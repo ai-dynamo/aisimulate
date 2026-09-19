@@ -28,27 +28,25 @@ pub enum TimingEvidenceSource {
 }
 
 impl TimingEvidenceSource {
+    #[cfg(feature = "python")]
     pub(crate) fn from_native(source: &str) -> Self {
-        match source {
-            "silicon" => Self::Silicon,
-            "empirical" => Self::Empirical,
-            "sol" => Self::Sol,
-            "estimated" => Self::Estimated,
-            "mixed" => Self::Mixed,
-            _ => Self::Other(source.to_owned()),
-        }
+        Self::known_tag(source).unwrap_or_else(|| Self::Other(source.to_owned()))
     }
 
     pub fn from_provider(source: impl Into<String>) -> Self {
         let source = source.into();
-        match source.as_str() {
+        Self::known_tag(&source).unwrap_or(Self::Other(source))
+    }
+
+    fn known_tag(source: &str) -> Option<Self> {
+        Some(match source {
             "silicon" => Self::Silicon,
             "empirical" => Self::Empirical,
             "sol" => Self::Sol,
             "estimated" => Self::Estimated,
             "mixed" => Self::Mixed,
-            _ => Self::Other(source),
-        }
+            _ => return None,
+        })
     }
 
     pub fn as_str(&self) -> &str {
@@ -239,12 +237,16 @@ pub struct TimingPhaseEvidence {
 /// Immutable provider evidence. Construction validates the public fields once;
 /// callers can borrow the result but cannot change its validated values.
 #[derive(Debug, Default)]
+#[cfg(any(feature = "python", test))]
 pub(crate) struct ValidatedTimingPhase(TimingPhaseEvidence);
 
+#[cfg(any(feature = "python", test))]
 impl ValidatedTimingPhase {
-    /// Native rows are already name-folded, in first-encounter order, and each
-    /// operation has passed `TimingOperationEvidence::new`. Keep this private
+    /// Native rows have unique names in first-encounter order. Each operation
+    /// is unchanged since `TimingOperationEvidence::new`, with no diagnostics.
+    /// Diagnostics must use `from_operations` after attaching details. Keep this private
     /// contract separate from the checked constructor for public field values.
+    #[cfg(feature = "python")]
     pub(crate) fn from_name_folded_operations(
         operations: Vec<TimingOperationEvidence>,
     ) -> Result<Self> {
@@ -252,6 +254,10 @@ impl ValidatedTimingPhase {
             !operations[..index]
                 .iter()
                 .any(|previous| previous.name == operation.name)
+        }));
+        debug_assert!(operations.iter().all(|operation| {
+            operation.details.is_none()
+                && matches!(operation.clone().canonicalized(), Ok(canonical) if canonical == *operation)
         }));
         let mut phase = TimingPhaseEvidence {
             operations,
@@ -305,17 +311,20 @@ impl ValidatedTimingPhase {
 /// The public, checked accumulator remains the fallback for changing layouts
 /// and optional operation diagnostics, whose merge rules it owns.
 #[derive(Default)]
+#[cfg(any(feature = "python", test))]
 pub(crate) struct TimingEvidenceAccumulator {
     summary: TimingEvidenceSummary,
     pending: Vec<OperationUpdate>,
 }
 
+#[cfg(any(feature = "python", test))]
 struct OperationUpdate {
     latency_ms: f64,
     energy_wms: Option<f64>,
     covered_latency_ms: f64,
 }
 
+#[cfg(any(feature = "python", test))]
 impl TimingEvidenceAccumulator {
     pub(crate) fn snapshot(&self) -> TimingEvidenceSummary {
         self.summary.clone()
@@ -835,6 +844,73 @@ pub(crate) fn modeled_duration_ms(raw_ms: f64, speedup_ratio: f64) -> Result<f64
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_source_tags_preserve_known_and_unknown_values() {
+        for (tag, expected) in [
+            ("silicon", TimingEvidenceSource::Silicon),
+            ("empirical", TimingEvidenceSource::Empirical),
+            ("sol", TimingEvidenceSource::Sol),
+            ("estimated", TimingEvidenceSource::Estimated),
+            ("mixed", TimingEvidenceSource::Mixed),
+            (
+                "transferred",
+                TimingEvidenceSource::Other("transferred".into()),
+            ),
+            ("Silicon", TimingEvidenceSource::Other("Silicon".into())),
+            ("", TimingEvidenceSource::Other(String::new())),
+        ] {
+            let owned = tag.to_owned();
+            let original = owned.as_ptr();
+            let actual = TimingEvidenceSource::from_provider(owned);
+            assert_eq!(actual, expected);
+            if let TimingEvidenceSource::Other(value) = &actual {
+                assert_eq!(value.as_ptr(), original);
+            }
+            #[cfg(feature = "python")]
+            assert_eq!(TimingEvidenceSource::from_native(tag), expected);
+        }
+    }
+
+    #[cfg(all(feature = "python", debug_assertions))]
+    #[test]
+    fn native_builder_asserts_its_private_input_contract() {
+        let valid =
+            TimingOperationEvidence::new("op", 1.0, Some(2.0), TimingEvidenceSource::Sol).unwrap();
+        assert!(
+            std::panic::catch_unwind(|| {
+                ValidatedTimingPhase::from_name_folded_operations(vec![
+                    valid.clone(),
+                    valid.clone(),
+                ])
+            })
+            .is_err()
+        );
+        for change in 0..5 {
+            let mut operation = valid.clone();
+            match change {
+                0 => operation.name.clear(),
+                1 => operation.latency_ms = f64::NAN,
+                2 => operation.energy_wms = Some(0.0),
+                3 => operation.covered_latency_ms = -1.0,
+                _ => {
+                    operation.details =
+                        Some(crate::perfmodel::engine::diagnostics::OperationDetails {
+                            sol: None,
+                            sol_unavailable_reason: Some("unsupported".into()),
+                            fallbacks: Vec::new(),
+                        })
+                }
+            }
+            assert!(
+                std::panic::catch_unwind(|| {
+                    ValidatedTimingPhase::from_name_folded_operations(vec![operation])
+                })
+                .is_err(),
+                "mutation {change} bypassed the debug contract"
+            );
+        }
+    }
 
     #[test]
     fn modeled_duration_applies_speedup_and_zero_means_unscaled() {
