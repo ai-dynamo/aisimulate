@@ -375,9 +375,13 @@ class EngineReplayRunner:
             if spec.adapters or spec.execution_mode != "offline":
                 raise InvalidRunnerError("analytical EPD requires offline static pools without adapters")
             goal = OptimizationGoal.model_validate(spec.goal)
-            if (goal.sla is not None and not goal.strict_sla) or any(
-                target.value.startswith("goodput")
-                for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+            if (
+                goal.min_goodput_rps is not None
+                or (goal.sla is not None and not goal.requires_aggregate_sla)
+                or any(
+                    target.value.startswith("goodput")
+                    for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+                )
             ):
                 raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
             workload = Workload.model_validate(spec.workload)
@@ -821,6 +825,7 @@ def _run_afd_replay(
         metrics["goodput_completed_requests"] = float(
             sum(1 for record in request_records if _request_passes_sla(record, sla))
         )
+        metrics["goodput_request_throughput_rps"] = metrics["goodput_completed_requests"] / duration_s
         metrics["goodput_output_throughput_tok_s"] = good_output_tokens / duration_s
     metrics.update(normalize_power_summary({}))
     summary: dict[str, JSONValue] = {
@@ -1194,6 +1199,42 @@ def _materialize_engine_role(
     _require_nested_context_parallel_match(role_config, parallel_config, role)
     if "rank" not in role_config:
         num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
+        for name in ("aic_backend_version", "backend_version"):
+            if role_config.get(name) is None:
+                role_config.pop(name, None)
+        # Propagate authored versions before capacity preflight. Otherwise a
+        # deployment pin reaches timing only after capacity has used current.
+        timing = role_config.get("timing_model")
+        timing_config = None
+        if (
+            isinstance(timing, dict)
+            and timing.get("type") == "external"
+            and timing.get("provider") == "aic"
+            and isinstance(timing.get("config"), dict)
+        ):
+            timing_config = timing["config"]
+        version = next(
+            (
+                value
+                for value in (
+                    role_config.get("aic_backend_version"),
+                    role_config.get("backend_version"),
+                    timing_config.get("backend_version") if timing_config is not None else None,
+                    deployment_backend_version or None,
+                )
+                if value is not None
+            ),
+            None,
+        )
+        if version is not None:
+            if (
+                not num_gpu_blocks_is_explicit
+                and role_config.get("aic_backend") is not None
+                and not any(name in role_config for name in ("aic_backend_version", "backend_version"))
+            ):
+                role_config["aic_backend_version"] = version
+            if timing_config is not None and timing_config.get("backend_version") is None:
+                role_config["timing_model"] = {**timing, "config": {**timing_config, "backend_version": version}}
         role_config = materialize_aic_num_gpu_blocks(
             role_config,
             **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
@@ -1388,6 +1429,8 @@ def _materialize_engine_role(
             roots = identity.get("systems_paths")
             if roots is None and identity.get("systems_path") is not None:
                 roots = [identity["systems_path"]]
+            if roots is None and aic_timing_overrides.get("systems_path") is not None:
+                roots = [aic_timing_overrides["systems_path"]]
             return resolve_query_version(
                 identity.get("system", system),
                 backend,

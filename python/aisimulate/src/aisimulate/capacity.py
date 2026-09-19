@@ -53,10 +53,14 @@ def materialize_aic_num_gpu_blocks(
 
     lowered = dict(raw)
     timing = lowered.get("timing_model")
+    timing_system_roots = None
     if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
         authored = timing.get("config")
         if not isinstance(authored, dict):
             raise ValueError("external AIC timing config must be a mapping")
+        timing_system_roots = authored.get("systems_paths")
+        if not timing_system_roots and authored.get("systems_path") is not None:
+            timing_system_roots = [authored["systems_path"]]
         if "estimation_mode" in authored or "estimator_config" in authored:
             from aisimulate_core.sdk import RustForwardPassPerfModel
 
@@ -165,6 +169,16 @@ def materialize_aic_num_gpu_blocks(
     if not model:
         raise ValueError("AIC KV cache capacity estimation requires aic_model_path in engine args")
 
+    capacity_systems_path = lowered.get("systems_path")
+    if timing_system_roots and canonical_result is None:
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+        resolved_roots = resolve_systems_paths(timing_system_roots)
+        if resolved_roots:
+            # Native timing gives systems_paths precedence over systems_path;
+            # canonical lowering has already pinned the selected root above.
+            capacity_systems_path = resolved_roots[0]
+
     lowered["num_gpu_blocks"] = estimate_num_gpu_blocks(
         backend_name=backend,
         system=lowered.get("aic_system") or _DEFAULT_AIC_SYSTEM,
@@ -182,7 +196,11 @@ def materialize_aic_num_gpu_blocks(
         gpu_memory_utilization=lowered.get("gpu_memory_utilization"),
         mem_fraction_static=lowered.get("mem_fraction_static"),
         free_gpu_memory_fraction=lowered.get("free_gpu_memory_fraction"),
-        backend_version=lowered.get("aic_backend_version"),
+        backend_version=(
+            lowered.get("aic_backend_version")
+            if lowered.get("aic_backend_version") is not None
+            else lowered.get("backend_version")
+        ),
         pp_size=(lowered.get("aic_pp_size") if lowered.get("aic_pp_size") is not None else 1),
         moe_tp_size=lowered.get("aic_moe_tp_size"),
         moe_ep_size=lowered.get("aic_moe_ep_size"),
@@ -199,7 +217,7 @@ def materialize_aic_num_gpu_blocks(
             for name in ("moe_backend", "attention_backend", "enable_eplb", "wideep_num_slots")
             if lowered.get(f"aic_{name}") is not None
         },
-        systems_path=lowered.get("systems_path"),
+        systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
@@ -255,6 +273,15 @@ def estimate_num_gpu_blocks(
         estimate_num_gpu_blocks as aic_estimate_num_gpu_blocks,
     )
 
+    if backend_version is None:
+        from aisimulate_core.sdk.perf_database import get_latest_database_version
+
+        # Use the maintained current slot (or the latest version in a custom
+        # legacy root), matching the database used for this capacity estimate.
+        backend_version = get_latest_database_version(system, backend_name, systems_paths=systems_path)
+        if backend_version is None:
+            raise ValueError(f"no perf database for system={system!r}, backend={backend_name!r}")
+
     validate_moe_controls(enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots)
 
     if backend_name == "trtllm":
@@ -276,9 +303,7 @@ def estimate_num_gpu_blocks(
             model_path,
             system,
             backend_name,
-            backend_version=(
-                backend_version if backend_version is not None else DEFAULT_BACKEND_VERSIONS[backend_name]
-            ),
+            backend_version=backend_version,
             scheduler_block_size=block_size,
             max_num_tokens=max_num_batched_tokens,
             max_batch_size=max_num_sequences,
