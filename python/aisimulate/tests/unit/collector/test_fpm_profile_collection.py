@@ -576,6 +576,7 @@ def test_cli_runtime_limits_reach_both_rendered_workers(
             runner._render_cell(plan, cell, target, overrides, smoke=_args.smoke)
         return []
 
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
     monkeypatch.setattr(cli, "run_resolved", render_without_launch)
     assert cli.main(argv) == 0
     for phase in ("prefill", "decode"):
@@ -647,6 +648,7 @@ def test_cli_rejects_scheduler_tokens_below_sequences_before_execution(
         argv.extend(["--fpm-model-profile", str(path)])
     if smoke:
         argv.append("--smoke")
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
     monkeypatch.setattr(cli, "run_resolved", lambda *_args: pytest.fail("collection execution started"))
 
     with pytest.raises(SystemExit) as error:
@@ -674,6 +676,7 @@ def test_cli_rejects_profile_limit_overshoots_before_execution(tmp_path, monkeyp
         deployment["resources"].update(max_num_tokens=4096, max_batch_size=64)
     path = tmp_path / "profile.json"
     path.write_text(json.dumps(profile))
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
     monkeypatch.setattr(cli, "run_resolved", lambda *_args: pytest.fail("collection execution started"))
     with pytest.raises(SystemExit) as error:
         cli.main([*_argv(profile), "--fpm-model-profile", str(path), *limits])

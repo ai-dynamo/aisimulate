@@ -43,8 +43,13 @@ an operation graph for timing or resources. Unsupported metadata and uncovered
 queries fail explicitly. See [execution-route selection and interpolation rules](../../../../docs/fpm-self-service.md#choose-the-model-execution-route)
 for exact-point, curve and two-sided interpolation coverage.
 
-Each plan selects one exact TP, DEP or TEP worker; use separate requests and
-output directories for alternatives. Follow the
+Each generated profile and plan selects one exact TP, DEP or TEP worker. To onboard
+several configurations in one session, use the self-service guide's
+[directory output](../../../../docs/fpm-self-service.md#onboard-multiple-parallel-configurations).
+It reuses shared intake and creates a separate reviewed profile and request
+for each tuple; rank-local byte bounds and cache groups are never transferred
+between configurations. Follow each emitted plan command and collect or resume
+each configuration independently. Follow the
 [shared collection policy](../../../../docs/fpm-self-service.md#how-the-collection-grid-is-determined):
 AISimulate sets runtime limits, prefill capture sizes and some sample caps;
 Dynamo combines them with the deployed image's sampling defaults and runtime

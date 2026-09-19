@@ -12,6 +12,7 @@ import re
 import shlex
 import sys
 import tempfile
+from copy import deepcopy
 from fractions import Fraction
 from pathlib import Path
 from typing import Any, get_args
@@ -111,6 +112,12 @@ def add_support_parser(subparsers: Any) -> None:
         action="store_true",
         help="Preview model-config topology suggestions as JSON; no prompts or writes, including to --output.",
     )
+    init.add_argument(
+        "--parallel-configs",
+        metavar="PATH",
+        help="JSON/YAML list of explicit parallel configurations with optional per-entry resource_overrides; "
+        "requires --model-config and --output-dir; conflicts with topology flags and --suggest-parallel.",
+    )
     init.add_argument("--input-tokens", type=int, help="Synthetic validation input tokens (default: 1024).")
     init.add_argument("--output-tokens", type=int, help="Synthetic validation output tokens (default: 128).")
     init.add_argument("--concurrency", type=int, help="Synthetic validation concurrency (default: 1).")
@@ -143,8 +150,19 @@ def add_support_parser(subparsers: Any) -> None:
         help="Recommendation objective (default: throughput).",
     )
     init.add_argument("--seed", type=int, help="Recommendation search seed (default: 42).")
-    init.add_argument("--output", default="support-request.yaml")
-    init.add_argument("--overwrite", action="store_true")
+    output = init.add_mutually_exclusive_group()
+    output.add_argument(
+        "--output", default="support-request.yaml", help="Save one request (default: support-request.yaml)."
+    )
+    output.add_argument(
+        "--output-dir",
+        metavar="ROOT",
+        help="Save a request and FPM profile for each selected configuration in a fresh directory; "
+        "requires --model-config. Interactive suggestions accept comma-separated choices.",
+    )
+    init.add_argument(
+        "--overwrite", action="store_true", help="Allow replacement of --output; unsupported with --output-dir."
+    )
 
     plan = actions.add_parser(
         "plan", help="Plan FPM collection and write predict/recommend configs for the target hardware."
@@ -307,7 +325,8 @@ def _require_terminal() -> None:
 def _guided_request(args: argparse.Namespace, *, skip_topology: bool = False) -> SupportRequest:
     _require_terminal()
     print("Onboard a model for FPM simulation on a target hardware platform.")
-    print("Select one TP, DEP, or TEP worker and review collection limits for vLLM.")
+    selection = "one or more" if getattr(args, "output_dir", None) is not None else "one"
+    print(f"Select {selection} TP, DEP, or TEP worker configurations and review collection limits for vLLM.")
     print("Enter accepts a displayed default. Ctrl-C cancels without saving. Supplied options skip their prompts.")
     for name in _PROMPTS:
         if skip_topology and name == "tensor_parallel":
@@ -449,6 +468,8 @@ def _review_config_profile(
     request: SupportRequest,
     overrides: dict[str, Any],
     draft: ProfileDraft,
+    *,
+    directory_output: bool = False,
 ) -> SupportRequest:
     while True:
         identity = request.identity
@@ -488,7 +509,13 @@ def _review_config_profile(
                 "  Provenance records the config SHA-256, deployment, values and sources; "
                 "edit provenance to add a note."
             )
-        print("Nothing has been saved. Accept saves these values; edit changes a profile field. Ctrl-C cancels setup.")
+        if directory_output:
+            print("Nothing has been saved. All selected profiles must be accepted before any files are saved.")
+            print("Accept keeps this profile; edit changes a profile field. Ctrl-C cancels setup.")
+        else:
+            print(
+                "Nothing has been saved. Accept saves these values; edit changes a profile field. Ctrl-C cancels setup."
+            )
         while True:
             action = input("Review action (accept/edit/cancel): ").strip().lower()
             if action in ("accept", "edit", "cancel"):
@@ -507,7 +534,7 @@ def _review_config_profile(
             print("Choose an editable field by its displayed name.")
         # Derive from explicit inputs again so inferred dependents can change.
         # Only publish the staged values after the entire request validates.
-        staged = dict(overrides)
+        staged = deepcopy(overrides)
         payload = request.model_dump(exclude={"fpm_profile"})
         if name in collection_fields:
             while True:
@@ -616,20 +643,39 @@ def _topology_summary(suggestions: TopologySuggestions) -> str:
     return "\n".join(lines)
 
 
-def _select_topology(
-    args: argparse.Namespace, config: ModelConfig, overrides: dict[str, Any], request: SupportRequest
-) -> SupportRequest:
+def _resolve_shared_profile_inputs(
+    config: ModelConfig, shared: dict[str, Any], entry_overrides: list[dict[str, Any]]
+) -> None:
+    while True:
+        for overrides in entry_overrides:
+            draft = derive_profile(config, None, {**shared, **overrides})
+            pending = [
+                name
+                for name in draft.missing
+                if not _memory_field(name) and name not in {"cache_groups", "cache_block_sizes"}
+            ]
+            if pending:
+                name = pending[0]
+                print(f"{name}: {draft.missing[name]}")
+                shared.update(_read_profile_value(name))
+                break
+        else:
+            return
+
+
+def _select_topologies(
+    args: argparse.Namespace,
+    config: ModelConfig,
+    overrides: dict[str, Any],
+    request: SupportRequest,
+    *,
+    multiple: bool = False,
+) -> list[SupportRequest]:
     while True:
         try:
             suggestions = suggest_topologies(config, request, overrides)
             if args.interactive and suggestions.candidates:
-                shared = derive_profile(config, None, overrides)
-                while names := [
-                    name
-                    for name in shared.missing
-                    if not _memory_field(name) and name not in {"cache_groups", "cache_block_sizes"}
-                ]:
-                    overrides, shared = _prompt_profile_value(config, None, overrides, shared, names[0])
+                _resolve_shared_profile_inputs(config, overrides, [{}])
                 suggestions = suggest_topologies(config, request, overrides)
             break
         except (ProfileRequestError, ValidationError) as exc:
@@ -647,39 +693,61 @@ def _select_topology(
             "Explicit topology may be outside the automatic shortlist."
         )
     print(summary)
-    selected = suggestions.default
+    selected = [suggestions.default] if suggestions.default is not None else []
     if args.interactive:
-        default = suggestions.candidates.index(selected) + 1 if selected is not None else None
+        default = suggestions.candidates.index(selected[0]) + 1 if selected else None
         if default is None:
             print("Memory fit is unresolved; select a candidate explicitly, then provide its missing per-rank bounds.")
         while True:
             answer = input(
-                f"Choose topology 1-{len(suggestions.candidates)}"
+                f"Choose {'topologies' if multiple else 'topology'} 1-{len(suggestions.candidates)}"
                 + (f" [{default}]" if default is not None else "")
-                + " (or cancel): "
+                + (" (comma-separated, or cancel): " if multiple else " (or cancel): ")
             ).strip()
             if answer.lower() == "cancel":
                 raise KeyboardInterrupt
             if not answer and default is not None:
                 break
-            if answer.isdecimal() and 1 <= int(answer) <= len(suggestions.candidates):
-                selected = suggestions.candidates[int(answer) - 1]
+            choices = [value.strip() for value in answer.split(",")] if multiple else [answer]
+            if all(value.isdecimal() and 1 <= int(value) <= len(suggestions.candidates) for value in choices) and len(
+                {int(value) for value in choices}
+            ) == len(choices):
+                selected = [suggestions.candidates[int(value) - 1] for value in choices]
                 break
-            print("Enter a displayed candidate number or cancel. Enter accepts only a fully assessed default.")
-    assert selected is not None
-    print(
-        f"Selected {selected.family} with {selected.required_gpus} collection GPUs: " + shlex.join(selected.cli_flags)
+            numbers = "unique comma-separated candidate numbers" if multiple else "a displayed candidate number"
+            print(f"Enter {numbers} or cancel. Enter accepts only a fully assessed default.")
+    for candidate in selected:
+        print(
+            f"Selected {candidate.family} with {candidate.required_gpus} collection GPUs: "
+            + shlex.join(candidate.cli_flags)
+        )
+    return [candidate.apply(request) for candidate in selected]
+
+
+def _topology_values(request: SupportRequest) -> dict[str, int]:
+    parallel = request.parallelism()
+    return dict(
+        zip(
+            _TOPOLOGY_OPTIONS,
+            (parallel[name] for name in ("tensor", "attention_data", "moe_tensor", "moe_expert")),
+            strict=True,
+        )
     )
-    for name, value in selected.topology.items():
-        setattr(args, name, value)
-    return selected.apply(request)
 
 
 def _config_request(args: argparse.Namespace) -> SupportRequest:
     automatic = not _explicit_topology(args)
     config, overrides, request = _config_inputs(args)
     if automatic:
-        request = _select_topology(args, config, overrides, request)
+        request = _select_topologies(args, config, overrides, request)[0]
+        for name, value in _topology_values(request).items():
+            setattr(args, name, value)
+    return _complete_config_request(args, config, overrides, request)
+
+
+def _complete_config_request(
+    args: argparse.Namespace, config: ModelConfig, overrides: dict[str, Any], request: SupportRequest
+) -> SupportRequest:
     while True:
         try:
             draft = derive_profile(config, request, overrides)
@@ -718,21 +786,209 @@ def _config_request(args: argparse.Namespace) -> SupportRequest:
             _correct_option(args, exc)
             request = _validate_guided_request(args)
             continue
-        return _review_config_profile(config, completed, overrides, draft) if args.interactive else completed
+        return (
+            _review_config_profile(
+                config, completed, overrides, draft, directory_output=getattr(args, "output_dir", None) is not None
+            )
+            if args.interactive
+            else completed
+        )
+
+
+def _load_parallel_configs(path: str) -> list[dict[str, Any]]:
+    source = Path(path).expanduser()
+    try:
+        entries = yaml.load(source.read_text(encoding="utf-8"), Loader=_ResourceOverridesLoader)
+    except yaml.YAMLError as exc:
+        raise ValueError(f"malformed parallel configurations in {source}: {exc}") from exc
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("--parallel-configs must contain a nonempty JSON/YAML list of objects")
+    for number, entry in enumerate(entries, 1):
+        if not isinstance(entry, dict):
+            raise ValueError(f"parallel configuration {number} must be an object")
+        unknown = entry.keys() - {*_TOPOLOGY_OPTIONS, "resource_overrides"}
+        if unknown:
+            raise ValueError(f"parallel configuration {number} has unknown fields: {', '.join(sorted(unknown))}")
+        if "tensor_parallel" not in entry:
+            raise ValueError(f"parallel configuration {number} requires tensor_parallel")
+        for name in entry.keys() & set(_TOPOLOGY_OPTIONS):
+            if type(entry[name]) is not int or entry[name] < 1:
+                raise ValueError(f"parallel configuration {number}: {name} must be a positive integer")
+        overrides = entry.get("resource_overrides", {})
+        if not isinstance(overrides, dict):
+            raise ValueError(f"parallel configuration {number}: resource_overrides must be a mapping")
+        entry["resource_overrides"] = validate_overrides(overrides)
+    return entries
+
+
+def _check_unique_topologies(requests: list[SupportRequest]) -> None:
+    seen = set()
+    for request in requests:
+        topology = _topology_values(request)
+        key = tuple(topology.values())
+        if key in seen:
+            raise ValueError(f"duplicate resolved parallel configuration: {topology}")
+        seen.add(key)
+
+
+def _config_requests(args: argparse.Namespace) -> list[SupportRequest]:
+    entries = _load_parallel_configs(args.parallel_configs) if args.parallel_configs is not None else None
+    automatic = not _explicit_topology(args) and entries is None
+    implicit_context = args.context_length is None
+    config, shared, request = _config_inputs(args)
+    if entries is not None:
+        selected = []
+        for entry in entries:
+            payload = request.model_dump()
+            payload["search"].update({name: entry[name] for name in _TOPOLOGY_OPTIONS if name in entry})
+            selected.append(SupportRequest.model_validate(payload))
+    else:
+        selected = _select_topologies(args, config, shared, request, multiple=True) if automatic else [request]
+    _check_unique_topologies(selected)
+    if len(selected) > 1 and (
+        rank_fields := [name for name in shared if _memory_field(name) or name == "cache_groups"]
+    ):
+        raise ValueError(
+            "Multiple configurations cannot share rank-local resource overrides: "
+            + ", ".join(sorted(rank_fields))
+            + ". Put them in each --parallel-configs entry's resource_overrides or edit each profile interactively."
+        )
+    if args.interactive and not automatic:
+        _resolve_shared_profile_inputs(
+            config, shared, [entry["resource_overrides"] for entry in entries] if entries is not None else [{}]
+        )
+    completed = []
+    for number, candidate in enumerate(selected, 1):
+        # Corrections, nested resource inputs and review edits belong only to
+        # this tuple. Start every profile from the original shared intake.
+        candidate_args = deepcopy(args)
+        candidate = candidate.model_copy(deep=True)
+        for name, value in _topology_values(candidate).items():
+            setattr(candidate_args, name, value)
+        overrides = deepcopy(shared)
+        if entries is not None:
+            overrides.update(deepcopy(entries[number - 1]["resource_overrides"]))
+        if implicit_context:
+            context = derive_profile(config, None, overrides).resolved.get("context_length")
+            if context is not None:
+                candidate_args.context_length = min(context, AGENTX_REFERENCE_CONTEXT)
+                candidate.search.context_length = candidate_args.context_length
+        print(f"Configuration {number}/{len(selected)}: {_topology_values(candidate)}")
+        completed.append(_complete_config_request(candidate_args, config, overrides, candidate))
+        _check_unique_topologies(completed)
+    return completed
+
+
+def _onboarding_target(path: str | Path) -> Path:
+    if not str(path):
+        raise ValueError("onboarding output directory must be a nonempty path")
+    target = Path(path).expanduser().absolute()
+    for parent in (target, *target.parents):
+        if parent.is_symlink():
+            raise ValueError(f"onboarding output path must not contain symlinks: {parent}")
+    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+        raise ValueError(
+            f"onboarding output directory {target} must be new or empty; collection results cannot be replaced"
+        )
+    parent = target.parent
+    while not parent.exists():
+        parent = parent.parent
+    if not parent.is_dir() or not os.access(parent, os.W_OK):
+        raise ValueError(f"onboarding output parent {parent} must be a writable directory")
+    return target
+
+
+def _write_onboarding(requests: list[SupportRequest], root: Path) -> dict[str, Any]:
+    _check_unique_topologies(requests)
+    for request in requests:
+        request.scheduler_limits()
+    root = _onboarding_target(root)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    index = {"schema_version": "aisimulate-onboarding/v1", "configurations": []}
+    with tempfile.TemporaryDirectory(prefix=f".{root.name}-", dir=root.parent) as temporary:
+        staged = Path(temporary)
+        for request in requests:
+            topology = _topology_values(request)
+            tp, dp, mtp, ep = topology.values()
+            name = f"tp{tp}-dp{dp}-moe-tp{mtp}-moe-ep{ep}"
+            final = root / name
+            _write_request(request, staged / name / "request.yaml", overwrite=False)
+            profile = request.fpm_profile
+            assert profile is not None
+            (staged / name / "fpm-profile.json").write_text(profile.model_dump_json(indent=2) + "\n", encoding="utf-8")
+            index["configurations"].append(
+                {
+                    "topology": topology,
+                    "collection_gpus_required": request.worker_gpus,
+                    "request_id": request_id(request),
+                    "request": str(final / "request.yaml"),
+                    "fpm_profile": str(final / "fpm-profile.json"),
+                    "collection_dir": str(final / "collection"),
+                    "plan_command": shlex.join(
+                        [
+                            "aisimulate",
+                            "onboard",
+                            "plan",
+                            "--config",
+                            str(final / "request.yaml"),
+                            "--output-dir",
+                            str(final / "collection"),
+                        ]
+                    ),
+                }
+            )
+        (staged / "onboarding.json").write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+        # Recheck after all reviews and serialization. Rename publishes only a
+        # complete directory and cannot replace a nonempty collection directory.
+        _onboarding_target(root)
+        staged.rename(root)
+    return index
 
 
 def _init(args: argparse.Namespace) -> int:
     if args.resource_overrides and not args.model_config:
         raise ValueError("--resource-overrides requires --model-config")
+    if args.parallel_configs is not None:
+        if not args.model_config or args.output_dir is None:
+            raise ValueError("--parallel-configs requires --model-config and --output-dir")
+        if _explicit_topology(args):
+            raise ValueError("--parallel-configs cannot be combined with explicit topology flags")
+    if args.output_dir is not None:
+        if not args.model_config:
+            raise ValueError("--output-dir requires --model-config")
+        if args.overwrite:
+            raise ValueError("--output-dir cannot be combined with --overwrite; use a fresh output directory")
     if args.suggest_parallel:
         if not args.model_config:
             raise ValueError("--suggest-parallel requires --model-config")
-        if args.interactive or args.fpm_profile or args.profile or _explicit_topology(args):
+        if (
+            args.interactive
+            or args.fpm_profile
+            or args.profile
+            or _explicit_topology(args)
+            or args.output_dir is not None
+            or args.parallel_configs is not None
+        ):
             raise ValueError(
-                "--suggest-parallel cannot be combined with --interactive, profiles, or explicit topology flags"
+                "--suggest-parallel cannot be combined with --interactive, profiles, explicit topology flags, "
+                "--output-dir, or --parallel-configs"
             )
         config, overrides, request = _config_inputs(args)
         _print(suggest_topologies(config, request, overrides).to_dict(), "json")
+        return 0
+    if args.output_dir is not None:
+        root = _onboarding_target(args.output_dir)
+        try:
+            index = _write_onboarding(_config_requests(args), root)
+        except (EOFError, KeyboardInterrupt):
+            print("Setup cancelled.", file=sys.stderr)
+            return 130
+        print(
+            "Requests and profiles saved. Runtime compatibility and FPM data are unchecked; "
+            "setup has not launched GPU work."
+        )
+        print("Separate collection plan commands are ready; the same GPUs may be reused across separate runs.")
+        _print({"onboarding_index": str(root / "onboarding.json"), **index})
         return 0
     _request_target(args.output, overwrite=args.overwrite)
     try:

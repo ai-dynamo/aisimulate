@@ -24,10 +24,22 @@ MoE TP/DEP/TEP alternatives, exact flags, resource sources and missing inputs.
 Ask for unresolved shared precision/layout facts rather than guessing. Only a
 complete declared/estimated byte budget can establish an `estimated_fit` default;
 the shortlist is not a performance ranking or runtime qualification. Present the
-default and alternatives, choose one exact topology per plan, and preserve any
-explicit topology choice. If no default exists, explain the missing inputs and
-select a candidate before collecting its rank-local bounds. Byte overrides are
-specific to the chosen tuple; use explicit topology flags with those bounds.
+default and alternatives, help select one or more configurations, and preserve
+explicit topology choices. Each generated profile and collection plan still
+uses one exact tuple. Use `--model-config PATH --interactive --output-dir ROOT`
+for guided comma-separated selection, or `--model-config PATH --parallel-configs CONFIGS
+--output-dir ROOT` for a JSON/YAML list of explicit topology fields and optional
+per-entry `resource_overrides`. Retain `--output FILE` for a single request.
+If no default exists, explain the missing inputs and select candidates before
+collecting their rank-local bounds. Read shared metadata once, then derive and
+review each profile independently. Per-rank byte bounds and `cache_groups`
+belong to the exact tuple; never transfer them between configurations or place
+them in shared overrides for multiple choices. Shared precision/layout and
+`cache_block_sizes` may be reused, but page bytes must be derived per tuple.
+Interactive edits apply only to the profile being reviewed; explicitly accept
+each profile before directory output is saved. A later cancellation or invalid
+profile leaves no new artifacts. Use a fresh or empty root; directory output
+rejects `--overwrite` and never replaces collection results.
 Inspect full-attention, sliding-window and supported convolution retention
 before choosing linear or grouped cache resources. For grouped resources,
 derive available geometry, then request unresolved runtime `cache_block_sizes`
@@ -38,10 +50,12 @@ including runtime padding; config-derived packed pages are minimum estimates.
 Never replace grouped storage with an averaged `kv_bytes_per_token` or scalar
 token capacity. Use the canonical native cache budget for group footprint and
 transient prefill admission; unresolved resource assumptions remain explicit.
-Derive the minimum collection GPUs from attention TP times attention DP (TP4
-requires four GPUs). Do not ask for total available GPUs, cluster node allocation
-or replica budgets during onboarding. Preserve target hardware, runtime and
-interconnect characteristics; verify actual collection resources before execution.
+Derive each configuration's minimum collection GPUs from attention TP times
+attention DP (TP4 requires four GPUs). Separate collection runs can reuse the
+same GPUs; do not sum their widths into an allocation requirement. Do not ask
+for total available GPUs, cluster node allocation or replica budgets during
+onboarding. Preserve target hardware, runtime and interconnect characteristics;
+verify actual collection resources before execution.
 Generated predict/recommend configs validate one worker. Deployment replicas and
 optimization GPU budgets belong to ordinary predict/recommend configurations.
 
@@ -89,8 +103,16 @@ deployment memory and latency are not modeled. Preserve this scope in the
 reviewed profile's provenance and require explicit bounds for unknown decoder
 resources. Keep validation of incompatible decoder/cache semantics intact.
 
-Report the current stage, its result or blocker, and the next action. Resume from
-validated artifacts and accepted decisions instead of repeating the intake.
+For directory output, read `onboarding.json` and run each configuration's
+`plan_command` for its own `collection/` directory. Inspect
+the ordinary plan and preview collection before execution; initialization
+does not launch collection. Use each plan's existing collection and validation
+commands with separate result paths. The index locates configurations and next
+plan commands; it does not record stage completion or acceptance.
+
+Report the current stage, its result or blocker, and the next action for each
+configuration. Resume from its validated artifacts and accepted decisions
+instead of repeating shared intake or completed collection.
 Stage transitions are not additional approval gates. Preserve explicit review
 and acceptance of the exact profile, user overrides/provenance, and existing
 execution authorization as described in the guide's terminal and headless flows.
