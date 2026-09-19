@@ -337,6 +337,17 @@ impl TimingEvidenceAccumulator {
             &mut self.summary.decode
         };
         let incoming = incoming.as_phase();
+        // Only operation-backed totals are already reconciled. Keep empty and
+        // phase-only accumulated states on the checked path, including -0.0.
+        if !phase.operations.is_empty()
+            && incoming.operations.is_empty()
+            && incoming.latency_ms == 0.0
+            && incoming.energy_wms.is_none()
+            && incoming.covered_latency_ms == 0.0
+            && incoming.source.is_none()
+        {
+            return Ok(());
+        }
         if phase.operations.is_empty()
             || incoming.operations.is_empty()
             || phase.operations.len() != incoming.operations.len()
@@ -1364,6 +1375,11 @@ mod tests {
                     op.energy_wms.map(f64::to_bits),
                     Some(op.covered_latency_ms.to_bits()),
                 ]);
+                if let Some(sol) = op.details.as_ref().and_then(|details| details.sol.as_ref()) {
+                    values.extend(
+                        [sol.latency_ms, sol.math_ms, sol.memory_ms].map(|v| Some(v.to_bits())),
+                    );
+                }
             }
             values
         };
@@ -1406,6 +1422,11 @@ mod tests {
                 &mut checked.decode
             };
             phase.try_accumulate(incoming.as_phase().clone()).unwrap();
+            fast.record(&ValidatedTimingPhase::default(), prefill)
+                .unwrap();
+            phase
+                .try_accumulate(TimingPhaseEvidence::default())
+                .unwrap();
             let snapshot = fast.snapshot();
             assert_phase_bits(&snapshot.prefill, &checked.prefill);
             assert_phase_bits(&snapshot.decode, &checked.decode);
@@ -1439,6 +1460,12 @@ mod tests {
             checked
                 .decode
                 .try_accumulate(incoming.as_phase().clone())
+                .unwrap();
+            fast.record(&ValidatedTimingPhase::default(), false)
+                .unwrap();
+            checked
+                .decode
+                .try_accumulate(TimingPhaseEvidence::default())
                 .unwrap();
             assert_phase_bits(&fast.snapshot().decode, &checked.decode);
         }
@@ -1511,6 +1538,38 @@ mod tests {
                 .to_string()
         );
         assert_phase_bits(&fast.snapshot().decode, &checked);
+        // Empty updates must retain the checked semantics for phase-only
+        // states, including signed zero, and for source-only incoming phases.
+        for initial in [
+            TimingPhaseEvidence::default(),
+            TimingPhaseEvidence {
+                latency_ms: -0.0,
+                covered_latency_ms: -0.0,
+                ..Default::default()
+            },
+            phase_only.as_phase().clone(),
+            incoming.as_phase().clone(),
+        ] {
+            for update in [
+                TimingPhaseEvidence::default(),
+                TimingPhaseEvidence {
+                    source: Some(TimingEvidenceSource::Mixed),
+                    ..Default::default()
+                },
+                phase_only.as_phase().clone(),
+            ] {
+                let mut fast = TimingEvidenceAccumulator::default();
+                fast.summary.decode = initial.clone();
+                let mut checked = initial.clone();
+                let expected = checked.try_accumulate(update.clone());
+                let actual = fast.record(&ValidatedTimingPhase(update), false);
+                assert_eq!(
+                    actual.err().map(|e| e.to_string()),
+                    expected.err().map(|e| e.to_string())
+                );
+                assert_phase_bits(&fast.snapshot().decode, &checked);
+            }
+        }
         for value in [f64::NAN, f64::INFINITY, -1.0] {
             let invalid = TimingOperationEvidence {
                 name: "bad".into(),
