@@ -27,7 +27,8 @@
   explicitly disables chunked prefill and selects the controls below.
   The retained resolved source arguments verify the attention-DP point.
   Non-DP values below come only from `residual-20260918/upstream/qwen-recipe.sh`;
-  this summary does not retain resolved non-DP arguments or readmission counts.
+  this summary retains no resolved non-DP arguments and no non-DP readmission
+  counts.
   The frozen engine spec does not express these controls.
 
 | Recipe scope | Effective source control | Replay limitation |
@@ -47,7 +48,7 @@
   and CUTEDSL timings, then implement the supported scheduling contract and
   rerun all 19 points. The capacity-policy difference is a confirmed config
   mismatch; its numerical effect is not established by the attention-DP
-  point's zero readmissions. The JSON records their sum from all 5,120
+  point's zero readmissions. The JSON records that readmission total from all 5,120
   `per_request[].readmission_count` values in the hashed replay artifact.
 
 ## GPT-OSS: matched TTFT reproduction and timing boundaries
