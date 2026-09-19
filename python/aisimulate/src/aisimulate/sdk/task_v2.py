@@ -2227,11 +2227,12 @@ class Task:
             return getattr(self, f"{prefix}{dim}_candidates")
 
         cp_list = _cands("cp") or [1]
-        # Topology-layer rule: one aggregated engine prices prefill CP and decode
-        # CP one at a time (the frameworks either never compose them or only for
-        # a narrow model class). Disaggregated roles carry each knob on its own
-        # worker, so no cross-check applies there. Fail loud instead of silently
-        # dropping the user's prefill-CP candidates.
+        # Topology-layer rules (same as the compiler's): one aggregated engine
+        # prices prefill CP and decode CP one at a time; a disaggregated prefill
+        # engine stripes its KV only as the PCP+DCP layout (dcp == cp); vLLM
+        # refuses a replicated-PCP prefill next to a DCP-sharded decode and
+        # needs the two DCP sizes to divide one another. Fail loud instead of
+        # silently dropping the user's prefill-CP candidates.
         dcp_size = self._role_attr(role, "dcp_size")
         if role == "agg" and dcp_size > 1 and any(c > 1 for c in cp_list):
             raise ValueError(
@@ -2240,6 +2241,25 @@ class Task:
                 "(or set dcp_size=1), or use serving_mode='disagg' to put prefill CP on the prefill "
                 "worker and decode CP on the decode worker."
             )
+        if role == "prefill":
+            if dcp_size > 1 and cp_list != [dcp_size]:
+                raise ValueError(
+                    f"prefill_dcp_size={dcp_size} is only accepted as the PCP+DCP layout, i.e. with "
+                    f"prefill_cp_candidates=[{dcp_size}] (got {cp_list}); a prefill engine gains nothing "
+                    "from striping its KV on its own"
+                )
+            decode_dcp = self.decode_dcp_size
+            if self.prefill_backend_name == "vllm" and decode_dcp > 1:
+                if dcp_size == 1 and any(c > 1 for c in cp_list):
+                    raise ValueError(
+                        f"vLLM cannot pair a replicated-PCP prefill worker (prefill_cp_candidates={cp_list}, "
+                        f"prefill_dcp_size=1) with a DCP-sharded decode worker (decode_dcp_size={decode_dcp})"
+                    )
+                if decode_dcp % dcp_size and dcp_size % decode_dcp:
+                    raise ValueError(
+                        f"vLLM requires prefill_dcp_size={dcp_size} and decode_dcp_size={decode_dcp} to divide "
+                        "one another"
+                    )
 
         backend = common.BackendName[self._role_attr(role, "backend_name")]
         parallel = enumerate_parallel_config(

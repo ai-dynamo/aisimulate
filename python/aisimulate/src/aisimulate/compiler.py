@@ -219,6 +219,7 @@ def _deployment(
     assert engine.workers.prefill is not None and engine.workers.decode is not None
     prefill = engine.workers.prefill
     decode = engine.workers.decode
+    _require_disaggregated_context_parallelism(engine.backend, prefill, decode)
     transfer_bytes_per_token = None
     if engine.kv_transfer is not None:
         transfer_bytes_per_token = _resolve_kv_bytes_per_token(
@@ -373,6 +374,41 @@ def _require_exclusive_context_parallelism(worker: WorkerPredictionConfig) -> No
             f"parallelism.decode_context above 1 (got prefill_context={parallel.prefill_context}, "
             f"decode_context={parallel.decode_context}); use a disaggregated deployment to apply "
             "prefill CP on the prefill worker and decode CP on the decode worker"
+        )
+
+
+def _require_disaggregated_context_parallelism(
+    backend: str, prefill: WorkerPredictionConfig, decode: WorkerPredictionConfig
+) -> None:
+    """Disaggregated roles carry their own knobs, with two layout constraints.
+
+    A prefill engine gains nothing from striping its KV (the KV only passes
+    through), so decode CP on the prefill worker is accepted only as the
+    PCP+DCP layout, i.e. equal to its prefill CP. vLLM's NIXL connector
+    additionally refuses to pair a replicated-PCP prefill (pcp > 1, dcp = 1)
+    with a DCP-sharded decode, and requires the two DCP sizes to divide one
+    another (``nixl/base_worker.py``). SGLang re-lays the KV out per decode
+    DCP rank on the prefill side and has no such pairing rule.
+    """
+    p, d = prefill.parallelism, decode.parallelism
+    if p.decode_context not in (1, p.prefill_context):
+        raise ValueError(
+            f"prefill workers accept parallelism.decode_context only as 1 or equal to prefill_context "
+            f"(got decode_context={p.decode_context}, prefill_context={p.prefill_context}); a prefill "
+            "engine only stripes its KV to match a PCP+DCP layout"
+        )
+    if backend != "vllm" or d.decode_context == 1:
+        return
+    if p.prefill_context > 1 and p.decode_context == 1:
+        raise ValueError(
+            f"vLLM cannot pair a replicated-PCP prefill worker (prefill_context={p.prefill_context}, "
+            f"decode_context=1) with a DCP-sharded decode worker (decode_context={d.decode_context}); "
+            "set the prefill worker's decode_context equal to its prefill_context or drop one knob"
+        )
+    if d.decode_context % p.decode_context and p.decode_context % d.decode_context:
+        raise ValueError(
+            f"vLLM requires the prefill and decode DCP sizes to divide one another (got prefill "
+            f"decode_context={p.decode_context}, decode decode_context={d.decode_context})"
         )
 
 

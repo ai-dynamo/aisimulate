@@ -1377,6 +1377,57 @@ def test_disaggregated_deployment_carries_each_context_parallel_knob_per_role() 
     assert spec.performance_model_metadata["decode"]["config"]["dcp_size"] == 4
 
 
+@pytest.mark.parametrize(
+    ("backend", "prefill", "decode", "needle"),
+    [
+        # A prefill engine stripes its KV only as the PCP+DCP layout.
+        ("sglang", {"decode_context": 4}, {}, "only as 1 or equal to prefill_context"),
+        ("vllm", {"prefill_context": 2, "decode_context": 4}, {"decode_context": 4}, "only as 1 or equal"),
+        # vLLM NIXL: replicated PCP cannot feed a DCP-sharded decode ...
+        ("vllm", {"prefill_context": 2}, {"decode_context": 4}, "replicated-PCP"),
+        # ... and the two DCP sizes must divide one another.
+        ("vllm", {"prefill_context": 4, "decode_context": 4}, {"decode_context": 6}, "divide one another"),
+    ],
+)
+def test_disaggregated_context_parallel_layout_rules(backend: str, prefill: dict, decode: dict, needle: str) -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "backend": backend,
+                "workers": {"prefill": {"parallelism": prefill}, "decode": {"parallelism": decode}},
+            }
+        }
+    )
+    with pytest.raises(ValueError, match=needle):
+        _deployment(config.engine, workload={}, afd_performance_model=None)
+
+
+def test_vllm_disaggregated_pcp_plus_dcp_prefill_pairs_with_a_dividing_decode_dcp() -> None:
+    from aisimulate.compiler import _deployment
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                **_engine(),
+                "mode": "disaggregated",
+                "backend": "vllm",
+                "context_length": 4096,
+                "workers": {
+                    "prefill": {"parallelism": {"prefill_context": 2, "decode_context": 2}},
+                    "decode": {"parallelism": {"decode_context": 8}},
+                },
+            }
+        }
+    )
+    spec = _deployment(config.engine, workload={}, afd_performance_model=None)
+    assert (spec.parallel_config["prefill_cp"], spec.parallel_config["prefill_dcp"]) == (2, 2)
+    assert spec.parallel_config["decode_dcp"] == 8
+
+
 def test_new_default_selection_survives_serialization_without_becoming_legacy_op_level():
     config = CorePredictionConfig.model_validate({"engine": _engine()})
     serialized = config.model_dump(mode="json", exclude_none=True)

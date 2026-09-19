@@ -2504,8 +2504,31 @@ def test_malformed_role_dcp_size_is_rejected_not_defaulted():
         t.build_model_config(role="decode")
 
 
+@pytest.mark.parametrize(
+    ("overrides", "needle"),
+    [
+        # A prefill engine stripes its KV only as the PCP+DCP layout.
+        ({"prefill_dcp_size": 4}, "PCP\\+DCP layout"),
+        ({"prefill_dcp_size": 2, "prefill_cp_candidates": [1, 2]}, "PCP\\+DCP layout"),
+        # vLLM NIXL: replicated PCP cannot feed a DCP-sharded decode; DCP sizes divide one another.
+        (
+            {"prefill_backend_name": "vllm", "prefill_cp_candidates": [2], "decode_dcp_size": 8},
+            "replicated-PCP",
+        ),
+        (
+            {"prefill_backend_name": "vllm", "prefill_cp_candidates": [4], "prefill_dcp_size": 4, "decode_dcp_size": 6},
+            "divide one another",
+        ),
+    ],
+)
+def test_disagg_prefill_context_parallel_layout_rules(overrides, needle):
+    # Task validates its parallel space on construction, so the rule fires there.
+    with pytest.raises(ValueError, match=needle):
+        list(_disagg_task(**overrides).iter_parallel("prefill"))
+
+
 def test_disagg_allows_prefill_cp_and_decode_dcp_on_different_workers():
-    """Disaggregated roles carry each knob independently: no cross-check."""
+    """SGLang re-lays the KV out per decode DCP rank on the prefill side: no pairing rule."""
     t = _disagg_task(prefill_cp_candidates=[1, 2], decode_dcp_size=8)
     assert list(t.iter_parallel("prefill"))
     assert list(t.iter_parallel("decode"))
