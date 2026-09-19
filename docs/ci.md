@@ -569,16 +569,30 @@ gh workflow run ci.yml --repo ai-dynamo/aisimulate \
 ```
 
 Full CI cancels older queued and running validation for the same trusted
-`pull-request/N` copy, including manual dispatches on that copy. For a manual
-run on the PR's source branch, add `-f pr_number=N` to the Full CI command to
-share the trusted copy's group. The workflow verifies that the selected branch
-and SHA belong to that open PR before allocating test runners. Without this
-optional input, manual source-branch runs replace only runs on the same branch;
-they do not deduplicate against the trusted copy. Different PRs remain independent.
-Main, `release/*`, and tag runs use unique groups, so later runs cannot cancel
-their validation or protected staging. Concurrency only applies to runs using
-the updated workflow; existing runs and older branches are not retroactively
-covered. A replacement still needs successful checks for its exact SHA.
+`pull-request/N` copy, including manual dispatches on that copy. To replace an
+automatic PR run manually, first verify that its trusted copy matches the PR's
+current head, then dispatch on the copy:
+
+```bash
+ci_pr=123  # Replace with the PR to validate.
+ci_sha="$(gh pr view "${ci_pr}" --repo ai-dynamo/aisimulate --json headRefOid --jq .headRefOid)"
+ci_copy_sha="$(gh api "repos/ai-dynamo/aisimulate/git/ref/heads/pull-request/${ci_pr}" --jq .object.sha)"
+if [[ "${ci_copy_sha}" == "${ci_sha}" ]]; then
+  gh workflow run ci.yml --repo ai-dynamo/aisimulate \
+    --ref "pull-request/${ci_pr}" -f expected_sha="${ci_sha}"
+else
+  echo "Trusted copy must be refreshed to the current PR head before dispatch."
+fi
+```
+
+Manual source-branch runs replace only runs on the same branch; use the trusted
+copy above to share the automatic PR run's concurrency group. Different PRs
+remain independent. Main, `release/*`, and tag runs use unique groups, so later
+runs cannot cancel their validation or protected staging. Concurrency only
+applies to runs using the updated workflow; existing runs and older branches
+are not retroactively covered. A replacement still needs successful checks for
+its exact SHA. Re-running an old revision can replace a newer run in the same
+group: dispatch the current PR head when replacing validation.
 
 Standalone Fast CI accepts these manual inputs:
 

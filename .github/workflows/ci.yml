@@ -12,11 +12,6 @@ on:
         description: Exact reviewed commit required for this run
         required: true
         type: string
-      pr_number:
-        description: PR number for source-branch runs to replace the same PR's trusted-copy CI
-        required: false
-        type: string
-        default: ""
   push:
     # Keep trusted copy-pr-bot branches as an automatic coverage backstop until
     # the main ruleset requires the exact-SHA Full CI checks. Reviewed PR
@@ -31,15 +26,14 @@ permissions:
   pull-requests: read
 
 concurrency:
-  # PR copies share a group across push/manual events. Source-branch manual
-  # runs can join that group with pr_number; otherwise they replace their own
-  # branch's runs. Unique lifecycle/tag groups preserve every staging run.
+  # Trusted PR copies share a group across push/manual events. Manual source
+  # branches replace their own runs. Unique lifecycle/tag groups preserve
+  # every validation and protected staging run.
   group: >-
-    full-ci-${{ startsWith(github.ref, 'refs/heads/pull-request/') && github.ref ||
+    full-ci-${{ (startsWith(github.ref, 'refs/heads/pull-request/') ||
       (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') &&
-       github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')) &&
-      (inputs.pr_number && format('refs/heads/pull-request/{0}', inputs.pr_number) || github.ref) ||
-      github.run_id }}
+       github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')))
+      && github.ref || github.run_id }}
   cancel-in-progress: true
 
 jobs:
@@ -61,41 +55,6 @@ jobs:
           fi
           if [[ -n "${EXPECTED_SHA}" && "${EXPECTED_SHA}" != "${RUN_SHA}" ]]; then
             echo "::error::expected ${EXPECTED_SHA}, but workflow is pinned to ${RUN_SHA}"
-            exit 1
-          fi
-      - name: Verify manual PR identity
-        id: manual-pr-target
-        if: github.event_name == 'workflow_dispatch' && inputs.pr_number != ''
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-        run: |
-          set -euo pipefail
-          if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::pr_number must be a positive integer without leading zeros"
-            exit 1
-          fi
-          case "${GITHUB_REF}" in
-            refs/heads/main|refs/heads/release/*|refs/tags/*)
-              echo "::error::pr_number is only supported for PR validation branches"
-              exit 1
-              ;;
-          esac
-          pr_metadata="$(
-            gh api -X GET "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
-              --jq '[.state, .head.sha, .head.ref, .head.repo.full_name] | @tsv'
-          )"
-          IFS=$'\t' read -r pr_state pr_head pr_branch pr_repository <<< "${pr_metadata}"
-          if [[ "${pr_state}" != open || "${pr_head}" != "${RUN_SHA}" ]]; then
-            echo "::error::manual Full CI must match the current head of an open PR"
-            exit 1
-          fi
-          if [[ "${GITHUB_REF}" == refs/heads/pull-request/* ]]; then
-            test "${GITHUB_REF}" = "refs/heads/pull-request/${PR_NUMBER}"
-          elif [[ "${pr_repository}" != "${REPOSITORY}" || "${GITHUB_REF}" != "refs/heads/${pr_branch}" ]]; then
-            echo "::error::manual branch does not belong to the supplied PR"
             exit 1
           fi
       - name: Verify trusted PR copy matches originating head
