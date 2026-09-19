@@ -372,6 +372,12 @@ fn estimate_from_dict(
     use pyo3::exceptions::PyValueError;
     use pyo3::types::PyAnyMethods;
 
+    if out.get_item("total_kv_size_tokens")?.is_none() {
+        return Err(PyValueError::new_err(
+            "grouped FPM caches have no scalar token capacity; use ForwardPassPerfModelConfig::estimate_cache_budget and a cache-group-aware allocator",
+        ));
+    }
+
     let u64_at = |k: &str| -> pyo3::PyResult<u64> { out.get_item(k)?.extract::<u64>() };
 
     let source = match out.get_item("source")?.extract::<String>()?.as_str() {
@@ -614,6 +620,21 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn scalar_memory_transport_rejects_grouped_capacity() {
+        use pyo3::prelude::*;
+        use pyo3::types::{PyDict, PyDictMethods};
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let out = PyDict::new(py);
+            out.set_item("total_kv_size_tokens", py.None()).unwrap();
+            let error = estimate_from_dict(out.as_any()).unwrap_err();
+            assert!(error.to_string().contains("no scalar token capacity"));
+        });
     }
 
     #[cfg(feature = "python")]

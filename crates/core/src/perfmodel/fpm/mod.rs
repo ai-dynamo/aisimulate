@@ -30,6 +30,7 @@ mod metrics;
 mod model;
 mod options;
 mod regression;
+mod resources;
 mod samples;
 
 #[cfg(test)]
@@ -49,3 +50,7 @@ pub use model::{
     ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
 };
 pub use options::ForwardPassPerfOptions;
+pub use resources::{
+    FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
+    FpmCacheLayout, FpmResourceConfig,
+};

@@ -77,6 +77,8 @@ def _configs(
     if request.fpm_profile is not None:
         engine["fpm_profile"] = request.fpm_profile.model_dump(mode="json")
         worker["timing"]["estimator_config"] = {"fpm_interpolation": {"method": "direct"}}
+        if request.profile_deployment().resources.cache_layout == "grouped":
+            worker["kv_cache"] = {"prefix_caching": False}
     prediction = {
         **common,
         "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": preset}}},
@@ -238,8 +240,18 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             moe_tp_size=deployment.moe_tp,
             moe_ep_size=deployment.moe_ep,
             fpm_profile=request.fpm_profile,
+            **(
+                {"context_length": request.search.context_length}
+                if deployment.resources.cache_layout == "grouped"
+                else {}
+            ),
         )
-        if estimate["total_kv_size_tokens"] <= request.search.context_length:
+        if deployment.resources.cache_layout == "grouped":
+            if estimate["request_peak_cache_bytes"] > estimate["total_kv_size_bytes"]:
+                raise ValueError(
+                    "declared FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
+                )
+        elif estimate["total_kv_size_tokens"] <= request.search.context_length:
             raise ValueError("declared FPM resources leave insufficient rank-local KV capacity for the runtime context")
         plan["resources"] = estimate
         plan["search"]["baseline_rule"] = (

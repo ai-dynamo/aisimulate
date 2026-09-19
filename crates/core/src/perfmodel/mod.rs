@@ -57,6 +57,10 @@ pub use fpm::{
     FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose, OpLevelConfig,
     RegressionFitConfig, RegressionFitKind,
 };
+pub use fpm::{
+    FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
+    FpmCacheLayout, FpmResourceConfig,
+};
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing
 // `crate::ForwardPassMetrics` / `crate::FPM_VERSION` references (in `py.rs`,

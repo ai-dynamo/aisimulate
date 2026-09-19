@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # SPDX-License-Identifier: Apache-2.0
 
 """Original synthetic geometries exercise onboarding's conservative byte precheck."""
@@ -111,6 +112,94 @@ def test_model_size_and_hardware_capacity_change_starting_widths(tmp_path):
     assert bigger_gpu.default.required_gpus == 1
     assert bigger_gpu.hardware.per_gpu_bytes > large.hardware.per_gpu_bytes
     assert all(item.status == "estimated_fit" for item in large.candidates + bigger_gpu.candidates)
+
+
+def test_grouped_fit_uses_windowed_native_peak_instead_of_linear_context_rate(tmp_path, monkeypatch):
+    # The budget fits the short window plus a prefill chunk but not the full
+    # retained context at TP1. The existing linear route requires TP2.
+    non_kv = 13472 + 70 * 1024**2
+    capacity = ((non_kv + 100_000) * 10 + 8) // 9
+    _hardware(tmp_path, monkeypatch, gpu={"mem_capacity": capacity})
+    request = _request(context_length=2048)
+    runtime = _runtime(max_num_tokens=256, max_batch_size=8)
+    linear = suggest_topologies(_config(tmp_path), request, runtime)
+    windowed = suggest_topologies(
+        _config(tmp_path, sliding_window=128),
+        request,
+        {**runtime, "cache_block_sizes": {"sliding_attention": 16}},
+    )
+    assert linear.default.required_gpus == 2
+    assert windowed.default.required_gpus == 1
+    assert windowed.default.estimated_required_bytes < windowed.hardware.memory_budget_bytes
+    assert windowed.default.draft.profile.deployments[0].resources.kv_bytes_per_token is None
+    assert any("Rust's window" in item for item in windowed.assumptions)
+
+
+def test_grouped_missing_runtime_blocks_never_establish_fit(tmp_path):
+    report = suggest_topologies(_config(tmp_path, sliding_window=128), _request(), _runtime())
+    assert report.default is None
+    assert report.candidates
+    assert all(candidate.status == "needs_inputs" for candidate in report.candidates)
+    assert all("cache_block_sizes" in candidate.missing for candidate in report.candidates)
+
+
+def test_grouped_non_kv_budget_equality_does_not_admit_a_worker(tmp_path, monkeypatch):
+    non_kv = 13472 + 70 * 1024**2
+    _hardware(tmp_path, monkeypatch, gpu={"mem_capacity": (non_kv * 10 + 8) // 9})
+    report = suggest_topologies(
+        _config(tmp_path, sliding_window=128),
+        _request(),
+        _runtime(cache_block_sizes={"sliding_attention": 16}),
+    )
+    candidate = next(candidate for candidate in report.rejected_candidates if candidate.required_gpus == 1)
+    assert candidate.known_required_bytes == candidate.memory_budget_bytes
+    assert "no grouped cache budget" in candidate.reasons[0]
+
+
+def test_inkling_topology_rejects_attention_tp_but_preserves_large_dep_candidates(tmp_path):
+    # Original synthetic counts with the pinned Inkling convolution semantics;
+    # this is not a checkpoint fixture or a declaration of runtime qualification.
+    # Modified metadata-only test of the Apache-2.0 vLLM packing constraint:
+    # https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/sconv_swa_attn.py
+    text = {
+        "hidden_size": 64,
+        "num_hidden_layers": 4,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 2,
+        "head_dim": 4,
+        "model_max_length": 4096,
+        "local_layer_ids": [0, 1, 2],
+        "sliding_window_size": 128,
+        "swa_num_key_value_heads": 4,
+        "use_sconv": True,
+        "sconv_kernel_size": 4,
+        "n_routed_experts": 64,
+        "torch_dtype": "bfloat16",
+    }
+    config = _config(
+        tmp_path, architectures=["InklingForConditionalGeneration"], model_type="inkling_mm_model", text_config=text
+    )
+    report = suggest_topologies(config, _request("moe", gpu="gb200"), _runtime())
+    assert report.default is None  # Unknown decoder weight/activation bounds remain explicit.
+    assert not any(candidate.family == "dep" for candidate in report.rejected_candidates)
+    rejected = [candidate for candidate in report.rejected_candidates if candidate.sizes[0] > 2]
+    assert rejected and all("attention TP <= 2" in candidate.reasons[0] for candidate in rejected)
+    assert any(candidate.family == "dep" and candidate.required_gpus == 4 for candidate in report.candidates)
+
+
+def test_grouped_topology_needs_current_extension_with_actionable_failure(tmp_path, monkeypatch):
+    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    def missing(*args, **kwargs):
+        raise AttributeError("old extension")
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "estimate_cache_budget", missing)
+    with pytest.raises(ValueError, match="compiled AISimulate extension"):
+        suggest_topologies(
+            _config(tmp_path, sliding_window=128),
+            _request(),
+            _runtime(cache_block_sizes={"sliding_attention": 16}),
+        )
 
 
 def test_moe_families_have_exact_tuples_and_deduplicate_width_one(tmp_path):

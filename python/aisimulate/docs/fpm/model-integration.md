@@ -27,6 +27,13 @@ values, effective precisions and provenance before accepting the profile.
 Follow the self-service guide's [terminal or headless review flow](../../../../docs/fpm-self-service.md#3-derive-review-and-save-the-profile).
 Profile resources must bound every rank of the selected topology. A profile is
 a declaration, not proof of runtime compatibility or measured memory fit.
+For full/sliding attention and supported convolution state, follow
+[grouped cache review](../../../../docs/fpm-self-service.md#review-grouped-cache-resources):
+runtime block sizes remain explicit inputs, and each group page includes every
+group layer plus runtime padding on one rank. Use the
+[canonical byte-budget API](../../../../docs/core-api.md#fpm-profile-cache-groups-and-byte-budgets)
+for grouped resources; a scalar token capacity cannot represent window eviction
+or transient prefill pages.
 
 The saved request embeds the profile, and generated ordinary configurations use
 `engine.fpm_profile`, `estimation_mode: fpm_interpolation`,
@@ -72,7 +79,10 @@ for the intended worker, and verify actual collection resources before execution
 The sequence limit does not reserve maximum context for every sequence.
 
 The profile-based collection workflow targets vLLM text decoders with
-`PP=CP=1` and linear KV storage. A multimodal checkpoint can supply an
+`PP=CP=1` and linear or grouped cache storage. Grouped prediction and replay
+currently require cold aggregated execution, HBM-only cache, no speculative
+decoding and `prefix_caching: false`; generated grouped configurations preserve
+that setting. A multimodal checkpoint can supply an
 unambiguous `text_config` or flat decoder fields; its encoders, projectors,
 preprocessing and other non-text resources are excluded. Preserve that scope in
 profile provenance. Unsupported cache semantics, encoder pools, AFD, speculative

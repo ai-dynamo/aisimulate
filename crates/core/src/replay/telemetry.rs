@@ -29,14 +29,22 @@ pub enum ReplayTelemetrySampleKind {
 pub struct ReplaySchedulerMetricsSnapshot {
     pub worker_id: usize,
     pub dp_rank: u32,
-    /// Backend-native legacy occupancy. vLLM counts active references; SGLang
-    /// counts occupied page-pool blocks, including radix-resident pages.
+    /// Backend-native occupancy. vLLM counts active references (physical pages
+    /// across all groups for grouped caches); SGLang counts occupied page-pool
+    /// blocks, including radix-resident pages.
     pub active_blocks: u64,
     /// Reusable resident blocks excluded from `active_blocks` (vLLM only;
     /// SGLang reports zero because its legacy occupancy already includes them).
     pub inactive_blocks: u64,
     pub total_blocks: u64,
-    /// Legacy/backend-native `active_blocks / total_blocks` utilization.
+    /// Shared physical grouped-cache occupancy and capacity. Linear caches
+    /// retain the legacy block metrics and omit these fields.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kv_cache_used_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kv_cache_capacity_bytes: Option<u64>,
+    /// Legacy/backend-native block utilization, or physical byte utilization
+    /// for grouped caches (which have no scalar total block capacity).
     pub active_cache_usage: f64,
     /// Physical resident utilization; equal to active utilization for SGLang.
     pub physical_cache_usage: f64,

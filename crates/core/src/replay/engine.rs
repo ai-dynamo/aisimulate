@@ -195,6 +195,7 @@ pub struct ReplayRoleFactory {
     tensor_parallel_size: u32,
     backend: Backend,
     total_blocks: u64,
+    kv_cache_capacity_bytes: Option<u64>,
     pub(crate) g3_config: Option<crate::engine::G3OffloadConfig>,
     pub(crate) g3_block_bytes: usize,
     pub(crate) g3_tier: Option<crate::engine::g3_offload::SharedG3Tier>,
@@ -268,6 +269,10 @@ impl ReplayRoleFactory {
     pub fn total_blocks(&self) -> u64 {
         self.total_blocks
     }
+
+    pub(crate) fn kv_cache_capacity_bytes(&self) -> Option<u64> {
+        self.kv_cache_capacity_bytes
+    }
 }
 
 /// Resolves built-in or Runner-provided timing once, then creates role factories.
@@ -329,9 +334,14 @@ impl ReplayEngineFactory {
             WorkerStage::Decode => self.decode_timing.as_ref().or(self.timing.as_ref()),
         };
         let backend = role.rank.backend;
-        let total_blocks = u64::try_from(role.rank.num_gpu_blocks).map_err(|_| {
-            ReplayError::InvalidSpec("engine KV block count exceeds the metrics range".into())
-        })?;
+        let kv_cache_capacity_bytes = role.rank.kv_cache_capacity_bytes;
+        let total_blocks = if role.rank.kv_cache_groups.is_empty() {
+            u64::try_from(role.rank.num_gpu_blocks).map_err(|_| {
+                ReplayError::InvalidSpec("engine KV block count exceeds the metrics range".into())
+            })?
+        } else {
+            0
+        };
         role.rank.validate().map_err(engine_error)?;
         let g3_config = role.rank.g3_offload.take();
         let g3_block_bytes = role
@@ -351,6 +361,7 @@ impl ReplayEngineFactory {
             tensor_parallel_size: role.tensor_parallel_size,
             backend,
             total_blocks,
+            kv_cache_capacity_bytes,
             g3_config,
             g3_block_bytes,
             g3_tier: None,

@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # SPDX-License-Identifier: Apache-2.0
 
 """Config onboarding uses declared geometry, without analytical model construction."""
@@ -201,16 +202,23 @@ def test_unknown_nested_decoder_retains_wrapper_identity_and_requires_resource_b
     assert draft.resolved["architecture"] == "ExampleMultimodalForConditionalGeneration"
     assert draft.resolved["context_length"] == 4096
     assert draft.resolved["num_experts"] == 4
-    assert {"weights_bytes", "activations_bytes", "cache_layout", "kv_bytes_per_token"} <= draft.missing.keys()
+    assert {"weights_bytes", "activations_bytes", "cache_block_sizes"} <= draft.missing.keys()
+    assert draft.resolved["cache_layout"] == "grouped"
     assert "wrapper architecture" in draft.sources["architecture"]
     assert "assumption" in draft.sources["gemm_quant_mode"]
+    with pytest.raises(ValueError, match="unsupported linear cache"):
+        derive_profile(config, _request("moe"), _runtime(kv_bytes_per_token=64, cache_layout="linear"))
     complete = derive_profile(
         config,
         _request("moe"),
-        _runtime(weights_bytes=1024, activations_bytes=2048, kv_bytes_per_token=64, cache_layout="linear"),
+        _runtime(
+            weights_bytes=1024,
+            activations_bytes=2048,
+            cache_block_sizes={"full_attention": 16, "sliding_attention": 16},
+        ),
     )
     assert complete.profile is not None
-    assert "user override" in complete.sources["kv_bytes_per_token"]
+    assert len(complete.profile.deployments[0].resources.cache_groups) == 2
 
 
 def test_missing_text_geometry_does_not_fall_back_to_wrapper_dimensions(tmp_path):
@@ -711,3 +719,186 @@ def test_config_route_does_not_import_model_construction_or_remote_code(tmp_path
         config = _config(tmp_path, text_config=config.raw, vision_config={"hidden_size": 512})
     draft = derive_profile(config, _request(), _runtime())
     assert draft.profile is not None
+
+
+@pytest.mark.parametrize("mixed", [False, True])
+def test_windowed_cache_derives_separate_group_pages_without_linear_rate(tmp_path, mixed):
+    updates = {"sliding_window": 128}
+    if mixed:
+        updates["layer_types"] = ["full_attention", "sliding_attention"]
+    config = _config(tmp_path, **updates)
+    missing = derive_profile(config, _request(tensor_parallel=2), _runtime())
+    assert missing.resolved["cache_layout"] == "grouped"
+    assert "cache_block_sizes" in missing.missing
+    assert "kv_bytes_per_token" not in missing.missing
+    blocks = {"sliding_attention": 8, **({"full_attention": 16} if mixed else {})}
+    draft = derive_profile(config, _request(tensor_parallel=2), _runtime(cache_block_sizes=blocks))
+    assert draft.profile is not None
+    resource = draft.profile.deployments[0].resources
+    assert resource.kv_bytes_per_token is None
+    groups = {group.name: group for group in resource.cache_groups}
+    assert groups["sliding_attention"].page_size_bytes == (128 if mixed else 256)
+    assert groups["sliding_attention"].sliding_window == 128
+    if mixed:
+        assert groups["full_attention"].page_size_bytes == 256
+        assert groups["full_attention"].sliding_window is None
+    serialized = draft.profile.model_dump(mode="json")
+    assert "kv_bytes_per_token" not in serialized["deployments"][0]["resources"]
+    assert type(draft.profile).model_validate(serialized) == draft.profile
+    assert "minimum packed" in draft.sources["cache_groups"]
+
+
+def _synthetic_inkling(tmp_path, **updates):
+    # Original small geometry. Expected packing/TP constraints follow the pinned
+    # Apache-2.0 vLLM implementation (copyright vLLM contributors):
+    # https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/sconv_swa_attn.py
+    # Modified for metadata-only tests; no checkpoint or upstream fixture copied.
+    text = {
+        "hidden_size": 16,
+        "num_hidden_layers": 8,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 2,
+        "head_dim": 4,
+        "local_layer_ids": [0, 1, 2, 4, 5, 6],
+        "swa_num_attention_heads": 8,
+        "swa_num_key_value_heads": 4,
+        "swa_head_dim": 4,
+        "sliding_window_size": 128,
+        "use_sconv": True,
+        "sconv_kernel_size": 4,
+        "model_max_length": 4096,
+        "n_routed_experts": 8,
+        "torch_dtype": "bfloat16",
+        **updates,
+    }
+    return _config(
+        tmp_path, architectures=["InklingForConditionalGeneration"], model_type="inkling_mm_model", text_config=text
+    )
+
+
+@pytest.mark.parametrize("dtype,attention_factor", [("bfloat16", 2), ("fp8", 1)])
+@pytest.mark.parametrize(
+    "topology",
+    [
+        {"tensor_parallel": 2},
+        {"tensor_parallel": 2, "attention_data_parallel": 1, "moe_tensor_parallel": 1, "moe_expert_parallel": 2},
+        {"tensor_parallel": 1, "attention_data_parallel": 8, "moe_tensor_parallel": 1, "moe_expert_parallel": 8},
+    ],
+)
+def test_inkling_mixed_kv_and_bfloat16_convolution_are_rank_local(tmp_path, dtype, attention_factor, topology):
+    config = _synthetic_inkling(tmp_path)
+    draft = derive_profile(
+        config,
+        _request("moe", **topology),
+        _runtime(
+            kv_cache_dtype=dtype,
+            weights_bytes=4096,
+            activations_bytes=1024,
+            comm_overhead_bytes=0,
+            cache_block_sizes={"full_attention": 16, "sliding_attention": 8},
+        ),
+    )
+    assert draft.profile is not None
+    groups = {group.name: group for group in draft.profile.deployments[0].resources.cache_groups}
+    rank_factor = 2 // topology["tensor_parallel"]
+    assert groups["full_attention"].page_size_bytes == 256 * attention_factor * rank_factor
+    assert groups["sliding_attention"].page_size_bytes == 768 * attention_factor * rank_factor
+    assert groups["full_convolution"].page_size_bytes == 512 * rank_factor
+    assert groups["sliding_convolution"].page_size_bytes == 1536 * rank_factor
+    assert groups["full_convolution"].sliding_window == groups["sliding_convolution"].sliding_window == 4
+    assert groups["full_attention"].num_layers == 2
+    assert groups["sliding_attention"].num_layers == 6
+    assert "rank_local_heads" in draft.sources["cache_groups"]
+    assert '"dtype": "bfloat16"' in draft.sources["cache_groups"]
+
+
+def test_inkling_convolution_caps_attention_tp_without_limiting_dep_width(tmp_path):
+    config = _synthetic_inkling(tmp_path)
+    with pytest.raises(ValueError, match="attention TP <= 2"):
+        derive_profile(config, _request("moe", tensor_parallel=4), _runtime())
+    dep = derive_profile(
+        config, _request("moe", attention_data_parallel=8, moe_tensor_parallel=1, moe_expert_parallel=8), _runtime()
+    )
+    assert dep.resolved["cache_layout"] == "grouped"
+    assert "cache_block_sizes" in dep.missing
+
+
+@pytest.mark.parametrize("flag", [False, "absent"])
+def test_inkling_cannot_silently_omit_runtime_convolution_state(tmp_path, flag):
+    _synthetic_inkling(tmp_path)
+    path = tmp_path / "config.json"
+    document = json.loads(path.read_text())
+    if flag == "absent":
+        document["text_config"].pop("use_sconv")
+    else:
+        document["text_config"]["use_sconv"] = flag
+    path.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match="allocates convolution state in every decoder layer"):
+        load_model_config(path)
+
+
+@pytest.mark.parametrize("local_ids", [None, "absent"])
+def test_inkling_nominal_window_does_not_enable_absent_local_layers(tmp_path, local_ids):
+    _synthetic_inkling(tmp_path)
+    path = tmp_path / "config.json"
+    document = json.loads(path.read_text())
+    if local_ids == "absent":
+        document["text_config"].pop("local_layer_ids")
+    else:
+        document["text_config"]["local_layer_ids"] = local_ids
+    path.write_text(json.dumps(document))
+    draft = derive_profile(load_model_config(path), _request("moe"), _runtime(cache_block_sizes={"full_attention": 16}))
+    assert [group["name"] for group in draft.resolved["cache_groups"]] == ["full_attention", "full_convolution"]
+    assert all(group["num_layers"] == 8 for group in draft.resolved["cache_groups"])
+
+
+def test_group_override_preserves_runtime_padding_and_required_states(tmp_path):
+    config = _synthetic_inkling(tmp_path)
+    overrides = _runtime(
+        weights_bytes=4096, activations_bytes=1024, cache_block_sizes={"full_attention": 16, "sliding_attention": 8}
+    )
+    initial = derive_profile(config, _request("moe", tensor_parallel=2), overrides)
+    groups = initial.resolved["cache_groups"]
+    groups[0]["page_size_bytes"] += 128
+    overrides.pop("cache_block_sizes")
+    overrides["cache_groups"] = groups
+    edited = derive_profile(config, _request("moe", tensor_parallel=2), overrides)
+    assert edited.profile is not None
+    assert edited.resolved["cache_groups"][0]["page_size_bytes"] == 640
+    assert "user override" in edited.sources["cache_groups"]
+    assert "cache_block_sizes" not in edited.missing
+    with pytest.raises(ValueError, match="layer counts and retention windows"):
+        derive_profile(config, _request("moe", tensor_parallel=2), {**overrides, "cache_groups": groups[:2]})
+
+
+@pytest.mark.parametrize(
+    "updates,match",
+    [
+        ({"sliding_window": 64, "sliding_window_size": 128}, "conflicting sliding-window"),
+        ({"sliding_window": 64, "local_layer_ids": [0, 0]}, "unique indexes"),
+        ({"sliding_window": 64, "local_layer_ids": [2]}, "below num_hidden_layers"),
+        (
+            {"sliding_window": 64, "local_layer_ids": [0], "layer_types": ["full_attention", "sliding_attention"]},
+            "conflicting layer_types",
+        ),
+        ({"sliding_window": 64, "local_layer_ids": [0], "use_sliding_window": False}, "conflicts"),
+        ({"layer_types": ["full_attention", "sliding_attention"]}, "positive sliding_window"),
+        ({"use_sconv": True, "sconv_kernel_size": 4}, "unsupported use_sconv"),
+        ({"use_sliding_window": True}, "requires a positive sliding_window"),
+        ({"sliding_window": 128, "attn_type_list": [1, 1]}, "conflicts"),
+    ],
+)
+def test_cache_alias_conflicts_and_unknown_states_fail_at_intake(tmp_path, updates, match):
+    with pytest.raises(ValueError, match=match):
+        _config(tmp_path, **updates)
+
+
+def test_grouped_sizing_requires_declared_kv_dtype_and_dynamic_scale_bounds(tmp_path):
+    config = _config(tmp_path, sliding_window=128)
+    unknown_dtype = derive_profile(config, _request(), {"cache_block_sizes": {"sliding_attention": 16}})
+    assert {"kv_cache_dtype", "cache_groups"} <= unknown_dtype.missing.keys()
+    assert "cache_groups" not in unknown_dtype.resolved
+    dynamic = _config(tmp_path, sliding_window=128, quantization_config={"kv_cache_scheme": {"dynamic": True}})
+    unknown_scales = derive_profile(dynamic, _request(), _runtime(cache_block_sizes={"sliding_attention": 16}))
+    assert "cache_groups" in unknown_scales.missing
+    assert "nonstandard KV" in unknown_scales.missing["cache_groups"]

@@ -250,6 +250,88 @@ def test_guided_config_intake_needs_no_validation_lengths_concurrency_or_slas(tm
     assert saved.scheduler_limits()["max_sequences"] == 8
 
 
+def test_grouped_review_collects_runtime_blocks_then_edits_pages_before_save(tmp_path, monkeypatch, capsys):
+    config = {**_CONFIG, "sliding_window": 128, "layer_types": ["full_attention", "sliding_attention"]}
+    overrides = {key: value for key, value in _OVERRIDES.items() if key not in {"kv_bytes_per_token", "cache_layout"}}
+    source, resources = _files(tmp_path, config=config, overrides=overrides)
+    output = tmp_path / "new" / "request.yaml"
+    edited_groups = [
+        {
+            "name": "full_attention",
+            "kind": "attention",
+            "num_layers": 1,
+            "block_size_tokens": 16,
+            "page_size_bytes": 8192,
+        },
+        {
+            "name": "sliding_attention",
+            "kind": "attention",
+            "num_layers": 1,
+            "block_size_tokens": 8,
+            "page_size_bytes": 2048,
+            "sliding_window": 128,
+        },
+    ]
+    answers = iter(
+        [
+            '{"full_attention": 16}',
+            '{"sliding_attention": 8}',
+            "edit",
+            "cache_groups",
+            json.dumps(edited_groups),
+            "accept",
+        ]
+    )
+    prompts = []
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+
+    def answer(prompt):
+        assert not output.parent.exists(), "grouped profile was saved before acceptance"
+        prompts.append(prompt)
+        return next(answers)
+
+    monkeypatch.setattr(builtins, "input", answer)
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+    saved = SupportRequest.from_yaml(output)
+    cache = saved.profile_deployment().resources
+    assert cache.cache_layout == "grouped"
+    assert cache.kv_bytes_per_token is None
+    assert cache.cache_groups[0].page_size_bytes == 8192
+    assert cache.cache_groups[1].sliding_window == 128
+    provenance = json.loads(cache.provenance)["fields"]
+    assert provenance["cache_block_sizes"]["value"] == {"full_attention": 16, "sliding_attention": 8}
+    assert "user override" in provenance["cache_groups"]["source"]
+    assert "config geometry reference" in provenance["cache_groups"]["source"]
+    assert sum(prompt.startswith("cache_block_sizes") for prompt in prompts) == 2
+    assert "minimum packed tensor estimates" in capsys.readouterr().out
+    source.unlink()
+    resources.unlink()
+    plan = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    prediction = CorePredictionConfig.from_yaml(plan / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(plan / "recommend/pilot.yaml")
+    assert prediction.engine.fpm_profile == recommendation.engine.fpm_profile == saved.fpm_profile
+    assert not prediction.engine.workers.aggregated.kv_cache.prefix_caching
+    assert not recommendation.engine.workers.aggregated.kv_cache.prefix_caching
+    planned = json.loads((plan / "support-plan.json").read_text())
+    assert planned["resources"]["total_kv_size_tokens"] is None
+    assert planned["resources"]["request_peak_cache_bytes"] > 0
+
+
+def test_grouped_automatic_intake_defers_rank_resources_until_after_topology(tmp_path, monkeypatch):
+    source, resources = _files(
+        tmp_path,
+        config={**_CONFIG, "sliding_window": 128},
+        overrides={"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"},
+    )
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["1", '{"sliding_attention": 16}', "accept"])
+    assert cli.main(_args(output, source, resources, tensor_parallel=None) + ["--interactive"]) == 0
+    assert prompts[0].startswith("Choose topology")
+    assert prompts[1].startswith("cache_block_sizes")
+    assert SupportRequest.from_yaml(output).profile_deployment().resources.cache_layout == "grouped"
+
+
 def _files(tmp_path, *, config=None, overrides=None, suffix="yaml"):
     source = tmp_path / "config.json"
     source.write_text(json.dumps(_CONFIG if config is None else config))

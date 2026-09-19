@@ -151,6 +151,74 @@ because deserialization defaults it to zero. Rust source that constructs
 patterns must include the new field. This source migration is part of the next
 minor API update.
 
+### FPM profile cache groups and byte budgets
+
+FPM resources support `cache_layout: linear` with a positive
+`kv_bytes_per_token`, or `cache_layout: grouped` with a nonempty `cache_groups`
+list and no scalar token rate. Existing linear profiles keep their serialized
+shape. Python exports `FpmCacheGroup` from `aisimulate.fpm_profile` and
+`aisimulate_core.fpm_profile`; Rust exports it from `aisimulate_core::perfmodel`.
+
+Each group has a unique `name`, `kind` (`attention` or `convolution`), positive
+`num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional positive
+`sliding_window`. An omitted or null window retains full history; convolution
+groups require a window. `page_size_bytes` is the **rank-local aggregate for all
+layers in the group**, including runtime padding. Do not multiply it by
+`num_layers` again. Runtime block sizes and padding are deployment inputs; model
+geometry alone does not establish them. See the
+[grouped-profile review workflow](fpm-self-service.md#review-grouped-cache-resources).
+
+Use `RustForwardPassPerfModel.estimate_cache_budget(config, budget)` with the
+same canonical `ForwardPassPerfModelConfig` used for timing. Rust exposes
+`ForwardPassPerfModelConfig::estimate_cache_budget(&request)` and
+`ForwardPassPerfModel::estimate_cache_budget(&request)`, taking
+`FpmCacheBudgetRequest` and returning `FpmCacheBudget`. The config method checks
+the exact profile deployment and scheduler envelope without constructing a
+timing model, loading timings, or building an operation graph. Grouped planning
+requires the native extension; it does not require GPU access or measured data.
+
+| Budget field | Meaning |
+| --- | --- |
+| `total_gpu_capacity_bytes` | Positive rank-local GPU capacity. |
+| `memory_fraction_kind`, `memory_fraction_value` | `of_total` and the fraction of GPU memory available to the worker. |
+| `max_num_tokens`, `max_batch_size` | Positive rank-local scheduler limits within the profile's declared envelope. |
+| `context_length` | Optional positive request bound, at most the profile context; defaults to that profile context. |
+| `cuda_graph_reserved_bytes` | Separate nonnegative rank-local reservation; defaults to zero. |
+| `tolerance_fraction` | Optional fraction in `[0, 1)` deducted from the resulting cache byte budget. |
+
+The result includes `total_kv_size_bytes`, `memory_breakdown`,
+`resource_provenance`, `cache_layout`, `cache_groups`, and
+`request_peak_cache_bytes`. The latter is a conservative single-request bound
+including block alignment and the configured prefill chunk, not a reservation
+for every scheduler slot. A smaller context changes this peak bound, not the
+declared non-cache resource bounds. `tolerance_adjusted`, when present, provides
+the reduced byte budget. For grouped caches, `kv_size_per_token_bytes`,
+`total_kv_size_tokens`, and the adjusted token capacity are null (`None` in Python).
+There is no equivalent scalar token capacity.
+
+Python `estimate_kv_cache(..., fpm_profile=..., context_length=...)` delegates
+grouped profiles to this native budget method. `estimate_num_gpu_blocks` and the
+legacy Rust scalar `KvCacheEstimate` transport reject grouped profiles; use the
+groups and shared byte budget instead. Existing linear estimation is unchanged.
+
+Grouped native execution supports cold aggregated vLLM, PP1/CP1, HBM-only cache,
+non-speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3
+offload, disaggregation and fixed scalar cache capacity are rejected. Allocation
+is atomic across all groups against one shared rank-local byte budget. A window
+of `W` keeps the blocks covering the last `W - 1` computed tokens and all tokens
+scheduled for the next forward. Expired completed pages are evicted before
+subsequent forwards; temporary prefill pages remain charged through completion.
+Full-attention groups retain full history. This physical retention never truncates
+logical request progress or the context coordinates sent to FPM timing queries.
+
+The Rust Replay observer's `ReplaySchedulerMetricsSnapshot` reports optional
+`kv_cache_used_bytes` and `kv_cache_capacity_bytes` for grouped caches; its
+`active_cache_usage` and `physical_cache_usage` use byte occupancy. `active_blocks`
+counts resident group pages, while `total_blocks` is zero because heterogeneous
+pages have no scalar block capacity. Use the byte fields for capacity comparisons.
+These fields are currently exposed through the Rust observer API, not the Python
+JSON replay runtime. Linear snapshots retain their existing block metrics.
+
 ## Choosing a forward-pass API
 
 Use `RustForwardPassPerfModel.best_available(config)` from Python or
@@ -426,6 +494,9 @@ The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
 - KV-cache estimation: `estimate_kv_cache`, `KvCacheEstimateRequest`,
   `KvCacheEstimateOptions`, `KvCacheMemoryFraction`, and estimate/result/error
   types;
+- FPM profile cache resources: `FpmCacheGroup`, `FpmCacheKind`, `FpmCacheLayout`,
+  `FpmResourceConfig`, `FpmCacheBudgetRequest`, `FpmCacheBudget`, and
+  `FpmCacheBudgetAdjusted`, through the canonical model/config budget method;
 - wire identity: `EngineConfig`, `ParallelMapping`, `QuantizationConfig`,
   `SpeculativeConfig`, `BackendKind`, `DatabaseMode`, and `DataType`;
 - schema gates: `ENGINE_CONFIG_SCHEMA_VERSION`,

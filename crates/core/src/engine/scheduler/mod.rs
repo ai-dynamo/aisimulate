@@ -133,7 +133,11 @@ pub struct MockerMetrics {
     /// Resident reusable blocks excluded from `active_decode_blocks`. vLLM
     /// populates this; SGLang reports zero by construction.
     pub inactive_decode_blocks: u64,
+    /// Zero for a grouped cache, whose heterogeneous pages have no fixed
+    /// total block capacity. The byte fields are authoritative in that case.
     pub total_blocks: u64,
+    pub kv_cache_used_bytes: Option<u64>,
+    pub kv_cache_capacity_bytes: Option<u64>,
     pub gpu_cache_usage_perc: f64,
     pub physical_gpu_cache_usage_perc: f64,
     pub running_requests: u64,
@@ -198,6 +202,8 @@ impl MockerMetrics {
             active_decode_blocks,
             inactive_decode_blocks,
             total_blocks,
+            kv_cache_used_bytes: None,
+            kv_cache_capacity_bytes: None,
             gpu_cache_usage_perc,
             physical_gpu_cache_usage_perc,
             running_requests,

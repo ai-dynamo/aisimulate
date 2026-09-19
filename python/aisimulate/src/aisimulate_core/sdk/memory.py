@@ -3,17 +3,19 @@
 
 """KV-cache capacity estimation.
 
-The single source of truth for the rank-local KV-cache capacity estimate. The
-Rust ``aisimulate_core::memory::estimate_kv_cache`` is a pure forwarder that
-calls :func:`estimate_kv_cache` here and rebuilds its result, so all of the
-math -- fraction + tolerance validation, the native AIC memory model, the naive
-fallback, and the tolerance margin -- lives in this module.
+This module implements scalar rank-local KV-cache capacity estimation. The
+legacy Rust ``aisimulate_core::memory::estimate_kv_cache`` forwards here and
+rebuilds the scalar result. Grouped FPM profiles delegate budget arithmetic,
+page rounding and retention footprints to the canonical Rust
+``ForwardPassPerfModelConfig::estimate_cache_budget`` API; they have no scalar
+token capacity.
 
 Resource sources:
 
 - **FPM profile**: caller-declared rank-local resource bounds bypass model
-  construction and timing data. The same budget arithmetic below applies,
-  after checking the scheduler against the declared resource envelope.
+  construction and timing data. Linear profiles use the scalar arithmetic below;
+  grouped profiles use the native cache-budget API. Both check the scheduler
+  against the declared resource envelope.
 
 - **Native** (:class:`KVCacheEstimator`): ``from_request`` reuses AIC's full
   backend memory model (``BaseBackend._get_memory_usage`` plus the model's
@@ -30,7 +32,7 @@ Resource sources:
   metadata to compute the weights or the per-token KV size (rather than guessing
   with a placeholder).
 
-The budget math is factored into :func:`kv_cache_budget_bytes` so the deferred
+The scalar budget math is factored into :func:`kv_cache_budget_bytes` so the deferred
 consolidation of ``InferenceSummary._check_and_set_kv_cache_oom`` onto a single
 formula is a small follow-up (tracked in #1208).
 """
@@ -60,7 +62,7 @@ from aisimulate_core.sdk.utils import (
 _ONE_GIB = 1 << 30
 _MAX_EXACT_BYTE_COUNT = 1 << 53
 
-# A KV byte-budget -> token-count inverse. Every estimation path produces one of
+# A KV byte-budget -> token-count inverse. Every scalar estimation path produces one of
 # these (native: the model's ``get_kvcache_max_tokens``; naive:
 # ``NaiveKVCacheEstimator.get_kvcache_max_tokens``; the linear
 # ``_linear_tokens_from_bytes`` is the default for constant-per-token growth), so
@@ -150,9 +152,9 @@ def _validate_cuda_graph_reservation(cuda_graph_reserved_bytes: int) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Shared budget math.
+# Shared scalar budget math.
 #
-# The single formula both the estimate and (in a follow-up PR) the sweep's
+# The scalar formula both the estimate and (in a follow-up PR) the sweep's
 # `InferenceSummary._check_and_set_kv_cache_oom` should use. The OOM check folds
 # `reserved` (block-allocator overhead) and `tolerance` into the fraction
 # multiplicatively; the estimate passes `reserved=tolerance=0` here and applies
@@ -1031,14 +1033,16 @@ def estimate_kv_cache(
     allow_hf_config_download: bool = False,
     fpm_profile: dict | str | FpmModelProfile | None = None,
     cp_size: int = 1,
+    context_length: int | None = None,
 ) -> dict[str, Any]:
     """Compute the KV-cache memory estimate (raw + optional tolerance margin).
 
-    This is the complete implementation: fraction + tolerance validation, the
-    native/naive budget math, AND the tolerance margin. The Rust
-    ``aisimulate_core::memory::estimate_kv_cache`` is a pure forwarder that
-    calls this function and rebuilds its result, so this is the single source of
-    truth for the estimate.
+    This function validates inputs and implements scalar native/naive budget
+    math and tolerance margins. Grouped FPM profiles delegate budget and peak
+    footprint arithmetic to ``RustForwardPassPerfModel.estimate_cache_budget``.
+    Their token-capacity and bytes-per-token fields are ``None``. The legacy Rust
+    ``aisimulate_core::memory::estimate_kv_cache`` transport calls this function
+    and rebuilds scalar results; it rejects grouped results.
 
     Native path: :meth:`KVCacheEstimator.from_request` builds AIC's full backend
     memory model and :meth:`KVCacheEstimator.estimate` does the OfFree (TRT-LLM) /
@@ -1075,6 +1079,9 @@ def estimate_kv_cache(
             a model or falls back to naive estimation. CUDA graph bytes remain
             a separate reservation in addition to declared profile overheads.
         cp_size: profile context-parallel identity; currently only CP1 is supported.
+        context_length: optional context bound for a grouped profile's per-request
+            cache peak. Defaults to the profile's declared context. This does not
+            alter the fixed resource bounds or the available byte budget.
 
     Returns:
         A flat dict with ``total_gpu_capacity_bytes``, ``total_kv_size_bytes``,
@@ -1135,6 +1142,34 @@ def estimate_kv_cache(
         capacity = gpu_memory_capacity_bytes_override
         if capacity is None:
             capacity = perf_database.load_system_spec(system, systems_paths=systems_path)["gpu"]["mem_capacity"]
+        if resources.cache_layout == "grouped":
+            from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+            return RustForwardPassPerfModel.estimate_cache_budget(
+                {
+                    "model": model_path,
+                    "system": system,
+                    "backend": backend,
+                    "backend_version": backend_version,
+                    "worker_type": "aggregated",
+                    "tp": tp_size,
+                    "pp": pp_size,
+                    "attention_dp": attention_dp_size,
+                    "moe_tp_size": deployment.moe_tp,
+                    "moe_ep_size": deployment.moe_ep,
+                    "fpm_profile": profile.model_dump(mode="json"),
+                },
+                {
+                    "total_gpu_capacity_bytes": capacity,
+                    "memory_fraction_kind": memory_fraction_kind,
+                    "memory_fraction_value": memory_fraction_value,
+                    "max_num_tokens": max_num_tokens,
+                    "max_batch_size": max_batch_size,
+                    "context_length": context_length,
+                    "cuda_graph_reserved_bytes": cuda_graph_reserved_bytes,
+                    "tolerance_fraction": tolerance_fraction,
+                },
+            )
         estimate = KVCacheEstimator._estimate_from_breakdown(
             {
                 "weights_bytes": resources.weights_bytes,
@@ -1328,6 +1363,11 @@ def estimate_num_gpu_blocks(
         cp_size=cp_size,
     )
 
+    if estimate.get("cache_layout") == "grouped":
+        raise ValueError(
+            "grouped FPM caches require cache_groups and the byte budget from estimate_kv_cache; "
+            "a scalar num_gpu_blocks or token capacity cannot represent windowed cache groups"
+        )
     adjusted = estimate.get("tolerance_adjusted")
     if adjusted is not None:
         tokens = int(adjusted["total_kv_size_tokens"])

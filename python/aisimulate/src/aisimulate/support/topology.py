@@ -244,15 +244,51 @@ def _assess(
     # total KV capacity is the remaining memory divided by bytes per token.
     resident = 1
     known = sum(resolved[field] for field in _NON_KV_BYTES if field in resolved)
-    if "kv_bytes_per_token" in resolved:
+    grouped = resolved.get("cache_layout") == "grouped"
+    no_grouped_cache_budget = grouped and known >= hardware.memory_budget_bytes
+    if grouped and draft.profile is not None and known < hardware.memory_budget_bytes:
+        try:
+            from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+            estimate = RustForwardPassPerfModel.estimate_cache_budget(
+                {
+                    "model": selected.identity.model,
+                    "system": selected.identity.gpu,
+                    "backend": selected.identity.framework,
+                    "backend_version": selected.identity.framework_version,
+                    "worker_type": "aggregated",
+                    "tp": sizes[0],
+                    "pp": 1,
+                    "attention_dp": sizes[1],
+                    "moe_tp_size": sizes[2],
+                    "moe_ep_size": sizes[3],
+                    "fpm_profile": draft.profile.model_dump(mode="json"),
+                },
+                {
+                    "total_gpu_capacity_bytes": hardware.per_gpu_bytes,
+                    "memory_fraction_kind": "of_total",
+                    "memory_fraction_value": 0.9,
+                    "max_num_tokens": resolved["max_num_tokens"],
+                    "max_batch_size": resolved["max_batch_size"],
+                    "context_length": request.search.context_length,
+                },
+            )
+        except (ImportError, AttributeError) as exc:
+            raise ValueError(
+                "grouped cache planning requires this checkout's compiled AISimulate extension; install or rebuild it"
+            ) from exc
+        known += estimate["request_peak_cache_bytes"]
+    elif "kv_bytes_per_token" in resolved:
         known += resolved["kv_bytes_per_token"] * (request.search.context_length + 1)
-    complete_resources = resolved.keys() >= _RANK_BYTES
+    complete_resources = draft.profile is not None if grouped else resolved.keys() >= _RANK_BYTES
     estimated = known if complete_resources else None
-    if known > hardware.memory_budget_bytes:
+    if known > hardware.memory_budget_bytes or no_grouped_cache_budget:
         status = "rejected"
+        bound = "Conservative grouped peak" if grouped and complete_resources else "Known per-rank resource lower bound"
         reasons = (
-            f"Known per-rank resource lower bound {known} bytes exceeds the 90% per-GPU "
-            f"budget of {hardware.memory_budget_bytes} bytes.",
+            f"Non-KV resources {known} bytes leave no grouped cache budget ({hardware.memory_budget_bytes}-byte limit)."
+            if no_grouped_cache_budget
+            else f"{bound} {known} bytes exceeds the 90% per-GPU budget of {hardware.memory_budget_bytes} bytes.",
         )
     elif draft.missing or not complete_resources:
         status = "needs_inputs"
@@ -282,7 +318,7 @@ def suggest_topologies(
     deployment profiles must instead use the existing explicit-topology route.
     """
     supplied = validate_overrides(overrides)
-    rank_overrides = sorted(_RANK_BYTES & supplied.keys())
+    rank_overrides = sorted((_RANK_BYTES | {"cache_groups"}) & supplied.keys())
     if rank_overrides:
         raise ValueError(
             "automatic topology suggestions cannot transfer rank-local byte overrides across topologies: "
@@ -319,6 +355,9 @@ def suggest_topologies(
     for field, scheduler_field in (("max_num_tokens", "max_batched_tokens"), ("max_batch_size", "max_sequences")):
         if field in supplied:
             collection["sources"][scheduler_field] = "user resource override; shared rank-local scheduler bound"
+    grouped = any(
+        candidate.draft and candidate.draft.resolved.get("cache_layout") == "grouped" for candidate in candidates
+    )
     return TopologySuggestions(
         config_sha256=config.sha256,
         identity=request.identity.model_dump(mode="json"),
@@ -332,10 +371,16 @@ def suggest_topologies(
         assumptions=(
             hardware.assumption,
             "Enumerate powers-of-two widths within the fast domain; explicit topology choices may exceed it.",
-            "Check room for one full search.context_length request plus one cached token of strict capacity "
-            "headroom per rank. max_batch_size is a scheduler bound, not that many full-context cache allocations. "
-            "Total KV capacity is estimated from the remaining per-rank memory; this check does not guarantee "
-            "a particular concurrent workload fits or assume balanced attention-DP routing.",
+            (
+                "Check one request's conservative peak grouped allocation using Rust's window, block-rounding "
+                "and transient prefill bound at the selected context and scheduler limits. No aggregate token "
+                "capacity is assigned to mixed cache groups. Concurrent workload fit remains unchecked."
+                if grouped
+                else "Check room for one full search.context_length request plus one cached token of strict capacity "
+                "headroom per rank. max_batch_size is a scheduler bound, not that many full-context cache allocations. "
+                "Total KV capacity is estimated from the remaining per-rank memory; this check does not guarantee "
+                "a particular concurrent workload fits or assume balanced attention-DP routing."
+            ),
             "The 90% byte budget reuses onboarding planning policy. CUDA graph reservations are excluded; "
             "generated plan and serving-runtime admission remain authoritative.",
             "Only known config geometry constraints are checked. Unknown architecture constraints, "

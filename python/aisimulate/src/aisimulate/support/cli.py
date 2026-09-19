@@ -103,7 +103,8 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument(
         "--resource-overrides",
         metavar="PATH",
-        help="Flat JSON/YAML profile field overrides; requires --model-config. Resource bytes are per rank.",
+        help="JSON/YAML profile field overrides, including cache_groups/cache_block_sizes; "
+        "requires --model-config. Resource bytes are per rank.",
     )
     init.add_argument(
         "--suggest-parallel",
@@ -374,7 +375,12 @@ def _memory_field(name: str) -> bool:
     return name.endswith("_bytes") or name == "kv_bytes_per_token"
 
 
-def _resource_answer(name: str, answer: str) -> str | int:
+def _resource_answer(name: str, answer: str) -> Any:
+    if name in {"cache_groups", "cache_block_sizes"}:
+        try:
+            return yaml.load(answer, Loader=_ResourceOverridesLoader)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"enter a valid JSON {'list' if name == 'cache_groups' else 'object'}") from exc
     if name not in INTEGER_FIELDS:
         return answer
     if _memory_field(name):
@@ -400,6 +406,10 @@ def _read_profile_value(name: str) -> dict[str, Any]:
     choices = f" ({', '.join(FIELD_CHOICES[name])})" if name in FIELD_CHOICES else ""
     if _memory_field(name):
         choices += " (per rank; integer bytes or units such as GiB/MiB)"
+    elif name == "cache_groups":
+        choices += " (JSON list; page_size_bytes includes every group layer and runtime padding per rank)"
+    elif name == "cache_block_sizes":
+        choices += " (JSON object mapping displayed group names to runtime tokens per block)"
     while True:
         answer = input(f"{name}{choices}: ").strip()
         if not answer:
@@ -422,9 +432,15 @@ def _prompt_profile_value(
     # Retain a valid answer if final profile validation asks for an identity
     # correction. Other derivation failures cannot be repaired by repeating
     # this answer, so let the caller report the actual error.
-    overrides.update(_read_profile_value(name))
+    answer = _read_profile_value(name)
+    if name == "cache_block_sizes":
+        answer[name] = {**overrides.get(name, {}), **answer[name]}
+    overrides.update(answer)
     updated = derive_profile(config, request, overrides)
-    print(f"  {name}: {updated.resolved[name]} (source: {updated.sources[name]})")
+    if name in updated.resolved:
+        print(f"  {name}: {updated.resolved[name]} (source: {updated.sources[name]})")
+    else:
+        print(f"  {name}: {updated.missing[name]}")
     return overrides, updated
 
 
@@ -457,6 +473,13 @@ def _review_config_profile(
         print("  A complete generated grid does not establish AgentX/direct-FPM query coverage.")
         print("  Synthetic validation traffic and SLAs do not determine these collection limits.")
         print("  Resource *_bytes values are bytes per rank; kv_bytes_per_token is bytes per cached token per rank.")
+        if draft.resolved.get("cache_layout") == "grouped":
+            print("  Grouped pages retain full history or the declared window, with separate convolution state.")
+            print("  Group page_size_bytes sums every group layer per rank; verify runtime block sizes and padding.")
+            print(
+                "  Config-derived pages are minimum packed tensor estimates; edit cache_groups for runtime allocation."
+            )
+            print("  Logical context determines FPM timing queries; retained cache length is only memory accounting.")
         print("  max_num_tokens/max_batch_size are per-rank scheduler limits. Estimates require runtime verification.")
         for name, value in draft.resolved.items():
             print(f"  {name}: {value} (source: {draft.sources[name]})")
@@ -601,7 +624,11 @@ def _select_topology(
             suggestions = suggest_topologies(config, request, overrides)
             if args.interactive and suggestions.candidates:
                 shared = derive_profile(config, None, overrides)
-                while names := [name for name in shared.missing if not _memory_field(name)]:
+                while names := [
+                    name
+                    for name in shared.missing
+                    if not _memory_field(name) and name not in {"cache_groups", "cache_block_sizes"}
+                ]:
                     overrides, shared = _prompt_profile_value(config, None, overrides, shared, names[0])
                 suggestions = suggest_topologies(config, request, overrides)
             break

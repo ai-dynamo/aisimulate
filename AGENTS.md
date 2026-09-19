@@ -28,6 +28,16 @@ default and alternatives, choose one exact topology per plan, and preserve any
 explicit topology choice. If no default exists, explain the missing inputs and
 select a candidate before collecting its rank-local bounds. Byte overrides are
 specific to the chosen tuple; use explicit topology flags with those bounds.
+Inspect full-attention, sliding-window and supported convolution retention
+before choosing linear or grouped cache resources. For grouped resources,
+derive available geometry, then request unresolved runtime `cache_block_sizes`
+after choosing the topology; model config cannot determine these block sizes.
+Review/edit the complete `cache_groups` JSON and provenance. Each
+`page_size_bytes` is the rank-local aggregate over every layer in that group,
+including runtime padding; config-derived packed pages are minimum estimates.
+Never replace grouped storage with an averaged `kv_bytes_per_token` or scalar
+token capacity. Use the canonical native cache budget for group footprint and
+transient prefill admission; unresolved resource assumptions remain explicit.
 Derive the minimum collection GPUs from attention TP times attention DP (TP4
 requires four GPUs). Do not ask for total available GPUs, cluster node allocation
 or replica budgets during onboarding. Preserve target hardware, runtime and
@@ -62,6 +72,14 @@ Missing timing stops replay and preserves partial evidence, which cannot certify
 the remainder of the trace. Report coverage and silicon accuracy separately.
 Reuse verified v2 collection plans for validation-only changes; legacy v1 plans
 need a new directory as described in the guide.
+
+Grouped cache execution currently requires cold aggregated vLLM with PP1, CP1,
+HBM-only storage, no speculative decoding and `prefix_caching: false`. Preserve
+that setting in generated predict/recommend and validation configs. Native
+allocation shares one byte budget across groups, retains full history or the
+declared window, and charges temporary prefill pages. Window eviction does not
+shorten logical request progress or FPM query context. Prefix reuse, offload/G3,
+disaggregation and scalar capacity overrides are unsupported for grouped caches.
 
 Do not reject a checkpoint solely because it is multimodal. Read its unambiguous
 `text_config`, or its flat text-decoder fields, and explain that FPM models only

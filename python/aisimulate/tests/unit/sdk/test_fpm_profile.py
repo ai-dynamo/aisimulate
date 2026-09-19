@@ -376,6 +376,134 @@ def test_profile_memory_capacity_override_does_not_read_hardware(profile_memory,
     assert result["total_kv_size_bytes"] == 1400
 
 
+@pytest.fixture
+def grouped_profile(profile_dict):
+    resources = profile_dict["deployments"][0]["resources"]
+    resources.pop("kv_bytes_per_token")
+    resources["cache_layout"] = "grouped"
+    resources["cache_groups"] = [
+        {
+            "name": "global",
+            "kind": "attention",
+            "num_layers": 2,
+            "block_size_tokens": 16,
+            "page_size_bytes": 32,
+            "sliding_window": None,
+        },
+        {
+            "name": "local",
+            "kind": "attention",
+            "num_layers": 4,
+            "block_size_tokens": 16,
+            "page_size_bytes": 16,
+            "sliding_window": 32,
+        },
+        {
+            "name": "conv",
+            "kind": "convolution",
+            "num_layers": 6,
+            "block_size_tokens": 4,
+            "page_size_bytes": 8,
+            "sliding_window": 4,
+        },
+    ]
+    return profile_dict
+
+
+def test_grouped_profile_memory_keeps_byte_budget_and_context_bound(grouped_profile, profile_memory):
+    result = profile_memory(max_num_tokens=16, context_length=64, cuda_graph_reserved_bytes=20, tolerance_fraction=0.1)
+    assert result["total_kv_size_bytes"] == 580
+    assert result["tolerance_adjusted"]["total_kv_size_bytes"] == 522
+    assert result["total_kv_size_tokens"] is None
+    assert result["kv_size_per_token_bytes"] is None
+    assert result["tolerance_adjusted"]["total_kv_size_tokens"] is None
+    # Full: four pages * 32B; local: <=four aligned pages *16B;
+    # conv: <=six pages spanning retained history plus the 16-token chunk *8B.
+    assert result["request_peak_cache_bytes"] == 240
+    assert result["cache_groups"] == grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    assert result["memory_breakdown"]["cuda_graph_reserved_bytes"] == 20
+    with pytest.raises(ValueError, match="context_length"):
+        profile_memory(context_length=4097)
+    json.dumps(result)
+
+
+def test_grouped_profile_cannot_be_reduced_to_scalar_blocks(grouped_profile, profile_memory):
+    with pytest.raises(ValueError, match="scalar num_gpu_blocks"):
+        memory.estimate_num_gpu_blocks(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            scheduler_block_size=16,
+            max_num_tokens=8192,
+            max_batch_size=256,
+            memory_fraction_kind="of_total",
+            memory_fraction_value=0.8,
+            tp_size=2,
+            moe_tp_size=2,
+            fpm_profile=grouped_profile,
+        )
+
+
+@pytest.mark.parametrize("capacity", [True, 1000.0, 0, 2**53 + 1])
+def test_grouped_profile_requires_exact_positive_capacity(grouped_profile, profile_memory, capacity):
+    with pytest.raises(ValueError, match="(cache budget|GPU capacity)"):
+        profile_memory(gpu_memory_capacity_bytes_override=capacity)
+
+
+def test_grouped_profile_roundtrip_compiles_without_graph(grouped_profile, direct_compile):
+    spec = direct_compile(grouped_profile)
+    saved = json.loads(spec["engine"]["extra"]["fpm_profile"])
+    assert (
+        saved["deployments"][0]["resources"]["cache_groups"]
+        == grouped_profile["deployments"][0]["resources"]["cache_groups"]
+    )
+    assert "kv_bytes_per_token" not in saved["deployments"][0]["resources"]
+    assert _normalize(_request(saved))["fpm_profile"] == saved
+
+
+def test_linear_profile_serialization_omits_new_group_fields(profile_dict):
+    resource = load_fpm_profile(profile_dict).model_dump(mode="json")["deployments"][0]["resources"]
+    assert resource == profile_dict["deployments"][0]["resources"]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda r: r.update(kv_bytes_per_token=1),
+        lambda r: r.update(cache_groups=[]),
+        lambda r: r["cache_groups"][1].update(name="global"),
+        lambda r: r["cache_groups"][0].update(block_size_tokens=True),
+        lambda r: r["cache_groups"][0].update(block_size_tokens=0),
+        lambda r: r["cache_groups"][0].update(page_size_bytes=2**53 + 1),
+        lambda r: r["cache_groups"][0].update(per_layer_page_size=1),
+        lambda r: r["cache_groups"][2].update(sliding_window=None),
+    ],
+)
+def test_grouped_profile_rejects_ambiguous_or_invalid_page_contract(grouped_profile, change):
+    change(grouped_profile["deployments"][0]["resources"])
+    with pytest.raises(ValidationError):
+        load_fpm_profile(grouped_profile)
+
+
+def test_grouped_budget_canonical_identity_and_bounds(grouped_profile):
+    config = _request(grouped_profile)
+    budget = {
+        "total_gpu_capacity_bytes": 1000,
+        "memory_fraction_kind": "of_total",
+        "memory_fraction_value": 0.8,
+        "max_num_tokens": 1,
+        "max_batch_size": 1,
+        "context_length": 64,
+    }
+    estimate = RustForwardPassPerfModel.estimate_cache_budget(config, budget)
+    assert estimate["total_kv_size_bytes"] == 600
+    assert estimate["request_peak_cache_bytes"] == 192  # 4*32 + 3*16 + 2*8.
+    config["system"] = "another_gpu"
+    with pytest.raises(ValueError, match="matching FPM deployment"):
+        RustForwardPassPerfModel.estimate_cache_budget(config, budget)
+
+
 def test_profile_block_budget_preserves_resource_provenance(profile_dict, profile_memory):
     diagnostics = {}
     blocks = memory.estimate_num_gpu_blocks(

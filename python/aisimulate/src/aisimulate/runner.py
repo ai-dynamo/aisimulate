@@ -1238,9 +1238,12 @@ def _materialize_engine_role(
         )
         if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
             role_memory["status"] = "available"
-            role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
+            if "num_gpu_blocks" in role_memory:
+                role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
             role_memory.pop("unavailable_reason", None)
-        capacity_materialized = role_config.get("num_gpu_blocks") is not None
+        capacity_materialized = (
+            role_config.get("num_gpu_blocks") is not None or role_config.get("kv_cache_capacity_bytes") is not None
+        )
     for name in ("engine_type", "aic_backend"):
         configured = role_config.pop(name, None)
         if configured is not None and configured != deployment_backend:

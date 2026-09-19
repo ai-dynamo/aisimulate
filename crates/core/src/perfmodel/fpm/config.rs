@@ -249,6 +249,7 @@ impl ForwardPassPerfModelConfig {
                 self.kvcache_quant_mode = Some(facts.kvcache_quant_mode);
                 self.comm_quant_mode = Some(facts.comm_quant_mode);
                 self.attention_backend = Some(facts.attention_backend);
+                self.fpm_resources()?;
                 Some(facts.registered)
             }
             #[cfg(not(feature = "python"))]

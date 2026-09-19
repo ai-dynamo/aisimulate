@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 from . import quantization
 
@@ -26,6 +26,27 @@ _MUTABLE_REFERENCES = {"main", "master", "head", "latest", "current", "unknown",
 
 class _ProfileModel(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class FpmCacheGroup(_ProfileModel):
+    """Rank-local physical cache pages for one attention or convolution group.
+
+    Page bytes include all group layers and runtime padding. The retention
+    window does not replace the logical context used for FPM timing queries.
+    """
+
+    name: _Nonempty
+    kind: Literal["attention", "convolution"]
+    num_layers: Annotated[int, Field(gt=0, le=2**32 - 1)]
+    block_size_tokens: Annotated[int, Field(gt=0, le=2**32 - 1)]
+    page_size_bytes: Annotated[int, Field(gt=0, le=2**53)]
+    sliding_window: Annotated[int, Field(gt=0, le=2**32 - 1)] | None = None
+
+    @model_validator(mode="after")
+    def _window(self) -> FpmCacheGroup:
+        if self.kind == "convolution" and self.sliding_window is None:
+            raise ValueError("convolution cache groups require a sliding_window")
+        return self
 
 
 class FpmResourceProfile(_ProfileModel):
@@ -40,8 +61,9 @@ class FpmResourceProfile(_ProfileModel):
     activations_bytes: _Bytes
     runtime_overhead_bytes: _Bytes
     comm_overhead_bytes: _Bytes
-    kv_bytes_per_token: Annotated[int, Field(gt=0, le=2**53)]
-    cache_layout: Literal["linear"]
+    kv_bytes_per_token: Annotated[int, Field(gt=0, le=2**53)] | None = None
+    cache_layout: Literal["linear", "grouped"]
+    cache_groups: list[FpmCacheGroup] = Field(default_factory=list)
     max_num_tokens: _PositiveInt
     max_batch_size: _PositiveInt
     provenance: _Nonempty
@@ -50,7 +72,24 @@ class FpmResourceProfile(_ProfileModel):
     def _exact_total(self) -> FpmResourceProfile:
         if self.non_kv_bytes > 2**53:
             raise ValueError("total non-KV resource bytes must not exceed 2**53")
+        if self.cache_layout == "linear":
+            if self.kv_bytes_per_token is None or self.cache_groups:
+                raise ValueError("linear cache requires kv_bytes_per_token and no cache_groups")
+        elif self.kv_bytes_per_token is not None or not self.cache_groups:
+            raise ValueError("grouped cache requires cache_groups without a scalar kv_bytes_per_token")
+        if len({group.name for group in self.cache_groups}) != len(self.cache_groups):
+            raise ValueError("cache group names must be unique")
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialize_resources(self, handler):
+        # Do not add empty fields to saved linear profiles or change plan IDs.
+        result = handler(self)
+        if not self.cache_groups:
+            result.pop("cache_groups", None)
+        if self.kv_bytes_per_token is None:
+            result.pop("kv_bytes_per_token", None)
+        return result
 
     @property
     def non_kv_bytes(self) -> int:

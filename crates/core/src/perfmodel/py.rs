@@ -1768,6 +1768,17 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// Size declarative resources using canonical configuration, without timing
+    /// data or analytical graph construction.
+    #[staticmethod]
+    fn estimate_cache_budget(config_json: &str, budget_json: &str) -> PyResult<String> {
+        let config = parse_forward_pass_config(config_json)?;
+        let request: crate::perfmodel::FpmCacheBudgetRequest = serde_json::from_str(budget_json)
+            .map_err(|e| PyValueError::new_err(format!("invalid cache budget: {e}")))?;
+        let estimate = config.estimate_cache_budget(&request).map_err(aic_to_py)?;
+        serde_json::to_string(&estimate).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Migration adapter for previously saved flat tuning options.
     #[staticmethod]
     fn legacy_estimator_config(options_json: &str) -> PyResult<String> {

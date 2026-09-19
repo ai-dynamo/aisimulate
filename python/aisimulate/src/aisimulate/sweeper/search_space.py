@@ -29,7 +29,13 @@ from .afd_parallel import (
 )
 from .config import ENGINE_MODEL_CONTROL_FIELDS, SmartSearchConfig
 from .kv_estimate import NoPerfDatabase, resolve_backend_version
-from .model_hw import ModelHardware, NoViableParallelConfig, parallel_configs_for, resolve_model_hardware
+from .model_hw import (
+    ModelHardware,
+    NoViableParallelConfig,
+    _profile_parallel_configs,
+    parallel_configs_for,
+    resolve_model_hardware,
+)
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from .replay import RunnerCapabilities
 
@@ -164,6 +170,42 @@ def _parse_parallel_entry(entry: dict[str, Any], deployment_mode: str):
     )
 
 
+def _fpm_parallel_configs(search_space, deployment_mode: str):
+    """Apply declared topology domains before grouped compatibility or resource checks."""
+    from aisimulate.fpm_profile import load_fpm_profile
+
+    profile = load_fpm_profile(search_space.fpm_profile)
+    configs = _profile_parallel_configs(
+        profile,
+        hardware_sku=search_space.hardware_sku_for("agg" if deployment_mode == "agg" else "prefill"),
+        decode_hardware_sku=(search_space.hardware_sku_for("decode") if deployment_mode == "disagg" else None),
+        backend="vllm",
+        backend_version=search_space.requested_backend_version("vllm"),
+        gpu_budget=search_space.gpu_budget,
+        min_gpu_budget=search_space.min_gpu_budget,
+        deployment_mode=deployment_mode,
+    )
+    raw_pinned = search_space.parallel_configs_by_mode.get(deployment_mode, search_space.parallel_configs)
+    if raw_pinned:
+        pinned = {_parse_parallel_entry(entry, deployment_mode) for entry in raw_pinned}
+        configs = [config for config in configs if config in pinned]
+    for role, entries in search_space.parallel_custom_configs_by_mode.get(deployment_mode, {}).items():
+        choices = {_replica_from_dict(entry) for entry in entries}
+        configs = [config for config in configs if _parallel_role(config, role) in choices]
+    domains = search_space.parallel_independent_by_mode.get(deployment_mode, {})
+    bounds = search_space.parallel_independent_log_ranges_by_mode.get(deployment_mode, {})
+    return [
+        config
+        for config in configs
+        if all(
+            bounds[name][0] <= value <= bounds[name][1]
+            if name in bounds
+            else domains.get(name) is None or value in domains[name]
+            for name, value in _parallel_leaf_values(config).items()
+        )
+    ]
+
+
 def branch_knob_choices(search_space, deployment_mode: str) -> dict[str, list[Any]]:
     """Backend-owned atomic knobs for one deployment branch."""
     names = _engine_knobs(deployment_mode)
@@ -260,6 +302,7 @@ def _heterogeneous_disagg_configs(
     *,
     backend: str,
     max_seq_len: int | None,
+    candidate_configs: list[DisaggParallelConfig] | None = None,
 ) -> list[DisaggParallelConfig]:
     """Enumerate each P/D role against its own hardware, then apply the shared budget."""
     role_hardware = {role: search_space.hardware_sku_for(role) for role in ("prefill", "decode")}
@@ -293,6 +336,11 @@ def _heterogeneous_disagg_configs(
                 **_engine_memory_kwargs(search_space),
                 **_estimator_root_kwargs(search_space, role),
                 **({"fpm_profile": search_space.fpm_profile} if search_space.fpm_profile is not None else {}),
+                **(
+                    {"candidate_configs": list(dict.fromkeys(getattr(config, role) for config in candidate_configs))}
+                    if candidate_configs is not None
+                    else {}
+                ),
             )
         except (NoPerfDatabase, NoViableParallelConfig) as exc:
             raise type(exc)(f"{role} hardware_sku={hardware!r}: {exc}") from exc
@@ -587,6 +635,7 @@ def enumerate_branches(
         custom_by_role = {
             role: tuple(_replica_from_dict(entry) for entry in entries) for role, entries in raw_custom.items()
         }
+        profile_configs = _fpm_parallel_configs(ss, deployment_mode) if ss.fpm_profile is not None else None
 
         def matches_custom(config: _ParallelConfig) -> bool:
             return all(_parallel_role(config, role) in choices for role, choices in custom_by_role.items())
@@ -607,6 +656,7 @@ def enumerate_branches(
                         ss,
                         backend=backend,
                         max_seq_len=max_seq_len,
+                        candidate_configs=profile_configs,
                     )
                 else:
                     legal = parallel_configs_for(
@@ -622,6 +672,7 @@ def enumerate_branches(
                         **_engine_memory_kwargs(ss),
                         **_estimator_root_kwargs(ss, "agg" if deployment_mode == "agg" else "prefill"),
                         **({"fpm_profile": ss.fpm_profile} if ss.fpm_profile is not None else {}),
+                        **({"candidate_configs": profile_configs} if profile_configs is not None else {}),
                     )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search

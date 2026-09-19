@@ -75,11 +75,13 @@ struct RankMetricsState {
 }
 
 impl RankMetricsState {
-    fn new(dp_rank: u32, total_blocks: u64) -> Self {
+    fn new(dp_rank: u32, total_blocks: u64, kv_cache_capacity_bytes: Option<u64>) -> Self {
         Self {
             latest: Metrics {
                 dp_rank,
                 total_blocks,
+                kv_cache_capacity_bytes,
+                kv_cache_used_bytes: kv_cache_capacity_bytes.map(|_| 0),
                 ..Metrics::default()
             },
             interval: ReplaySchedulerIntervalMetrics::default(),
@@ -115,6 +117,8 @@ impl RankMetricsState {
             active_blocks: self.latest.active_blocks,
             inactive_blocks: self.latest.inactive_blocks,
             total_blocks: self.latest.total_blocks,
+            kv_cache_used_bytes: self.latest.kv_cache_used_bytes,
+            kv_cache_capacity_bytes: self.latest.kv_cache_capacity_bytes,
             active_cache_usage: self.latest.cache_usage,
             physical_cache_usage: self.latest.physical_cache_usage,
             running_requests: self.latest.running_requests,
@@ -229,7 +233,13 @@ where
         for worker in self.workers.iter_mut().filter_map(Option::as_mut) {
             worker.telemetry = Some(
                 (0..dp_size)
-                    .map(|dp_rank| RankMetricsState::new(dp_rank, total_blocks))
+                    .map(|dp_rank| {
+                        RankMetricsState::new(
+                            dp_rank,
+                            total_blocks,
+                            self.factory.kv_cache_capacity_bytes(),
+                        )
+                    })
                     .collect(),
             );
         }
@@ -315,7 +325,13 @@ where
         }
         let telemetry = self.telemetry.as_ref().map(|_| {
             (0..self.factory.dp_size())
-                .map(|dp_rank| RankMetricsState::new(dp_rank, self.factory.total_blocks()))
+                .map(|dp_rank| {
+                    RankMetricsState::new(
+                        dp_rank,
+                        self.factory.total_blocks(),
+                        self.factory.kv_cache_capacity_bytes(),
+                    )
+                })
                 .collect()
         });
         self.workers.push(Some(LogicalWorker {
@@ -1424,7 +1440,7 @@ mod tests {
 
     #[test]
     fn scheduler_cache_metrics_accumulate_and_drain_per_tick() {
-        let mut state = RankMetricsState::new(2, 100);
+        let mut state = RankMetricsState::new(2, 100, None);
         state
             .update(
                 &Metrics {

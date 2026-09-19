@@ -275,6 +275,24 @@ class RustForwardPassPerfModel:
 
         return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))
 
+    @staticmethod
+    def estimate_cache_budget(
+        config: ForwardPassPerfModelConfig | Mapping[str, Any], budget: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        """Size explicit profile resources without a graph or timing data.
+
+        Grouped caches expose a byte budget and per-request peak bound; their
+        scalar bytes-per-token and aggregate token capacities are unavailable.
+        Rust owns allocation rounding, retention windows and budget arithmetic.
+        """
+        import aisimulate_core
+
+        return json.loads(
+            aisimulate_core.RustForwardPassPerfModel.estimate_cache_budget(
+                _forward_pass_config_json(config), _json_dumps(dict(budget))
+            )
+        )
+
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
 

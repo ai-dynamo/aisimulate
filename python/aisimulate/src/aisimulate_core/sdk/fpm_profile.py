@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 from aisimulate_core.fpm_profile import _MUTABLE_REFERENCES
+from aisimulate_core.fpm_profile import FpmCacheGroup as FpmCacheGroup
 from aisimulate_core.fpm_profile import FpmDeploymentProfile as FpmDeploymentProfile
 from aisimulate_core.fpm_profile import FpmModelProfile as FpmModelProfile
 from aisimulate_core.fpm_profile import FpmResourceProfile as FpmResourceProfile

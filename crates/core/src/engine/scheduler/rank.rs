@@ -429,6 +429,8 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         aic_mtp_seed: config.aic_mtp_seed,
         kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,
         kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
+        kv_cache_groups: config.kv_cache_groups.clone(),
+        kv_cache_capacity_bytes: config.kv_cache_capacity_bytes,
         native_host_offload: config.native_host_offload,
         kv_transfer_bandwidth: config.kv_transfer_bandwidth,
         kv_transfer_timing_mode: match config.kv_transfer_timing_mode {
@@ -574,6 +576,8 @@ fn map_metrics(metrics: MockerMetrics) -> Metrics {
         active_blocks: metrics.active_decode_blocks,
         inactive_blocks: metrics.inactive_decode_blocks,
         total_blocks: metrics.total_blocks,
+        kv_cache_used_bytes: metrics.kv_cache_used_bytes,
+        kv_cache_capacity_bytes: metrics.kv_cache_capacity_bytes,
         cache_usage: metrics.gpu_cache_usage_perc,
         physical_cache_usage: metrics.physical_gpu_cache_usage_perc,
         running_requests: metrics.running_requests,
