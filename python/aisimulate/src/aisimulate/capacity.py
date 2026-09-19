@@ -116,6 +116,7 @@ def materialize_aic_num_gpu_blocks(
                         "aic_pp_size": resolved["pp"],
                         "aic_moe_tp_size": resolved["moe_tp_size"],
                         "aic_moe_ep_size": resolved["moe_ep_size"],
+                        "aic_fpm_profile": resolved.get("fpm_profile"),
                     }.items()
                     if value is not None
                 }
@@ -213,6 +214,7 @@ def materialize_aic_num_gpu_blocks(
         },
         systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
+        **({"fpm_profile": lowered["aic_fpm_profile"]} if lowered.get("aic_fpm_profile") is not None else {}),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)
@@ -247,6 +249,7 @@ def estimate_num_gpu_blocks(
     systems_path: str | list[str] | None = None,
     cuda_graph_reserved_bytes: int = 0,
     diagnostics: dict[str, Any] | None = None,
+    fpm_profile: dict[str, Any] | None = None,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -323,6 +326,7 @@ def estimate_num_gpu_blocks(
             },
             systems_path=systems_path,
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
+            **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
     )
@@ -336,8 +340,30 @@ def estimate_kv_bytes_per_token(
     moe_tp_size: int = 1,
     moe_ep_size: int = 1,
     kvcache_quant_mode: str | None = None,
+    fpm_profile: dict[str, Any] | None = None,
+    system: str | None = None,
+    backend: str = "vllm",
+    backend_version: str | None = None,
+    attention_dp_size: int = 1,
 ) -> int:
     """Derive per-rank KV bytes/token from the resolved Hugging Face config."""
+
+    if fpm_profile is not None:
+        from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+        deployment = load_fpm_profile(fpm_profile).select(
+            model=model_name,
+            system=system,
+            backend=backend,
+            backend_version=backend_version,
+            tp_size=tp_size,
+            pp_size=pp_size,
+            attention_dp_size=attention_dp_size,
+            moe_tp_size=moe_tp_size,
+            moe_ep_size=moe_ep_size,
+        )
+        deployment.validate_overrides(kvcache_quant_mode=kvcache_quant_mode)
+        return deployment.resources.kv_bytes_per_token
 
     from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
 

@@ -181,6 +181,79 @@ def request(**changes):
     )
 
 
+@pytest.mark.parametrize("input_kind", ["dataclass", "mapping"])
+@pytest.mark.parametrize("field", ["attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"])
+@pytest.mark.parametrize("sentinel", ["NaN", "Infinity", "-Infinity"])
+def test_canonical_nonfinite_regression_weights_preserve_native_and_regression_contracts(input_kind, field, sentinel):
+    from dataclasses import replace
+
+    config = request(
+        tp=2,
+        backend_version="0.24.0",
+        estimation_mode="op_level",
+        estimator_config={"features": {field: float(sentinel)}},
+    )
+    payload = config if input_kind == "dataclass" else config.to_dict()
+    original = json.dumps(config.to_dict() if input_kind == "dataclass" else payload, sort_keys=True)
+    normalized = RustForwardPassPerfModel.normalize_config(payload)
+    assert normalized["estimator_config"]["features"][field] == sentinel
+    model = RustForwardPassPerfModel.best_available(payload)
+    try:
+        diagnostics = model.diagnostics()
+        assert diagnostics["readiness"] == "ready"
+        assert diagnostics["provenance"]["selected_estimation_mode"] == "op_level"
+        assert diagnostics["provenance"]["config"]["estimator_config"]["features"][field] == sentinel
+        assert (
+            model.estimate_forward_pass_time_ms(
+                {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 128}}
+            )
+            > 0
+        )
+    finally:
+        model.close()
+    assert json.dumps(config.to_dict() if input_kind == "dataclass" else payload, sort_keys=True) == original
+
+    regression = replace(config, estimation_mode="fpm_regression")
+    regression_payload = regression if input_kind == "dataclass" else regression.to_dict()
+    original = json.dumps(regression.to_dict() if input_kind == "dataclass" else regression_payload, sort_keys=True)
+    normalized = RustForwardPassPerfModel.normalize_config(regression_payload)
+    assert normalized["estimator_config"]["features"][field] == sentinel
+    with pytest.raises(ValueError, match=f"regression_{field}"):
+        RustForwardPassPerfModel.best_available(regression_payload)
+    assert (
+        json.dumps(regression.to_dict() if input_kind == "dataclass" else regression_payload, sort_keys=True)
+        == original
+    )
+
+
+@pytest.mark.parametrize("field", ["attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"])
+@pytest.mark.parametrize("sentinel", ["NaN", "Infinity", "-Infinity"])
+def test_resolver_preserves_nonfinite_regression_weight_contract(field, sentinel):
+    from dataclasses import replace
+
+    from aisimulate.sweeper.config import SearchSpace
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolutionError,
+        ForwardPassEstimatorResolver,
+    )
+
+    config = request(
+        tp=2,
+        backend_version="0.24.0",
+        estimation_mode="op_level",
+        estimator_config={"features": {field: float(sentinel)}},
+    )
+    resolver = ForwardPassEstimatorResolver(SearchSpace(model_name=config.model, hardware_sku=config.system))
+    spec = resolver._resolve(config, "agg")
+    assert spec.diagnostics["readiness"] == "ready"
+    assert spec.config["estimation_mode"] == "op_level"
+    assert spec.config["estimator_config"]["features"][field] == sentinel
+    spec.config["estimator_config"]["features"][field] = 1.0
+    assert resolver._resolve(config, "agg").config["estimator_config"]["features"][field] == sentinel
+    with pytest.raises(ForwardPassEstimatorResolutionError, match=f"regression_{field}"):
+        resolver._resolve(replace(config, estimation_mode="fpm_regression"), "agg")
+
+
 def test_legacy_options_preserve_shape_ridge_and_general_mapping():
     from collections.abc import Mapping
 

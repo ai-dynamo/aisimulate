@@ -623,6 +623,7 @@ mod tests {
         // Recursive like Overlap/Fallback: sol_ops carries the model's
         // original granular list, so the round-trip must preserve nesting.
         crate::operators::FpmForwardOp {
+            interpolation: Default::default(),
             name: "fpm_forward_prefill".into(),
             phase: crate::operators::FpmPhase::Prefill,
             model_path: "org/model-a".into(),
@@ -1050,6 +1051,30 @@ mod tests {
         assert_eq!(decoded.schema_version, ENGINE_SPEC_SCHEMA_VERSION);
     }
 
+    #[test]
+    fn fpm_interpolation_round_trip_and_schema19_rejection() {
+        let mut op = fpm_forward();
+        op.interpolation = crate::operators::fpm_forward::FpmInterpolation::Direct;
+        op.sol_ops.clear();
+        let spec = EngineSpec::new(sample_engine_config(), vec![], vec![OpSpec::FpmForward(op)]);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        // Main's schema19 FPM payload ends with an empty sol_ops vector,
+        // without the four-byte interpolation enum immediately before it.
+        let selector = bytes.len() - 12;
+        assert_eq!(&bytes[selector..selector + 4], &1u32.to_le_bytes());
+        bytes.drain(selector..selector + 4);
+        bytes[..4].copy_from_slice(&19u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 19,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+            })
+        ));
+    }
+
     /// A buffer too short to even hold the 4-byte version prefix must fail at the
     /// prefix stage, not deep in the (absent) payload.
     #[test]
@@ -1107,11 +1132,11 @@ mod tests {
             Err(AicError::UnsupportedSchemaVersion {
                 kind: "EngineSpec",
                 got: 18,
-                expected: 19
+                expected: ENGINE_SPEC_SCHEMA_VERSION
             })
         ));
-        // A false schema19 stamp cannot silently use the JSON-only default.
-        bytes[..4].copy_from_slice(&19u32.to_le_bytes());
+        // A false current-version stamp cannot silently use the JSON-only default.
+        bytes[..4].copy_from_slice(&ENGINE_SPEC_SCHEMA_VERSION.to_le_bytes());
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
             Err(AicError::EngineSpec(_))

@@ -27,7 +27,12 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
-from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, SystemsPath, is_active_engine_model_control
+from ..config.common import (
+    ENGINE_MODEL_CONTROL_FIELDS,
+    SystemsPath,
+    is_active_engine_model_control,
+    requested_backend_version,
+)
 from ..config.engine import NgramSpeculationConfig
 
 
@@ -515,6 +520,7 @@ class SearchSpace(BaseModel):
     # pinned
     model_name: str  # HF id or private model name
     hardware_sku: str  # e.g. "h200_sxm"
+    fpm_profile: dict[str, Any] | None = None
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
     systems_paths: list[str] | None = Field(default=None, min_length=1)
@@ -639,6 +645,19 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
+        if self.fpm_profile is not None:
+            from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+            profile = load_fpm_profile(self.fpm_profile)
+            if profile.model != self.model_name:
+                raise ValueError("FPM profile model identity does not match the requested model")
+            if set(self.backend) != {"vllm"} or self._uses_legacy_estimator_provider():
+                raise ValueError(
+                    "FPM profiles support vLLM aggregated/disaggregated decoder workers without AFD or encoders"
+                )
+            if any(getattr(self, f"{role}_timing_model") is not None for role in ("agg", "prefill", "decode")):
+                raise ValueError("fpm_profile requires default timing for every worker")
+            self.fpm_profile = profile.model_dump(mode="json")
         if self.systems_path is not None:
             if self.systems_paths is not None and self.systems_paths != [self.systems_path]:
                 raise ValueError("systems_path conflicts with systems_paths")
@@ -939,11 +958,7 @@ class SearchSpace(BaseModel):
     def requested_backend_version(self, backend: str) -> str | None:
         """Return the version pin for ``backend``; ``None`` means resolve latest."""
 
-        if isinstance(self.backend_version, str):
-            return self.backend_version
-        if isinstance(self.backend_version, dict):
-            return self.backend_version.get(backend)
-        return None
+        return requested_backend_version(self.backend_version, backend)
 
     @model_validator(mode="after")
     def _validate_gpu_budget(self) -> SearchSpace:

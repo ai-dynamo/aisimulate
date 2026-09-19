@@ -15,12 +15,14 @@ import json
 import logging
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile, FpmModelProfile, load_fpm_profile
+
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
-from .config import FPMCollectionOptions
+from .config import PARALLEL_AXES, FPMCollectionOptions
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
 from .topology import enumerate_fpm_topologies, topology_strategy
 from .types import ParallelTopology
@@ -481,9 +483,32 @@ class FPMCollectionPlan:
     backend_policies: tuple[BackendPolicy, ...]
     cells: tuple[FPMCell, ...]
     sha256: str
+    _fpm_profile_json: str | None = field(default=None, repr=False)
+
+    @property
+    def fpm_profile(self) -> FpmModelProfile | None:
+        """Return detached profile metadata from the frozen collection input."""
+        return load_fpm_profile(self._fpm_profile_json) if self._fpm_profile_json is not None else None
+
+    def deployment_profile(self, cell: FPMCell) -> FpmDeploymentProfile | None:
+        profile = self.fpm_profile
+        if profile is None:
+            return None
+        return profile.select(
+            model=self.model_path,
+            system=self.system,
+            backend=self.backend,
+            backend_version=self.capability.aic_database_version,
+            tp_size=cell.topology.tp,
+            pp_size=cell.topology.pp,
+            attention_dp_size=cell.topology.dp,
+            moe_tp_size=cell.topology.moe_tp,
+            moe_ep_size=cell.topology.moe_ep,
+            cp_size=cell.topology.cp,
+        )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "schema_name": "aic_fpm_collection_plan",
             "schema_version": 10,
             "backend": self.backend,
@@ -535,6 +560,9 @@ class FPMCollectionPlan:
             },
             "sha256": self.sha256,
         }
+        if self._fpm_profile_json is not None:
+            payload["fpm_profile"] = json.loads(self._fpm_profile_json)
+        return payload
 
 
 def _cell_id(
@@ -572,12 +600,31 @@ def build_collection_plan(
     model_architecture: str | None = None,
     has_model_cases: bool = True,
     model_config_path: str | None = None,
+    fpm_profile: FpmModelProfile | dict[str, Any] | None = None,
     collector_config: dict[str, Any] | None = None,
     generator_overrides: dict[str, Any] | None = None,
 ) -> FPMCollectionPlan:
     if backend != "vllm":
         raise ValueError("FPM Generator V1 currently supports only backend=vllm")
-    collector_config = collector_config or {}
+    collector_config = dict(collector_config or {})
+    profile = load_fpm_profile(fpm_profile) if fpm_profile is not None else None
+    if profile is not None:
+        if profile.model != model_path:
+            raise ValueError(
+                f"FPM profile model identity mismatch: requested {model_path!r}, profile={profile.model!r}"
+            )
+        versions = {
+            deployment.backend_version
+            for deployment in profile.deployments
+            if deployment.system == system and deployment.backend == backend
+        }
+        if "aic_database_version" not in collector_config:
+            if len(versions) != 1:
+                raise ValueError(
+                    "FPM collection profile must identify one runtime version for the target "
+                    f"{system}/{backend}; found {sorted(versions)}"
+                )
+            collector_config["aic_database_version"] = next(iter(versions))
     generator_config_sha256 = _canonical_hash(generator_overrides or {})
     capability = resolve_model_capability(
         backend=backend,
@@ -592,6 +639,7 @@ def build_collection_plan(
         database_version=(
             str(collector_config["aic_database_version"]) if "aic_database_version" in collector_config else None
         ),
+        checkpoint_native_dtypes=profile is not None,
     )
     candidate_topologies = enumerate_fpm_topologies(
         backend=backend,
@@ -599,6 +647,9 @@ def build_collection_plan(
         options=options,
         allow_pure_tp=capability.allow_pure_tp,
     )
+    policies = _backend_policies(options, collector_config, backend=backend)
+    if profile is not None:
+        _validate_profile_identities(profile, capability, candidate_topologies, policies, model_path, system, backend)
     topologies, topology_memory_admission = filter_memory_infeasible_topologies(
         backend=backend,
         model_path=model_path,
@@ -606,8 +657,9 @@ def build_collection_plan(
         capability=capability,
         topologies=candidate_topologies,
         max_new_tokens=options.prefill_sampling.max_total_prefill_tokens,
+        fpm_profile=profile,
+        max_batch_size=options.max_prefill_batch_size,
     )
-    policies = _backend_policies(options, collector_config, backend=backend)
     weight_quantization = capability.dtype.gemm_quant_mode
     runnable_dtype_pairs = {
         (decision.topology, estimate.kv_cache_dtype)
@@ -681,6 +733,10 @@ def build_collection_plan(
         "policies": [policy.to_dict() for policy in policies],
         "cells": [cell.to_dict() for cell in cells],
     }
+    profile_json = None
+    if profile is not None:
+        canonical["fpm_profile"] = profile.model_dump(mode="json")
+        profile_json = json.dumps(canonical["fpm_profile"], sort_keys=True, separators=(",", ":"))
     return FPMCollectionPlan(
         backend=backend,
         model_path=model_path,
@@ -695,4 +751,70 @@ def build_collection_plan(
         backend_policies=policies,
         cells=cells,
         sha256=_canonical_hash(canonical),
+        _fpm_profile_json=profile_json,
     )
+
+
+def _validate_profile_identities(
+    profile: FpmModelProfile,
+    capability: ModelCapabilityProfile,
+    topologies: tuple[ParallelTopology, ...],
+    policies: tuple[BackendPolicy, ...],
+    model_path: str,
+    system: str,
+    backend: str,
+) -> None:
+    """Require a resource declaration for every requested cell, before admission."""
+    if profile.architecture != capability.architecture:
+        raise ValueError(
+            "FPM collection profile architecture mismatch: "
+            f"checkpoint={capability.architecture!r}, profile={profile.architecture!r}"
+        )
+    identity_fields = (
+        "gemm_quant_mode",
+        "moe_quant_mode",
+        "fmha_quant_mode",
+        "comm_quant_mode",
+        "kv_cache_dtype",
+        *PARALLEL_AXES,
+        "moe_backend",
+        "attention_backend",
+        "enable_wideep",
+        "enable_eplb",
+    )
+    for topology in topologies:
+        deployment = profile.select(
+            model=model_path,
+            system=system,
+            backend=backend,
+            backend_version=capability.aic_database_version,
+            tp_size=topology.tp,
+            pp_size=topology.pp,
+            attention_dp_size=topology.dp,
+            moe_tp_size=topology.moe_tp,
+            moe_ep_size=topology.moe_ep,
+            cp_size=topology.cp,
+        )
+        for kv_dtype in capability.dtype.kv_cache_dtypes:
+            for policy in policies:
+                resolved = [
+                    capability.dtype.gemm_quant_mode,
+                    capability.dtype.moe_quant_mode,
+                    capability.dtype.fmha_by_kv_dtype[kv_dtype],
+                    capability.dtype.comm_quant_mode,
+                    kv_dtype,
+                    *(str(getattr(topology, axis)) for axis in PARALLEL_AXES),
+                    *(str(value) for value in backend_identity_columns(policy).values()),
+                ]
+                if deployment.match_identity() != resolved:
+                    conflicts = "; ".join(
+                        f"{name}: resolved={actual!r}, profile={expected!r}"
+                        for name, actual, expected in zip(
+                            identity_fields, resolved, deployment.match_identity(), strict=True
+                        )
+                        if actual != expected
+                    )
+                    raise ValueError(
+                        f"FPM collection profile identity mismatch: {conflicts}; supply a profile matching "
+                        "the collection configuration. The profile does not override serving dispatch."
+                    )

@@ -23,8 +23,44 @@ pub struct EstimatorConfig {
 pub struct OpLevelConfig {}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FpmInterpolationConfig {}
+#[serde(default, deny_unknown_fields)]
+pub struct FpmInterpolationConfig {
+    pub method: FpmInterpolationMethod,
+}
+
+/// Construction-time interpolation selection. Native operators receive only
+/// the resolved SOL or direct method and never change it during queries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FpmInterpolationMethod {
+    #[default]
+    Auto,
+    Sol,
+    Direct,
+}
+
+impl FpmInterpolationMethod {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Sol => "sol",
+            Self::Direct => "direct",
+        }
+    }
+
+    pub(crate) fn resolve(self, registered: Option<bool>) -> Result<Self, AicError> {
+        match (self, registered) {
+            (Self::Direct, None) => Err(AicError::InvalidEngineConfig(
+                "direct FPM interpolation requires an fpm_profile with identity and resource metadata".into(),
+            )),
+            (Self::Sol, Some(false)) => Err(AicError::InvalidEngineConfig(
+                "SOL interpolation requires a registered analytical model class; use estimator_config.fpm_interpolation.method='direct' with the supplied profile".into(),
+            )),
+            (Self::Auto, Some(false)) | (Self::Direct, Some(_)) => Ok(Self::Direct),
+            _ => Ok(Self::Sol),
+        }
+    }
+}
 
 /// These weights currently affect regression. Native correction keeps its
 /// established workload coordinates until a replacement is accuracy-qualified.

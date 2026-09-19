@@ -9,6 +9,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, StrictBool, field_validator, model_validator
 
+from aisimulate.fpm_profile import FpmModelProfile
+
 from .common import (
     ENGINE_MODEL_CONTROL_FIELDS,
     Choices,
@@ -17,6 +19,7 @@ from .common import (
     StrictModel,
     SystemsPath,
     is_active_engine_model_control,
+    requested_backend_version,
 )
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
@@ -387,6 +390,7 @@ class EstimatorPolicyConfig(StrictModel):
 class EnginePredictionConfig(EstimatorPolicyConfig):
     mode: EngineMode = "aggregated"
     model: str
+    fpm_profile: FpmModelProfile | None = None
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
@@ -415,6 +419,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
+        _validate_fpm_profile(self, {self.mode}, {self.backend})
         if self.decoder_replay:
             # Keep the pre-supervision configuration path lightweight. Import
             # the canonical model identity only when this runtime feature is
@@ -575,6 +580,7 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         default_factory=lambda: Choices[EngineMode](choices=["aggregated", "disaggregated"])
     )
     model: str
+    fpm_profile: FpmModelProfile | None = None
     hardware: str
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
     backend_version: str | dict[str, str] | None = None
@@ -594,6 +600,8 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
     @model_validator(mode="after")
     def _validate_roles(self) -> EngineRecommendationConfig:
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
+        backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
+        _validate_fpm_profile(self, modes, backends)
         _validate_worker_hardware(modes=modes, workers=self.workers)
         if "afd" in modes:
             if modes != {"afd"}:
@@ -616,6 +624,55 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
+
+
+def _validate_fpm_profile(engine, modes: set[str], backends: set[str]) -> None:
+    profile = engine.fpm_profile
+    if profile is None:
+        return
+    if engine.model != profile.model:
+        raise ValueError("engine.model must match engine.fpm_profile.model")
+    if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
+        raise ValueError("FPM profiles support vLLM aggregated/disaggregated decoder workers without AFD or encoders")
+    backend_version = requested_backend_version(engine.backend_version, "vllm")
+    if (
+        backend_version is None
+        or not backend_version.strip()
+        or backend_version.strip() in {"current", "previous", "next"}
+    ):
+        raise ValueError("engine.fpm_profile requires a literal engine.backend_version for vllm")
+    backend_version = backend_version.strip()
+    if isinstance(engine.backend_version, dict):
+        engine.backend_version = {**engine.backend_version, "vllm": backend_version}
+    else:
+        engine.backend_version = backend_version
+    if not any(deployment.backend_version == backend_version for deployment in profile.deployments):
+        raise ValueError("engine.backend_version does not match any FPM profile deployment")
+    if isinstance(engine.context_length, int) and engine.context_length > profile.context_length:
+        raise ValueError("engine.context_length exceeds the FPM profile context_length")
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None:
+            continue
+        if worker.timing.type != "default":
+            raise ValueError("engine.fpm_profile requires default timing for every worker")
+        if isinstance(worker, WorkerPredictionConfig):
+            parallel = worker.parallelism
+            deployment = profile.select(
+                model=engine.model,
+                system=worker.hardware or engine.hardware,
+                backend=engine.backend,
+                backend_version=backend_version,
+                tp_size=parallel.tensor,
+                pp_size=parallel.pipeline,
+                attention_dp_size=parallel.attention_data,
+                moe_tp_size=parallel.moe_tensor,
+                moe_ep_size=parallel.moe_expert,
+            )
+            deployment.resources.validate_envelope(
+                max_num_tokens=worker.scheduler.max_batched_tokens,
+                max_batch_size=worker.scheduler.max_sequences,
+            )
 
 
 def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:

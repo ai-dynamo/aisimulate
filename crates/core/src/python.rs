@@ -197,6 +197,10 @@ struct AicTimingConfig {
     #[serde(default)]
     forward_model: Option<String>,
     #[serde(default)]
+    fpm_profile: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(default, skip_serializing)]
+    fpm_interpolation: Option<crate::FpmInterpolationMethod>,
+    #[serde(default)]
     decoder_replay: bool,
     #[serde(default)]
     worker_type: Option<ForwardPassWorkerType>,
@@ -265,6 +269,15 @@ impl AicTimingConfig {
         } else {
             self.systems_paths.clone()
         };
+        let mut estimator_config = self.estimator_config.clone();
+        if let Some(legacy) = self.fpm_interpolation {
+            let method = &mut estimator_config.fpm_interpolation.method;
+            ensure!(
+                *method == crate::FpmInterpolationMethod::Auto || *method == legacy,
+                "fpm_interpolation conflicts with estimator_config.fpm_interpolation.method"
+            );
+            *method = legacy;
+        }
         Ok(ForwardPassPerfModelConfig {
             model: self.model.clone(),
             system: self.system.clone(),
@@ -287,7 +300,8 @@ impl AicTimingConfig {
             decoder_replay: self.decoder_replay,
             estimation_mode: mode,
             fallback_policy: self.fallback_policy,
-            estimator_config: self.estimator_config.clone(),
+            estimator_config,
+            fpm_profile: self.fpm_profile.clone(),
             database_mode: self.database_mode,
             transfer_policy: self.transfer_policy.clone(),
             systems_paths: roots,
@@ -377,8 +391,9 @@ impl AicTimingConfig {
         );
         if let (Some(moe_tp), Some(moe_ep)) = (self.moe_tp_size, self.moe_ep_size) {
             ensure!(
-                u64::from(self.tp) * u64::from(self.attention_dp)
-                    == u64::from(moe_tp) * u64::from(moe_ep),
+                self.fpm_profile.is_some()
+                    || u64::from(self.tp) * u64::from(self.attention_dp)
+                        == u64::from(moe_tp) * u64::from(moe_ep),
                 "AIC topology requires tp * attention_dp == moe_tp_size * moe_ep_size"
             );
         }
@@ -420,6 +435,14 @@ impl AicTimingModel {
         config.forward_model = None;
         config.fallback_policy = ForwardPassFallbackPolicy::Deny;
         config.estimator_config = provenance.config.estimator_config.clone();
+        config.fpm_profile = provenance.config.fpm_profile.clone();
+        config.fpm_interpolation = None;
+        config.gemm_dtype = provenance.config.gemm_quant_mode.clone();
+        config.moe_dtype = provenance.config.moe_quant_mode.clone();
+        config.fmha_dtype = provenance.config.fmha_quant_mode.clone();
+        config.kv_cache_dtype = provenance.config.kvcache_quant_mode.clone();
+        config.comm_dtype = provenance.config.comm_quant_mode.clone();
+        config.attention_backend = provenance.config.attention_backend.clone();
         let use_fpm_decode_totals =
             provenance.selected_estimation_mode == EstimationMode::FpmInterpolation;
         let native = model.native_engine().context(
@@ -673,6 +696,13 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
         kwargs.set_item("enable_eplb", config.enable_eplb)?;
         kwargs.set_item("wideep_num_slots", config.wideep_num_slots)?;
+        kwargs.set_item(
+            "fpm_profile",
+            config
+                .fpm_profile
+                .as_ref()
+                .map(|profile| serde_json::to_string(profile).expect("JSON profile")),
+        )?;
         kwargs.set_item(
             "cuda_graph_reserved_bytes",
             config.cuda_graph_reserved_bytes,
@@ -2206,6 +2236,8 @@ mod tests {
             strict_provenance: false,
             systems_path: None,
             forward_model: None,
+            fpm_profile: None,
+            fpm_interpolation: None,
             decoder_replay: false,
         }
     }
@@ -2726,10 +2758,20 @@ mod tests {
             "backend": "vllm",
             "system": "test-system",
             "tp": 1,
-            "forward_model": "fpm"
+            "forward_model": "fpm",
+            "fpm_profile": {"model": "test-model"},
+            "fpm_interpolation": "direct"
         }))
         .unwrap();
         assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+        assert_eq!(
+            config.fpm_profile,
+            Some(serde_json::from_value(serde_json::json!({"model": "test-model"})).unwrap())
+        );
+        assert_eq!(
+            config.fpm_interpolation,
+            Some(crate::FpmInterpolationMethod::Direct)
+        );
     }
 
     #[test]

@@ -27,6 +27,11 @@ def _absolute_systems_path(value: str) -> str:
 SystemsPath = Annotated[str, Field(strict=True, min_length=1), AfterValidator(_absolute_systems_path)]
 
 
+def requested_backend_version(versions: str | dict[str, str] | None, backend: str) -> str | None:
+    """Return the version pin for one backend; ``None`` means resolve latest."""
+    return versions.get(backend) if isinstance(versions, dict) else versions
+
+
 T = TypeVar("T")
 PositiveFiniteFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 PositiveStrictInt = Annotated[int, Field(strict=True, gt=0)]

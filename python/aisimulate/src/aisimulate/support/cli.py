@@ -17,6 +17,8 @@ from typing import Any, get_args
 import yaml
 from pydantic import ValidationError
 
+from aisimulate.config.common import load_yaml
+
 from .fpm import run_fpm
 from .plan import create_plan, request_id
 from .schema import FPMDeployment, SearchProfile, SloSpec, SupportIdentity, SupportRequest, WorkloadSpec
@@ -57,7 +59,11 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--tokenizer-revision")
     init.add_argument("--chat-template-revision")
     init.add_argument("--aisimulate-revision", help="Optional pinned AISimulate source revision.")
-    init.add_argument("--tensor-parallel", type=int, help="GPUs per pure-TP worker (default: 1).")
+    init.add_argument("--tensor-parallel", type=int, help="Attention tensor-parallel size (default: 1).")
+    init.add_argument("--attention-data-parallel", type=int, help="Attention data-parallel size (default: 1).")
+    init.add_argument("--moe-tensor-parallel", type=int, help="Expert tensor-parallel size (default: TP for MoE).")
+    init.add_argument("--moe-expert-parallel", type=int, help="Expert-parallel size (default: 1).")
+    init.add_argument("--fpm-profile", help="JSON/YAML identity and resource profile for class-independent FPM.")
     init.add_argument("--input-tokens", type=int, help="Input tokens per request (default: 1024).")
     init.add_argument("--output-tokens", type=int, help="Output tokens per request (default: 128).")
     init.add_argument("--concurrency", type=int, help="Concurrent requests (default: 1).")
@@ -121,6 +127,7 @@ def _request_from_args(args: argparse.Namespace) -> SupportRequest:
             "identity": identity,
             "workload": {**_values(args, WorkloadSpec), "slo": _values(args, SloSpec)},
             "search": _values(args, SearchProfile),
+            **({"fpm_profile": load_yaml(args.fpm_profile)} if getattr(args, "fpm_profile", None) else {}),
         }
     )
 
@@ -196,6 +203,9 @@ _CORRECTION_PROMPTS = {
     "max_candidates": ("Maximum candidates (1 or 2)", int),
     "objective": ("Recommendation objective", str),
     "seed": ("Recommendation search seed", int),
+    "attention_data_parallel": ("Attention data-parallel size", int),
+    "moe_tensor_parallel": ("Expert tensor-parallel size", int),
+    "moe_expert_parallel": ("Expert-parallel size", int),
 }
 
 
@@ -266,12 +276,12 @@ def _init(args: argparse.Namespace) -> int:
         f"Scope: FPM simulation for {request.identity.model} ({request.identity.model_kind}), "
         f"vLLM {request.identity.framework_version}, "
         f"{request.identity.gpu_count} {request.identity.gpu} GPU(s) on {request.identity.node_count} node(s); "
-        f"TP{request.search.tensor_parallel}, {workload.input_tokens}/{workload.output_tokens} tokens, "
+        f"{request.parallel_preset} {request.parallelism()}, {workload.input_tokens}/{workload.output_tokens} tokens, "
         f"concurrency {workload.concurrency}, {workload.request_count} requests, "
         f"up to {request.search.max_candidates} candidate(s)."
     )
     print(
-        "Request saved. Model integration, runtime compatibility and FPM data are unchecked; "
+        "Request saved. Model metadata/resources, runtime compatibility and FPM data are unchecked; "
         "accuracy is not assessed. Setup has not launched GPU work."
     )
     _print(
@@ -294,7 +304,8 @@ def _plan(args: argparse.Namespace) -> int:
             "candidate_count": plan["search"]["candidate_count"],
             "plan": str(root / "support-plan.json"),
             "commands": plan["outputs"]["commands"],
-            "prerequisites": "unchecked",
+            "prerequisites": "runtime_and_fpm_data_unchecked" if request.fpm_profile is not None else "unchecked",
+            **({"resources": "estimated_from_declared_profile"} if request.fpm_profile is not None else {}),
             "accuracy": "not assessed",
             "next": shlex.join(
                 [

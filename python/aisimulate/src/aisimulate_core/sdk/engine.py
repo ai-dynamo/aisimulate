@@ -12,6 +12,10 @@ layer (``sdk/models/*.py``) to build a model, walks its
 plain-data ``OpSpec`` wire form, and ships the whole thing across the boundary
 as a bincode-serialised ``EngineSpec``.
 
+With direct FPM interpolation, an explicit ``FpmModelProfile`` supplies identity
+and resources instead. Compilation emits whole-forward timing operations with
+empty SOL lists and never constructs an analytical model.
+
 Since the pyo3 op unification the ``Operation`` objects the model layer
 builds ARE engine ops (Rust pyclasses; ``operations/*.py`` keeps thin
 data-plane shells). Serialization is therefore Rust-to-Rust:
@@ -47,6 +51,11 @@ import aisimulate_core
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
+from aisimulate_core.sdk.fpm_profile import (
+    FpmDeploymentProfile,
+    FpmModelProfile,
+    load_fpm_profile,
+)
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
 from aisimulate_core.sdk.operations import FPMForwardOp
@@ -131,6 +140,8 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 18 (speculation migration): Generation attention gained verify_query_tokens
 #   and FPM forward gained verify_width, both positional bincode fields.
 #   TokenScale was appended to remap draft query widths before op lookup.
+# - 19 (DeepSeek-V4.1): attention gained the backend KV cache layout.
+# - 20: FPM forward gained the SOL/direct interpolation selector.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
@@ -167,6 +178,7 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
             # draft scheme is materialized.
             "verify_width": int(getattr(op, "_verify_width", 1) or 1),
+            "interpolation": "sol",
             "sol_ops": [json.loads(_as_engine_op(c)._spec_json()) for c in op._sol_ops],
         }
     }
@@ -432,6 +444,9 @@ def compile_engine(
     systems_path: str | None = None,
     forward_model: str | None = None,
     decoder_replay: bool = False,
+    fpm_profile: dict | str | FpmModelProfile | None = None,
+    fpm_interpolation: str | None = None,
+    cp_size: int = 1,
     database_mode: str | None = None,
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
@@ -444,6 +459,13 @@ def compile_engine(
     inside ``get_model``) to build the model, then walks ``encoder_ops`` (vision
     decomposed), ``context_ops`` and ``generation_ops`` into OpSpecs and returns
     the bytes produced by the Rust ``engine_spec_bincode_from_json`` pyfunction.
+
+    ``fpm_profile`` supplies independent decoder metadata and rank-local
+    resource bounds. This is internal compilation plumbing: the canonical
+    Rust constructor supplies an already resolved ``sol`` or ``direct`` method.
+    Profile precision is authoritative on either route, with
+    conflicting caller overrides rejected. ``cp_size`` completes the profile
+    identity; profiles currently support only CP1/PP1 and no speculation.
     """
     if not isinstance(decoder_replay, bool):
         raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
@@ -451,6 +473,60 @@ def compile_engine(
         raise InvalidEngineConfigurationError(
             f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
         )
+    if type(cp_size) is not int or cp_size != 1:
+        raise ValueError("cp_size must be the integer 1; this SDK entry point does not support context parallelism")
+    profile = load_fpm_profile(fpm_profile) if fpm_profile is not None else None
+    if fpm_interpolation not in (None, "sol", "direct") or (profile is not None and fpm_interpolation is None):
+        raise InvalidEngineConfigurationError("FPM compilation requires a resolved method from best_available(config)")
+    if fpm_interpolation == "direct" and profile is None:
+        raise InvalidEngineConfigurationError("direct FPM interpolation requires an fpm_profile")
+    interpolation = fpm_interpolation
+    deployment = None
+    if profile is not None:
+        if nextn or speculation is not None:
+            raise InvalidEngineConfigurationError("FPM profiles support plain autoregressive decoder-only execution")
+        literal_version = _literal_backend_version(system, backend, backend_version, systems_path, None)
+        deployment = profile.select(
+            model=model_path,
+            system=system,
+            backend=backend,
+            backend_version=literal_version,
+            tp_size=tp_size,
+            pp_size=pp_size,
+            attention_dp_size=attention_dp_size,
+            moe_tp_size=moe_tp_size,
+            moe_ep_size=moe_ep_size,
+            cp_size=cp_size,
+        )
+        deployment.validate_overrides(
+            gemm_quant_mode=gemm_quant_mode,
+            moe_quant_mode=moe_quant_mode,
+            kvcache_quant_mode=kvcache_quant_mode,
+            fmha_quant_mode=fmha_quant_mode,
+            comm_quant_mode=comm_quant_mode,
+            attention_backend=attention_backend,
+            moe_backend=moe_backend,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
+        )
+        if forward_model == "fpm" and interpolation == "direct":
+            spec_json = _direct_fpm_spec_json(
+                profile,
+                deployment,
+                kv_block_size=kv_block_size,
+                systems_path=systems_path,
+                database_mode=database_mode,
+                shared_layer=shared_layer,
+                transfer_policy=transfer_policy,
+                strict_provenance=strict_provenance,
+            )
+            return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
+        gemm_quant_mode = deployment.gemm_quant_mode
+        moe_quant_mode = deployment.moe_quant_mode
+        kvcache_quant_mode = deployment.kv_cache_dtype
+        fmha_quant_mode = deployment.fmha_quant_mode
+        comm_quant_mode = deployment.comm_quant_mode
+        attention_backend = None if deployment.attention_backend == "auto" else deployment.attention_backend
 
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
@@ -490,6 +566,8 @@ def compile_engine(
             raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
     model_config.decoder_replay = decoder_replay
     resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
+    if deployment is not None:
+        model_config.moe_backend = None if deployment.moe_backend == "auto" else deployment.moe_backend
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the
@@ -501,6 +579,12 @@ def compile_engine(
             model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
         )
     model = get_model(model_path, model_config, backend)
+    if deployment is not None and forward_model == "fpm":
+        for op in (*model.context_ops, *model.generation_ops):
+            if not isinstance(op, FPMForwardOp) or list(op._match_identity) != deployment.match_identity():
+                raise InvalidEngineConfigurationError(
+                    "registered SOL construction does not preserve the requested FPM profile identity"
+                )
     database = _maybe_load_database(
         system,
         backend,
@@ -528,7 +612,82 @@ def compile_engine(
         strict_provenance=strict_provenance,
     )
 
+    if profile is not None:
+        spec = json.loads(spec_json)
+        spec["engine"]["extra"].update(
+            fpm_profile=profile.model_dump_json(),
+            estimator_config=json.dumps({"fpm_interpolation": {"method": interpolation}}),
+        )
+        spec_json = json.dumps(spec)
+
     return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
+
+
+def _direct_fpm_spec_json(
+    profile: FpmModelProfile,
+    deployment: FpmDeploymentProfile,
+    *,
+    kv_block_size: int | None,
+    systems_path: str | None,
+    database_mode: str | None,
+    shared_layer: bool | None,
+    transfer_policy: str | list[str] | None,
+    strict_provenance: bool | None,
+) -> str:
+    """Build whole-forward timing operations from metadata, without a graph."""
+    if _database_mode_name(None, database_mode) != "SILICON":
+        raise ValueError("direct FPM interpolation requires database_mode='SILICON'; it has no analytical SOL model")
+    engine = {
+        "schema_version": ENGINE_CONFIG_SCHEMA_VERSION,
+        "model_name": profile.model,
+        "system_name": deployment.system,
+        "systems_path": systems_path,
+        "backend": deployment.backend,
+        "backend_version": deployment.backend_version,
+        "forward_model": "fpm",
+        "kv_block_size": kv_block_size,
+        "tp_size": deployment.tp,
+        "pp_size": deployment.pp,
+        "attention_dp_size": deployment.dp,
+        "moe_tp_size": deployment.moe_tp,
+        "moe_ep_size": deployment.moe_ep,
+        "cp_size": deployment.cp,
+        "weight_dtype": _rust_quant_to_dtype(deployment.gemm_quant_mode),
+        "moe_dtype": _rust_moe_quant_to_dtype(deployment.moe_quant_mode),
+        "activation_dtype": _rust_quant_to_dtype(deployment.fmha_quant_mode),
+        "kv_cache_dtype": _rust_quant_to_dtype(deployment.kv_cache_dtype),
+        "enable_shared_layer": shared_layer,
+        "strict_provenance": bool(strict_provenance),
+        "database_mode": "SILICON",
+        "transfer_policy": _transfer_policy_tokens(None, transfer_policy),
+        "extra": {
+            "fpm_profile": profile.model_dump_json(),
+            "estimator_config": json.dumps({"fpm_interpolation": {"method": "direct"}}),
+        },
+    }
+
+    def phase_op(phase: str) -> dict:
+        return {
+            "FpmForward": {
+                "name": f"fpm_forward_{phase}",
+                "phase": phase,
+                "model_path": profile.model,
+                "match_identity": deployment.match_identity(),
+                "weight_bytes": deployment.resources.weights_bytes,
+                "verify_width": 1,
+                "sol_ops": [],
+                "interpolation": "direct",
+            }
+        }
+
+    return json.dumps(
+        {
+            "schema_version": ENGINE_SPEC_SCHEMA_VERSION,
+            "engine": engine,
+            "context_ops": [phase_op("prefill")],
+            "generation_ops": [phase_op("decode")],
+        }
+    )
 
 
 def build_ops_json(ops: Any) -> str:

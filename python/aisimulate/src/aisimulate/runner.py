@@ -91,6 +91,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
+    "fpm_profile": ("fpm_profile", "aic_fpm_profile"),
     "moe_backend": ("aic_moe_backend",),
     "attention_backend": ("aic_attention_backend",),
     "enable_eplb": ("aic_enable_eplb",),
@@ -1375,6 +1376,10 @@ def _materialize_engine_role(
         value = rank.pop(configured[0])
         if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
             value = _positive_int(value, f"engine provider {role} {target}")
+        elif target == "fpm_profile":
+            from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+            value = load_fpm_profile(value).model_dump(mode="json")
         elif target in {"enable_eplb", "decoder_replay", "enable_shared_layer", "strict_provenance"}:
             if not isinstance(value, bool):
                 raise ValueError(f"engine provider {role} {target} must be a boolean")

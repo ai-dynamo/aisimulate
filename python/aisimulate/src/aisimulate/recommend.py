@@ -151,8 +151,16 @@ def recommendation_to_sweeper(
         "hardware_sku": hardware,
         "gpu_budget": optimization.constraints.max_candidate_gpus,
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
-        "context_length": (resolve_model_context_length(model) if context == "max" else context),
+        "context_length": (
+            config.engine.fpm_profile.context_length
+            if context == "max" and config.engine.fpm_profile is not None
+            else resolve_model_context_length(model)
+            if context == "max"
+            else context
+        ),
     }
+    if engine.get("fpm_profile") is not None:
+        search_space["fpm_profile"] = engine["fpm_profile"]
     for name in (
         "database_mode",
         "transfer_policy",
@@ -793,6 +801,8 @@ def _candidate_prediction(
     }
     if sample.get("systems_paths") is not None:
         engine["systems_paths"] = sample["systems_paths"]
+    if sample.get("fpm_profile") is not None:
+        engine["fpm_profile"] = deepcopy(sample["fpm_profile"])
     for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
         if sample.get(name) is not None:
             engine[name] = sample[name]

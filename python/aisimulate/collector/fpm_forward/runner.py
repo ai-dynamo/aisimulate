@@ -503,6 +503,7 @@ class KubernetesCellRunner:
         cell_id: str,
         plan_sha256: str,
         attempt_id: str,
+        expected_backend_version: str | None = None,
     ) -> None:
         """Clear stale results and bind every Pod to this Collector attempt."""
 
@@ -525,6 +526,14 @@ class KubernetesCellRunner:
             f"path = pathlib.Path('{FPM_RESULTS_DIR}') / sys.argv[2]; "
             "path.write_text(json.dumps(payload, sort_keys=True) + '\\n')"
         )
+        version_args = []
+        if expected_backend_version is not None:
+            script += (
+                "\nactual = payload['runtime']['backend_version']\n"
+                "if actual != sys.argv[3]:\n"
+                "    raise RuntimeError(f'FPM profile runtime mismatch: actual={actual!r}, expected={sys.argv[3]!r}')\n"
+            )
+            version_args.append(expected_backend_version)
         for pod in pods:
             self._exec_checked(
                 pod,
@@ -546,7 +555,7 @@ class KubernetesCellRunner:
             )
             self._exec_checked(
                 pod,
-                ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME],
+                ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME, *version_args],
                 timeout=60,
             )
 
@@ -967,6 +976,16 @@ def _cell_generator_overrides(
                     "2",
                 ]
             )
+    if getattr(plan, "fpm_profile", None) is not None:
+        deployment_profile = plan.deployment_profile(cell)
+        assert deployment_profile is not None
+        resources = deployment_profile.resources
+        # Native point generation sees the declared scheduler bounds before
+        # any cases are queued. Never discard runtime cases to fit a profile.
+        if "--max-num-batched-tokens" not in scheduler_args:
+            scheduler_args.extend(["--max-num-batched-tokens", str(resources.max_num_tokens)])
+        if "--max-num-seqs" not in scheduler_args:
+            scheduler_args.extend(["--max-num-seqs", str(resources.max_batch_size)])
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
     if architecture == "GlmMoeDsaForCausalLM":
@@ -1645,11 +1664,17 @@ def _run_collection_impl(
                     runtime_preflight,
                 ],
             )
+            profile_version = (
+                {"expected_backend_version": plan.capability.aic_database_version}
+                if getattr(plan, "fpm_profile", None) is not None
+                else {}
+            )
             resource.prepare_attempt(
                 pods,
                 cell_id=cell.cell_id,
                 plan_sha256=plan.sha256,
                 attempt_id=attempt_id,
+                **profile_version,
             )
             phase_marks["stage_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()

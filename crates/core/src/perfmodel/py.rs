@@ -1055,6 +1055,9 @@ struct EngineBuildRequest {
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
+    fpm_profile: Option<String>,
+    fpm_interpolation: Option<String>,
+    cp_size: u32,
     decoder_replay: bool,
     database_mode: Option<String>,
     shared_layer: Option<bool>,
@@ -1104,6 +1107,9 @@ impl AicEngineBuilder {
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
+                fpm_profile: None,
+                fpm_interpolation: None,
+                cp_size: 1,
                 decoder_replay: false,
                 database_mode: None,
                 shared_layer: None,
@@ -1323,7 +1329,7 @@ mod builder_tests {
             "enable_shared_layer": true,
             "transfer_policy": ["xshape", "xquant"],
             "strict_provenance": true,
-            "extra": {}
+            "extra": {"fpm_profile": "{\"model\":\"model\"}", "fpm_interpolation": "direct"}
         }))
         .expect("deserialize engine config");
 
@@ -1336,6 +1342,9 @@ mod builder_tests {
             Some(["xshape".to_owned(), "xquant".to_owned()].as_slice())
         );
         assert_eq!(request.strict_provenance, Some(true));
+        assert_eq!(request.fpm_profile.as_deref(), Some(r#"{"model":"model"}"#));
+        assert_eq!(request.fpm_interpolation.as_deref(), Some("direct"));
+        assert_eq!(request.cp_size, 1);
     }
 
     #[test]
@@ -1365,6 +1374,12 @@ fn build_engine_from_request(request: EngineBuildRequest) -> Result<AicEngine, A
 /// The public builder and [`compile_engine_to_engine`] both use this function,
 /// so Python argument names and defaults cannot drift.
 fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, AicError> {
+    if request.cp_size != 1 {
+        return Err(AicError::InvalidEngineConfig(
+            "cp_size must be the integer 1; this SDK entry point does not support context parallelism"
+                .to_string(),
+        ));
+    }
     if request.database_mode.as_deref() == Some(DatabaseMode::SolFull.as_str()) {
         return Err(AicError::InvalidEngineConfig(
             "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
@@ -1398,6 +1413,9 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("enable_eplb", request.enable_eplb)?;
         kwargs.set_item("wideep_num_slots", request.wideep_num_slots)?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
+        kwargs.set_item("fpm_profile", request.fpm_profile.as_deref())?;
+        kwargs.set_item("fpm_interpolation", request.fpm_interpolation.as_deref())?;
+        kwargs.set_item("cp_size", request.cp_size)?;
         kwargs.set_item("decoder_replay", request.decoder_replay)?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
         kwargs.set_item("shared_layer", request.shared_layer)?;
@@ -1458,6 +1476,34 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
 }
 
+/// Profile schema/identity facts supplied by Python without choosing an estimator.
+#[derive(serde::Deserialize)]
+pub(crate) struct ForwardPassProfileFacts {
+    pub profile: serde_json::Map<String, serde_json::Value>,
+    pub registered: bool,
+    pub gemm_quant_mode: String,
+    pub moe_quant_mode: String,
+    pub fmha_quant_mode: String,
+    pub kvcache_quant_mode: String,
+    pub comm_quant_mode: String,
+    pub attention_backend: String,
+}
+
+pub(crate) fn validate_forward_pass_profile(
+    config: &crate::ForwardPassPerfModelConfig,
+) -> Result<ForwardPassProfileFacts, AicError> {
+    let json = serde_json::to_string(config)
+        .map_err(|error| AicError::InvalidEngineConfig(error.to_string()))?;
+    let facts = Python::with_gil(|py| -> PyResult<String> {
+        py.import("aisimulate_core.sdk.fpm_profile")?
+            .call_method1("_validate_forward_pass_profile", (json,))?
+            .extract()
+    })
+    .map_err(|error| AicError::InvalidEngineConfig(format!("fpm_profile: {error}")))?;
+    serde_json::from_str(&facts)
+        .map_err(|error| AicError::InvalidEngineConfig(format!("fpm_profile facts: {error}")))
+}
+
 /// Compile the selected canonical native estimator through the shared builder.
 pub(crate) fn compile_forward_pass_model_to_engine(
     config: &crate::ForwardPassPerfModelConfig,
@@ -1492,6 +1538,19 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         kv_block_size: config.kv_block_size,
         systems_path: Some(systems_path.to_owned()),
         forward_model: Some(forward_model.to_owned()),
+        fpm_profile: config
+            .fpm_profile
+            .as_ref()
+            .map(|profile| serde_json::to_string(profile).expect("JSON profile")),
+        fpm_interpolation: Some(
+            config
+                .estimator_config
+                .fpm_interpolation
+                .method
+                .as_str()
+                .to_owned(),
+        ),
+        cp_size: 1,
         decoder_replay: config.decoder_replay,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
@@ -1515,7 +1574,36 @@ pub(crate) fn compile_engine_to_engine(
     config: &EngineConfig,
     systems_path: Option<&str>,
 ) -> Result<Engine, AicError> {
-    compile_engine_from_request(engine_build_request(config, systems_path))
+    let mut request = engine_build_request(config, systems_path);
+    if let Some(value) = config.extra.get("estimator_config") {
+        let controls: crate::EstimatorConfig = serde_json::from_str(value)
+            .map_err(|error| AicError::InvalidEngineConfig(format!("estimator_config: {error}")))?;
+        controls.validate()?;
+        request.fpm_interpolation = Some(controls.fpm_interpolation.method.as_str().to_owned());
+    }
+    if config.extra.contains_key("fpm_profile") {
+        let mut modes = Python::with_gil(|py| fpm_profile_quantization(py, config))
+            .map_err(|e| AicError::InvalidEngineConfig(format!("FPM profile quantization: {e}")))?;
+        request.gemm_quant_mode = modes.remove("gemm_quant_mode");
+        request.moe_quant_mode = modes.remove("moe_quant_mode");
+        request.kvcache_quant_mode = modes.remove("kvcache_quant_mode");
+        request.fmha_quant_mode = modes.remove("fmha_quant_mode");
+        request.comm_quant_mode = modes.remove("comm_quant_mode");
+    }
+    compile_engine_from_request(request)
+}
+
+/// Restore profile precision shared by the native timing and memory bridges.
+/// Python checks the wire dtypes before recovering exact quantization modes.
+pub(crate) fn fpm_profile_quantization(
+    py: Python<'_>,
+    config: &EngineConfig,
+) -> PyResult<std::collections::BTreeMap<String, String>> {
+    let config_json = serde_json::to_string(config)
+        .map_err(|e| PyValueError::new_err(format!("invalid engine config: {e}")))?;
+    py.import("aisimulate_core.sdk.fpm_profile")?
+        .call_method1("_quantization_from_engine_config", (config_json,))?
+        .extract()
 }
 
 fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> EngineBuildRequest {
@@ -1553,6 +1641,9 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
+        fpm_profile: config.extra.get("fpm_profile").cloned(),
+        fpm_interpolation: config.extra.get("fpm_interpolation").cloned(),
+        cp_size: config.parallel.cp_size.unwrap_or(1),
         decoder_replay: config.decoder_replay,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
@@ -1671,8 +1762,9 @@ impl PyForwardPassPerfModel {
     /// Expand and validate the canonical schema without constructing an engine.
     #[staticmethod]
     fn normalize_config(config_json: &str) -> PyResult<String> {
-        let config = parse_forward_pass_config(config_json)?;
-        config.validate().map_err(aic_to_py)?;
+        let config = parse_forward_pass_config(config_json)?
+            .resolve()
+            .map_err(aic_to_py)?;
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -1702,10 +1794,43 @@ impl PyForwardPassPerfModel {
             .transpose()
             .map_err(|e| PyValueError::new_err(e.to_string()))?
             .unwrap_or_default();
-        let request = engine_build_request(
+        let mut request = engine_build_request(
             &legacy,
             legacy.systems_path.as_ref().and_then(|path| path.to_str()),
         );
+        if legacy.extra.contains_key("fpm_profile") {
+            let mut modes = Python::with_gil(|py| fpm_profile_quantization(py, &legacy))?;
+            request.gemm_quant_mode = modes.remove("gemm_quant_mode");
+            request.moe_quant_mode = modes.remove("moe_quant_mode");
+            request.fmha_quant_mode = modes.remove("fmha_quant_mode");
+            request.kvcache_quant_mode = modes.remove("kvcache_quant_mode");
+            request.comm_quant_mode = modes.remove("comm_quant_mode");
+        }
+        if request.cp_size != 1 {
+            return Err(PyValueError::new_err(
+                "cp_size must be the integer 1; this SDK entry point does not support context parallelism",
+            ));
+        }
+        let mut estimator_config =
+            crate::EstimatorConfig::from_legacy(options).map_err(aic_to_py)?;
+        if let Some(value) = legacy.extra.get("estimator_config") {
+            estimator_config = serde_json::from_str(value)
+                .map_err(|e| PyValueError::new_err(format!("invalid estimator_config: {e}")))?;
+        }
+        if let Some(value) = request.fpm_interpolation.as_ref() {
+            let method =
+                serde_json::from_value(serde_json::Value::String(value.clone())).map_err(|e| {
+                    PyValueError::new_err(format!("invalid FPM interpolation method: {e}"))
+                })?;
+            if estimator_config.fpm_interpolation.method != crate::FpmInterpolationMethod::Auto
+                && estimator_config.fpm_interpolation.method != method
+            {
+                return Err(PyValueError::new_err(
+                    "fpm_interpolation conflicts with estimator_config.fpm_interpolation.method",
+                ));
+            }
+            estimator_config.fpm_interpolation.method = method;
+        }
         let worker_type = serde_json::from_value(serde_json::Value::String(worker_type.to_owned()))
             .map_err(|e| PyValueError::new_err(format!("invalid worker_type: {e}")))?;
         let estimation_mode = match request.forward_model.as_deref().unwrap_or("op_level") {
@@ -1723,6 +1848,12 @@ impl PyForwardPassPerfModel {
             backend: legacy.backend,
             worker_type,
             backend_version: request.backend_version,
+            fpm_profile: request
+                .fpm_profile
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+                .map_err(|e| PyValueError::new_err(format!("invalid fpm_profile: {e}")))?,
             tp: request.tp_size,
             pp: request.pp_size,
             attention_dp: request.attention_dp_size,
@@ -1746,7 +1877,7 @@ impl PyForwardPassPerfModel {
             } else {
                 crate::ForwardPassFallbackPolicy::Deny
             },
-            estimator_config: crate::EstimatorConfig::from_legacy(options).map_err(aic_to_py)?,
+            estimator_config,
             attention_backend: request.attention_backend,
             moe_backend: request.moe_backend,
             enable_eplb: request.enable_eplb,

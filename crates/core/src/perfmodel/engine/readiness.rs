@@ -10,6 +10,7 @@ use crate::AicError;
 use crate::common::enums::{DatabaseMode, GemmQuantMode, TransferKind};
 use crate::config::PerfSource;
 use crate::operators::Op;
+use crate::operators::fpm_forward::{FpmForwardOp, FpmInterpolation};
 use crate::perf_database::{PerfDatabase, kernel_source_ok, parquet_loader::PerfReader};
 
 pub(super) fn validate<'a>(
@@ -22,6 +23,23 @@ pub(super) fn validate<'a>(
     };
     for op in ops {
         check.op(op)?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_fpm(db: &PerfDatabase, fpm: &FpmForwardOp) -> Result<(), AicError> {
+    let cell = db
+        .fpm_forward
+        .select_cell(&fpm.match_identity, &fpm.model_path)?;
+    if fpm.interpolation == FpmInterpolation::Direct
+        && cell.direct_prefill.is_empty()
+        && cell.direct_decode.is_empty()
+    {
+        return Err(AicError::PerfDatabase(format!(
+            "direct FPM interpolation has no genuine measurements for {:?} at {}",
+            fpm.model_path,
+            db.data_root.display(),
+        )));
     }
     Ok(())
 }
@@ -143,12 +161,7 @@ impl Availability<'_> {
                 }
             }
             TokenScale(scale) => return self.op(&scale.op),
-            FpmForward(fpm) => {
-                self.db
-                    .fpm_forward
-                    .select_cell(&fpm.match_identity, &fpm.model_path)?;
-                return Ok(());
-            }
+            FpmForward(fpm) => return validate_fpm(self.db, fpm),
             // These families have no analytic/empirical implementation.
             MoeAllToAll(_) | MoeExpertCompute(_) | Dsv4MegaMoe(_)
                 if !matches!(

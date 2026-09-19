@@ -30,6 +30,17 @@ def fpm_cli_args(
     checkpoint = Path(checkpoint_dir).expanduser().resolve() if checkpoint_dir else root / "fpm-checkpoint"
     if checkpoint != root / "fpm-checkpoint" and root / "fpm-checkpoint" not in checkpoint.parents:
         raise ValueError("checkpoint_dir must stay within the plan's fpm-checkpoint directory")
+    profile = request.profile_deployment()
+    max_prefill_tokens = max(2, request.workload.input_tokens * request.workload.concurrency)
+    max_prefill_batch = request.workload.concurrency
+    if profile is not None:
+        scheduler = request.scheduler_limits()
+        max_prefill_batch = scheduler["max_sequences"]
+        max_prefill_tokens = min(
+            max(2, request.workload.input_tokens * max_prefill_batch), scheduler["max_batched_tokens"]
+        )
+        if max_prefill_tokens < 2:
+            raise ValueError("FPM collection requires a rank-local token limit of at least 2 in the resource profile")
     command = [
         "python3",
         "-m",
@@ -41,15 +52,15 @@ def fpm_cli_args(
         "--gpu",
         request.identity.gpu,
         "--fpm-max-gpus",
-        str(request.search.tensor_parallel),
+        str(request.worker_gpus),
         "--fpm-gpu-counts",
-        str(request.search.tensor_parallel),
+        str(request.worker_gpus),
         "--fpm-parallel-presets",
-        "pure_tp" if request.identity.model_kind == "moe" else "tp",
+        request.parallel_preset,
         "--fpm-max-prefill-isl",
-        str(max(2, request.workload.input_tokens * request.workload.concurrency)),
+        str(max_prefill_tokens),
         "--fpm-max-prefill-batch-size",
-        str(request.workload.concurrency),
+        str(max_prefill_batch),
         "--checkpoint-dir",
         str(checkpoint),
         "--fpm-artifact-root",
@@ -57,6 +68,23 @@ def fpm_cli_args(
         "--fpm-database-root",
         str(root / "systems/data"),
     ]
+    if profile is not None:
+        command.extend(
+            (
+                "--model-architecture",
+                request.fpm_profile.architecture,
+                "--fpm-weight-quantizations",
+                profile.gemm_quant_mode,
+                "--fpm-kv-cache-dtypes",
+                profile.kv_cache_dtype,
+                "--fpm-attention-backend",
+                profile.attention_backend,
+                "--fpm-moe-backend",
+                profile.moe_backend,
+                "--fpm-model-profile",
+                str(root / "fpm-model-profile.json"),
+            )
+        )
     if request.identity.sm is not None:
         command.extend(("--sm", str(request.identity.sm)))
     if deployment is not None:

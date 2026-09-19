@@ -8,9 +8,10 @@
 use std::path::Path;
 
 use aisimulate_core::{
-    AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode, ForwardPassPerfModelConfig, EstimatorConfig,
-    ForwardPassPerfModel, ForwardPassRegressionStoreDiagnostics,
-    ForwardPassWorkerType, KvCacheEstimateRequest,
+    AicEngine, AicEngineBuilder, AicError, BackendKind, DatabaseMode, EstimationMode,
+    EstimatorConfig, ForwardPassPerfModel, ForwardPassPerfModelConfig,
+    ForwardPassRegressionStoreDiagnostics, ForwardPassWorkerType, FpmInterpolationMethod,
+    KvCacheEstimateRequest,
 };
 
 /// Compile the ergonomic engine builder without starting embedded Python.
@@ -44,7 +45,12 @@ pub fn build_engine(builder: AicEngineBuilder) -> Result<AicEngine, AicError> {
 
 /// Compile the forward-pass model's public constructor and telemetry type.
 pub fn regression_model() -> Result<ForwardPassPerfModel, AicError> {
-    let mut config = ForwardPassPerfModelConfig::new("test/model", "test-system", BackendKind::Vllm, ForwardPassWorkerType::Aggregated);
+    let mut config = ForwardPassPerfModelConfig::new(
+        "test/model",
+        "test-system",
+        BackendKind::Vllm,
+        ForwardPassWorkerType::Aggregated,
+    );
     config.estimation_mode = EstimationMode::FpmRegression;
     config.estimator_config = regression_options();
     ForwardPassPerfModel::best_available(config)
@@ -66,11 +72,24 @@ pub fn regression_options() -> EstimatorConfig {
     config
 }
 
-pub fn best_available_model(config: ForwardPassPerfModelConfig) -> Result<ForwardPassPerfModel, AicError> {
+/// Independent profile and interpolation method use the one construction API.
+pub fn profile_model(
+    mut config: ForwardPassPerfModelConfig,
+) -> Result<ForwardPassPerfModel, AicError> {
+    config.estimator_config.fpm_interpolation.method = FpmInterpolationMethod::Direct;
     ForwardPassPerfModel::best_available(config)
 }
 
-pub fn best_available_model_with_roots(mut config: ForwardPassPerfModelConfig, systems_root: impl AsRef<Path>) -> Result<ForwardPassPerfModel, AicError> {
+pub fn best_available_model(
+    config: ForwardPassPerfModelConfig,
+) -> Result<ForwardPassPerfModel, AicError> {
+    ForwardPassPerfModel::best_available(config)
+}
+
+pub fn best_available_model_with_roots(
+    mut config: ForwardPassPerfModelConfig,
+    systems_root: impl AsRef<Path>,
+) -> Result<ForwardPassPerfModel, AicError> {
     config.systems_paths = vec![systems_root.as_ref().to_path_buf()];
     ForwardPassPerfModel::best_available(config)
 }
@@ -85,9 +104,9 @@ pub fn accept_kv_request(request: KvCacheEstimateRequest) -> KvCacheEstimateRequ
 mod tests {
     use super::*;
     use aisimulate_core::{
-        ForwardPassMetrics, ForwardPassRegressionWorkloadKind, TimingEvidenceSource,
-        TimingEvidenceSummary, TimingOperationEvidence, TimingPhaseEvidence,
-        ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION,
+        ENGINE_CONFIG_SCHEMA_VERSION, ENGINE_SPEC_SCHEMA_VERSION, FPM_VERSION, ForwardPassMetrics,
+        ForwardPassRegressionWorkloadKind, TimingEvidenceSource, TimingEvidenceSummary,
+        TimingOperationEvidence, TimingPhaseEvidence,
     };
 
     #[test]
@@ -120,7 +139,9 @@ mod tests {
         // v17: ContextAttentionOp gained apply_rope (Muse Glimmer review
         //     follow-up) — a positional bincode op-layout change.
         // v18: speculative attention width fields and FpmForward verify_width.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 19);
+        // v19: Dsv41Attention gained its backend KV cache layout.
+        // v20: FpmForward gained the SOL/direct interpolation selector.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 20);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
@@ -200,9 +221,11 @@ mod tests {
             stores[0].workload_kind,
             ForwardPassRegressionWorkloadKind::PureDecode
         );
-        assert!(stores
-            .iter()
-            .all(|store| !store.ready && store.retained_observations == 0));
+        assert!(
+            stores
+                .iter()
+                .all(|store| !store.ready && store.retained_observations == 0)
+        );
         let _roles = [
             ForwardPassWorkerType::Prefill,
             ForwardPassWorkerType::Decode,
