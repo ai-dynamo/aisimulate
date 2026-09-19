@@ -111,6 +111,12 @@ impl Availability<'_> {
             DatabaseMode::Sol | DatabaseMode::SolFull
         );
         match op {
+            Dsv41Stage(stage) => {
+                for child in &stage.children {
+                    self.op(child)?;
+                }
+                return Ok(());
+            }
             Overlap(group) => {
                 for child in group.group_a.iter().chain(&group.group_b) {
                     self.op(child)?;
@@ -272,7 +278,20 @@ impl Availability<'_> {
             }
             Embedding(_) | Elementwise(_) | P2P(_) | CustomAllReduce(_) | Nccl(_)
             | MoeDispatch(_) => Ok(()),
-            Overlap(_) | Fallback(_) | TokenScale(_) | FpmForward(_) => Ok(()),
+            Dsv41Attention(_) | Dsv41Mhc(_) | Dsv41Engram(_) | Dsv41Linear(_) => {
+                match self.db.database_mode {
+                    DatabaseMode::Silicon => Err(AicError::PerfDatabase(format!(
+                        "DeepSeek-V4.1 {} has no measured SILICON data",
+                        op.name()
+                    ))),
+                    DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(format!(
+                        "DeepSeek-V4.1 {} has no empirical anchor",
+                        op.name()
+                    ))),
+                    _ => Ok(()),
+                }
+            }
+            Overlap(_) | Fallback(_) | TokenScale(_) | FpmForward(_) | Dsv41Stage(_) => Ok(()),
         }
     }
 }
@@ -333,6 +352,40 @@ mod tests {
     fn table(path: &std::path::Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         write_parquet(path, &[Col::Str("kernel_source", vec!["fixture"])]);
+    }
+
+    #[test]
+    fn dsv41_stage_preserves_analytic_only_readiness() {
+        use crate::operators::dsv41::{Dsv41LinearOp, Dsv41StageOp};
+        let root = systems();
+        let stage = Op::Dsv41Stage(Dsv41StageOp {
+            name: "stage".into(),
+            is_context: true,
+            decoder_replay: true,
+            bounded: true,
+            window_size: 128,
+            children: vec![Op::Dsv41Linear(Dsv41LinearOp {
+                name: "projection".into(),
+                n: 16,
+                k: 16,
+                quant_mode: GemmQuantMode::Fp8Block,
+            })],
+        });
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Empirical,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Sol,
+            DatabaseMode::SolFull,
+        ] {
+            let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+                .unwrap()
+                .with_mode(mode, TransferPolicy::ALL);
+            assert_eq!(
+                validate(&db, [&stage].into_iter()).is_ok(),
+                !matches!(mode, DatabaseMode::Silicon | DatabaseMode::Empirical)
+            );
+        }
     }
 
     #[test]

@@ -132,6 +132,7 @@ def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
                 "moe_ep_size": None,
                 "nextn": None,
                 "forward_model": "op_level",
+                "database_mode": "SILICON",
             },
         }
     }
@@ -264,7 +265,10 @@ def test_b200_power_survives_native_json_and_runner_normalization() -> None:
 
     assert report.metrics["completed_requests"] == 100
     native_summary = report.metadata["native_report"]
-    for name, expected in {"power_w": 655.9411158961074, "power_coverage": 0.9070317503277924}.items():
+    # Decode converts scheduler-inclusive length to past KV before pricing the
+    # current token. Reverting only that conversion reproduces the older
+    # section 4.11 capture (655.9411158961074 W, coverage 0.9070317503277924).
+    for name, expected in {"power_w": 655.957349601573, "power_coverage": 0.907023184956731}.items():
         assert native_summary[name] == pytest.approx(expected)
         assert report.metrics[name] == native_summary[name]
 

@@ -1260,6 +1260,7 @@ mod tests {
         let mut spec = SystemSpec {
             data_dir: std::path::PathBuf::from("data/synthetic"),
             gpu: GpuSpec {
+                fp32_flops: None,
                 mem_bw: 1.0,
                 mem_bw_empirical_scaling_factor: 1.0,
                 mem_empirical_constant_latency: 0.0,

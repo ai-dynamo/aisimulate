@@ -197,6 +197,8 @@ struct AicTimingConfig {
     #[serde(default)]
     forward_model: Option<String>,
     #[serde(default)]
+    decoder_replay: bool,
+    #[serde(default)]
     worker_type: Option<ForwardPassWorkerType>,
     #[serde(default)]
     estimation_mode: Option<EstimationMode>,
@@ -218,7 +220,7 @@ struct AicTimingConfig {
     enable_eplb: bool,
     #[serde(default)]
     wideep_num_slots: Option<u32>,
-    #[serde(default)]
+    #[serde(default, alias = "shared_layer")]
     enable_shared_layer: Option<bool>,
     #[serde(default)]
     strict_provenance: bool,
@@ -282,6 +284,7 @@ impl AicTimingConfig {
             nextn: self.nextn,
             speculation: self.speculation.clone(),
             kv_block_size: self.kv_block_size,
+            decoder_replay: self.decoder_replay,
             estimation_mode: mode,
             fallback_policy: self.fallback_policy,
             estimator_config: self.estimator_config.clone(),
@@ -388,6 +391,7 @@ type PhaseEvidenceKey = (u32, u32, u32, u32, bool);
 struct AicTimingModel {
     engine: Py<PyAny>,
     diagnostic_model: Option<ForwardPassPerfModel>,
+    decoder_replay: bool,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceSummary>,
@@ -436,6 +440,7 @@ impl AicTimingModel {
         Ok(Self {
             engine,
             diagnostic_model: Some(model),
+            decoder_replay: config.decoder_replay,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
@@ -548,6 +553,21 @@ fn phase_evidence_from_python(
 }
 
 impl TimingModel for AicTimingModel {
+    fn prefill_batch_validation_can_fail(&self) -> bool {
+        self.decoder_replay
+    }
+
+    fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
+        if self.decoder_replay {
+            ensure!(
+                requests.windows(2).all(|pair| pair[0] == pair[1]),
+                "decoder replay requires identical per-request new-token and cached-prefix lengths; \
+                 heterogeneous prefill cannot be represented by the mean-based replay timing API"
+            );
+        }
+        Ok(())
+    }
+
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -603,9 +623,14 @@ impl TimingModel for AicTimingModel {
         }
 
         let batch_size = checked_u32(batch_size, "decode batch size")?;
-        let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
-        let evidence =
-            self.predict_phase_evidence(batch_size, mean_context_length, 2, 0, "static_gen")?;
+        // Both scheduler implementations include the current input token in
+        // their sequence length before sampling the next token. The op API's
+        // isl is past KV; osl=2 adds the current token exactly once.
+        let mean_past_kv = mean_context_length
+            .checked_sub(1)
+            .context("mean decode context must include the current input token")?;
+        let mean_past_kv = checked_u32(mean_past_kv, "mean past KV length")?;
+        let evidence = self.predict_phase_evidence(batch_size, mean_past_kv, 2, 0, "static_gen")?;
         let latency_ms = evidence.latency_ms;
         self.record_evidence(evidence, false)?;
         Ok(latency_ms)
@@ -2099,6 +2124,7 @@ mod tests {
         AicTimingModel {
             engine,
             diagnostic_model: None,
+            decoder_replay: false,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling: None,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
@@ -2180,6 +2206,7 @@ mod tests {
             strict_provenance: false,
             systems_path: None,
             forward_model: None,
+            decoder_replay: false,
         }
     }
 
@@ -2706,6 +2733,36 @@ mod tests {
     }
 
     #[test]
+    fn timing_policy_reaches_canonical_request() {
+        for replay in [false, true] {
+            let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+                "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1,
+                "decoder_replay": replay, "database_mode": "SILICON",
+                "enable_shared_layer": false, "strict_provenance": true
+            }))
+            .unwrap();
+            let request = config
+                .estimator_request(ForwardPassWorkerType::Aggregated)
+                .unwrap();
+            assert_eq!(request.decoder_replay, replay);
+            assert_eq!(request.database_mode, crate::DatabaseMode::Silicon);
+            assert_eq!(request.enable_shared_layer, Some(false));
+            assert!(request.strict_provenance);
+            let round_trip: ForwardPassPerfModelConfig =
+                serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+            assert_eq!(round_trip, request);
+        }
+        let defaults = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+            "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1
+        }))
+        .unwrap();
+        assert!(!defaults.decoder_replay);
+        assert_eq!(defaults.database_mode, crate::DatabaseMode::default());
+        assert!(defaults.enable_shared_layer.is_none());
+        assert!(!defaults.strict_provenance);
+    }
+
+    #[test]
     fn fpm_decode_timing_queries_exact_past_kv_total() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
@@ -2730,6 +2787,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(latency, 546_048.0);
+    }
+
+    #[test]
+    fn op_level_decode_timing_converts_inclusive_mean_to_past_kv() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let timing = timing_model(engine, false);
+
+        let latency = timing
+            .predict_decode_ms(35, 546_081, 15_602, 546_048)
+            .unwrap();
+
+        assert_eq!(latency, 546_070.0);
+        for inclusive_length in [1, 128, 129, 2049] {
+            assert_eq!(
+                timing
+                    .predict_decode_ms(2, 2 * inclusive_length, inclusive_length, 8192)
+                    .unwrap(),
+                (2 * inclusive_length) as f64,
+            );
+        }
+        assert!(timing.predict_decode_ms(1, 0, 0, 8192).is_err());
+    }
+
+    #[test]
+    fn bounded_replay_rejects_heterogeneous_actual_prefill_geometry() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let mut timing = timing_model(engine, false);
+        timing.decoder_replay = true;
+        for geometry in [vec![], vec![(3, 1536)], vec![(129, 128), (129, 128)]] {
+            timing.validate_prefill_batch(&geometry).unwrap();
+        }
+        for geometry in [vec![(127, 128), (129, 128)], vec![(3, 128), (3, 1536)]] {
+            assert!(timing.prefill_batch_validation_can_fail());
+            let error = timing.validate_prefill_batch(&geometry).unwrap_err();
+            assert!(error.to_string().contains("heterogeneous prefill"));
+            timing.decoder_replay = false;
+            assert!(!timing.prefill_batch_validation_can_fail());
+            timing.validate_prefill_batch(&geometry).unwrap();
+            timing.decoder_replay = true;
+        }
     }
 
     #[test]

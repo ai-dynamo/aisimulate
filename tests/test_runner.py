@@ -1290,6 +1290,67 @@ def test_runner_rejects_unknown_forward_model(value):
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
+@pytest.mark.parametrize("replay", [False, True])
+def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeypatch):
+    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    class ReadyEstimator:
+        def __init__(self, config):
+            self.config = config
+
+        def diagnostics(self):
+            return {"readiness": "ready", "provenance": {"config": self.config}}
+
+        def close(self):
+            pass
+
+    # This exercises configuration transport with a recording runtime, not
+    # readiness or prediction for the deliberately synthetic example model.
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", ReadyEstimator)
+    public = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "model": "example/model",
+                "hardware": "gb300",
+                "backend": "sglang",
+                "decoder_replay": replay,
+                "database_mode": "SILICON",
+                "enable_shared_layer": False,
+                "strict_provenance": True,
+                "workers": {"aggregated": {"kv_cache": {"capacity": {"type": "fixed", "blocks": 128}}}},
+            }
+        }
+    )
+    runtime = RecordingRuntime()
+    spec = prediction_to_replay_spec(public)
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    config = runtime.execution_spec["spec"]["engine"]["rank"]["timing_model"]["config"]
+    assert config.get("decoder_replay", False) is replay
+    assert config["database_mode"] == "SILICON"
+    assert config["enable_shared_layer"] is False
+    assert config["strict_provenance"] is True
+    metadata = spec.backend_deployment.performance_model_metadata["aggregated"]["config"]
+    assert metadata.get("decoder_replay", False) is replay
+    assert metadata["database_mode"] == "SILICON"
+
+
+@pytest.mark.parametrize("field", ["aic_decoder_replay", "aic_enable_shared_layer", "aic_strict_provenance"])
+def test_replay_policy_alias_requires_a_boolean(field):
+    engine_args = _engine_args()
+    engine_args.pop("timing_model")
+    engine_args[field] = "false"
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config={"tp": 2, "attention_dp": 1, "replicas": 2},
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    with pytest.raises(ValueError, match="must be a boolean"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
 def test_memory_detail_reuses_capacity_calculation_without_changing_execution(monkeypatch):
     from aisimulate_core.sdk import memory
 

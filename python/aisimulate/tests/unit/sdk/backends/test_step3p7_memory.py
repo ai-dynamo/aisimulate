@@ -42,6 +42,8 @@ def test_step3p7_uses_moe_activation_and_dispatch_workspace(backend, moe_coeffic
             nextn=0,
         ),
         get_kvcache_bytes_per_sequence=lambda _seq: 0,
+        get_resident_weights_bytes=lambda: 0,
+        get_additional_activation_bytes=lambda _tokens: 0,
         _cp_kv_memory_divisor=lambda: 1,
     )
     database = SimpleNamespace(system_spec={"misc": {"nccl_mem": {1: 0}, "other_mem": 0}})

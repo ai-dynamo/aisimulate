@@ -447,6 +447,20 @@ pub enum TimingModelConfig {
 /// Implementations may call AIC, interpolate profiler data, or use another
 /// provider without adding that dependency to `aisimulate-core`.
 pub trait TimingModel: Send + Sync {
+    /// Whether admission needs a checkpoint around `validate_prefill_batch`.
+    /// Existing custom providers default to the safe, fallible contract. Providers
+    /// opting out must accept every batch geometry in that validation hook.
+    fn prefill_batch_validation_can_fail(&self) -> bool {
+        true
+    }
+
+    /// Validate actual (new tokens, cached prefix) pairs before a scheduler
+    /// reduces them to means. Providers with nonlinear per-request execution
+    /// policies may reject batches that their aggregate API cannot represent.
+    fn validate_prefill_batch(&self, _requests: &[(usize, usize)]) -> Result<()> {
+        Ok(())
+    }
+
     /// Predict one prefill batch's latency in milliseconds.
     fn predict_prefill_ms(
         &self,
@@ -477,6 +491,10 @@ pub trait TimingModel: Send + Sync {
 struct PolynomialTimingModel;
 
 impl TimingModel for PolynomialTimingModel {
+    fn prefill_batch_validation_can_fail(&self) -> bool {
+        false
+    }
+
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -509,6 +527,10 @@ struct FixedTimingModel {
 }
 
 impl TimingModel for FixedTimingModel {
+    fn prefill_batch_validation_can_fail(&self) -> bool {
+        false
+    }
+
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -600,10 +622,18 @@ mod tests {
             decode_ms: 3.0,
         })
         .unwrap();
+        assert!(!model.prefill_batch_validation_can_fail());
         assert_eq!(model.predict_prefill_ms(0, 128, 0).unwrap(), 0.0);
         assert_eq!(model.predict_decode_ms(0, 128, 64, 1024).unwrap(), 0.0);
         assert_eq!(model.predict_prefill_ms(2, 128, 0).unwrap(), 7.0);
         assert_eq!(model.predict_decode_ms(2, 128, 64, 1024).unwrap(), 3.0);
+    }
+
+    #[test]
+    fn polynomial_model_does_not_need_admission_checkpoint() {
+        let model = built_in_timing_model(&TimingModelConfig::Polynomial).unwrap();
+        assert!(!model.prefill_batch_validation_can_fail());
+        model.validate_prefill_batch(&[(4, 0), (12, 8)]).unwrap();
     }
 
     #[test]
