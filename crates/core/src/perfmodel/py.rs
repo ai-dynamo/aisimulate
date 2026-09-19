@@ -1780,6 +1780,24 @@ impl PyForwardPassPerfModel {
             .map_err(aic_to_py)
     }
 
+    /// Static operation evidence from the canonical model, as JSON.
+    fn static_phase_diagnostics(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        context_length: u32,
+        prefix: u32,
+        prefill: bool,
+    ) -> PyResult<String> {
+        let result = py
+            .allow_threads(|| {
+                self.inner
+                    .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+            })
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&result).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
     /// Diagnostics (source / readiness / retained count / warning) as JSON.
     fn diagnostics(&self) -> PyResult<String> {
         serde_json::to_string(&self.inner.diagnostics())
