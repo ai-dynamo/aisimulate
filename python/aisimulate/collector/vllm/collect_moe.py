@@ -81,8 +81,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import torch
-from vllm.version import __version__ as vllm_version
-
 from collector.case_generator import (
     get_common_moe_test_cases,
     get_moe_quantization_modes,
@@ -96,9 +94,10 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from vllm.version import __version__ as vllm_version
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
-_MODEL_CONFIG_ROOT = Path(__file__).resolve().parents[2] / "src/aiconfigurator/model_configs"
+_MODEL_CONFIG_ROOT = Path(__file__).resolve().parents[2] / "src/aisimulate_core/model_configs"
 
 
 def _load_model_moe_config(model_name: str) -> dict:
@@ -401,6 +400,7 @@ def run_moe_torch(
         from vllm.model_executor.layers.fused_moe.layer import FusedMoEFactory as FusedMoE
     except ImportError:
         from vllm.model_executor.layers.fused_moe.layer import FusedMoE
+    from collector.vllm.utils import setup_distributed
     from vllm.model_executor.layers.quantization.compressed_tensors.compressed_tensors import (
         CompressedTensorsConfig,
     )
@@ -408,8 +408,6 @@ def run_moe_torch(
     from vllm.model_executor.layers.quantization.modelopt import ModelOptFp8Config
     from vllm.model_executor.layers.quantization.mxfp4 import Mxfp4Config
     from vllm.v1.worker.workspace import init_workspace_manager
-
-    from collector.vllm.utils import setup_distributed
 
     if moe_tp_size > 1 and moe_ep_size > 1:
         raise ValueError("vLLM MoE collector does not combine logical TP and EP")

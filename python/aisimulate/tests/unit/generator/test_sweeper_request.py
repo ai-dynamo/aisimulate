@@ -8,8 +8,8 @@ import shlex
 import pytest
 import yaml
 
-from aiconfigurator.generator.api import generate_from_request
-from aiconfigurator.generator.request import (
+from aisimulate.generator.api import generate_from_request
+from aisimulate.generator.request import (
     ModelFacts,
     SweeperCandidateError,
     from_sweeper_candidate,

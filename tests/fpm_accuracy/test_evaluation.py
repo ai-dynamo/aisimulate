@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from types import SimpleNamespace
 
 import pytest
 from fpm_accuracy.evaluate import Metric, choose_variant, evaluate_case
@@ -126,6 +127,87 @@ def test_predictor_failures_remain_in_denominator(case):
     assert "unsupported model" not in json.dumps(result)
 
 
+@pytest.mark.parametrize("canonical", [True, False])
+def test_dcp_keeps_regression_and_reports_native_fpm_as_unsupported(tmp_path, monkeypatch, canonical):
+    content = "\n".join(json.dumps(_fpm_payload(counter=index)) for index in range(12)).encode()
+    dataset = _build_dataset(
+        tmp_path,
+        protocol_id="forward-pass-measurement-v1",
+        files=[("truth", "traffic.jsonl", content)],
+        tp=8,
+        dcp=8,
+    )
+    case = dataset.measurement_case(CONFIGURATION_PATH)
+    requests = []
+
+    @dataclass(frozen=True)
+    class Config:
+        worker_type: str
+        estimation_mode: str = "auto"
+
+        @classmethod
+        def from_legacy_engine_config(cls, config, worker_type, options):
+            assert config["tp_size"] == 8
+            assert config["cp_size"] == 1
+            return cls(worker_type)
+
+    class Model:
+        def __init__(self, worker_type):
+            self.worker_type = worker_type
+            self.count = 0
+
+        @classmethod
+        def best_available(cls, config):
+            assert canonical
+            assert config.estimation_mode == "fpm_regression"
+            requests.append(config)
+            return cls(config.worker_type)
+
+        @classmethod
+        def from_regression(cls, worker_type, options):
+            assert not canonical
+            requests.append(worker_type)
+            return cls(worker_type)
+
+        @classmethod
+        def from_native(cls, *args):
+            pytest.fail("native FPM must reject unsupported DCP before construction")
+
+        def regression_store_diagnostics(self):
+            return [
+                {"workload_kind": bucket, "ready": self.count >= 5, "retained_observations": self.count}
+                for bucket in regression_buckets(self.worker_type)
+            ]
+
+        def estimate_forward_pass_time_ms(self, payload):
+            return 10 if self.count >= 5 else None
+
+        def tune_with_fpms(self, observations):
+            self.count += len(observations)
+
+        def diagnostics(self):
+            return {}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(aic_predictors, "_import_aisim_forward_pass_perf_model", lambda: Model)
+    monkeypatch.setattr(aic_predictors, "_canonical_config_type", lambda: Config if canonical else None)
+    result = evaluate_case(case)
+    warmup = result["results"]["warmup"]
+    assert warmup["status"] == "unsupported_predictor"
+    assert warmup["metrics"]["all"]["measured_count"] == warmup["metrics"]["all"]["unavailable_count"] == 12
+    assert warmup["metrics"]["all"]["error_count"] == 0
+    assert result["results"]["regression"]["status"] == "evaluated"
+    regression = result["results"]["regression"]["metrics"]["all"]
+    assert regression["measured_count"] == 12
+    assert regression["predicted_count"] == 7
+    assert regression["unavailable_count"] == 5
+    assert regression["error_count"] == regression["tuning_error_count"] == 0
+    assert len(requests) == 1
+    assert case.configuration.worker_config_record.config.parallelism.decode_context_parallel_size == 8
+
+
 def test_missing_worker_stores_are_logged_before_scoring(case, capsys):
     instances = []
 
@@ -218,6 +300,94 @@ def test_legacy_regression_is_unavailable_without_changing_measurement_membershi
     assert metric["measured_count"] == metric["unavailable_count"] == 12
     assert metric["error_count"] == metric["predicted_count"] == 0
     assert result["warmup"]["metrics"]["all"]["predicted_count"] == 12
+
+
+@pytest.mark.parametrize("dcp", [1, 8])
+def test_real_regression_uses_canonical_identity_and_options(tmp_path, dcp):
+    pytest.importorskip("aisimulate_core.sdk")
+    from fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    case = _build_dataset(tmp_path, protocol_id=None, files=[], tp=8, dcp=dcp).measurement_case(CONFIGURATION_PATH)
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role="decode",
+        options={"max_observations": 32, "min_observations": 6},
+    )
+    predictor = aic_predictors.AicRegressionPredictor.create(context)
+    try:
+        config = predictor.diagnostics()["provenance"]["config"]
+        assert config["tp"] == 8
+        assert config["worker_type"] == "decode"
+        assert config["estimation_mode"] == "fpm_regression"
+        assert config["fallback_policy"] == "deny"
+        assert config["estimator_config"]["fpm_regression"]["sampling"]["max_observations"] == 32
+        assert config["estimator_config"]["fpm_regression"]["min_observations"] == 6
+    finally:
+        predictor.close()
+
+
+@pytest.mark.parametrize("mode", ["fpm", "regression"])
+@pytest.mark.parametrize("canonical", [True, False])
+def test_predictor_uses_canonical_api_or_older_wheel_adapter(case, tmp_path, monkeypatch, mode, canonical):
+    from fpm_accuracy.models.fpt_predictor import PredictorContext
+
+    if canonical:
+        pytest.importorskip("aisimulate_core.sdk")
+    else:
+        monkeypatch.setattr(aic_predictors, "_canonical_config_type", lambda: None)
+    calls = []
+
+    class Model:
+        @classmethod
+        def best_available(cls, config):
+            assert canonical
+            calls.append(config.to_dict())
+            return cls()
+
+        @classmethod
+        def from_native(cls, config, options):
+            assert not canonical
+            calls.append((config, options))
+            return cls()
+
+        @classmethod
+        def from_regression(cls, worker_type, options):
+            assert not canonical
+            calls.append((worker_type, options))
+            return cls()
+
+        def regression_store_diagnostics(self):
+            return []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(aic_predictors, "_import_aisim_forward_pass_perf_model", lambda: Model)
+    monkeypatch.setattr(
+        aic_predictors,
+        "prepare_aic_fpm_database",
+        lambda *args: SimpleNamespace(
+            systems_root=tmp_path,
+            close=lambda: None,
+        ),
+    )
+    context = PredictorContext(
+        worker=case.configuration.worker_config_record,
+        worker_role="decode",
+        options={"max_observations": 32},
+        fpm_artifact=object(),
+    )
+    cls = aic_predictors.AicFpmPredictor if mode == "fpm" else aic_predictors.AicRegressionPredictor
+    predictor = cls.create(context)
+    predictor.close()
+    assert len(calls) == 1
+    if canonical:
+        assert calls[0]["worker_type"] == "decode"
+        assert calls[0]["estimation_mode"] == ("fpm_interpolation" if mode == "fpm" else "fpm_regression")
+        assert calls[0]["fallback_policy"] == "deny"
+        assert calls[0]["estimator_config"]["fpm_regression"]["sampling"]["max_observations"] == 32
+        if mode == "fpm":
+            assert calls[0]["systems_paths"] == [str(tmp_path)]
 
 
 def test_micro_mape_and_variant_order():

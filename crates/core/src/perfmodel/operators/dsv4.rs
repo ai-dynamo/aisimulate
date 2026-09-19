@@ -3,7 +3,7 @@
 
 //! DeepSeek-V4 attention module operator.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.dsv4.DSV4Module`. Each layer of
+//! Mirrors `aisimulate.sdk.operations.dsv4.DSV4Module`. Each layer of
 //! DSv4 picks between CSA (compressed-sparse) and HCA (hybrid-causal)
 //! variants depending on the layer index — the model layer decides which
 //! `AttnKind` to use; the operator just routes to the right
@@ -1066,7 +1066,7 @@ mod tests {
     fn cp_missing_sparse_tables_fail_loud_on_real_db() {
         let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let db = PerfDatabase::load(&systems_root, "b200_sxm", "sglang", "0.5.10")
             .expect("b200_sxm/sglang/0.5.10 must load");
         let op = dsv4_cp_op(AttnKind::Csa, 8, None);
@@ -1086,7 +1086,7 @@ mod tests {
     fn mqa_chunked_matches_python_on_gb200_data() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems/data/gb200/sparse_attention/sglang/0.5.14");
+            .join("python/aisimulate/src/aisimulate_core/systems/data/gb200/sparse_attention/sglang/0.5.14");
         let table = Dsv4Table::new(root);
         let mut lookup =
             |chunk_isl: u32, past: u32| table.query_paged_mqa_logits(1, chunk_isl, past, 1, 64);
@@ -1110,7 +1110,7 @@ mod tests {
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems")
+            .join("python/aisimulate/src/aisimulate_core/systems")
     }
 
     fn b200_sglang_root() -> PathBuf {
@@ -1157,8 +1157,8 @@ mod tests {
     ///
     /// ```text
     /// uv run --no-sync python3 -c "
-    /// from aiconfigurator.sdk import perf_database, common
-    /// from aiconfigurator.sdk.operations.dsv4 import (
+    /// from aisimulate.sdk import perf_database, common
+    /// from aisimulate.sdk.operations.dsv4 import (
     ///     ContextDeepSeekV4AttentionModule as CTX,
     ///     GenerationDeepSeekV4AttentionModule as GEN)
     /// db = perf_database.get_database('b200_sxm', 'sglang', '0.5.10')
@@ -1356,10 +1356,10 @@ mod tests {
     ///
     /// ```text
     /// uv run --no-sync python -c "
-    /// from aiconfigurator.sdk import common
-    /// from aiconfigurator.sdk.perf_database import get_database
-    /// from aiconfigurator.sdk.operations.dsv4 import DeepSeekV4MegaMoEModule as M
-    /// from aiconfigurator.sdk.common import DatabaseMode
+    /// from aisimulate.sdk import common
+    /// from aisimulate.sdk.perf_database import get_database
+    /// from aisimulate.sdk.operations.dsv4 import DeepSeekV4MegaMoEModule as M
+    /// from aisimulate.sdk.common import DatabaseMode
     /// db = get_database('gb200', 'sglang', '0.5.10')
     /// base = dict(hidden_size=7168, inter_size=3072, topk=6, num_experts=384,
     ///             moe_tp_size=1, moe_ep_size=8,
@@ -1511,7 +1511,7 @@ mod tests {
     fn dsv4_sol_mode_returns_roofline_with_sol_source() {
         let systems_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let mut db = PerfDatabase::load(&systems_root, "b200_sxm", "sglang", "0.5.10")
             .expect("db must load");
         db.database_mode = DatabaseMode::Sol;

@@ -217,3 +217,37 @@ def split_config_sections(
             raise ValueError(f"adapter section {section!r} must be a mapping")
         adapters[section] = deepcopy(value)
     return core, adapters
+
+
+# Engine identity controls forwarded unchanged to the canonical Core constructor.
+ENGINE_MODEL_CONTROL_FIELDS = (
+    "enable_eplb",
+    "wideep_num_slots",
+    "moe_backend",
+    "attention_backend",
+    "gemm_quant_mode",
+    "moe_quant_mode",
+    "kvcache_quant_mode",
+    "fmha_quant_mode",
+    "comm_quant_mode",
+)
+
+
+def is_active_engine_model_control(name: str, value: Any) -> bool:
+    """Distinguish inactive defaults without treating invalid numeric zero as False."""
+    if value is None:
+        return False
+    if name == "enable_eplb":
+        return value is not False
+    if name == "moe_backend":
+        return value != "default"
+    return True
+
+
+def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
+    """Keep additive defaults out of timing payloads parsed by older runners."""
+    result = dict(config)
+    for name in ("moe_backend", "wideep_num_slots", "enable_eplb"):
+        if not is_active_engine_model_control(name, result.get(name)):
+            result.pop(name, None)
+    return result

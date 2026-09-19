@@ -21,11 +21,11 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-import aiconfigurator_core
+import aisimulate_core
 
 pytestmark = pytest.mark.unit
 
-_DATA_ROOT = Path(aiconfigurator_core.__file__).parent / "systems" / "data"
+_DATA_ROOT = Path(aisimulate_core.__file__).parent / "systems" / "data"
 _POWER_DATA = Path(__file__).resolve().parents[4] / "tools" / "perf_database" / "power_data.py"
 _SPEC = importlib.util.spec_from_file_location("power_data_invariants", _POWER_DATA)
 assert _SPEC is not None and _SPEC.loader is not None

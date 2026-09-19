@@ -23,7 +23,7 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES_ROOT = Path("pages")
-SYSTEMS_ROOT = Path("python/aisimulate/src/aiconfigurator_core/systems")
+SYSTEMS_ROOT = Path("python/aisimulate/src/aisimulate_core/systems")
 
 # Directories are opt-in so adding internal documentation under docs/ never
 # publishes it accidentally. Every listed page is now part of the required

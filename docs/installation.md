@@ -46,7 +46,8 @@ latest repository source or an internal nightly automatically.
 When replacing standalone AIConfigurator, first follow the
 [package migration instructions](../README.md#upgrade-from-standalone-aiconfigurator)
 in the environment you intend to use. The `aisimulate` wheel owns both console
-commands and the compatibility import namespaces.
+commands. Python imports use `aisimulate` and `aisimulate_core`; see
+[Python source migration](python-source-migration.md) for the breaking import change.
 
 ## Platform matrix
 
@@ -106,7 +107,7 @@ to the intended environment.
 ## Use an internal nightly
 
 The [nightly workflow](../.github/workflows/nightly-ci.yml) produces a wheel
-version such as `0.12.0.devYYYYMMDD`, then stages artifacts to access-controlled
+version such as `0.13.0.devYYYYMMDD`, then stages artifacts to access-controlled
 Artifactory through the protected release environment. The run subsequently
 checks the downloaded wheel and qualifies its FPE support matrix. Use a
 successful completed nightly: a successful build, staging step, or dev suffix

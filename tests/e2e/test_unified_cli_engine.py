@@ -300,8 +300,13 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
             deployment = prediction_to_replay_spec(concrete).backend_deployment
             assert raw["engine"]["hardware"] == "h200_sxm"
             assert raw["engine"]["workers"]["decode"]["hardware"] == "gb200"
-            assert deployment.prefill_engine_args["aic_system"] == "h200_sxm"
-            assert deployment.decode_engine_args["aic_system"] == "gb200"
+            for role, hardware in (("prefill", "h200_sxm"), ("decode", "gb200")):
+                engine_args = getattr(deployment, f"{role}_engine_args")
+                assert "aic_system" not in engine_args
+                timing = engine_args["timing_model"]
+                assert timing["type"] == "external"
+                assert timing["provider"] == "aic"
+                assert timing["config"]["system"] == hardware
             assert candidate.config["prefill_hardware_sku"] == "h200_sxm"
             assert candidate.config["decode_hardware_sku"] == "gb200"
             assert candidate.used_gpus == 2
@@ -353,10 +358,10 @@ def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Pa
     candidate = result.selected_candidates[0]
     assert candidate.used_gpus == 1
     assert candidate.score == -1
-    assert candidate.metrics["mean_e2e_latency_ms"] <= 100
+    assert all(c.metrics["mean_e2e_latency_ms"] <= 100 for c in result.selected_candidates)
     assert {row.used_gpus for row in result.candidates} == {1, 2}
     if load_type != "concurrency":
-        assert candidate.metrics["goodput_request_throughput_rps"] >= 5
+        assert all(c.metrics["goodput_request_throughput_rps"] >= 5 for c in result.selected_candidates)
     selected_path = sorted((output / "recommendations").glob("*.yaml"))[0]
     prediction = _run_cli(
         "predict", "--config", str(selected_path), "--output-dir", str(tmp_path / "predict"), "--format", "json"

@@ -125,9 +125,9 @@ E2E latency, and a deterministic configuration key. GPU count is provisioned top
 not time-averaged usage. A finite trial budget establishes the smallest qualifying configuration
 found, not a global optimum. No qualifying candidate produces an empty selection.
 
-This target supports static engine pools with fixed synthetic request-rate or concurrency
-traffic. It rejects adapters, traces, sessions, candidate-relative KV load, and searched load
-domains. Analytical EPD supports concurrency plus aggregate latency only, without a rate floor.
+This target supports standalone AISimulate static engine pools with fixed synthetic request-rate
+or concurrency traffic. Dynamo integration is not supported. It rejects adapters, traces, sessions,
+candidate-relative KV load, and searched load domains. Analytical EPD supports concurrency plus aggregate latency only, without a rate floor.
 `min_gpus` cannot be a Pareto objective, and `min_goodput_rps` is only accepted with this target.
 
 In the CLI, use `optimization.target: min_gpus` and

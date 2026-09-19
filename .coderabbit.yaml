@@ -118,7 +118,7 @@ reviews:
         rationale. New behavior needs an independent oracle or justified
         append-only parity case.
 
-    - path: "python/aisimulate/src/aiconfigurator_core/**"
+    - path: "python/aisimulate/src/aisimulate_core/**"
       instructions: |
         Preserve the Rust single oracle: Python may describe operations, load
         raw data, orchestrate, and present results, but must not compute per-op
@@ -126,7 +126,7 @@ reviews:
         explicit absence behavior, and loud handling of corrupt or unsupported
         inputs. Do not reintroduce public per-call query shims.
 
-    - path: "python/aisimulate/src/aiconfigurator/generator/**"
+    - path: "python/aisimulate/src/aisimulate/generator/**"
       instructions: |
         Enforce the mapped generator guidelines. Trace input parsing, defaults,
         rules, parameter mapping, rendering, and emitted artifacts. Preserve
@@ -329,11 +329,11 @@ knowledge_base:
       - files: "REVIEW.md,AGENTS.md"
         applyTo: "**/*"
       - files: "python/aisimulate/.claude/rules/generator-development.md,python/aisimulate/.claude/rules/generator/*.md"
-        applyTo: "python/aisimulate/src/aiconfigurator/generator/**,python/aisimulate/tools/generator_validator/**"
+        applyTo: "python/aisimulate/src/aisimulate/generator/**,python/aisimulate/tools/generator_validator/**"
       - files: "python/aisimulate/.claude/rules/collector/*.md"
         applyTo: "python/aisimulate/collector/**,python/aisimulate/tests/unit/collector/**"
       - files: "python/aisimulate/.claude/rules/rust-core/parity.md"
-        applyTo: "crates/core/src/perfmodel/**,crates/core/perfmodel/**,crates/core/parity_tests/perfmodel/**,python/aisimulate/src/aiconfigurator_core/**,python/aisimulate/tests/unit/sdk/test_opspec_coverage.py,python/aisimulate/tests/cross_package/test_single_oracle_contract.py"
+        applyTo: "crates/core/src/perfmodel/**,crates/core/perfmodel/**,crates/core/parity_tests/perfmodel/**,python/aisimulate/src/aisimulate_core/**,python/aisimulate/tests/unit/sdk/test_opspec_coverage.py,python/aisimulate/tests/cross_package/test_single_oracle_contract.py"
   learnings:
     scope: local
     approval_delay: 7

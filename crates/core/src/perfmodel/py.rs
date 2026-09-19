@@ -18,7 +18,7 @@
 //!   so the Rust compute runs without holding the GIL.
 //! * **Rust → Python → Rust (embedded path).** [`AicEngineBuilder`] is the
 //!   Rust entry point. It crosses into Python once to run
-//!   `aiconfigurator_core.sdk.engine.compile_engine`, then build an [`Engine`]
+//!   `aisimulate_core.sdk.engine.compile_engine`, then build an [`Engine`]
 //!   from the returned bincode bytes. After that the `predict_*` hot path is
 //!   pure Rust with no GIL.
 //!
@@ -52,10 +52,10 @@ fn _build_smoke() -> u32 {
 }
 
 /// Cached handles to the canonical SDK exception classes
-/// (`aiconfigurator_core.sdk.errors` — the CORE namespace: the standalone
+/// (`aisimulate_core.sdk.errors` — the CORE namespace: the standalone
 /// compatibility namespace bundled in the `aisimulate` wheel). Filled lazily
 /// on first use so importing the
-/// extension never imports the sdk (the sdk imports aiconfigurator_core — an
+/// extension never imports the sdk (the sdk imports aisimulate_core — an
 /// eager import here would be a cycle), and left empty in pure-Rust contexts
 /// where the sdk is not installed (fallback to `PyValueError`).
 static PERF_DATA_NOT_AVAILABLE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
@@ -72,7 +72,7 @@ fn sdk_error_type(
 ) -> Option<Py<PyType>> {
     cell.get_or_try_init(py, || -> PyResult<Py<PyType>> {
         Ok(py
-            .import("aiconfigurator_core.sdk.errors")?
+            .import("aisimulate_core.sdk.errors")?
             .getattr(name)?
             .downcast_into::<PyType>()?
             .unbind())
@@ -87,17 +87,17 @@ fn sdk_error_type(
 /// Typed mapping so Python-side classifiers keep working across the FFI:
 /// * missing-perf-data errors (`AicError::PerfDatabase` / `Io` — the
 ///   `is_missing_perf_data` set) raise the canonical
-///   `aiconfigurator_core.sdk.errors.PerfDataNotAvailableError`, so
+///   `aisimulate_core.sdk.errors.PerfDataNotAvailableError`, so
 ///   `perf_database.has_perf_data_not_available_cause` recognizes rust-path
 ///   data misses;
 /// * `AicError::EmpiricalNotImplemented` raises
-///   `aiconfigurator_core.sdk.errors.EmpiricalNotImplementedError` (the typed
+///   `aisimulate_core.sdk.errors.EmpiricalNotImplementedError` (the typed
 ///   HYBRID/EMPIRICAL coverage miss);
 /// * `AicError::MissingSystemFlops` raises
-///   `aiconfigurator_core.sdk.errors.MissingSystemFlopsError` (strict per-dtype
+///   `aisimulate_core.sdk.errors.MissingSystemFlopsError` (strict per-dtype
 ///   `*_tc_flops` resolution — a `ValueError` subclass on the Python side);
 /// * `AicError::SolNotImplemented` raises
-///   `aiconfigurator_core.sdk.errors.SolNotImplementedError` (the analytic SOL
+///   `aisimulate_core.sdk.errors.SolNotImplementedError` (the analytic SOL
 ///   path has no implementation for a required operator);
 /// * everything else stays `PyValueError`.
 ///
@@ -148,6 +148,23 @@ fn parse_mode(mode: &str) -> PyResult<StaticMode> {
     }
 }
 
+/// Discover the ordered roots using the same SDK/environment policy as the Python facade.
+pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicError> {
+    Python::with_gil(|py| {
+        py.import("aisimulate_core.sdk.rust_engine_step")?
+            .getattr("_resolve_forward_pass_systems_paths")?
+            .call1((Vec::<String>::new(),))?
+            .extract::<Vec<PathBuf>>()
+    })
+    .map_err(|error: PyErr| {
+        if Python::with_gil(|py| error.is_instance_of::<PyValueError>(py)) {
+            AicError::InvalidEngineConfig(format!("resolve systems paths: {error}"))
+        } else {
+            AicError::DataRoot(format!("resolve systems paths: {error}"))
+        }
+    })
+}
+
 /// Resolve the bundled `systems/` directory for [`AicEngine::from_spec`].
 ///
 /// Mirrors the systems-root half of `DataRoots::discover` but does NOT require
@@ -155,8 +172,8 @@ fn parse_mode(mode: &str) -> PyResult<StaticMode> {
 /// configs) runs in Python, so the Rust side only loads the perf database.
 /// Precedence: explicit `systems_path` arg → `AICONFIGURATOR_SYSTEMS_PATH` env
 /// → the installed core wheel's SDK resource path → repo-relative
-/// `python/aisimulate/src/aiconfigurator_core/systems`.
-fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
+/// `python/aisimulate/src/aisimulate_core/systems`.
+pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
     if let Some(p) = systems_path {
         return Ok(PathBuf::from(p));
     }
@@ -164,7 +181,7 @@ fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
         return Ok(PathBuf::from(p));
     }
     let installed_root = Python::with_gil(|py| -> PyResult<Option<PathBuf>> {
-        let Ok(perf_database) = py.import("aiconfigurator_core.sdk.perf_database") else {
+        let Ok(perf_database) = py.import("aisimulate_core.sdk.perf_database") else {
             return Ok(None);
         };
         let paths: Vec<String> = perf_database.call_method0("get_systems_paths")?.extract()?;
@@ -173,7 +190,7 @@ fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
     if let Some(p) = installed_root {
         return Ok(p);
     }
-    crate::repo_relative("python/aisimulate/src/aiconfigurator_core/systems").ok_or_else(|| {
+    crate::repo_relative("python/aisimulate/src/aisimulate_core/systems").ok_or_else(|| {
         PyValueError::new_err(
             "could not resolve systems path: pass systems_path, set \
              AICONFIGURATOR_SYSTEMS_PATH, install aisimulate, or run \
@@ -195,6 +212,10 @@ pub struct AicEngine {
 }
 
 impl AicEngine {
+    pub(crate) fn from_shared_engine(inner: Arc<Engine>) -> Self {
+        Self { inner }
+    }
+
     /// Internal constructor shared by [`AicEngine::from_spec`] and
     /// [`AicEngineBuilder::build`].
     fn new(engine: Engine) -> Self {
@@ -1026,10 +1047,15 @@ struct EngineBuildRequest {
     fmha_quant_mode: Option<String>,
     comm_quant_mode: Option<String>,
     attention_backend: Option<String>,
+    moe_backend: Option<String>,
+    enable_eplb: bool,
+    wideep_num_slots: Option<u32>,
     nextn: u32,
+    speculation: Option<crate::ForwardPassSpeculationConfig>,
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
+    decoder_replay: bool,
     database_mode: Option<String>,
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
@@ -1070,10 +1096,15 @@ impl AicEngineBuilder {
                 fmha_quant_mode: None,
                 comm_quant_mode: None,
                 attention_backend: None,
+                moe_backend: None,
+                enable_eplb: false,
+                wideep_num_slots: None,
                 nextn: 0,
+                speculation: None,
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
+                decoder_replay: false,
                 database_mode: None,
                 shared_layer: None,
                 transfer_policy: None,
@@ -1086,6 +1117,12 @@ impl AicEngineBuilder {
     /// Python's default (op_level).
     pub fn forward_model(mut self, forward_model: &str) -> Self {
         self.request.forward_model = Some(forward_model.to_owned());
+        self
+    }
+
+    /// Select the verified V4.1 bounded decoder execution profile.
+    pub fn decoder_replay(mut self, enabled: bool) -> Self {
+        self.request.decoder_replay = enabled;
         self
     }
 
@@ -1343,7 +1380,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         ))
     })?;
     let spec_bytes: Vec<u8> = Python::with_gil(|py| -> PyResult<Vec<u8>> {
-        let engine_mod = py.import("aiconfigurator_core.sdk.engine")?;
+        let engine_mod = py.import("aisimulate_core.sdk.engine")?;
         let kwargs = pyo3::types::PyDict::new(py);
         kwargs.set_item("backend_version", request.backend_version.as_deref())?;
         kwargs.set_item("tp_size", request.tp_size)?;
@@ -1357,12 +1394,22 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("fmha_quant_mode", request.fmha_quant_mode.as_deref())?;
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
+        kwargs.set_item("moe_backend", request.moe_backend.as_deref())?;
+        kwargs.set_item("enable_eplb", request.enable_eplb)?;
+        kwargs.set_item("wideep_num_slots", request.wideep_num_slots)?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
+        kwargs.set_item("decoder_replay", request.decoder_replay)?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
         kwargs.set_item("strict_provenance", request.strict_provenance)?;
         kwargs.set_item("nextn", request.nextn)?;
+        if let Some(speculation) = &request.speculation {
+            let json = serde_json::to_string(speculation)
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            let value = PyModule::import(py, "json")?.call_method1("loads", (json,))?;
+            kwargs.set_item("speculation", value)?;
+        }
         kwargs.set_item("kv_block_size", request.kv_block_size)?;
         kwargs.set_item("systems_path", systems_root_str)?;
         engine_mod
@@ -1382,9 +1429,75 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
     // `UnsupportedModel` — the variant `best_available` treats as
     // fallback-safe. Hard caller/config errors use `InvalidEngineConfig` (which
     // is NOT fallback-safe) so they surface instead of silently degrading.
-    .map_err(|e| AicError::UnsupportedModel(format!("compile_engine: {e}")))?;
+    .map_err(|error| {
+        let invalid = Python::with_gil(|py| {
+            py.import("aisimulate_core.sdk.engine")
+                .and_then(|module| module.getattr("InvalidEngineConfigurationError"))
+                .is_ok_and(|kind| error.is_instance(py, &kind))
+        });
+        if invalid {
+            AicError::InvalidEngineConfig(format!("compile_engine: {error}"))
+        } else {
+            AicError::UnsupportedModel(format!("compile_engine: {error}"))
+        }
+    })?;
 
+    if request.backend_version.is_none()
+        && crate::perfmodel::engine::spec::EngineSpec::from_bincode(&spec_bytes)?
+            .engine
+            .backend_version
+            .is_none()
+    {
+        return Err(AicError::DataRoot(format!(
+            "no backend version is available for {}/{}/{}",
+            systems_root.display(),
+            request.system,
+            request.backend,
+        )));
+    }
     Engine::from_spec_bytes(&spec_bytes, systems_root.as_path() as &Path)
+}
+
+/// Compile the selected canonical native estimator through the shared builder.
+pub(crate) fn compile_forward_pass_model_to_engine(
+    config: &crate::ForwardPassPerfModelConfig,
+    systems_path: &str,
+) -> Result<Engine, AicError> {
+    let forward_model = config.estimation_mode.native_name().ok_or_else(|| {
+        AicError::InvalidEngineConfig(
+            "a native estimator mode must be selected before compilation".into(),
+        )
+    })?;
+    compile_engine_from_request(EngineBuildRequest {
+        model_path: config.model.clone(),
+        system: config.system.clone(),
+        backend: config.backend.as_str().to_owned(),
+        backend_version: config.backend_version.clone(),
+        tp_size: config.tp,
+        pp_size: config.pp,
+        attention_dp_size: config.attention_dp,
+        moe_tp_size: config.moe_tp_size,
+        moe_ep_size: config.moe_ep_size,
+        gemm_quant_mode: config.gemm_quant_mode.clone(),
+        moe_quant_mode: config.moe_quant_mode.clone(),
+        kvcache_quant_mode: config.kvcache_quant_mode.clone(),
+        fmha_quant_mode: config.fmha_quant_mode.clone(),
+        comm_quant_mode: config.comm_quant_mode.clone(),
+        attention_backend: config.attention_backend.clone(),
+        moe_backend: config.moe_backend.clone(),
+        enable_eplb: config.enable_eplb,
+        wideep_num_slots: config.wideep_num_slots,
+        nextn: config.nextn,
+        speculation: config.speculation.clone(),
+        kv_block_size: config.kv_block_size,
+        systems_path: Some(systems_path.to_owned()),
+        forward_model: Some(forward_model.to_owned()),
+        decoder_replay: config.decoder_replay,
+        database_mode: Some(config.database_mode.as_str().to_owned()),
+        shared_layer: config.enable_shared_layer,
+        transfer_policy: config.transfer_policy.clone(),
+        strict_provenance: Some(config.strict_provenance),
+    })
 }
 
 /// Build a compiled [`Engine`] from a modular [`EngineConfig`] (the
@@ -1432,10 +1545,15 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         comm_quant_mode: None,
         // Attention backend is not carried on EngineConfig; let Python resolve it.
         attention_backend: None,
+        moe_backend: None,
+        enable_eplb: false,
+        wideep_num_slots: None,
         nextn,
+        speculation: None,
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
+        decoder_replay: config.decoder_replay,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
@@ -1516,31 +1634,13 @@ pub struct PyForwardPassPerfModel {
     inner: crate::ForwardPassPerfModel,
 }
 
-/// Parse the optional options JSON into [`ForwardPassPerfOptions`], defaulting
-/// when `None`/empty. Serde fills missing fields from the per-field defaults.
-/// Raw JSON callers represent nonfinite regression weights with the exact
-/// quoted sentinels `"NaN"`, `"Infinity"`, and `"-Infinity"`.
-fn parse_fpm_options(options_json: Option<&str>) -> PyResult<crate::ForwardPassPerfOptions> {
-    match options_json {
-        None => Ok(crate::ForwardPassPerfOptions::default()),
-        Some(s) if s.trim().is_empty() => Ok(crate::ForwardPassPerfOptions::default()),
-        Some(s) => serde_json::from_str(s)
-            .map_err(|e| PyValueError::new_err(format!("invalid options JSON: {e}"))),
-    }
-}
-
-/// Parse the exact worker-type spellings shared with the Dynamo planner.
-/// Aliases are intentionally rejected so model identity cannot depend on which
-/// API surface constructed it.
-fn parse_fpm_worker_type(worker_type: &str) -> PyResult<crate::ForwardPassWorkerType> {
-    match worker_type {
-        "prefill" => Ok(crate::ForwardPassWorkerType::Prefill),
-        "decode" => Ok(crate::ForwardPassWorkerType::Decode),
-        "aggregated" => Ok(crate::ForwardPassWorkerType::Aggregated),
-        _ => Err(PyValueError::new_err(format!(
-            "invalid worker_type {worker_type:?}: expected 'prefill', 'decode', or 'aggregated'"
-        ))),
-    }
+fn parse_forward_pass_config(config_json: &str) -> PyResult<crate::ForwardPassPerfModelConfig> {
+    let mut de = serde_json::Deserializer::from_str(config_json);
+    let config = serde_path_to_error::deserialize(&mut de)
+        .map_err(|e| PyValueError::new_err(format!("invalid forward-pass config at {e}")))?;
+    de.end()
+        .map_err(|e| PyValueError::new_err(format!("invalid forward-pass config: {e}")))?;
+    Ok(config)
 }
 
 /// Parse an FPM payload JSON into one iteration's per-rank list. Accepts either
@@ -1560,50 +1660,101 @@ fn parse_fpm_iteration(fpm_json: &str) -> PyResult<Vec<crate::ForwardPassMetrics
 
 #[pymethods]
 impl PyForwardPassPerfModel {
-    /// `RustForwardPassPerfModel.from_native(config_json, options_json=None)`:
-    /// strict native AIC model. Compiles the engine via Python `compile_engine`;
-    /// raises if the config cannot be compiled.
+    /// Create a model from the complete canonical request.
     #[staticmethod]
-    #[pyo3(signature = (config_json, options_json=None))]
-    fn from_native(config_json: &str, options_json: Option<&str>) -> PyResult<Self> {
-        let config: EngineConfig = serde_json::from_str(config_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid engine config JSON: {e}")))?;
-        let options = parse_fpm_options(options_json)?;
-        let inner = crate::ForwardPassPerfModel::from_native(config, options).map_err(aic_to_py)?;
+    fn best_available(config_json: &str) -> PyResult<Self> {
+        let config = parse_forward_pass_config(config_json)?;
+        let inner = crate::ForwardPassPerfModel::best_available(config).map_err(aic_to_py)?;
         Ok(Self { inner })
     }
 
-    /// `RustForwardPassPerfModel.best_available(config_json, worker_type,
-    /// options_json=None)`:
-    /// native when possible, else regression fallback (reason in
-    /// `diagnostics()["last_warning"]`).
+    /// Expand and validate the canonical schema without constructing an engine.
     #[staticmethod]
-    #[pyo3(signature = (config_json, worker_type, options_json=None))]
-    fn best_available(
+    fn normalize_config(config_json: &str) -> PyResult<String> {
+        let config = parse_forward_pass_config(config_json)?;
+        config.validate().map_err(aic_to_py)?;
+        serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Migration adapter for previously saved flat tuning options.
+    #[staticmethod]
+    fn legacy_estimator_config(options_json: &str) -> PyResult<String> {
+        let options: crate::ForwardPassPerfOptions = serde_json::from_str(options_json)
+            .map_err(|e| PyValueError::new_err(format!("invalid legacy options: {e}")))?;
+        let config = crate::EstimatorConfig::from_legacy(options).map_err(aic_to_py)?;
+        config.validate().map_err(aic_to_py)?;
+        serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    /// Translate a saved EngineConfig and flat options into the canonical schema.
+    #[staticmethod]
+    #[pyo3(signature = (config_json, worker_type, options_json=None, allow_regression=false))]
+    fn migrate_legacy_config(
         config_json: &str,
         worker_type: &str,
         options_json: Option<&str>,
-    ) -> PyResult<Self> {
-        let config: EngineConfig = serde_json::from_str(config_json)
-            .map_err(|e| PyValueError::new_err(format!("invalid engine config JSON: {e}")))?;
-        let worker_type = parse_fpm_worker_type(worker_type)?;
-        let options = parse_fpm_options(options_json)?;
-        let inner = crate::ForwardPassPerfModel::best_available(config, worker_type, options)
-            .map_err(aic_to_py)?;
-        Ok(Self { inner })
-    }
-
-    /// `RustForwardPassPerfModel.from_regression(worker_type,
-    /// options_json=None)`:
-    /// regression-only model (no native engine, no Python compile).
-    #[staticmethod]
-    #[pyo3(signature = (worker_type, options_json=None))]
-    fn from_regression(worker_type: &str, options_json: Option<&str>) -> PyResult<Self> {
-        let worker_type = parse_fpm_worker_type(worker_type)?;
-        let options = parse_fpm_options(options_json)?;
-        let inner = crate::ForwardPassPerfModel::from_regression(worker_type, options)
-            .map_err(aic_to_py)?;
-        Ok(Self { inner })
+        allow_regression: bool,
+    ) -> PyResult<String> {
+        let legacy: EngineConfig =
+            serde_json::from_str(config_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let options = options_json
+            .map(serde_json::from_str::<crate::ForwardPassPerfOptions>)
+            .transpose()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?
+            .unwrap_or_default();
+        let request = engine_build_request(
+            &legacy,
+            legacy.systems_path.as_ref().and_then(|path| path.to_str()),
+        );
+        let worker_type = serde_json::from_value(serde_json::Value::String(worker_type.to_owned()))
+            .map_err(|e| PyValueError::new_err(format!("invalid worker_type: {e}")))?;
+        let estimation_mode = match request.forward_model.as_deref().unwrap_or("op_level") {
+            "op_level" => crate::EstimationMode::OpLevel,
+            "fpm" => crate::EstimationMode::FpmInterpolation,
+            value => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown legacy forward_model {value:?}"
+                )));
+            }
+        };
+        let config = crate::ForwardPassPerfModelConfig {
+            model: request.model_path,
+            system: request.system,
+            backend: legacy.backend,
+            worker_type,
+            backend_version: request.backend_version,
+            tp: request.tp_size,
+            pp: request.pp_size,
+            attention_dp: request.attention_dp_size,
+            moe_tp_size: request.moe_tp_size,
+            moe_ep_size: request.moe_ep_size,
+            gemm_quant_mode: request.gemm_quant_mode,
+            moe_quant_mode: request.moe_quant_mode,
+            fmha_quant_mode: request.fmha_quant_mode,
+            kvcache_quant_mode: request.kvcache_quant_mode,
+            comm_quant_mode: request.comm_quant_mode,
+            nextn: request.nextn,
+            speculation: request.speculation,
+            kv_block_size: request.kv_block_size,
+            decoder_replay: request.decoder_replay,
+            estimation_mode,
+            database_mode: legacy.database_mode,
+            transfer_policy: request.transfer_policy,
+            systems_paths: legacy.systems_path.into_iter().collect(),
+            fallback_policy: if allow_regression {
+                crate::ForwardPassFallbackPolicy::LegacyRegression
+            } else {
+                crate::ForwardPassFallbackPolicy::Deny
+            },
+            estimator_config: crate::EstimatorConfig::from_legacy(options).map_err(aic_to_py)?,
+            attention_backend: request.attention_backend,
+            moe_backend: request.moe_backend,
+            enable_eplb: request.enable_eplb,
+            wideep_num_slots: request.wideep_num_slots,
+            enable_shared_layer: request.shared_layer,
+            strict_provenance: legacy.strict_provenance,
+        };
+        serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Estimate one forward-pass iteration in ms. `fpm_json` is one iteration as
@@ -1627,6 +1778,24 @@ impl PyForwardPassPerfModel {
             .map_err(|e| PyValueError::new_err(format!("invalid tuning iterations JSON: {e}")))?;
         py.allow_threads(|| self.inner.tune_with_fpms(&iterations))
             .map_err(aic_to_py)
+    }
+
+    /// Static operation evidence from the canonical model, as JSON.
+    fn static_phase_diagnostics(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        context_length: u32,
+        prefix: u32,
+        prefill: bool,
+    ) -> PyResult<String> {
+        let result = py
+            .allow_threads(|| {
+                self.inner
+                    .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+            })
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&result).map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// Diagnostics (source / readiness / retained count / warning) as JSON.
@@ -1661,7 +1830,7 @@ impl PyForwardPassPerfModel {
 
 /// Register the AIConfigurator compatibility surface on the unified
 /// `aisimulate._runtime` extension. Python's
-/// `aiconfigurator_core._aiconfigurator_core` module is a pure-Python shim that
+/// `aisimulate_core._native` module is a pure-Python shim that
 /// re-exports these objects from that canonical extension.
 ///
 /// The removed `build_aic_engine` flat adapter is intentionally not exposed;
@@ -1697,7 +1866,7 @@ mod tests {
 
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems")
+            .join("../../python/aisimulate/src/aisimulate_core/systems")
     }
 
     /// `cargo test` runs without an embedding host, so the interpreter must
@@ -1809,6 +1978,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            decoder_replay: false,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -2029,7 +2199,7 @@ mod tests {
     fn aic_to_py_maps_typed_errors_to_sdk_classes() {
         py_init();
         Python::with_gil(|py| {
-            let sdk_available = py.import("aiconfigurator_core.sdk.errors").is_ok();
+            let sdk_available = py.import("aisimulate_core.sdk.errors").is_ok();
 
             let check = |err: AicError, sdk_name: &str| {
                 let pyerr = aic_to_py(err);

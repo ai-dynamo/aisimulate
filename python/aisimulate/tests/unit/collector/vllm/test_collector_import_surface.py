@@ -263,7 +263,7 @@ class TestCollectMoeImportSurface:
         (AIC-1782 Task V2, case YAML comment on that row): no packaged HF
         config exists for this model_path anywhere in the repo (unlike the
         base/-FP8 ids, both of which have one under
-        src/aiconfigurator/model_configs/), so ``_load_model_moe_config``
+        src/aisimulate_core/model_configs/), so ``_load_model_moe_config``
         raises before the row could ever be benchmarked. Opening the vllm
         nvfp4 gate on this row without also adding that (cross-module,
         human-approved) config would crash vLLM MoE case generation for

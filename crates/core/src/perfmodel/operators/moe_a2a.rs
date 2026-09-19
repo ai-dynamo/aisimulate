@@ -71,7 +71,17 @@ const A2A_PHASES: [&str; 3] = ["prepare", "dispatch", "combine"];
 /// equivalent (same choice as `moe_dispatch.rs`'s `op_name` guard) and is the
 /// one config-error variant `fpm::model::can_fallback_to_regression` refuses
 /// to swallow.
-fn validate_a2a_request(comm_backend: &str, phase: &str) -> Result<(), AicError> {
+fn validate_a2a_request(
+    comm_backend: &str,
+    phase: &str,
+    moe_ep_size: u32,
+    node_num: u32,
+) -> Result<(), AicError> {
+    if moe_ep_size == 0 || node_num == 0 {
+        return Err(AicError::InvalidEngineConfig(
+            "moe_ep_size and node_num must be positive".into(),
+        ));
+    }
     if !MOE_A2A_BACKENDS
         .iter()
         .any(|(name, _)| *name == comm_backend)
@@ -249,7 +259,12 @@ impl MoeAllToAllOp {
         let tokens = num_tokens / self.attention_tp_size.max(1);
         // moe_comm.py:600 — validation precedes the mode gate (:610), so an
         // invalid backend/phase is a ValueError even under SOL/EMPIRICAL.
-        validate_a2a_request(&self.comm_backend, &self.phase)?;
+        validate_a2a_request(
+            &self.comm_backend,
+            &self.phase,
+            self.moe_ep_size,
+            self.node_num,
+        )?;
         match db.database_mode {
             DatabaseMode::Silicon | DatabaseMode::Hybrid => {}
             mode => {
@@ -466,7 +481,7 @@ mod tests {
 
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems")
+            .join("../../python/aisimulate/src/aisimulate_core/systems")
     }
 
     fn write_column<T: parquet::data_type::DataType>(
@@ -1074,6 +1089,31 @@ mod tests {
     /// NOT `is_missing_perf_data` and therefore never converts into a HYBRID
     /// estimate or a `FallbackOp` chain.
     #[test]
+    fn zero_topology_is_rejected_before_lookup_or_fallback() {
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Hybrid,
+            DatabaseMode::Sol,
+            DatabaseMode::SolFull,
+            DatabaseMode::Empirical,
+        ] {
+            let (_tmp, db) = synthetic_db(mode);
+            for backend in ["deepep_ll", "deepep_ht"] {
+                for (ep, nodes) in [(0, 2), (16, 0), (0, 0)] {
+                    let mut request = op("dispatch", backend, 1);
+                    request.moe_ep_size = ep;
+                    request.node_num = nodes;
+                    let error = request.query(&db, 64).unwrap_err();
+                    assert!(
+                        matches!(&error, AicError::InvalidEngineConfig(message) if message.contains("must be positive"))
+                    );
+                    assert!(!error.is_missing_perf_data());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn unknown_backend_and_phase_are_config_errors_not_data_misses() {
         let (_tmp, db) = synthetic_db(DatabaseMode::Silicon);
         let bad_backend = op("dispatch", "deepep_xl", 1).query(&db, 64);
@@ -1167,9 +1207,9 @@ mod tests {
             ]
         );
         for backend in names {
-            validate_a2a_request(backend, "dispatch")
+            validate_a2a_request(backend, "dispatch", 16, 2)
                 .unwrap_or_else(|error| panic!("{backend} rejected: {error}"));
-            validate_a2a_request(backend, "combine")
+            validate_a2a_request(backend, "combine", 16, 2)
                 .unwrap_or_else(|error| panic!("{backend} rejected: {error}"));
         }
     }

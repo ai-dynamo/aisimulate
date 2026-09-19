@@ -85,6 +85,27 @@ def _recommendation(mode="aggregated"):
     return raw
 
 
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_epd_language_policy_normalizes_only_equivalent_default(mode):
+    from aisimulate.config.epd import _language_execution
+
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(mode)))
+    expected = _language_execution(spec)
+    legacy = deepcopy(spec)
+    deployment = legacy.backend_deployment
+    arguments = (
+        [deployment.agg_engine_args]
+        if mode == "aggregated"
+        else [deployment.prefill_engine_args, deployment.decode_engine_args]
+    )
+    for args in arguments:
+        assert args.pop("aic_database_mode") == "SILICON"
+    assert _language_execution(legacy) == expected
+    # A genuinely different estimator policy must still reject a callback.
+    arguments[0]["aic_database_mode"] = "SOL"
+    assert _language_execution(legacy) != expected
+
+
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated", "heterogeneous"])
 @pytest.mark.parametrize("relative_stop", [False, True])
 @pytest.mark.parametrize("target", ["throughput_per_gpu", "min_gpus"])
@@ -176,6 +197,13 @@ def test_epd_public_schema_rejects_unsupported(kind, recommend):
         )
     with pytest.raises(ValueError):
         (CoreRecommendationConfig if recommend else CorePredictionConfig).model_validate(raw)
+
+
+def test_encoder_legacy_fpm_does_not_bypass_estimator_policy_validation():
+    raw = _prediction()
+    raw["engine"]["workers"]["aggregated"]["timing"] = {"forward_model": "fpm", "estimation_mode": "fpm_regression"}
+    with pytest.raises(ValueError, match="estimator policies"):
+        CorePredictionConfig.model_validate(raw)
 
 
 @pytest.mark.parametrize(
@@ -387,8 +415,8 @@ def test_epd_callback_preserves_equivalent_defaults_and_stops(mode, inferred_cap
 @pytest.mark.parametrize("backends", [["sglang", "vllm"], ["vllm", "sglang"], ["vllm"]])
 @pytest.mark.parametrize("absence", ["database", "version"])
 def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, backends, absence):
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.sweeper import kv_estimate
+    from aisimulate_core.sdk import perf_database
 
     original_database = perf_database.get_database_view
     original_version = kv_estimate.get_latest_database_version
@@ -396,7 +424,7 @@ def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, bac
     def database(system, backend, version, **kwargs):
         return None if backend == "vllm" else original_database(system, backend, version, **kwargs)
 
-    def latest_version(system, backend):
+    def latest_version(system, backend, **kwargs):
         return None if backend == "vllm" else original_version(system, backend)
 
     raw = _recommendation()

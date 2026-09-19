@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 import aisimulate.sweeper.search as search_mod
-from aiconfigurator.sdk.sweep import _overlay_encoder_stage
 from aisimulate.runner import EngineReplayRunnerFactory, InvalidRunnerError
+from aisimulate.sdk.sweep import _overlay_encoder_stage
 from aisimulate.sweeper import (
     BackendDeploymentSpec,
     EncoderPoolSpec,
@@ -260,7 +260,7 @@ def test_runner_and_export_guards():
     ):
         with pytest.raises(InvalidRunnerError, match="per-request"):
             EngineReplayRunnerFactory().create(0).run(_spec(), output_requirements=outputs)
-    from aiconfigurator.generator.request.sweeper import (
+    from aisimulate.generator.request.sweeper import (
         SweeperCandidateError,
         from_sweeper_candidate,
     )
@@ -389,8 +389,8 @@ def test_unresolved_parallel_snapshot_keeps_encoder_without_inventing_gpu_total(
 
 
 def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
-    import aiconfigurator.sdk.sweep as aic_sweep
-    from aiconfigurator_core.sdk import perf_database
+    import aisimulate.sdk.sweep as aic_sweep
+    from aisimulate_core.sdk import perf_database
 
     calls = []
     monkeypatch.setattr(
@@ -435,8 +435,8 @@ def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
 def test_encoder_catalog_preserves_version_precedence(
     monkeypatch, encoder_hardware, language_version, encoder_version, implicit
 ):
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.sweeper import kv_estimate
+    from aisimulate_core.sdk import perf_database
 
     original_version = kv_estimate.get_latest_database_version
     original_database = perf_database.get_database_view
@@ -472,9 +472,9 @@ def test_encoder_catalog_preserves_version_precedence(
     + [(stage, NoPerfDatabase) for stage in ("database", "estimator")],
 )
 def test_encoder_catalog_does_not_hide_failures(monkeypatch, stage, error_type):
-    import aiconfigurator.sdk.sweep as aic_sweep
-    from aiconfigurator_core.sdk import perf_database
+    import aisimulate.sdk.sweep as aic_sweep
     from aisimulate.sweeper import kv_estimate
+    from aisimulate_core.sdk import perf_database
 
     error = error_type(f"unexpected {stage} failure")
 
@@ -494,7 +494,7 @@ def test_encoder_catalog_does_not_hide_failures(monkeypatch, stage, error_type):
 
 @pytest.mark.parametrize("modes", [["agg", "disagg"], ["disagg", "agg"], ["agg"]])
 def test_epd_native_search_preserves_available_modes(monkeypatch, caplog, modes):
-    from aiconfigurator_core.sdk import perf_database
+    from aisimulate_core.sdk import perf_database
 
     class LimitedFactory:
         def capabilities(self):

@@ -3,7 +3,7 @@
 
 //! Communication operators: custom allreduce, NCCL collectives, P2P.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.communication.{CustomAllReduce,
+//! Mirrors `aisimulate.sdk.operations.communication.{CustomAllReduce,
 //! NCCL, P2P}`, including the database-mode dispatch of
 //! `_query_custom_allreduce_table` / `_query_nccl_table`. This is where the
 //! topology-aware scaling lives:
@@ -474,7 +474,7 @@ mod tests {
     fn b200_vllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.19.0").expect("db must load")
     }
 

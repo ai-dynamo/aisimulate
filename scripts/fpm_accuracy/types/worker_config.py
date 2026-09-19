@@ -64,6 +64,7 @@ class WorkerParallelismConfig(_WorkerConfigSection):
     attention_data_parallel_size: PositiveInt | None = None
     attention_dp_size: PositiveInt | None = None
     context_parallel_size: PositiveInt | None = None
+    decode_context_parallel_size: PositiveInt = 1
     cp_size: PositiveInt | None = None
     expert_parallel_enabled: bool | None = None
     pipeline_parallel_size: PositiveInt | None = None

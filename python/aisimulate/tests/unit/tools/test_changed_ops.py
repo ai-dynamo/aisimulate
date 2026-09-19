@@ -500,9 +500,7 @@ class TestTablesAndSystems:
     def test_nested_source_root_resolves_unified_package_data(self, mod, repo):
         source_root = repo / "python" / "aisimulate"
         files = {f"python/aisimulate/{path}": content for path, content in _default_files().items()}
-        files[
-            "python/aisimulate/src/aiconfigurator_core/systems/data/h200_sxm/gemm/sglang/0.5.14/gemm_perf.parquet"
-        ] = "x"
+        files["python/aisimulate/src/aisimulate_core/systems/data/h200_sxm/gemm/sglang/0.5.14/gemm_perf.parquet"] = "x"
         _write_tree(repo, files)
         base_sha = _commit_all(repo, "nested source root")
 

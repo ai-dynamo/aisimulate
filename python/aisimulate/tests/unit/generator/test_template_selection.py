@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator.generator.rendering.engine import _log_versioned_template_selection, _select_versioned_template
+from aisimulate.generator.rendering.engine import _log_versioned_template_selection, _select_versioned_template
 
 pytestmark = pytest.mark.unit
 

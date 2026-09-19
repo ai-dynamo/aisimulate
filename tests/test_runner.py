@@ -10,7 +10,7 @@ import pickle
 import pytest
 
 import aisimulate
-from aisimulate import aic
+from aisimulate import capacity as aic
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
 from aisimulate.replay.config import ReplayCliConfig, ReplayOutputConfig
@@ -27,6 +27,7 @@ from aisimulate.sweeper import (
     ReplaySpec,
     RuntimeHookSpec,
 )
+from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 
 pytestmark = [
     pytest.mark.unit,
@@ -259,6 +260,51 @@ def test_runner_preserves_weka_lane_input_without_defaulting_source_block_size()
     assert traffic["agentic_lanes"] == 2
     assert traffic["execution_model"] == "test-model"
     assert "trace_block_size" not in traffic
+
+
+@pytest.mark.parametrize("model_key", ["model", "model_path"])
+def test_agentic_runner_reads_canonical_model_identity(model_key):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("aic_model_path")
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=1,
+        performance_model_metadata={"aggregated": {"provider": "aic", "config": {model_key: "test-model"}}},
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            deployment=deployment,
+            workload={
+                "source_type": "trace",
+                "load_type": "trace_timestamps",
+                "trace_path": "agentic.jsonl",
+                "trace_format": "agentic_mooncake",
+            },
+        )
+    )
+    assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
+
+
+@pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("payload", [{}, {"config": None}, {"config": []}, {"config": "invalid"}])
+def test_runner_rejects_nonmapping_aic_timing_before_materialization(nested_rank, payload, monkeypatch):
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", lambda **kwargs: pytest.fail("invalid timing reached capacity"))
+    runtime = RecordingRuntime()
+    args = _engine_args(timing={"type": "external", "provider": "aic", **payload})
+    if nested_rank:
+        args = {"rank": args}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="agg", backend="vllm", backend_version="test", agg_engine_args=args, num_workers=1
+        )
+    )
+    with pytest.raises(ValueError, match="external AIC timing config must be a mapping"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
 
 
 def test_runner_rejects_agentic_execution_without_a_target_model():
@@ -531,7 +577,8 @@ def test_public_host_offload_config_reaches_native_execution_rank():
     }
 
 
-def test_public_cuda_graph_reservation_reaches_native_capacity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("rank_only_controls", [False, True])
+def test_public_cuda_graph_reservation_reaches_native_capacity(tmp_path, monkeypatch, rank_only_controls):
     reserved_bytes = 14_559_947_612
     path = tmp_path / "prediction.yaml"
     path.write_text(
@@ -560,8 +607,27 @@ engine:
         return 321
 
     monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    import aisimulate_core
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    class Estimator:
+        def __init__(self, config):
+            self.config = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+            self.config.update(backend_version="0.24.0", estimation_mode="op_level", fallback_policy="deny")
+
+        def diagnostics(self):
+            return {"readiness": "ready", "provenance": {"config": self.config}}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", Estimator)
     public = CorePredictionConfig.from_yaml(path)
     spec = prediction_to_replay_spec(public)
+    if rank_only_controls:
+        timing = spec.backend_deployment.agg_engine_args["timing_model"]["config"]
+        timing.pop("cuda_graph_reserved_bytes")
+        timing.pop("gpu_memory_utilization")
     runtime = RecordingRuntime()
 
     assert public.engine.workers.aggregated is not None
@@ -685,11 +751,14 @@ def test_runner_rejects_nested_inferred_capacity_when_fixed_timing_discards_rese
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
-def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch):
+@pytest.mark.parametrize("dtype", [None, "gemm_dtype", "moe_dtype", "fmha_dtype", "kv_cache_dtype", "comm_dtype"])
+def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch, dtype):
     runtime = RecordingRuntime()
     engine_args = _engine_args()
     engine_args.pop("num_gpu_blocks")
     engine_args["gpu_memory_utilization"] = 0.8
+    if dtype:
+        engine_args["aic_" + dtype] = "fp8"
     calls = []
 
     def estimate(**kwargs):
@@ -713,6 +782,9 @@ def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypa
     assert rank["timing_model"]["type"] == "fixed"
     assert "gpu_memory_utilization" not in rank
     assert calls[0]["gpu_memory_utilization"] == 0.8
+    if dtype:
+        assert calls[0][dtype] == "fp8"
+        assert "aic_" + dtype not in rank
 
 
 def test_runner_captures_requested_raw_and_per_request_report():
@@ -1003,6 +1075,32 @@ def test_runner_accepts_matching_backend_version_in_explicit_aic_timing():
     assert timing_config["backend_version"] == "0.11.1"
 
 
+def test_direct_replay_normalizes_both_version_aliases_without_mutating_input():
+    runtime = RecordingRuntime()
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "Qwen/Qwen3-32B",
+            "system": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "current",
+            "tp": 2,
+            "attention_dp": 1,
+        },
+    }
+    args = {"tensor_parallel_size": 2, "rank": {"block_size": 4, "num_gpu_blocks": 128, "timing_model": timing}}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="vllm", backend_version="current", agg_engine_args=args, num_workers=1
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    actual = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]["backend_version"]
+    from aisimulate_core.sdk.perf_database import resolve_query_version
+
+    assert actual == resolve_query_version("h200_sxm", "vllm", "current")
+    assert timing["config"]["backend_version"] == "current"
+
+
 def test_runner_rejects_conflicting_backend_version_in_explicit_aic_timing():
     timing = {
         "type": "external",
@@ -1193,8 +1291,87 @@ def test_runner_rejects_unknown_forward_model(value):
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
+@pytest.mark.parametrize("replay", [False, True])
+def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeypatch):
+    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
+
+    class ReadyEstimator:
+        def __init__(self, config):
+            self.config = config
+
+        def diagnostics(self):
+            return {"readiness": "ready", "provenance": {"config": self.config}}
+
+        def close(self):
+            pass
+
+    # This exercises configuration transport with a recording runtime, not
+    # readiness or prediction for the model.
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", ReadyEstimator)
+    public = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "model": DEEPSEEK_V41_MODEL_PATH,
+                "hardware": "gb300",
+                "backend": "sglang",
+                "decoder_replay": replay,
+                "database_mode": "SILICON",
+                "enable_shared_layer": False,
+                "strict_provenance": True,
+                "workers": {"aggregated": {"kv_cache": {"capacity": {"type": "fixed", "blocks": 128}}}},
+            }
+        }
+    )
+    runtime = RecordingRuntime()
+    spec = prediction_to_replay_spec(public)
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    config = runtime.execution_spec["spec"]["engine"]["rank"]["timing_model"]["config"]
+    assert config.get("decoder_replay", False) is replay
+    assert config["database_mode"] == "SILICON"
+    assert config["enable_shared_layer"] is False
+    assert config["strict_provenance"] is True
+    metadata = spec.backend_deployment.performance_model_metadata["aggregated"]["config"]
+    assert metadata.get("decoder_replay", False) is replay
+    assert metadata["database_mode"] == "SILICON"
+
+
+@pytest.mark.parametrize(
+    ("model", "backend"),
+    [("example/model", "sglang"), (DEEPSEEK_V41_MODEL_PATH, "vllm")],
+)
+def test_public_replay_rejects_unsupported_model_or_backend(model, backend):
+    with pytest.raises(ValueError, match="decoder_replay requires"):
+        CorePredictionConfig.model_validate(
+            {
+                "engine": {
+                    "model": model,
+                    "hardware": "gb300",
+                    "backend": backend,
+                    "decoder_replay": True,
+                }
+            }
+        )
+
+
+@pytest.mark.parametrize("field", ["aic_decoder_replay", "aic_enable_shared_layer", "aic_strict_provenance"])
+def test_replay_policy_alias_requires_a_boolean(field):
+    engine_args = _engine_args()
+    engine_args.pop("timing_model")
+    engine_args[field] = "false"
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        parallel_config={"tp": 2, "attention_dp": 1, "replicas": 2},
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    with pytest.raises(ValueError, match="must be a boolean"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
+
+
 def test_memory_detail_reuses_capacity_calculation_without_changing_execution(monkeypatch):
-    from aiconfigurator_core.sdk import memory
+    from aisimulate_core.sdk import memory
 
     calls = []
     estimate = {
@@ -1306,3 +1483,93 @@ def test_runner_rejects_overflowing_ordinary_metric():
 
     with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
+
+
+@pytest.mark.parametrize("inferred_capacity", [False, True])
+def test_flat_engine_controls_reach_native_timing_identity(inferred_capacity, monkeypatch):
+    controls = {"enable_eplb": True, "wideep_num_slots": 128, "moe_backend": "deepep_moe", "attention_backend": "fa3"}
+    seen = {}
+
+    def estimate(**kwargs):
+        seen.update(kwargs)
+        return 16
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    args = _engine_args()
+    args.pop("timing_model")
+    if inferred_capacity:
+        args.pop("num_gpu_blocks")
+    args.update({"aic_" + name: value for name, value in controls.items()})
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            deployment=BackendDeploymentSpec(
+                deployment_mode="agg",
+                backend="vllm",
+                backend_version="test",
+                agg_engine_args=args,
+                num_workers=1,
+            )
+        )
+    )
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert {name: rank["timing_model"]["config"][name] for name in controls} == controls
+    assert not {"aic_" + name for name in controls} & rank.keys()
+    if inferred_capacity:
+        assert {name: seen[name] for name in controls} == controls
+
+
+@pytest.mark.parametrize(
+    "name,value", [("enable_eplb", 1), ("wideep_num_slots", 0), ("wideep_num_slots", True), ("moe_backend", False)]
+)
+def test_flat_engine_controls_validate_types(name, value):
+    args = _engine_args()
+    args.pop("timing_model")
+    args["aic_" + name] = value
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match=name):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )
+    assert runtime.execution_spec is None
+
+
+def test_flat_controls_cannot_override_inactive_nested_identity():
+    args = _engine_args(timing={"type": "external", "provider": "aic", "config": {"enable_eplb": False}})
+    args["aic_enable_eplb"] = True
+    with pytest.raises(ValueError, match="configured both"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )
+
+
+def test_flat_active_controls_reject_fixed_timing():
+    args = {**_engine_args(), "aic_enable_eplb": True}
+    with pytest.raises(ValueError, match="require an AIC timing"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )

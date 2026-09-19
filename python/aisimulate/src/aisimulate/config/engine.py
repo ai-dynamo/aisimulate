@@ -7,9 +7,16 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictBool, field_validator, model_validator
 
-from .common import Choices, IntegerRange, NumericRange, StrictModel
+from .common import (
+    ENGINE_MODEL_CONTROL_FIELDS,
+    Choices,
+    IntegerRange,
+    NumericRange,
+    StrictModel,
+    is_active_engine_model_control,
+)
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
@@ -158,12 +165,40 @@ class NgramSpeculationConfig(StrictModel):
 
 class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
-    forward_model: Literal["op_level", "fpm"] = "op_level"
+    forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
+    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
+    fallback_policy: Literal["deny", "allow"] | None = None
+    estimator_config: dict[str, Any] | None = None
+    systems_paths: list[str] | None = Field(default=None, min_length=1)
+    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] | None = None
+    transfer_policy: str | list[str] | None = None
+
+    @field_validator("database_mode", mode="before")
+    @classmethod
+    def _normalize_database_mode(cls, value):
+        return value.upper() if isinstance(value, str) else value
+
+    @model_validator(mode="before")
+    @classmethod
+    def _preserve_legacy_estimator_selection(cls, value):
+        if isinstance(value, dict) and value.get("type", "default") == "default" and "forward_model" in value:
+            value = dict(value)
+            legacy = {"op_level": "op_level", "fpm": "fpm_interpolation"}.get(value["forward_model"])
+            if legacy is not None and "estimation_mode" not in value:
+                value["estimation_mode"] = legacy
+                value.setdefault("fallback_policy", "deny")
+        return value
+
     prefill_ms: float | None = Field(default=None, ge=0.0)
     decode_ms: float | None = Field(default=None, ge=0.0)
 
     @model_validator(mode="after")
     def _validate_timing(self) -> TimingConfig:
+        if self.estimation_mode == "fpm_interpolation":
+            self.forward_model = "fpm"
+        elif self.estimation_mode == "op_level":
+            self.forward_model = "op_level"
+
         if self.type == "fixed":
             if self.prefill_ms is None or self.decode_ms is None:
                 raise ValueError("fixed timing requires prefill_ms and decode_ms")
@@ -225,12 +260,127 @@ class KvTransferConfig(StrictModel):
     timing_mode: Literal["full_prompt", "destination_missing"] = "destination_missing"
 
 
-class EnginePredictionConfig(StrictModel):
+class EstimatorPolicyConfig(StrictModel):
+    nextn: NonNegativeInt = Field(default=0, le=5)
+    nextn_accepted: NonNegativeFloat | None = None
+    enable_chunked_prefill: bool | None = Field(default=None, strict=True)
+    enable_eplb: bool = Field(default=False, strict=True)
+    wideep_num_slots: PositiveInt | None = None
+    moe_backend: str | None = None
+    attention_backend: str | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_engine_controls(self):
+        if self.nextn and self.nextn_accepted is None:
+            raise ValueError("nextn requires explicit nextn_accepted")
+        if self.nextn_accepted is not None and (not self.nextn or self.nextn_accepted > self.nextn):
+            raise ValueError("nextn_accepted requires nextn > 0 and must be within [0, nextn]")
+        active = self.nextn or any(
+            is_active_engine_model_control(name, getattr(self, name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        )
+        mode = getattr(self, "mode", "aggregated")
+        modes = mode.choices if hasattr(mode, "choices") else [mode]
+        if "afd" in modes and self.enable_chunked_prefill is not None:
+            raise ValueError("enable_chunked_prefill is unsupported for AFD")
+        workers = getattr(self, "workers", None)
+        roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
+        if active and (
+            "afd" in modes
+            or getattr(workers, "encoder", None) is not None
+            or any(worker is not None and worker.timing.type != "default" for worker in roles)
+        ):
+            raise ValueError("engine model controls require default timing in every regular language role")
+        return self
+
+    database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
+    transfer_policy: str | list[str] | None = None
+    systems_paths: list[str] | None = None
+    estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
+    fallback_policy: Literal["deny", "allow"] = "deny"
+    estimator_config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("database_mode", mode="before")
+    @classmethod
+    def _normalize_database_mode(cls, value):
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator("systems_paths")
+    @classmethod
+    def _nonempty_system_roots(cls, value):
+        if value is None:
+            return value
+        if not value or any(not path.strip() for path in value):
+            raise ValueError("systems_paths must contain at least one nonempty root")
+        return value
+
+    @model_validator(mode="after")
+    def _supported_estimator_policies(self):
+        mode = getattr(self, "mode", "aggregated")
+        modes = mode.choices if hasattr(mode, "choices") else [mode]
+        workers = getattr(self, "workers", None)
+        custom_policy = (
+            self.database_mode != "SILICON"
+            or self.transfer_policy is not None
+            or self.systems_paths not in (None, ["default"])
+            or self.estimation_mode != "auto"
+            or self.fallback_policy != "deny"
+            or bool(self.estimator_config)
+        )
+        roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
+        unsupported_provider = "afd" in modes or getattr(workers, "encoder", None) is not None
+        if unsupported_provider and any(
+            worker is not None
+            and (
+                bool(worker.timing.estimator_config)
+                or worker.timing.systems_paths is not None
+                or worker.timing.database_mode is not None
+                or worker.timing.transfer_policy is not None
+                or worker.timing.fallback_policy == "allow"
+                or worker.timing.estimation_mode not in {None, "op_level", "fpm_interpolation"}
+            )
+            for worker in roles
+        ):
+            raise ValueError("estimator policies require regular language workers with default timing")
+        if custom_policy and (
+            "afd" in modes
+            or getattr(workers, "encoder", None) is not None
+            or any(worker is not None and worker.timing.type != "default" for worker in roles)
+        ):
+            raise ValueError("estimator policies require regular language workers with default timing in every role")
+        for worker in roles:
+            if (
+                worker is not None
+                and worker.timing.type != "default"
+                and any(
+                    getattr(worker.timing, name) is not None
+                    for name in (
+                        "estimation_mode",
+                        "fallback_policy",
+                        "estimator_config",
+                        "systems_paths",
+                        "database_mode",
+                        "transfer_policy",
+                    )
+                )
+            ):
+                raise ValueError("estimator settings require default timing")
+        return self
+
+
+class EnginePredictionConfig(EstimatorPolicyConfig):
     mode: EngineMode = "aggregated"
     model: str
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
+    decoder_replay: StrictBool = False
+    enable_shared_layer: StrictBool | None = None
+    strict_provenance: StrictBool | None = None
     context_length: PositiveInt | Literal["max"] = "max"
     speculation: NgramSpeculationConfig | None = None
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
@@ -253,6 +403,14 @@ class EnginePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
+        if self.decoder_replay:
+            # Keep the pre-supervision configuration path lightweight. Import
+            # the canonical model identity only when this runtime feature is
+            # requested, rather than importing aisimulate_core for every CLI.
+            from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
+
+            if self.model != DEEPSEEK_V41_MODEL_PATH or self.backend != "sglang":
+                raise ValueError(f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'")
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.mode == "afd":
             _validate_prediction_afd(self)
@@ -400,14 +558,14 @@ class WorkersRecommendationConfig(StrictModel):
     decode: WorkerRecommendationConfig | None = None
 
 
-class EngineRecommendationConfig(StrictModel):
+class EngineRecommendationConfig(EstimatorPolicyConfig):
     mode: EngineMode | Choices[EngineMode] = Field(
         default_factory=lambda: Choices[EngineMode](choices=["aggregated", "disaggregated"])
     )
     model: str
     hardware: str
     backend: Backend | Choices[Backend] = Field(default_factory=lambda: Choices[Backend](choices=["vllm", "sglang"]))
-    backend_version: str | None = None
+    backend_version: str | dict[str, str] | None = None
     context_length: PositiveInt | Literal["max"] = "max"
     speculation: NgramSpeculationConfig | None = None
     workers: WorkersRecommendationConfig = Field(default_factory=WorkersRecommendationConfig)
@@ -438,6 +596,10 @@ class EngineRecommendationConfig(StrictModel):
                 has_transfer=self.kv_transfer is not None,
             )
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
+        if isinstance(self.backend_version, dict):
+            unknown = sorted(set(self.backend_version) - backends)
+            if unknown:
+                raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
         _validate_recommendation_host_offload(self)
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
@@ -447,6 +609,8 @@ class EngineRecommendationConfig(StrictModel):
 def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:
     if engine.speculation is None:
         return
+    if engine.nextn:
+        raise ValueError("speculation cannot be combined with nextn")
     if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
         raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
     for role in ("aggregated", "prefill", "decode"):

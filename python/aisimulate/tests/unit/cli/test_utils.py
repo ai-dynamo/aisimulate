@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from aiconfigurator.cli.utils import (
+from aisimulate.legacy_cli.utils import (
     _merge_into_top_n,
     merge_experiment_results_by_mode,
     process_experiment_result,
@@ -57,7 +57,7 @@ class TestProcessExperimentResult:
         assert not pareto_frontier_df.empty
 
     def test_afd_uses_effective_gpu_budget_for_picking(self, monkeypatch):
-        import aiconfigurator.cli.utils as cli_utils
+        import aisimulate.legacy_cli.utils as cli_utils
 
         captured = {}
 

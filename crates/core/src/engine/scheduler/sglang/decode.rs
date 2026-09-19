@@ -7,7 +7,9 @@ use crate::engine::common::protocols::OutputSignal;
 use crate::engine::common::speculative::SpeculativeDecodeSampler;
 use crate::engine::common::utils::compute_prefill_handoff_delay_ms;
 use crate::engine::kv_manager::SglangKvManager;
-use crate::engine::{PressureEvent, PressureKind, PressureState, modeled_duration_ms};
+use crate::engine::{
+    DecodeAcceptance, PressureEvent, PressureKind, PressureState, modeled_duration_ms,
+};
 
 use super::config::{SglangConfig, floor_to_block};
 use super::request::SglangRequest;
@@ -27,6 +29,7 @@ pub(super) struct DecodeResult {
     /// happened.
     pub(super) new_token_ratio_estimate: Option<f64>,
     pub(super) end_ms: f64,
+    pub(super) decode_acceptance: DecodeAcceptance,
 }
 
 /// What a scheduler pass asks the step simulation to do with `running`.
@@ -482,6 +485,7 @@ fn simulate_step(
             pressure_events,
             new_token_ratio_estimate,
             end_ms: current_time_ms,
+            ..DecodeResult::default()
         });
     }
 
@@ -516,21 +520,33 @@ fn simulate_step(
             pressure_events,
             new_token_ratio_estimate,
             end_ms: current_time_ms,
+            ..DecodeResult::default()
         });
     };
 
     output_signals.reserve(running.len());
     let mut completed_indices = Vec::new();
+    let mut decode_acceptance = DecodeAcceptance::default();
 
     for (idx, req) in running.iter_mut().enumerate() {
         let remaining = req.remaining_output_tokens();
-        let burst = if config.worker_type == crate::engine::common::protocols::WorkerType::Prefill {
-            remaining.min(1)
-        } else if let Some(sampler) = sampler.as_deref_mut() {
-            sampler.sample_output_tokens(remaining)
-        } else {
-            remaining.min(1)
-        };
+        let accepted =
+            if config.worker_type == crate::engine::common::protocols::WorkerType::Prefill {
+                remaining.min(1)
+            } else if remaining == 0 {
+                0
+            } else if let Some(sampler) = sampler.as_deref_mut() {
+                sampler.sample_accepted_tokens()
+            } else {
+                remaining.min(1)
+            };
+        if accepted > 0
+            && config.worker_type != crate::engine::common::protocols::WorkerType::Prefill
+        {
+            decode_acceptance.accepted_tokens += accepted;
+            decode_acceptance.forwards += 1;
+        }
+        let burst = accepted.min(remaining);
         for _ in 0..burst {
             let crossing_page_boundary = req.current_sequence_len() + 1 > req.allocated_tokens;
             kv_manager.extend_decode(&mut req.kv_lease, &mut reservation);
@@ -584,5 +600,6 @@ fn simulate_step(
         pressure_events,
         new_token_ratio_estimate,
         end_ms: current_time_ms + total_time.as_secs_f64() * 1000.0,
+        decode_acceptance,
     })
 }

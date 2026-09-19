@@ -12,8 +12,8 @@
     "aic_semantics_revision": "7b71c9227836845b8588e2d52898f7b8f85dcdb4",
     "fpe_energy_revision": "0c1bee0867da5b5cc545e35cbea173a55afd90e0",
     "reference_paths": [
-      "python/aisimulate/src/aiconfigurator_core/sdk/inference_summary.py",
-      "python/aisimulate/src/aiconfigurator/cli/api.py",
+      "python/aisimulate/src/aisimulate_core/sdk/inference_summary.py",
+      "python/aisimulate/src/aisimulate/legacy_cli/api.py",
       "crates/core/src/perfmodel/engine/runtime.rs"
     ]
   },
