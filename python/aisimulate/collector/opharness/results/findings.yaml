@@ -295,16 +295,22 @@ findings:
       generic registry construction: dsa (aligned, done) AND plain mla — DeepSeek-V3 runs unmodified through collect_mla_module_029
       (registry resolves DeepseekV3ForCausalLM -> generic deepseek_v2 model -> serving-same DeepseekV2MLAAttention;
       FLASH_ATTN_MLA, 1.81ms ctx b1 s512), i.e. the config-in construction generalizes across architectures with
-      zero per-model code. API-BROKEN, forks needed: collect_attn (set_kv_cache_layout removed in 0.29 -> record_kv_cache_layout/get_supported_kv_cache_layouts,
-      utils.py:190-232), collect_msa_module (MiniMaxM3SparseBackend lost get_kv_cache_shape). NOT YET SMOKED: compute_scale
-      + mla_bmm (no __main__, need the registry single-case runner). EXPECTED BLOCKED: dsv4_* (0.29 cutedsl framework
-      regression). OUT OF SCOPE: kda (preview-image runtime lane), xpu variants. Evidence: workspace facts/opsweep_0290/*.txt
-      (11.7k perf rows).'
+      zero per-model code. FORKED AND CLOSED (second pass, same day): collect_attn_029.py (0.29 replaced the
+      set/get kv-cache-layout API with get_supported_kv_cache_layouts + resolve_kv_cache_layout and merged the
+      per-layer cache view to [B,H,N,2*D], flash_attn.py:1013-1014; SM90 smokes green on vllm_flash_attn_fa3;
+      path_diff aligned ctx+gen vs Meta-Llama-3.1-8B serving) and collect_msa_029.py (0.29 removed
+      AttentionBackend.get_kv_cache_shape — both caches now allocated via compute_layer_kv_cache_shape_bytes
+      and bound via each layer''s bind_kv_cache, v1/kv_cache_interface.py:253-269 + v1/worker/utils.py:622;
+      SM90 smokes green bf16 ctx/gen + fp8 ctx on MiniMaxM3SparseTritonImpl; path_diff aligned ctx+gen vs
+      MiniMax-M3 serving). SMOKED VIA components/op_smoke.py (generic registry-driven single-case runner —
+      one standard, no per-op drivers): compute_scale (2/2 cases, dynamic-minus-static fp8 quant rows) and
+      mla_bmm_gen_pre/post (2/2 each, vllm_torch_bmm) run AS-IS on 0.29. EXPECTED BLOCKED: dsv4_* (0.29 cutedsl
+      framework regression). OUT OF SCOPE: kda (preview-image runtime lane), xpu variants. Evidence: workspace
+      facts/opsweep_0290/*.txt.'
     applies_to:
     - framework:vllm-0.29.0
-    - ops:gemm,moe,encoder_attention,gdn,mhc,mla,dsa
-    - ops-broken:attention,msa
-    - ops-pending:compute_scale,mla_bmm
+    - ops:gemm,moe,encoder_attention,gdn,mhc,mla,dsa,attention,msa,compute_scale,mla_bmm
+    - ops-blocked:dsv4
   vllm_0290_sparse_family_split_needed:
     statement: 'OWNER DECISION NEEDED (op granularity): the sparse_attention family lumps dsa_* with dsv4_*/glm5_*
       tables, but the 0.29.0 upgrade forks their fates — DSA collects fine on 0.29 (lane collect_mla_module_029.py,
@@ -348,3 +354,33 @@ findings:
       per (model, backend) — neither blanket auto nor blanket profile->fp8 works.'
     applies_to:
     - family:dsv4
+  probe_cudagraph_kernel_blindness_fixed:
+    statement: 'INSTRUMENT FIX (probe_vllm, 2026-09-19): the whole-run kernel tables were built by walking
+      torch.profiler CPU function_events — kernels replayed inside CUDA graphs have no CPU launch event and
+      were INVISIBLE. Consequence: vllm 0.29 MiniMax-M3 serving evidence showed ZERO attend/indexer kernels
+      (M3''s graph-safe attend runs under full cudagraph), and Llama FA evidence missed the in-graph
+      FlashAttnFwdCombine + prepare_varlen_num_blocks — path_diff produced FALSE "diverged" verdicts against
+      collector captures (collectors run eager, so their kernels were all visible). Fix in code, generic
+      (no per-model case): tables now come from the kineto DEVICE event stream (every executed kernel appears
+      there, graph-replayed or not), CPU-tree walk kept as fallback. Second generalized knob from the same
+      episode: probe prompt length is now --isl / AIC_PROBE_ISL (default 32, recorded as probe_isl) because
+      shape-conditional serving paths (M3 sparse threshold at topk_blocks*block_size tokens, FA split-KV)
+      are invisible below their thresholds — coverage is a parameter, never a per-model special case.
+      MiniMax-M3 and Meta-Llama-3.1-8B 0.29 raws re-probed at isl 4096 and superseded (old raws kept in
+      workspace facts/raw_superseded/); after the fix all four attn/msa 029-lane path_diff verdicts flipped
+      to aligned with zero collector changes.'
+    applies_to:
+    - instrument:probe_vllm
+    - framework:vllm-0.29.0
+    - MiniMaxAI/MiniMax-M3
+    - meta-llama/Meta-Llama-3.1-8B
+  taxonomy_dsa_nsa_family_covers_m3:
+    statement: 'NAMING DEBT: the kernel_taxonomy family "dsa_nsa" matches MiniMax-M3 sparse-attention kernels
+      too (sparse_attn_fwd/_gqa_share_sparse/_merge_topk_attn_out/_decode_score are models/minimax_m3 Triton
+      kernels, ops/sparse_attn.py). Verdicts are computed within-family by kernel-name overlap so the lumping
+      is functionally harmless today, but the family name misleads readers of verdict files. Rename (e.g.
+      block_sparse_attn) or split when the owner next touches the taxonomy.'
+    applies_to:
+    - instrument:kernel_taxonomy
+    - MiniMaxAI/MiniMax-M3
+    - deepseek-ai/DeepSeek-V3.2

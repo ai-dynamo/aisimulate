@@ -28,6 +28,11 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="attention_context",
+        # A 0.29.0 lane exists (collect_attn_029.py: 0.29 replaced the
+        # set/get kv-cache-layout API with get_supported_kv_cache_layouts +
+        # resolve_kv_cache_layout and merged the per-layer cache view to
+        # [B, H, N, 2*D]; SM90 smokes pass on vllm_flash_attn_fa3). Routed
+        # when the manifest pin moves to 0.29.
         module="collector.vllm.collect_attn",
         get_func="get_context_attention_test_cases",
         run_func="run_attention_torch",
@@ -105,6 +110,11 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="msa_context_module",
+        # A 0.29.0 lane exists (collect_msa_029.py: 0.29 removed
+        # AttentionBackend.get_kv_cache_shape — allocation goes through the
+        # generic byte-shape pipeline + per-layer bind_kv_cache; SM90 smokes
+        # pass, bf16+fp8, Triton impls). Routed when the manifest pin moves
+        # to 0.29 (vllm collectors pin exactly to the manifest version).
         module="collector.vllm.collect_msa_module",
         get_func="get_msa_context_module_test_cases",
         run_func="run_msa_module_worker",
