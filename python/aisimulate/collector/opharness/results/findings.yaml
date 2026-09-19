@@ -288,6 +288,23 @@ findings:
     applies_to:
     - nvidia/Nemotron-H-56B-Base-8K
     - generator:rule-engine
+  vllm_0290_op_sweep_triage:
+    statement: 'vllm 0.29.0 op-collector sweep, first pass (H20, quick smokes in the official container, 2026-09-19).
+      WORK AS-IS on 0.29 (perf rows produced, no code change): gemm (incl. fp8 CutlassFP8ScaledMM kernel_source),
+      moe (108 cases), encoder_attention (long sweep, no errors), gdn (4k rows), mhc_module. WORK VIA THE 029 LANE''s
+      generic registry construction: dsa (aligned, done) AND plain mla — DeepSeek-V3 runs unmodified through collect_mla_module_029
+      (registry resolves DeepseekV3ForCausalLM -> generic deepseek_v2 model -> serving-same DeepseekV2MLAAttention;
+      FLASH_ATTN_MLA, 1.81ms ctx b1 s512), i.e. the config-in construction generalizes across architectures with
+      zero per-model code. API-BROKEN, forks needed: collect_attn (set_kv_cache_layout removed in 0.29 -> record_kv_cache_layout/get_supported_kv_cache_layouts,
+      utils.py:190-232), collect_msa_module (MiniMaxM3SparseBackend lost get_kv_cache_shape). NOT YET SMOKED: compute_scale
+      + mla_bmm (no __main__, need the registry single-case runner). EXPECTED BLOCKED: dsv4_* (0.29 cutedsl framework
+      regression). OUT OF SCOPE: kda (preview-image runtime lane), xpu variants. Evidence: workspace facts/opsweep_0290/*.txt
+      (11.7k perf rows).'
+    applies_to:
+    - framework:vllm-0.29.0
+    - ops:gemm,moe,encoder_attention,gdn,mhc,mla,dsa
+    - ops-broken:attention,msa
+    - ops-pending:compute_scale,mla_bmm
   vllm_0290_sparse_family_split_needed:
     statement: 'OWNER DECISION NEEDED (op granularity): the sparse_attention family lumps dsa_* with dsv4_*/glm5_*
       tables, but the 0.29.0 upgrade forks their fates — DSA collects fine on 0.29 (lane collect_mla_module_029.py,
