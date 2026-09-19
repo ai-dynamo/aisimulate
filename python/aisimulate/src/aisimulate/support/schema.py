@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 
 from packaging.version import Version
 from pydantic import Field, field_validator, model_validator
@@ -23,9 +24,6 @@ class SupportIdentity(StrictModel):
     framework: Literal["vllm"] = "vllm"
     framework_version: str
     gpu: str
-    gpu_count: PositiveStrictInt
-    node_count: PositiveStrictInt = 1
-    gpus_per_node: PositiveStrictInt
     interconnect: str
     sm: PositiveStrictInt | None = None
     tokenizer_revision: str | None = None
@@ -67,12 +65,6 @@ class SupportIdentity(StrictModel):
             raise ValueError("gpu must be a packaged system name, not a path")
         return value
 
-    @model_validator(mode="after")
-    def _allocation(self) -> SupportIdentity:
-        if self.node_count * self.gpus_per_node != self.gpu_count:
-            raise ValueError("node_count * gpus_per_node must equal gpu_count")
-        return self
-
 
 class SloSpec(StrictModel):
     ttft_ms: PositiveFiniteFloat = 1000.0
@@ -101,7 +93,6 @@ class SearchProfile(StrictModel):
     moe_tensor_parallel: PositiveStrictInt | None = None
     moe_expert_parallel: PositiveStrictInt | None = None
     context_length: PositiveStrictInt = 16384
-    max_candidates: int = Field(default=1, strict=True, ge=1, le=2)
     objective: Literal[
         "throughput",
         "throughput_per_gpu",
@@ -158,10 +149,30 @@ class SupportRequest(StrictModel):
     search: SearchProfile = Field(default_factory=SearchProfile)
     fpm_profile: FpmModelProfile | None = None
 
-    def parallelism(self, replicas: int = 1) -> dict[str, int]:
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_allocation(cls, values: Any) -> Any:
+        if isinstance(values, Mapping):
+            obsolete = []
+            for section, fields in (
+                ("identity", ("gpu_count", "node_count", "gpus_per_node")),
+                ("search", ("max_candidates",)),
+            ):
+                fields_in_request = values.get(section)
+                if isinstance(fields_in_request, Mapping):
+                    obsolete.extend(f"{section}.{name}" for name in fields if name in fields_in_request)
+            if obsolete:
+                raise ValueError(
+                    "Legacy onboarding fields are no longer supported: " + ", ".join(obsolete) + ". "
+                    "Copy the request, remove these fields, and regenerate the plan in a new output directory. "
+                    "Set deployment replicas and GPU budgets in ordinary predict/recommend configs."
+                )
+        return values
+
+    def parallelism(self) -> dict[str, int]:
         search = self.search
         return {
-            "replicas": replicas,
+            "replicas": 1,
             "tensor": search.tensor_parallel,
             "pipeline": 1,
             "attention_data": search.attention_data_parallel or 1,
@@ -172,6 +183,7 @@ class SupportRequest(StrictModel):
 
     @property
     def worker_gpus(self) -> int:
+        """Minimum GPUs required for the selected collection worker, not available capacity."""
         parallel = self.parallelism()
         return parallel["tensor"] * parallel["attention_data"]
 
@@ -222,8 +234,6 @@ class SupportRequest(StrictModel):
             )
         if not valid:
             raise ValueError("onboarding requires a complete TP, DEP, or TEP topology; set the attention and MoE sizes")
-        if self.worker_gpus > self.identity.gpus_per_node:
-            raise ValueError("search.tensor_parallel * attention_data_parallel must fit within gpus_per_node")
         if self.workload.input_tokens + self.workload.output_tokens > self.search.context_length:
             raise ValueError("search.context_length must cover the input and output tokens")
         if self.fpm_profile is not None:

@@ -49,12 +49,13 @@ def add_support_parser(subparsers: Any) -> None:
     actions = onboard.add_subparsers(dest="support_action", required=True)
     init = actions.add_parser(
         "init",
-        help="Declare a model, target hardware, and FPM pilot workload.",
+        help="Declare a model, target hardware, worker topology, and FPM workload.",
         description=(
             "Use --interactive for terminal prompts. --model-config derives supported local model metadata; "
             "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
-            "--model, --model-revision, --model-kind, --framework-version, --gpu, --gpu-count, and --interconnect. "
-            "One node and a small TP1 synthetic pilot are defaults; review the saved scope before collection."
+            "--model, --model-revision, --model-kind, --framework-version, --gpu, and --interconnect. "
+            "Collection GPUs are derived from the selected topology; TP1 and a small synthetic workload are defaults. "
+            "Set deployment replicas and GPU budgets in ordinary predict/recommend configs."
         ),
     )
     init.add_argument(
@@ -69,9 +70,6 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--framework", choices=("vllm",), help="Collection runtime (default: vllm).")
     init.add_argument("--framework-version", help="Pinned vLLM version in the collection environment.")
     init.add_argument("--gpu", help="Target GPU system name, for example h200_sxm.")
-    init.add_argument("--gpu-count", type=int, help="Total GPUs available.")
-    init.add_argument("--node-count", type=int, help="Number of nodes (default: 1).")
-    init.add_argument("--gpus-per-node", type=int, help="GPUs available per node; defaults to gpu-count on one node.")
     init.add_argument("--interconnect", help="Interconnect, for example nvswitch, pcie, or none.")
     init.add_argument("--sm", type=int, help="GPU SM version override.")
     init.add_argument("--tokenizer-revision")
@@ -95,10 +93,9 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--output-tokens", type=int, help="Output tokens per request (default: 128).")
     init.add_argument("--concurrency", type=int, help="Concurrent requests (default: 1).")
     init.add_argument("--request-count", type=int, help="Synthetic request count (default: 4).")
-    init.add_argument("--context-length", type=int, help="Pilot context limit in tokens (default: 16384).")
+    init.add_argument("--context-length", type=int, help="Validation context limit in tokens (default: 16384).")
     init.add_argument("--ttft-ms", type=float, help="Target time to first token in ms (default: 1000).")
     init.add_argument("--tpot-ms", type=float, help="Target time per output token in ms (default: 100).")
-    init.add_argument("--max-candidates", type=int, help="One worker, or also the largest replica count (1 or 2).")
     init.add_argument(
         "--objective",
         choices=get_args(SearchProfile.model_fields["objective"].annotation),
@@ -146,12 +143,9 @@ def _values(args: argparse.Namespace, model: Any) -> dict[str, Any]:
 
 
 def _request_from_args(args: argparse.Namespace) -> SupportRequest:
-    identity = _values(args, SupportIdentity)
-    if args.gpus_per_node is None and identity.get("node_count", 1) == 1:
-        identity["gpus_per_node"] = args.gpu_count
     return SupportRequest.model_validate(
         {
-            "identity": identity,
+            "identity": _values(args, SupportIdentity),
             "workload": {**_values(args, WorkloadSpec), "slo": _values(args, SloSpec)},
             "search": _values(args, SearchProfile),
             **({"fpm_profile": load_yaml(args.fpm_profile)} if getattr(args, "fpm_profile", None) else {}),
@@ -207,13 +201,12 @@ _PROMPTS = {
     "model_kind": ("Model kind (dense/moe)", str),
     "framework_version": ("Pinned vLLM version", str),
     "gpu": ("Target GPU system name (for example h200_sxm)", str),
-    "gpu_count": ("Total GPUs available", int),
     "interconnect": ("GPU interconnect (for example nvswitch, pcie, or none)", str),
-    "tensor_parallel": ("GPUs per pure-TP worker", int),
+    "tensor_parallel": ("Attention tensor-parallel size", int),
     "input_tokens": ("Input tokens per request", int),
     "output_tokens": ("Output tokens per request", int),
     "concurrency": ("Concurrent requests", int),
-    "context_length": ("Pilot context limit in tokens", int),
+    "context_length": ("Validation context limit in tokens", int),
     "ttft_ms": ("Target time to first token (ms)", float),
     "tpot_ms": ("Target time per output token (ms)", float),
 }
@@ -223,11 +216,8 @@ _CORRECTION_PROMPTS = {
     "tokenizer_revision": ("Pinned tokenizer revision", str),
     "chat_template_revision": ("Pinned chat-template revision", str),
     "aisimulate_revision": ("Pinned AISimulate revision", str),
-    "node_count": ("Number of nodes", int),
-    "gpus_per_node": ("GPUs per node", int),
     "sm": ("GPU SM version", int),
     "request_count": ("Number of synthetic requests", int),
-    "max_candidates": ("Maximum candidates (1 or 2)", int),
     "objective": ("Recommendation objective", str),
     "seed": ("Recommendation search seed", int),
     "attention_data_parallel": ("Attention data-parallel size", int),
@@ -244,8 +234,6 @@ def _prompt(args: argparse.Namespace, name: str) -> None:
             field = model.model_fields.get(name)
             if field is not None and not field.is_required():
                 default = field.default
-        if name == "gpu_count":
-            default = 1
     while True:
         answer = input(f"{label}{f' [{default}]' if default is not None else ''}: ").strip()
         if not answer and default is None:
@@ -270,7 +258,7 @@ def _require_terminal() -> None:
 def _guided_request(args: argparse.Namespace) -> SupportRequest:
     _require_terminal()
     print("Onboard a model for FPM simulation on a target hardware platform.")
-    print("Start with a pure-TP worker and a small synthetic workload on vLLM.")
+    print("Select one TP, DEP, or TEP worker and a small synthetic workload on vLLM.")
     print("Enter accepts a displayed default. Ctrl-C cancels without saving. Supplied options skip their prompts.")
     for name in _PROMPTS:
         if getattr(args, name) is None:
@@ -401,13 +389,14 @@ def _review_config_profile(
         print("Review FPM profile before saving:")
         print(f"  Modeling scope: {config.notes['modeling_scope']}")
         print(
-            f"  Deployment: {identity.model} ({identity.model_kind}) @ {identity.model_revision}; "
+            f"  Target: {identity.model} ({identity.model_kind}) @ {identity.model_revision}; "
             f"{identity.framework} {identity.framework_version}; "
-            f"{identity.gpu_count} {identity.gpu} GPU(s) on {identity.node_count} node(s); {identity.interconnect}"
+            f"{identity.gpu}; {identity.interconnect}"
         )
         print(f"  Parallelism: {request.parallelism()}")
+        print(f"  Collection GPUs required: {request.worker_gpus} for one selected worker; availability is unchecked.")
         print(
-            f"  Pilot: {workload.input_tokens}/{workload.output_tokens} tokens, concurrency {workload.concurrency}, "
+            f"  Workload: {workload.input_tokens}/{workload.output_tokens} tokens, concurrency {workload.concurrency}, "
             f"{workload.request_count} requests; context limit {request.search.context_length} tokens"
         )
         print("  Resource *_bytes values are bytes per rank; kv_bytes_per_token is bytes per cached token per rank.")
@@ -490,7 +479,7 @@ def _config_request(args: argparse.Namespace) -> SupportRequest:
                 option = "--" + name.replace("_", "-") if name in _CORRECTION_PROMPTS else "request"
                 details.append(f"  {option}: {error['msg']}")
             raise ValueError(
-                "Complete deployment identity and pilot options before dependent profile derivation:\n"
+                "Complete target identity and workload options before dependent profile derivation:\n"
                 + "\n".join(details)
                 + "\nThen supply unresolved profile fields with --resource-overrides PATH (flat JSON/YAML), "
                 "or use --interactive."
@@ -553,11 +542,11 @@ def _init(args: argparse.Namespace) -> int:
     print(
         f"Scope: FPM simulation for {request.identity.model} ({request.identity.model_kind}), "
         f"vLLM {request.identity.framework_version}, "
-        f"{request.identity.gpu_count} {request.identity.gpu} GPU(s) on {request.identity.node_count} node(s); "
+        f"{request.identity.gpu}; {request.identity.interconnect}; "
         f"{request.parallel_preset} {request.parallelism()}, {workload.input_tokens}/{workload.output_tokens} tokens, "
-        f"concurrency {workload.concurrency}, {workload.request_count} requests, "
-        f"up to {request.search.max_candidates} candidate(s)."
+        f"concurrency {workload.concurrency}, {workload.request_count} requests."
     )
+    print(f"Collection GPUs required: {request.worker_gpus} for one selected worker; availability is unchecked.")
     if args.model_config:
         print(
             "Request saved with the complete FPM profile and declared or estimated resources. "
@@ -587,6 +576,7 @@ def _plan(args: argparse.Namespace) -> int:
         {
             "request_id": plan["request_id"],
             "candidate_count": plan["search"]["candidate_count"],
+            "collection_gpus_required": request.worker_gpus,
             "plan": str(root / "support-plan.json"),
             "commands": plan["outputs"]["commands"],
             "prerequisites": "runtime_and_fpm_data_unchecked" if request.fpm_profile is not None else "unchecked",

@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 import aisimulate.main as cli
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
@@ -27,7 +28,6 @@ _REQUIRED = {
     "model_kind": "dense",
     "framework_version": "0.24.0",
     "gpu": "h200_sxm",
-    "gpu_count": 4,
     "interconnect": "nvswitch",
 }
 _PILOT = {
@@ -93,6 +93,79 @@ def test_help_explains_model_fpm_and_target_hardware_scope(capsys, command) -> N
     assert "aisimulate" in output
 
 
+def test_init_help_explains_collection_requirements_and_runtime_budgets(capsys) -> None:
+    with pytest.raises(SystemExit) as result:
+        cli.main(["onboard", "init", "--help"])
+    assert result.value.code == 0
+    output = " ".join(capsys.readouterr().out.split())
+    assert "Collection GPUs are derived from the selected topology" in output
+    assert "Set deployment replicas and GPU budgets in ordinary predict/recommend configs" in output
+    for obsolete in ("--gpu-count", "--node-count", "--gpus-per-node", "--max-candidates"):
+        assert obsolete not in output
+
+
+@pytest.mark.parametrize("option", ["gpu-count", "node-count", "gpus-per-node", "max-candidates"])
+def test_obsolete_onboarding_options_fail_without_writing(tmp_path, monkeypatch, capsys, option):
+    output = tmp_path / "request.yaml"
+    output.write_text("existing request\n")
+    prompts = _terminal(monkeypatch)
+    with pytest.raises(SystemExit) as result:
+        cli.main(_init_args(output) + [f"--{option}", "4", "--interactive", "--overwrite"])
+    assert result.value.code == 2
+    assert f"unrecognized arguments: --{option}" in capsys.readouterr().err
+    assert prompts == []
+    assert output.read_text() == "existing request\n"
+    assert list(tmp_path.iterdir()) == [output]
+
+
+@pytest.mark.parametrize("action", ["plan", "collect-fpm"])
+def test_legacy_saved_request_requires_new_plan_and_preserves_old_data(tmp_path, monkeypatch, capsys, action):
+    from aisimulate.support.plan import create_plan
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("request migration must not launch collection")
+
+    monkeypatch.setitem(sys.modules, "collector.fpm_forward.cli", SimpleNamespace(main=unexpected_launch))
+    request = tmp_path / "request.yaml"
+    assert cli.main(_init_args(request, tensor_parallel=4)) == 0
+    current = SupportRequest.from_yaml(request)
+    old_root = tmp_path / "old-plan"
+    create_plan(current, old_root)
+    old_request = yaml.safe_load((old_root / "request.yaml").read_text())
+    old_request["identity"].update(gpu_count=16, node_count=2, gpus_per_node=8)
+    old_request["search"]["max_candidates"] = 2
+    (old_root / "request.yaml").write_text(yaml.safe_dump(old_request))
+    old_plan = json.loads((old_root / "support-plan.json").read_text())
+    old_plan["request_id"] = "onboarding-legacy-request"
+    (old_root / "support-plan.json").write_text(json.dumps(old_plan))
+    (old_root / "systems/data/existing.parquet").write_bytes(b"collected timing data")
+    before = {p.relative_to(old_root): p.read_bytes() for p in old_root.rglob("*") if p.is_file()}
+    args = ["onboard", action, "--config", str(old_root / "request.yaml"), "--output-dir", str(old_root)]
+    args += ["--overwrite"] if action == "plan" else ["--execute"]
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(args)
+    assert result.value.code == 2
+    assert "Copy the request, remove these fields" in capsys.readouterr().err
+    assert {p.relative_to(old_root): p.read_bytes() for p in old_root.rglob("*") if p.is_file()} == before
+
+    # Migrate a copy and create a new plan; the old plan and timings retain their identity.
+    for name in ("gpu_count", "node_count", "gpus_per_node"):
+        del old_request["identity"][name]
+    del old_request["search"]["max_candidates"]
+    migrated = tmp_path / "migrated.yaml"
+    migrated.write_text(yaml.safe_dump(old_request))
+    assert SupportRequest.from_yaml(migrated) == current
+    with pytest.raises(SystemExit) as result:
+        cli.main(["onboard", "plan", "--config", str(migrated), "--output-dir", str(old_root), "--overwrite"])
+    assert result.value.code == 2
+    assert "choose a new output directory" in capsys.readouterr().err
+    new_root = tmp_path / "new-plan"
+    assert cli.main(["onboard", "plan", "--config", str(migrated), "--output-dir", str(new_root)]) == 0
+    assert SupportRequest.from_yaml(new_root / "request.yaml") == current
+    assert {p.relative_to(old_root): p.read_bytes() for p in old_root.rglob("*") if p.is_file()} == before
+
+
 @pytest.mark.parametrize("action", ["init", "plan", "collect-fpm"])
 def test_retired_support_command_is_rejected_before_dispatch(tmp_path, monkeypatch, capsys, action) -> None:
     def unexpected_dispatch(*args, **kwargs):
@@ -121,7 +194,7 @@ def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatc
     scripted = tmp_path / "scripted.yaml"
     prompts = _terminal(
         monkeypatch,
-        ["example/unintegrated-model", "revision-123", "dense", "0.24.0", "h200_sxm", "4", "nvswitch", "2"] + [""] * 6,
+        ["example/unintegrated-model", "revision-123", "dense", "0.24.0", "h200_sxm", "nvswitch", "2"] + [""] * 6,
     )
 
     assert cli.main(["onboard", "init", "--interactive", "--output", str(guided)]) == 0
@@ -132,10 +205,12 @@ def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatc
     assert any("Target time to first token (ms) [1000.0]" in prompt for prompt in prompts)
     request = SupportRequest.from_yaml(guided)
     assert request.workload.request_count == 4
-    assert request.identity.gpus_per_node == 4
+    assert request.worker_gpus == 2
+    assert not any("node" in prompt.lower() or "available" in prompt.lower() for prompt in prompts)
     assert request.identity.aisimulate_revision is None
     assert request.identity.tokenizer_revision is None
     output = capsys.readouterr().out
+    assert "Collection GPUs required: 2" in output
     assert "accuracy is not assessed" in output
     assert "are unchecked" in output
 
@@ -144,7 +219,7 @@ def test_supplied_options_skip_prompts_and_onboarding_alias_is_optional(tmp_path
     prompts = _terminal(monkeypatch)
     guided = tmp_path / "guided.yaml"
     scripted = tmp_path / "scripted.yaml"
-    options = {"request_count": 8, "seed": 123, "max_candidates": 2, "objective": "goodput"}
+    options = {"request_count": 8, "seed": 123, "objective": "goodput"}
 
     assert cli.main(_init_args(guided, full=True, **options) + ["--interactive", "--profile", "onboarding"]) == 0
     assert cli.main(_init_args(scripted, full=True, **options)) == 0
@@ -157,10 +232,10 @@ def test_guided_setup_recovers_numeric_input_and_shared_field_validation(tmp_pat
     output = tmp_path / "request.yaml"
     prompts = _terminal(monkeypatch, ["many", "4", "revision-123"])
 
-    assert cli.main(_init_args(output, full=True, model_revision="main", gpu_count=None) + ["--interactive"]) == 0
+    assert cli.main(_init_args(output, full=True, model_revision="main", tensor_parallel=None) + ["--interactive"]) == 0
 
     request = SupportRequest.from_yaml(output)
-    assert request.identity.gpu_count == 4
+    assert request.worker_gpus == 4
     assert request.identity.model_revision == "revision-123"
     assert len(prompts) == 3
     transcript = capsys.readouterr().out
@@ -171,10 +246,9 @@ def test_guided_setup_recovers_numeric_input_and_shared_field_validation(tmp_pat
 @pytest.mark.parametrize(
     ("changes", "answers", "expected"),
     [
-        ({"tensor_parallel": 8}, ["unknown-option", "--tensor-parallel", "2"], "tensor_parallel"),
+        ({"attention_data_parallel": 2}, ["unknown-option", "--attention-data-parallel", "1"], "TP, DEP, or TEP"),
         ({"context_length": 100}, ["context-length", "4096"], "context_length"),
         ({"concurrency": 8}, ["request-count", "8"], "request_count"),
-        ({"node_count": 2, "gpus_per_node": 4}, ["gpu-count", "8"], "gpu_count"),
     ],
 )
 def test_guided_setup_recovers_cross_field_validation(
@@ -195,14 +269,11 @@ def test_guided_setup_recovers_cross_field_validation(
     [
         {"model": None},
         {"model_revision": "latest"},
-        {"gpu_count": 0},
         {"ttft_ms": "nan"},
         {"request_count": 0},
         {"context_length": 100},
-        {"tensor_parallel": 8},
-        {"max_candidates": 3},
+        {"tensor_parallel": 0},
         {"objective": "invented"},
-        {"node_count": 2},
     ],
 )
 def test_scripted_setup_uses_shared_validation_and_never_writes_invalid_requests(tmp_path, capsys, changes) -> None:
@@ -373,6 +444,7 @@ def test_init_plan_and_preview_use_real_public_configs_without_launching_collect
     plan = json.loads((output / "support-plan.json").read_text())
     assert summary["request_id"] == plan["request_id"]
     assert summary["candidate_count"] == 1
+    assert summary["collection_gpus_required"] == plan["fpm"]["collection_gpus_required"] == 2
     prediction = CorePredictionConfig.from_yaml(plan["outputs"]["prediction_configs"][0])
     recommendation = CoreRecommendationConfig.from_yaml(plan["outputs"]["recommendation_configs"][0])
     assert prediction.engine.workers.aggregated.timing.estimation_mode == "fpm_interpolation"

@@ -201,8 +201,6 @@ def _onboard_collection_plan(tmp_path, document, overrides=None):
                 "model_kind": "dense",
                 "framework_version": "0.25.1",
                 "gpu": "h200_sxm",
-                "gpu_count": 1,
-                "gpus_per_node": 1,
                 "interconnect": "NVLink",
             },
             "search": {"context_length": 4096},

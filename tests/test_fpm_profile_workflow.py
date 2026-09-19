@@ -497,8 +497,6 @@ def test_onboard_dep_keeps_full_identity_and_checks_resources_before_collection(
                 "model_kind": "moe",
                 "framework_version": "0.25.1",
                 "gpu": "h200_sxm",
-                "gpu_count": 2,
-                "gpus_per_node": 2,
                 "interconnect": "NVLink",
             },
             "search": {
@@ -512,8 +510,8 @@ def test_onboard_dep_keeps_full_identity_and_checks_resources_before_collection(
         }
     )
     plan = create_plan(request, tmp_path)
-    assert plan["fpm"]["worker_gpus"] == 2
-    assert plan["search"]["candidates"][0]["total_gpus"] == 2
+    assert plan["fpm"]["collection_gpus_required"] == 2
+    assert plan["search"]["candidates"][0]["required_gpus"] == 2
     assert plan["resources"]["source"] == "profile"
     assert plan["resources"]["total_kv_size_tokens"] > 4096
     loaded = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml")
@@ -579,8 +577,6 @@ def test_generated_glm_collector_plan_preserves_backend_and_rank_local_bounds(
                 "model_kind": "moe",
                 "framework_version": "0.25.1",
                 "gpu": "b200_sxm",
-                "gpu_count": 8,
-                "gpus_per_node": 8,
                 "interconnect": "NVLink",
             },
             "search": {
@@ -626,8 +622,6 @@ def test_onboard_rejects_profile_below_collector_minimum_token_axis(profile, tmp
                 "model_kind": "moe",
                 "framework_version": "0.25.1",
                 "gpu": "h200_sxm",
-                "gpu_count": 2,
-                "gpus_per_node": 2,
                 "interconnect": "NVLink",
             },
             "search": {"tensor_parallel": 2, "context_length": 4096},
@@ -663,8 +657,6 @@ def test_onboard_cli_embeds_profile_and_preserves_topology(profile, tmp_path, tp
                 "0.25.1",
                 "--gpu",
                 "h200_sxm",
-                "--gpu-count",
-                "2",
                 "--interconnect",
                 "NVLink",
                 "--context-length",

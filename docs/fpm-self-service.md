@@ -5,7 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 
 # FPM self-service
 
-`aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and allocation, plans one TP, DEP, or TEP worker, and produces ordinary `predict` and `recommend` configurations that read your collected FPM data. It builds on AISimulate's per-worker FPM support and packaged collector.
+`aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and interconnect, plans one TP, DEP, or TEP worker, and derives the minimum GPUs required to collect that worker's timings. It produces ordinary `predict` and `recommend` configurations for validating that worker against your collected FPM data. It builds on AISimulate's per-worker FPM support and packaged collector.
 
 Planning works before the model has an AISimulate model class or measured FPM timings. With a supplied FPM profile, planning validates the declared deployment identity and estimates memory admission from your resource bounds. Runtime compatibility and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not provision GPUs or run target preflight checks.
 
@@ -18,11 +18,11 @@ For a request such as "Help me onboard my model for FPM simulation on my target 
 | Stage | Required result |
 | --- | --- |
 | 1. Inspect the model and target | Accessible config/profile and packaged hardware specification identified; supported metadata read and gaps recorded. |
-| 2. Choose the deployment and workload | Checkpoint identity/revision, runtime, allocation, exact worker topology and initial workload selected. Runtime compatibility remains unchecked. |
+| 2. Choose the worker and workload | Checkpoint identity/revision, runtime, interconnect, exact worker topology and initial workload selected; minimum collection GPUs derived. Runtime compatibility remains unchecked. |
 | 3. Derive, review and save the profile | Exact resource/precision values and assumptions reviewed and accepted; final request contains the complete profile and provenance. |
 | 4. Plan collection | Validated saved plan, generated configurations and collector preview; sampling scope and remaining execution prerequisites explained. |
 | 5. Collect and verify data | Matching formal Parquet/metadata pair verified, with provenance and available phase cells recorded. |
-| 6. Run predict/recommend and report | Prediction and every planned recommendation candidate exercised; results, coverage and failures reported, with accuracy stated separately. |
+| 6. Run predict/recommend and report | Single-worker prediction and recommendation exercised; results, coverage and failures reported, with accuracy stated separately. |
 
 At each transition or blocker, give a short update: **Stage N/6 — name; result or blocker; next action.** Ask only for missing information needed for the current stage, using facts and decisions already supplied. Continue independent authorized work while an answer is pending. Move on when the required evidence is available; stage transitions do not require another approval. Honor prior authorization, including authorization to execute collection, while preserving the profile acceptance step below.
 
@@ -40,11 +40,11 @@ A natively multimodal checkpoint can be onboarded for its text decoder. Explain 
 
 The agent handles checkout and environment checks: record the branch/commit, follow [development setup](../DEVELOPMENT.md#initial-setup), activate the environment, and inspect `aisimulate onboard --help` and `aisimulate onboard init --help`. Check later subcommands before using them. Report missing commands/options as a version mismatch, rather than asking the user to supply unsupported inputs.
 
-### 2. Choose the deployment and workload
+### 2. Choose the worker and workload
 
-Resolve only the remaining checkpoint identifier and immutable revision, literal vLLM version, GPU allocation, node layout and interconnect. Use available repository/deployment metadata before asking the user. A model label, config hash or example revision does not establish a checkpoint pin.
+Resolve only the remaining checkpoint identifier and immutable revision, literal vLLM version, target GPU platform and interconnect. Use available repository/deployment metadata before asking the user. A model label, config hash or example revision does not establish a checkpoint pin. Do not ask for total available GPUs, node allocation, GPUs per node or replica budgets during onboarding; those are choices for actual prediction or recommendation runs.
 
-Help choose an initial TP configuration, or the relevant TP/DEP/TEP configuration for MoE, from the available allocation and [supported topology flags](#create-the-request). Explain the selected worker and map it to the exact parallel tuple; do not require the user to know every parallelism field upfront. Proposals are starting configurations, not claims of optimality, runtime compatibility or memory fit. Establish input/output lengths, concurrency, context and latency targets here. If there is no workload preference, show the [planning defaults](#create-the-request) and cap the context at the model's known limit; adjust token lengths if needed to fit that limit. Do not silently assume topology or precision.
+Help choose an initial TP configuration, or the relevant TP/DEP/TEP configuration for MoE, using the [supported topology flags](#create-the-request). Explain the selected worker and map it to the exact parallel tuple; do not require the user to know every parallelism field upfront. Derive its minimum collection GPUs as attention TP times attention DP: TP4 requires four GPUs, while DEP8 requires eight. This requirement does not declare available capacity or establish runtime placement, memory fit or compatibility. Establish input/output lengths, concurrency, context and latency targets here. If there is no workload preference, show the [planning defaults](#create-the-request) and cap the context at the model's known limit; adjust token lengths if needed to fit that limit. Do not silently assume topology or precision.
 
 ### 3. Derive, review and save the profile
 
@@ -53,7 +53,7 @@ Use [a local model config](#start-from-a-local-model-config), or [a supplied pro
 | Agent environment | Review and save behavior |
 | --- | --- |
 | Terminal or agent tool with a PTY | Run `aisimulate onboard init --model-config /path/to/config.json --interactive --output support-request.yaml`. Relay unresolved prompts and the final profile to the user. Apply requested `edit` actions and return the revised profile to the user for review. Enter CLI `accept` only after the user explicitly accepts those exact values; honor any existing explicit acceptance of those same values. `cancel`, Ctrl-C or EOF creates no new request and preserves any existing output, even with `--overwrite`. This final review is specific to `--model-config --interactive`; supplying `--fpm-profile` does not add it. |
-| Headless or noninteractive agent | Supply identity/pilot flags and `--resource-overrides` as needed, without `--interactive`. Missing required inputs exit 2 without saving; use the diagnostics to ask for the missing facts. A successful command writes immediately. Initially write to a separate path such as `draft-request.yaml` and show the embedded profile, sources and scope for user review. Apply edits in the inputs/overrides and repeat draft review until accepted; then rerun the unchanged reviewed inputs to a new final request path and verify that it matches the accepted draft before planning. The draft name is only a file convention; it has no special CLI status. Review a supplied `--fpm-profile` in the same way. |
+| Headless or noninteractive agent | Supply identity/workload flags and `--resource-overrides` as needed, without `--interactive`. Missing required inputs exit 2 without saving; use the diagnostics to ask for the missing facts. A successful command writes immediately. Initially write to a separate path such as `draft-request.yaml` and show the embedded profile, sources and scope for user review. Apply edits in the inputs/overrides and repeat draft review until accepted; then rerun the unchanged reviewed inputs to a new final request path and verify that it matches the accepted draft before planning. The draft name is only a file convention; it has no special CLI status. Review a supplied `--fpm-profile` in the same way. |
 
 Do not pipe answers into `--interactive`: it requires a terminal. Scripted setup has no built-in acceptance prompt. Keep draft files separate from the final request and preserve prior outputs when revising a deployment.
 
@@ -63,7 +63,7 @@ Model identity, runtime and topology are not profile-review edit fields. If they
 
 Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. Inspect `support-plan.json`, the embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; this does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available and identify any missing prerequisites.
 
-Explain the rank-local scheduler/resource envelope, sampling scope and candidate count. One onboarding plan selects one parallel tuple; extra recommendation candidates are counts of identical workers, not additional TP/DEP/TEP choices. Use separate requests/output directories for additional tuples. The pilot request count does not bound timing samples or collection duration.
+Explain the minimum collection GPUs, rank-local scheduler/resource envelope and sampling scope. One onboarding plan selects one parallel tuple and generates single-worker validation configs. Use separate requests/output directories for additional tuples. Actual collection resources and placement must be checked in the collector environment before execution. The synthetic request count does not bound timing samples or collection duration.
 
 ### 5. Collect and verify data
 
@@ -73,7 +73,7 @@ For both reused and new data, [inspect the published pair](../python/aisimulate/
 
 ### 6. Run predict/recommend and report
 
-[Run the generated ordinary configurations](#run-the-generated-ordinary-configurations) for prediction and every planned recommendation candidate. Keep `engine.systems_paths` and the direct-FPM profile intact. Report each command's exit status and results; missing cells and out-of-domain queries need their exact coordinates. Do not change precision labels or silently switch timing methods to obtain a result. Return to stage 5 to address missing data or to stage 2 if the user changes the deployment/workload scope. Failed queries remain coverage gaps, even if other candidates succeed; report the simulation stage as incomplete while required queries fail.
+[Run the generated ordinary configurations](#run-the-generated-ordinary-configurations) for single-worker prediction and recommendation validation. Keep `engine.systems_paths` and the direct-FPM profile intact. Report each command's exit status and results; missing cells and out-of-domain queries need their exact coordinates. For deployment prediction or optimization, set the desired replicas and GPU budget in the ordinary runtime configs. Do not change precision labels or silently switch timing methods to obtain a result. Return to stage 5 to address missing data or to stage 2 if the user changes the selected worker/workload scope. Report the simulation stage as incomplete while required queries fail.
 
 At handoff, include the checkout revision, final request/profile, plan directory, data pair/provenance, exact commands/exit statuses and all result paths. Distinguish estimated memory fit and CPU planning from actual target-runtime checks, formal data/coverage, and completed simulations. For accuracy, report an independent matched silicon comparison if performed, or explicitly **not assessed**. Successful simulation is not evidence of accuracy; an accuracy study is not a mandatory additional collection campaign for onboarding.
 
@@ -91,7 +91,7 @@ Use an environment installed from this checkout; see [development setup](../DEVE
 aisimulate onboard init --interactive --output support-request.yaml
 ```
 
-Enter the actual model identifier or checkpoint path, pinned model revision, dense/MoE kind, pinned vLLM version, GPU system, allocation, and interconnect. Then choose a TP size and pilot workload. Supplied options skip their prompts. Enter accepts displayed defaults; invalid values can be corrected; Ctrl-C or end-of-input cancels without saving. Existing files require `--overwrite`.
+Enter the actual model identifier or checkpoint path, pinned model revision, dense/MoE kind, pinned vLLM version, GPU system and interconnect. Then choose a TP size and validation workload. Setup derives and displays the GPUs required for the selected worker. Supplied options skip their prompts. Enter accepts displayed defaults; invalid values can be corrected; Ctrl-C or end-of-input cancels without saving. Existing files require `--overwrite`.
 
 Both guided and scripted setup use onboarding. `--profile onboarding` is an optional spelling of the same behavior. For automation, supply the identity flags directly:
 
@@ -101,7 +101,7 @@ aisimulate onboard init \
   --model-revision YOUR_IMMUTABLE_REVISION \
   --model-kind dense \
   --framework-version YOUR_PINNED_VLLM_VERSION \
-  --gpu h200_sxm --gpu-count 4 --interconnect nvswitch \
+  --gpu h200_sxm --interconnect nvswitch \
   --tensor-parallel 2 \
   --output support-request.yaml
 ```
@@ -110,7 +110,7 @@ Replace the model, runtime and hardware inputs with your deployment's values. Fr
 
 The default pilot uses 1,024 input tokens, 128 output tokens, concurrency 1, four requests, a 16,384-token context limit, TTFT target 1,000 ms, and TPOT target 100 ms. With `--model-config`, the default pilot context is capped at the config's known context limit. Scripted setup defaults to TP1 unless `--tensor-parallel` is supplied. These are planning defaults, not measured model capacity or latency. Change them with the corresponding flags shown by `aisimulate onboard init --help`.
 
-One node is the default; GPUs per node then equals `--gpu-count`. For multiple nodes, supply both `--node-count` and `--gpus-per-node`; their product must equal the total allocation. Each selected worker must fit on one node. Advanced flags include `--request-count`, `--max-candidates`, `--objective`, `--seed`, and `--sm`.
+Onboarding takes no GPU-pool or node-allocation inputs. The selected topology establishes a minimum collection requirement, not a reservation or a check that those GPUs are available. Advanced flags include `--request-count`, `--objective`, `--seed`, and `--sm`. Replica counts and optimization budgets remain configurable in ordinary `predict` and `recommend` inputs.
 
 `--tensor-parallel` always means attention TP. Use all MoE dimensions explicitly for DEP and TEP; replicas are independent workers:
 
@@ -132,7 +132,7 @@ aisimulate onboard init \
   --interactive --output support-request.yaml
 ```
 
-Setup reads that file without downloading a checkpoint, importing model code, constructing an analytical model, or launching GPU work. It displays source information and derived inputs, then asks for unresolved values. Missing model metadata is collected before pilot options so the model's context limit can bound the pilot. Config identity hints skip their ordinary prompts; explicit CLI identity options take precedence and conflicts can be corrected. A pinned checkpoint revision, literal runtime version, GPU system, allocation, and interconnect still need your input when absent. The config's SHA-256 records the local source; it is not a checkpoint revision.
+Setup reads that file without downloading a checkpoint, importing model code, constructing an analytical model, or launching GPU work. It displays source information and derived inputs, then asks for unresolved values. Missing model metadata is collected before workload options so the model's context limit can bound the validation run. Config identity hints skip their ordinary prompts; explicit CLI identity options take precedence and conflicts can be corrected. A pinned checkpoint revision, literal runtime version, GPU system and interconnect still need your input when absent. The config's SHA-256 records the local source; it is not a checkpoint revision.
 
 When present, `text_config` must be one nonempty decoder configuration object. Only its geometry is used; wrapper and encoder dimensions are never merged into it. Otherwise, setup reads the flat decoder fields even when vision or audio metadata is present. Nested decoder architecture/model-type declarations select supported decoder validation and resource estimates. The profile preserves the declared architecture used by collection: nested `architectures` when present, otherwise the wrapper architecture. Provenance records both identities when they differ. A wrapper architecture never establishes an unknown nested decoder's resource layout. Shared outer dtype and quantization metadata are inherited only when the text section does not declare that metadata. The checkpoint identity hint and SHA-256 remain those of the original document. `model_max_length` is accepted as a context-limit alias; conflicting context declarations fail explicitly.
 
@@ -185,11 +185,11 @@ aisimulate onboard init \
   --model /models/your-pinned-checkpoint \
   --model-revision YOUR_IMMUTABLE_REVISION \
   --framework-version YOUR_PINNED_VLLM_VERSION \
-  --gpu h200_sxm --gpu-count 4 --interconnect nvswitch \
+  --gpu h200_sxm --interconnect nvswitch \
   --tensor-parallel 4 --output support-request.yaml
 ```
 
-Replace the model, revision, runtime and hardware inputs with the deployment you will actually run. `--model-config` and `--fpm-profile` are mutually exclusive; `--resource-overrides` requires `--model-config` and also works with guided setup. Scripted setup never reads terminal input. It exits 2 without writing a request when required inputs remain unresolved. Validation first lists all missing or invalid deployment identity and pilot options. Once that stage is valid, it lists all unresolved profile fields, explains why each is unavailable, and asks for `--resource-overrides` or guided setup.
+Replace the model, revision, runtime and hardware inputs with the worker you will actually run. `--model-config` and `--fpm-profile` are mutually exclusive; `--resource-overrides` requires `--model-config` and also works with guided setup. Scripted setup never reads terminal input. It exits 2 without writing a request when required inputs remain unresolved. Validation first lists all missing or invalid target identity and workload options. Once that stage is valid, it lists all unresolved profile fields, explains why each is unavailable, and asks for `--resource-overrides` or guided setup.
 
 The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `moe_backend`, `attention_backend`, and optional `provenance`. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects the smaller pilot limit and cannot exceed it. A scheduler envelope is per attention-DP rank and defaults to 8,192 tokens and the pilot concurrency; `max_num_tokens` and `max_batch_size` can declare different bounds.
 
@@ -246,7 +246,9 @@ The first command saves the request, `support-plan.json`, `commands.json`, `pred
 
 If an AISimulate update changes generated guidance, recreate the plan in a new output directory: repair compares generated files byte for byte and does not migrate existing plans. Guidance changes do not change the saved-request identity checks used by collection.
 
-The guided plan uses one selected parallel tuple. By default it evaluates a single worker, so recommendation is not a broad deployment search. `--max-candidates 2` additionally considers the largest count of identical workers that fits the allocation, when that differs from one worker. Each choice gets an independent recommendation config pinned to that replica count with a one-trial budget. The single worker keeps `recommend/pilot.yaml`; the second choice uses `recommend/replicas-N.yaml`, where `N` is its replica count. The plan reports the actual candidate count and lists both config and result paths. Collection uses the matching `tp`, `pure_tp`, `dep`, or `tep` preset and exact worker GPU count.
+The plan reports `fpm.collection_gpus_required`, derived as attention TP times attention DP. Collection uses only that worker width and the matching `tp`, `pure_tp`, `dep`, or `tep` preset. The generated prediction and recommendation configs both use one worker. Recommendation has one exact preset and one trial; its `optimization.constraints.max_candidate_gpus` equals the selected worker's requirement so even workers wider than the runtime default are representable. That derived cap describes this validation example and does not declare the user's total available GPUs. There is no replica expansion or deployment optimization during onboarding.
+
+Earlier draft `aisimulate-support-request/v1` files included `identity.gpu_count`, `identity.node_count`, `identity.gpus_per_node` and `search.max_candidates`. The draft request schema keeps its version name but now rejects those obsolete fields explicitly. Copy an old request to a new file, remove those fields, review the retained topology/profile and regenerate the plan in a new output directory. Do not edit or overwrite the old plan, timings or checkpoints to reuse its identity. Regenerated plan summaries report `fpm.collection_gpus_required` and `search.candidates[].required_gpus` in place of `fpm.worker_gpus` and `search.candidates[].total_gpus`. The corresponding `onboard init` flags (`--gpu-count`, `--node-count`, `--gpus-per-node`, `--max-candidates`) are no longer accepted. Existing ordinary `predict` and `recommend` configurations remain valid; their replica and GPU-budget APIs are unchanged.
 
 Before execution, prepare the real checkpoint and the pinned runtime using the existing [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md). The packaged collector invokes a Generator-resolved Dynamo/vLLM deployment and needs the corresponding GPU resources, deployment configuration, permissions, and model access. Invoking its command locally does not create that environment. `commands.json` publishes the guarded `aisimulate onboard collect-fpm --execute` command for collection, alongside a read-only collector planning command.
 
@@ -286,41 +288,7 @@ aisimulate recommend \
   --output-dir ./aisimulate-support/recommend-results/pilot
 ```
 
-With two candidates, run both replica counts. This loop derives the candidate names from the validated saved request and constructs fixed `aisimulate recommend` commands:
-
-```bash
-python3 - <<'PY'
-import shlex
-import subprocess
-from pathlib import Path
-
-from aisimulate.support.plan import check_plan
-from aisimulate.support.schema import SupportRequest
-
-root = Path("./aisimulate-support").resolve()
-request = SupportRequest.from_yaml(root / "request.yaml")
-check_plan(request, root)
-max_replicas = request.identity.node_count * (request.identity.gpus_per_node // request.worker_gpus)
-replicas = list(dict.fromkeys((1, max_replicas)))[:request.search.max_candidates]
-statuses = []
-for count in replicas:
-    name = "pilot" if count == 1 else f"replicas-{count}"
-    command = [
-        "aisimulate", "recommend",
-        "--config", str(root / f"recommend/{name}.yaml"),
-        "--output-dir", str(root / f"recommend-results/{name}"),
-        "--format", "json",
-    ]
-    result = subprocess.run(command, check=False)
-    statuses.append(result.returncode)
-    print(f"exit {result.returncode}: {shlex.join(command)}", flush=True)
-raise SystemExit(1 if any(statuses) else 0)
-PY
-```
-
-The loop reports each command's exit status and attempts all commands, including when the pilot finds no feasible candidate. It exits 1 after all attempts if any command returned a nonzero status, otherwise 0. Successful outputs remain usable even when the loop exits 1; inspect each result before comparing candidates.
-
-Run either the individual recommendation command or the loop against fresh result directories. The loop also handles a one-candidate plan and does not execute entries from `commands.json`. Results remain separate under `recommend-results/pilot` and, when present, `recommend-results/replicas-N`; compare their objective and latency results for the same workload. This plan does not produce a combined ranking or search additional TP sizes or scheduler settings.
+Use fresh result directories and inspect each command's exit status and results. These examples validate one selected worker and workload. For an actual deployment run, copy the generated config and set `engine.workers.aggregated.parallelism.replicas` in prediction, or the replica values in recommendation's `parallelism.preset` and `optimization.constraints.max_candidate_gpus` to your intended deployment budget. Keep the exact worker topology and profile consistent with the measured data. Those runtime choices do not require changing the onboarding request or recollecting the same worker's timings.
 
 The generated configurations select `engine.workers.aggregated.timing.estimation_mode: fpm_interpolation` with `fallback_policy: deny`. With a profile, they also set `estimator_config.fpm_interpolation.method: direct`. `engine.systems_paths` contains the plan's absolute local systems directory, which supplies hardware and collected FPM data. Recommendation preserves the resolved root, interpolation method, and complete profile in exported prediction configs. Moving the plan to another machine requires updating absolute paths or regenerating it there. Existing configurations using the single-root `engine.systems_path` input are normalized to `engine.systems_paths` when saved.
 

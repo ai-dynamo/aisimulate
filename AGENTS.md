@@ -7,7 +7,7 @@ This file adds explicit repository-wide development guards.
 When asked to onboard a model for FPM simulation on designated hardware, follow
 [Onboard with an agent](docs/fpm-self-service.md#onboard-with-an-agent) in the FPM
 self-service guide. Use the checkout's `aisimulate onboard` CLI and current help.
-Follow its six stages: inspect the model and target; choose the deployment and
+Follow its six stages: inspect the model and target; choose the worker and
 workload; derive, review and save the profile; plan collection; collect and verify
 data; run prediction/recommendation and report. Start by asking only for a missing
 Hugging Face model ID (`organization/model-name`) and target GPU platform. Accept
@@ -15,7 +15,13 @@ an already supplied local config, profile or checkpoint path instead of requirin
 a Hub ID; do not ask for both an ID and a config upfront. For a Hub ID, retrieve
 the config using available Hub access as described in stage 1. Reuse supplied
 facts and inspect the config/profile before asking for derivable metadata; defer
-other questions to their stage and help the user choose deployment settings.
+other questions to their stage and help the user choose the worker topology.
+Derive the minimum collection GPUs from attention TP times attention DP (TP4
+requires four GPUs). Do not ask for total available GPUs, cluster node allocation
+or replica budgets during onboarding. Preserve target hardware, runtime and
+interconnect characteristics; verify actual collection resources before execution.
+Generated predict/recommend configs validate one worker. Deployment replicas and
+optimization GPU budgets belong to ordinary predict/recommend configurations.
 
 Do not reject a checkpoint solely because it is multimodal. Read its unambiguous
 `text_config`, or its flat text-decoder fields, and explain that FPM models only

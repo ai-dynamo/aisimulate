@@ -56,7 +56,6 @@ _IDENTITY = {
     "model_revision": "checkpoint-revision-123",
     "framework_version": "0.25.1",
     "gpu": "h200_sxm",
-    "gpu_count": 8,
     "interconnect": "nvswitch",
 }
 _PILOT = {
@@ -449,7 +448,7 @@ def test_scripted_identity_failure_lists_all_missing_identity_without_input(tmp_
 
     assert result.value.code == 2
     errors = capsys.readouterr().err
-    for option in ("--model-revision", "--framework-version", "--gpu", "--gpu-count", "--interconnect"):
+    for option in ("--model-revision", "--framework-version", "--gpu", "--interconnect"):
         assert option in errors
     assert "--resource-overrides" in errors
     assert "identity" in errors.lower()
@@ -658,11 +657,11 @@ def test_bundled_modelopt_string_cache_config_creates_complete_request(tmp_path,
 def test_guided_missing_identity_is_asked_before_profile_fields(tmp_path, monkeypatch):
     source, resources = _files(tmp_path)
     output = tmp_path / "request.yaml"
-    prompts = _terminal(monkeypatch, ["checkpoint-revision-123", "0.25.1", "h200_sxm", "8", "nvswitch", "accept"])
+    prompts = _terminal(monkeypatch, ["checkpoint-revision-123", "0.25.1", "h200_sxm", "nvswitch", "accept"])
 
     assert cli.main(_args(output, source, resources, **dict.fromkeys(_IDENTITY)) + ["--interactive"]) == 0
 
-    assert len(prompts) == 6
+    assert len(prompts) == 5
     assert "Pinned model revision" in prompts[0]
     assert not any("Model name" in prompt or "Model kind" in prompt for prompt in prompts)
 
@@ -890,12 +889,13 @@ def test_config_route_option_relationships_are_rejected_before_reading_files(
 
 
 @pytest.mark.parametrize("multimodal", [False, True])
+@pytest.mark.parametrize("interactive", [False, True])
 @pytest.mark.parametrize(
     "tp,dp,moe_tp,moe_ep,preset",
     [(4, 1, 4, 1, "pure_tp"), (1, 8, 1, 8, "dep"), (8, 1, 1, 8, "tep")],
 )
 def test_config_init_to_plan_replay_preserves_full_topology_without_source_files(
-    tmp_path, monkeypatch, tp, dp, moe_tp, moe_ep, preset, multimodal
+    tmp_path, monkeypatch, capsys, tp, dp, moe_tp, moe_ep, preset, multimodal, interactive
 ):
     config = {
         **_CONFIG,
@@ -915,6 +915,7 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", no_model_or_download_import)
+    prompts = _terminal(monkeypatch, ["accept"] if interactive else [])
     assert (
         cli.main(
             _args(
@@ -926,20 +927,33 @@ def test_config_init_to_plan_replay_preserves_full_topology_without_source_files
                 moe_tensor_parallel=moe_tp,
                 moe_expert_parallel=moe_ep,
             )
+            + (["--interactive"] if interactive else [])
         )
         == 0
     )
     source.unlink()
     resources.unlink()
     request = SupportRequest.from_yaml(output)
+    assert prompts == (["Review action (accept/edit/cancel): "] if interactive else [])
+    assert "Collection GPUs required: " + str(tp * dp) in capsys.readouterr().out
+    assert not {"gpu_count", "node_count", "gpus_per_node"} & request.identity.model_dump().keys()
+    assert "max_candidates" not in request.search.model_dump()
     assert "Text decoder only" in json.loads(request.fpm_profile.provenance)["config_notes"]["modeling_scope"]
     assert request.parallel_preset == preset
     assert request.profile_deployment().parallel_tuple == (tp, 1, dp, moe_tp, moe_ep, 1)
     plan = tmp_path / "plan"
     assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(plan)]) == 0
+    saved_plan = json.loads((plan / "support-plan.json").read_text())
+    assert saved_plan["fpm"]["collection_gpus_required"] == tp * dp
+    command = saved_plan["fpm"]["plan_command"]
+    assert command[command.index("--fpm-gpu-counts") + 1] == str(tp * dp)
+    assert command[command.index("--fpm-parallel-presets") + 1] == preset
     assert SupportRequest.from_yaml(plan / "request.yaml") == request
     prediction = CorePredictionConfig.from_yaml(plan / "predict/pilot.yaml")
     recommendation = CoreRecommendationConfig.from_yaml(plan / "recommend/pilot.yaml")
+    assert recommendation.optimization.constraints.max_candidate_gpus == tp * dp
+    assert len(recommendation.engine.workers.aggregated.parallelism.preset) == 1
+    assert recommendation.engine.workers.aggregated.parallelism.preset[0].replicas == 1
     assert prediction.engine.fpm_profile == recommendation.engine.fpm_profile == request.fpm_profile
     for generated, path in (
         (prediction, plan / "predict/pilot.yaml"),

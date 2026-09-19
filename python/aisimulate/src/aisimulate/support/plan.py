@@ -32,16 +32,10 @@ def request_id(request: SupportRequest) -> str:
     return "onboarding-" + hashlib.sha256(payload.encode()).hexdigest()
 
 
-def _parallelism(request: SupportRequest, replicas: int) -> dict[str, int]:
-    return request.parallelism(replicas)
-
-
 def _configs(
     request: SupportRequest, root: Path
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]], list[dict[str, int]]]:
-    max_replicas = request.identity.node_count * (request.identity.gpus_per_node // request.worker_gpus)
-    replicas = list(dict.fromkeys((1, max_replicas)))[: request.search.max_candidates]
-    presets = [_parallelism(request, count) for count in replicas]
+    preset = request.parallelism()
     workload = request.workload
     common = {
         "traffic": {
@@ -74,24 +68,22 @@ def _configs(
         worker["timing"]["estimator_config"] = {"fpm_interpolation": {"method": "direct"}}
     prediction = {
         **common,
-        "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": presets[0]}}},
+        "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": preset}}},
     }
     CorePredictionConfig.model_validate(prediction)
-    recommendations = {}
-    for preset in presets:
-        recommendation = {
-            **common,
-            "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": {"preset": [preset]}}}},
-            "optimization": {
-                "target": request.search.objective,
-                "constraints": {"max_candidate_gpus": request.identity.gpu_count},
-            },
-            "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": request.search.seed},
-        }
-        CoreRecommendationConfig.model_validate(recommendation)
-        name = "pilot" if preset["replicas"] == 1 else f"replicas-{preset['replicas']}"
-        recommendations[name] = recommendation
-    return prediction, recommendations, presets
+    recommendation = {
+        **common,
+        "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": {"preset": [preset]}}}},
+        "optimization": {
+            "target": request.search.objective,
+            # Match this validation worker even when it exceeds the runtime's default cap.
+            # This is derived scope, not a declaration of available deployment GPUs.
+            "constraints": {"max_candidate_gpus": request.worker_gpus},
+        },
+        "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": request.search.seed},
+    }
+    CoreRecommendationConfig.model_validate(recommendation)
+    return prediction, {"pilot": recommendation}, [preset]
 
 
 def _commands(request: SupportRequest, root: Path, recommendation_names: list[str]) -> dict[str, Any]:
@@ -149,22 +141,21 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
         "request_id": request_id(request),
         "search": {
             "candidate_count": len(presets),
-            "max_candidates": request.search.max_candidates,
-            "candidates": [
-                {"parallelism": preset, "total_gpus": preset["replicas"] * request.worker_gpus} for preset in presets
-            ],
+            "candidates": [{"parallelism": preset, "required_gpus": request.worker_gpus} for preset in presets],
             "detail": (
-                "A single selected worker is planned; recommendation does not compare alternative configurations."
-                if len(presets) == 1
-                else "Run one independent one-trial recommendation for the selected worker and one for the maximum "
-                "same-worker replicas that fit within each node. Compare their separate results; no combined ranking "
-                "or additional topology search is generated."
+                "Prediction and recommendation are single-worker validation examples for the selected topology. "
+                "The recommendation GPU cap equals that worker's required GPUs; no available allocation is declared. "
+                "Set deployment replicas and optimization budgets in ordinary predict/recommend configs."
             ),
             "baseline_rule": "Selected single worker; model parallelism legality and memory fit remain unchecked.",
         },
         "fpm": {
             "status": "planned",
-            "worker_gpus": request.worker_gpus,
+            "collection_gpus_required": request.worker_gpus,
+            "resource_requirement": (
+                "At least this many GPUs are required for one selected worker (attention TP times attention DP). "
+                "Actual available GPUs, placement and collector runtime resources remain unchecked."
+            ),
             "plan_command": commands["fpm_plan_local"],
             "sampling": (
                 "Prefill is bounded by max(2, input_tokens * concurrency) and concurrency. Decode sampling and "

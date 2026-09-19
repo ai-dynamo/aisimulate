@@ -111,9 +111,6 @@ def _request(**updates) -> SupportRequest:
             "model_kind": "moe",
             "framework_version": "0.25.1",
             "gpu": "h200_sxm",
-            "gpu_count": 12,
-            "node_count": 2,
-            "gpus_per_node": 6,
             "interconnect": "NVLink",
         },
         "search": {"tensor_parallel": 4},
@@ -130,10 +127,8 @@ def _request(**updates) -> SupportRequest:
         {"identity": {"model_revision": "main"}},
         {"identity": {"framework_version": " "}},
         {"identity": {"gpu": "../h200_sxm"}},
-        {"identity": {"gpu_count": 13}},
-        {"search": {"tensor_parallel": 8}},
+        {"search": {"moe_tensor_parallel": 2}},
         {"search": {"tensor_parallel": True}},
-        {"search": {"max_candidates": 3}},
         {"search": {"context_length": 1151}},
         {"workload": {"input_tokens": 0}},
         {"workload": {"request_count": 0}},
@@ -142,9 +137,29 @@ def _request(**updates) -> SupportRequest:
         {"workload": {"slo": {"ttft_ms": 1.0, "tpot_ms": True}}},
     ],
 )
-def test_request_rejects_invalid_allocation_workload_and_identity(updates):
+def test_request_rejects_invalid_topology_workload_and_identity(updates):
     with pytest.raises(ValidationError):
         _request(**updates)
+
+
+@pytest.mark.parametrize(
+    "updates,field",
+    [
+        ({"identity": {"gpu_count": 4}}, "identity.gpu_count"),
+        ({"identity": {"node_count": 1}}, "identity.node_count"),
+        ({"identity": {"gpus_per_node": 4}}, "identity.gpus_per_node"),
+        ({"search": {"max_candidates": 1}}, "search.max_candidates"),
+        ({"search": {"max_candidates": 2}}, "search.max_candidates"),
+    ],
+)
+def test_legacy_allocation_fields_require_explicit_request_migration(updates, field):
+    with pytest.raises(ValidationError) as error:
+        _request(**updates)
+    message = str(error.value)
+    assert field in message
+    assert "Copy the request, remove these fields" in message
+    assert "new output directory" in message
+    assert "ordinary predict/recommend configs" in message
 
 
 def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path, monkeypatch):
@@ -183,7 +198,7 @@ def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path
     assert recommendation.optimizer.max_trials == 1
     assert recommendation.optimizer.parallelism == 1
     assert plan["search"]["candidate_count"] == 1
-    assert "single" in plan["search"]["detail"]
+    assert "single-worker validation" in plan["search"]["detail"]
     assert {item["status"] for item in plan["prerequisites"]} == {"not_checked"}
     assert plan["accuracy"]["status"] == "not_assessed"
     assert (root / "systems/h200_sxm.yaml").is_file()
@@ -192,16 +207,20 @@ def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path
 
 
 @pytest.mark.parametrize("model_kind,preset,moe_tensor", [("dense", "tp", 1), ("moe", "pure_tp", 4)])
-def test_plan_collects_one_chosen_worker_and_bounds_recommendation(tmp_path, model_kind, preset, moe_tensor):
+def test_plan_collects_one_chosen_worker_and_generates_validation_configs(tmp_path, model_kind, preset, moe_tensor):
     from aisimulate.recommend import recommendation_to_sweeper
 
-    request = _request(identity={"model_kind": model_kind}, search={"max_candidates": 2})
+    request = _request(identity={"model_kind": model_kind})
     plan = create_plan(request, tmp_path)
     configs = [CoreRecommendationConfig.from_yaml(path) for path in plan["outputs"]["recommendation_configs"]]
     candidates = [candidate for config in configs for candidate in config.engine.workers.aggregated.parallelism.preset]
-    assert [(c.replicas, c.tensor, c.moe_tensor) for c in candidates] == [(1, 4, moe_tensor), (2, 4, moe_tensor)]
+    assert [(c.replicas, c.tensor, c.moe_tensor) for c in candidates] == [(1, 4, moe_tensor)]
     assert all(config.optimizer.max_trials == 1 for config in configs)
-    assert plan["search"]["candidate_count"] == 2
+    assert plan["search"]["candidate_count"] == 1
+    assert plan["fpm"]["collection_gpus_required"] == 4
+    assert all(config.optimization.constraints.max_candidate_gpus == 4 for config in configs)
+    assert "max_candidates" not in plan["search"]
+    assert not (tmp_path / "recommend/replicas-2.yaml").exists()
     for config in configs:
         search = recommendation_to_sweeper(config).search_space
         assert search.agg_max_num_batched_tokens == [8192]
@@ -217,20 +236,43 @@ def test_plan_collects_one_chosen_worker_and_bounds_recommendation(tmp_path, mod
     assert "--execute" in commands["fpm_run_local"]
 
 
-def test_one_worker_allocation_keeps_one_pilot_even_with_two_candidate_limit(tmp_path):
-    request = _request(identity={"node_count": 1, "gpus_per_node": 4, "gpu_count": 4}, search={"max_candidates": 2})
+@pytest.mark.parametrize(
+    "topology,preset",
+    [
+        ({"tensor_parallel": 64}, "pure_tp"),
+        (
+            {"tensor_parallel": 1, "attention_data_parallel": 64, "moe_tensor_parallel": 1, "moe_expert_parallel": 64},
+            "dep",
+        ),
+        ({"tensor_parallel": 64, "moe_tensor_parallel": 1, "moe_expert_parallel": 64}, "tep"),
+    ],
+)
+def test_wide_worker_requirement_is_not_limited_by_node_allocation_or_runtime_default(tmp_path, topology, preset):
+    from aisimulate.recommend import recommendation_to_sweeper
+
+    request = _request(search=topology)
     plan = create_plan(request, tmp_path)
     commands = json.loads((tmp_path / "commands.json").read_text())
+    recommendation = CoreRecommendationConfig.from_yaml(tmp_path / "recommend/pilot.yaml")
 
     assert plan["search"]["candidate_count"] == 1
+    assert plan["fpm"]["collection_gpus_required"] == 64
+    assert recommendation_to_sweeper(recommendation).search_space.gpu_budget == 64
+    assert recommendation.engine.workers.aggregated.parallelism.preset[0].replicas == 1
+    command = plan["fpm"]["plan_command"]
+    assert command[command.index("--fpm-gpu-counts") + 1] == "64"
+    assert command[command.index("--fpm-parallel-presets") + 1] == preset
     assert plan["outputs"]["recommendation_configs"] == [str(tmp_path / "recommend/pilot.yaml")]
     assert len(commands["recommend"]) == 1
-    assert "single" in plan["search"]["detail"]
+    assert "available allocation" in plan["search"]["detail"]
 
 
 @pytest.mark.parametrize("seed", [0, 7, 42])
 @pytest.mark.parametrize("model_kind,moe_tensor", [("dense", 1), ("moe", 4)])
-def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeypatch, seed, model_kind, moe_tensor):
+@pytest.mark.parametrize("runtime_replicas", [1, 3])
+def test_validation_recommendation_and_user_runtime_replica_budget(
+    tmp_path, monkeypatch, seed, model_kind, moe_tensor, runtime_replicas
+):
     from aiconfigurator_core.sdk import RustForwardPassPerfModel
     from aisimulate.main import build_parser
     from aisimulate.recommend import run_recommendation
@@ -243,10 +285,10 @@ def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeyp
     monkeypatch.setattr(RustForwardPassPerfModel, "best_available", _OfflinePerfModel.best_available)
     legal = [
         ReplicaParallelConfig(shape=ParallelShape(tp=4, pp=1, dp=1, moe_tp=moe_tensor, moe_ep=1), replicas=count)
-        for count in (1, 2)
+        for count in (1, 2, 3)
     ]
     monkeypatch.setattr("aisimulate.sweeper.search_space.parallel_configs_for", lambda *args, **kwargs: legal)
-    request = _request(identity={"model_kind": model_kind}, search={"max_candidates": 2, "seed": seed})
+    request = _request(identity={"model_kind": model_kind}, search={"seed": seed})
     plan = create_plan(request, tmp_path)
     commands = json.loads((tmp_path / "commands.json").read_text())["recommend"]
     evaluated = []
@@ -256,57 +298,47 @@ def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeyp
     for command in commands:
         args = build_parser().parse_args(command[1:])
         config = CoreRecommendationConfig.from_yaml(args.config)
+        assert config.engine.workers.aggregated.parallelism.preset[0].replicas == 1
+        if runtime_replicas > 1:
+            # Deployment choices remain ordinary runtime inputs; onboarding is unchanged.
+            payload = config.model_dump(mode="json", exclude_none=True)
+            payload["engine"]["workers"]["aggregated"]["parallelism"]["preset"][0]["replicas"] = runtime_replicas
+            payload["optimization"]["constraints"]["max_candidate_gpus"] = runtime_replicas * request.worker_gpus
+            config = CoreRecommendationConfig.model_validate(payload)
+            prediction = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml").model_dump(mode="json")
+            prediction["engine"]["workers"]["aggregated"]["parallelism"]["replicas"] = runtime_replicas
+            assert (
+                CorePredictionConfig.model_validate(prediction).engine.workers.aggregated.parallelism.replicas
+                == runtime_replicas
+            )
         result = run_recommendation(config, stack="engine", runner_factory=_OfflineRunnerFactory(), show_progress=False)
         evaluated.extend(candidate.config["replicas"] for candidate in result.candidates)
         results.append(result)
         configs.append(args.config)
         outputs.append(args.output_dir)
-    assert evaluated == [1, 2]
+    assert evaluated == [runtime_replicas]
     assert configs == plan["outputs"]["recommendation_configs"]
     assert outputs == plan["outputs"]["recommendation_results"]
-    assert len(set(outputs)) == 2
+    assert len(set(outputs)) == 1
     assert all(result.counts.evaluated == 1 and result.counts.cache_hits == 0 for result in results)
-    assert len(_OfflinePerfModel.requests) == 2
+    assert len(_OfflinePerfModel.requests) == 1
+    assert SupportRequest.from_yaml(tmp_path / "request.yaml") == request
     _assert_estimator_requests(_OfflinePerfModel.requests, tmp_path / "systems", moe_tensor)
 
 
-@pytest.mark.parametrize(
-    "max_candidates,missing_pilot_samples,statuses",
-    [(1, False, [0]), (2, False, [0, 0]), (2, True, [1, 0])],
-)
-@pytest.mark.parametrize("tampered_commands", [False, True])
-def test_documented_recommendation_loop_attempts_every_candidate(
-    tmp_path, max_candidates, missing_pilot_samples, statuses, tampered_commands
-):
+@pytest.mark.parametrize("missing_samples", [False, True])
+def test_documented_recommendation_command_evaluates_one_worker(tmp_path, missing_samples):
     guide = Path(__file__).resolve().parents[4] / "docs/fpm-self-service.md"
-    snippet = guide.read_text().split("python3 - <<'PY'\n", 1)[1].split("\nPY\n", 1)[0]
+    snippet = "aisimulate recommend " + guide.read_text().split("\naisimulate recommend ", 1)[1].split("\n```", 1)[0]
     workdir = tmp_path / "work with 'quotes'; $(literal)"
     workdir.mkdir()
-    request = _request(
-        identity={"model_kind": "dense", "gpu_count": 8, "node_count": 1, "gpus_per_node": 8},
-        search={"max_candidates": max_candidates, "objective": "ttft"},
-    )
+    request = _request(identity={"model_kind": "dense"}, search={"objective": "ttft"})
     plan = create_plan(request, workdir / "aisimulate-support")
-    commands = json.loads(Path(plan["outputs"]["commands"]).read_text())["recommend"]
-    injected_marker = tmp_path / "injected-command-ran"
-    if tampered_commands:
-        command_file = Path(plan["outputs"]["commands"])
-        payload = json.loads(command_file.read_text())
-        payload["recommend"].insert(
-            0,
-            [
-                sys.executable,
-                "-c",
-                "import sys; from pathlib import Path; Path(sys.argv[1]).write_text('unexpected execution')",
-                str(injected_marker),
-            ],
-        )
-        command_file.write_text(json.dumps(payload))
     evaluated = tmp_path / "evaluated.txt"
     estimator_requests = tmp_path / "estimator-requests.jsonl"
     wrapper = tmp_path / "bin/aisimulate"
     wrapper.parent.mkdir()
-    # Install the same Core double in each supervised child. The snippet executes
+    # Install the same Core double in each supervised child. The command executes
     # real subprocesses, CLI dispatch, estimator resolution, sampling and export.
     wrapper.write_text(
         f"#!{sys.executable}\n"
@@ -344,7 +376,7 @@ class Runner:
         replicas = spec.backend_deployment.num_workers
         with Path(os.environ["SUPPORT_TEST_EVALUATED"]).open("a") as stream:
             stream.write(str(replicas) + "\\n")
-        samples = 0.0 if {missing_pilot_samples!r} and replicas == 1 else 4.0
+        samples = 0.0 if {missing_samples!r} else 4.0
         return ReplayReport(metrics={{"mean_ttft_ms": 10.0, "num_ttft_samples": samples}})
 
     def close(self):
@@ -364,7 +396,7 @@ if __name__ == "__main__":
     )
     wrapper.chmod(0o755)
     result = subprocess.run(
-        [sys.executable, "-c", snippet],
+        shlex.split(snippet.replace("\\\n", "")),
         cwd=workdir,
         env={
             **os.environ,
@@ -378,34 +410,30 @@ if __name__ == "__main__":
         check=False,
     )
 
-    assert not injected_marker.exists()
-    assert result.returncode == (1 if any(statuses) else 0), result.stderr
-    assert evaluated.read_text().splitlines() == [str(index) for index in range(1, max_candidates + 1)]
+    assert result.returncode == (1 if missing_samples else 0), result.stderr
+    assert evaluated.read_text().splitlines() == ["1"]
     resolved_requests = [json.loads(line) for line in estimator_requests.read_text().splitlines()]
-    assert len(resolved_requests) == max_candidates
+    assert len(resolved_requests) == 1
     _assert_estimator_requests(resolved_requests, workdir / "aisimulate-support/systems", 1)
-    for index, (output, status) in enumerate(zip(plan["outputs"]["recommendation_results"], statuses, strict=True), 1):
+    for output in plan["outputs"]["recommendation_results"]:
         root = Path(output)
         payload = json.loads((root / "recommendation.json").read_text())
         assert payload["counts"]["evaluated"] == 1
-        assert payload["counts"]["feasible"] == (0 if status else 1)
-        assert payload["counts"]["infeasible"] == (1 if status else 0)
-        assert payload["candidates"][0]["config"]["replicas"] == index
+        assert payload["counts"]["feasible"] == (0 if missing_samples else 1)
+        assert payload["counts"]["infeasible"] == (1 if missing_samples else 0)
+        assert payload["candidates"][0]["config"]["replicas"] == 1
         exported = root / "recommendations/0001.yaml"
-        if status:
+        if missing_samples:
             assert "no qualifying samples" in payload["candidates"][0]["reason"]
             assert not exported.exists()
         else:
             prediction = CorePredictionConfig.from_yaml(exported)
-            assert prediction.engine.workers.aggregated.parallelism.replicas == index
+            assert prediction.engine.workers.aggregated.parallelism.replicas == 1
             assert prediction.engine.systems_paths == [str(workdir / "aisimulate-support/systems")]
             timing = prediction.engine.workers.aggregated.timing
             assert timing.estimation_mode == "fpm_interpolation"
             assert timing.fallback_policy == "deny"
             assert timing.systems_paths == prediction.engine.systems_paths
-    assert [line for line in result.stdout.splitlines() if line.startswith("exit ")] == [
-        f"exit {status}: {shlex.join(command)}" for command, status in zip(commands, statuses, strict=True)
-    ]
 
 
 def test_prefill_bounds_follow_concurrent_workload_and_collector_minimum(tmp_path):
@@ -422,7 +450,6 @@ def test_prefill_bounds_follow_concurrent_workload_and_collector_minimum(tmp_pat
     "updates",
     [
         {"search": {"tensor_parallel": 2}},
-        {"search": {"max_candidates": 2}},
         {"search": {"seed": 7}},
         {"workload": {"input_tokens": 64}},
         {"identity": {"model_revision": "other-checkpoint"}},

@@ -51,8 +51,6 @@ def _request(kind="dense", **topology):
                 "model_kind": kind,
                 "framework_version": "0.25.1",
                 "gpu": "h200_sxm",
-                "gpu_count": 8,
-                "gpus_per_node": 8,
                 "interconnect": "NVLink",
             },
             "search": {"context_length": 2048, **topology},
