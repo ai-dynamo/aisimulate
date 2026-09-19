@@ -22,3 +22,5 @@ Identity ≠ compute precision: a quantized checkpoint that binds an NVFP4
 identity but executes a W4A16 dequant kernel family is recorded exactly so
 (the `moe quant->kernel` arrow in results); admission never equates
 "checkpoint loads" with "precision measured".
+
+Progress is derived, not self-reported: `components/workflow_check.py onboard_model --param ...` evaluates the sibling `onboard_model.yaml` manifest against artifacts and names the first actionable step.

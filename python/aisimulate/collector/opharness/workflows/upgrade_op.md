@@ -22,3 +22,5 @@ give the same answer twice is a component invocation, never free-hand.
 AI never: re-derives comparison baselines, renames labels outside
 `kernel_taxonomy.yaml`, or concludes "unsupported" from reading code — every
 "the framework does X" claim needs a component-produced record.
+
+Progress is derived, not self-reported: `components/workflow_check.py upgrade_op --param ...` evaluates the sibling `upgrade_op.yaml` manifest against artifacts and names the first actionable step.

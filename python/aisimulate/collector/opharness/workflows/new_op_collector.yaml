@@ -1,0 +1,19 @@
+# Machine-readable step manifest for workflows/new_op_collector.md.
+# Params: family (op family), sm (default sm90).
+workflow: new_op_collector
+steps:
+- id: serving_truth_recorded
+  actor: script
+  done_when: {check: component_pending, args: {component: decompose}}
+- id: unit_defined
+  actor: owner
+  done_when: {check: component_pending, args: {component: decompose}}
+- id: implemented
+  actor: ai
+  done_when: {check: component_pending, args: {component: path_diff}}
+- id: path_aligned
+  actor: script
+  done_when: {check: component_pending, args: {component: path_diff}}
+- id: smoke_full_sanity
+  actor: script
+  done_when: {check: component_pending, args: {component: sanity}}

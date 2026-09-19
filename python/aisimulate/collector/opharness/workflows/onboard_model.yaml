@@ -1,0 +1,31 @@
+# Machine-readable step manifest for workflows/onboard_model.md.
+# Params: repo (HF checkpoint), sm (default sm90).
+workflow: onboard_model
+steps:
+- id: inputs_ready
+  actor: script
+  done_when: {check: model_inputs_ready}
+- id: dummies_built
+  actor: script
+  done_when: {check: dummies_built}
+- id: identity_probed
+  actor: script
+  done_when: {check: model_probed}
+- id: fails_dispositioned
+  actor: ai
+  done_when: {check: model_fails_dispositioned}
+- id: decomposed
+  actor: script
+  done_when: {check: component_pending, args: {component: decompose}}
+- id: granularity_decided
+  actor: owner
+  done_when: {check: component_pending, args: {component: decompose}}
+- id: coverage_collected
+  actor: script
+  done_when: {check: component_pending, args: {component: sanity}}
+- id: path_aligned
+  actor: script
+  done_when: {check: component_pending, args: {component: path_diff}}
+- id: e2e_admitted
+  actor: script
+  done_when: {check: component_pending, args: {component: e2e_align}}

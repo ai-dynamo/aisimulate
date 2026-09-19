@@ -16,3 +16,5 @@ execution path is proven aligned with serving, producing sane rows.
 
 The one law: the collector may execute a case or raise — it never silently
 skips, and it never substitutes a backend to keep collecting.
+
+Progress is derived, not self-reported: `components/workflow_check.py new_op_collector --param ...` evaluates the sibling `new_op_collector.yaml` manifest against artifacts and names the first actionable step.

@@ -48,6 +48,26 @@ opharness/
 More workflows are expected; they reuse components rather than growing new
 ad-hoc scripts.
 
+## How workflows are driven (and kept from drifting)
+
+A workflow run is a loop between an agent and `components/workflow_check.py`:
+
+```
+while not workflow_check(<workflow>, params).all_done:
+    do the FIRST todo step (script steps call components; ai steps produce
+    declared artifacts; owner steps stop for a signed decision)
+    re-run workflow_check      # artifacts decide progress, never the agent
+```
+
+Each `workflows/<name>.md` has a sibling `<name>.yaml` manifest whose per-step
+`done_when` predicates consult artifacts only (results matrices, findings,
+targets declarations, workspace evidence). Steps depending on a
+not-yet-implemented component report `blocked` — an honest roadmap, distinct
+from actionable `todo`. Every check appends an observation to
+`results/campaigns/<slug>.jsonl`, so how a campaign actually progressed is a
+complete, append-only record; the ledger is audit-only and never read back as
+state, which makes runs resumable across interrupted sessions and agents.
+
 ## Boundary rules
 
 1. **Instruments measure, AI judges, owners choose.** Deterministic +
