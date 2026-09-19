@@ -34,7 +34,16 @@ from .config_profile import (
 )
 from .fpm import run_fpm
 from .plan import create_plan, request_id
-from .schema import FPMDeployment, SearchProfile, SloSpec, SupportIdentity, SupportRequest, WorkloadSpec
+from .schema import (
+    AGENTX_REFERENCE_CONTEXT,
+    CollectionSpec,
+    FPMDeployment,
+    SearchProfile,
+    SloSpec,
+    SupportIdentity,
+    SupportRequest,
+    WorkloadSpec,
+)
 from .topology import TopologySuggestions, suggest_topologies
 
 
@@ -50,13 +59,14 @@ def add_support_parser(subparsers: Any) -> None:
     actions = onboard.add_subparsers(dest="support_action", required=True)
     init = actions.add_parser(
         "init",
-        help="Declare a model, target hardware, worker topology, and FPM workload.",
+        help="Declare a model, target hardware, worker topology, and FPM collection limits.",
         description=(
             "Use --interactive for terminal prompts. --model-config derives supported local model metadata; "
             "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
             "--model, --model-revision, --model-kind, --framework-version, --gpu, and --interconnect. "
             "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
-            "topologies; other routes default to TP1. A small synthetic workload is the default. "
+            "topologies; other routes default to TP1. Dynamo self-benchmark generates the collection grid. "
+            "Synthetic workload and SLA options customize optional validation examples only. "
             "Set deployment replicas and GPU budgets in ordinary predict/recommend configs."
         ),
     )
@@ -98,13 +108,28 @@ def add_support_parser(subparsers: Any) -> None:
         action="store_true",
         help="Preview model-config topology suggestions as JSON; no prompts or writes, including to --output.",
     )
-    init.add_argument("--input-tokens", type=int, help="Input tokens per request (default: 1024).")
-    init.add_argument("--output-tokens", type=int, help="Output tokens per request (default: 128).")
-    init.add_argument("--concurrency", type=int, help="Concurrent requests (default: 1).")
-    init.add_argument("--request-count", type=int, help="Synthetic request count (default: 4).")
-    init.add_argument("--context-length", type=int, help="Validation context limit in tokens (default: 16384).")
-    init.add_argument("--ttft-ms", type=float, help="Target time to first token in ms (default: 1000).")
-    init.add_argument("--tpot-ms", type=float, help="Target time per output token in ms (default: 100).")
+    init.add_argument("--input-tokens", type=int, help="Synthetic validation input tokens (default: 1024).")
+    init.add_argument("--output-tokens", type=int, help="Synthetic validation output tokens (default: 128).")
+    init.add_argument("--concurrency", type=int, help="Synthetic validation concurrency (default: 1).")
+    init.add_argument("--request-count", type=int, help="Synthetic validation request count (default: 4).")
+    init.add_argument(
+        "--context-length",
+        type=int,
+        help="Runtime per-request context limit; defaults to min(model/profile context, AgentX reference 256000).",
+    )
+    init.add_argument(
+        "--max-num-tokens", type=int, help="Rank-local scheduled token budget; profile bound or initial policy 8192."
+    )
+    init.add_argument(
+        "--max-batch-size", type=int, help="Rank-local scheduler sequence bound; profile bound or initial policy 256."
+    )
+    init.add_argument(
+        "--max-prefill-cudagraph-size",
+        type=int,
+        help="Collector prefill CUDA graph capture limit; default 2048. Match the target runtime.",
+    )
+    init.add_argument("--ttft-ms", type=float, help="Synthetic validation TTFT target in ms (default: 1000).")
+    init.add_argument("--tpot-ms", type=float, help="Synthetic validation TPOT target in ms (default: 100).")
     init.add_argument(
         "--objective",
         choices=get_args(SearchProfile.model_fields["objective"].annotation),
@@ -145,6 +170,9 @@ def add_support_parser(subparsers: Any) -> None:
     deployment.add_argument("--model-cache", metavar="NAME[:MOUNT[:SUBPATH]]", help="Model-cache PVC and mount.")
     deployment.add_argument("--transport", choices=("nvlink", "ib", "efa"))
     deployment.add_argument("--image-pull-secret", help="Kubernetes secret for pulling the collector image.")
+    from .validation import add_validation_parser
+
+    add_validation_parser(actions)
 
 
 def _values(args: argparse.Namespace, model: Any) -> dict[str, Any]:
@@ -157,6 +185,7 @@ def _request_from_args(args: argparse.Namespace) -> SupportRequest:
             "identity": _values(args, SupportIdentity),
             "workload": {**_values(args, WorkloadSpec), "slo": _values(args, SloSpec)},
             "search": _values(args, SearchProfile),
+            "collection": _values(args, CollectionSpec),
             **({"fpm_profile": load_yaml(args.fpm_profile)} if getattr(args, "fpm_profile", None) else {}),
         }
     )
@@ -177,6 +206,7 @@ def _request_target(path: str | Path, *, overwrite: bool) -> Path:
 
 
 def _write_request(request: SupportRequest, path: str | Path, *, overwrite: bool) -> Path:
+    request.scheduler_limits()
     target = _request_target(path, overwrite=overwrite)
     payload = yaml.safe_dump(request.model_dump(mode="json", exclude_none=True), sort_keys=False)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -212,15 +242,18 @@ _PROMPTS = {
     "gpu": ("Target GPU system name (for example h200_sxm)", str),
     "interconnect": ("GPU interconnect (for example nvswitch, pcie, or none)", str),
     "tensor_parallel": ("Attention tensor-parallel size", int),
-    "input_tokens": ("Input tokens per request", int),
-    "output_tokens": ("Output tokens per request", int),
-    "concurrency": ("Concurrent requests", int),
-    "context_length": ("Validation context limit in tokens", int),
-    "ttft_ms": ("Target time to first token (ms)", float),
-    "tpot_ms": ("Target time per output token (ms)", float),
 }
 _CORRECTION_PROMPTS = {
     **_PROMPTS,
+    "input_tokens": ("Input tokens per request", int),
+    "output_tokens": ("Output tokens per request", int),
+    "concurrency": ("Concurrent requests", int),
+    "context_length": ("Runtime per-request context limit in tokens", int),
+    "ttft_ms": ("Target time to first token (ms)", float),
+    "tpot_ms": ("Target time per output token (ms)", float),
+    "max_num_tokens": ("Rank-local scheduled token budget", int),
+    "max_batch_size": ("Rank-local scheduler sequence bound", int),
+    "max_prefill_cudagraph_size": ("Prefill CUDA graph capture limit", int),
     "framework": ("Runtime (vllm)", str),
     "tokenizer_revision": ("Pinned tokenizer revision", str),
     "chat_template_revision": ("Pinned chat-template revision", str),
@@ -239,7 +272,7 @@ def _prompt(args: argparse.Namespace, name: str) -> None:
     label, convert = _CORRECTION_PROMPTS[name]
     default = getattr(args, name)
     if default is None:
-        for model in (SupportIdentity, WorkloadSpec, SloSpec, SearchProfile):
+        for model in (SupportIdentity, WorkloadSpec, SloSpec, SearchProfile, CollectionSpec):
             field = model.model_fields.get(name)
             if field is not None and not field.is_required():
                 default = field.default
@@ -267,7 +300,7 @@ def _require_terminal() -> None:
 def _guided_request(args: argparse.Namespace, *, skip_topology: bool = False) -> SupportRequest:
     _require_terminal()
     print("Onboard a model for FPM simulation on a target hardware platform.")
-    print("Select one TP, DEP, or TEP worker and a small synthetic workload on vLLM.")
+    print("Select one TP, DEP, or TEP worker and review collection limits for vLLM.")
     print("Enter accepts a displayed default. Ctrl-C cancels without saving. Supplied options skip their prompts.")
     for name in _PROMPTS:
         if skip_topology and name == "tensor_parallel":
@@ -396,7 +429,7 @@ def _review_config_profile(
     draft: ProfileDraft,
 ) -> SupportRequest:
     while True:
-        identity, workload = request.identity, request.workload
+        identity = request.identity
         print("Review FPM profile before saving:")
         print(f"  Modeling scope: {config.notes['modeling_scope']}")
         print(
@@ -406,10 +439,11 @@ def _review_config_profile(
         )
         print(f"  Parallelism: {request.parallelism()}")
         print(f"  Collection GPUs required: {request.worker_gpus} for one selected worker; availability is unchecked.")
-        print(
-            f"  Workload: {workload.input_tokens}/{workload.output_tokens} tokens, concurrency {workload.concurrency}, "
-            f"{workload.request_count} requests; context limit {request.search.context_length} tokens"
-        )
+        settings = request.collection_settings()
+        print(f"  Runtime context limit: {request.search.context_length} tokens per request.")
+        print(f"  Collection: {json.dumps(settings, sort_keys=True)}")
+        print("  Dynamo generates the grid; exact points and total KV capacity resolve at runtime.")
+        print("  Synthetic validation traffic and SLAs do not determine these collection limits.")
         print("  Resource *_bytes values are bytes per rank; kv_bytes_per_token is bytes per cached token per rank.")
         print("  max_num_tokens/max_batch_size are per-rank scheduler limits. Estimates require runtime verification.")
         for name, value in draft.resolved.items():
@@ -429,23 +463,43 @@ def _review_config_profile(
             return request
         if action == "cancel":
             raise KeyboardInterrupt
-        print("Editable fields: " + ", ".join(sorted(OVERRIDE_FIELDS)))
+        collection_fields = {"runtime_context_length", "max_prefill_cudagraph_size"}
+        print("Editable fields: " + ", ".join(sorted(OVERRIDE_FIELDS | collection_fields)))
         while True:
             name = input("Field to edit: ").strip()
-            if name in OVERRIDE_FIELDS:
+            if name in OVERRIDE_FIELDS | collection_fields:
                 break
             print("Choose an editable field by its displayed name.")
         # Derive from explicit inputs again so inferred dependents can change.
         # Only publish the staged values after the entire request validates.
-        staged = {**overrides, **_read_profile_value(name)}
+        staged = dict(overrides)
+        payload = request.model_dump(exclude={"fpm_profile"})
+        if name in collection_fields:
+            while True:
+                try:
+                    value = int(input(f"{name} (positive integer): ").strip())
+                    if value <= 0:
+                        raise ValueError
+                    break
+                except ValueError:
+                    print("Enter a positive integer.")
+            if name == "runtime_context_length":
+                payload["search"]["context_length"] = value
+            else:
+                payload["collection"][name] = value
+        else:
+            staged.update(_read_profile_value(name))
+            if name in {"max_num_tokens", "max_batch_size"}:
+                payload["collection"][name] = staged[name]
         try:
-            updated = derive_profile(config, request, staged)
+            edited_request = SupportRequest.model_validate(payload)
+            updated = derive_profile(config, edited_request, staged)
             while updated.missing:
                 field = min(updated.missing, key=_memory_field)
-                staged, updated = _prompt_profile_value(config, request, staged, updated, field)
+                staged, updated = _prompt_profile_value(config, edited_request, staged, updated, field)
             if updated.profile is None:
                 raise ValueError("model config did not produce a complete FPM profile")
-            validated = SupportRequest.model_validate({**request.model_dump(), "fpm_profile": updated.profile})
+            validated = SupportRequest.model_validate({**edited_request.model_dump(), "fpm_profile": updated.profile})
         except ValueError as exc:
             print(f"Edit rejected: {exc}. Previous profile values retained.")
             continue
@@ -483,9 +537,7 @@ def _config_inputs(args: argparse.Namespace) -> tuple[ModelConfig, dict[str, Any
             ("moe" if experts > 0 else "dense") if experts is not None else config.suggestions.get("model_kind")
         )
     if args.context_length is None and "context_length" in preview.resolved:
-        args.context_length = min(
-            preview.resolved["context_length"], SearchProfile.model_fields["context_length"].default
-        )
+        args.context_length = min(preview.resolved["context_length"], AGENTX_REFERENCE_CONTEXT)
     if args.interactive:
         request = _guided_request(args, skip_topology=not _explicit_topology(args))
     else:
@@ -498,7 +550,7 @@ def _config_inputs(args: argparse.Namespace) -> tuple[ModelConfig, dict[str, Any
                 option = "--" + name.replace("_", "-") if name in _CORRECTION_PROMPTS else "request"
                 details.append(f"  {option}: {error['msg']}")
             raise ValueError(
-                "Complete target identity and workload options before dependent profile derivation:\n"
+                "Complete target identity and collection options before dependent profile derivation:\n"
                 + "\n".join(details)
                 + "\nThen supply unresolved profile fields with --resource-overrides PATH (flat JSON/YAML), "
                 "or use --interactive."
@@ -653,14 +705,13 @@ def _init(args: argparse.Namespace) -> int:
     except (EOFError, KeyboardInterrupt):
         print("Setup cancelled.", file=sys.stderr)
         return 130
-    workload = request.workload
     print(
         f"Scope: FPM simulation for {request.identity.model} ({request.identity.model_kind}), "
         f"vLLM {request.identity.framework_version}, "
         f"{request.identity.gpu}; {request.identity.interconnect}; "
-        f"{request.parallel_preset} {request.parallelism()}, {workload.input_tokens}/{workload.output_tokens} tokens, "
-        f"concurrency {workload.concurrency}, {workload.request_count} requests."
+        f"{request.parallel_preset} {request.parallelism()}; runtime context {request.search.context_length} tokens."
     )
+    print("Collection settings: " + json.dumps(request.collection_settings(), sort_keys=True))
     print(f"Collection GPUs required: {request.worker_gpus} for one selected worker; availability is unchecked.")
     if args.model_config:
         print(
@@ -715,6 +766,10 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def run_support_command(args: argparse.Namespace) -> int:
+    if args.support_action == "validate-fpm":
+        from .validation import run_validation
+
+        return run_validation(args)
     if args.support_action == "init":
         return _init(args)
     if args.support_action == "plan":

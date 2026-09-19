@@ -8,8 +8,9 @@ When asked to onboard a model for FPM simulation on designated hardware, follow
 [Onboard with an agent](docs/fpm-self-service.md#onboard-with-an-agent) in the FPM
 self-service guide. Use the checkout's `aisimulate onboard` CLI and current help.
 Follow its six stages: inspect the model and target; choose the worker and
-workload; derive, review and save the profile; plan collection; collect and verify
-data; run prediction/recommendation and report. Start by asking only for a missing
+review runtime/collection limits; derive, review and save the profile; plan
+collection; collect and verify data; validate replay and run ordinary
+prediction/recommendation. Start by asking only for a missing
 Hugging Face model ID (`organization/model-name`) and target GPU platform. Accept
 an already supplied local config, profile or checkpoint path instead of requiring
 a Hub ID; do not ask for both an ID and a config upfront. For a Hub ID, retrieve
@@ -17,7 +18,7 @@ the config using available Hub access as described in stage 1. Reuse supplied
 facts and inspect the config/profile before asking for derivable metadata; defer
 other questions to their stage and help the user choose the worker topology.
 At stage 2, inspect `aisimulate onboard init --model-config PATH --suggest-parallel`
-with the actual checkpoint/revision, runtime, GPU, interconnect and workload
+with the actual checkpoint/revision, runtime, GPU, interconnect and collection
 options. This read-only JSON preview reports model/hardware-aware TP choices and
 MoE TP/DEP/TEP alternatives, exact flags, resource sources and missing inputs.
 Ask for unresolved shared precision/layout facts rather than guessing. Only a
@@ -33,6 +34,29 @@ or replica budgets during onboarding. Preserve target hardware, runtime and
 interconnect characteristics; verify actual collection resources before execution.
 Generated predict/recommend configs validate one worker. Deployment replicas and
 optimization GPU budgets belong to ordinary predict/recommend configurations.
+
+Review context, scheduler and prefill capture limits independently of validation
+traffic. Fresh config/profile defaults use the smaller of the declared context
+and 256,000 tokens, profile scheduler bounds or 8,192 tokens/256 sequences, and a
+2,048-token prefill CUDA graph capture limit. Explain and allow edits to these
+initial policies; they establish neither capacity nor timing coverage. Do not
+require fixed input/output lengths, concurrency, TTFT or TPOT during intake.
+Those flags customize optional synthetic examples only. Maximum sequences does
+not reserve maximum context for every sequence. Dynamo self-benchmark owns the
+grid generated from capture sizes and runtime bounds; do not invent a separate
+AgentX collection grid.
+
+After verifying the formal data pair, use `aisimulate onboard validate-fpm`
+with a local Weka trace and a separate validation output directory. Follow the
+guide's pinned AgentX reference and current cold aggregated, one-lane, HBM-only,
+non-speculative scope. Preserve target model projection and strict direct FPM
+with denied fallback. Read `validation.json` together with native query coverage
+and request completion evidence. Coverage counts native lookup resolutions,
+including interpolation and failures; cached timing reuse is not another query.
+Missing timing stops replay and preserves partial evidence, which cannot certify
+the remainder of the trace. Report coverage and silicon accuracy separately.
+Reuse verified v2 collection plans for validation-only changes; legacy v1 plans
+need a new directory as described in the guide.
 
 Do not reject a checkpoint solely because it is multimodal. Read its unambiguous
 `text_config`, or its flat text-decoder fields, and explain that FPM models only

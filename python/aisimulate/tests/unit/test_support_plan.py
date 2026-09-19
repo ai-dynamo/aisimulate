@@ -23,7 +23,7 @@ from pydantic import ValidationError
 
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.support.fpm import run_fpm
-from aisimulate.support.plan import create_plan, plan_lock, request_id
+from aisimulate.support.plan import check_plan, create_plan, plan_lock, request_id, validation_id
 from aisimulate.support.schema import SupportRequest
 
 pytestmark = pytest.mark.unit
@@ -274,8 +274,8 @@ def test_plan_collects_one_chosen_worker_and_generates_validation_configs(tmp_pa
     assert command[command.index("--fpm-gpu-counts") + 1] == "4"
     assert command[command.index("--fpm-max-gpus") + 1] == "4"
     assert command[command.index("--fpm-parallel-presets") + 1] == preset
-    assert command[command.index("--fpm-max-prefill-isl") + 1] == "1024"
-    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "1"
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "8192"
+    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "256"
     assert "--plan-only" in command
     assert "--execute" in commands["fpm_run_local"]
 
@@ -480,22 +480,24 @@ if __name__ == "__main__":
             assert timing.systems_paths == prediction.engine.systems_paths
 
 
-def test_prefill_bounds_follow_concurrent_workload_and_collector_minimum(tmp_path):
+def test_collection_bounds_are_independent_of_synthetic_validation(tmp_path):
     request = _request(workload={"input_tokens": 10, "concurrency": 3, "request_count": 4})
     command = create_plan(request, tmp_path)["fpm"]["plan_command"]
-    assert command[command.index("--fpm-max-prefill-isl") + 1] == "30"
-    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "3"
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "8192"
+    assert command[command.index("--fpm-max-prefill-batch-size") + 1] == "256"
+    assert command[command.index("--fpm-max-model-len") + 1] == "256000"
     small = _request(workload={"input_tokens": 1})
     command = create_plan(small, tmp_path / "small")["fpm"]["plan_command"]
-    assert command[command.index("--fpm-max-prefill-isl") + 1] == "2"
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "8192"
 
 
 @pytest.mark.parametrize(
     "updates",
     [
         {"search": {"tensor_parallel": 2}},
-        {"search": {"seed": 7}},
-        {"workload": {"input_tokens": 64}},
+        {"search": {"context_length": 65536}},
+        {"collection": {"max_num_tokens": 16384}},
+        {"collection": {"max_prefill_cudagraph_size": 512}},
         {"identity": {"model_revision": "other-checkpoint"}},
         {"identity": {"framework_version": "0.26.0"}},
         {"identity": {"tokenizer_revision": "tokenizer-v2"}},
@@ -528,6 +530,81 @@ def test_same_request_overwrite_preserves_timings_and_rejects_modified_inputs(tm
     with pytest.raises(ValueError, match="modified|request|identity"):
         create_plan(request, tmp_path, overwrite=True)
     assert data.read_bytes() == b"timings"
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"workload": {"input_tokens": 4096, "output_tokens": 256, "concurrency": 8, "request_count": 16}},
+        {"workload": {"slo": {"ttft_ms": 2500.0, "tpot_ms": 75.0}}},
+        {"search": {"seed": 7, "objective": "goodput"}},
+    ],
+)
+def test_validation_refresh_keeps_collection_artifacts_and_updates_examples(tmp_path, updates):
+    request = _request()
+    original = create_plan(request, tmp_path)
+    data = tmp_path / "systems/data/collected.parquet"
+    data.write_bytes(b"collected timings")
+    checkpoint = tmp_path / "fpm-checkpoint"
+    checkpoint.mkdir()
+    (checkpoint / "campaign.json").write_bytes(b"immutable checkpoint")
+    changed = _request(**updates)
+    assert request_id(changed) == request_id(request)
+    assert validation_id(changed) != validation_id(request)
+
+    updated = create_plan(changed, tmp_path, overwrite=True)
+
+    assert updated["request_id"] == original["request_id"]
+    assert updated["fpm"] == original["fpm"]
+    assert updated["validation_id"] != original["validation_id"]
+    assert data.read_bytes() == b"collected timings"
+    assert (checkpoint / "campaign.json").read_bytes() == b"immutable checkpoint"
+    assert SupportRequest.from_yaml(tmp_path / "request.yaml") == changed
+    prediction = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(tmp_path / "recommend/pilot.yaml")
+    assert prediction.traffic.source.input_tokens == changed.workload.input_tokens
+    assert prediction.traffic.load.concurrency == changed.workload.concurrency
+    assert recommendation.optimizer.seed == changed.search.seed
+    check_plan(changed, tmp_path)
+
+
+@pytest.mark.parametrize("relative", ["request.yaml", "predict/pilot.yaml", "commands.json", "support-plan.json"])
+def test_validation_refresh_does_not_bless_tampered_generated_files(tmp_path, relative):
+    create_plan(_request(), tmp_path)
+    target = tmp_path / relative
+    target.write_bytes(target.read_bytes() + b"\n")
+    before = _file_contents(tmp_path)
+    with pytest.raises(ValueError, match="modified|identity"):
+        create_plan(_request(workload={"input_tokens": 4096}), tmp_path, overwrite=True)
+    assert _file_contents(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "search,expected_context",
+    [(None, 16384), ({}, 16384), ({"tensor_parallel": 4, "context_length": 8192}, 8192)],
+)
+def test_v1_request_migration_preserves_declared_context_but_requires_a_new_plan(tmp_path, search, expected_context):
+    import yaml
+
+    legacy = _request().model_dump(mode="json", exclude_none=True)
+    legacy["schema_version"] = "aisimulate-support-request/v1"
+    legacy.pop("collection")
+    if search is None:
+        legacy.pop("search")
+    else:
+        legacy["search"] = search
+    source = tmp_path / "old-request.yaml"
+    source.write_text(yaml.safe_dump(legacy))
+    migrated = SupportRequest.from_yaml(source)
+    assert migrated.schema_version == "aisimulate-support-request/v2"
+    assert migrated.search.context_length == expected_context
+    assert migrated.scheduler_limits() == {"max_batched_tokens": 8192, "max_sequences": 256}
+    root = tmp_path / "old-plan"
+    root.mkdir()
+    (root / "support-plan.json").write_text(json.dumps({"schema_version": "aisimulate-support-plan/v1"}))
+    with pytest.raises(ValueError, match="new output directory"):
+        create_plan(migrated, root, overwrite=True)
+    assert create_plan(migrated, tmp_path / "new-plan")["fpm"]["runtime_limits"]["context_length"] == expected_context
 
 
 @pytest.mark.parametrize("modification", ["retired_command", "missing_execute", "formatting"])

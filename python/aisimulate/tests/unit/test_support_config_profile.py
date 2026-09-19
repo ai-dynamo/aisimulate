@@ -266,7 +266,7 @@ def test_dense_tensor_counts_include_replicated_norms_and_kv_heads(tmp_path, tp,
     assert resources.weights_bytes == weights
     assert resources.kv_bytes_per_token == kv
     assert resources.max_num_tokens == 8192
-    assert resources.max_batch_size == 2
+    assert resources.max_batch_size == 256
     assert "estimate" in draft.sources["weights_bytes"]
     assert "exact" in draft.sources["kv_bytes_per_token"]
     assert "estimate" in draft.sources["runtime_overhead_bytes"]

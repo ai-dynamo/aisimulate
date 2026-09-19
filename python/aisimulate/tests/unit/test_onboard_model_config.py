@@ -17,6 +17,8 @@ import yaml
 
 import aisimulate.main as cli
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
+from aisimulate.support.fpm import fpm_cli_args
+from aisimulate.support.plan import request_id
 from aisimulate.support.schema import SupportRequest
 
 pytestmark = pytest.mark.unit
@@ -66,6 +68,186 @@ _PILOT = {
     "ttft_ms": 1000,
     "tpot_ms": 100,
 }
+
+
+def test_validation_changes_preserve_profile_and_collection_command(tmp_path, capsys):
+    source, resources = _files(tmp_path)
+    requests = []
+    for name, validation in (
+        ("small", {}),
+        (
+            "large",
+            {"input_tokens": 4096, "output_tokens": 256, "concurrency": 16, "request_count": 32, "ttft_ms": 5000},
+        ),
+    ):
+        output = tmp_path / f"{name}.yaml"
+        assert cli.main(_args(output, source, resources, **validation)) == 0
+        requests.append(SupportRequest.from_yaml(output))
+    first, second = requests
+    assert first.workload != second.workload
+    assert first.fpm_profile == second.fpm_profile
+    assert request_id(first) == request_id(second)
+    assert fpm_cli_args(first, output_dir=tmp_path / "plan", plan_only=True) == fpm_cli_args(
+        second, output_dir=tmp_path / "plan", plan_only=True
+    )
+    assert first.scheduler_limits() == {"max_batched_tokens": 4096, "max_sequences": 8}
+
+
+@pytest.mark.parametrize("model_context,expected", [(32768, 32768), (262144, 256000)])
+def test_model_context_and_reference_cap_define_initial_runtime_context(tmp_path, model_context, expected):
+    source, resources = _files(tmp_path, config={**_CONFIG, "max_position_embeddings": model_context})
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources)) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.search.context_length == expected
+    assert request.fpm_profile.context_length == model_context
+    command = fpm_cli_args(request, output_dir=tmp_path / "plan", plan_only=True)
+    assert command[command.index("--fpm-max-model-len") + 1] == str(expected)
+    assert command[command.index("--fpm-max-prefill-isl") + 1] == "4096"
+
+
+def test_guided_collection_edit_reestimates_resources_before_acceptance(tmp_path, monkeypatch):
+    source, resources = _files(
+        tmp_path,
+        config={**_CONFIG, "hidden_size": 4096, "num_attention_heads": 32, "intermediate_size": 8192},
+        overrides={"fmha_quant_mode": "bfloat16", "comm_quant_mode": "half", "kv_cache_dtype": "bfloat16"},
+    )
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(
+        monkeypatch,
+        [
+            "edit",
+            "max_num_tokens",
+            "4096",
+            "edit",
+            "runtime_context_length",
+            "8192",
+            "edit",
+            "max_prefill_cudagraph_size",
+            "512",
+            "accept",
+        ],
+    )
+    assert cli.main(_args(output, source, resources, max_num_tokens=16384) + ["--interactive"]) == 0
+    request = SupportRequest.from_yaml(output)
+    profile = request.profile_deployment()
+    assert request.search.context_length == 8192
+    assert request.collection.max_num_tokens == profile.resources.max_num_tokens == 4096
+    assert request.collection.max_prefill_cudagraph_size == 512
+    assert profile.resources.activations_bytes == 2 * 4096 * 4096 * 11
+    assert request.scheduler_limits() == {"max_batched_tokens": 4096, "max_sequences": 256}
+    assert not any("Input tokens" in prompt or "Concurrent requests" in prompt for prompt in prompts)
+    command = fpm_cli_args(request, output_dir=tmp_path / "plan", plan_only=True)
+    for option, expected in (
+        ("--fpm-max-model-len", "8192"),
+        ("--fpm-max-num-batched-tokens", "4096"),
+        ("--fpm-max-num-seqs", "256"),
+        ("--fpm-max-prefill-cudagraph-size", "512"),
+    ):
+        assert command[command.index(option) + 1] == expected
+
+
+def test_conflicting_resource_and_collection_bounds_fail_before_saving(tmp_path):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    with pytest.raises(SystemExit):
+        cli.main(_args(output, source, resources, max_num_tokens=8192))
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "route,limits",
+    [
+        (route, limits)
+        for route in ("identifier", "profile", "config")
+        for limits in ({"max_num_tokens": 128, "max_batch_size": 256}, {"max_num_tokens": 128})
+    ]
+    + [("profile", {}), ("config", {})],
+)
+def test_invalid_resolved_scheduler_cannot_be_saved_or_planned(tmp_path, capsys, route, limits):
+    source, resources = _files(tmp_path, overrides={**_OVERRIDES, "max_num_tokens": 8192, "max_batch_size": 256})
+    baseline = tmp_path / "baseline.yaml"
+    assert cli.main(_args(baseline, source, resources)) == 0
+    payload = yaml.safe_load(baseline.read_text())
+    profile = payload["fpm_profile"]
+    output = tmp_path / "invalid.yaml"
+    if route == "config":
+        resources.write_text(yaml.safe_dump({**_OVERRIDES, "max_num_tokens": 128, "max_batch_size": 256}))
+        command = _args(output, source, resources, **limits)
+    else:
+        command = _args(output, source, None, model=_CONFIG["_name_or_path"], model_kind="dense", **limits)
+        command.remove(str(source))
+        command.remove("--model-config")
+        if route == "profile":
+            if not limits:
+                profile["deployments"][0]["resources"]["max_num_tokens"] = 128
+            profile_path = tmp_path / "profile.json"
+            profile_path.write_text(json.dumps(profile))
+            command.extend(["--fpm-profile", str(profile_path)])
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(command)
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "max_num_tokens" in message and "max_batch_size" in message
+    assert not output.exists()
+
+    payload["collection"] = limits
+    if route == "identifier":
+        payload.pop("fpm_profile")
+    elif not limits:
+        payload["fpm_profile"]["deployments"][0]["resources"]["max_num_tokens"] = 128
+    request_path = tmp_path / "invalid-saved.yaml"
+    request_path.write_text(yaml.safe_dump(payload))
+    original = request_path.read_bytes()
+    plan = tmp_path / "invalid-plan"
+    with pytest.raises(SystemExit) as error:
+        cli.main(["onboard", "plan", "--config", str(request_path), "--output-dir", str(plan)])
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "max_num_tokens" in message and "max_batch_size" in message
+    assert request_path.read_bytes() == original
+    assert not plan.exists()
+
+
+@pytest.mark.parametrize("suggest_parallel", [False, True])
+def test_config_small_token_budget_uses_reviewed_sequence_bound(tmp_path, capsys, suggest_parallel):
+    overrides = {**_OVERRIDES, "max_num_tokens": 128}
+    if suggest_parallel:
+        # Automatic topology selection requires shared inputs rather than rank-local byte overrides.
+        overrides = {key: value for key, value in overrides.items() if not key.endswith("_bytes")}
+        overrides.pop("kv_bytes_per_token")
+    source, resources = _files(tmp_path, overrides=overrides)
+    output = tmp_path / "request.yaml"
+    command = _args(output, source, resources, max_num_tokens=128, tensor_parallel=None if suggest_parallel else 1)
+    if suggest_parallel:
+        command.append("--suggest-parallel")
+
+    assert cli.main(command) == 0
+
+    if suggest_parallel:
+        assert json.loads(capsys.readouterr().out)["default"] is not None
+        assert not output.exists()
+    else:
+        request = SupportRequest.from_yaml(output)
+        assert request.scheduler_limits() == {"max_batched_tokens": 128, "max_sequences": 8}
+        root = tmp_path / "plan"
+        assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+        command = fpm_cli_args(request, output_dir=root, plan_only=True)
+        assert command[command.index("--fpm-max-num-batched-tokens") + 1] == "128"
+        assert command[command.index("--fpm-max-num-seqs") + 1] == "8"
+
+
+def test_guided_config_intake_needs_no_validation_lengths_concurrency_or_slas(tmp_path, monkeypatch):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    prompts = _terminal(monkeypatch, ["accept"])
+    omitted = dict.fromkeys(("input_tokens", "output_tokens", "concurrency", "ttft_ms", "tpot_ms"))
+    assert cli.main(_args(output, source, resources, **omitted) + ["--interactive"]) == 0
+    assert prompts == ["Review action (accept/edit/cancel): "]
+    saved = SupportRequest.from_yaml(output)
+    assert saved.workload.concurrency == 1
+    assert saved.scheduler_limits()["max_sequences"] == 8
 
 
 def _files(tmp_path, *, config=None, overrides=None, suffix="yaml"):
@@ -146,7 +328,7 @@ def test_scripted_config_embeds_complete_profile_and_sources(tmp_path, monkeypat
     assert request.identity.model_revision == _IDENTITY["model_revision"]
     assert profile.architecture == "LlamaForCausalLM"
     assert profile.context_length == 32768
-    assert request.search.context_length == 16384
+    assert request.search.context_length == 32768
     assert profile.num_experts == 0
     assert profile.deployments[0].resources.weights_bytes == _OVERRIDES["weights_bytes"]
     provenance = profile.provenance + profile.deployments[0].resources.provenance
@@ -729,7 +911,7 @@ def test_guided_precision_answers_resolve_supported_memory_without_redundant_pro
     resources = SupportRequest.from_yaml(output).profile_deployment().resources
     assert resources.kv_bytes_per_token == 512
     assert resources.max_num_tokens == 8192
-    assert resources.max_batch_size == 1
+    assert resources.max_batch_size == 256
 
 
 def test_guided_memory_accepts_exact_units_and_reprompts_invalid_quantities(tmp_path, monkeypatch, capsys):

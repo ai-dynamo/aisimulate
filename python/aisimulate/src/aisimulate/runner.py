@@ -443,7 +443,10 @@ class EngineReplayRunner:
                 from .resources import ResourceLimitError
             except ImportError:
                 raise error from None
-            raise ResourceLimitError(str(error)) from error
+            failure = ResourceLimitError(str(error))
+            if hasattr(error, "fpm_query_coverage"):
+                failure.fpm_query_coverage = error.fpm_query_coverage
+            raise failure from error
         if not isinstance(report_json, str):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON string")
         try:

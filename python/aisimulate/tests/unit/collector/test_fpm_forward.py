@@ -17,7 +17,12 @@ from types import SimpleNamespace
 
 import pytest
 from collector.fpm_forward.capabilities import resolve_model_capability
-from collector.fpm_forward.config import FPMCollectionOptions, PrefillSamplingProfile, add_fpm_arguments
+from collector.fpm_forward.config import (
+    FPMCollectionOptions,
+    PrefillSamplingProfile,
+    add_fpm_arguments,
+    reject_fpm_arguments_without_fpm,
+)
 from collector.fpm_forward.database import (
     aggregate_cell,
     validate_formal_database_commit,
@@ -152,7 +157,7 @@ def test_options_leave_point_generation_to_dynamo():
     assert options.parallel_presets == ("auto",)
     assert options.to_dict()["point_source"] == "dynamo_native_self_benchmark"
     assert options.to_dict()["measurement_repeats"] == 1
-    assert options.max_prefill_isl == 8192
+    assert options.max_prefill_isl is None
     assert options.max_prefill_batch_size is None
     assert options.vllm_max_model_len == -1
     assert options.prefill_sampling.max_total_prefill_tokens == 8192
@@ -182,6 +187,38 @@ def test_prefill_limits_expose_no_cli_aliases():
     assert "--fpm-model-config" in help_text
     assert "--fpm-max-isl" not in help_text
     assert "--fpm-max-prefill-bs" not in help_text
+
+
+@pytest.mark.parametrize("option", ["max-model-len", "max-num-batched-tokens", "max-num-seqs"])
+@pytest.mark.parametrize("value", ["0", "-1", "1.5"])
+def test_runtime_limit_cli_requires_positive_integers(option, value):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args([f"--fpm-{option}", value])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("option", ["max-model-len", "max-num-batched-tokens", "max-num-seqs"])
+def test_runtime_limits_require_fpm_collection(option):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    args = parser.parse_args([f"--fpm-{option}", "64"])
+    args.ops = ["gemm"]
+    with pytest.raises(ValueError, match="FPM-only arguments require --ops fpm_forward"):
+        reject_fpm_arguments_without_fpm(args)
+
+
+@pytest.mark.parametrize(
+    "arguments, message",
+    [
+        ({"fpm_max_num_batched_tokens": 1024, "fpm_max_prefill_isl": 2048}, "prefill-isl exceeds"),
+        ({"fpm_max_num_seqs": 8, "fpm_max_prefill_batch_size": 16}, "prefill-batch-size exceeds"),
+    ],
+)
+def test_prefill_limits_cannot_exceed_shared_limits(arguments, message):
+    with pytest.raises(ValueError, match=message):
+        FPMCollectionOptions.from_args(_args(**arguments))
 
 
 def test_prefill_sampling_profile_keeps_vllm_strides_and_exact_endpoint():

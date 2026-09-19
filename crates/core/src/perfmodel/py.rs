@@ -1935,6 +1935,42 @@ impl PyForwardPassPerfModel {
             .map_err(|e| PyValueError::new_err(format!("diagnostics serialize: {e}")))
     }
 
+    /// Bounded direct-FPM native lookup evidence, or JSON null when disabled.
+    fn fpm_query_coverage(&self) -> PyResult<String> {
+        let coverage = self.inner.fpm_query_coverage().map_err(aic_to_py)?;
+        serde_json::to_string(&coverage)
+            .map_err(|error| PyValueError::new_err(format!("FPM coverage serialize: {error}")))
+    }
+
+    fn predict_prefill_latency(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        isl: u32,
+        prefix: u32,
+    ) -> PyResult<f64> {
+        py.allow_threads(|| self.inner.predict_prefill_latency(batch_size, isl, prefix))
+            .map_err(aic_to_py)
+    }
+
+    fn predict_decode_latency_total(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        total_past_kv_tokens: u32,
+    ) -> PyResult<f64> {
+        py.allow_threads(|| {
+            self.inner
+                .predict_decode_latency_total(batch_size, total_past_kv_tokens)
+        })
+        .map_err(aic_to_py)
+    }
+
+    fn fpm_decode_kv_ceiling(&self, py: Python<'_>) -> PyResult<Option<u32>> {
+        py.allow_threads(|| self.inner.fpm_decode_kv_ceiling())
+            .map_err(aic_to_py)
+    }
+
     /// Regression store labels, readiness and retained counts as JSON.
     /// Includes cold stores; native AIC models return an empty list.
     fn regression_store_diagnostics(&self) -> PyResult<String> {

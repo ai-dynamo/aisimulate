@@ -162,8 +162,8 @@ def test_real_cli_preview_is_json_and_never_validates_or_writes_output_target(tm
     assert report["identity"]["model"] == "deployment/actual-model"
     assert report["identity"]["model_revision"] == _OPTIONS["model_revision"]
     assert report["identity"]["framework_version"] == _OPTIONS["framework_version"]
-    assert report["workload"]["request_count"] == 3
-    assert report["workload"]["concurrency"] == 2
+    assert "workload" not in report
+    assert report["collection"]["max_sequences"] == 256
     assert report["context_length"] == 4096
     assert report["config_sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
     assert {path.relative_to(tmp_path): path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()} == before

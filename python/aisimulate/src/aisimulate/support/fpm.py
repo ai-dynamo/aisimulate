@@ -31,16 +31,11 @@ def fpm_cli_args(
     if checkpoint != root / "fpm-checkpoint" and root / "fpm-checkpoint" not in checkpoint.parents:
         raise ValueError("checkpoint_dir must stay within the plan's fpm-checkpoint directory")
     profile = request.profile_deployment()
-    max_prefill_tokens = max(2, request.workload.input_tokens * request.workload.concurrency)
-    max_prefill_batch = request.workload.concurrency
-    if profile is not None:
-        scheduler = request.scheduler_limits()
-        max_prefill_batch = scheduler["max_sequences"]
-        max_prefill_tokens = min(
-            max(2, request.workload.input_tokens * max_prefill_batch), scheduler["max_batched_tokens"]
-        )
-        if max_prefill_tokens < 2:
-            raise ValueError("FPM collection requires a rank-local token limit of at least 2 in the resource profile")
+    scheduler = request.scheduler_limits()
+    max_prefill_tokens = scheduler["max_batched_tokens"]
+    max_prefill_batch = scheduler["max_sequences"]
+    if max_prefill_tokens < 2:
+        raise ValueError("FPM collection requires a rank-local token limit of at least 2 in the resource profile")
     command = [
         "python3",
         "-m",
@@ -57,6 +52,12 @@ def fpm_cli_args(
         str(request.worker_gpus),
         "--fpm-parallel-presets",
         request.parallel_preset,
+        "--fpm-max-model-len",
+        str(request.search.context_length),
+        "--fpm-max-num-batched-tokens",
+        str(max_prefill_tokens),
+        "--fpm-max-num-seqs",
+        str(max_prefill_batch),
         "--fpm-max-prefill-isl",
         str(max_prefill_tokens),
         "--fpm-max-prefill-batch-size",
@@ -68,6 +69,8 @@ def fpm_cli_args(
         "--fpm-database-root",
         str(root / "systems/data"),
     ]
+    if request.collection.max_prefill_cudagraph_size is not None:
+        command.extend(("--fpm-max-prefill-cudagraph-size", str(request.collection.max_prefill_cudagraph_size)))
     if profile is not None:
         command.extend(
             (

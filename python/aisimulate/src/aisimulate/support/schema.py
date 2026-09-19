@@ -16,6 +16,8 @@ from pydantic import Field, field_validator, model_validator
 from aisimulate.config.common import PositiveFiniteFloat, PositiveStrictInt, StrictModel, load_yaml
 from aisimulate.fpm_profile import FpmModelProfile
 
+AGENTX_REFERENCE_CONTEXT = 256000
+
 
 class SupportIdentity(StrictModel):
     model: str
@@ -92,7 +94,9 @@ class SearchProfile(StrictModel):
     attention_data_parallel: PositiveStrictInt | None = None
     moe_tensor_parallel: PositiveStrictInt | None = None
     moe_expert_parallel: PositiveStrictInt | None = None
-    context_length: PositiveStrictInt = 16384
+    # Historical field location retained for saved requests. This is a runtime
+    # limit, independent of the optional synthetic validation workload.
+    context_length: PositiveStrictInt = AGENTX_REFERENCE_CONTEXT
     objective: Literal[
         "throughput",
         "throughput_per_gpu",
@@ -104,6 +108,21 @@ class SearchProfile(StrictModel):
         "pareto",
     ] = "throughput"
     seed: int = Field(default=42, strict=True, ge=0)
+
+
+class CollectionSpec(StrictModel):
+    """Rank-local runtime bounds; Dynamo generates the measurement grid."""
+
+    max_num_tokens: PositiveStrictInt | None = None
+    max_batch_size: PositiveStrictInt | None = None
+    max_prefill_cudagraph_size: PositiveStrictInt | None = None
+
+    @field_validator("max_num_tokens")
+    @classmethod
+    def _collector_token_minimum(cls, value: int | None) -> int | None:
+        if value is not None and value < 2:
+            raise ValueError("FPM collection requires max_num_tokens >= 2")
+        return value
 
 
 _DNS_LABEL = r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?"
@@ -143,10 +162,11 @@ class FPMDeployment(StrictModel):
 
 
 class SupportRequest(StrictModel):
-    schema_version: Literal["aisimulate-support-request/v1"] = "aisimulate-support-request/v1"
+    schema_version: Literal["aisimulate-support-request/v2"] = "aisimulate-support-request/v2"
     identity: SupportIdentity
     workload: WorkloadSpec = Field(default_factory=WorkloadSpec)
     search: SearchProfile = Field(default_factory=SearchProfile)
+    collection: CollectionSpec = Field(default_factory=CollectionSpec)
     fpm_profile: FpmModelProfile | None = None
 
     @model_validator(mode="before")
@@ -167,6 +187,25 @@ class SupportRequest(StrictModel):
                     "Copy the request, remove these fields, and regenerate the plan in a new output directory. "
                     "Set deployment replicas and GPU budgets in ordinary predict/recommend configs."
                 )
+            if values.get("schema_version") == "aisimulate-support-request/v1":
+                search = values.get("search", {})
+                values = {**values, "schema_version": "aisimulate-support-request/v2"}
+                if isinstance(search, Mapping):
+                    search = dict(search)
+                    search.setdefault("context_length", 16384)
+                    values["search"] = search
+            # Preserve explicit legacy limits and profile resource bounds. Do
+            # not infer collection limits from a saved validation workload.
+            profile = values.get("fpm_profile")
+            search = values.get("search", {})
+            if profile is not None and isinstance(search, Mapping) and "context_length" not in search:
+                context = (
+                    profile.get("context_length")
+                    if isinstance(profile, Mapping)
+                    else getattr(profile, "context_length", None)
+                )
+                if type(context) is int and context > 0:
+                    values = {**values, "search": {**search, "context_length": min(context, AGENTX_REFERENCE_CONTEXT)}}
         return values
 
     def parallelism(self) -> dict[str, int]:
@@ -215,11 +254,46 @@ class SupportRequest(StrictModel):
     def scheduler_limits(self) -> dict[str, int]:
         """Rank-local limits shared by generated configs and collection bounds."""
         deployment = self.profile_deployment()
-        if deployment is None:
-            return {"max_batched_tokens": 8192, "max_sequences": 256}
+        limits = {
+            "max_batched_tokens": self.collection.max_num_tokens
+            or (deployment.resources.max_num_tokens if deployment is not None else 8192),
+            "max_sequences": self.collection.max_batch_size
+            or (deployment.resources.max_batch_size if deployment is not None else 256),
+        }
+        if limits["max_batched_tokens"] < limits["max_sequences"]:
+            raise ValueError(
+                f"resolved collection max_num_tokens ({limits['max_batched_tokens']}) must be at least "
+                f"max_batch_size ({limits['max_sequences']}); edit the collection or profile bounds"
+            )
+        return limits
+
+    def collection_settings(self) -> dict[str, Any]:
+        """Resolved runtime inputs and the source of each proposed bound."""
+        scheduler = self.scheduler_limits()
+        profile = self.fpm_profile is not None
         return {
-            "max_batched_tokens": min(8192, deployment.resources.max_num_tokens),
-            "max_sequences": min(self.workload.concurrency, deployment.resources.max_batch_size),
+            "context_length": self.search.context_length,
+            **scheduler,
+            "max_prefill_cudagraph_size": self.collection.max_prefill_cudagraph_size or 2048,
+            "sources": {
+                "context_length": (
+                    "reviewed runtime limit; model/profile context capped at the 256000-token AgentX reference "
+                    "unless explicitly overridden"
+                ),
+                "max_batched_tokens": "user collection override"
+                if self.collection.max_num_tokens is not None
+                else "reviewed profile resource bound"
+                if profile
+                else "initial vLLM collection policy (8192); review for the target runtime",
+                "max_sequences": "user collection override"
+                if self.collection.max_batch_size is not None
+                else "reviewed profile resource bound"
+                if profile
+                else "initial vLLM collection policy (256); independent of validation concurrency",
+                "max_prefill_cudagraph_size": "user collection override"
+                if self.collection.max_prefill_cudagraph_size is not None
+                else "collector default (2048); review against the target runtime CUDA graph configuration",
+            },
         }
 
     @model_validator(mode="after")
@@ -237,7 +311,11 @@ class SupportRequest(StrictModel):
         if self.workload.input_tokens + self.workload.output_tokens > self.search.context_length:
             raise ValueError("search.context_length must cover the input and output tokens")
         if self.fpm_profile is not None:
-            self.profile_deployment()
+            deployment = self.profile_deployment()
+            scheduler = self.scheduler_limits()
+            deployment.resources.validate_envelope(
+                max_num_tokens=scheduler["max_batched_tokens"], max_batch_size=scheduler["max_sequences"]
+            )
             if self.identity.model_revision != self.fpm_profile.model_revision:
                 raise ValueError("identity.model_revision must match fpm_profile.model_revision")
             if (self.fpm_profile.num_experts > 0) != (self.identity.model_kind == "moe"):

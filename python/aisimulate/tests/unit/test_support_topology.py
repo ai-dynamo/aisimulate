@@ -262,7 +262,7 @@ def test_known_weight_lower_bound_can_reject_without_precision_cache_or_overhead
     } <= rejected.missing.keys()
 
 
-def test_cache_precheck_uses_full_context_and_conservative_rank_local_concurrency(tmp_path):
+def test_cache_precheck_requires_one_full_context_independent_of_scheduler_batch_limit(tmp_path):
     config = _config(tmp_path, architectures=["MixtralForCausalLM"], model_type="mixtral", num_local_experts=4)
     request = _request("moe", concurrency=8)
     report = suggest_topologies(config, request, _runtime(max_batch_size=3, max_num_tokens=64))
@@ -272,22 +272,23 @@ def test_cache_precheck_uses_full_context_and_conservative_rank_local_concurrenc
         for field in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes")
         if field in dep4.draft.resolved
     )
-    assert dep4.resident_sequences_per_rank == 3
-    assert dep4.known_required_bytes - known_non_kv == 64 * (4096 * 3 + 1)
+    assert dep4.resident_sequences_per_rank == 1
+    assert dep4.known_required_bytes - known_non_kv == 64 * (4096 + 1)
     assert dep4.draft.resolved["max_num_tokens"] == 64
     assert report.context_length == 4096
-    assert report.workload["concurrency"] == 8
-    assert any("without assuming balanced attention-DP routing" in item for item in report.assumptions)
+    assert report.collection["max_sequences"] == 3
+    assert report.collection["max_batched_tokens"] == 64
+    assert "workload" not in report.to_dict()
+    assert any("not guarantee" in item for item in report.assumptions)
 
 
-def test_context_and_concurrency_can_rule_out_previously_small_workers(tmp_path, monkeypatch):
+def test_validation_concurrency_does_not_change_topology_fit(tmp_path, monkeypatch):
     _hardware(tmp_path, monkeypatch, gpu={"mem_capacity": 85_000_000})
     config = _config(tmp_path)
     light = suggest_topologies(config, _request(concurrency=1), _runtime())
     assert light.default.required_gpus == 1
     heavy = suggest_topologies(config, _request(concurrency=16), _runtime())
-    assert heavy.default.required_gpus == 2
-    assert heavy.rejected_candidates[0].required_gpus == 1
+    assert heavy.to_dict() == light.to_dict()
 
 
 @pytest.mark.parametrize("extra_token", [0, 1])

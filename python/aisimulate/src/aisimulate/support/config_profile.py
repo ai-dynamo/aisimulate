@@ -689,14 +689,16 @@ def derive_profile(
         values[key], sources[key] = value, source
     for key in ("moe_backend", "attention_backend"):
         values[key], sources[key] = "auto", "existing FPM deployment schema default: automatic backend selection"
-    values["max_num_tokens"] = 8192
-    sources["max_num_tokens"] = "onboarding scheduler policy: rank-local max_batched_tokens=8192"
-    values["max_batch_size"] = request.workload.concurrency if request else 256
-    sources["max_batch_size"] = (
-        "onboarding rank-local workload concurrency"
-        if request
-        else "initial onboarding max_sequences=256; resolved to workload concurrency after identity input"
-    )
+    for key, default in (("max_num_tokens", 8192), ("max_batch_size", 256)):
+        declared = getattr(request.collection, key) if request is not None else None
+        if declared is not None and key in supplied and declared != supplied[key]:
+            raise ValueError(f"collection.{key} conflicts with the resource override; provide one consistent bound")
+        values[key] = declared if declared is not None else default
+        sources[key] = (
+            "user collection override; per-rank runtime bound"
+            if declared is not None
+            else f"initial vLLM collection policy: rank-local {key}={default}; independent of validation traffic"
+        )
     for key, value in supplied.items():
         if key in ("architecture", "num_experts") and key in values and values[key] != value:
             raise ValueError(f"{key} override conflicts with the source config: {value!r} != {values[key]!r}")

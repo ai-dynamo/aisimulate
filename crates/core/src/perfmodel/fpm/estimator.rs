@@ -26,6 +26,14 @@ pub struct OpLevelConfig {}
 #[serde(default, deny_unknown_fields)]
 pub struct FpmInterpolationConfig {
     pub method: FpmInterpolationMethod,
+    /// Record bounded query coverage on the returned canonical model.
+    /// Requires explicit direct FPM with fallback denied.
+    #[serde(skip_serializing_if = "is_false")]
+    pub collect_coverage: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// Construction-time interpolation selection. Native operators receive only

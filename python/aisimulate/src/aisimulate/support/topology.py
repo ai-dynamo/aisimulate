@@ -106,7 +106,7 @@ class TopologyCandidate:
 class TopologySuggestions:
     config_sha256: str
     identity: dict[str, Any]
-    workload: dict[str, Any]
+    collection: dict[str, Any]
     context_length: int
     overrides: dict[str, Any]
     hardware: HardwareEnvelope
@@ -119,7 +119,7 @@ class TopologySuggestions:
         return {
             "config_sha256": self.config_sha256,
             "identity": dict(self.identity),
-            "workload": dict(self.workload),
+            "collection": dict(self.collection),
             "context_length": self.context_length,
             "overrides": dict(self.overrides),
             "hardware": asdict(self.hardware),
@@ -239,10 +239,13 @@ def _assess(
             family, sizes, "rejected", (str(error),), None, None, None, hardware.memory_budget_bytes, None
         )
     resolved = draft.resolved
-    resident = min(request.workload.concurrency, resolved["max_batch_size"])
+    # Admission establishes room for one declared full-context request. The
+    # scheduler's sequence limit is not an allocation of full contexts; runtime
+    # total KV capacity is the remaining memory divided by bytes per token.
+    resident = 1
     known = sum(resolved[field] for field in _NON_KV_BYTES if field in resolved)
     if "kv_bytes_per_token" in resolved:
-        known += resolved["kv_bytes_per_token"] * (request.search.context_length * resident + 1)
+        known += resolved["kv_bytes_per_token"] * (request.search.context_length + 1)
     complete_resources = resolved.keys() >= _RANK_BYTES
     estimated = known if complete_resources else None
     if known > hardware.memory_budget_bytes:
@@ -260,7 +263,7 @@ def _assess(
     else:
         status = "estimated_fit"
         reasons = (
-            f"Complete declared/estimated per-rank resources including full-context cache need {known} bytes, "
+            f"Complete declared/estimated per-rank resources including one full-context cache need {known} bytes, "
             f"within the 90% per-GPU budget of {hardware.memory_budget_bytes} bytes; "
             "this is a conservative admission precheck, not runtime qualification.",
         )
@@ -274,7 +277,7 @@ def suggest_topologies(
 ) -> TopologySuggestions:
     """Shortlist one worker's starting points, without user allocation or timing data.
 
-    The request supplies actual deployment identity, workload and context. Its
+    The request supplies actual deployment identity, collection bounds and context. Its
     topology is replaced during enumeration. Exact per-rank bounds and attached
     deployment profiles must instead use the existing explicit-topology route.
     """
@@ -308,10 +311,18 @@ def suggest_topologies(
         candidates.extend((passing or pending)[:2])
     passing = [candidate for candidate in candidates if candidate.status == "estimated_fit"]
     default = min(passing, key=lambda candidate: candidate.required_gpus, default=None)
+    payload = request.model_dump()
+    payload["collection"].update(
+        {field: supplied[field] for field in ("max_num_tokens", "max_batch_size") if field in supplied}
+    )
+    collection = SupportRequest.model_validate(payload).collection_settings()
+    for field, scheduler_field in (("max_num_tokens", "max_batched_tokens"), ("max_batch_size", "max_sequences")):
+        if field in supplied:
+            collection["sources"][scheduler_field] = "user resource override; shared rank-local scheduler bound"
     return TopologySuggestions(
         config_sha256=config.sha256,
         identity=request.identity.model_dump(mode="json"),
-        workload=request.workload.model_dump(mode="json"),
+        collection=collection,
         context_length=request.search.context_length,
         overrides=supplied,
         hardware=hardware,
@@ -321,10 +332,10 @@ def suggest_topologies(
         assumptions=(
             hardware.assumption,
             "Enumerate powers-of-two widths within the fast domain; explicit topology choices may exceed it.",
-            "Cache reserves search.context_length tokens per concurrently resident sequence on each rank; "
-            "rank-local concurrency is min(workload.concurrency, max_batch_size), "
-            "without assuming balanced attention-DP routing. Reserve one additional cached token per rank "
-            "to satisfy the planner's strict context-capacity headroom requirement.",
+            "Check room for one full search.context_length request plus one cached token of strict capacity "
+            "headroom per rank. max_batch_size is a scheduler bound, not that many full-context cache allocations. "
+            "Total KV capacity is estimated from the remaining per-rank memory; this check does not guarantee "
+            "a particular concurrent workload fits or assume balanced attention-DP routing.",
             "The 90% byte budget reuses onboarding planning policy. CUDA graph reservations are excluded; "
             "generated plan and serving-runtime admission remain authoritative.",
             "Only known config geometry constraints are checked. Unknown architecture constraints, "

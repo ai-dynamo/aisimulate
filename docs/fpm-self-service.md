@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # FPM self-service
 
-`aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and interconnect, plans one TP, DEP, or TEP worker, and derives the minimum GPUs required to collect that worker's timings. It produces ordinary `predict` and `recommend` configurations for validating that worker against your collected FPM data. It builds on AISimulate's per-worker FPM support and packaged collector.
+`aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and interconnect, plans one TP, DEP, or TEP worker, and derives the minimum GPUs required to collect that worker's timings. You review the resource and collection limits, collect whole-forward timings through Dynamo self-benchmark, then validate their query coverage using ordinary trace replay. It also produces ordinary `predict` and `recommend` configurations for the selected worker.
+
+Collection limits and validation traffic are separate inputs. Dynamo self-benchmark generates its sampling grid from CUDA graph sizes and runtime bounds. AgentX traces exercise the resulting FPM library through replay; their variable request lengths do not require a fixed input/output length or latency target during onboarding.
 
 Planning works before the model has an AISimulate model class or measured FPM timings. With a supplied FPM profile, planning validates the declared deployment identity and estimates memory admission from your resource bounds. Runtime compatibility and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not provision GPUs or run target preflight checks.
 
@@ -18,11 +20,11 @@ For a request such as "Help me onboard my model for FPM simulation on my target 
 | Stage | Required result |
 | --- | --- |
 | 1. Inspect the model and target | Accessible config/profile and packaged hardware specification identified; supported metadata read and gaps recorded. |
-| 2. Choose the worker and workload | Checkpoint identity/revision, runtime, interconnect, exact worker topology and initial workload selected; minimum collection GPUs derived. Runtime compatibility remains unchecked. |
+| 2. Choose the worker and collection limits | Checkpoint identity/revision, runtime, interconnect, exact worker topology, context and scheduler/capture limits selected; minimum collection GPUs derived. Runtime compatibility remains unchecked. |
 | 3. Derive, review and save the profile | Exact resource/precision values and assumptions reviewed and accepted; final request contains the complete profile and provenance. |
 | 4. Plan collection | Validated saved plan, generated configurations and collector preview; sampling scope and remaining execution prerequisites explained. |
 | 5. Collect and verify data | Matching formal Parquet/metadata pair verified, with provenance and available phase cells recorded. |
-| 6. Run predict/recommend and report | Single-worker prediction and recommendation exercised; results, coverage and failures reported, with accuracy stated separately. |
+| 6. Validate replay and run predict/recommend | Cold aggregated trace replay checks direct-FPM query coverage; completed and incomplete results are distinguished. Ordinary prediction/recommendation examples remain available; accuracy is assessed separately. |
 
 At each transition or blocker, give a short update: **Stage N/6 — name; result or blocker; next action.** Ask only for missing information needed for the current stage, using facts and decisions already supplied. Continue independent authorized work while an answer is pending. Move on when the required evidence is available; stage transitions do not require another approval. Honor prior authorization, including authorization to execute collection, while preserving the profile acceptance step below.
 
@@ -40,11 +42,13 @@ A natively multimodal checkpoint can be onboarded for its text decoder. Explain 
 
 The agent handles checkout and environment checks: record the branch/commit, follow [development setup](../DEVELOPMENT.md#initial-setup), activate the environment, and inspect `aisimulate onboard --help` and `aisimulate onboard init --help`. Check later subcommands before using them. Report missing commands/options as a version mismatch, rather than asking the user to supply unsupported inputs.
 
-### 2. Choose the worker and workload
+### 2. Choose the worker and collection limits
 
 Resolve only the remaining checkpoint identifier and immutable revision, literal vLLM version, target GPU platform and interconnect. Use available repository/deployment metadata before asking the user. A model label, config hash or example revision does not establish a checkpoint pin. Do not ask for total available GPUs, node allocation, GPUs per node or replica budgets during onboarding; those are choices for actual prediction or recommendation runs.
 
-Establish input/output lengths, concurrency, context and latency targets here. If there is no workload preference, show the [planning defaults](#create-the-request) and cap the context at the model's known limit; adjust token lengths if needed to fit that limit. With a local model config, inspect the [read-only topology preview](#preview-and-choose-parallelism) using the actual identity, runtime, target and workload. Resolve shared precision/layout facts explicitly and rerun the preview. Present the default and alternatives with their resource assumptions and unresolved fields. A candidate marked `estimated_fit` has a complete declared/estimated byte budget; it is not a performance ranking, runtime qualification or a measurement. If no default is available, explain why and select an exact candidate before asking for its per-rank bounds. Do not silently assume topology or precision.
+Review the [runtime and collection defaults](#runtime-and-collection-limits): per-request context, scheduled token budget, maximum sequences and prefill CUDA graph capture limit. Fresh config/profile-based setup caps context at the smaller of the declared limit and the 256,000-token AgentX reference bound. Explain this initial policy and allow edits; it does not establish memory fit or timing coverage. Do not ask for fixed input/output lengths, concurrency, TTFT or TPOT as required collection inputs. Those flags customize optional synthetic validation examples.
+
+With a local model config, inspect the [read-only topology preview](#preview-and-choose-parallelism) using the actual identity, runtime, target and collection limits. Resolve shared precision/layout facts explicitly and rerun the preview. Present the default and alternatives with their resource assumptions and unresolved fields. A candidate marked `estimated_fit` has a complete declared/estimated byte budget; it is not a performance ranking, runtime qualification or a measurement. If no default is available, explain why and select an exact candidate before asking for its per-rank bounds. Do not silently assume topology or precision.
 
 Help choose one initial TP configuration, or the relevant TP/DEP/TEP configuration for MoE, using the preview's exact flags or the [supported topology flags](#create-the-request). Honor an explicit topology even when it lies outside the automatic shortlist. Explain the selected tuple; do not require the user to know every parallelism field upfront. Derive its minimum collection GPUs as attention TP times attention DP: TP4 requires four GPUs, while DEP8 requires eight. This requirement does not declare available capacity or establish runtime placement or compatibility. Each plan collects one exact topology; use separate requests and output directories to investigate alternatives.
 
@@ -55,7 +59,7 @@ Use [a local model config](#start-from-a-local-model-config), or [a supplied pro
 | Agent environment | Review and save behavior |
 | --- | --- |
 | Terminal or agent tool with a PTY | Run `aisimulate onboard init --model-config /path/to/config.json --interactive --output support-request.yaml`. Relay unresolved prompts and the final profile to the user. Apply requested `edit` actions and return the revised profile to the user for review. Enter CLI `accept` only after the user explicitly accepts those exact values; honor any existing explicit acceptance of those same values. `cancel`, Ctrl-C or EOF creates no new request and preserves any existing output, even with `--overwrite`. This final review is specific to `--model-config --interactive`; supplying `--fpm-profile` does not add it. |
-| Headless or noninteractive agent | Supply identity/workload flags and `--resource-overrides` as needed, without `--interactive`. Missing required inputs exit 2 without saving; use the diagnostics to ask for the missing facts. A successful command writes immediately. Initially write to a separate path such as `draft-request.yaml` and show the embedded profile, sources and scope for user review. Apply edits in the inputs/overrides and repeat draft review until accepted; then rerun the unchanged reviewed inputs to a new final request path and verify that it matches the accepted draft before planning. The draft name is only a file convention; it has no special CLI status. Review a supplied `--fpm-profile` in the same way. |
+| Headless or noninteractive agent | Supply identity/collection flags and `--resource-overrides` as needed, without `--interactive`. Missing required inputs exit 2 without saving; use the diagnostics to ask for the missing facts. A successful command writes immediately. Initially write to a separate path such as `draft-request.yaml` and show the embedded profile, sources and scope for user review. Apply edits in the inputs/overrides and repeat draft review until accepted; then rerun the unchanged reviewed inputs to a new final request path and verify that it matches the accepted draft before planning. The draft name is only a file convention; it has no special CLI status. Review a supplied `--fpm-profile` in the same way. |
 
 Do not pipe answers into `--interactive`: it requires a terminal. Scripted setup has no built-in acceptance prompt. Keep draft files separate from the final request and preserve prior outputs when revising a deployment.
 
@@ -65,7 +69,7 @@ Model identity, runtime and topology are not profile-review edit fields. If they
 
 Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. Inspect `support-plan.json`, the embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; this does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available and identify any missing prerequisites.
 
-Explain the minimum collection GPUs, rank-local scheduler/resource envelope and sampling scope. One onboarding plan selects one parallel tuple and generates single-worker validation configs. Use separate requests/output directories for additional tuples. Actual collection resources and placement must be checked in the collector environment before execution. The synthetic request count does not bound timing samples or collection duration.
+Explain the minimum collection GPUs, rank-local scheduler/resource envelope and sampling scope. Dynamo self-benchmark owns the point grid; the plan supplies runtime and capture limits, without deriving a second grid from trace requests. One onboarding plan selects one parallel tuple and generates single-worker validation configs. Use separate requests/output directories for additional tuples. Actual collection resources and placement must be checked in the collector environment before execution. The synthetic request count does not bound timing samples or collection duration.
 
 ### 5. Collect and verify data
 
@@ -73,17 +77,19 @@ First inspect any existing timing data for a matching deployment. Reuse a verifi
 
 For both reused and new data, [inspect the published pair](../python/aisimulate/docs/fpm/end-to-end-workflow.md#5-inspect-the-published-pair): verify hashes, schema and identities, including actual runtime, topology, precision and available prefill/decode cells. Keep it at the generated configs' local systems path. Record any historical checkpoint-revision uncertainty in provenance; a declared revision does not prove that old measurements used it. A successful preview or smoke run is not formal data, and a matching pair does not prove all simulated queries are covered.
 
-### 6. Run predict/recommend and report
+### 6. Validate replay and run predict/recommend
 
-[Run the generated ordinary configurations](#run-the-generated-ordinary-configurations) for single-worker prediction and recommendation validation. Keep `engine.systems_paths` and the direct-FPM profile intact. Report each command's exit status and results; missing cells and out-of-domain queries need their exact coordinates. For deployment prediction or optimization, set the desired replicas and GPU budget in the ordinary runtime configs. Do not change precision labels or silently switch timing methods to obtain a result. Return to stage 5 to address missing data or to stage 2 if the user changes the selected worker/workload scope. Report the simulation stage as incomplete while required queries fail.
+[Validate a local AgentX trace](#validate-fpm-query-coverage-with-agentx-replay) through `onboard validate-fpm`. It writes an inspectable ordinary prediction config, runs cold aggregated replay, and saves coverage evidence separately from the collection plan. Use the selected complete local corpus or one complete play for a first check, and state that selection. Keep `engine.systems_paths`, the target model projection and the direct-FPM profile intact. Report the command's exit status and exact missing coordinates. Missing timing stops replay; a partial report does not audit the rest of the trace.
+
+[Run the generated ordinary configurations](#run-the-generated-ordinary-configurations) when a synthetic prediction or recommendation check is useful. For deployment prediction or optimization, set the desired replicas and GPU budget in the ordinary runtime configs. Do not change precision labels or silently switch timing methods to obtain a result. Return to stage 5 to address missing data, or stage 2 if the selected deployment or collection limits change. A different validation trace alone does not invalidate collected timings. Report the simulation stage as incomplete while required queries fail.
 
 At handoff, include the checkout revision, final request/profile, plan directory, data pair/provenance, exact commands/exit statuses and all result paths. Distinguish estimated memory fit and CPU planning from actual target-runtime checks, formal data/coverage, and completed simulations. For accuracy, report an independent matched silicon comparison if performed, or explicitly **not assessed**. Successful simulation is not evidence of accuracy; an accuracy study is not a mandatory additional collection campaign for onboarding.
 
 ### Resume from existing work
 
-Inspect the saved request/profile, plan, data pair and results before deciding where to resume. Validate that they still match the checkout's CLI, selected deployment and workload; use the existing plan checks described below. An accepted final request can start at stage 4, a valid plan at stage 5, and a verified matching data pair at stage 6. A draft or a saved file without evidence of acceptance still needs stage 3 review. Do not repeat accepted decisions or rerun completed work without a reason.
+Inspect the saved request/profile, plan, data pair and results before deciding where to resume. Validate that they still match the checkout's CLI, selected deployment and collection settings; use the existing plan checks described below. An accepted final request can start at stage 4, a valid plan at stage 5, and a verified matching data pair at stage 6. A draft or a saved file without evidence of acceptance still needs stage 3 review. Do not repeat accepted decisions or rerun completed work without a reason.
 
-Preserve completed artifacts when blocked and report the current stage, specific missing input and next action. Changed deployment or workload inputs invalidate dependent estimates, plans and results; return to the affected stage and use a new output directory. Collection's existing `--resume` is for a matching collector checkpoint as described below, not a general onboarding-stage resume command.
+Preserve completed artifacts when blocked and report the current stage, specific missing input and next action. Changed deployment, resource profile or collection bounds require review and a new collection directory. Validation-only changes can reuse the verified collection plan as described below; use a separate results directory for each replay. Collection's existing `--resume` is for a matching collector checkpoint as described below, not a general onboarding-stage resume command.
 
 ## Create the request
 
@@ -93,7 +99,7 @@ Use an environment installed from this checkout; see [development setup](../DEVE
 aisimulate onboard init --interactive --output support-request.yaml
 ```
 
-Enter the actual model identifier or checkpoint path, pinned model revision, dense/MoE kind, pinned vLLM version, GPU system and interconnect. Then choose a TP size and validation workload. Setup derives and displays the GPUs required for the selected worker. Supplied options skip their prompts. Enter accepts displayed defaults; invalid values can be corrected; Ctrl-C or end-of-input cancels without saving. Existing files require `--overwrite`.
+Enter the actual model identifier or checkpoint path, pinned model revision, dense/MoE kind, pinned vLLM version, GPU system and interconnect. Choose a worker and review its context, scheduler and capture limits. Setup derives and displays the GPUs required for that worker. Supplied options skip their prompts. Enter accepts displayed defaults; invalid values can be corrected; Ctrl-C or end-of-input cancels without saving. Existing files require `--overwrite`.
 
 Both guided and scripted setup use onboarding. `--profile onboarding` is an optional spelling of the same behavior. For automation, supply the identity flags directly:
 
@@ -110,7 +116,9 @@ aisimulate onboard init \
 
 Replace the model, runtime and hardware inputs with your deployment's values. Framework support currently selects vLLM. Optional tokenizer, chat-template, and AISimulate revisions are recorded only when supplied.
 
-The default pilot uses 1,024 input tokens, 128 output tokens, concurrency 1, four requests, a 16,384-token context limit, TTFT target 1,000 ms, and TPOT target 100 ms. With `--model-config`, the default pilot context is capped at the config's known context limit, and omitted parallelism flags trigger model/hardware-aware suggestions. Headless setup selects only a fully assessed default; otherwise it exits without saving. Identifier-only and supplied-profile setup retain TP1 when parallelism is omitted. These are planning defaults, not measured model capacity or latency. Change them with the corresponding flags shown by `aisimulate onboard init --help`.
+With `--model-config`, omitted parallelism flags trigger model/hardware-aware suggestions. Headless setup selects only a fully assessed default; otherwise it exits without saving. Identifier-only and supplied-profile setup retain TP1 when parallelism is omitted. Review the default limits below and change them through `aisimulate onboard init --help` options or config-based profile review.
+
+The optional `predict/pilot.yaml` and `recommend/pilot.yaml` examples use 1,024 input tokens, 128 output tokens, concurrency 1, four requests, TTFT target 1,000 ms and TPOT target 100 ms. Their workload/SLA flags do not size memory, choose the collector grid or change the collection identity. The example token lengths must still fit the selected runtime context. Guided intake does not prompt for these synthetic workload or SLA fields.
 
 Onboarding takes no GPU-pool or node-allocation inputs. The selected topology establishes a minimum collection requirement, not a reservation or a check that those GPUs are available. Advanced flags include `--request-count`, `--objective`, `--seed`, and `--sm`. Replica counts and optimization budgets remain configurable in ordinary `predict` and `recommend` inputs.
 
@@ -124,6 +132,21 @@ Onboarding takes no GPU-pool or node-allocation inputs. The selected topology es
 
 The first profile implementation supports vLLM text decoders, including the text portion of multimodal checkpoints, with PP1, CP1 and linear KV storage. AFD, encoder pools, speculative decoding, nonlinear recurrent state, wide EP and EPLB need additional metadata/semantics and are rejected by this route.
 
+### Runtime and collection limits
+
+These settings define the runtime envelope used for profile sizing, collection and generated configurations. They describe different constraints; none independently proves that a trace is covered.
+
+| Setting | Scope and initial value |
+| --- | --- |
+| `--context-length` | Maximum input plus output tokens for one request. Fresh config/profile-based setup uses `min(declared context, 256000)`; identifier-only setup uses 256,000 until reviewed. The saved field remains `search.context_length`. |
+| `--max-num-tokens` | Scheduled token budget per attention-DP rank. Use the supplied profile's bound, or an initial policy of 8,192. Saved as `collection.max_num_tokens` when explicitly set. |
+| `--max-batch-size` | Scheduler sequence bound per attention-DP rank. Use the supplied profile's bound, or an initial policy of 256. It is independent of validation concurrency. Saved as `collection.max_batch_size` when explicitly set. |
+| `--max-prefill-cudagraph-size` | Prefill CUDA graph capture limit passed to the collector, initially 2,048. Match the target serving configuration. Saved as `collection.max_prefill_cudagraph_size` when explicitly set. |
+
+Profile resource bounds must cover the selected scheduler envelope. Conflicting declarations fail rather than silently clipping the request. With config-based setup, editing scheduler bounds recomputes dependent estimates; review those estimates again. An explicit byte override remains your declared bound until you edit it.
+
+The 256,000-token context policy is motivated by the [AgentX reference subset](#validate-fpm-query-coverage-with-agentx-replay), whose request limit is 256,000, not 262,144. It is a starting point for review, not an assertion that every maximum-length request fits or that the FPM table covers it. The scheduler sequence limit does not reserve maximum context for all sequences simultaneously. Automatic KV capacity comes from the remaining rank-local GPU memory after non-KV resources and any explicit CUDA graph reservation; replay then applies actual request/cache occupancy.
+
 ## Start from a local model config
 
 Use a local Hugging Face-style JSON configuration to fill supported metadata and create the existing FPM profile:
@@ -134,7 +157,7 @@ aisimulate onboard init \
   --interactive --output support-request.yaml
 ```
 
-Setup reads that file without downloading a checkpoint, importing model code, constructing an analytical model, or launching GPU work. It displays source information and derived inputs, then asks for unresolved values. Missing model metadata is collected before workload options so the model's context limit can bound the validation run. Config identity hints skip their ordinary prompts; explicit CLI identity options take precedence and conflicts can be corrected. A pinned checkpoint revision, literal runtime version, GPU system and interconnect still need your input when absent. The config's SHA-256 records the local source; it is not a checkpoint revision.
+Setup reads that file without downloading a checkpoint, importing model code, constructing an analytical model, or launching GPU work. It displays source information and derived inputs, then asks for unresolved values. Missing model metadata is collected before runtime/collection options so the model's context limit can bound the selected envelope. Config identity hints skip their ordinary prompts; explicit CLI identity options take precedence and conflicts can be corrected. A pinned checkpoint revision, literal runtime version, GPU system and interconnect still need your input when absent. The config's SHA-256 records the local source; it is not a checkpoint revision.
 
 With no parallelism flags, guided setup asks for missing shared precision/layout facts, shows a small topology shortlist with resource reasons, and lets you choose one worker. Enter selects a displayed default only when all required profile inputs are resolved and its estimated bytes fit the budget. Otherwise a candidate number is required before setup asks for its remaining per-rank bounds. Any explicit parallelism flag bypasses suggestions and retains the existing topology validation. The chosen topology then follows the same profile review, edit, accept and cancellation flow below.
 
@@ -158,7 +181,7 @@ provenance: User-declared bound; replace with the actual source of your estimate
 Review action (accept/edit/cancel): accept
 ```
 
-Changing an input recomputes dependent estimates: for example, changing `kv_cache_dtype` updates inferred `kv_bytes_per_token`, and changing `max_num_tokens` updates inferred activation bytes. Explicit values remain in place until you edit those fields themselves. If an edit makes a required estimate unavailable, setup asks for that value before returning to review. Invalid individual answers can be corrected; an edit that conflicts with the config or complete request is rejected with the reason, and the previous profile is retained. Model identity and topology remain the declared deployment.
+Changing an input recomputes dependent estimates: for example, changing `kv_cache_dtype` updates inferred `kv_bytes_per_token`, and changing `max_num_tokens` updates inferred activation bytes. The review also exposes `runtime_context_length` and `max_prefill_cudagraph_size` as editable collection settings; `context_length` edits the model profile's declared maximum. Explicit values remain in place until you edit those fields themselves. If an edit makes a required estimate unavailable, setup asks for that value before returning to review. Invalid individual answers can be corrected; an edit that conflicts with the config or complete request is rejected with the reason, and the previous profile is retained. Model identity and topology remain the declared deployment.
 
 Only an explicit `accept` saves the reviewed request; Enter alone does not accept it. You can make repeated edits before accepting. Choose `cancel` at topology selection or review, or press Ctrl-C or send end-of-input at any prompt, to exit 130 without creating the output directory or replacing an existing request, including with `--overwrite`. This review step applies to `--model-config --interactive`; scripted setup never prompts.
 
@@ -178,7 +201,7 @@ runtime_overhead_bytes: 1073741824
 comm_overhead_bytes: 268435456
 kv_bytes_per_token: 262144
 max_num_tokens: 8192
-max_batch_size: 1
+max_batch_size: 256
 provenance: Illustrative file shape only; replace values and this explanation with their actual source.
 ```
 
@@ -193,9 +216,9 @@ aisimulate onboard init \
   --tensor-parallel 4 --output support-request.yaml
 ```
 
-Replace the model, revision, runtime and hardware inputs with the worker you will actually run. `--model-config` and `--fpm-profile` are mutually exclusive; `--resource-overrides` requires `--model-config` and also works with guided setup. Flat per-rank byte overrides require explicit topology flags because the same byte bound cannot be transferred or rescaled across candidate tuples. Shared precision/layout overrides can be used for automatic suggestions. Scripted setup never reads terminal input. It exits 2 without writing a request when required inputs remain unresolved or no fully assessed automatic default exists. Validation first lists all missing or invalid target identity and workload options. Once that stage is valid, it lists unresolved profile fields, or candidate-specific gaps and exact topology flags, and asks for the necessary inputs or guided setup.
+Replace the model, revision, runtime and hardware inputs with the worker you will actually run. `--model-config` and `--fpm-profile` are mutually exclusive; `--resource-overrides` requires `--model-config` and also works with guided setup. Flat per-rank byte overrides require explicit topology flags because the same byte bound cannot be transferred or rescaled across candidate tuples. Shared precision/layout overrides can be used for automatic suggestions. Scripted setup never reads terminal input. It exits 2 without writing a request when required inputs remain unresolved or no fully assessed automatic default exists. Validation first lists all missing or invalid target identity and collection options. Once that stage is valid, it lists unresolved profile fields, or candidate-specific gaps and exact topology flags, and asks for the necessary inputs or guided setup.
 
-The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `moe_backend`, `attention_backend`, and optional `provenance`. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects the smaller pilot limit and cannot exceed it. A scheduler envelope is per attention-DP rank and defaults to 8,192 tokens and the pilot concurrency; `max_num_tokens` and `max_batch_size` can declare different bounds.
+The flat override fields are `architecture`, `context_length`, `num_experts`, every precision and resource field shown above, `moe_backend`, `attention_backend`, and optional `provenance`. Unknown fields, duplicate fields, invalid types, unsupported values, and incompatible cache semantics are rejected. Overrides are recorded with per-field provenance rather than discarded. Profile `context_length` is the model's declared maximum; the CLI `--context-length` selects a runtime limit that cannot exceed it. Scheduler limits are per attention-DP rank, as described in [Runtime and collection limits](#runtime-and-collection-limits).
 
 Derivation is deliberately limited. Unambiguous architecture, context, expert count and model kind can be read independently of memory support. The initial supported estimates are:
 
@@ -213,7 +236,7 @@ The saved request embeds the complete profile and its provenance. The original m
 
 ### Preview and choose parallelism
 
-`--suggest-parallel` emits one JSON report to stdout without creating a request, plan, timing data or output directory. It requires `--model-config` and the actual target identity; config hints can supply the model label and kind, but checkpoint revision and runtime version are never invented. Use your intended workload, context and shared precision declarations for meaningful resource accounting:
+`--suggest-parallel` emits one JSON report to stdout without creating a request, plan, timing data or output directory. It requires `--model-config` and the actual target identity; config hints can supply the model label and kind, but checkpoint revision and runtime version are never invented. Use your intended runtime/collection limits and shared precision declarations for meaningful resource accounting:
 
 ```bash
 aisimulate onboard init \
@@ -222,7 +245,6 @@ aisimulate onboard init \
   --model-revision YOUR_IMMUTABLE_REVISION \
   --framework-version YOUR_PINNED_VLLM_VERSION \
   --gpu h200_sxm --interconnect nvswitch \
-  --input-tokens 1024 --output-tokens 128 --concurrency 1 \
   --suggest-parallel
 ```
 
@@ -230,7 +252,7 @@ The report includes hardware/config provenance, exact `cli_flags`, required GPUs
 
 Dense decoders consider TP; MoE decoders consider pure TP, DEP and TEP. The shortlist contains at most two choices per family and six distinct tuples overall, preferring the smallest estimated fit and the next one. Widths are powers of two within the packaged node domain. A declared NVLink/NVSwitch fabric can use a packaged fast rack domain when its inter-node bandwidth matches or exceeds its intra-node bandwidth; a declared `none` interconnect permits only one GPU automatically. This is hardware architecture, not an available GPU allocation. Explicit topology choices may exceed the shortlist.
 
-The memory precheck compares complete per-rank resource estimates against 90% of packaged GPU memory. It reserves the chosen full context for each concurrently resident sequence on every rank, using the smaller of workload concurrency and the profile's per-rank batch limit, plus one cached token per rank for planner headroom. It does not assume that attention-DP routing balances requests. Missing precision, weights, cache, activations or reservations prevent a default; a known lower bound can reject an oversized candidate but cannot prove fit. DEP/TEP communication storage, many quantized or custom decoder layouts, and large TP activation envelopes need explicit bounds after selection. CUDA graph reservations and non-text components remain outside these estimates. Only known geometry constraints are checked; generated-plan admission and actual serving-runtime checks remain authoritative. The shortlist does not establish timing coverage, optimal performance or measured accuracy.
+The memory precheck compares complete per-rank resource estimates against 90% of packaged GPU memory. It reserves one full runtime context plus one cached token per rank for planner headroom. It does not multiply context by the maximum scheduler sequence count or assume balanced attention-DP routing. Actual total KV capacity is computed from remaining memory; concurrent requests must share that capacity. Missing precision, weights, cache, activations or reservations prevent a default; a known lower bound can reject an oversized candidate but cannot prove fit. DEP/TEP communication storage, many quantized or custom decoder layouts, and large TP activation envelopes need explicit bounds after selection. CUDA graph reservations and non-text components remain outside these estimates. Only known geometry constraints are checked; generated-plan admission and actual serving-runtime checks remain authoritative. The shortlist does not establish timing coverage, optimal performance or measured accuracy.
 
 ## Provide identity and resource metadata
 
@@ -267,15 +289,28 @@ aisimulate onboard collect-fpm \
   --output-dir ./aisimulate-support
 ```
 
-The first command saves the request, `support-plan.json`, `commands.json`, `predict/pilot.yaml`, `recommend/pilot.yaml`, and a local `systems/` directory. When supplied, the profile is also saved as `fpm-model-profile.json`, included in the collector command, and embedded in prediction/recommendation configs. The plan records the CPU resource estimate. The second command prints the collector invocation without launching it. Generated command vectors and printed next commands use absolute output paths and preserve spaces or shell punctuation. Use a separate output directory for each request. On an existing plan, `--overwrite` can repair missing generated files for the identical request; it rejects changed inputs and preserves existing collected data.
+The first command saves the request, `support-plan.json`, `commands.json`, `predict/pilot.yaml`, `recommend/pilot.yaml`, and a local `systems/` directory. When supplied, the profile is also saved as `fpm-model-profile.json`, included in the collector command, and embedded in prediction/recommendation configs. The plan records the CPU resource estimate and effective collection limits with their sources. The second command prints the collector invocation without launching it. Generated command vectors and printed next commands use absolute output paths and preserve spaces or shell punctuation. Use a separate output directory for each deployment or collection envelope.
 
-If an AISimulate update changes generated guidance, recreate the plan in a new output directory: repair compares generated files byte for byte and does not migrate existing plans. Guidance changes do not change the saved-request identity checks used by collection.
+The v2 plan's `request_id` identifies collection inputs: deployment identity, exact profile and collection settings. Its separate `validation_id` also includes synthetic workload/SLA, recommendation objective and seed. To change only those validation inputs, copy the request to a new file, edit that copy, then run `onboard plan --config UPDATED_REQUEST --output-dir EXISTING_PLAN --overwrite`. The command first validates the original saved request and every existing generated file against the saved plan, then refreshes validation examples and their hashes. It can also repair missing generated files for the same collection. It preserves collected data, checkpoints and prior result directories. Changed collection/profile inputs or modified existing generated files are rejected; do not edit files inside the plan to bypass those checks.
+
+If an AISimulate update changes generated guidance, recreate the plan in a new output directory: validation compares generated files byte for byte and does not migrate existing plans. A validation trace is supplied separately to `validate-fpm`, so selecting another trace does not require regenerating the collection plan.
 
 The plan reports `fpm.collection_gpus_required`, derived as attention TP times attention DP. Collection uses only that worker width and the matching `tp`, `pure_tp`, `dep`, or `tep` preset. The generated prediction and recommendation configs both use one worker. Recommendation has one exact preset and one trial; its `optimization.constraints.max_candidate_gpus` equals the selected worker's requirement so even workers wider than the runtime default are representable. That derived cap describes this validation example and does not declare the user's total available GPUs. There is no replica expansion or deployment optimization during onboarding.
 
-Earlier draft `aisimulate-support-request/v1` files included `identity.gpu_count`, `identity.node_count`, `identity.gpus_per_node` and `search.max_candidates`. The draft request schema keeps its version name but now rejects those obsolete fields explicitly. Copy an old request to a new file, remove those fields, review the retained topology/profile and regenerate the plan in a new output directory. Do not edit or overwrite the old plan, timings or checkpoints to reuse its identity. Regenerated plan summaries report `fpm.collection_gpus_required` and `search.candidates[].required_gpus` in place of `fpm.worker_gpus` and `search.candidates[].total_gpus`. The corresponding `onboard init` flags (`--gpu-count`, `--node-count`, `--gpus-per-node`, `--max-candidates`) are no longer accepted. Existing ordinary `predict` and `recommend` configurations remain valid; their replica and GPU-budget APIs are unchanged.
+Saved `aisimulate-support-request/v1` requests are read as v2 while preserving their declared context and profile resource bounds; an omitted legacy context retains 16,384. Legacy validation concurrency is not reused as a collection sequence limit. Review these retained and newly independent settings before use. Old `aisimulate-support-plan/v1` directories must be regenerated in a **new directory** because their collection commands depended on the synthetic validation workload. Do not overwrite old timings or checkpoints to reuse the old plan identity.
+
+Some earlier v1 drafts also included `identity.gpu_count`, `identity.node_count`, `identity.gpus_per_node` and `search.max_candidates`; those obsolete fields remain rejected. Copy the request, remove them and review the retained topology/profile before regeneration. Plan summaries use `fpm.collection_gpus_required` and `search.candidates[].required_gpus`. The old `onboard init` allocation flags (`--gpu-count`, `--node-count`, `--gpus-per-node`, `--max-candidates`) are not accepted. Ordinary `predict` and `recommend` replica and GPU-budget APIs are unchanged.
 
 Before execution, prepare the real checkpoint and the pinned runtime using the existing [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md). The packaged collector invokes a Generator-resolved Dynamo/vLLM deployment and needs the corresponding GPU resources, deployment configuration, permissions, and model access. Invoking its command locally does not create that environment. `commands.json` publishes the guarded `aisimulate onboard collect-fpm --execute` command for collection, alongside a read-only collector planning command.
+
+For a source checkout installed with `uv sync`, activate its environment and expose the collector source package before running generated collector commands. From the repository root:
+
+```bash
+source python/aisimulate/.venv/bin/activate
+export PYTHONPATH="$PWD/python/aisimulate${PYTHONPATH:+:$PYTHONPATH}"
+```
+
+Alternatively, run the collector from the `python/aisimulate` source directory with that environment active. The installed release wheel includes the collector and needs no source-path adjustment. These steps make the command importable; they do not provide the target deployment or GPUs.
 
 After those prerequisites are ready, explicitly launch collection from that environment:
 
@@ -297,11 +332,55 @@ For a diagnostic run, add `--execute --smoke`; `--limit N` also requires `--smok
 
 Planning and collection reject concurrent onboarding operations. The persistent `.support.lock` file uses an OS advisory lock; ownership is released when the process exits, including after an abrupt termination. Leave the file in place. Request validation, saved onboarding-plan checks, and collector input resolution exit 2. Failures after collector execution starts, including a frozen checkpoint identity mismatch, exit 1 with a concise message. Interruption exits 130.
 
-The collector narrows initial prefill sampling with the pilot's input-token and concurrency bounds. With an FPM profile, both the sample batch size and total new-token axis are capped by the same rank-local scheduler limits used in the generated prediction and recommendation configs. DEP does not multiply these limits by the GPU count; coverage of the worker's summed FPM queries still requires validation. Decode uses the collector's existing sampling profile within the declared resource envelope; a four-request synthetic pilot does not imply four timing samples or a short decode campaign. Inspect the generated command and collector plan before committing GPU time. Successful formal collection publishes the FPM Parquet file and metadata pair into the plan's local systems data directory; diagnostic success alone does not provide that pair.
+Dynamo self-benchmark generates the actual point grid after runtime initialization, using CUDA graph sizes and available runtime bounds. The onboarding command supplies `--fpm-max-model-len`, `--fpm-max-num-batched-tokens` and `--fpm-max-num-seqs` to both prefill and decode workers. Prefill sampling uses the reviewed scheduled-token and sequence limits, plus the capture limit; `--fpm-max-prefill-isl` is a total new-token budget, not a per-request context limit. DEP does not multiply these rank-local settings by GPU count. The runtime chooses the actual sampling coordinates; onboarding does not build a separate trace-derived grid or promise a sample count or collection duration.
+
+Direct collector callers can set the same shared runtime flags. With a supplied FPM profile, omitted limits use that profile's bounds; without one, an omitted context retains the existing vLLM `-1` auto-fit behavior. Explicit limits must be positive and cannot exceed the supplied profile or contradict the prefill sampling bounds. Inspect the generated command and collector plan before committing GPU time. Successful formal collection publishes the FPM Parquet file and metadata pair into the plan's local systems data directory; diagnostic success alone does not provide that pair. Validate the worker's actual FPM query shapes afterward, including summed queries for DEP.
+
+## Validate FPM query coverage with AgentX replay
+
+After verifying a matching formal FPM pair, run the existing cold aggregated replay path against a local Weka JSON or JSONL file:
+
+```bash
+aisimulate onboard validate-fpm \
+  --config ./aisimulate-support/request.yaml \
+  --output-dir ./aisimulate-support \
+  --trace /path/to/traces.jsonl \
+  --validation-output-dir ./aisimulate-validation/agentx
+```
+
+The output directory must be separate from, and neither inside nor above, the collection directory. Use a fresh directory or `--overwrite` to replace prior validation outputs. The command verifies the saved collection plan, writes `predict.yaml`, and invokes ordinary `aisimulate predict` with per-request evidence. It does not download traces or run GPU collection. The reviewed target model, topology, runtime, profile, scheduler limits and systems paths remain fixed; source model labels in a trace do not replace the configured target model.
+
+The current validation scope is **cold aggregated replay, one client lane, HBM-only cache and no speculative decoding**. The cache starts cold and normal prefix reuse can accumulate during replay. Nested timestamps are interpreted relative to the root play (`nested_timestamp_basis: absolute`). The command replays the complete supplied file; selecting one complete play is useful for a first check, but does not establish coverage of a larger corpus. Preserve the full play and its dependencies when preparing a subset. Ordinary prediction's host-memory checks still apply; a larger corpus can require a larger host, and a preflight rejection remains incomplete validation. The current path builds on existing vLLM/SGLang replay support; onboarding collection remains vLLM. Seeded cache snapshots, explicit warmup and expanded replay modes are follow-up work after the relevant AgentX changes, including [#207](https://github.com/ai-dynamo/aisimulate/pull/207) and [#235](https://github.com/ai-dynamo/aisimulate/pull/235); they are not prerequisites for this workflow.
+
+The reference corpus is [semianalysisai/cc-traces-weka-062126-256k](https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740). To download that pinned revision separately, with Hugging Face access available:
+
+```bash
+hf download semianalysisai/cc-traces-weka-062126-256k traces.jsonl \
+  --type dataset \
+  --revision 8fecd2fc56694469f758f0afbbb6335ad3043740 \
+  --local-dir ./agentx-reference
+```
+
+The expected `traces.jsonl` SHA-256 is `e39cd2ff3eba21d4a3664be51da743ac3d2149a1933898cafc7bfeac8147eeef`. Record the file hash and selection when using a derived subset. No trace corpus is bundled or fetched automatically by AISimulate.
+
+### Read the coverage result
+
+| Artifact | Meaning |
+| --- | --- |
+| `predict.yaml` | Inspectable ordinary prediction input with strict direct FPM and native coverage collection enabled. |
+| `validation.json` | Overall `covered` or `incomplete` result, issues, collection identity, trace/config/FPM file hashes and replay scope. Accuracy remains `not_assessed`. |
+| `prediction/fpm-coverage.json` | Native lookup counts and bounded missing-query details, also saved when a timing lookup fails after replay starts. |
+| `prediction/prediction.json` | Ordinary prediction report when produced, including per-request completion, AgentX graph and target-model projection. |
+
+`measured` means the native lookup resolved from an exact measured point; `interpolated` means it used supported direct interpolation; `unsupported` means the native query failed. Counts are **native lookup resolutions**, not requests, replay iterations or tokens. Reusing a cached timing does not make another lookup. Each role records prefill, decode and any mixed-pass decode-baseline counts. Missing entries identify phase, purpose, cell identity, coordinates, reason and occurrence count. Each model retains at most 128 distinct gaps and reports omitted gap occurrences; its total unsupported count remains complete.
+
+An exit status of 0 and overall `validation.json` status `covered` require a nonempty completed replay, all selected requests and plays completed with their requested output, and at least one supported native query with no unsupported queries. An early failure, failed or aborted request, empty query set or interruption cannot pass. Inspect `validation.json` first: an individual native snapshot does not certify replay completion. A missing query stops ordinary prediction and returns nonzero while retaining available evidence. That partial report describes only the attempted portion; it does not identify every missing point in the remainder of the corpus.
+
+For a missing decode query, inspect its exact batch size and total past-KV coordinate together. A high maximum KV value elsewhere in a table does not prove coverage for batch size 1 at that context, or for another batch/capture region. Prefill likewise needs the requested batch and prompt/KV support. Use these gaps to review the collection envelope and matching data, preserving strict direct interpolation and denied fallback. Successful coverage establishes that the selected replay could obtain timings; it does not establish predictive accuracy. Assess accuracy separately with matched silicon measurements.
 
 ## Run the generated ordinary configurations
 
-After the selected model execution route is available and formal data collection is complete:
+The generated synthetic configurations are optional small prediction/recommendation examples after the selected model route and formal data are available:
 
 ```bash
 aisimulate predict \

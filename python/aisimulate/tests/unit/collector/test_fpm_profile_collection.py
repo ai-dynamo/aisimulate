@@ -481,7 +481,9 @@ def test_resource_envelope_errors_do_not_fail_open(field, value, no_models_or_ti
     profile = _profile()
     profile["deployments"][0]["resources"][field] = value
     options = replace(
-        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))), max_prefill_batch_size=4
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))),
+        max_prefill_isl=8192,
+        max_prefill_batch_size=4,
     )
     with pytest.raises(ValueError, match="resource envelope exceeded"):
         _plan(profile, options=options)
@@ -506,6 +508,9 @@ def test_profile_bounds_native_scheduling_before_cases_are_queued(phase, smoke, 
     assert arguments[arguments.index("--max-num-batched-tokens") + 1] == "8192"
     assert arguments.count("--max-num-seqs") == 1
     assert arguments[arguments.index("--max-num-seqs") + 1] == "1024"
+    # A profile's declared context is now authoritative; legacy profile
+    # callers previously used -1 and could auto-fit beyond that contract.
+    assert arguments[arguments.index("--max-model-len") + 1] == "8192"
 
 
 def test_profile_preserves_explicit_prefill_envelope(no_models_or_timing_data):
@@ -521,6 +526,159 @@ def test_profile_preserves_explicit_prefill_envelope(no_models_or_timing_data):
         expected_tokens, expected_batch = ("2048", "4") if cell.workload_kind == "prefill" else ("8192", "1024")
         assert arguments[arguments.index("--max-num-batched-tokens") + 1] == expected_tokens
         assert arguments[arguments.index("--max-num-seqs") + 1] == expected_batch
+
+
+@pytest.mark.parametrize("with_profile", [False, True])
+@pytest.mark.parametrize("narrow_prefill", [False, True])
+@pytest.mark.parametrize("smoke", [False, True])
+@pytest.mark.parametrize(
+    "max_tokens,max_sequences,prefill_tokens,prefill_sequences", [(4096, 64, 1024, 4), (256, 256, 128, 128)]
+)
+def test_cli_runtime_limits_reach_both_rendered_workers(
+    tmp_path,
+    monkeypatch,
+    with_profile,
+    narrow_prefill,
+    smoke,
+    max_tokens,
+    max_sequences,
+    prefill_tokens,
+    prefill_sequences,
+):
+    """Exercise parsing, plan resolution and real Generator output without launching GPUs."""
+    profile = _profile()
+    argv = [
+        *_argv(profile),
+        "--fpm-max-model-len",
+        "4096",
+        "--fpm-max-num-batched-tokens",
+        str(max_tokens),
+        "--fpm-max-num-seqs",
+        str(max_sequences),
+    ]
+    if with_profile:
+        path = tmp_path / "profile.json"
+        path.write_text(json.dumps(profile))
+        argv.extend(["--fpm-model-profile", str(path)])
+    if narrow_prefill:
+        argv.extend(
+            ["--fpm-max-prefill-isl", str(prefill_tokens), "--fpm-max-prefill-batch-size", str(prefill_sequences)]
+        )
+    if smoke:
+        argv.append("--smoke")
+
+    def render_without_launch(_args, resolved):
+        plan, overrides = resolved
+        for phase in ("prefill", "decode"):
+            cell = next(cell for cell in plan.cells if cell.workload_kind == phase)
+            target = tmp_path / phase
+            target.mkdir()
+            runner._render_cell(plan, cell, target, overrides, smoke=_args.smoke)
+        return []
+
+    monkeypatch.setattr(cli, "run_resolved", render_without_launch)
+    assert cli.main(argv) == 0
+    for phase in ("prefill", "decode"):
+        script = (tmp_path / phase / "run.sh").read_text()
+        tokens, sequences = (
+            (prefill_tokens, prefill_sequences)
+            if narrow_prefill and phase == "prefill"
+            else (max_tokens, max_sequences)
+        )
+        for option, value in (
+            ("--max-model-len", 4096),
+            ("--max-num-batched-tokens", tokens),
+            ("--max-num-seqs", sequences),
+        ):
+            assert script.count(option) == 1
+            assert f"{option} {value}" in script
+
+
+@pytest.mark.parametrize("smoke", [False, True])
+def test_omitted_prefill_defaults_stay_within_selected_profile_bounds(no_models_or_timing_data, smoke):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["resources"].update(max_num_tokens=4096, max_batch_size=32)
+    plan = _plan(profile)
+    assert plan.options.prefill_sampling.max_total_prefill_tokens == 4096
+    for cell in plan.cells:
+        arguments = runner._cell_generator_overrides(plan, cell, {}, smoke=smoke)["params"]["agg"]["extra_cli_args"]
+        for option, value in (
+            ("--max-model-len", "8192"),
+            ("--max-num-batched-tokens", "4096"),
+            ("--max-num-seqs", "32"),
+        ):
+            assert arguments.count(option) == 1
+            assert arguments[arguments.index(option) + 1] == value
+
+
+@pytest.mark.parametrize(
+    "with_profile,resource_limits,limits",
+    [
+        (False, {}, ["--fpm-max-num-batched-tokens", "128", "--fpm-max-num-seqs", "256"]),
+        (True, {}, ["--fpm-max-num-batched-tokens", "128", "--fpm-max-num-seqs", "256"]),
+        (
+            False,
+            {},
+            ["--fpm-max-num-batched-tokens", "4096", "--fpm-max-num-seqs", "256", "--fpm-max-prefill-isl", "128"],
+        ),
+        (False, {}, ["--fpm-max-num-seqs", "16384"]),
+        (True, {}, ["--fpm-max-num-batched-tokens", "128"]),
+        (True, {}, ["--fpm-max-prefill-isl", "128"]),
+        (True, {"max_num_tokens": 128, "max_batch_size": 256}, []),
+        (
+            True,
+            {"max_num_tokens": 128, "max_batch_size": 256},
+            ["--fpm-max-prefill-batch-size", "8"],
+        ),
+    ],
+)
+@pytest.mark.parametrize("smoke", [False, True])
+def test_cli_rejects_scheduler_tokens_below_sequences_before_execution(
+    tmp_path, monkeypatch, capsys, with_profile, resource_limits, limits, smoke
+):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["resources"].update(resource_limits)
+    argv = [*_argv(profile), *limits]
+    if with_profile:
+        path = tmp_path / "profile.json"
+        path.write_text(json.dumps(profile))
+        argv.extend(["--fpm-model-profile", str(path)])
+    if smoke:
+        argv.append("--smoke")
+    monkeypatch.setattr(cli, "run_resolved", lambda *_args: pytest.fail("collection execution started"))
+
+    with pytest.raises(SystemExit) as error:
+        cli.main(argv)
+
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "max_num_batched_tokens" in message
+    assert "max_num_seqs" in message
+
+
+@pytest.mark.parametrize(
+    "limits, message",
+    [
+        (["--fpm-max-model-len", "8193"], "context"),
+        (["--fpm-max-num-batched-tokens", "8192", "--fpm-max-prefill-isl", "1024"], "resource envelope exceeded"),
+        (["--fpm-max-num-seqs", "128", "--fpm-max-prefill-batch-size", "4"], "resource envelope exceeded"),
+        (["--fpm-max-prefill-isl", "8192"], "resource envelope exceeded"),
+        (["--fpm-max-prefill-batch-size", "128"], "resource envelope exceeded"),
+    ],
+)
+def test_cli_rejects_profile_limit_overshoots_before_execution(tmp_path, monkeypatch, capsys, limits, message):
+    profile = _profile()
+    for deployment in profile["deployments"]:
+        deployment["resources"].update(max_num_tokens=4096, max_batch_size=64)
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    monkeypatch.setattr(cli, "run_resolved", lambda *_args: pytest.fail("collection execution started"))
+    with pytest.raises(SystemExit) as error:
+        cli.main([*_argv(profile), "--fpm-model-profile", str(path), *limits])
+    assert error.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("actual_version", ["0.25.1", "0.24.0"])

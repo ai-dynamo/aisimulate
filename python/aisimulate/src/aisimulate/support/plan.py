@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import stat
+import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,10 +27,20 @@ _LOCK_NAME = ".support.lock"
 
 
 def request_id(request: SupportRequest) -> str:
-    """Bind the entire declared request, including workload and search settings."""
+    """Identify reusable collection inputs, independent of evaluation traffic."""
 
-    payload = json.dumps(request.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":"))
+    collection = request.model_dump(mode="json", exclude_none=True)
+    collection.pop("workload")
+    for key in ("objective", "seed"):
+        collection["search"].pop(key)
+    payload = json.dumps(collection, sort_keys=True, separators=(",", ":"))
     return "onboarding-" + hashlib.sha256(payload.encode()).hexdigest()
+
+
+def validation_id(request: SupportRequest) -> str:
+    """Bind generated validation examples to the complete saved request."""
+    payload = json.dumps(request.model_dump(mode="json", exclude_none=True), sort_keys=True, separators=(",", ":"))
+    return "validation-" + hashlib.sha256(payload.encode()).hexdigest()
 
 
 def _configs(
@@ -137,8 +148,9 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
     prediction, recommendations, presets = _configs(request, root)
     commands = _commands(request, root, list(recommendations))
     plan = {
-        "schema_version": "aisimulate-support-plan/v1",
+        "schema_version": "aisimulate-support-plan/v2",
         "request_id": request_id(request),
+        "validation_id": validation_id(request),
         "search": {
             "candidate_count": len(presets),
             "candidates": [{"parallelism": preset, "required_gpus": request.worker_gpus} for preset in presets],
@@ -157,10 +169,12 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "Actual available GPUs, placement and collector runtime resources remain unchecked."
             ),
             "plan_command": commands["fpm_plan_local"],
+            "runtime_limits": request.collection_settings(),
             "sampling": (
-                "Prefill is bounded by max(2, input_tokens * concurrency) and concurrency. Decode sampling and "
-                "runtime context auto-fitting use the collector's existing profile. The synthetic request count "
-                "does not bound timing samples. Smoke and limited runs do not publish formal FPM data."
+                "Dynamo self-benchmark generates the prefill/decode grid from CUDA graph sizes and the reviewed "
+                "runtime limits. The new-token budget, per-request context, scheduler sequence bound and total KV "
+                "capacity are separate quantities. Exact points resolve at runtime; validation traffic and SLAs "
+                "do not change these collection settings. Smoke and limited runs do not publish formal FPM data."
             ),
         },
         "prerequisites": [
@@ -226,7 +240,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             fpm_profile=request.fpm_profile,
         )
         if estimate["total_kv_size_tokens"] <= request.search.context_length:
-            raise ValueError("declared FPM resources leave insufficient rank-local KV capacity for the pilot context")
+            raise ValueError("declared FPM resources leave insufficient rank-local KV capacity for the runtime context")
         plan["resources"] = estimate
         plan["search"]["baseline_rule"] = (
             "Selected profile deployment; declared topology and rank-local resource bounds pass CPU admission. "
@@ -246,13 +260,6 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             "checkpoint or inspect the running runtime. During collection execution, the collector checks "
             "the observed Pod vLLM version against the profile's literal backend version before benchmarking."
         )
-        plan["fpm"]["sampling"] = (
-            "Prefill sampling is capped by the pilot input length and the generated rank-local scheduler limits. "
-            "These bounds do not establish complete timing coverage of worker-wide FPM queries, including DEP. "
-            "Decode uses the collector's existing sampling profile within the declared resource envelope. "
-            "The synthetic request count does not bound timing samples. Smoke and limited runs do not publish "
-            "formal FPM data."
-        )
         plan["prerequisites"][2]["detail"] = (
             "Collect matching prefill/decode timings into the local systems tree before prediction or recommendation. "
             "The profile resource estimate does not establish timing coverage or measured accuracy."
@@ -270,6 +277,9 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
         ).encode()
     documents[Path("systems") / source_spec.name] = source_spec.read_bytes()
     documents[Path("commands.json")] = (json.dumps(commands, indent=2, sort_keys=True) + "\n").encode()
+    plan["generated_files_sha256"] = {
+        path.as_posix(): hashlib.sha256(content).hexdigest() for path, content in documents.items()
+    }
     documents[Path("support-plan.json")] = (json.dumps(plan, indent=2, sort_keys=True) + "\n").encode()
     return plan, documents
 
@@ -318,7 +328,7 @@ def _check_paths(root: Path) -> None:
             pending.extend(path.iterdir())
 
 
-def check_plan(request: SupportRequest, root: Path) -> None:
+def check_plan(request: SupportRequest, root: Path, *, allow_missing: bool = False) -> None:
     """Verify saved identity before collecting or reusing any local output."""
 
     _check_paths(root)
@@ -328,27 +338,40 @@ def check_plan(request: SupportRequest, root: Path) -> None:
         raise ValueError(
             f"a readable onboarding plan is required in {root}; run aisimulate onboard plan first"
         ) from exc
-    if not isinstance(prior, dict) or prior.get("request_id") != request_id(request):
+    if not isinstance(prior, dict) or prior.get("schema_version") != "aisimulate-support-plan/v2":
+        raise ValueError(
+            f"legacy or invalid onboarding plan in {root}; regenerate in a new output directory. "
+            "Legacy plans used validation traffic to choose collection bounds and cannot be reused implicitly."
+        )
+    if prior.get("request_id") != request_id(request):
         raise ValueError(f"refusing to mix a different request identity in {root}; choose a new output directory")
     try:
         saved = SupportRequest.from_yaml(root / "request.yaml")
     except ValueError as exc:
         raise ValueError(f"saved request in {root} was modified or cannot be read") from exc
-    if saved != request:
-        raise ValueError(f"saved request identity in {root} differs from the requested plan")
-    if request.fpm_profile is not None and (root / "fpm-model-profile.json").exists():
-        from aisimulate_core.sdk.fpm_profile import load_fpm_profile
-
-        try:
-            profile = load_fpm_profile((root / "fpm-model-profile.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
-            raise ValueError(f"saved FPM model profile in {root} is missing or invalid") from exc
-        if profile != request.fpm_profile:
-            raise ValueError(f"saved FPM model profile in {root} differs from the requested identity")
+    if request_id(saved) != prior["request_id"] or validation_id(saved) != prior.get("validation_id"):
+        raise ValueError(f"saved request identity in {root} was modified or differs from the requested plan")
+    expected, documents = _plan_documents(saved, root)
+    if prior != expected:
+        raise ValueError(
+            f"generated plan input {root / 'support-plan.json'} was modified; choose a new output directory"
+        )
+    # Recompute the manifest rather than trusting hashes in an edited plan. An
+    # evaluation-only refresh must never bless modified collector inputs.
+    for relative, content in documents.items():
+        destination = root / relative
+        if destination.is_symlink():
+            raise ValueError(f"refusing symlinked plan output {destination}")
+        if not destination.exists() and allow_missing:
+            continue
+        if not destination.is_file() or destination.read_bytes() != content:
+            raise ValueError(
+                f"generated plan input {destination} was modified or missing; choose a new output directory"
+            )
 
 
 def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: bool = False) -> dict[str, Any]:
-    """Write a new plan, or repair missing files for an identical saved request."""
+    """Write a plan or safely refresh validation inputs for the same collection."""
 
     root = Path(output_dir).expanduser().resolve()
     plan, documents = _plan_documents(request, root)
@@ -358,23 +381,33 @@ def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: b
         nonempty = any(path.name != _LOCK_NAME for path in root.iterdir())
         if nonempty:
             if not overwrite:
-                raise ValueError(f"output directory {root} is nonempty; use overwrite only for the same request")
-            check_plan(request, root)
+                raise ValueError(f"output directory {root} is nonempty; use overwrite only for the same collection")
+            check_plan(request, root, allow_missing=True)
         # Inspect every generated file before writing any file. Existing data,
-        # checkpoints, results, and edited inputs are never replaced or deleted.
+        # checkpoints and results are never replaced or deleted. Only verified
+        # generated inputs may change after an evaluation-only request edit.
         pending: dict[Path, bytes] = {}
         for relative, content in documents.items():
             destination = root / relative
             if destination.is_symlink():
                 raise ValueError(f"refusing symlinked plan output {destination}")
-            if not destination.exists():
+            if not destination.exists() or destination.read_bytes() != content:
                 pending[relative] = content
-            elif destination.read_bytes() != content:
-                raise ValueError(f"generated plan input {destination} was modified; choose a new output directory")
         (root / "systems/data").mkdir(parents=True, exist_ok=True)
         for relative, content in pending.items():
             destination = root / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            with destination.open("xb") as handle:
-                handle.write(content)
+            if not destination.exists():
+                with destination.open("xb") as handle:
+                    handle.write(content)
+            else:
+                temporary = None
+                try:
+                    with tempfile.NamedTemporaryFile(dir=destination.parent, delete=False) as handle:
+                        temporary = Path(handle.name)
+                        handle.write(content)
+                    os.replace(temporary, destination)
+                finally:
+                    if temporary is not None:
+                        temporary.unlink(missing_ok=True)
     return plan

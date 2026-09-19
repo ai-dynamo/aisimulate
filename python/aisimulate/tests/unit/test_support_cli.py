@@ -189,6 +189,24 @@ def test_retired_support_command_is_rejected_before_dispatch(tmp_path, monkeypat
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("search", [123, True, [], None, [["context_length", 4096]]])
+def test_v1_request_rejects_malformed_search_without_writing_plan(tmp_path, capsys, search):
+    source = tmp_path / "request.yaml"
+    source.write_text(
+        yaml.safe_dump({"schema_version": "aisimulate-support-request/v1", "identity": _REQUIRED, "search": search})
+    )
+    original = source.read_bytes()
+    output = tmp_path / "plan"
+
+    with pytest.raises(SystemExit) as result:
+        cli.main(["onboard", "plan", "--config", str(source), "--output-dir", str(output)])
+
+    assert result.value.code == 2
+    assert "search" in capsys.readouterr().err
+    assert source.read_bytes() == original
+    assert not output.exists()
+
+
 def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatch, capsys) -> None:
     guided = tmp_path / "guided request.yaml"
     scripted = tmp_path / "scripted.yaml"
@@ -201,8 +219,10 @@ def test_guided_and_scripted_setup_produce_the_same_request(tmp_path, monkeypatc
     assert cli.main(_init_args(scripted, tensor_parallel=2)) == 0
 
     assert SupportRequest.from_yaml(guided) == SupportRequest.from_yaml(scripted)
-    assert any("Input tokens per request [1024]" in prompt for prompt in prompts)
-    assert any("Target time to first token (ms) [1000.0]" in prompt for prompt in prompts)
+    assert not any("tokens" in prompt.lower() or "concurrent" in prompt.lower() for prompt in prompts)
+    assert not any(
+        "time to first token" in prompt.lower() or "time per output token" in prompt.lower() for prompt in prompts
+    )
     request = SupportRequest.from_yaml(guided)
     assert request.workload.request_count == 4
     assert request.worker_gpus == 2

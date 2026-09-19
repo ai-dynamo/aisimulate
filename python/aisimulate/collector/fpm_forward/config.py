@@ -199,15 +199,68 @@ class FPMCollectionOptions:
     # vLLM 0.24 auto-fits this limit after model/CUDA-graph profiling, and
     # Dynamo records the resolved value in ``limits.max_model_len``.
     vllm_max_model_len: int = VLLM_AUTO_FIT_MAX_MODEL_LEN
-    max_prefill_isl: int = FPM_MAX_PREFILL_ISL
+    max_num_batched_tokens: int | None = None
+    max_num_seqs: int | None = None
+    max_prefill_isl: int | None = None
     max_prefill_batch_size: int | None = None
     max_prefill_cudagraph_size: int = FPM_MAX_PREFILL_CUDAGRAPH_SIZE
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            (
+                "max-model-len",
+                None if self.vllm_max_model_len == VLLM_AUTO_FIT_MAX_MODEL_LEN else self.vllm_max_model_len,
+            ),
+            ("max-num-batched-tokens", self.max_num_batched_tokens),
+            ("max-num-seqs", self.max_num_seqs),
+        ):
+            if value is not None and (type(value) is not int or value < 1):
+                raise ValueError(f"--fpm-{name} must be a positive integer")
+        if (
+            self.max_prefill_isl is not None
+            and self.max_num_batched_tokens is not None
+            and self.max_prefill_isl > self.max_num_batched_tokens
+        ):
+            raise ValueError("--fpm-max-prefill-isl exceeds --fpm-max-num-batched-tokens")
+        if (
+            self.max_prefill_batch_size is not None
+            and self.max_num_seqs is not None
+            and self.max_prefill_batch_size > self.max_num_seqs
+        ):
+            raise ValueError("--fpm-max-prefill-batch-size exceeds --fpm-max-num-seqs")
+        self.validate_scheduler_limits()
+
+    def validate_scheduler_limits(
+        self, *, profile_max_num_tokens: int | None = None, profile_max_batch_size: int | None = None
+    ) -> None:
+        """Check known effective phase limits without inventing runtime defaults."""
+        shared_tokens = self.max_num_batched_tokens or profile_max_num_tokens
+        shared_sequences = self.max_num_seqs or profile_max_batch_size
+        for phase, tokens, sequences in (
+            ("decode", shared_tokens, shared_sequences),
+            (
+                "prefill",
+                self.max_prefill_isl or shared_tokens or FPM_MAX_PREFILL_ISL,
+                self.max_prefill_batch_size or shared_sequences,
+            ),
+        ):
+            # vLLM v0.25.1 vllm/config/scheduler.py:286 rejects token budgets below
+            # max_num_seqs: every scheduled sequence needs at least one token.
+            if tokens is not None and sequences is not None and tokens < sequences:
+                raise ValueError(
+                    f"FPM {phase} max_num_batched_tokens ({tokens}) must be at least max_num_seqs ({sequences}); "
+                    "edit the shared/prefill limits or profile bounds"
+                )
 
     @property
     def prefill_sampling(self) -> PrefillSamplingProfile:
         return PrefillSamplingProfile.build(
-            max_isl=self.max_prefill_isl,
-            max_batch_size=self.max_prefill_batch_size,
+            max_isl=self.max_prefill_isl
+            if self.max_prefill_isl is not None
+            else (self.max_num_batched_tokens or FPM_MAX_PREFILL_ISL),
+            max_batch_size=self.max_prefill_batch_size
+            if self.max_prefill_batch_size is not None
+            else self.max_num_seqs,
             max_cudagraph_capture_size=self.max_prefill_cudagraph_size,
         )
 
@@ -271,7 +324,14 @@ class FPMCollectionOptions:
                 if getattr(args, "fpm_warmup_iterations", None) is None
                 else args.fpm_warmup_iterations
             ),
-            max_prefill_isl=getattr(args, "fpm_max_prefill_isl", None) or FPM_MAX_PREFILL_ISL,
+            vllm_max_model_len=(
+                VLLM_AUTO_FIT_MAX_MODEL_LEN
+                if getattr(args, "fpm_max_model_len", None) is None
+                else args.fpm_max_model_len
+            ),
+            max_num_batched_tokens=getattr(args, "fpm_max_num_batched_tokens", None),
+            max_num_seqs=getattr(args, "fpm_max_num_seqs", None),
+            max_prefill_isl=getattr(args, "fpm_max_prefill_isl", None),
             max_prefill_batch_size=getattr(args, "fpm_max_prefill_batch_size", None),
             max_prefill_cudagraph_size=(
                 getattr(args, "fpm_max_prefill_cudagraph_size", None) or FPM_MAX_PREFILL_CUDAGRAPH_SIZE
@@ -279,7 +339,7 @@ class FPMCollectionOptions:
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result = {
             "max_gpus": self.max_gpus,
             "gpu_counts": list(self.gpu_counts),
             "parallel_presets": list(self.parallel_presets),
@@ -303,6 +363,13 @@ class FPMCollectionOptions:
             "point_source": "dynamo_native_self_benchmark",
             "prefill_sampling": self.prefill_sampling.to_dict(),
         }
+        # Preserve the existing frozen-plan representation when the new shared
+        # runtime limits are absent.
+        if self.max_num_batched_tokens is not None:
+            result["max_num_batched_tokens"] = self.max_num_batched_tokens
+        if self.max_num_seqs is not None:
+            result["max_num_seqs"] = self.max_num_seqs
+        return result
 
 
 def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
@@ -399,6 +466,24 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         ),
     )
     group.add_argument(
+        "--fpm-max-model-len",
+        type=_positive_int,
+        default=None,
+        help="Maximum context length for both phases; defaults to the profile context or vLLM auto-fit (-1).",
+    )
+    group.add_argument(
+        "--fpm-max-num-batched-tokens",
+        type=_positive_int,
+        default=None,
+        help="Shared vLLM scheduled-token limit for prefill and decode; may be narrowed for prefill.",
+    )
+    group.add_argument(
+        "--fpm-max-num-seqs",
+        type=_positive_int,
+        default=None,
+        help="Shared vLLM sequence limit for prefill and decode; may be narrowed for prefill.",
+    )
+    group.add_argument(
         "--fpm-max-prefill-isl",
         dest="fpm_max_prefill_isl",
         type=_at_least_two_int,
@@ -406,7 +491,8 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         help=(
             "Maximum total scheduled prefill new-token axis; the batch=1 points also "
             "cover this per-request new-token length "
-            f"(default: {FPM_MAX_PREFILL_ISL})."
+            "(defaults to the shared token limit, otherwise "
+            f"{FPM_MAX_PREFILL_ISL} within supplied profile bounds)."
         ),
     )
     group.add_argument(
@@ -414,7 +500,7 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         dest="fpm_max_prefill_batch_size",
         type=_positive_int,
         default=None,
-        help="Optional prefill max_num_seqs override; defaults to the Dynamo/vLLM runtime value.",
+        help="Optional narrower prefill max_num_seqs; defaults to shared/profile bounds or the Dynamo/vLLM value.",
     )
     group.add_argument(
         "--fpm-max-prefill-cudagraph-size",
@@ -535,6 +621,9 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_enable_wideep",
         "fpm_enable_eplb",
         "fpm_warmup_iterations",
+        "fpm_max_model_len",
+        "fpm_max_num_batched_tokens",
+        "fpm_max_num_seqs",
         "fpm_max_prefill_isl",
         "fpm_max_prefill_batch_size",
         "fpm_max_prefill_cudagraph_size",
