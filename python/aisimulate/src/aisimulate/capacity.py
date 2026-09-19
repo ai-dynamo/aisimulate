@@ -129,6 +129,9 @@ def materialize_aic_num_gpu_blocks(
             ):
                 if resolved[source] is not None:
                     lowered[target] = resolved[source]
+            for name in ("moe_backend", "attention_backend", "enable_eplb", "wideep_num_slots"):
+                if resolved.get(name) is not None and not (name == "enable_eplb" and resolved[name] is False):
+                    lowered[f"aic_{name}"] = resolved[name]
             if resolved["systems_paths"]:
                 lowered["systems_path"] = resolved["systems_paths"][0]
             for name, value in memory_fields.items():
@@ -203,6 +206,11 @@ def materialize_aic_num_gpu_blocks(
         fmha_dtype=lowered.get("aic_fmha_dtype"),
         kv_cache_dtype=lowered.get("aic_kv_cache_dtype"),
         comm_dtype=lowered.get("aic_comm_dtype"),
+        **{
+            name: lowered[f"aic_{name}"]
+            for name in ("moe_backend", "attention_backend", "enable_eplb", "wideep_num_slots")
+            if lowered.get(f"aic_{name}") is not None
+        },
         systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
@@ -232,6 +240,10 @@ def estimate_num_gpu_blocks(
     fmha_dtype: str | None = None,
     kv_cache_dtype: str | None = None,
     comm_dtype: str | None = None,
+    moe_backend: str | None = None,
+    attention_backend: str | None = None,
+    enable_eplb: bool = False,
+    wideep_num_slots: int | None = None,
     systems_path: str | None = None,
     cuda_graph_reserved_bytes: int = 0,
     diagnostics: dict[str, Any] | None = None,
@@ -248,6 +260,7 @@ def estimate_num_gpu_blocks(
         raise ValueError(
             f"AIC KV cache capacity estimation does not support {backend_name!r}; supported backends: {supported}"
         )
+    from aisimulate_core.sdk.config_builders import validate_moe_controls
     from aisimulate_core.sdk.memory import (
         estimate_num_gpu_blocks as aic_estimate_num_gpu_blocks,
     )
@@ -260,6 +273,8 @@ def estimate_num_gpu_blocks(
         backend_version = get_latest_database_version(system, backend_name, systems_paths=systems_path)
         if backend_version is None:
             raise ValueError(f"no perf database for system={system!r}, backend={backend_name!r}")
+
+    validate_moe_controls(enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots)
 
     if backend_name == "trtllm":
         memory_fraction_kind = "of_free"
@@ -296,6 +311,16 @@ def estimate_num_gpu_blocks(
             fmha_quant_mode=_quant_mode_name("fmha", fmha_dtype),
             kvcache_quant_mode=_quant_mode_name("kvcache", kv_cache_dtype),
             comm_quant_mode=_quant_mode_name("comm", comm_dtype),
+            **{
+                name: value
+                for name, value in (
+                    ("moe_backend", moe_backend),
+                    ("attention_backend", attention_backend),
+                    ("enable_eplb", enable_eplb),
+                    ("wideep_num_slots", wideep_num_slots),
+                )
+                if value is not None and not (name == "enable_eplb" and value is False)
+            },
             systems_path=systems_path,
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
@@ -310,6 +335,7 @@ def estimate_kv_bytes_per_token(
     pp_size: int,
     moe_tp_size: int = 1,
     moe_ep_size: int = 1,
+    kvcache_quant_mode: str | None = None,
 ) -> int:
     """Derive per-rank KV bytes/token from the resolved Hugging Face config."""
 
@@ -323,6 +349,14 @@ def estimate_kv_bytes_per_token(
         moe_ep_size=moe_ep_size,
         allow_hf_config_download=True,
     )
+    kvcache_quant_mode = _quant_mode_name("kvcache", kvcache_quant_mode)
+    if kvcache_quant_mode is not None:
+        from aisimulate_core.sdk.common import KVCacheQuantMode
+
+        try:
+            estimator.dtype_bytes = int(KVCacheQuantMode[kvcache_quant_mode].value.memory)
+        except KeyError as exc:
+            raise ValueError(f"unsupported kvcache_quant_mode {kvcache_quant_mode!r}") from exc
     value = estimator.kv_bytes_per_token()
     if value is None or value <= 0:
         raise ValueError(f"could not derive KV bytes per token for model {model_name!r}")

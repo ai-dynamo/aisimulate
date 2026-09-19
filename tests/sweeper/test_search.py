@@ -1167,3 +1167,69 @@ def _isolate_estimator_data_for_orchestration(monkeypatch):
     from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeypatch, fail):
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolutionError,
+        ForwardPassEstimatorResolver,
+    )
+    from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+
+    config = _config()
+    config.search_space.agg_num_gpu_blocks = 128
+    identity = {
+        "model": "model",
+        "system": "system",
+        "backend": "trtllm",
+        "backend_version": "resolved-version",
+        "database_mode": "SILICON",
+        "estimation_mode": "op_level",
+        "fallback_policy": "deny",
+        "tp": 4,
+        "pp": 1,
+        "attention_dp_size": 1,
+        "moe_tp_size": 1,
+        "moe_ep_size": 4,
+        "systems_paths": ["root"],
+        "enable_eplb": False,
+        "moe_backend": None,
+        "wideep_num_slots": None,
+    }
+    resolved = ForwardPassEstimatorSpec(config=identity)
+
+    def resolve(self, sample):
+        if fail:
+            raise ForwardPassEstimatorResolutionError("fixture resolution failed")
+        return {"agg": resolved}
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", resolve)
+
+    def artifact(sample, spec):
+        assert sample["forward_pass_estimators"]["agg"]["config"] == identity
+        assert spec.backend_deployment.forward_pass_estimators["agg"].config == identity
+        return {"resolved": identity}
+
+    prepared, error = search_mod._materialize_one(
+        _selection(256),
+        _pc(),
+        config=config,
+        goal=config.goal,
+        providers={},
+        provider_plans={},
+        runner_factory=_FakeRunnerFactory(),
+        prediction_config_factory=artifact,
+    )
+    if fail:
+        assert prepared is None
+        assert error.outcome == "failed"
+        assert "fixture resolution failed" in error.reason
+    else:
+        assert error is None
+        assert prepared.sample["backend_version"] == "resolved-version"
+        assert prepared.prediction_config == {"resolved": identity}
+        payload = prepared.replay_spec.backend_deployment.agg_engine_args["timing_model"]["config"]
+        assert payload == {
+            k: v for k, v in identity.items() if k not in {"enable_eplb", "moe_backend", "wideep_num_slots"}
+        }

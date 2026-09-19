@@ -27,6 +27,7 @@ from aisimulate.sweeper import (
     ReplaySpec,
     RuntimeHookSpec,
 )
+from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 
 pytestmark = [
     pytest.mark.unit,
@@ -750,11 +751,14 @@ def test_runner_rejects_nested_inferred_capacity_when_fixed_timing_discards_rese
         EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
 
 
-def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch):
+@pytest.mark.parametrize("dtype", [None, "gemm_dtype", "moe_dtype", "fmha_dtype", "kv_cache_dtype", "comm_dtype"])
+def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypatch, dtype):
     runtime = RecordingRuntime()
     engine_args = _engine_args()
     engine_args.pop("num_gpu_blocks")
     engine_args["gpu_memory_utilization"] = 0.8
+    if dtype:
+        engine_args["aic_" + dtype] = "fp8"
     calls = []
 
     def estimate(**kwargs):
@@ -778,6 +782,9 @@ def test_runner_keeps_capacity_estimation_independent_from_fixed_timing(monkeypa
     assert rank["timing_model"]["type"] == "fixed"
     assert "gpu_memory_utilization" not in rank
     assert calls[0]["gpu_memory_utilization"] == 0.8
+    if dtype:
+        assert calls[0][dtype] == "fp8"
+        assert "aic_" + dtype not in rank
 
 
 def test_runner_captures_requested_raw_and_per_request_report():
@@ -1299,12 +1306,12 @@ def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeyp
             pass
 
     # This exercises configuration transport with a recording runtime, not
-    # readiness or prediction for the deliberately synthetic example model.
+    # readiness or prediction for the model.
     monkeypatch.setattr(RustForwardPassPerfModel, "best_available", ReadyEstimator)
     public = CorePredictionConfig.model_validate(
         {
             "engine": {
-                "model": "example/model",
+                "model": DEEPSEEK_V41_MODEL_PATH,
                 "hardware": "gb300",
                 "backend": "sglang",
                 "decoder_replay": replay,
@@ -1326,6 +1333,24 @@ def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeyp
     metadata = spec.backend_deployment.performance_model_metadata["aggregated"]["config"]
     assert metadata.get("decoder_replay", False) is replay
     assert metadata["database_mode"] == "SILICON"
+
+
+@pytest.mark.parametrize(
+    ("model", "backend"),
+    [("example/model", "sglang"), (DEEPSEEK_V41_MODEL_PATH, "vllm")],
+)
+def test_public_replay_rejects_unsupported_model_or_backend(model, backend):
+    with pytest.raises(ValueError, match="decoder_replay requires"):
+        CorePredictionConfig.model_validate(
+            {
+                "engine": {
+                    "model": model,
+                    "hardware": "gb300",
+                    "backend": backend,
+                    "decoder_replay": True,
+                }
+            }
+        )
 
 
 @pytest.mark.parametrize("field", ["aic_decoder_replay", "aic_enable_shared_layer", "aic_strict_provenance"])
@@ -1584,3 +1609,93 @@ def test_direct_replay_resolves_aliases_in_the_effective_systems_root(monkeypatc
     assert report.metrics["completed_requests"] == 1
     assert set(versions) == {custom_version}
     assert "aic_backend_version" not in args
+
+
+@pytest.mark.parametrize("inferred_capacity", [False, True])
+def test_flat_engine_controls_reach_native_timing_identity(inferred_capacity, monkeypatch):
+    controls = {"enable_eplb": True, "wideep_num_slots": 128, "moe_backend": "deepep_moe", "attention_backend": "fa3"}
+    seen = {}
+
+    def estimate(**kwargs):
+        seen.update(kwargs)
+        return 16
+
+    monkeypatch.setattr(aic, "estimate_num_gpu_blocks", estimate)
+    args = _engine_args()
+    args.pop("timing_model")
+    if inferred_capacity:
+        args.pop("num_gpu_blocks")
+    args.update({"aic_" + name: value for name, value in controls.items()})
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            deployment=BackendDeploymentSpec(
+                deployment_mode="agg",
+                backend="vllm",
+                backend_version="test",
+                agg_engine_args=args,
+                num_workers=1,
+            )
+        )
+    )
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert {name: rank["timing_model"]["config"][name] for name in controls} == controls
+    assert not {"aic_" + name for name in controls} & rank.keys()
+    if inferred_capacity:
+        assert {name: seen[name] for name in controls} == controls
+
+
+@pytest.mark.parametrize(
+    "name,value", [("enable_eplb", 1), ("wideep_num_slots", 0), ("wideep_num_slots", True), ("moe_backend", False)]
+)
+def test_flat_engine_controls_validate_types(name, value):
+    args = _engine_args()
+    args.pop("timing_model")
+    args["aic_" + name] = value
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match=name):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )
+    assert runtime.execution_spec is None
+
+
+def test_flat_controls_cannot_override_inactive_nested_identity():
+    args = _engine_args(timing={"type": "external", "provider": "aic", "config": {"enable_eplb": False}})
+    args["aic_enable_eplb"] = True
+    with pytest.raises(ValueError, match="configured both"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )
+
+
+def test_flat_active_controls_reject_fixed_timing():
+    args = {**_engine_args(), "aic_enable_eplb": True}
+    with pytest.raises(ValueError, match="require an AIC timing"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                deployment=BackendDeploymentSpec(
+                    deployment_mode="agg",
+                    backend="vllm",
+                    backend_version="test",
+                    agg_engine_args=args,
+                    num_workers=1,
+                )
+            )
+        )
