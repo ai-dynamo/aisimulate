@@ -28,8 +28,10 @@ import yaml
 # workspace: where dummy_models/, archive/ and probe outputs live
 ROOT = Path(os.environ.get("AIC_PROBE_WORKSPACE", Path.cwd()))
 # generator source: this repo by default; override to pin a specific checkout
+# vendored layout: this file lives at <pkg>/collector/facts/, the generator
+# at <pkg>/src/aiconfigurator — resolve relative to the package root
 AIC_SRC = os.environ.get("AIC_GENERATOR_SRC",
-                         str(Path(__file__).resolve().parents[1] / "aic" / "src"))
+                         str(Path(__file__).resolve().parents[2] / "src"))
 if AIC_SRC not in sys.path:
     sys.path.insert(0, AIC_SRC)
 WORK = "/work"  # container mount of ROOT
@@ -63,7 +65,7 @@ def render_golden(run: dict) -> Path | None:
     cmd += list(run.get("cli_extra_args") or [])
     cmd_txt = shlex.join(cmd)
     import subprocess as _sp
-    gen_commit = _sp.run(["git", "-C", str(ROOT / "aic"), "rev-parse", "--short", "HEAD"],
+    gen_commit = _sp.run(["git", "-C", AIC_SRC, "rev-parse", "--short", "HEAD"],
                          capture_output=True, text=True).stdout.strip()
     stamp = gdir / "command.txt"
     # cache valid only for the SAME command rendered by the SAME generator code
@@ -75,7 +77,7 @@ def render_golden(run: dict) -> Path | None:
         shutil.rmtree(gdir)
     gdir.mkdir(parents=True)
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(ROOT / "aic" / "aic-core" / "src")
+    env["PYTHONPATH"] = str(Path(AIC_SRC))  # vendored aiconfigurator_core lives beside aiconfigurator
     r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=900)
     stamp.write_text(cmd_txt + f"\n# generator={gen_commit}\n# exit={r.returncode}\n")
     (gdir / "render.log").write_text((r.stdout or "")[-8000:] + (r.stderr or "")[-8000:])
@@ -412,8 +414,6 @@ def derive_profile(repo: str, configs_dir: Path) -> str:
 # ---------------------------------------------------------------------------
 # records stage (merged from make_records.py): raw probe JSONs -> curated
 # records.jsonl — kernel normalization, taxonomy labeling, error compression
-
-ROOT = Path(__file__).resolve().parent.parent
 
 # kernels that are infrastructure, never op identity
 KERNEL_DENY = re.compile(
