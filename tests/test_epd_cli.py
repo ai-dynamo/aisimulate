@@ -5,7 +5,7 @@
 
 import json
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -13,7 +13,7 @@ import yaml
 
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.epd import encoder_prediction_fields, validate_epd_prediction_mapping
+from aisimulate.config.epd import _language_execution, encoder_prediction_fields, validate_epd_prediction_mapping
 from aisimulate.main import main
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
 from aisimulate.runner import EngineReplayRunnerFactory
@@ -165,6 +165,69 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_
     table_output = tmp_path / "table"
     assert main(["predict", "-c", str(saved), "--output-dir", str(table_output)]) == 0
     assert "aggregate estimates" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_epd_language_execution_omitted_version_uses_current(mode):
+    from aisimulate_core.sdk import perf_database
+
+    raw = _prediction(mode)
+    raw["engine"]["backend_version"] = None
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+
+    execution = _language_execution(spec)
+
+    current = perf_database.get_version_slots("h200_sxm", "sglang")["current"]
+    assert {role["rank"]["timing_model"]["config"]["backend_version"] for role in execution.values()} == {current}
+
+
+@pytest.mark.parametrize("root_field", ["systems_paths", "systems_path"])
+def test_epd_language_execution_uses_the_timing_systems_root(tmp_path, root_field):
+    from aisimulate_core.sdk import perf_database
+
+    bundled = Path(perf_database.__file__).resolve().parents[1] / "systems"
+    system = yaml.safe_load((bundled / "h200_sxm.yaml").read_text())
+    system["data_dir"] = str(bundled / system["data_dir"])
+    (tmp_path / "h200_sxm.yaml").write_text(yaml.safe_dump(system))
+    custom_version = perf_database.get_version_slots("h200_sxm", "sglang")["next"]
+    (tmp_path / "query_versions.yaml").write_text(yaml.safe_dump({"defaults": {"sglang": {"current": custom_version}}}))
+
+    raw = _prediction()
+    raw["engine"]["backend_version"] = None
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    deployment = spec.backend_deployment
+    args = {
+        **deployment.agg_engine_args,
+        "timing_model": {
+            "type": "external",
+            "provider": "aic",
+            "config": {
+                "model": raw["engine"]["model"],
+                "system": raw["engine"]["hardware"],
+                "backend": raw["engine"]["backend"],
+                "tp": 1,
+                "attention_dp": 1,
+                root_field: [str(tmp_path)] if root_field == "systems_paths" else str(tmp_path),
+            },
+        },
+    }
+    spec = replace(spec, backend_deployment=replace(deployment, agg_engine_args=args))
+
+    execution = _language_execution(spec)
+
+    assert execution["aggregated"]["rank"]["timing_model"]["config"]["backend_version"] == custom_version
+
+
+def test_epd_language_execution_without_a_database_fails(monkeypatch):
+    from aisimulate_core.sdk import perf_database
+
+    raw = _prediction()
+    raw["engine"]["backend_version"] = None
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    monkeypatch.setattr(perf_database, "get_latest_database_version", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ValueError, match="no perf database.*h200_sxm.*sglang"):
+        _language_execution(spec)
 
 
 @pytest.mark.parametrize(
