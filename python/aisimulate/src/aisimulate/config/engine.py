@@ -9,8 +9,6 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, StrictBool, field_validator, model_validator
 
-from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
-
 from .common import (
     ENGINE_MODEL_CONTROL_FIELDS,
     Choices,
@@ -405,8 +403,14 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
-        if self.decoder_replay and (self.model != DEEPSEEK_V41_MODEL_PATH or self.backend != "sglang"):
-            raise ValueError(f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'")
+        if self.decoder_replay:
+            # Keep the pre-supervision configuration path lightweight. Import
+            # the canonical model identity only when this runtime feature is
+            # requested, rather than importing aisimulate_core for every CLI.
+            from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
+
+            if self.model != DEEPSEEK_V41_MODEL_PATH or self.backend != "sglang":
+                raise ValueError(f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'")
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.mode == "afd":
             _validate_prediction_afd(self)
