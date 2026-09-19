@@ -14,6 +14,7 @@ from aisimulate import capacity as aic
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
 from aisimulate.replay.config import ReplayCliConfig, ReplayOutputConfig
+from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate.runner import (
     EngineReplayRunner,
     EngineReplayRunnerFactory,
@@ -1305,12 +1306,12 @@ def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeyp
             pass
 
     # This exercises configuration transport with a recording runtime, not
-    # readiness or prediction for the deliberately synthetic example model.
+    # readiness or prediction for the model.
     monkeypatch.setattr(RustForwardPassPerfModel, "best_available", ReadyEstimator)
     public = CorePredictionConfig.model_validate(
         {
             "engine": {
-                "model": "example/model",
+                "model": DEEPSEEK_V41_MODEL_PATH,
                 "hardware": "gb300",
                 "backend": "sglang",
                 "decoder_replay": replay,
@@ -1332,6 +1333,24 @@ def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeyp
     metadata = spec.backend_deployment.performance_model_metadata["aggregated"]["config"]
     assert metadata.get("decoder_replay", False) is replay
     assert metadata["database_mode"] == "SILICON"
+
+
+@pytest.mark.parametrize(
+    ("model", "backend"),
+    [("example/model", "sglang"), (DEEPSEEK_V41_MODEL_PATH, "vllm")],
+)
+def test_public_replay_rejects_unsupported_model_or_backend(model, backend):
+    with pytest.raises(ValueError, match="decoder_replay requires"):
+        CorePredictionConfig.model_validate(
+            {
+                "engine": {
+                    "model": model,
+                    "hardware": "gb300",
+                    "backend": backend,
+                    "decoder_replay": True,
+                }
+            }
+        )
 
 
 @pytest.mark.parametrize("field", ["aic_decoder_replay", "aic_enable_shared_layer", "aic_strict_provenance"])
