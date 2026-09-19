@@ -441,6 +441,13 @@ class EngineReplayRunner:
             )
         if memory_diagnostics is not None:
             report = {**report, "memory_diagnostics": memory_diagnostics}
+        state_sizes = {
+            role: metadata["state_cache"]
+            for role, metadata in spec.backend_deployment.performance_model_metadata.items()
+            if isinstance(metadata, dict) and "state_cache" in metadata
+        }
+        if state_sizes:
+            report = {**report, "state_cache": state_sizes}
         normalized = _normalize_engine_replay_report(
             report,
             include_native_report=(
@@ -1700,6 +1707,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
     metadata = {
         key: payload[key]
         for key in (
+            "state_cache",
             "agentic_qualification",
             "agentic_input_format",
             "agentic_lanes",
