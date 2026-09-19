@@ -388,7 +388,7 @@ class KVCacheEstimator:
                 "kv_size_per_token_bytes": float(model.get_kvcache_bytes_per_sequence(1)),
                 "gpu_memory_capacity_bytes": float(database.system_spec["gpu"]["mem_capacity"]),
                 # Model's byte-budget -> token-count inverse (KV-curve aware).
-                "tokens_from_kv_bytes": model.get_kvcache_max_tokens,
+                "tokens_from_kv_bytes": lambda budget: model.get_kvcache_batch_capacity(budget, max_batch_size),
             }
         )
 

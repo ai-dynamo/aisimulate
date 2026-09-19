@@ -165,9 +165,13 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         // FpmForward has no family class: FPMForwardOp stays a Python class
         // (callable slot + pinned signature) whose spec adapter converts to a
         // BASE-wrapped engine op for list assembly.
-        Op::FpmForward(_) | Op::TokenScale(_) => {
-            Ok(Py::new(py, PyOperation { inner: op })?.into_any())
-        }
+        Op::FpmForward(_)
+        | Op::Dsv41Attention(_)
+        | Op::Dsv41Mhc(_)
+        | Op::Dsv41Engram(_)
+        | Op::Dsv41Stage(_)
+        | Op::Dsv41Linear(_)
+        | Op::TokenScale(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
         // Vision is never wrapped: compile decomposes it into child ops.
         other => Err(PyTypeError::new_err(format!(
             "no Python class wrapper for engine op variant {:?}",
@@ -4289,6 +4293,7 @@ pub(crate) fn reject_retired_ops(ops: &[Op]) -> Result<(), String> {
                 reject_retired_ops(&o.fallback)?;
             }
             Op::FpmForward(o) => reject_retired_ops(&o.sol_ops)?,
+            Op::Dsv41Stage(o) => reject_retired_ops(&o.children)?,
             Op::TokenScale(o) => reject_retired_ops(std::slice::from_ref(&o.op))?,
             _ => {}
         }

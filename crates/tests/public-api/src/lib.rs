@@ -120,7 +120,7 @@ mod tests {
         // v17: ContextAttentionOp gained apply_rope (Muse Glimmer review
         //     follow-up) — a positional bincode op-layout change.
         // v18: speculative attention width fields and FpmForward verify_width.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 18);
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 19);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
