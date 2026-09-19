@@ -263,12 +263,23 @@ findings:
     - family:sparse_attention
     - collector.vllm.collect_mla_module_029
   vllm_0290_dsv4_cutedsl:
-    statement: 'vllm 0.29.0/SM90 REGRESSION: the whole DeepseekV4 family (8 checkpoints, all quant artifacts) fails
-      at first forward — 0.29 routes head=512 CUDA compression unconditionally to the new cutedsl kernel (models/deepseek_v4/compressor.py:407
-      ''head=512 on CUDA always uses cutedsl'', no fallback flag), which raises tvm_ffi ''Misaligned Tensor data
-      on argument #3'' on state_cache [n0,n1,1024] float32. No escape: kv-auto is still refused (''fp8_ds_mla layout
-      only supports fp8 kv-cache, got auto'', facts/ab_dsv4_kvauto_0290.json), so the mandatory path crashes. On
-      0.24.0 the same checkpoints ran as pass+custom. Evidence archive/raw (plan_vllm_0290) + A/B, 2026-09-19.'
+    statement: 'CORRECTED 2026-09-19 (retracts the same-day ''framework regression, family dead'' verdict): DSV4
+      RUNS on vllm 0.29.0/SM90 — the crash is a CONFIG-TRIGGERED alignment bug, single-variable isolated. Trigger:
+      the generator renders --max-num-batched-tokens 6012; the runner slices per-group slot mappings as rows of a
+      2D buffer with row width = max_num_batched_tokens, so a non-multiple-of-8 budget puts every row after the
+      first at a 64B-misaligned int64 offset (6012*8=48096 bytes, not /64), and DSV4 is multi-cache-group (MLA main
+      + compressor state + indexer) so its state-cache slot_mapping lands on a misaligned row — cutedsl''s tvm_ffi
+      wrapper asserts 64B alignment on argument #3 (slot_mapping, NOT state_cache as first written). A/B on the
+      pristine 0.29 image, same dummy: minimal args PASS (full request, whole DSV4 path executes: cutedsl compress,
+      fused indexer_q, dsv4_topk, FlashMLA decode metadata, deep_gemm fp8 — facts/ab_dsv4_minargs_trace_0290.json,
+      probe_isl 4096); minimal + 6012 reproduces the Misaligned error verbatim (ab_dsv4_tok6012_0290.json); minimal
+      + 6016 (=64*94) PASSES (ab_dsv4_tok6016_0290.json). Routing is SM-agnostic (compressor.py:402 is_cuda &
+      head=512 -> cutedsl on every SM; triton only for AMD/XPU/head-128), so B200 would crash identically under
+      6012 — not a Hopper-specific kernel bug. Dual attribution: vllm robustness bug (pad slot-mapping rows or
+      relax the assert; worth reporting upstream) + generator trigger (odd token budget). Expressible rescue today:
+      cli_extra_args --max-num-batched-tokens rounded to a multiple of 64; proper fix is a GENERIC generator rule
+      (round max_num_batched_tokens up to 64) — owner approval needed, cross-module. Consequence: the
+      sparse_attention family split is NO LONGER FORCED by dsv4 (see vllm_0290_sparse_family_split_needed).'
     applies_to:
     - deepseek-ai/DeepSeek-V4-Flash
     - deepseek-ai/DeepSeek-V4-Pro
@@ -312,14 +323,15 @@ findings:
     - ops:gemm,moe,encoder_attention,gdn,mhc,mla,dsa,attention,msa,compute_scale,mla_bmm
     - ops-blocked:dsv4
   vllm_0290_sparse_family_split_needed:
-    statement: 'OWNER DECISION NEEDED (op granularity): the sparse_attention family lumps dsa_* with dsv4_*/glm5_*
-      tables, but the 0.29.0 upgrade forks their fates — DSA collects fine on 0.29 (lane collect_mla_module_029.py,
-      SM90 smokes green: FLASH_ATTN_MLA_SPARSE for bf16-kv, FLASHMLA_SPARSE for fp8-kv — kv dtype now forks the
-      backend, both keys need collection; selector matches the serving probe) while DSV4 is broken on 0.29 (mandatory
-      cutedsl compress misalignment). Family pins are the manifest''s granularity, so dsa cannot move to 0.29 until
-      the family splits. The 0.29 lane is parked unrouted; registry/manifest stay consistently on 0.24. This is
-      the first live instance of the copy-on-upgrade mechanism: base lane frozen, all 0.29 adaptation (indexer builder
-      block_table_width, serving citation v1/worker/utils.py:276-283 + block_table.py:29-49) in the fork.'
+    statement: 'UPDATED 2026-09-19 (the forcing condition is GONE): the split was motivated by ''DSA works on 0.29,
+      DSV4 dead on 0.29'' — but the DSV4 death was retracted (config-triggered alignment crash, not a framework
+      regression; see vllm_0290_dsv4_cutedsl CORRECTED). With the token-budget fix (round to 64) DSV4 serves on
+      0.29, so dsa_* and dsv4_* can move pins TOGETHER and no family split is required for the 0.29 upgrade.
+      Remaining owner decisions on this thread: (1) approve the generic generator rounding rule (or accept
+      per-checkpoint cli_extra_args as the interim); (2) dsv4 op-collector 0.29 validation is still pending (the
+      sweep skipped it under the retracted verdict) — run it through the 029 lane flow before moving the family
+      pin. Historical context kept: DSA lane collect_mla_module_029.py validated (FLASH_ATTN_MLA_SPARSE bf16-kv /
+      FLASHMLA_SPARSE fp8-kv, both keys need collection), first live copy-on-upgrade instance.'
     applies_to:
     - family:sparse_attention
     - deepseek-ai/DeepSeek-V3.2
