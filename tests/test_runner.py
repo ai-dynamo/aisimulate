@@ -1485,9 +1485,9 @@ def test_runner_rejects_overflowing_ordinary_metric():
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
 
 
-@pytest.mark.parametrize("layout", ["flat", "null_flat", "canonical", "nested"])
+@pytest.mark.parametrize("layout", ["flat", "null_flat", "canonical", "canonical_fallback", "nested"])
 @pytest.mark.parametrize("version", ["", "next", "literal_next"])
-def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, layout, version):
+def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, tmp_path, layout, version):
     from aisimulate import _runtime
     from aisimulate_core.sdk import perf_database
 
@@ -1535,9 +1535,13 @@ def test_direct_replay_capacity_uses_the_resolved_timing_version(monkeypatch, la
     }
     if layout == "null_flat":
         args["aic_backend_version"] = None
-    elif layout == "canonical":
+    elif layout in {"canonical", "canonical_fallback"}:
         timing["config"]["estimation_mode"] = "op_level"
         timing["config"]["worker_type"] = "aggregated"
+        if layout == "canonical_fallback":
+            # The first root has no database. Timing selects the bundled root;
+            # capacity must retain that resolved choice for every version pin.
+            timing["config"]["systems_paths"] = [str(tmp_path), "default"]
         args = {"tensor_parallel_size": 2, "block_size": 64, "timing_model": timing}
     elif layout == "nested":
         args = {"tensor_parallel_size": 2, "rank": {"block_size": 64, "timing_model": timing}}

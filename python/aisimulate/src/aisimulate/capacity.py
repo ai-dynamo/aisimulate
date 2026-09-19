@@ -166,13 +166,13 @@ def materialize_aic_num_gpu_blocks(
         raise ValueError("AIC KV cache capacity estimation requires aic_model_path in engine args")
 
     capacity_systems_path = lowered.get("systems_path")
-    if timing_system_roots:
+    if timing_system_roots and canonical_result is None:
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 
         resolved_roots = resolve_systems_paths(timing_system_roots)
         if resolved_roots:
             # Native timing gives systems_paths precedence over systems_path;
-            # capacity preflight must query that same first effective root.
+            # canonical lowering has already pinned the selected root above.
             capacity_systems_path = resolved_roots[0]
 
     lowered["num_gpu_blocks"] = estimate_num_gpu_blocks(
