@@ -229,14 +229,16 @@ findings:
     - zai-org/GLM-5.2-FP8
     - moonshotai/Kimi-K2.5
   vllm_0290_dsa_lane_indexer_drift:
-    statement: 'path_diff gate (profiler-measured both sides, one taxonomy) on the 0.29 DSA lane vs serving: attention
-      core ALIGNED (fa3 family, flash::FlashAttnFwdSm90/Combine/prepare_varlen on both sides — required TWO probe
-      fixes it also caught: vllm probe recorded no whole-run kernel table so span-blind kernels were invisible,
-      and prefill ran as un-profiled warmup so context-phase kernels were missing entirely; both fixed, prefill_kernels/decode_kernels
-      now always dumped). Indexer sub-path DIVERGED (kernel drift inside dsa_nsa): the lane executes 0.24-era indexer_k_quant_and_cache
-      + _fused_indexer_q_rope_quant and NO topk kernel, while serving 0.29 runs cp_gather_indexer_k_quant_cache
-      + topKPerRowPrefill. The lane''s DSA perf rows are NOT trustworthy until its indexer construction is re-adapted
-      to 0.29 serving (next task on the lane; it is parked unrouted anyway). Verdicts: results/pathdiff/vllm-0.29.0/*.json,
+    statement: 'path_diff gate on the 0.29 DSA lane, final precision after three instrument fixes it forced (whole-run
+      kernel tables in the vllm probe; profiled prefill phase; launcher-vs-kernel name dedup both sides): SPARSE
+      CORE ALIGNED — at seq>index_topk the lane executes serving''s exact sparse path (cp_gather_indexer_k_quant_cache
+      + sm90_fp8_mqa_logits + topKPerRowPrefill + fa3 flash::FlashAttnFwdSm90). Remaining REAL divergence is prelude
+      fusion: the lane builds the generic DeepseekV2MLAAttention module whose indexer prelude runs unfused (_fused_indexer_q_rope_quant_kernel
+      + vllm::indexer_k_quant_and_cache_kernel) while serving''s DSV32 nvidia model fuses those into other kernels
+      — module-level timings therefore price a different prelude. Next adaptation: construct the serving-same DSV32
+      nvidia fused module. OPEN PUZZLE: short-seq branch choice disagrees (lane s512 takes the dense-MHA early-exit
+      per use_dense_mha = max_seq<=index_topk, serving''s 32-token prefill still ran sparse topk) — suspect dense_mha_metadata_layer_name
+      resolution differs; unresolved. Verdicts: results/pathdiff/vllm-0.29.0/*.json (incl. s4096 sparse-branch case),
       2026-09-19.'
     applies_to:
     - family:sparse_attention

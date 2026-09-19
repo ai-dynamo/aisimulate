@@ -89,7 +89,14 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
          op_hint: str | None, save: str | None = None) -> int:
     label_kernels, normalize_kernel = _load_labeler()
     cap = json.loads(Path(capture_file).read_text())
-    col_kernels = sorted({n for k in cap["kernels"] if (n := normalize_kernel(k))})
+    # custom-op LAUNCHERS shadow their kernels under a second name
+    # (_vllm_fa3_C::fwd wraps flash::FlashAttnFwdSm90) — same exclusion
+    # build_ops applies to serving orphans, applied here to both sides
+    _launcher = re.compile(r"^(_\w*C\w*|sglang|sgl_kernel|triton_|vllm)::(?!.*_kernel)")
+    def _is_launcher(name: str) -> bool:
+        return bool(_launcher.match(name)) and "kernel" not in name.split("::")[-1].lower()
+    col_kernels = sorted({n for k in cap["kernels"]
+                          if (n := normalize_kernel(k)) and not _is_launcher(n)})
     col_backends, col_unmatched = label_kernels(col_kernels)
 
     serving = None
@@ -114,7 +121,8 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
                 [op.get("label") or ""] + (op.get("kernels") or [])), re.I):
             continue
         srv_backends |= set(op.get("backends") or [])
-        srv_kernels |= set(op.get("kernels") or [])
+        srv_kernels |= {k for k in (op.get("kernels") or []) if not _is_launcher(k)}
+    srv_kernels = {k for k in srv_kernels if not _is_launcher(k)}
 
     infra = {"cublas", "vllm_kernel", "sgl_kernel", "torch", "triton"}
     col_sig = col_backends - infra
