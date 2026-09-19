@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-
 from tools.support_matrix.compare_support_matrix import (
     check_csv_sanity,
     find_blocking_status_transitions,

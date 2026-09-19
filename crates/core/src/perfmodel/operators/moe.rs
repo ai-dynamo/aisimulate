@@ -3,7 +3,7 @@
 
 //! MoE operator.
 //!
-//! Mirrors `aiconfigurator.sdk.operations.moe.MoE._query_moe_table`. The
+//! Mirrors `aisimulate.sdk.operations.moe.MoE._query_moe_table`. The
 //! perf-DB layer handles workload-distribution fallback to `"uniform"` and
 //! resolves the token curve on the perf_interp v2 engine; this operator
 //! supplies the MoE roofline SOL closure the engine's beyond-range util-hold
@@ -855,7 +855,7 @@ mod tests {
     fn b200_vllm_db() -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&root, "b200_sxm", "vllm", "0.19.0").expect("db loads")
     }
 
@@ -882,7 +882,7 @@ mod tests {
     fn b200_trtllm_db() -> PerfDatabase {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&root, "b200_sxm", "trtllm", "1.3.0rc20").expect("db loads")
     }
 
@@ -1105,7 +1105,7 @@ mod tests {
     fn moe_nvfp4_wo_ladder_matches_python_oracle() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         let db = PerfDatabase::load(&root, "h200_sxm", "vllm", "0.19.0")
             .expect("h200/vllm/0.19.0 db loads")
             .with_mode(

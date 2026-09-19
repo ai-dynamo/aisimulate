@@ -213,6 +213,7 @@ except ImportError:
         get_default_config,
         get_moe_configs,
     )
+from collector.version_resolver import _check_compat
 from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 from sglang.srt.layers.moe.moe_runner.base import MoeRunnerConfig
 from sglang.srt.layers.moe.topk import (
@@ -228,8 +229,6 @@ from sglang.srt.layers.quantization.fp8 import Fp8Config
 from sglang.srt.layers.quantization.modelopt_quant import ModelOptFp4Config, ModelOptFp8Config
 from sglang.srt.layers.quantization.mxfp4 import Mxfp4Config
 from sglang.srt.utils import is_hip
-
-from collector.version_resolver import _check_compat
 
 try:
     from case_generator import (

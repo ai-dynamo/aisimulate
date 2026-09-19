@@ -34,6 +34,13 @@ Both commands now come from AISimulate. Existing AIC flags and experiment YAML c
 `aiconfigurator`; there is no automatic converter to the new CLI input format. See the
 [Legacy AIC CLI User Guide](legacy-aic-user-guide.md) for the six-command reference.
 
+### 1.1 Migrate Python imports
+
+AISimulate 0.13.0 removes the legacy `aiconfigurator` and
+`aiconfigurator_core` Python packages. The `aiconfigurator` executable remains
+available. See [Python source migration](../python-source-migration.md) for
+replacement imports, the package layout, and downstream qualification requirements.
+
 ## 2. AIC to AISimulate command mapping
 
 The rows follow the legacy guide's command order. “Keep AIC” means use the compatibility command
@@ -42,7 +49,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#54-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Normal summaries include serving metrics and [power and coverage](#411-power-and-energy-analysis). Use `predict --detail summary,memory,time` for optional detail sections. [Example](#410-inspect-prediction-details). `predict --detail energy` adds [energy diagnostics](#411-power-and-energy-analysis) on supported engine paths. [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes and [remaining diagnostic gaps](#detailed-diagnostics). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Normal summaries include serving metrics and [power and coverage](#411-power-and-energy-analysis). Use `predict --detail summary,memory,time` for optional detail sections. [Example](#410-inspect-prediction-details). `predict --detail energy` adds [energy diagnostics](#411-power-and-energy-analysis) on supported engine paths. [Static estimate modes are intentionally not migrated](#531-static-estimates). See [provider-specific diagnostic limits](#detailed-diagnostics). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -400,9 +407,11 @@ prefill savings.
 
 To model reuse, enable `engine.workers.<role>.kv_cache.prefix_caching` on a supported backend and
 supply shared prefixes through a [trace](user-guide.md#trace-source) or
-[synthetic sessions](user-guide.md#synthetic-session-source). Enabling caching alone does not
-create shared input. Session `shared_prefix_ratio` and `prefix_groups` describe workload sharing;
-they do not guarantee a cache-hit count or ratio. This KV prefix reuse is separate from ngram
+[synthetic sessions](user-guide.md#synthetic-session-source). For independent synthetic requests,
+set `traffic.source.cached_prefix_tokens` to share an exact number of input tokens, as shown in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). This also preserves a cold first
+request. Enabling caching alone does not create shared input. Session `shared_prefix_ratio` and
+`prefix_groups` describe workload sharing; they do not guarantee a cache-hit count or ratio. This KV prefix reuse is separate from ngram
 prompt-lookup speculative decoding.
 
 Keep the bundled AIC compatibility CLI for controlled cached-prefix what-if estimates or
@@ -530,6 +539,78 @@ policy, estimator mode, and full estimator configuration for a subsequent predic
 current native correction stores and the latest role-bound regression routing remain unchanged.
 The unified CLI does not expose AIC's per-operation source breakdown shown above; keep the
 compatibility CLI or SDK for that diagnostic.
+
+<a id="preserve-pinned-engine-and-request-controls"></a>
+
+#### 4.6.3 Preserve pinned engine and request controls
+
+The unified `predict` and `recommend` configurations accept the following flat
+`engine` controls. They use the same canonical estimator interface as estimator
+selection and fallback policy.
+
+| AIC control | Unified configuration |
+| --- | --- |
+| `nextn`, `nextn_accepted` | `engine.nextn`, `engine.nextn_accepted` (both required for MTP) |
+| Chunked prefill | `engine.enable_chunked_prefill` (omit for backend default) |
+| EPLB and redundant expert slots | `engine.enable_eplb`, `engine.wideep_num_slots` |
+| MoE and attention kernel backends | `engine.moe_backend`, `engine.attention_backend` |
+| Quantization overrides | `engine.gemm_quant_mode`, `engine.moe_quant_mode`, `engine.kvcache_quant_mode`, `engine.fmha_quant_mode`, `engine.comm_quant_mode` |
+| Exact synthetic shared prefix | `traffic.source.cached_prefix_tokens` |
+| Maximum sequence length | Existing `engine.context_length` |
+| GPU memory fraction | Existing `engine.workers.<role>.kv_cache.capacity.memory_fraction` |
+
+`enable_wideep` is obsolete: topology now determines the MoE execution regime.
+The new model controls require default timing on every language role. AFD and
+analytical encoder configurations reject them. Backend/model compatibility is
+validated by the canonical constructor before simulation. Use `--stack engine`
+for these controls and exact synthetic shared prefixes. Older Dynamo adapters
+do not support them and fail capability validation before replay. Explicit MTP
+expected acceptance also requires an opt-in runner capability; legacy acceptance-rate
+payloads retain their existing compatibility. AFD and
+AFD+PD reject positive `cached_prefix_tokens`.
+
+This recommendation example preserves a token-exact shared prefix and explicit
+KV quantization while using the existing capacity field:
+
+```yaml
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  estimation_mode: op_level
+  fallback_policy: deny
+  kvcache_quant_mode: fp8
+  enable_chunked_prefill: true
+  workers:
+    aggregated:
+      kv_cache:
+        capacity:
+          memory_fraction: 0.85
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+    cached_prefix_tokens: 256
+  load:
+    type: concurrency
+    concurrency: 8
+  stop:
+    requests: 32
+optimization:
+  constraints:
+    max_candidate_gpus: 8
+```
+
+For MTP-capable models, specify both `engine.nextn: 2` and
+`engine.nextn_accepted: 1.25`. The accepted count is a workload assumption:
+replay uses one guaranteed accepted draft token and a 25% chance of a second.
+Saved candidate YAML retains these values and all engine model controls.
+A shared prefix does not mean a prewarmed cache; the first request remains cold.
+Only complete cache blocks can be reused, so a shared prefix shorter than the
+engine cache block size can produce zero hits.
 
 <a id="predict-and-search-analytical-epd"></a>
 
@@ -744,8 +825,9 @@ aisimulate predict --config prediction.yaml --detail summary,memory,time \
 | --- | --- |
 | `summary` | Existing serving prediction metrics. |
 | `memory` | Initial per-rank capacity estimate and available memory components, with `stage: before_native_capacity_adjustments`. |
-| `time` | Existing serving latency metrics in milliseconds; no phase/operation breakdown or SOL comparison. |
-| `all` | The three sections above plus the [energy diagnostics in section 4.11](#411-power-and-energy-analysis). |
+| `time` | Serving latency statistics plus native accumulated phase/operation latency, SOL comparisons, and latency/SOL ratios. |
+| `source` | Per-operation source tags and executed MoE communication measurement substitutions. |
+| `all` | All five selectors, including [energy diagnostics in section 4.11](#411-power-and-energy-analysis). |
 
 **Captured result for the `prediction.yaml` above** (AISimulate 0.12.0 with this detail
 implementation, 2026-09-15; simulation results, latency/throughput rounded):
@@ -773,15 +855,17 @@ The terminal identifies skipped sections with reasons. `prediction.json` stores 
 exported estimate. Its block count is an initial estimate, not a final runtime allocation.
 Analytical EPD retains available language-worker estimates and identifies the missing encoder
 component breakdown; it does not claim a complete EPD memory report.
-`source` remains unsupported and is rejected. `energy` is supported, and `all` includes it;
-see [section 4.11](#411-power-and-energy-analysis) for energy evidence and availability.
+`time` and `source` operation evidence requires the native op-level engine path. SOL gaps carry
+null values and explicit reasons; source records preserve executed measurement substitutions.
+`--detail-top-n` bounds tables only; JSON keeps complete evidence. See
+[section 4.11](#411-power-and-energy-analysis) for energy availability.
 For recommendation details, run `predict --detail` on a saved recommendation YAML.
 See the [detail output contract](user-guide.md#prediction-details).
 
 **What changed:** AISimulate reports the configured serving workload, rather than reproducing
-AIC's fixed-batch estimate. Its `time` section contains serving latency metrics. Phase and
-per-operation timing, SOL comparisons, and other unsupported diagnostics remain
-[separate gaps](#detailed-diagnostics).
+AIC's fixed-batch estimate. Its `time` section separates request statistics from accumulated
+scheduled forward-pass work per GPU; operation sums are not wall-clock or request latency.
+[Provider availability limits](#detailed-diagnostics) remain explicit.
 
 <a id="power-and-energy-analysis"></a>
 <a id="54-power-and-energy-analysis"></a>
@@ -791,7 +875,7 @@ per-operation timing, SOL comparisons, and other unsupported diagnostics remain
 **Migration status: implemented by the power stack.** Normal engine prediction and
 recommendation summaries always show both power fields; `--detail energy` adds a breakdown.
 Section 4.10 retains the captured output from the initial three-section detail implementation.
-This extension adds `energy` and includes it in `--detail all`; `source` remains unsupported.
+`--detail all` includes both `energy` and the operation provenance in `source`.
 The native engine runner exports phase and operation evidence with op-level timing on supported
 topologies. The external Dynamo Python adapter's diagnostics export is not qualified by this
 stack; missing exports receive an explicit unavailable reason.
@@ -1223,24 +1307,25 @@ aiconfigurator cli estimate \
 <a id="detailed-diagnostics"></a>
 <a id="532-detailed-diagnostics"></a>
 
-#### 5.3.2 Remaining detailed-diagnostic gaps
+#### 5.3.2 Detailed-diagnostic availability limits
 
-The initial `summary`, `memory`, `time`, and `all` selectors are covered in
-[section 4.10](#410-inspect-prediction-details). The power stack adds `energy` and includes it in
-`all`, as shown in [section 4.11](#411-power-and-energy-analysis). Keep AIC `estimate --detail`
-when you need these additional diagnostic capabilities:
+All five selectors (`summary,memory,time,energy,source`) are supported by `predict`; `all`
+requests them together. [Section 4.10](#410-inspect-prediction-details) covers timing and
+provenance; [section 4.11](#411-power-and-energy-analysis) covers energy.
 
-| Remaining gap | AIC selector and evidence |
-| --- | --- |
-| Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
-| Per-operation data provenance and fallback information | `source`. |
+The native op-level engine exports scheduled phase/operation timings, SOL comparisons, source
+tags, and executed MoE communication measurement substitutions. An operation without a SOL
+implementation keeps its actual timing and provenance and reports the SOL reason. These
+comparisons use the same scheduled shapes and do not replace the selected estimator.
 
-AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests
-`summary,memory,time,energy`. AISimulate energy evidence requires a supported engine path;
-the external Dynamo Python adapter's diagnostics export remains unqualified. Available AIC
-sections depend on the estimate mode and data;
-static-mode `--detail energy` can display `<no energy data>` when operation-energy data is
-absent. For specialized fixed-batch diagnostics, use the compatibility
+Whole-model FPM and latency-only providers do not expose per-operation timing/source evidence.
+Analytical EPD/AFD overlays and the external Dynamo Python adapter do not export a qualified
+combined operation report. Such paths retain explicit unavailable reasons; serving timing
+statistics remain available where exported. Source tags describe the engine's provenance
+classification, not full file/row lineage. Fallback records describe executed measurement
+substitutions, not every estimator-construction attempt.
+
+For specialized fixed-batch diagnostics, keep the compatibility
 [static-estimate workflow](#531-static-estimates).
 
 <a id="deployment-artifacts"></a>
@@ -1297,13 +1382,17 @@ alone does not establish support for an entire CLI workflow.
 
 <a id="estimator-controls-and-speculative-decoding"></a>
 
-### 5.6 Estimator controls and speculative decoding
+<a id="56-estimator-controls-and-speculative-decoding"></a>
+
+### 5.6 Remaining estimator and speculative-decoding gaps
 
 For supported estimator selection, fallback, database/transfer policies, system roots, and
 regression/correction tuning, see [section 4.6](#46-select-and-configure-performance-estimators).
-The controls below continue to use AIC or the estimator SDK: explicit quantization/kernel
-selectors, exact cached-prefix assumptions, and non-ngram speculative decoding. Per-operation source
-diagnostics also remain on the compatibility CLI or SDK.
+Unified prediction and recommendation also support pinned quantization/kernel controls and
+MTP with explicit accepted-token assumptions; see [section 4.6.3](#preserve-pinned-engine-and-request-controls).
+Ngram prediction and recommendation are covered in [section 4.12](#412-ngram-prompt-lookup-speculative-decoding).
+Fixed-batch estimates, fixed cached-token assumptions, speculative schemes beyond MTP and ngram,
+and per-operation source diagnostics continue to use the compatibility CLI or SDK.
 
 **Pin quantization and select an attention implementation.** For a dense-model decode estimate
 with explicit BF16 compute/cache settings and the framework's default attention implementation:
@@ -1320,8 +1409,10 @@ aiconfigurator cli estimate \
 ```
 
 **Result to inspect:** the printed configuration and timing/source breakdown use the requested
-settings. Supported selectors depend on the backend and data. MoE-specific quantization and kernel
-selectors also use AIC/SDK controls; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
+settings. Supported selectors depend on the backend and data. For serving simulation, pin the
+same supported quantization and kernel selectors through the unified `engine` fields in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). The static estimate and source
+breakdown above remain compatibility features; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
 
 <a id="exact-cached-prefix-estimates"></a>
 
@@ -1342,12 +1433,16 @@ aiconfigurator cli estimate \
 **Result to inspect:** the summary prints `Prefix: 256`, followed by the timing breakdown for that
 assumption. AISimulate supports prefix-cache simulation, but `kv_cache.prefix_caching: true` enables
 reuse instead of setting a fixed cached-token count. Session shared-prefix settings describe
-workload sharing. Keep AIC when you require its exact cached-token assumption.
+workload sharing. `traffic.source.cached_prefix_tokens` likewise sets an exact shared prefix for
+synthetic requests, with a cold first request and reuse governed by cache state. Keep AIC when
+you require its fixed cached-token assumption.
 
 **Other speculative-decoding schemes.** Ngram prediction and recommendation are covered in
-[section 4.12](#412-ngram-prompt-lookup-speculative-decoding). MTP, EAGLE-3, DFlash, DSpark, and
-standalone draft models still use the compatibility CLI or SDK, subject to
-[scheme-specific configuration and limits](../../python/aisimulate/src/aiconfigurator_core/sdk/speculation/README.md#estimate-command).
+[section 4.12](#412-ngram-prompt-lookup-speculative-decoding). The unified CLI supports MTP through
+`engine.nextn` and an explicit `engine.nextn_accepted`, as shown in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). Neither path predicts acceptance rates.
+EAGLE-3, DFlash, DSpark, and standalone draft models still use the compatibility CLI or SDK, subject to
+[scheme-specific configuration and limits](../../python/aisimulate/src/aisimulate_core/sdk/speculation/README.md#estimate-command).
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
 
@@ -1475,7 +1570,7 @@ aggregate-only SLA semantics, described in its feature guide.
 ### 6.2 Repository and release transition
 
 AISimulate is the home for ongoing development, issues, and releases. The standalone
-AIConfigurator repository is scheduled to archive after its final 0.12.0 release. AISimulate 0.12.0
-keeps the AIC compatibility command; removal is targeted for 0.13.0 after all remaining workflows
+AIConfigurator repository is scheduled to archive after its final 0.12.0 release. AISimulate 0.13.0
+keeps the AIC compatibility command; removal is targeted for 0.14.0 after all remaining workflows
 have verified unified-CLI replacements. See the [release transition policy](../../README.md#aiconfigurator-repository-transition)
 and [repository history](../repository-history.md).

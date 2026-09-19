@@ -82,11 +82,11 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
 
 def _language_execution(spec: ReplaySpec) -> dict:
     """Normalize compiler/Sweeper spellings at the existing execution boundary."""
-    from aiconfigurator_core.sdk.perf_database import resolve_query_version
+    from aisimulate_core.sdk.perf_database import resolve_query_version
 
-    from ..aic import DEFAULT_BACKEND_VERSIONS
+    from ..capacity import DEFAULT_BACKEND_VERSIONS
     from ..runner import _materialize_engine_role
-    from .engine import SchedulerPredictionConfig
+    from .engine import EstimatorPolicyConfig, SchedulerPredictionConfig
 
     deployment = spec.backend_deployment
     roles = (
@@ -110,6 +110,9 @@ def _language_execution(spec: ReplaySpec) -> dict:
             timing.get("backend_version") or DEFAULT_BACKEND_VERSIONS[deployment.backend],
         )
         timing.setdefault("cuda_graph_reserved_bytes", 0)
+        # Legacy Sweeper descriptors omit the default policy; the compiler
+        # serializes it explicitly. Compare their resolved execution meaning.
+        timing.setdefault("database_mode", EstimatorPolicyConfig().database_mode)
         # HandoffTransferTiming::delay_ms uses the same fallback for either mode
         # when a complete byte-count/bandwidth transfer model is unavailable.
         if rank.get("kv_transfer_bytes_per_token") is None or rank.get("kv_transfer_bandwidth") is None:

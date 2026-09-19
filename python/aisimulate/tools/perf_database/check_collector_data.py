@@ -18,7 +18,7 @@ Seven rules, each named after the design section it enforces:
   not field completeness, so a legacy entry with only `status` is enough.
 - **R2 reuse validity** (design §6.3, §6.5 rules 1-3): every `reuse.yaml`
   must parse via the real loader parser
-  (`aiconfigurator_core.sdk.perf_database._parse_reuse_yaml`); each entry's
+  (`aisimulate_core.sdk.perf_database._parse_reuse_yaml`); each entry's
   donor (same family, same backend, `from_version`, `table`) must exist as
   real parquet data, not merely another declared-reuse dir. "Same backend
   only" is a structural guarantee here: a `reuse.yaml` entry carries no
@@ -44,10 +44,10 @@ Seven rules, each named after the design section it enforces:
 
 Reuses (imports, does not duplicate): `collector.op_catalog.load_family_map`,
 `collector.framework_manifest.validate_resolution`, and the loader's real
-parsers `aiconfigurator_core.sdk.perf_database._parse_reuse_yaml` /
-`_load_collection_meta_yaml` (via the `aiconfigurator.sdk` compatibility
+parsers `aisimulate_core.sdk.perf_database._parse_reuse_yaml` /
+`_load_collection_meta_yaml` (via the `aisimulate.sdk` compatibility
 alias, which is the same module object — see
-`src/aiconfigurator/sdk/_compat.py`). The tree-walking shape mirrors
+`src/aisimulate/sdk/_compat.py`). The tree-walking shape mirrors
 `perf_data_layout.py`'s `iter_data_files`, specialized to the
 post-migration family-first layout (`<system>/<family>/<backend>/<version>/`)
 that is now the only layout on disk.
@@ -55,7 +55,7 @@ that is now the only layout on disk.
 Usage:
     python3 tools/perf_database/check_collector_data.py
     python3 tools/perf_database/check_collector_data.py \\
-        --data-root src/aiconfigurator_core/systems/data \\
+        --data-root src/aisimulate_core/systems/data \\
         --catalog collector/op_backend_catalog.yaml
 
 Exit codes: 0 = every rule OK. 1 = at least one failure (printed, grouped by
@@ -80,23 +80,24 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# aiconfigurator_core is pip-installed editable (pyproject.toml
+# aisimulate_core is pip-installed editable (pyproject.toml
 # [tool.uv.sources]), so it needs no sys.path help. Imported via the
-# `aiconfigurator.sdk` compatibility alias, as the SDK-layer test suite does
+# `aisimulate.sdk` compatibility alias, as the SDK-layer test suite does
 # (e.g. tests/unit/sdk/database/test_dual_layout_discovery.py) — it is the
-# same module object as aiconfigurator_core.sdk.perf_database
-# (src/aiconfigurator/sdk/_compat.py:alias_module).
-from aiconfigurator.sdk.perf_database import (
-    _load_collection_meta_yaml,
-    _parse_reuse_yaml,
-)
+# same module object as aisimulate_core.sdk.perf_database
+# (src/aisimulate/sdk/_compat.py:alias_module).
 from collector.framework_manifest import validate_resolution
 from collector.op_catalog import (
     CATALOG_PATH,
     load_family_map,
 )
 
-DATA_ROOT_DEFAULT = REPO_ROOT / "src" / "aiconfigurator_core" / "systems" / "data"
+from aisimulate.sdk.perf_database import (
+    _load_collection_meta_yaml,
+    _parse_reuse_yaml,
+)
+
+DATA_ROOT_DEFAULT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "data"
 
 REUSE_YAML = "reuse.yaml"
 COLLECTION_META_YAML = "collection_meta.yaml"

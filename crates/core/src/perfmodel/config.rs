@@ -80,10 +80,15 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   batch/query widths and FpmForwardOp gained verify_width. Upstream used
 //   14/15, already occupied here; these are positional bincode layout changes.
 //   TokenScale was appended to remap draft query widths before op lookup.
-// - 19 (decode context parallelism): `GenerationAttentionOp`,
-//   `GenerationMlaOp`, `WideEpGenerationMlaOp` and `DsaModuleOp` gained a
-//   tail-appended `dcp_size` (gathered query heads over a 1/dcp KV stripe).
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
+// - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
+//   separating physical backend KV payload from attention arithmetic precision.
+//   Its appended enum changes positional bincode layout; old JSON defaults only.
+// - 20 (decode context parallelism): the context/generation attention, MLA,
+//   MLA-module, wide-EP MLA and DSA ops gained a tail-appended `dcp_size`
+//   (gathered query heads over a 1/dcp KV stripe; striped-context gather).
+//   Claimed 19 on its own branch alongside the DeepSeek-V4.1 change; renumbered
+//   at merge (same precedent as 15 and 18).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 20;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -117,6 +122,10 @@ pub struct EngineConfig {
     /// predictor API (additive-optional: absent in older payloads).
     #[serde(default)]
     pub forward_model: Option<String>,
+
+    /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
+    #[serde(default)]
+    pub decoder_replay: bool,
 
     // KV
     pub kv_block_size: Option<u32>,

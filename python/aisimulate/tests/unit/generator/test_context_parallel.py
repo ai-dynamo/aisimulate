@@ -19,16 +19,16 @@ import pandas as pd
 import pytest
 from jinja2 import Environment, FileSystemLoader
 
-from aiconfigurator.fpm_contract import FPM_RUN_SCRIPT_FILENAME
-from aiconfigurator.generator.api import generate_backend_artifacts, generate_from_request
-from aiconfigurator.generator.context_parallel import (
+from aisimulate.fpm_contract import FPM_RUN_SCRIPT_FILENAME
+from aisimulate.generator.api import generate_backend_artifacts, generate_from_request
+from aisimulate.generator.context_parallel import (
     ContextParallelUnsupportedError,
     context_parallel_params,
     cp_strategy_for,
 )
-from aiconfigurator.generator.module_bridge import task_config_to_generator_config
-from aiconfigurator.generator.rendering.engine import render_backend_templates
-from aiconfigurator.generator.request import ModelFacts, SweeperCandidateError, from_sweeper_candidate
+from aisimulate.generator.module_bridge import task_config_to_generator_config
+from aisimulate.generator.rendering.engine import render_backend_templates
+from aisimulate.generator.request import ModelFacts, SweeperCandidateError, from_sweeper_candidate
 
 from .test_fpm_artifacts import _params as _fpm_params
 from .test_sweeper_request import _agg_candidate, _cli_flag_value, _disagg_candidate
@@ -36,7 +36,7 @@ from .test_sweeper_request import _agg_candidate, _cli_flag_value, _disagg_candi
 pytestmark = pytest.mark.unit
 
 _TEMPLATE_ROOT = (
-    Path(__file__).resolve().parents[3] / "src" / "aiconfigurator" / "generator" / "config" / "backend_templates"
+    Path(__file__).resolve().parents[3] / "src" / "aisimulate" / "generator" / "config" / "backend_templates"
 )
 _WORKLOAD = {"isl": 4096, "osl": 512}
 
@@ -400,7 +400,7 @@ def _sglang_rule_params(*, is_moe: bool, rule: str | None = None, **agg) -> dict
 
 @pytest.mark.parametrize("rule", [None, "benchmark"])
 def test_sglang_moe_fold_does_not_count_attention_dp_twice(rule):
-    from aiconfigurator.generator.rendering.rule_engine import apply_rule_plugins
+    from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
 
     # DeepSeek-style DEP on SGLang: attention tp=1 x dp=8, experts moe_ep=8.
     # --tp is folded to moe_tp x moe_ep (8) and --dp partitions that --tp, so
@@ -641,7 +641,7 @@ def test_fpm_decode_cp_adds_no_gpus():
 
 
 def test_fpm_topology_check_multiplies_prefill_cp():
-    from aiconfigurator.generator.builders.fpm_builder import _resolve_topology
+    from aisimulate.generator.builders.fpm_builder import _resolve_topology
 
     worker = SimpleNamespace(resources={"limits": {"gpu": "4"}}, multinode=None)
     context = {"NodeConfig": {"num_gpus_per_node": 8}}

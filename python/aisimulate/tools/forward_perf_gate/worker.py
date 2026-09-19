@@ -30,7 +30,7 @@ from tools.forward_perf_gate.measurement import (
     redirect_output,
 )
 
-from aiconfigurator.sdk.errors import (
+from aisimulate.sdk.errors import (
     EmpiricalNotImplementedError,
     MissingSystemFlopsError,
     PerfDataNotAvailableError,

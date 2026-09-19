@@ -43,6 +43,7 @@ impl KvPageId {
 /// Manages free / allocated pages for the simulated SGLang KV cache.
 ///
 /// SGLang's paged allocator owns and frees whole pages in production.
+#[derive(Clone)]
 pub struct PagePool {
     next_fresh: usize,
     free: Vec<KvPageId>,
@@ -157,6 +158,7 @@ impl PagePool {
 }
 
 /// A single node in the radix tree.
+#[derive(Clone)]
 pub struct TreeNode {
     /// Children keyed by the first complete page on the child edge.
     pub children: FxHashMap<LocalBlockHash, NodeId>,
@@ -195,6 +197,7 @@ pub struct RadixCache {
 }
 
 /// Optional forecast metadata; physical ownership and leaf eligibility stay in the radix tree.
+#[derive(Clone)]
 struct BeladyLeaves {
     oracle: BeladyOracle,
     cursor: usize,
@@ -205,6 +208,23 @@ struct BeladyLeaves {
 }
 
 impl RadixCache {
+    /// Snapshot allocator and radix metadata for a fallible admission transaction.
+    /// This is not a second owner of live request leases; only one cache state may commit.
+    pub(crate) fn admission_checkpoint(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            root: self.root,
+            page_pool: self.page_pool.clone(),
+            page_size: self.page_size,
+            #[cfg(test)]
+            test_now: self.test_now,
+            evictable_leaves: self.evictable_leaves.clone(),
+            belady: self.belady.clone(),
+            evictable_size: self.evictable_size,
+            protected_size: self.protected_size,
+        }
+    }
+
     pub fn new(total_tokens: usize, page_size: usize) -> Self {
         assert!(page_size >= 1, "page_size must be >= 1");
         let mut nodes = SlotMap::with_key();
@@ -811,9 +831,12 @@ impl RadixCache {
             let child_parent = child.parent;
             let original_ck = child.key[0];
             let suffix_key = child.key.split_off(split_pos);
-            let prefix_key = std::mem::replace(&mut child.key, suffix_key);
+            let mut prefix_key = std::mem::replace(&mut child.key, suffix_key);
             let suffix_value = child.value.split_off(split_pos);
-            let prefix_value = std::mem::replace(&mut child.value, suffix_value);
+            let mut prefix_value = std::mem::replace(&mut child.value, suffix_value);
+            // The short prefix must not retain the original edge's allocation.
+            prefix_key.shrink_to_fit();
+            prefix_value.shrink_to_fit();
             let suffix_ck = child.key[0];
             (
                 child_parent,
@@ -1261,6 +1284,33 @@ mod tests {
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 5);
         cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[10, 20, 30, 40, 50, 60, 70, 80]);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
+    }
+
+    #[test]
+    fn repeated_prefix_splits_keep_retained_capacity_proportional_to_live_pages() {
+        let mut cache = RadixCache::new(512, 1);
+        let tokens: Vec<u32> = (0..512).collect();
+        let indices: Vec<usize> = (0..512).collect();
+        cache.insert(&tokens, &indices);
+
+        for prefix_len in (1..512).step_by(4) {
+            assert_eq!(cache.match_prefix(&tokens[..prefix_len]).0, prefix_len);
+        }
+        assert_eq!(cache.match_prefix(&tokens).0, tokens.len());
+
+        // Repeated splits must not leave each short prefix holding a copy of
+        // the original edge's capacity. Allow allocator slack, not exact sizes.
+        let (key_capacity, page_capacity) = cache.nodes.values().fold((0, 0), |sum, node| {
+            (sum.0 + node.key.capacity(), sum.1 + node.value.capacity())
+        });
+        assert!(
+            key_capacity <= 2 * tokens.len(),
+            "retained key capacity: {key_capacity}"
+        );
+        assert!(
+            page_capacity <= 2 * tokens.len(),
+            "retained page capacity: {page_capacity}"
+        );
     }
 
     #[test]

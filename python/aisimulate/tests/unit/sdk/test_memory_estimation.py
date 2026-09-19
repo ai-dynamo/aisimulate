@@ -5,7 +5,7 @@
 
 Exercises the naive-fallback math (MLA-aware per-token KV, rough weight estimate,
 80%-of-post-weight reservation, default constants) and the OfFree/OfTotal native
-budget formulas. ``sdk.memory`` imports the compiled ``aiconfigurator_core``
+budget formulas. ``sdk.memory`` imports the compiled ``aisimulate_core``
 extension at module top, so these tests are skipped (``pytest.importorskip``)
 when it is not built. The native budget math is tested with a synthetic breakdown
 (no perf DB / model build), and the routing in ``estimate_kv_cache`` is driven by
@@ -23,14 +23,14 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-# ``sdk.memory`` imports the compiled ``aiconfigurator_core`` extension at module
+# ``sdk.memory`` imports the compiled ``aisimulate_core`` extension at module
 # top, so these pure-Python tests require it to be importable. Skip them when it
 # is not built rather than stubbing ``sys.modules`` — a stub would leak to other
 # test modules in the same xdist worker and break tests that use the real
 # extension (e.g. the FPM pyclass).
-pytest.importorskip("aiconfigurator_core")
+pytest.importorskip("aisimulate_core")
 
-from aiconfigurator.sdk import memory
+from aisimulate.sdk import memory
 
 _GIB = 1 << 30
 
@@ -230,6 +230,7 @@ def test_breakdown_applies_nextn_to_model_config(monkeypatch):
 
     class _StubDB:
         def __init__(self):
+            self.version = "1.3.0rc20"
             self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
 
     monkeypatch.setattr(memory, "get_model", _fake_get_model)
@@ -278,6 +279,7 @@ def test_breakdown_accepts_nextn_without_acceptance_field(monkeypatch):
 
     class _StubDB:
         def __init__(self):
+            self.version = "1.3.0rc20"
             self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
 
     monkeypatch.setattr(memory, "get_model", _fake_get_model)
@@ -307,6 +309,10 @@ def test_prefill_workspace_respects_backend_kv_pool(monkeypatch, backend, extra_
 
         def get_kvcache_max_tokens(self, budget):
             return int(budget // 1024)
+
+        def get_kvcache_batch_capacity(self, budget, max_batch_size):
+            assert max_batch_size == 128
+            return self.get_kvcache_max_tokens(budget)
 
     class Backend:
         def _get_memory_usage(self, *args, num_tokens, **kwargs):

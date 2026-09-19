@@ -6,7 +6,7 @@
 import pytest
 import yaml
 
-from aiconfigurator.generator.rendering.engine import render_backend_templates
+from aisimulate.generator.rendering.engine import render_backend_templates
 
 
 @pytest.mark.unit

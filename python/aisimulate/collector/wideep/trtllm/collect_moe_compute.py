@@ -17,7 +17,7 @@ distribution suffix — both flow into the unified table unchanged, exactly as
 
 Emits the unified ``moe_expert_compute_perf`` rows (one table, ``inference_phase``
 column) consumed by
-``aiconfigurator_core.sdk.operations.moe_comm.load_moe_expert_compute_data``.
+``aisimulate_core.sdk.operations.moe_comm.load_moe_expert_compute_data``.
 """
 
 import gc

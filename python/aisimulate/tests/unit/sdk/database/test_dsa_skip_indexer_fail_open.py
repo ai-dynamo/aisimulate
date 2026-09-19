@@ -22,7 +22,7 @@ degradation keys off.
 
 import pytest
 
-from aiconfigurator.sdk.operations.dsa import ContextDSAModule, GenerationDSAModule
+from aisimulate.sdk.operations.dsa import ContextDSAModule, GenerationDSAModule
 
 pytestmark = pytest.mark.unit
 
@@ -41,7 +41,7 @@ pytestmark = pytest.mark.unit
 )
 def test_shipped_skip_row_availability(system, backend, version, expect_skip_rows):
     """Pins the shipped skip-row availability the engine degradation keys off."""
-    from aiconfigurator_core.sdk.perf_database import get_database
+    from aisimulate_core.sdk.perf_database import get_database
 
     db = get_database(system, backend, version)
     ContextDSAModule.load_data(db)

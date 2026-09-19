@@ -127,7 +127,7 @@ def test_native_replay_samples_conditional_progress_per_verification(mode):
 
 
 def test_native_aic_compiles_ngram_cost_without_mtp_draft_layers(monkeypatch):
-    from aiconfigurator_core.sdk import engine
+    from aisimulate_core.sdk import engine
 
     calls = []
     original = engine.compile_engine
@@ -156,7 +156,7 @@ def test_native_aic_compiles_ngram_cost_without_mtp_draft_layers(monkeypatch):
 
 
 def test_canonical_estimator_round_trip_preserves_prompt_lookup_cost():
-    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
     config = ForwardPassPerfModelConfig(
         model="meta-llama/Meta-Llama-3.1-8B",
@@ -180,7 +180,7 @@ def test_canonical_estimator_round_trip_preserves_prompt_lookup_cost():
 
 @pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
 def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
-    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
     with pytest.raises(ValueError, match="ngram speculation requires op_level timing"):
         RustForwardPassPerfModel.best_available(
@@ -295,7 +295,7 @@ def test_ngram_sweeper_ignores_inactive_roles_until_selected(mode, inactive_role
 
 
 def test_generator_does_not_silently_drop_prompt_lookup():
-    from aiconfigurator.generator.request import SweeperCandidateError, from_sweeper_candidate
+    from aisimulate.generator.request import SweeperCandidateError, from_sweeper_candidate
 
     with pytest.raises(SweeperCandidateError, match="ngram deployment generation is unsupported"):
         from_sweeper_candidate({"config": {"speculation": _SPEC}})
@@ -342,3 +342,10 @@ def test_online_prediction_rejects_ngram():
     config = CorePredictionConfig.model_validate(_prediction())
     with pytest.raises(ValueError, match="offline engine stack"):
         prediction_to_replay_spec(config, execution_mode="online")
+
+
+def test_ngram_rejects_mtp_combination_before_compilation():
+    raw = _prediction(timing="default")
+    raw["engine"].update(nextn=2, nextn_accepted=1)
+    with pytest.raises(ValidationError, match="speculation cannot be combined with nextn"):
+        CorePredictionConfig.model_validate(raw)

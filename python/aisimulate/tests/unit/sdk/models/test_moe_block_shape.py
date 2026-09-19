@@ -4,7 +4,7 @@
 """Unit tests for MoEBlockShape and the derived MoE fields in ``_get_model_info``.
 
 The expectations are pinned against the shipped HF ``config.json`` fixtures in
-``aiconfigurator_core/model_configs`` (loaded by model path, same as the other
+``aisimulate_core/model_configs`` (loaded by model path, same as the other
 model-config tests). DeepSeek-R1 is the parity oracle: 61 hidden layers with
 ``first_k_dense_replace=3`` and ``n_shared_experts=1`` must derive to 58 MoE
 layers and 1 shared expert.
@@ -14,11 +14,11 @@ import dataclasses
 
 import pytest
 
-from aiconfigurator.sdk.config_builders import build_model_config
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.models.blocks import MoEBlockShape
-from aiconfigurator.sdk.models.helpers import _derive_num_moe_layers, _get_model_info
-from aiconfigurator.sdk.utils import get_model_config_from_model_path
+from aisimulate.sdk.config_builders import build_model_config
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.models.blocks import MoEBlockShape
+from aisimulate.sdk.models.helpers import _derive_num_moe_layers, _get_model_info
+from aisimulate.sdk.utils import get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 

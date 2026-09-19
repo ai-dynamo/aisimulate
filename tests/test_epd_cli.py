@@ -84,6 +84,27 @@ def _recommendation(mode="aggregated"):
     return raw
 
 
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_epd_language_policy_normalizes_only_equivalent_default(mode):
+    from aisimulate.config.epd import _language_execution
+
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(mode)))
+    expected = _language_execution(spec)
+    legacy = deepcopy(spec)
+    deployment = legacy.backend_deployment
+    arguments = (
+        [deployment.agg_engine_args]
+        if mode == "aggregated"
+        else [deployment.prefill_engine_args, deployment.decode_engine_args]
+    )
+    for args in arguments:
+        assert args.pop("aic_database_mode") == "SILICON"
+    assert _language_execution(legacy) == expected
+    # A genuinely different estimator policy must still reject a callback.
+    arguments[0]["aic_database_mode"] = "SOL"
+    assert _language_execution(legacy) != expected
+
+
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated", "heterogeneous"])
 @pytest.mark.parametrize("relative_stop", [False, True])
 def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_stop):
@@ -386,8 +407,8 @@ def test_epd_callback_preserves_equivalent_defaults_and_stops(mode, inferred_cap
 @pytest.mark.parametrize("backends", [["sglang", "vllm"], ["vllm", "sglang"], ["vllm"]])
 @pytest.mark.parametrize("absence", ["database", "version"])
 def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, backends, absence):
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.sweeper import kv_estimate
+    from aisimulate_core.sdk import perf_database
 
     original_database = perf_database.get_database_view
     original_version = kv_estimate.get_latest_database_version

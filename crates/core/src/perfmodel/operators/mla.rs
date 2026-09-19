@@ -4,7 +4,7 @@
 //! MLA operators: op-level context/generation, module-level
 //! context/generation, and MLA BMM (pre/post).
 //!
-//! Mirrors `aiconfigurator.sdk.operations.mla.{ContextMLA, GenerationMLA,
+//! Mirrors `aisimulate.sdk.operations.mla.{ContextMLA, GenerationMLA,
 //! MLAModule, MLABmm}`. Op-level paths apply Python's prefix-correction
 //! multiplier inside the mode dispatch (silicon branch only — the empirical
 //! branch's SOL carries prefix natively, exactly like Python's
@@ -52,7 +52,7 @@ pub struct ContextMlaOp {
     pub cp_size: u32,
     /// Decode context parallelism on the same engine: prefill with cached
     /// context all-gathers the other ranks' latent-KV stripes first. See
-    /// `ContextAttentionOp::dcp_size`. Defaults to 1; tail-appended (schema v19).
+    /// `ContextAttentionOp::dcp_size`. Defaults to 1; tail-appended (schema v20).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"
@@ -140,7 +140,7 @@ pub struct GenerationMlaOp {
     /// `num_heads * dcp` query heads (the DCP group's gathered queries) over
     /// this rank's `ceil(s / dcp)` latent-KV stripe. See
     /// [`GenerationAttentionOp::dcp_size`](crate::operators::GenerationAttentionOp).
-    /// Defaults to 1; appended at the struct tail (schema v19).
+    /// Defaults to 1; appended at the struct tail (schema v20).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"
@@ -194,7 +194,7 @@ pub struct MlaModuleOp {
     /// the fused decode module prices `num_heads * dcp` gathered heads over
     /// this rank's `ceil(s / dcp)` latent-KV stripe (the module's projection
     /// GEMMs stay rank-local: the frameworks shard those by TP and gather
-    /// the query afterwards). Defaults to 1; tail-appended (schema v19).
+    /// the query afterwards). Defaults to 1; tail-appended (schema v20).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"
@@ -929,7 +929,7 @@ mod tests {
     fn b200_vllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load")
     }
 
@@ -953,7 +953,7 @@ mod tests {
     fn gb200_trtllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems");
+            .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "gb200", "trtllm", "1.3.0rc20").expect("db must load")
     }
 

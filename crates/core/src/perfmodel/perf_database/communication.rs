@@ -4,7 +4,7 @@
 //! Communication perf tables: custom_allreduce + NCCL + OneCCL.
 //!
 //! Mirrors the SILICON paths of
-//! `aiconfigurator.sdk.operations.communication.{CustomAllReduce, NCCL}._query_*_table`.
+//! `aisimulate.sdk.operations.communication.{CustomAllReduce, NCCL}._query_*_table`.
 //! P2P latency is computed analytically by the operator layer from
 //! `SystemSpec` fields, not from a CSV, so there's no `P2PTable` here.
 //!
@@ -647,7 +647,7 @@ mod tests {
     fn systems_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems")
+            .join("python/aisimulate/src/aisimulate_core/systems")
     }
 
     fn b200_vllm_data_root() -> PathBuf {
@@ -1154,10 +1154,10 @@ mod tests {
     ///
     /// ```text
     /// PYTHONPATH=src python3 -c "
-    /// from aiconfigurator.sdk.perf_database import PerfDatabase
-    /// from aiconfigurator.sdk import common
+    /// from aisimulate.sdk.perf_database import PerfDatabase
+    /// from aisimulate.sdk import common
     /// db = PerfDatabase('b200_sxm','vllm','0.19.0',
-    ///                   systems_root='python/aisimulate/src/aiconfigurator_core/systems', database_mode='SOL')
+    ///                   systems_root='python/aisimulate/src/aisimulate_core/systems', database_mode='SOL')
     /// for msg in [384, 1073741824, 64]:
     ///     r = db.query_nccl(common.CommQuantMode.half, 8, 'all_gather', msg,
     ///                       database_mode=common.DatabaseMode.SILICON)

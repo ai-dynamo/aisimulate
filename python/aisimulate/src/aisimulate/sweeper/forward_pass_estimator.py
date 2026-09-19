@@ -9,12 +9,12 @@ import json
 from copy import deepcopy
 from typing import Any
 
-from aiconfigurator_core.sdk import (
+from aisimulate_core.sdk import (
     ForwardPassPerfModelConfig,
     RustForwardPassPerfModel,
 )
 
-from .config import SearchSpace
+from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .deploy import _role_hardware_sku
 from .replay import ForwardPassEstimatorSpec
 
@@ -26,7 +26,7 @@ class ForwardPassEstimatorResolutionError(ValueError):
 def resolve_systems_paths(configured: list[str] | None) -> tuple[str, ...]:
     """Expand and validate request-scoped system roots without setting globals."""
 
-    from aiconfigurator_core.sdk.rust_engine_step import _resolve_forward_pass_systems_paths
+    from aisimulate_core.sdk.rust_engine_step import _resolve_forward_pass_systems_paths
 
     return tuple(_resolve_forward_pass_systems_paths(tuple(configured or ())))
 
@@ -86,6 +86,7 @@ class ForwardPassEstimatorResolver:
             cp_size=cp_size if cp_size != 1 else None,
             dcp_size=dcp_size if dcp_size != 1 else None,
             nextn=int(nextn or 0),
+            **{name: getattr(self._search_space, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
             speculation=self._search_space.speculation.cost_config()
             if self._search_space.speculation is not None
             else None,
@@ -154,6 +155,7 @@ class ForwardPassEstimatorResolver:
             "speculation",
             "kv_block_size",
             "worker_type",
+            *ENGINE_MODEL_CONTROL_FIELDS,
         ):
             if resolved_config.get(field) != request_payload.get(field):
                 raise ForwardPassEstimatorResolutionError(

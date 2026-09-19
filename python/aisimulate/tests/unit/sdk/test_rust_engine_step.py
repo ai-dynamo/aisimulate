@@ -12,9 +12,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.sdk import common, rust_engine_step
-from aiconfigurator.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator.sdk.performance_result import MoECommFallback
+from aisimulate.sdk import common, rust_engine_step
+from aisimulate.sdk.config import ModelConfig, RuntimeConfig
+from aisimulate.sdk.performance_result import MoECommFallback
 
 pytestmark = pytest.mark.unit
 
@@ -25,7 +25,7 @@ _GENERATION_FALLBACK = MoECommFallback(*_GENERATION_FALLBACK_PAYLOAD)
 
 
 def _regression_model(cls, worker_type, options=None):
-    import aiconfigurator_core
+    import aisimulate_core
 
     config = {
         "model": "test/model",
@@ -36,7 +36,7 @@ def _regression_model(cls, worker_type, options=None):
     }
     if options is not None:
         config["estimator_config"] = json.loads(
-            aiconfigurator_core.RustForwardPassPerfModel.legacy_estimator_config(
+            aisimulate_core.RustForwardPassPerfModel.legacy_estimator_config(
                 rust_engine_step._optional_json_dumps(options)
             )
         )
@@ -44,13 +44,13 @@ def _regression_model(cls, worker_type, options=None):
 
 
 def _native_model(cls, config, options=None):
-    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
     return cls.best_available(ForwardPassPerfModelConfig.from_legacy_engine_config(config, "aggregated", options))
 
 
 def _best_model(cls, config, worker_type, options=None):
-    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
     return cls.best_available(
         ForwardPassPerfModelConfig.from_legacy_engine_config(config, worker_type, options, allow_regression=True)
@@ -95,7 +95,7 @@ def _real_database():
     """A real ``PerfDatabase`` instance (loader bypassed): default routing
     requires the real type — synthetic database doubles delegate to the
     Python step."""
-    from aiconfigurator_core.sdk.perf_database import PerfDatabase
+    from aisimulate_core.sdk.perf_database import PerfDatabase
 
     database = PerfDatabase.__new__(PerfDatabase)
     database.system = "routing_probe"
@@ -132,8 +132,8 @@ def _handle_cache_harness(monkeypatch):
     stubbed at its import sources: models compile to sentinel handles (or an
     ``OpConversionError`` when ``model.fail``), so cache-hit recency, negative
     entries, and eviction are exercised through the production code path."""
-    import aiconfigurator_core
-    from aiconfigurator_core.sdk import engine as core_engine
+    import aisimulate_core
+    from aisimulate_core.sdk import engine as core_engine
 
     monkeypatch.setattr(rust_engine_step, "_ENGINE_HANDLE_CACHE", OrderedDict())
     monkeypatch.setattr(rust_engine_step, "_ENGINE_HANDLE_CACHE_MAX", 2)
@@ -154,7 +154,7 @@ def _handle_cache_harness(monkeypatch):
 
     monkeypatch.setattr(core_engine, "build_engine_spec_json", fake_build)
     monkeypatch.setattr(core_engine, "EngineHandle", _FakeHandle)
-    monkeypatch.setattr(aiconfigurator_core, "engine_spec_bincode_from_json", lambda spec: b"")
+    monkeypatch.setattr(aisimulate_core, "engine_spec_bincode_from_json", lambda spec: b"")
 
     def model(key: str, *, fail: bool = False) -> SimpleNamespace:
         return SimpleNamespace(key=key, model_path=key, _nextn=None, fail=fail)
@@ -201,7 +201,7 @@ def test_cached_engine_handle_negative_entries_raise_fresh_errors(_handle_cache_
 
 
 def test_clear_all_op_caches_drops_engine_handles(_handle_cache_harness) -> None:
-    from aiconfigurator.sdk.operations import clear_all_op_caches
+    from aisimulate.sdk.operations import clear_all_op_caches
 
     model, database, compiles = _handle_cache_harness
     rust_engine_step._cached_engine_handle(model("a"), database)
@@ -216,7 +216,7 @@ def test_cached_engine_handle_mirrors_database_systems_root(_handle_cache_harnes
     paired database actually matched (multi-root ``--systems-paths``), not the
     process-wide env default; the env is only the fallback for duck-typed
     databases without a ``systems_root``."""
-    from aiconfigurator_core.sdk import engine as core_engine
+    from aisimulate_core.sdk import engine as core_engine
 
     model, database, compiles = _handle_cache_harness
     captured: list = []
@@ -654,7 +654,7 @@ def test_evaluate_op_helpers_forward_args_and_return_entries_verbatim(monkeypatc
 
 @pytest.mark.parametrize("tier", [None, "silicon", "xop"])
 def test_attention_kernel_helper_forwards_provenance(monkeypatch, tier) -> None:
-    from aiconfigurator.sdk.operations import util_empirical
+    from aisimulate.sdk.operations import util_empirical
 
     handle = SimpleNamespace(
         evaluate_context_attention_kernels_json=lambda *args, **kwargs: [],
@@ -675,7 +675,7 @@ def test_rust_provenance_tier_forwarded_into_python_capture(monkeypatch) -> None
     empirical provenance tier into Python's ``capture_provenance`` (used by
     the support matrix to label HYBRID_PASS rows). Silicon answers
     (``last_provenance() is None`` or ``"silicon"``) record nothing."""
-    from aiconfigurator.sdk.operations import util_empirical
+    from aisimulate.sdk.operations import util_empirical
 
     class _FakeHandle:
         def __init__(self, tier):
@@ -896,7 +896,7 @@ def test_forward_pass_perf_model_regression_stores_end_to_end() -> None:
 
 
 def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch) -> None:
-    import aiconfigurator_core
+    import aisimulate_core
 
     calls = []
 
@@ -906,7 +906,7 @@ def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch) -> 
             calls.append(json.loads(config_json))
             return object()
 
-    monkeypatch.setattr(aiconfigurator_core, "RustForwardPassPerfModel", RawModel)
+    monkeypatch.setattr(aisimulate_core, "RustForwardPassPerfModel", RawModel)
     payload = {
         "model": "test",
         "system": "test",
@@ -927,12 +927,12 @@ def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch) -> 
 
 
 def test_forward_pass_config_carries_context_parallel_knobs_through_rust_normalization() -> None:
-    import aiconfigurator_core
-    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+    import aisimulate_core
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
     plain = ForwardPassPerfModelConfig(model="m", system="s", backend="vllm", worker_type="decode")
     assert (plain.cp_size, plain.dcp_size) == (None, None)
-    normalized = json.loads(aiconfigurator_core.RustForwardPassPerfModel.normalize_config(json.dumps(plain.to_dict())))
+    normalized = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(plain.to_dict())))
     # Unset knobs never enter the serialized identity (pre-CP configs stay byte-identical).
     assert "cp_size" not in normalized and "dcp_size" not in normalized
 
@@ -941,12 +941,12 @@ def test_forward_pass_config_carries_context_parallel_knobs_through_rust_normali
     )
     payload = striped.to_dict()
     assert (payload["cp_size"], payload["dcp_size"]) == (2, 4)
-    normalized = json.loads(aiconfigurator_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
+    normalized = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
     assert (normalized["cp_size"], normalized["dcp_size"]) == (2, 4)
 
 
 def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
-    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
     with pytest.raises(TypeError, match="worker_type"):
         ForwardPassPerfModelConfig(model="m", system="s", backend="vllm")
@@ -1000,8 +1000,8 @@ def _supported_fpm_validation_config() -> dict[str, object]:
 @pytest.mark.integration
 def test_nemotron_super_fp8_native_estimation_uses_packaged_moe_data() -> None:
     """Issue #1522: the exact deployed MoE key must estimate successfully."""
-    pytest.importorskip("aiconfigurator_core")
-    from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
+    pytest.importorskip("aisimulate_core")
+    from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
     model = _native_model(
         RustForwardPassPerfModel,
@@ -1073,10 +1073,10 @@ def test_forward_pass_perf_model_native_default_directional_bounds_end_to_end() 
     Builds a native model via ``compile_engine`` (crossing into the Rust core),
     estimates a prefill iteration, then drives one correction bucket through
     its slower ceiling, faster floor, and recovery between them. Requires the
-    compiled ``aiconfigurator_core`` extension.
+    compiled ``aisimulate_core`` extension.
     """
-    pytest.importorskip("aiconfigurator_core")
-    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+    pytest.importorskip("aisimulate_core")
+    from aisimulate.sdk.rust_engine_step import RustForwardPassPerfModel
 
     config = _supported_fpm_config()
     model = _native_model(
@@ -1159,8 +1159,8 @@ def test_forward_pass_perf_model_native_default_directional_bounds_end_to_end() 
 def test_forward_pass_perf_model_best_available_falls_back_on_bad_config() -> None:
     """``best_available`` falls back to regression when the native engine cannot
     be compiled (an unknown model), recording the reason in diagnostics."""
-    pytest.importorskip("aiconfigurator_core")
-    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+    pytest.importorskip("aisimulate_core")
+    from aisimulate.sdk.rust_engine_step import RustForwardPassPerfModel
 
     config = _unsupported_fpm_config()
     model = _best_model(
@@ -1193,10 +1193,10 @@ def test_forward_pass_perf_model_best_available_falls_back_on_bad_config() -> No
 
 
 @pytest.mark.integration
-def test_best_available_falls_back_on_malformed_system_yaml(tmp_path: Path) -> None:
-    """Malformed system specs are native-data failures, not hard config errors."""
-    pytest.importorskip("aiconfigurator_core")
-    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+def test_best_available_rejects_malformed_system_yaml(tmp_path: Path) -> None:
+    """Corrupt system specs must not be treated as missing estimator coverage."""
+    pytest.importorskip("aisimulate_core")
+    from aisimulate.sdk.rust_engine_step import RustForwardPassPerfModel
 
     systems_root = tmp_path / "systems"
     systems_root.mkdir()
@@ -1204,19 +1204,16 @@ def test_best_available_falls_back_on_malformed_system_yaml(tmp_path: Path) -> N
     config = _supported_fpm_config()
     config.update(system_name="broken", systems_path=str(systems_root))
 
-    model = _best_model(RustForwardPassPerfModel, config, "aggregated")
-    diagnostics = model.diagnostics()
-
-    assert diagnostics["source"] == "fallback_regression"
-    assert "YAML error" in diagnostics["last_warning"]
+    with pytest.raises(ValueError, match=r"YAML error.*broken\.yaml"):
+        _best_model(RustForwardPassPerfModel, config, "aggregated")
 
 
 @pytest.mark.integration
 def test_malformed_performance_yaml_remains_a_perf_database_failure(tmp_path: Path) -> None:
     """Performance-side YAML keeps its typed error and remains fallback-safe."""
-    pytest.importorskip("aiconfigurator_core")
-    from aiconfigurator.sdk.errors import PerfDataNotAvailableError
-    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+    pytest.importorskip("aisimulate_core")
+    from aisimulate.sdk.errors import PerfDataNotAvailableError
+    from aisimulate.sdk.rust_engine_step import RustForwardPassPerfModel
 
     systems_root = tmp_path / "systems"
     systems_root.mkdir()
@@ -1246,8 +1243,8 @@ def test_malformed_performance_yaml_remains_a_perf_database_failure(tmp_path: Pa
 @pytest.mark.integration
 def test_best_available_validates_regression_weights_only_after_fallback() -> None:
     """Regression-only knobs and worker semantics apply only if native AIC is unavailable."""
-    pytest.importorskip("aiconfigurator_core")
-    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+    pytest.importorskip("aisimulate_core")
+    from aisimulate.sdk.rust_engine_step import RustForwardPassPerfModel
 
     invalid_regression_options = {"regression_attention_kv_weight": 0.0}
     decode_fpm = {
@@ -1280,8 +1277,8 @@ def test_best_available_validates_regression_weights_only_after_fallback() -> No
 @pytest.mark.integration
 def test_native_constructors_ignore_all_nonfinite_regression_weights() -> None:
     """Nonfinite regression-only knobs must not block either successful Native path."""
-    pytest.importorskip("aiconfigurator_core")
-    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+    pytest.importorskip("aisimulate_core")
+    from aisimulate.sdk.rust_engine_step import RustForwardPassPerfModel
 
     options = {
         "regression_attention_kv_weight": float("nan"),
@@ -1311,8 +1308,8 @@ def test_regression_constructors_decode_and_reject_nonfinite_weight_sentinels(
     value: float,
 ) -> None:
     """Strict and fallback Regression retain their field-specific validation errors."""
-    pytest.importorskip("aiconfigurator_core")
-    from aiconfigurator.sdk.rust_engine_step import RustForwardPassPerfModel
+    pytest.importorskip("aisimulate_core")
+    from aisimulate.sdk.rust_engine_step import RustForwardPassPerfModel
 
     options = {field: value}
     with pytest.raises(ValueError, match=field):
@@ -1333,8 +1330,8 @@ def test_sparse_cp_ops_emit_cp_fields_in_spec():
     sparse tables exist and fail loud identically when they don't -- logical
     parity does not wait for data. Since the pyo3 op unification the op
     serializes ITSELF (`_spec_json`); the pin now reads the real wire."""
-    from aiconfigurator.sdk import common
-    from aiconfigurator.sdk.operations import ContextDeepSeekV4AttentionModule
+    from aisimulate.sdk import common
+    from aisimulate.sdk.operations import ContextDeepSeekV4AttentionModule
 
     op = ContextDeepSeekV4AttentionModule(
         "context_attention",
@@ -1370,7 +1367,7 @@ def test_engine_config_json_identity_disambiguates_collapsed_quant_modes():
     -> "int8") or an identity-omitted ModelConfig field (moe_backend) must get
     DISTINCT handle-cache keys — sharing one cached handle silently returns
     the other model's latencies."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     def _model(gemm_mode, moe_backend=None):
         cfg = SimpleNamespace(
@@ -1417,7 +1414,7 @@ def test_engine_config_json_identity_includes_database_policy():
     ``perf_db_sources`` into the compiled handle, so aliasing them makes the
     reuse-aware behavior call-order-dependent (whichever view warms the cache
     answers — or fails — for the other)."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     def _model():
         cfg = SimpleNamespace(
@@ -1469,8 +1466,8 @@ def test_op_conversion_error_raises_typed_and_memoized(monkeypatch):
     coverage tripwire keeps it unreachable for shipped op-level models.)"""
     import pytest
 
-    from aiconfigurator.sdk.engine import OpConversionError
-    from aiconfigurator.sdk.rust_engine_step import RustEngineUnsupportedError
+    from aisimulate.sdk.engine import OpConversionError
+    from aisimulate.sdk.rust_engine_step import RustEngineUnsupportedError
 
     calls = {"n": 0}
 
@@ -1478,7 +1475,7 @@ def test_op_conversion_error_raises_typed_and_memoized(monkeypatch):
         calls["n"] += 1
         raise OpConversionError("unsupported op: ContextMSAModule")
 
-    monkeypatch.setattr("aiconfigurator.sdk.engine.build_engine_spec_json", _raise_conversion)
+    monkeypatch.setattr("aisimulate.sdk.engine.build_engine_spec_json", _raise_conversion)
     rust_engine_step._engine_handle_cache_clear()
 
     model = _dense_model()
@@ -1499,8 +1496,8 @@ def test_wideep_mla_spec_emits_per_rank_heads_not_tp():
     must apply the same conversion — emitting raw tp_size makes the engine
     query the wrong table slice (tp=8 would read the heads=8 extrapolation
     instead of heads=16)."""
-    from aiconfigurator.sdk import common
-    from aiconfigurator.sdk.operations import WideEPContextMLA, WideEPGenerationMLA
+    from aisimulate.sdk import common
+    from aisimulate.sdk.operations import WideEPContextMLA, WideEPGenerationMLA
 
     ctx = WideEPContextMLA("context_attention", 1.0, 8, common.KVCacheQuantMode.fp8, common.FMHAQuantMode.fp8_block)
     gen = WideEPGenerationMLA(
@@ -1514,7 +1511,7 @@ def test_wideep_mla_spec_emits_per_rank_heads_not_tp():
 
 # ---- Large-EP op graphs: native compilation (AIC-1601, PR 2.5) ----
 
-_SYSTEMS_DATA_ROOT = Path(__file__).resolve().parents[3] / "aic-core/src/aiconfigurator_core/systems/data"
+_SYSTEMS_DATA_ROOT = Path(__file__).resolve().parents[3] / "src/aisimulate_core/systems/data"
 
 
 def test_large_ep_opspec_key_sets_match_the_rust_structs():
@@ -1525,7 +1522,7 @@ def test_large_ep_opspec_key_sets_match_the_rust_structs():
     field sets exactly — source of truth:
     ``rust/aiconfigurator-core/src/operators/moe_a2a.rs::MoeAllToAllOp`` and
     ``rust/aiconfigurator-core/src/operators/moe_expert_compute.rs::MoeExpertComputeOp``."""
-    from aiconfigurator.sdk.operations import MoEAllToAll, MoEExpertCompute
+    from aisimulate.sdk.operations import MoEAllToAll, MoEExpertCompute
 
     a2a = MoEAllToAll(
         "context_moe_dispatch",
@@ -1626,10 +1623,10 @@ def test_large_ep_op_graph_compiles_natively(caplog):
     config."""
     import logging
 
-    from aiconfigurator.sdk.backends.factory import get_backend
-    from aiconfigurator.sdk.engine import build_engine_spec_json
-    from aiconfigurator.sdk.models import get_model
-    from aiconfigurator.sdk.perf_database import get_database
+    from aisimulate.sdk.backends.factory import get_backend
+    from aisimulate.sdk.engine import build_engine_spec_json
+    from aisimulate.sdk.models import get_model
+    from aisimulate.sdk.perf_database import get_database
 
     # A shipped-data large-EP config: DeepSeek-R1 EP32 on GB200/sglang. The
     # database resolver follows the approved moe-family reuse.yaml donors for
@@ -1734,11 +1731,11 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
     """
     import logging
 
-    from aiconfigurator.cli.api import cli_estimate
-    from aiconfigurator.cli.estimate_detail_report import format_estimate_detail_report
-    from aiconfigurator.cli.main import _run_estimate_mode
-    from aiconfigurator.sdk.models import get_model
-    from aiconfigurator.sdk.perf_database import get_database
+    from aisimulate.legacy_cli.api import cli_estimate
+    from aisimulate.legacy_cli.estimate_detail_report import format_estimate_detail_report
+    from aisimulate.legacy_cli.main import _run_estimate_mode
+    from aisimulate.sdk.models import get_model
+    from aisimulate.sdk.perf_database import get_database
 
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     rust_engine_step._engine_handle_cache_clear()
@@ -1750,7 +1747,7 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
             captured_results.append(result)
             return result
 
-        monkeypatch.setattr("aiconfigurator.cli.api.cli_estimate", _capture_real_estimate)
+        monkeypatch.setattr("aisimulate.legacy_cli.api.cli_estimate", _capture_real_estimate)
         args = cli_parser.parse_args(
             [
                 "estimate",
@@ -1792,7 +1789,7 @@ def test_shipped_gb200_ep32_node8_reports_executed_fallback_to_api_and_cli(cli_p
                 "fp8_block",
             ]
         )
-        with caplog.at_level(logging.WARNING, logger="aiconfigurator.cli.main"):
+        with caplog.at_level(logging.WARNING, logger="aisimulate.legacy_cli.main"):
             _run_estimate_mode(args)
         result = captured_results[0]
 
@@ -1891,8 +1888,8 @@ def test_every_selectable_database_mode_routes_to_rust():
     database mode at all."""
     from enum import Enum
 
-    from aiconfigurator.sdk.config import RuntimeConfig
-    from aiconfigurator.sdk.rust_engine_step import should_use_rust_engine_step
+    from aisimulate.sdk.config import RuntimeConfig
+    from aisimulate.sdk.rust_engine_step import should_use_rust_engine_step
 
     class _Mode(Enum):
         SILICON = "SILICON"
@@ -1922,8 +1919,8 @@ def test_rust_perf_db_misses_translate_to_perf_data_not_available():
     PerfDataNotAvailableError so sweep.py can mark the point unanswerable
     instead of aborting the whole parallel config. Other ValueErrors pass
     through untouched."""
-    from aiconfigurator.sdk.errors import PerfDataNotAvailableError
-    from aiconfigurator_core.sdk.rust_engine_step import _reraise_engine_error
+    from aisimulate.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.rust_engine_step import _reraise_engine_error
 
     miss = ValueError(
         "perf database error: FPM decode query total_kv_read_tokens=4013448 is outside the collected domain"
@@ -1947,7 +1944,7 @@ def test_engine_handle_cache_key_distinguishes_raw_quant_identity():
     fp8_ootb -> "fp8", no comm axis at all)."""
     from types import SimpleNamespace
 
-    from aiconfigurator_core.sdk.rust_engine_step import _engine_config_json
+    from aisimulate_core.sdk.rust_engine_step import _engine_config_json
 
     def make(comm, gemm):
         config = SimpleNamespace(
@@ -1982,11 +1979,11 @@ def test_engine_handle_cache_key_distinguishes_raw_quant_identity():
 def test_python_step_fallback_telemetry_counts_and_warns_once(caplog) -> None:
     import logging
 
-    from aiconfigurator_core.sdk import rust_engine_step as res
+    from aisimulate_core.sdk import rust_engine_step as res
 
     res._python_step_fallback_reset()
     try:
-        with caplog.at_level(logging.DEBUG, logger="aiconfigurator_core.sdk.rust_engine_step"):
+        with caplog.at_level(logging.DEBUG, logger="aisimulate_core.sdk.rust_engine_step"):
             res.note_python_step_fallback("non_perf_database", "SimpleNamespace")
             res.note_python_step_fallback("non_perf_database", "SimpleNamespace")
             res.note_python_step_fallback("unsupported_op_graph:afd", "no OpSpec conversion")
@@ -2014,10 +2011,10 @@ def test_default_config_wideep_mla_spec_survives_the_real_bincode_decode():
     round-trip through the REAL extension — a monkeypatched stub is
     structurally blind to payload types.
     """
-    import aiconfigurator_core
-    from aiconfigurator.sdk import common, engine
-    from aiconfigurator.sdk import config as sdk_config
-    from aiconfigurator.sdk.operations.mla import WideEPContextMLA, WideEPGenerationMLA
+    import aisimulate_core
+    from aisimulate.sdk import common, engine
+    from aisimulate.sdk import config as sdk_config
+    from aisimulate.sdk.operations.mla import WideEPContextMLA, WideEPGenerationMLA
 
     cfg = sdk_config.ModelConfig(
         tp_size=8,
@@ -2056,7 +2053,7 @@ def test_default_config_wideep_mla_spec_survives_the_real_bincode_decode():
 
     # The JSON -> bincode conversion is NOT schema-gated (the version check lives
     # in `from_bincode`), so this exercises field validation on today's tree.
-    assert len(aiconfigurator_core.engine_spec_bincode_from_json(spec_json)) > 0
+    assert len(aisimulate_core.engine_spec_bincode_from_json(spec_json)) > 0
 
 
 def test_mixed_energy_coverage_keeps_missing_contributions_with_repeated_names(monkeypatch):
@@ -2107,7 +2104,7 @@ def test_decode_estimate_retains_energy_and_partial_coverage(monkeypatch):
 @pytest.mark.parametrize("entrypoint", ["_estimate_decode_step_with_rust", "estimate_decode_step_breakdown_with_rust"])
 @pytest.mark.parametrize("perf_miss", [True, False])
 def test_decode_energy_bridge_preserves_error_taxonomy(monkeypatch, entrypoint, perf_miss):
-    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
     error = ValueError("perf database error: missing data" if perf_miss else "invalid engine configuration")
 
@@ -2126,9 +2123,9 @@ def test_decode_energy_bridge_preserves_error_taxonomy(monkeypatch, entrypoint, 
 def test_canonical_native_selection_retries_roots_and_pins_effective_configuration(tmp_path):
     from importlib import resources
 
-    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-    packaged = str(resources.files("aiconfigurator_core") / "systems")
+    packaged = str(resources.files("aisimulate_core") / "systems")
     config = ForwardPassPerfModelConfig(
         model="Qwen/Qwen3-32B",
         system="h200_sxm",

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator_core.sdk.speculation import (
+from aisimulate_core.sdk.speculation import (
     NullScheme,
     SpecSchemeBase,
     SpeculationConfig,
@@ -20,10 +20,10 @@ pytestmark = pytest.mark.unit
 
 
 def test_registry_round_trip(monkeypatch):
-    from aiconfigurator_core.sdk.speculation.base import _SPEC_SCHEME_REGISTRY
+    from aisimulate_core.sdk.speculation.base import _SPEC_SCHEME_REGISTRY
 
     # Restore the full mapping, including any existing registration under the test key.
-    monkeypatch.setattr("aiconfigurator_core.sdk.speculation.base._SPEC_SCHEME_REGISTRY", dict(_SPEC_SCHEME_REGISTRY))
+    monkeypatch.setattr("aisimulate_core.sdk.speculation.base._SPEC_SCHEME_REGISTRY", dict(_SPEC_SCHEME_REGISTRY))
 
     @register_spec_scheme("_test_scheme")
     class _TestScheme(NullScheme):

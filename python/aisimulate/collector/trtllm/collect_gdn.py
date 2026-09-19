@@ -713,7 +713,6 @@ if __name__ == "__main__":
     import sys
 
     import tensorrt_llm
-
     from collector.registry_types import PerfFile
 
     print(f"GDN Collector - TensorRT-LLM {tensorrt_llm.__version__}")

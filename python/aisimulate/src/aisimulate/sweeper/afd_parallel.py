@@ -22,7 +22,7 @@ from typing import Any
 from .parallel_enum import ReplicaParallelConfig
 
 AFD_SCHEMA_VERSION = 1
-_LEGACY_SOURCE = "aiconfigurator.sdk.task_v2.build_afd_parallel_lists"
+_LEGACY_SOURCE = "aisimulate.sdk.task_v2.build_afd_parallel_lists"
 
 
 class AFDPhase(str, Enum):

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from aisimulate import aic
+from aisimulate import capacity as aic
 
 pytestmark = [
     pytest.mark.unit,
@@ -60,7 +60,7 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
         calls.append((args, kwargs))
         return 123
 
-    from aiconfigurator_core.sdk import memory
+    from aisimulate_core.sdk import memory
 
     monkeypatch.setattr(memory, "estimate_num_gpu_blocks", estimate)
     blocks = aic.estimate_num_gpu_blocks(

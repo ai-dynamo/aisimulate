@@ -18,13 +18,13 @@ an `auto` default.
 
 ## Public API
 
-Import the API from `aiconfigurator.sdk.config_adapter`:
+Import the API from `aisimulate.sdk.config_adapter`:
 
 ```python
 from pathlib import Path
 
-from aiconfigurator.cli.api import cli_estimate
-from aiconfigurator.sdk.config_adapter import (
+from aisimulate.legacy_cli.api import cli_estimate
+from aisimulate.sdk.config_adapter import (
     AdapterOverrides,
     DynamoRecipeSource,
     InferenceXSource,

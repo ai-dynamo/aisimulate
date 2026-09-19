@@ -7,11 +7,11 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator_core.sdk import common, models
-from aiconfigurator_core.sdk import config as sdk_config
-from aiconfigurator_core.sdk.config_builders import resolve_speculation
-from aiconfigurator_core.sdk.speculation import NullScheme, SpeculationConfig
-from aiconfigurator_core.sdk.speculation.mtp import MTPScheme
+from aisimulate_core.sdk import common, models
+from aisimulate_core.sdk import config as sdk_config
+from aisimulate_core.sdk.config_builders import resolve_speculation
+from aisimulate_core.sdk.speculation import NullScheme, SpeculationConfig
+from aisimulate_core.sdk.speculation.mtp import MTPScheme
 
 pytestmark = pytest.mark.unit
 
@@ -105,8 +105,8 @@ def test_explicit_mtp_depth_rejects_fractional_input(depth):
 
 
 def test_reused_legacy_config_can_enable_change_and_disable_mtp():
-    from aiconfigurator_core.sdk.config_builders import apply_nextn
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.config_builders import apply_nextn
+    from aisimulate_core.sdk.models import get_model
 
     cfg = _model_config(nextn=0)
     for depth in (0, 3, 2, 0, 1):
@@ -118,8 +118,8 @@ def test_reused_legacy_config_can_enable_change_and_disable_mtp():
 
 
 def test_reused_explicit_mtp_still_rejects_conflicting_legacy_depth():
-    from aiconfigurator_core.sdk.config_builders import apply_nextn
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.config_builders import apply_nextn
+    from aisimulate_core.sdk.models import get_model
 
     cfg = _model_config(speculation=SpeculationConfig(kind="mtp", params={"depth": 3}))
     assert get_model("Qwen/Qwen3-8B", cfg, "vllm")._nextn == 3

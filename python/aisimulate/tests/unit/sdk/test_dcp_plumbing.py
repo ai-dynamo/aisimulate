@@ -25,9 +25,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator_core.sdk import config
-from aiconfigurator_core.sdk.config_builders import build_model_config
-from aiconfigurator_core.sdk.models.base import BaseModel
+from aisimulate_core.sdk import config
+from aisimulate_core.sdk.config_builders import build_model_config
+from aisimulate_core.sdk.models.base import BaseModel
 
 pytestmark = pytest.mark.unit
 
@@ -89,7 +89,7 @@ def test_persistent_kv_divisor_is_dcp_not_prefill_cp():
 
 
 def test_get_model_gates_dcp_on_model_capability():
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.models import get_model
 
     # Dense GQA DCP is only modeled on vLLM (SGLang's GQA DCP lives in its
     # Triton backend), so the sglang request must fail loud.
@@ -110,7 +110,7 @@ def _generation_op_names(model) -> list[str]:
 def _decode_attention_ops(model):
     """``[(top-level container name, decode attention op)]`` incl. FallbackOp interiors."""
     # Core classes: FallbackOp interiors come back as bare core instances.
-    import aiconfigurator_core._aiconfigurator_core as core
+    import aisimulate_core._native as core
 
     kinds = (core.GenerationAttention, core.GenerationMLA, core.WideEPGenerationMLA, core.GenerationDSAModule)
 
@@ -126,7 +126,7 @@ def _decode_attention_ops(model):
 
 
 def _context_attention_ops(model):
-    import aiconfigurator_core._aiconfigurator_core as core
+    import aisimulate_core._native as core
 
     kinds = (core.ContextAttention, core.ContextMLA, core.ContextDSAModule)
 
@@ -146,7 +146,7 @@ def _context_attention_ops(model):
     [("sglang", "_dcp_out_all_to_all"), ("vllm", "_dcp_out_reduce_scatter")],
 )
 def test_deepseek_dcp_rewrites_decode_attention_and_adds_merge_collectives(backend, merge_suffix):
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.models import get_model
 
     model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=8)
     model = get_model("deepseek-ai/DeepSeek-V3", model_config, backend)
@@ -172,7 +172,7 @@ def test_deepseek_dcp_rewrites_decode_attention_and_adds_merge_collectives(backe
 
 
 def test_dcp_comm_override_selects_the_merge_collective():
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.models import get_model
 
     model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4, dcp_comm="a2a")
     model = get_model("deepseek-ai/DeepSeek-V3", model_config, "vllm")
@@ -182,7 +182,7 @@ def test_dcp_comm_override_selects_the_merge_collective():
 
 
 def test_dsa_dcp_rewrites_the_sparse_decode_module():
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.models import get_model
 
     model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=4)
     model = get_model("deepseek-ai/DeepSeek-V3.2", model_config, "sglang")
@@ -193,7 +193,7 @@ def test_dsa_dcp_rewrites_the_sparse_decode_module():
 
 
 def test_gqa_dcp_is_bounded_by_kv_head_replication():
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.models import get_model
 
     # Llama-3.1-70B: 8 kv heads. tp=16 replicates each kv head twice -> dcp<=2.
     ok = get_model(
@@ -217,7 +217,7 @@ def test_gqa_dcp_is_bounded_by_kv_head_replication():
 
 
 def test_fpm_forward_model_refuses_dcp_until_tables_carry_it():
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.models import get_model
 
     model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=8, forward_model="fpm")
     with pytest.raises(NotImplementedError, match="forward_model='fpm' has no decode-context-parallel cells"):
@@ -227,7 +227,7 @@ def test_fpm_forward_model_refuses_dcp_until_tables_carry_it():
 def test_get_model_records_the_backend_for_families_that_do_not():
     # The DCP merge collective defaults per backend (a2a on sglang); dense
     # families do not store backend_name themselves, so get_model must.
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.models import get_model
 
     for backend in ("vllm", "sglang"):
         model = get_model("meta-llama/Meta-Llama-3.1-70B", config.ModelConfig(tp_size=8), backend)
@@ -236,7 +236,7 @@ def test_get_model_records_the_backend_for_families_that_do_not():
 
 
 def test_dcp_one_leaves_the_decode_graph_untouched():
-    from aiconfigurator_core.sdk.models import get_model
+    from aisimulate_core.sdk.models import get_model
 
     model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1)
     model = get_model("deepseek-ai/DeepSeek-V3", model_config, "sglang")
@@ -245,7 +245,7 @@ def test_dcp_one_leaves_the_decode_graph_untouched():
 
 
 def test_engine_identity_includes_dcp_size():
-    from aiconfigurator_core.sdk.rust_engine_step import _engine_config_json
+    from aisimulate_core.sdk.rust_engine_step import _engine_config_json
 
     def make(dcp):
         cfg = SimpleNamespace(

@@ -4,15 +4,15 @@
 //! End-to-end KV-cache capacity round-trip.
 //!
 //! Drives the full Rust → Python → Rust capacity path: calls the top-level
-//! [`aiconfigurator_core::estimate_kv_cache`] (the **pure forwarder** the Dynamo
+//! [`aisimulate_core::estimate_kv_cache`] (the **pure forwarder** the Dynamo
 //! Mocker uses) for a real fixture model. That crosses into Python once to run
-//! `aiconfigurator.sdk.memory.estimate_kv_cache` (which owns the budget math AND
-//! the tolerance margin) and rebuilds a [`aiconfigurator_core::KvCacheEstimate`]
+//! `aisimulate.sdk.memory.estimate_kv_cache` (which owns the budget math AND
+//! the tolerance margin) and rebuilds a [`aisimulate_core::KvCacheEstimate`]
 //! from the returned dict.
 //!
 //! ## Why this test exists
 //!
-//! Removing the `aiconfigurator_core.estimate_kv_cache` `#[pyfunction]` removed
+//! Removing the `aisimulate_core.estimate_kv_cache` `#[pyfunction]` removed
 //! the only in-repo path that exercised the Rust `fetch_python_estimate`
 //! (forwarding `tolerance_fraction`) and `estimate_from_dict` (parsing
 //! `tolerance_adjusted`). This test restores that coverage: a typo in a forwarded
@@ -23,8 +23,8 @@
 //! ## Run requirements
 //!
 //! Same as `embedded_round_trip.rs`: an embedded Python interpreter that can
-//! import `aiconfigurator.sdk.memory` (which imports the maturin-built
-//! `aiconfigurator_core`), plus the perf DB (LFS) for the native SystemSpec
+//! import `aisimulate.sdk.memory` (which imports the maturin-built
+//! `aisimulate_core`), plus the perf DB (LFS) for the native SystemSpec
 //! capacity. Run after
 //! `uv run maturin develop -m crates/core/Cargo.toml --release --features extension-module`:
 //! ```text
@@ -57,10 +57,10 @@ const TEST_MODEL: &str = "Qwen/Qwen3-32B";
 const TOLERANCE: f64 = 0.05;
 
 /// Soft-skip guard: true only when the embedded interpreter can import
-/// `aiconfigurator.sdk.memory` (which transitively imports the maturin-built
-/// `aiconfigurator_core`).
+/// `aisimulate.sdk.memory` (which transitively imports the maturin-built
+/// `aisimulate_core`).
 fn python_memory_importable() -> bool {
-    Python::with_gil(|py| match py.import("aiconfigurator.sdk.memory") {
+    Python::with_gil(|py| match py.import("aisimulate.sdk.memory") {
         Ok(_) => true,
         Err(e) => {
             let exe: String = py
@@ -86,6 +86,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
             backend: BackendKind::Trtllm,
             backend_version: Some("1.3.0rc10".to_string()),
             forward_model: None,
+            decoder_replay: false,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 1,
@@ -131,12 +132,12 @@ fn memory_round_trip_forwards_tolerance_and_parses_adjusted() {
         assert!(
             !required,
             "memory_round_trip: AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but \
-             `aiconfigurator.sdk.memory` is not importable — run after \
+             `aisimulate.sdk.memory` is not importable — run after \
              `maturin develop` with PYTHONPATH including aic-core/src, the venv \
              site-packages, and src."
         );
         eprintln!(
-            "memory_round_trip: SKIP — `aiconfigurator.sdk.memory` not importable. \
+            "memory_round_trip: SKIP — `aisimulate.sdk.memory` not importable. \
              Set AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1 + PYTHONPATH to enforce."
         );
         return;

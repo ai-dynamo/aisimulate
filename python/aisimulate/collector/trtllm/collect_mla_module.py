@@ -461,7 +461,7 @@ def create_attention_layer(
     # get_config_dict()/ModelConfig.from_pretrained() through the trust_remote_code
     # path, whose ~/.cache/huggingface/modules/_remote_code.lock serializes the 8
     # parallel workers and caused mass file-lock Timeouts on the *_module ops. The
-    # bundled config (src/aiconfigurator/model_configs/) carries every dimension the
+    # bundled config (src/aisimulate_core/model_configs/) carries every dimension the
     # bare-layer build needs — including the sparse index_* fields read below — and
     # already omits both auto_map and the layer_types field, so this also makes the
     # GLM-5.2 layer_types shim a no-op for bundled models.

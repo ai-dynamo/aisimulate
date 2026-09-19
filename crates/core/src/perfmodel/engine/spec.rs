@@ -167,10 +167,11 @@ mod tests {
     use crate::operators::op::{FallbackOp, OverlapOp};
     use crate::operators::{
         ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp,
-        Dsv4ModuleOp, ElementwiseOp, EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp,
-        GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp,
-        MlaModuleOp, MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp, P2POp,
-        VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
+        Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp,
+        ElementwiseOp, EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp, GenerationAttentionOp,
+        GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
+        MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp,
+        WideEpContextMlaOp, WideEpGenerationMlaOp,
     };
     use crate::perf_database::dsv4::AttnKind;
     use crate::{
@@ -718,6 +719,57 @@ mod tests {
                 numerator: 5,
                 denominator: 6,
             }),
+            OpSpec::Dsv41Attention(Dsv41AttentionOp {
+                name: "v41_attention".into(),
+                is_context: true,
+                role: "full".into(),
+                compress_ratio: 2,
+                hidden_size: 5120,
+                num_heads: 16,
+                head_dim: 512,
+                q_lora_rank: 1280,
+                o_lora_rank: 1024,
+                o_groups: 2,
+                index_n_heads: 8,
+                index_head_dim: 128,
+                index_topk: 512,
+                window_size: 128,
+                candidate_limit: 0,
+                is_candidate_source: false,
+                bounded_prefill: false,
+                gemm_quant_mode: GemmQuantMode::Fp8Block,
+                fmha_quant_mode: FmhaQuantMode::Fp8,
+                kv_cache_layout: crate::operators::dsv41::Dsv41KvCacheLayout::SglangFp8Bf16,
+            }),
+            OpSpec::Dsv41Mhc(Dsv41MhcOp {
+                name: "v41_mhc".into(),
+                hidden_size: 5120,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            }),
+            OpSpec::Dsv41Engram(Dsv41EngramOp {
+                name: "v41_engram".into(),
+                num_embeddings: 384006168,
+                head_dim: 256,
+                hash_columns: 24,
+                hidden_size: 5120,
+                hc_mult: 4,
+                tp_size: 4,
+            }),
+            OpSpec::Dsv41Linear(Dsv41LinearOp {
+                name: "v41_linear".into(),
+                n: 1152,
+                k: 5120,
+                quant_mode: GemmQuantMode::Fp8Block,
+            }),
+            OpSpec::Dsv41Stage(Dsv41StageOp {
+                name: "v41_stage".into(),
+                is_context: true,
+                decoder_replay: true,
+                bounded: true,
+                window_size: 128,
+                children: vec![OpSpec::Gemm(gemm())],
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -759,6 +811,11 @@ mod tests {
                 | OpSpec::Kda(_)
                 | OpSpec::MoeAllToAll(_)
                 | OpSpec::MoeExpertCompute(_)
+                | OpSpec::Dsv41Attention(_)
+                | OpSpec::Dsv41Mhc(_)
+                | OpSpec::Dsv41Engram(_)
+                | OpSpec::Dsv41Stage(_)
+                | OpSpec::Dsv41Linear(_)
                 | OpSpec::TokenScale(_) => {}
             }
         }
@@ -774,6 +831,7 @@ mod tests {
             backend: crate::BackendKind::Trtllm,
             backend_version: Some("1.0.0rc3".into()),
             forward_model: None,
+            decoder_replay: false,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -850,8 +908,16 @@ mod tests {
         // Appending is the only safe growth direction.
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
+        // Keep the main-branch TokenScale index; V41 variants append after it.
+        let mut appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
+        appended.sort();
         assert_eq!(
-            TOKEN_SCALE_INDEX as usize + 1,
+            appended,
+            vec![36, 37, 38, 39, 40],
+            "V41 appended indices moved"
+        );
+        assert_eq!(
+            TOKEN_SCALE_INDEX as usize + 6,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
@@ -1029,6 +1095,37 @@ mod tests {
         }
     }
 
+    /// The backend layout is positional even though legacy JSON has a default.
+    #[test]
+    fn dsv41_layout_round_trip_and_stale_v18_payload_rejection() {
+        let attention = all_op_variants()
+            .into_iter()
+            .find(|op| matches!(op, OpSpec::Dsv41Attention(_)))
+            .unwrap();
+        let spec = EngineSpec::new(sample_engine_config(), vec![], vec![attention]);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        // SglangFp8Bf16 is enum1 (four bytes), the final field of the final op.
+        // Removing it restores the actual prior Dsv41Attention schema18 shape.
+        assert_eq!(&bytes[bytes.len() - 4..], &1u32.to_le_bytes());
+        bytes.truncate(bytes.len() - 4);
+        bytes[..4].copy_from_slice(&18u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 18,
+                expected: ENGINE_SPEC_SCHEMA_VERSION
+            })
+        ));
+        // A false current-schema stamp cannot silently use the JSON-only default.
+        bytes[..4].copy_from_slice(&ENGINE_SPEC_SCHEMA_VERSION.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::EngineSpec(_))
+        ));
+    }
+
     /// v11 -> v12 regression (PR-6): `DsaModuleOp` gained
     /// `attn_projection_quant_modes`, a positional bincode layout change. A
     /// pre-PR v11 producer's DSA payload must be rejected by the VERSION GATE
@@ -1163,7 +1260,7 @@ mod tests {
         let attention: GenerationAttentionOp = serde_json::from_value(attention_json).unwrap();
         assert_eq!(attention.scale_num_tokens, 1);
         assert_eq!(attention.verify_query_tokens, 0);
-        // Pre-v19 producers never emitted decode CP: it defaults to "off".
+        // Pre-v20 producers never emitted decode CP: it defaults to "off".
         assert_eq!(attention.dcp_size, 1);
         let mut fpm_json = serde_json::to_value(fpm_forward()).unwrap();
         fpm_json.as_object_mut().unwrap().remove("verify_width");
@@ -1177,7 +1274,7 @@ mod tests {
             EngineSpec::from_bincode(&bytes),
             Err(AicError::UnsupportedSchemaVersion {
                 got: 18,
-                expected: 19,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
                 ..
             })
         ));

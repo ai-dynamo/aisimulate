@@ -88,7 +88,7 @@ CATALOG_PATH = "collector/op_backend_catalog.yaml"
 HASH_CLOSURES_PATH = "collector/hash_closures.yaml"
 REGISTRY_TYPES_PATH = "collector/registry_types.py"
 PROVENANCE_PATH = "collector/provenance.py"
-DATA_PREFIX = "src/aiconfigurator_core/systems/data"
+DATA_PREFIX = "src/aisimulate_core/systems/data"
 
 # Naming/path CONVENTIONS mirrored from collector/provenance.py, not a file
 # list — see module docstring. Kept as hardcoded literals (like the PATH

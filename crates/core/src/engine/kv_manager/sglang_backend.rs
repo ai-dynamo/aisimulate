@@ -32,7 +32,38 @@ pub(crate) struct RadixRequestLease {
     last_node: Option<NodeId>,
 }
 
+/// Metadata used only with the matching KV-manager admission checkpoint.
+pub(crate) struct RadixLeaseCheckpoint {
+    pages: Vec<KvPageId>,
+    materialized_tokens: usize,
+    cached_tokens: usize,
+    admission_reused_tokens: usize,
+    page_hashes_len: usize,
+    last_node: Option<NodeId>,
+}
+
 impl RadixRequestLease {
+    pub(crate) fn admission_checkpoint(&self) -> RadixLeaseCheckpoint {
+        RadixLeaseCheckpoint {
+            pages: self.pages.clone(),
+            materialized_tokens: self.materialized_tokens,
+            cached_tokens: self.cached_tokens,
+            admission_reused_tokens: self.admission_reused_tokens,
+            page_hashes_len: self.page_hashes.len(),
+            last_node: self.last_node,
+        }
+    }
+
+    /// Restore only after the matching manager checkpoint has been rolled back.
+    pub(crate) fn restore_admission(&mut self, checkpoint: RadixLeaseCheckpoint) {
+        self.pages = checkpoint.pages;
+        self.materialized_tokens = checkpoint.materialized_tokens;
+        self.cached_tokens = checkpoint.cached_tokens;
+        self.admission_reused_tokens = checkpoint.admission_reused_tokens;
+        self.page_hashes.truncate(checkpoint.page_hashes_len);
+        self.last_node = checkpoint.last_node;
+    }
+
     #[cfg(test)]
     pub(crate) fn pages(&self) -> &[KvPageId] {
         &self.pages
@@ -135,6 +166,15 @@ pub struct SglangKvManager {
     /// block hash so router events reflect logical block visibility, not
     /// transient slot ownership.
     block_hash_refcounts: FxHashMap<SequenceHash, usize>,
+    pending_admission_events: Option<Vec<KvEvent>>,
+}
+
+#[must_use = "admission must be committed or rolled back"]
+pub(crate) struct SglangAdmissionCheckpoint {
+    cache: RadixCache,
+    next_event_id: u64,
+    page_to_block_hash: Vec<Option<SequenceHash>>,
+    block_hash_refcounts: FxHashMap<SequenceHash, usize>,
 }
 
 pub struct DecodeTokenReservation {
@@ -208,6 +248,11 @@ impl SglangKvManager {
         enable_prefix_caching: bool,
         emit_token_ids: bool,
     ) -> Self {
+        let kv_event_publishers = if enable_prefix_caching {
+            kv_event_publishers
+        } else {
+            KvEventPublishers::default()
+        };
         let page_to_block_hash = if kv_event_publishers.is_empty() {
             Vec::new()
         } else {
@@ -222,6 +267,7 @@ impl SglangKvManager {
             next_event_id: 0,
             page_to_block_hash,
             block_hash_refcounts: FxHashMap::default(),
+            pending_admission_events: None,
         }
     }
 
@@ -236,6 +282,50 @@ impl SglangKvManager {
 
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
         self.cache.set_belady_oracle(oracle);
+    }
+
+    /// Hold speculative events until the timing provider accepts the admitted batch.
+    pub(crate) fn begin_admission(&mut self) -> SglangAdmissionCheckpoint {
+        assert!(
+            self.pending_admission_events.is_none(),
+            "nested KV admission"
+        );
+        self.pending_admission_events = Some(Vec::new());
+        SglangAdmissionCheckpoint {
+            cache: self.cache.admission_checkpoint(),
+            next_event_id: self.next_event_id,
+            page_to_block_hash: self.page_to_block_hash.clone(),
+            block_hash_refcounts: self.block_hash_refcounts.clone(),
+        }
+    }
+
+    pub(crate) fn commit_admission(&mut self, _checkpoint: SglangAdmissionCheckpoint) {
+        for event in self
+            .pending_admission_events
+            .take()
+            .expect("active KV admission")
+        {
+            self.publish_event(event);
+        }
+    }
+
+    pub(crate) fn rollback_admission(&mut self, checkpoint: SglangAdmissionCheckpoint) {
+        self.pending_admission_events
+            .take()
+            .expect("active KV admission");
+        self.cache = checkpoint.cache;
+        self.next_event_id = checkpoint.next_event_id;
+        self.page_to_block_hash = checkpoint.page_to_block_hash;
+        self.block_hash_refcounts = checkpoint.block_hash_refcounts;
+        self.log_trace("admission_rollback", 0);
+    }
+
+    fn publish_event(&mut self, event: KvEvent) {
+        if let Some(events) = self.pending_admission_events.as_mut() {
+            events.push(event);
+        } else if let Err(error) = self.kv_event_publishers.publish(event, None) {
+            tracing::warn!("Failed to publish SGLang KV event: {error}");
+        }
     }
 
     #[cfg(test)]
@@ -994,9 +1084,7 @@ impl SglangKvManager {
         };
         self.next_event_id += 1;
 
-        if let Err(e) = self.kv_event_publishers.publish(event, None) {
-            tracing::warn!("Failed to publish SGLang KV event: {e}");
-        }
+        self.publish_event(event);
 
         hashed_blocks
     }
@@ -1037,9 +1125,7 @@ impl SglangKvManager {
         };
         self.next_event_id += 1;
 
-        if let Err(e) = self.kv_event_publishers.publish(event, None) {
-            tracing::warn!("Failed to publish SGLang KV remove event: {e}");
-        }
+        self.publish_event(event);
     }
 }
 

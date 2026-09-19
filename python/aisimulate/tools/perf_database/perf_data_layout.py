@@ -24,7 +24,7 @@ SKIP_BACKEND_DIRS = frozenset({"nccl", "oneccl"})
 
 # First-level backend dirs in the legacy <system>/<backend>/<version> layout.
 # Keep this set textually identical to the canonical _KNOWN_BACKEND_DIRS in
-# aic-core/src/aiconfigurator_core/sdk/operations/base.py minus
+# src/aisimulate_core/sdk/operations/base.py minus
 # SKIP_BACKEND_DIRS (consumer backends only; no comm pseudo-backends).
 LEGACY_BACKEND_DIRS = frozenset({"trtllm", "sglang", "vllm"})
 

@@ -203,7 +203,7 @@ fn public_aggregated_weka_and_materialized_v2_have_identical_complete_lifecycles
 
 #[test]
 fn public_vllm_child_context_rejection_settles_the_play_and_skips_parent_resume() {
-    // max_model_len is an advertised vLLM-only engine control.
+    // Exercise the shared context limit through a vLLM child request.
     let report = qualify_paths(&fixture("weka-relative.json"), Backend::Vllm, Some(6));
     assert_eq!(report.request_counts.num_requests, 3);
     assert_eq!(report.request_counts.completed_requests, 2);

@@ -58,7 +58,7 @@ flowchart TD
   
   **Context parallelism**: two orthogonal per-worker knobs flow through the same chain. `context_parallel_size` is prefill CP (vLLM `--prefill-context-parallel-size`, SGLang `--enable-prefill-cp --attn-cp-size --cp-strategy`); it adds attention ranks, so `gpus_per_worker` multiplies by it (the SGLang rule folds it into `--tensor-parallel-size`, because SGLang's CP ranks live inside `--tp`). `decode_context_parallel_size` is decode CP (vLLM `--decode-context-parallel-size`, SGLang `--dcp-size`); it stripes the KV cache across ranks already in the attention group and adds no GPUs. `generator/context_parallel.py` is the single decision point: it version-gates the flags (vLLM PCP and DCP >= 0.14.1, the first `cli_args` template that renders them, `--dcp-comm-backend` >= 0.18.0; SGLang `--attn-cp-size`/`--dcp-size` >= 0.5.15, `--dcp-comm-backend` >= 0.5.17), picks `--cp-strategy interleave` for DSA architectures and `zigzag` otherwise, and rejects TRT-LLM (no CP perf data). Both request paths use it: `module_bridge` reads the swept `cp`/`(p)cp` column plus the task's `dcp_size`/`prefill_dcp_size`/`decode_dcp_size`, and `from_sweeper_candidate` reads the optional `cp`/`dcp` (or `prefill_`/`decode_`-prefixed) candidate columns. The `aisimulate sweep`/`recommend` search spaces do not enumerate either knob yet; they are CLI-driven inputs.
 
-  **Rule selection**: Use `--generator-set rule=benchmark` to switch to a different rule plugin folder under `src/aiconfigurator/generator/rule_plugin/`. If `rule` is not provided, the default production rules are used (tuned for deployment, including max batch size and CUDA graph batch size adjustments). The `benchmark` rules are designed to align generated configs with AIC simulation, using broader CUDA graph batch sizes and a stricter max batch size derived from the simulated batch size. You can add your own rule sets by creating a folder under `rule_plugin/` and selecting it via `--generator-set rule=<folder_name>`.
+  **Rule selection**: Use `--generator-set rule=benchmark` to switch to a different rule plugin folder under `src/aisimulate/generator/rule_plugin/`. If `rule` is not provided, the default production rules are used (tuned for deployment, including max batch size and CUDA graph batch size adjustments). The `benchmark` rules are designed to align generated configs with AIC simulation, using broader CUDA graph batch sizes and a stricter max batch size derived from the simulated batch size. You can add your own rule sets by creating a folder under `rule_plugin/` and selecting it via `--generator-set rule=<folder_name>`.
 
 - Backend templates (`config/backend_templates/<backend>/`):  
   Jinja templates that turn mapped parameters into CLI args, engine configs, run scripts, and Kubernetes manifests (optionally versioned). 
@@ -103,7 +103,7 @@ You can use the generator in two ways: AIConfigurator CLI or standalone (code/CL
   - In code:
     ```python
     from pathlib import Path
-    from aiconfigurator.generator.api import (
+    from aisimulate.generator.api import (
         generate_backend_artifacts,
         generate_backend_config,
         generate_config_from_input_dict,
@@ -138,7 +138,7 @@ You can use the generator in two ways: AIConfigurator CLI or standalone (code/CL
     params = generate_config_from_input_dict(input_params, backend="trtllm")
     artifacts = generate_backend_artifacts(params, backend="trtllm", output_dir="./results/sample", backend_version="1.2.0rc5")
     ```
-  - Command line: `python -m aiconfigurator.generator.main render-artifacts --backend trtllm --version 1.2.0rc5 --config sample_input.yaml --output ./results`
+  - Command line: `python -m aisimulate.generator.main render-artifacts --backend trtllm --version 1.2.0rc5 --config sample_input.yaml --output ./results`
     ```
     # Sample sample_input.yaml
     
@@ -174,8 +174,8 @@ ranked scalar candidate or an explicit Pareto point, lower that candidate and it
 into the generator's typed request:
 
 ```python
-from aiconfigurator.generator.api import generate_from_request
-from aiconfigurator.generator.request import from_sweeper_candidate
+from aisimulate.generator.api import generate_from_request
+from aisimulate.generator.request import from_sweeper_candidate
 
 candidates = sweeper.run(sweep_config)
 request = from_sweeper_candidate(

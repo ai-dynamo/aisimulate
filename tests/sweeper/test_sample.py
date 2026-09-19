@@ -138,6 +138,7 @@ def test_unroll_folds_only_backend_pinned_values():
             context_length=4096,
             startup_time=300.0,
             aic_nextn=2,
+            nextn_accepted=1.5,
             agg_block_size=32,
             agg_gpu_memory_utilization=0.8,
             agg_enable_prefix_caching=False,
