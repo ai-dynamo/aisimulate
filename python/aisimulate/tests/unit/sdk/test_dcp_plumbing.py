@@ -137,10 +137,13 @@ def _context_attention_ops(model):
 
 
 @pytest.mark.parametrize(
-    ("backend", "merge_suffix"),
-    [("sglang", "_dcp_out_all_to_all"), ("vllm", "_dcp_out_reduce_scatter")],
+    ("backend", "merge_suffixes"),
+    [
+        ("sglang", ("_dcp_a2a_pack", "_dcp_out_all_to_all", "_dcp_a2a_combine")),
+        ("vllm", ("_dcp_lse_all_gather", "_dcp_lse_correct", "_dcp_out_reduce_scatter")),
+    ],
 )
-def test_deepseek_dcp_rewrites_decode_attention_and_adds_merge_collectives(backend, merge_suffix):
+def test_deepseek_dcp_rewrites_decode_attention_and_adds_merge_collectives(backend, merge_suffixes):
     from aisimulate_core.sdk.models import get_model
 
     model_config = config.ModelConfig(tp_size=8, moe_tp_size=8, moe_ep_size=1, dcp_size=8)
@@ -154,9 +157,10 @@ def test_deepseek_dcp_rewrites_decode_attention_and_adds_merge_collectives(backe
     names = _generation_op_names(model)
     for container, _ in {container: None for container, _ in attention}.items():
         index = names.index(container)
-        # The merge collectives ride directly behind the block they serve.
-        assert names[index + 1] == f"{container}_dcp_q_all_gather"
-        assert names[index + 2] == f"{container}{merge_suffix}"
+        # The q gather, then the merge collectives and their elementwise
+        # passes, ride directly behind the block they serve.
+        expected = [f"{container}_dcp_q_all_gather", *(f"{container}{suffix}" for suffix in merge_suffixes)]
+        assert names[index + 1 : index + 1 + len(expected)] == expected
     # The prefill graph gains no collectives of its own ...
     assert not any("_dcp_" in op._name for op in model.context_ops)
     # ... but its attention ops are marked so cached-context prefill pays the

@@ -343,33 +343,39 @@ class BaseModel:
         dcp = int(self.config.dcp_size)
         comm_quant_mode = self.config.comm_quant_mode
         gathered_heads = n_local * dcp
-        collectives = [
-            ops.NCCL(
-                f"{name}_dcp_q_all_gather",
-                scale,
-                "all_gather",
-                num_elements_per_token=n_local * q_dim,
-                num_gpus=dcp,
-                comm_quant_mode=comm_quant_mode,
-            )
-        ]
-        # Partial-output merge: ag_rs reduce-scatters the fp32 outputs (vLLM
-        # default), a2a moves them with one packed all-to-all (SGLang default).
-        kind, suffix = (
-            ("reduce_scatter", "out_reduce_scatter")
-            if self._dcp_comm_style() == "ag_rs"
-            else ("alltoall", "out_all_to_all")
-        )
-        collectives.append(
-            ops.NCCL(
+
+        def nccl(suffix: str, kind: str, elements_per_token: int):
+            return ops.NCCL(
                 f"{name}_dcp_{suffix}",
                 scale,
                 kind,
-                num_elements_per_token=gathered_heads * v_dim,
+                num_elements_per_token=elements_per_token,
                 num_gpus=dcp,
                 comm_quant_mode=comm_quant_mode,
             )
-        )
+
+        collectives = [nccl("q_all_gather", "all_gather", n_local * q_dim)]
+        # Partial-output merge (vllm/v1/attention/ops/dcp.py). Both styles pay
+        # the collectives AND the elementwise passes around them; the latter
+        # are launch/latency-bound at decode batch sizes but add up over the
+        # layers, so they are priced explicitly.
+        if self._dcp_comm_style() == "ag_rs":
+            # `cp_lse_ag_out_rs`: all-gather the fp32 LSE (2 half-elements per
+            # gathered head), `correct_attn_out` rescales the partial outputs in
+            # place, then reduce-scatter the corrected outputs by head.
+            collectives.append(nccl("lse_all_gather", "all_gather", gathered_heads * 2))
+            collectives.append(
+                ops.ElementWise(f"{name}_dcp_lse_correct", scale, gathered_heads * v_dim, gathered_heads * v_dim)
+            )
+            collectives.append(nccl("out_reduce_scatter", "reduce_scatter", gathered_heads * v_dim))
+        else:
+            # `dcp_a2a_lse_reduce`: pack output + LSE (2 half slots per head)
+            # into one send buffer, one all-to-all, then unpack and combine
+            # the dcp partials of this rank's heads.
+            packed = gathered_heads * (v_dim + 2)
+            collectives.append(ops.ElementWise(f"{name}_dcp_a2a_pack", scale, gathered_heads * v_dim, packed))
+            collectives.append(nccl("out_all_to_all", "alltoall", packed))
+            collectives.append(ops.ElementWise(f"{name}_dcp_a2a_combine", scale, packed, n_local * v_dim))
         return collectives
 
     def _dcp_kv_head_replication(self) -> int | None:
