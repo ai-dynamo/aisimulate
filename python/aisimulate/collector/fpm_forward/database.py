@@ -18,7 +18,7 @@ from typing import Any
 
 import yaml
 
-from aiconfigurator.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
+from aisimulate.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
 
 from .native_artifact import validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan, backend_identity_columns
@@ -317,15 +317,15 @@ def _curated_systems_root() -> Path:
     """The data tree the SDK's default systems path actually reads.
 
     Resolved through the same package the SDK's ``--systems-paths default``
-    resolves to (``aiconfigurator_core``), so default publications land where
+    resolves to (``aisimulate_core``), so default publications land where
     the fpm forward-model consumer looks regardless of how the package is
     installed. In a repo checkout this is the aic-core tree (which
-    src/aiconfigurator/systems symlinks to); in an installed environment it is
+    src/aisimulate_core/systems symlinks to); in an installed environment it is
     the site-packages tree the SDK reads.
     """
     from importlib import resources
 
-    return Path(os.fspath(resources.files("aiconfigurator_core") / "systems" / "data"))
+    return Path(os.fspath(resources.files("aisimulate_core") / "systems" / "data"))
 
 
 # The SDK's reuse/partial markers declare a version without holding measured

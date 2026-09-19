@@ -13,16 +13,20 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from aisimulate.aic import materialize_aic_num_gpu_blocks
+from aisimulate.capacity import materialize_aic_num_gpu_blocks
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
+from aisimulate.config.common import ENGINE_MODEL_CONTROL_FIELDS
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
 from aisimulate.support.fpm import fpm_cli_args
 from aisimulate.support.plan import check_plan, create_plan
 from aisimulate.support.schema import SupportRequest
 from aisimulate.sweeper.config import SearchSpace
 from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+from aisimulate.sweeper.forward_pass_estimator import (
+    ForwardPassEstimatorResolutionError,
+    ForwardPassEstimatorResolver,
+)
 from aisimulate.sweeper.model_hw import parallel_configs_for
 from aisimulate.sweeper.replay import ReplaySpec
 from aisimulate.sweeper.sample import unroll_sample
@@ -79,9 +83,9 @@ def profile():
 
 @pytest.fixture(autouse=True)
 def forbid_registered_model(monkeypatch):
-    from aiconfigurator_core.sdk import engine, memory
-    from aisimulate import aic, compiler, recommend
+    from aisimulate import capacity, compiler, recommend
     from aisimulate.sweeper import model_hw
+    from aisimulate_core.sdk import engine, memory
 
     def fail(*args, **kwargs):
         pytest.fail("class-independent workflow reached model/config construction")
@@ -89,7 +93,7 @@ def forbid_registered_model(monkeypatch):
     monkeypatch.setattr(engine, "get_model", fail)
     monkeypatch.setattr(memory.KVCacheEstimator, "from_request", fail)
     monkeypatch.setattr(memory.NaiveKVCacheEstimator, "from_model_path", fail)
-    monkeypatch.setattr(aic, "resolve_model_context_length", fail)
+    monkeypatch.setattr(capacity, "resolve_model_context_length", fail)
     monkeypatch.setattr(compiler, "resolve_model_context_length", fail)
     monkeypatch.setattr(recommend, "resolve_model_context_length", fail)
     monkeypatch.setattr(model_hw, "get_model_config_from_model_path", fail)
@@ -102,12 +106,12 @@ def timing_systems(profile, tmp_path, monkeypatch):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    import aiconfigurator_core
-    from aiconfigurator_core.sdk.fpm_profile import load_fpm_profile
+    import aisimulate_core
+    from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 
     root = tmp_path / "systems"
     root.mkdir()
-    packaged = Path(aiconfigurator_core.__file__).parent / "systems"
+    packaged = Path(aisimulate_core.__file__).parent / "systems"
     (root / "h200_sxm.yaml").write_bytes((packaged / "h200_sxm.yaml").read_bytes())
     rows = []
     for index, deployment in enumerate(load_fpm_profile(profile).deployments):
@@ -214,7 +218,7 @@ def test_disaggregated_transfer_uses_profile_cache_geometry(profile):
 
 @pytest.mark.parametrize("mode,budget,expected", [("agg", 2, 2), ("disagg", 4, 4)])
 def test_profile_candidates_use_only_declared_topologies(profile, mode, budget, expected, monkeypatch):
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     def no_timing(*args, **kwargs):
         pytest.fail("candidate enumeration constructed a timing estimator before collection")
@@ -311,6 +315,8 @@ def test_profile_kv_load_cache_keeps_resource_identity_without_model_constructio
 def test_recommendation_preserves_profile_in_exported_prediction(
     profile, monkeypatch, method, timing_systems, backend_version
 ):
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
     engine = _engine(profile)
     engine["backend_version"] = backend_version
     engine["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
@@ -348,9 +354,20 @@ def test_recommendation_preserves_profile_in_exported_prediction(
     resolved = estimators["agg"].config
     assert resolved["estimator_config"]["fpm_interpolation"]["method"] == "direct"
     assert resolved["fpm_profile"] == source.engine.fpm_profile.model_dump(mode="json")
-    assert resolved["gemm_quant_mode"] == "fp8_block"
+    controls = {
+        "gemm_quant_mode": "fp8_block",
+        "moe_quant_mode": "fp8_block",
+        "fmha_quant_mode": "bfloat16",
+        "kvcache_quant_mode": "fp8",
+        "comm_quant_mode": "half",
+        "attention_backend": "auto",
+        "moe_backend": None,
+        "enable_eplb": False,
+        "wideep_num_slots": None,
+    }
+    assert {name: resolved[name] for name in ENGINE_MODEL_CONTROL_FIELDS} == controls
     assert resolved["systems_paths"] == [timing_systems]
-    from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY
+    from aisimulate_core.sdk.models.base import _MODEL_REGISTRY
 
     # A fresh environment may now have an analytical class for the same model.
     # Export must retain the method actually selected for the evaluated sample.
@@ -369,8 +386,103 @@ def test_recommendation_preserves_profile_in_exported_prediction(
     assert "forward_model" not in exported["engine"]["workers"]["aggregated"]["timing"]
     assert "fpm_interpolation" not in exported["engine"]["workers"]["aggregated"]["timing"]
     assert reloaded.engine.workers.aggregated.parallelism.attention_data == 2
-    args = prediction_to_replay_spec(reloaded).backend_deployment.agg_engine_args
+    deployment = prediction_to_replay_spec(reloaded).backend_deployment
+    args = deployment.agg_engine_args
+    model = RustForwardPassPerfModel.best_available(deployment.performance_model_metadata["aggregated"]["config"])
+    try:
+        identity = model.diagnostics()["provenance"]["config"]
+    finally:
+        model.close()
+    assert {name: identity[name] for name in ENGINE_MODEL_CONTROL_FIELDS} == controls
+    assert identity["worker_type"] == "aggregated"
+    assert tuple(identity[name] for name in ("tp", "pp", "attention_dp", "moe_tp_size", "moe_ep_size")) == (
+        1,
+        1,
+        2,
+        1,
+        2,
+    )
     assert materialize_aic_num_gpu_blocks(args)["num_gpu_blocks"] > 0
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("gemm_quant_mode", "bfloat16"),
+        ("moe_quant_mode", "bfloat16"),
+        ("fmha_quant_mode", "fp8"),
+        ("kvcache_quant_mode", "bfloat16"),
+        ("comm_quant_mode", "fp8"),
+        ("attention_backend", "fa3"),
+        ("moe_backend", "deepep_moe"),
+        ("enable_eplb", True),
+        ("wideep_num_slots", 128),
+    ],
+)
+def test_profile_resolver_normalizes_cache_identity_and_rejects_conflicting_overrides(
+    profile, timing_systems, monkeypatch, field, value
+):
+    from dataclasses import replace
+
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    resolver = ForwardPassEstimatorResolver(SearchSpace(model_name=profile["model"], hardware_sku="h200_sxm"))
+    request = ForwardPassPerfModelConfig(
+        model=profile["model"],
+        fpm_profile=profile,
+        system="h200_sxm",
+        backend="vllm",
+        backend_version="0.25.1",
+        worker_type="aggregated",
+        tp=2,
+        moe_tp_size=2,
+        moe_ep_size=1,
+        kv_block_size=64,
+        systems_paths=(timing_systems,),
+        estimation_mode="fpm_interpolation",
+        estimator_config={"fpm_interpolation": {"method": "direct"}},
+    )
+    first = resolver._resolve(request, "agg")
+
+    def no_build(*args, **kwargs):
+        pytest.fail("equivalent defaults or conflicting profile override reached estimator construction")
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", no_build)
+    explicit = replace(request, **{name: first.config[name] for name in ENGINE_MODEL_CONTROL_FIELDS})
+    assert resolver._resolve(explicit, "agg").config == first.config
+    with pytest.raises(ForwardPassEstimatorResolutionError, match="identity conflict|override|EPLB"):
+        resolver._resolve(replace(explicit, **{field: value}), "agg")
+
+
+@pytest.mark.parametrize("field", [*ENGINE_MODEL_CONTROL_FIELDS, "worker_type", "tp"])
+def test_profile_resolver_rejects_changed_resolved_identity(profile, timing_systems, monkeypatch, field):
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    engine = _engine(profile)
+    engine.update(mode="aggregated", systems_paths=[timing_systems])
+    engine["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
+    smart = recommendation_to_sweeper(CoreRecommendationConfig.model_validate({"engine": engine, "optimization": {}}))
+    sample = {
+        "deployment_mode": "agg",
+        "hardware_sku": "h200_sxm",
+        "backend": "vllm",
+        "tp": 2,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp": 2,
+        "moe_ep": 1,
+        "agg_block_size": 64,
+    }
+    diagnostics = RustForwardPassPerfModel.diagnostics
+
+    def changed(model):
+        result = diagnostics(model)
+        result["provenance"]["config"][field] = "unexpected"
+        return result
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "diagnostics", changed)
+    with pytest.raises(ForwardPassEstimatorResolutionError, match=f"changed exact candidate field '{field}'"):
+        ForwardPassEstimatorResolver(smart.search_space).resolve_candidate(sample)
 
 
 @pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
@@ -483,7 +595,7 @@ def test_invalid_profile_predictions_fail_before_runtime(profile, update, error)
 
 
 def test_onboard_dep_keeps_full_identity_and_checks_resources_before_collection(profile, tmp_path, monkeypatch):
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     def no_timing(*args, **kwargs):
         pytest.fail("planning constructed a timing estimator before collection")

@@ -24,16 +24,16 @@ All tests use the real production pipeline with no mocks.
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.backends.trtllm_backend import (
+from aisimulate.sdk import common
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.backends.trtllm_backend import (
     KV_CACHE_MEMORY_RESERVED_FRACTION,
     KV_CACHE_MEMORY_TOLERANCE,
 )
-from aiconfigurator.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator.sdk.inference_summary import InferenceSummary
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.perf_database import get_database, get_latest_database_version
+from aisimulate.sdk.config import ModelConfig, RuntimeConfig
+from aisimulate.sdk.inference_summary import InferenceSummary
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.perf_database import get_database, get_latest_database_version
 
 pytestmark = pytest.mark.integration
 

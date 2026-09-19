@@ -3,7 +3,7 @@
 
 //! Per-phase op-list execution primitives.
 //!
-//! Mirrors `aiconfigurator.sdk.backends.base_backend`: iterates a context /
+//! Mirrors `aisimulate.sdk.backends.base_backend`: iterates a context /
 //! generation op list to compute per-phase latency, and composes the mix-step
 //! latency exactly the way Python's `_get_mix_step_latency` does — one combined
 //! non-attention pass plus per-phase attention. The compiled

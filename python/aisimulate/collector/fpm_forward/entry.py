@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from aiconfigurator_core.sdk.fpm_profile import load_fpm_profile
+from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 
 from .config import FPMCollectionOptions
 from .planner import FPMCollectionPlan, build_collection_plan

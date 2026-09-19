@@ -18,7 +18,7 @@
 //!   so the Rust compute runs without holding the GIL.
 //! * **Rust → Python → Rust (embedded path).** [`AicEngineBuilder`] is the
 //!   Rust entry point. It crosses into Python once to run
-//!   `aiconfigurator_core.sdk.engine.compile_engine`, then build an [`Engine`]
+//!   `aisimulate_core.sdk.engine.compile_engine`, then build an [`Engine`]
 //!   from the returned bincode bytes. After that the `predict_*` hot path is
 //!   pure Rust with no GIL.
 //!
@@ -52,10 +52,10 @@ fn _build_smoke() -> u32 {
 }
 
 /// Cached handles to the canonical SDK exception classes
-/// (`aiconfigurator_core.sdk.errors` — the CORE namespace: the standalone
+/// (`aisimulate_core.sdk.errors` — the CORE namespace: the standalone
 /// compatibility namespace bundled in the `aisimulate` wheel). Filled lazily
 /// on first use so importing the
-/// extension never imports the sdk (the sdk imports aiconfigurator_core — an
+/// extension never imports the sdk (the sdk imports aisimulate_core — an
 /// eager import here would be a cycle), and left empty in pure-Rust contexts
 /// where the sdk is not installed (fallback to `PyValueError`).
 static PERF_DATA_NOT_AVAILABLE_ERROR: GILOnceCell<Py<PyType>> = GILOnceCell::new();
@@ -72,7 +72,7 @@ fn sdk_error_type(
 ) -> Option<Py<PyType>> {
     cell.get_or_try_init(py, || -> PyResult<Py<PyType>> {
         Ok(py
-            .import("aiconfigurator_core.sdk.errors")?
+            .import("aisimulate_core.sdk.errors")?
             .getattr(name)?
             .downcast_into::<PyType>()?
             .unbind())
@@ -87,17 +87,17 @@ fn sdk_error_type(
 /// Typed mapping so Python-side classifiers keep working across the FFI:
 /// * missing-perf-data errors (`AicError::PerfDatabase` / `Io` — the
 ///   `is_missing_perf_data` set) raise the canonical
-///   `aiconfigurator_core.sdk.errors.PerfDataNotAvailableError`, so
+///   `aisimulate_core.sdk.errors.PerfDataNotAvailableError`, so
 ///   `perf_database.has_perf_data_not_available_cause` recognizes rust-path
 ///   data misses;
 /// * `AicError::EmpiricalNotImplemented` raises
-///   `aiconfigurator_core.sdk.errors.EmpiricalNotImplementedError` (the typed
+///   `aisimulate_core.sdk.errors.EmpiricalNotImplementedError` (the typed
 ///   HYBRID/EMPIRICAL coverage miss);
 /// * `AicError::MissingSystemFlops` raises
-///   `aiconfigurator_core.sdk.errors.MissingSystemFlopsError` (strict per-dtype
+///   `aisimulate_core.sdk.errors.MissingSystemFlopsError` (strict per-dtype
 ///   `*_tc_flops` resolution — a `ValueError` subclass on the Python side);
 /// * `AicError::SolNotImplemented` raises
-///   `aiconfigurator_core.sdk.errors.SolNotImplementedError` (the analytic SOL
+///   `aisimulate_core.sdk.errors.SolNotImplementedError` (the analytic SOL
 ///   path has no implementation for a required operator);
 /// * everything else stays `PyValueError`.
 ///
@@ -151,7 +151,7 @@ fn parse_mode(mode: &str) -> PyResult<StaticMode> {
 /// Discover the ordered roots using the same SDK/environment policy as the Python facade.
 pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicError> {
     Python::with_gil(|py| {
-        py.import("aiconfigurator_core.sdk.rust_engine_step")?
+        py.import("aisimulate_core.sdk.rust_engine_step")?
             .getattr("_resolve_forward_pass_systems_paths")?
             .call1((Vec::<String>::new(),))?
             .extract::<Vec<PathBuf>>()
@@ -172,7 +172,7 @@ pub(crate) fn resolve_forward_pass_systems_roots() -> Result<Vec<PathBuf>, AicEr
 /// configs) runs in Python, so the Rust side only loads the perf database.
 /// Precedence: explicit `systems_path` arg → `AICONFIGURATOR_SYSTEMS_PATH` env
 /// → the installed core wheel's SDK resource path → repo-relative
-/// `python/aisimulate/src/aiconfigurator_core/systems`.
+/// `python/aisimulate/src/aisimulate_core/systems`.
 pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathBuf> {
     if let Some(p) = systems_path {
         return Ok(PathBuf::from(p));
@@ -181,7 +181,7 @@ pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathB
         return Ok(PathBuf::from(p));
     }
     let installed_root = Python::with_gil(|py| -> PyResult<Option<PathBuf>> {
-        let Ok(perf_database) = py.import("aiconfigurator_core.sdk.perf_database") else {
+        let Ok(perf_database) = py.import("aisimulate_core.sdk.perf_database") else {
             return Ok(None);
         };
         let paths: Vec<String> = perf_database.call_method0("get_systems_paths")?.extract()?;
@@ -190,7 +190,7 @@ pub(crate) fn resolve_systems_root(systems_path: Option<&str>) -> PyResult<PathB
     if let Some(p) = installed_root {
         return Ok(p);
     }
-    crate::repo_relative("python/aisimulate/src/aiconfigurator_core/systems").ok_or_else(|| {
+    crate::repo_relative("python/aisimulate/src/aisimulate_core/systems").ok_or_else(|| {
         PyValueError::new_err(
             "could not resolve systems path: pass systems_path, set \
              AICONFIGURATOR_SYSTEMS_PATH, install aisimulate, or run \
@@ -1047,6 +1047,9 @@ struct EngineBuildRequest {
     fmha_quant_mode: Option<String>,
     comm_quant_mode: Option<String>,
     attention_backend: Option<String>,
+    moe_backend: Option<String>,
+    enable_eplb: bool,
+    wideep_num_slots: Option<u32>,
     nextn: u32,
     speculation: Option<crate::ForwardPassSpeculationConfig>,
     kv_block_size: Option<u32>,
@@ -1055,6 +1058,7 @@ struct EngineBuildRequest {
     fpm_profile: Option<String>,
     fpm_interpolation: Option<String>,
     cp_size: u32,
+    decoder_replay: bool,
     database_mode: Option<String>,
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
@@ -1095,6 +1099,9 @@ impl AicEngineBuilder {
                 fmha_quant_mode: None,
                 comm_quant_mode: None,
                 attention_backend: None,
+                moe_backend: None,
+                enable_eplb: false,
+                wideep_num_slots: None,
                 nextn: 0,
                 speculation: None,
                 kv_block_size: None,
@@ -1103,6 +1110,7 @@ impl AicEngineBuilder {
                 fpm_profile: None,
                 fpm_interpolation: None,
                 cp_size: 1,
+                decoder_replay: false,
                 database_mode: None,
                 shared_layer: None,
                 transfer_policy: None,
@@ -1115,6 +1123,12 @@ impl AicEngineBuilder {
     /// Python's default (op_level).
     pub fn forward_model(mut self, forward_model: &str) -> Self {
         self.request.forward_model = Some(forward_model.to_owned());
+        self
+    }
+
+    /// Select the verified V4.1 bounded decoder execution profile.
+    pub fn decoder_replay(mut self, enabled: bool) -> Self {
+        self.request.decoder_replay = enabled;
         self
     }
 
@@ -1381,7 +1395,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         ))
     })?;
     let spec_bytes: Vec<u8> = Python::with_gil(|py| -> PyResult<Vec<u8>> {
-        let engine_mod = py.import("aiconfigurator_core.sdk.engine")?;
+        let engine_mod = py.import("aisimulate_core.sdk.engine")?;
         let kwargs = pyo3::types::PyDict::new(py);
         kwargs.set_item("backend_version", request.backend_version.as_deref())?;
         kwargs.set_item("tp_size", request.tp_size)?;
@@ -1395,10 +1409,14 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("fmha_quant_mode", request.fmha_quant_mode.as_deref())?;
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
+        kwargs.set_item("moe_backend", request.moe_backend.as_deref())?;
+        kwargs.set_item("enable_eplb", request.enable_eplb)?;
+        kwargs.set_item("wideep_num_slots", request.wideep_num_slots)?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
         kwargs.set_item("fpm_profile", request.fpm_profile.as_deref())?;
         kwargs.set_item("fpm_interpolation", request.fpm_interpolation.as_deref())?;
         kwargs.set_item("cp_size", request.cp_size)?;
+        kwargs.set_item("decoder_replay", request.decoder_replay)?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
@@ -1431,7 +1449,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
     // is NOT fallback-safe) so they surface instead of silently degrading.
     .map_err(|error| {
         let invalid = Python::with_gil(|py| {
-            py.import("aiconfigurator_core.sdk.engine")
+            py.import("aisimulate_core.sdk.engine")
                 .and_then(|module| module.getattr("InvalidEngineConfigurationError"))
                 .is_ok_and(|kind| error.is_instance(py, &kind))
         });
@@ -1477,7 +1495,7 @@ pub(crate) fn validate_forward_pass_profile(
     let json = serde_json::to_string(config)
         .map_err(|error| AicError::InvalidEngineConfig(error.to_string()))?;
     let facts = Python::with_gil(|py| -> PyResult<String> {
-        py.import("aiconfigurator_core.sdk.fpm_profile")?
+        py.import("aisimulate_core.sdk.fpm_profile")?
             .call_method1("_validate_forward_pass_profile", (json,))?
             .extract()
     })
@@ -1512,6 +1530,9 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         fmha_quant_mode: config.fmha_quant_mode.clone(),
         comm_quant_mode: config.comm_quant_mode.clone(),
         attention_backend: config.attention_backend.clone(),
+        moe_backend: config.moe_backend.clone(),
+        enable_eplb: config.enable_eplb,
+        wideep_num_slots: config.wideep_num_slots,
         nextn: config.nextn,
         speculation: config.speculation.clone(),
         kv_block_size: config.kv_block_size,
@@ -1530,6 +1551,7 @@ pub(crate) fn compile_forward_pass_model_to_engine(
                 .to_owned(),
         ),
         cp_size: 1,
+        decoder_replay: config.decoder_replay,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
@@ -1579,7 +1601,7 @@ pub(crate) fn fpm_profile_quantization(
 ) -> PyResult<std::collections::BTreeMap<String, String>> {
     let config_json = serde_json::to_string(config)
         .map_err(|e| PyValueError::new_err(format!("invalid engine config: {e}")))?;
-    py.import("aiconfigurator_core.sdk.fpm_profile")?
+    py.import("aisimulate_core.sdk.fpm_profile")?
         .call_method1("_quantization_from_engine_config", (config_json,))?
         .extract()
 }
@@ -1611,6 +1633,9 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         comm_quant_mode: None,
         // Attention backend is not carried on EngineConfig; let Python resolve it.
         attention_backend: None,
+        moe_backend: None,
+        enable_eplb: false,
+        wideep_num_slots: None,
         nextn,
         speculation: None,
         kv_block_size: config.kv_block_size,
@@ -1619,6 +1644,7 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         fpm_profile: config.extra.get("fpm_profile").cloned(),
         fpm_interpolation: config.extra.get("fpm_interpolation").cloned(),
         cp_size: config.parallel.cp_size.unwrap_or(1),
+        decoder_replay: config.decoder_replay,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
@@ -1841,6 +1867,7 @@ impl PyForwardPassPerfModel {
             nextn: request.nextn,
             speculation: request.speculation,
             kv_block_size: request.kv_block_size,
+            decoder_replay: request.decoder_replay,
             estimation_mode,
             database_mode: legacy.database_mode,
             transfer_policy: request.transfer_policy,
@@ -1852,6 +1879,9 @@ impl PyForwardPassPerfModel {
             },
             estimator_config,
             attention_backend: request.attention_backend,
+            moe_backend: request.moe_backend,
+            enable_eplb: request.enable_eplb,
+            wideep_num_slots: request.wideep_num_slots,
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
         };
@@ -1879,6 +1909,24 @@ impl PyForwardPassPerfModel {
             .map_err(|e| PyValueError::new_err(format!("invalid tuning iterations JSON: {e}")))?;
         py.allow_threads(|| self.inner.tune_with_fpms(&iterations))
             .map_err(aic_to_py)
+    }
+
+    /// Static operation evidence from the canonical model, as JSON.
+    fn static_phase_diagnostics(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        context_length: u32,
+        prefix: u32,
+        prefill: bool,
+    ) -> PyResult<String> {
+        let result = py
+            .allow_threads(|| {
+                self.inner
+                    .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+            })
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&result).map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// Diagnostics (source / readiness / retained count / warning) as JSON.
@@ -1913,7 +1961,7 @@ impl PyForwardPassPerfModel {
 
 /// Register the AIConfigurator compatibility surface on the unified
 /// `aisimulate._runtime` extension. Python's
-/// `aiconfigurator_core._aiconfigurator_core` module is a pure-Python shim that
+/// `aisimulate_core._native` module is a pure-Python shim that
 /// re-exports these objects from that canonical extension.
 ///
 /// The removed `build_aic_engine` flat adapter is intentionally not exposed;
@@ -1949,7 +1997,7 @@ mod tests {
 
     fn systems_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems")
+            .join("../../python/aisimulate/src/aisimulate_core/systems")
     }
 
     /// `cargo test` runs without an embedding host, so the interpreter must
@@ -2061,6 +2109,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            decoder_replay: false,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -2281,7 +2330,7 @@ mod tests {
     fn aic_to_py_maps_typed_errors_to_sdk_classes() {
         py_init();
         Python::with_gil(|py| {
-            let sdk_available = py.import("aiconfigurator_core.sdk.errors").is_ok();
+            let sdk_available = py.import("aisimulate_core.sdk.errors").is_ok();
 
             let check = |err: AicError, sdk_name: &str| {
                 let pyerr = aic_to_py(err);

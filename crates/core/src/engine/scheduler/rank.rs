@@ -601,6 +601,7 @@ fn split_pass(
         kv_event_visibility,
         kv_events,
         fpm,
+        decode_acceptance,
         ..
     } = pass;
     let (start_kv, completion_kv) = match kv_event_visibility {
@@ -633,6 +634,7 @@ fn split_pass(
         kv_events: completion_kv,
         metrics: map_metrics(mocker_metrics),
         forward_pass_metrics: fpm.map(map_fpm).unwrap_or_default(),
+        decode_acceptance,
     };
     Ok((same_timestamp_retry, start, completion))
 }

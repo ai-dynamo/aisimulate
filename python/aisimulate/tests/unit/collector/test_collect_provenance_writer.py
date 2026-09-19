@@ -48,11 +48,11 @@ if "torch" not in sys.modules:
     sys.modules["torch"] = _torch
 
 import collect as collect_mod
-
-import helper as helper_mod
 from collector import provenance
 from collector.framework_manifest import CollectorRuntime
 from collector.registry_types import PerfFile
+
+import helper as helper_mod
 
 pytestmark = pytest.mark.unit
 

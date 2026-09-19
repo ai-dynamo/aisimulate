@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-
 from collector.helper import log_scope_dirname
 
 pytestmark = pytest.mark.unit

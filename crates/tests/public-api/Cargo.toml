@@ -10,4 +10,4 @@ license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1"
-aiconfigurator-core = { package = "aisimulate-core", path = "../../core", features = ["python"] }
+aisimulate-core = { package = "aisimulate-core", path = "../../core", features = ["python"] }

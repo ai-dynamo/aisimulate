@@ -18,15 +18,15 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, models, perf_database
-from aiconfigurator_core.sdk.config import ModelConfig
-from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
-from aiconfigurator_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.output import write_recommendations
 from aisimulate.recommend import run_recommendation
 from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, models, perf_database
+from aisimulate_core.sdk.config import ModelConfig
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS
 
 pytestmark = pytest.mark.unit
 
@@ -147,7 +147,7 @@ def local_profiles(tmp_path):
         root = tmp_path / label
         data = root / "data" / _SYSTEM / "vllm" / _VERSION
         data.mkdir(parents=True)
-        system = yaml.safe_load((files("aiconfigurator_core") / "systems/h200_sxm.yaml").read_text())
+        system = yaml.safe_load((files("aisimulate_core") / "systems/h200_sxm.yaml").read_text())
         system["data_dir"] = f"data/{_SYSTEM}"
         system["gpu"]["mem_capacity"] = memory
         (root / f"{_SYSTEM}.yaml").write_text(yaml.safe_dump(system))

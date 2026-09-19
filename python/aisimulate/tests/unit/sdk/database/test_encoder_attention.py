@@ -4,8 +4,8 @@
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations import EncoderAttention
+from aisimulate.sdk import common
+from aisimulate.sdk.operations import EncoderAttention
 
 pytestmark = pytest.mark.unit
 

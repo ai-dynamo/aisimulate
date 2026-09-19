@@ -858,7 +858,7 @@ mod tests {
 
     const SYSTEMS_ROOT: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../python/aisimulate/src/aiconfigurator_core/systems"
+        "/../../python/aisimulate/src/aisimulate_core/systems"
     );
 
     /// A PerfDatabase whose fpm_forward table points at a temp pair; the rest

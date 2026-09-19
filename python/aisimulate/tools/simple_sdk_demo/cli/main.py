@@ -4,12 +4,12 @@
 import argparse
 import sys
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.inference_session import InferenceSession
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.perf_database import get_database
-from aiconfigurator.sdk.task_v2 import _warn_large_ep_flag
+from aisimulate.sdk import common, config
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.inference_session import InferenceSession
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.perf_database import get_database
+from aisimulate.sdk.task_v2 import _warn_large_ep_flag
 
 
 def parse(args):

@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from aiconfigurator_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, engine, memory
-from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
-from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, engine, memory
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+from aisimulate_core.sdk.fpm_profile import FpmModelProfile, load_fpm_profile
 
 pytestmark = pytest.mark.unit
 
@@ -87,7 +87,7 @@ def _request(profile, method="auto", **overrides):
 
 
 def _normalize(config):
-    return json.loads(engine.aiconfigurator_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
+    return json.loads(engine.aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config)))
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ def direct_compile(monkeypatch):
     monkeypatch.setattr(engine, "build_model_config", _fail_graph)
     monkeypatch.setattr(engine, "_maybe_load_database", _fail_graph)
     monkeypatch.setattr(engine, "_literal_backend_version", lambda _s, _b, version, *_args: version)
-    monkeypatch.setattr(engine.aiconfigurator_core, "engine_spec_bincode_from_json", lambda value: value.encode())
+    monkeypatch.setattr(engine.aisimulate_core, "engine_spec_bincode_from_json", lambda value: value.encode())
 
     def compile_profile(profile, **kwargs):
         config = _normalize(_request(profile, kwargs.pop("fpm_interpolation", "auto"), **kwargs))
@@ -165,6 +165,27 @@ def test_precision_conflicts_fail_before_build(profile_dict, direct_compile, ove
         direct_compile(profile_dict, **override)
 
 
+@pytest.mark.parametrize("controls", [{"enable_eplb": True}, {"wideep_num_slots": 256}, {"moe_backend": "megamoe"}])
+def test_profile_engine_controls_fail_before_model_lookup(profile_dict, direct_compile, profile_memory, controls):
+    with pytest.raises(ValueError):
+        _normalize(_request(profile_dict, "direct", estimation_mode="auto", **controls))
+    with pytest.raises(ValueError, match="FPM profiles do not support"):
+        engine.compile_engine(
+            "test/unknown-decoder",
+            "test_gpu",
+            "vllm",
+            "0.25.1",
+            tp_size=2,
+            moe_tp_size=2,
+            forward_model="fpm",
+            fpm_profile=profile_dict,
+            fpm_interpolation="direct",
+            **controls,
+        )
+    with pytest.raises(ValueError, match="FPM profiles do not support"):
+        profile_memory(**controls)
+
+
 @pytest.mark.parametrize("cp_size", [2, 0, True, 1.0, "1", None])
 @pytest.mark.parametrize("with_profile", [False, True])
 def test_sdk_entry_points_reject_unsupported_cp_before_construction(profile_dict, monkeypatch, cp_size, with_profile):
@@ -206,7 +227,7 @@ def test_explicit_sol_does_not_fall_back_on_unknown_architecture(profile_dict, d
 
 
 def test_registered_auto_uses_registry_presence_without_constructing(profile_dict, monkeypatch):
-    from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY
+    from aisimulate_core.sdk.models.base import _MODEL_REGISTRY
 
     profile = load_fpm_profile(profile_dict)
     monkeypatch.setitem(_MODEL_REGISTRY, profile.architecture, object())
@@ -216,7 +237,7 @@ def test_registered_auto_uses_registry_presence_without_constructing(profile_dic
 
 
 def test_registered_build_failure_is_not_direct_fallback(profile_dict, monkeypatch):
-    from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY
+    from aisimulate_core.sdk.models.base import _MODEL_REGISTRY
 
     monkeypatch.setitem(_MODEL_REGISTRY, profile_dict["architecture"], object())
     monkeypatch.setattr(engine, "_literal_backend_version", lambda _s, _b, version, *_args: version)
@@ -399,6 +420,7 @@ def test_profile_block_budget_preserves_resource_provenance(profile_dict, profil
         ({"max_batch_size": 257}, "resource envelope exceeded"),
         ({"max_num_tokens": True}, "positive integer"),
         ({"fmha_quant_mode": "bfloat16"}, "identity conflict"),
+        ({"attention_backend": "different"}, "identity conflict"),
         ({"cp_size": 2}, "cp_size must be the integer 1"),
         ({"nextn": 1}, "nextn must be 0"),
         ({"gpu_memory_capacity_bytes_override": 200}, "no KV budget"),
@@ -419,13 +441,13 @@ def native_profile_config(profile_dict, monkeypatch):
     profile_dict["deployments"][0].update(system="h200_sxm")
     monkeypatch.setattr(engine, "get_model", _fail_graph)
     specs = []
-    encode = engine.aiconfigurator_core.engine_spec_bincode_from_json
+    encode = engine.aisimulate_core.engine_spec_bincode_from_json
 
     def record_spec(value):
         specs.append(json.loads(value))
         return encode(value)
 
-    monkeypatch.setattr(engine.aiconfigurator_core, "engine_spec_bincode_from_json", record_spec)
+    monkeypatch.setattr(engine.aisimulate_core, "engine_spec_bincode_from_json", record_spec)
 
     def compile_config():
         engine.compile_engine(
@@ -523,7 +545,7 @@ def test_real_fpm_cells_compile_and_query_with_model_construction_disabled(
 ):
     import pyarrow.parquet as pq
 
-    import aiconfigurator_core
+    import aisimulate_core
 
     # Synthetic resource declarations deliberately isolate timing compilation;
     # this test does not qualify real GPU memory. The measured model identity
@@ -551,7 +573,7 @@ def test_real_fpm_cells_compile_and_query_with_model_construction_disabled(
     assert resolved["fpm_profile"] == load_fpm_profile(profile_dict).model_dump(mode="json")
     assert resolved["gemm_quant_mode"] == gemm
     assert resolved["fmha_quant_mode"] == fmha
-    data_path = Path(aiconfigurator_core.__file__).parent / "systems/data" / system / "vllm/0.25.1"
+    data_path = Path(aisimulate_core.__file__).parent / "systems/data" / system / "vllm/0.25.1"
     rows = pq.read_table(
         data_path / "fpm_forward_perf.parquet",
         filters=[("model_path", "=", model), ("tp", "=", tp), ("dp", "=", dp), ("batch_size", "=", 1)],
@@ -630,7 +652,7 @@ def test_profile_topology_accepts_dense_tp_without_moe_partition(profile_dict, m
 
 @pytest.mark.parametrize("registered", [False, True])
 def test_profile_auto_preserves_global_priority_with_deny(profile_dict, monkeypatch, registered):
-    from aiconfigurator_core.sdk.models.base import _MODEL_REGISTRY
+    from aisimulate_core.sdk.models.base import _MODEL_REGISTRY
 
     if registered:
         monkeypatch.setitem(_MODEL_REGISTRY, profile_dict["architecture"], object())
@@ -690,7 +712,7 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    import aiconfigurator_core
+    import aisimulate_core
 
     profile_dict["deployments"][0].update(system="h200_sxm", attention_backend="future_attention")
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
@@ -700,7 +722,7 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
     def make_root(name, kind):
         root = tmp_path / name
         root.mkdir()
-        packaged = Path(aiconfigurator_core.__file__).parent / "systems/h200_sxm.yaml"
+        packaged = Path(aisimulate_core.__file__).parent / "systems/h200_sxm.yaml"
         (root / packaged.name).write_bytes(packaged.read_bytes())
         identity = load_fpm_profile(profile_dict).deployments[0].model_dump(mode="json", exclude={"resources"})
         coordinates = []

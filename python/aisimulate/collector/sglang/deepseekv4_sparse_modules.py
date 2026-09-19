@@ -112,7 +112,7 @@ __all__ = [
 
 
 DEFAULT_MODEL = _DSV4_DEFAULT_MODELS[0]
-MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aiconfigurator" / "model_configs"
+MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aisimulate_core" / "model_configs"
 
 # ═══════════════════════════════════════════════════════════════════════
 # Model config (single source for all DSV4 model-specific shapes)

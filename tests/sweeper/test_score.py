@@ -19,6 +19,7 @@ from aisimulate.sweeper.score import (
     is_feasible,
     make_candidate,
     meets_aggregate_sla,
+    minimum_goodput_violations,
     objective_value,
     objective_vector,
     pareto_front,
@@ -46,6 +47,92 @@ REPORT = {
     "power_w": 487.5,
     "power_coverage": 0.95,
 }
+
+
+def test_min_gpus_uses_provisioned_count_not_time_average_or_throughput():
+    candidate = make_candidate({"used_gpus": 2}, REPORT, OptimizationTarget.MIN_GPUS)
+    assert candidate.score == -2.0  # REPORT's time-averaged GPU count is four.
+    assert not OptimizationTarget.MIN_GPUS.maximize
+    with pytest.raises(ValueError, match="concrete positive"):
+        score_report(REPORT, OptimizationTarget.MIN_GPUS)
+
+
+@pytest.mark.parametrize(("target", "expected_gpus"), [("goodput_per_gpu", 4), ("min_gpus", 2)])
+def test_efficiency_and_minimum_gpu_selection_have_distinct_expected_results(target, expected_gpus):
+    # Synthetic one-second reports, ten output tokens per SLA-qualified request.
+    # Efficiency: 40/1=40, 100/2=50, 400/4=100 tok/s/GPU -> four GPUs.
+    # Sizing at 10 qualified requests/s: one GPU fails; two is the smallest feasible count.
+    goal = OptimizationGoal(
+        target=target,
+        sla=SLATarget(itl_ms=30),
+        strict_sla=True,
+        min_goodput_rps=10 if target == "min_gpus" else None,
+    )
+    candidates = [
+        make_candidate(
+            {"used_gpus": gpus},
+            dict(
+                REPORT,
+                duration_ms=1000,
+                gpu_hours=gpus / 3600,
+                completed_requests=rps,
+                num_ttft_samples=rps,
+                num_tpot_samples=rps,
+                num_e2e_latency_samples=rps,
+                request_throughput_rps=rps,
+                output_throughput_tok_s=10 * rps,
+                goodput_completed_requests=rps,
+                goodput_request_throughput_rps=rps,
+                goodput_output_throughput_tok_s=10 * rps,
+            ),
+            goal.target,
+        )
+        for gpus, rps in [(1, 4), (2, 10), (4, 40)]
+    ]
+    assert analyze_candidates(candidates, goal)[0].used_gpus == expected_gpus
+
+
+def test_min_gpus_filters_full_pool_before_ranking_and_breaks_ties_by_goodput_and_latency():
+    goal = OptimizationGoal(target="min_gpus", sla=SLATarget(itl_ms=30), min_goodput_rps=10)
+
+    def candidate(gpus, goodput, *, rps=10, itl=20, e2e=1200):
+        return make_candidate(
+            {"used_gpus": gpus, "name": str(goodput)},
+            dict(
+                REPORT,
+                goodput_request_throughput_rps=rps,
+                goodput_output_throughput_tok_s=goodput,
+                mean_tpot_ms=itl,
+                mean_e2e_latency_ms=e2e,
+            ),
+            OptimizationTarget.MIN_GPUS,
+        )
+
+    large = candidate(8, 10000)
+    smaller = candidate(2, 1000)
+    tied_better = candidate(2, 2000)
+    tied_lower_latency = candidate(2, 2000, e2e=1000)
+    insufficient_rate = candidate(1, 20000, rps=9.99)
+    fails_latency = candidate(1, 20000, itl=31)
+    selected = analyze_candidates(
+        [large, insufficient_rate, fails_latency, smaller, tied_better, tied_lower_latency], goal
+    )
+    assert selected == [tied_lower_latency, tied_better, smaller, large]
+    assert selected[0].metrics["goodput_request_throughput_rps"] == 10
+    assert selected[0].metrics["goodput_output_throughput_tok_s"] == 2000
+
+
+@pytest.mark.parametrize("value", [None, float("nan"), float("inf"), -1, 0, 9.999, True])
+def test_min_goodput_rejects_missing_invalid_or_insufficient_measurements(value):
+    report = {"request_throughput_rps": 100, "output_throughput_tok_s": 100000}
+    if value is not None:
+        report["goodput_request_throughput_rps"] = value
+    assert minimum_goodput_violations(report, 10)
+
+
+def test_min_goodput_accepts_equality_and_is_optional_for_concurrency():
+    assert minimum_goodput_violations({"goodput_request_throughput_rps": 10}, 10) == ()
+    assert minimum_goodput_violations({}, None) == ()
 
 
 def test_objective_per_target():

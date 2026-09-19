@@ -6,7 +6,7 @@
 //! Whole-model `fpm_forward` perf tables (Python `forward_model="fpm"`).
 //!
 //! Rust port of the loader half of
-//! `python/aisimulate/src/aiconfigurator_core/sdk/operations/fpm_forward.py`: the formal
+//! `python/aisimulate/src/aisimulate_core/sdk/operations/fpm_forward.py`: the formal
 //! collector pair
 //!
 //! ```text

@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 ARTIFACT_NAME = "fpe-support-matrix-web"
-DATA_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
+DATA_PREFIX = "python/aisimulate/src/aisimulate_core/systems/fpe_support_matrix/"
 WORKFLOWS = {".github/workflows/fpe-support-matrix.yml", ".github/workflows/nightly-ci.yml"}
 RELEASE_WORKFLOW = ".github/workflows/release-nightly-ci.yml"
 QUALIFICATION = "complete_native_fpe_reports_and_required_probes"

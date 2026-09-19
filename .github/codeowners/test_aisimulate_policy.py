@@ -69,11 +69,11 @@ def test_representative_routing_contract() -> None:
         FPE,
         MAINTAINERS,
     }
-    assert _owners("python/aisimulate/src/aiconfigurator_core/sdk/engine.py") == {
+    assert _owners("python/aisimulate/src/aisimulate_core/sdk/engine.py") == {
         FPE,
         MAINTAINERS,
     }
-    assert _owners("python/aisimulate/src/aiconfigurator/generator/__init__.py") == {
+    assert _owners("python/aisimulate/src/aisimulate/generator/__init__.py") == {
         FPE,
         MAINTAINERS,
     }
@@ -88,7 +88,7 @@ def test_representative_routing_contract() -> None:
     assert _owners("docs/core-api.md") == {FPE, MAINTAINERS}
 
     # Unified application Replay, Sweeper, and Mocker surface.
-    assert _owners("python/aisimulate/src/aisimulate/aic.py") == {
+    assert _owners("python/aisimulate/src/aisimulate/capacity.py") == {
         FPE,
         MAINTAINERS,
     }

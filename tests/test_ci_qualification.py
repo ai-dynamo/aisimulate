@@ -7,11 +7,12 @@ import copy
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from scripts.check_prediction_numerics import check_results, validate_cases
+from scripts.check_prediction_numerics import check_results, resolve_baseline, validate_cases
 
 ROOT = Path(__file__).resolve().parents[1]
 BASELINE_SHA = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())["baseline_source_sha"]
@@ -64,6 +65,91 @@ def test_valid_baseline_commit_is_accepted(case):
     assert validate_cases({"schema_version": 1, "baseline_source_sha": BASELINE_SHA, "cases": [case]}) == [case]
 
 
+def test_fetch_historical_baseline_preserves_checkout_and_works_offline_afterward(tmp_path):
+    upstream = tmp_path / "upstream"
+    checkout = tmp_path / "checkout"
+    upstream.mkdir()
+
+    def git(root, *args):
+        return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+
+    git(upstream, "init", "-q", "-b", "main")
+    git(upstream, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "main")
+    git(upstream, "checkout", "-qb", "historical-baseline")
+    git(
+        upstream,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "baseline",
+    )
+    baseline = git(upstream, "rev-parse", "HEAD")
+    git(upstream, "checkout", "main")
+    git(tmp_path, "clone", "--depth=1", "--single-branch", upstream.as_uri(), str(checkout))
+    head = git(checkout, "rev-parse", "HEAD")
+    manifest = {"baseline_source_sha": baseline}
+    with pytest.raises(ValueError, match="does not resolve"):
+        resolve_baseline(manifest, repository_root=checkout)
+    assert resolve_baseline(manifest, fetch=True, repository_root=checkout) == baseline
+    assert git(checkout, "rev-parse", "HEAD") == head
+    assert git(checkout, "branch", "--show-current") == "main"
+    git(checkout, "remote", "remove", "origin")
+    assert resolve_baseline(manifest, fetch=True, repository_root=checkout) == baseline
+    assert manifest == {"baseline_source_sha": baseline}
+
+
+@pytest.mark.parametrize("baseline", [None, "main", "--upload-pack=invalid", "a" * 39, "z" * 40])
+def test_fetch_baseline_rejects_non_sha_before_git(tmp_path, baseline):
+    with pytest.raises(ValueError, match="full commit SHA"):
+        resolve_baseline({"baseline_source_sha": baseline}, fetch=True, repository_root=tmp_path)
+
+
+def test_fetch_baseline_fails_when_origin_cannot_supply_commit(tmp_path):
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(tmp_path / "missing")], cwd=tmp_path, check=True)
+    with pytest.raises(subprocess.CalledProcessError):
+        resolve_baseline({"baseline_source_sha": "0" * 40}, fetch=True, repository_root=tmp_path)
+
+
+def test_fetch_baseline_cli_does_not_require_prediction_cases_or_write_results(tmp_path):
+    baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"baseline_source_sha": baseline}))
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/check_prediction_numerics.py"),
+            "--manifest",
+            str(manifest),
+            "--fetch-baseline-only",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert result.stdout.strip() == f"Numerical baseline available: {baseline}"
+    assert set(tmp_path.iterdir()) == {manifest}
+
+
+@pytest.mark.parametrize("arguments", [[], ["--fetch-baseline-only", "--output", "results.json"]])
+def test_numerical_cli_requires_exactly_one_mode(tmp_path, arguments):
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/check_prediction_numerics.py"), *arguments],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "--fetch-baseline-only" in result.stderr
+    assert "--output" in result.stderr
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize("base", ["", "runner:latest", "runner:2.0", "runner@sha256:abc", "runner@sha256:" + "x" * 64])
 def test_image_builder_rejects_unpinned_base_before_docker(tmp_path, base):
     result, log = _build_image(tmp_path, base)
@@ -103,10 +189,17 @@ def _build_image(tmp_path, base):
 def test_manifest_retains_dense_moe_prefill_and_decode():
     manifest = json.loads((ROOT / ".github/prediction-numerical-sentinels.json").read_text())
     cases = validate_cases(manifest)
-    assert len(cases) == 8
-    assert {(c["compile"]["model_path"], c["method"], c["arguments"]["isl"]) for c in cases} == {
-        (model, method, isl)
-        for model in ("Qwen/Qwen3-32B", "MiniMaxAI/MiniMax-M2.5")
+    assert len(cases) == 16
+    assert {
+        (c["compile"]["backend"], c["compile"]["model_path"], c["method"], c["arguments"]["isl"]) for c in cases
+    } == {
+        (backend, model, method, isl)
+        for backend, model in (
+            ("vllm", "Qwen/Qwen3-32B"),
+            ("vllm", "MiniMaxAI/MiniMax-M2.5"),
+            ("trtllm", "Qwen/Qwen3-32B"),
+            ("sglang", "Qwen/Qwen3-32B"),
+        )
         for method in ("predict_prefill_latency", "predict_decode_latency")
         for isl in (1024, 8192)
     }

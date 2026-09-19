@@ -43,8 +43,8 @@ Consequences adopted in this plan:
 
 ## 2. Data contract consumed (fixed by Task 1 — do not change here)
 
-Location (post-restructure the canonical tree is `aic-core/src/aiconfigurator_core/systems/data/`;
-`src/aiconfigurator/systems` is a symlink to it):
+Location (post-restructure the canonical tree is `src/aisimulate_core/systems/data/`;
+`src/aisimulate_core/systems` is a symlink to it):
 
 ```text
 systems/data/<system>/<backend>/<version>/
@@ -107,13 +107,13 @@ Loader obligations (mirroring the writer's semantics):
 ### M0 — `forward_model` switch (default unchanged)
 
 - Add `forward_model: str = "op_level"` to **`ModelConfig`**
-  (`aic-core/src/aiconfigurator_core/sdk/config.py:11`). ModelConfig, not RuntimeConfig,
+  (`src/aisimulate_core/sdk/config.py:11`). ModelConfig, not RuntimeConfig,
   because the op-list rewrite happens inside `get_model`, which receives ModelConfig only.
   Values: `op_level | fpm`; anything else raises.
 - Thread it exactly like `engine_step_backend`:
-  TaskV2 field + `build_model_config` (`src/aiconfigurator/sdk/task_v2.py:354, 1074`),
+  TaskV2 field + `build_model_config` (`src/aisimulate/sdk/task_v2.py:354, 1074`),
   v1-compat passthrough (`task_v1_compat.py:83`), CLI flag `--forward-model`
-  (`src/aiconfigurator/cli/main.py`, `cli/api.py`), webapp bridges, `pareto_analysis.py`.
+  (`src/aisimulate/legacy_cli/main.py`, `cli/api.py`), webapp bridges, `pareto_analysis.py`.
   Generator is **not** touched in V1 (module boundary). This is not an exemption from
   generator validation: `forward_model` is a modeling-mode switch that never flows into
   generator output — the bridge (`generator/module_bridge.py`) reads named Task
@@ -126,7 +126,7 @@ Loader obligations (mirroring the writer's semantics):
 
 ### M1 — Python loader, `FPMForwardOp`, centralized rewrite
 
-New code lives in the modeling core (`aic-core/src/aiconfigurator_core/sdk/`):
+New code lives in the modeling core (`src/aisimulate_core/sdk/`):
 
 1. `PerfDataFilename.fpm_forward = "fpm_forward_perf.parquet"` (`common.py`).
 2. A loader (`load_fpm_forward_data`, shipped in `operations/fpm_forward.py` — NOT in

@@ -10,11 +10,11 @@ from typing import ClassVar
 import pandas as pd
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk import pareto_analysis as pa
-from aiconfigurator.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator.sdk.errors import NoFeasibleConfigError
-from aiconfigurator.sdk.utils import HuggingFaceDownloadError
+from aisimulate.sdk import common
+from aisimulate.sdk import pareto_analysis as pa
+from aisimulate.sdk.config import ModelConfig, RuntimeConfig
+from aisimulate.sdk.errors import NoFeasibleConfigError
+from aisimulate.sdk.utils import HuggingFaceDownloadError
 
 pytestmark = pytest.mark.unit
 
@@ -121,7 +121,7 @@ def _patch_afd_pareto_fixed_batch_dependencies(
     monkeypatch.setattr(pa, "_derive_a_batch_size", fake_derive_a_batch_size)
     monkeypatch.setattr(pa, "_quick_balance_ratio", lambda *_args, **_kwargs: 1.0)
     monkeypatch.setattr(
-        "aiconfigurator.sdk.afd_partition.build_afd_ops_partition",
+        "aisimulate.sdk.afd_partition.build_afd_ops_partition",
         lambda *_args, **_kwargs: SimpleNamespace(attn_ops=[], ffn_ops=[]),
     )
     return captured
@@ -329,7 +329,7 @@ def test_derive_a_batch_size_aligns_converted_total_capacity(monkeypatch):
 
     monkeypatch.setattr(pa, "get_model", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
-        "aiconfigurator.sdk.afd_partition.build_afd_ops_partition",
+        "aisimulate.sdk.afd_partition.build_afd_ops_partition",
         lambda *_args, **_kwargs: SimpleNamespace(attn_ops=[]),
     )
 
@@ -361,7 +361,7 @@ def test_derive_a_batch_size_aligns_converted_total_capacity(monkeypatch):
 def test_derive_a_batch_size_keeps_capacity_above_256(monkeypatch):
     monkeypatch.setattr(pa, "get_model", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
-        "aiconfigurator.sdk.afd_partition.build_afd_ops_partition",
+        "aisimulate.sdk.afd_partition.build_afd_ops_partition",
         lambda *_args, **_kwargs: SimpleNamespace(attn_ops=[]),
     )
     monkeypatch.setattr(pa, "_analytical_max_batch_size", lambda *_args, **_kwargs: 128)
@@ -387,7 +387,7 @@ def test_derive_a_batch_size_keeps_capacity_above_256(monkeypatch):
 def test_derive_a_batch_size_applies_configured_ceiling(monkeypatch):
     monkeypatch.setattr(pa, "get_model", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(
-        "aiconfigurator.sdk.afd_partition.build_afd_ops_partition",
+        "aisimulate.sdk.afd_partition.build_afd_ops_partition",
         lambda *_args, **_kwargs: SimpleNamespace(attn_ops=[]),
     )
     monkeypatch.setattr(pa, "_analytical_max_batch_size", lambda *_args, **_kwargs: 128)

@@ -51,6 +51,69 @@ def _run(config: dict):
     )
 
 
+@pytest.mark.parametrize(
+    "timestamps,expected",
+    [
+        ([None, 100], [0, 100]),
+        ([100, None], [0, 100]),
+        ([100, 200], [0, 100]),
+        ([None, None], [0, 0]),
+    ],
+)
+def test_native_mooncake_preserves_implicit_zero_arrivals(tmp_path, timestamps, expected):
+    trace = tmp_path / "arrivals.jsonl"
+    rows = []
+    for index, timestamp in enumerate(timestamps):
+        row = {"input_length": 4, "output_length": 1, "hash_ids": [index]}
+        if timestamp is not None:
+            row["timestamp"] = timestamp
+        rows.append(row)
+    trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    report = _run(
+        {
+            "engine": _engine(),
+            "traffic": {
+                "source": {"type": "trace", "format": "mooncake", "paths": [str(trace)], "block_size": 4},
+                "load": {"type": "trace_timestamps"},
+            },
+        }
+    )
+    records = report.metadata["native_report"]["per_request"]
+    assert sorted(record["arrival_time_ms"] for record in records) == expected
+    assert all(record["output_length"] == 1 for record in records)
+    assert report.metrics["completed_requests"] == 2
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_prediction_preserves_context_limit_for_all_backends(backend: str, mode: str) -> None:
+    engine = _engine()
+    worker = engine["workers"]["aggregated"]
+    roles = ["aggregated"] if mode == "aggregated" else ["prefill", "decode"]
+    engine.update(backend=backend, mode=mode, workers=dict.fromkeys(roles, worker))
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine})).backend_deployment
+    for role in roles:
+        payload = getattr(deployment, f"{'agg' if role == 'aggregated' else role}_engine_args")
+        assert payload["max_model_len"] == 1024
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_prediction_max_context_preserves_backend_defaults(backend: str, mode: str, monkeypatch) -> None:
+    monkeypatch.setattr("aisimulate.compiler.resolve_model_context_length", lambda _: 4096)
+    engine = _engine()
+    worker = engine["workers"]["aggregated"]
+    roles = ["aggregated"] if mode == "aggregated" else ["prefill", "decode"]
+    engine.update(backend=backend, mode=mode, context_length="max", workers=dict.fromkeys(roles, worker))
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine})).backend_deployment
+    for role in roles:
+        payload = getattr(deployment, f"{'agg' if role == 'aggregated' else role}_engine_args")
+        if backend == "vllm":
+            assert payload["max_model_len"] == 4096
+        else:
+            assert "max_model_len" not in payload
+
+
 def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
     parsed = CorePredictionConfig.model_validate({"engine": _engine()})
     deployment = prediction_to_replay_spec(parsed).backend_deployment
@@ -69,6 +132,7 @@ def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
                 "moe_ep_size": None,
                 "nextn": None,
                 "forward_model": "op_level",
+                "database_mode": "SILICON",
             },
         }
     }
@@ -201,7 +265,10 @@ def test_b200_power_survives_native_json_and_runner_normalization() -> None:
 
     assert report.metrics["completed_requests"] == 100
     native_summary = report.metadata["native_report"]
-    for name, expected in {"power_w": 655.9411158961074, "power_coverage": 0.9070317503277924}.items():
+    # Decode converts scheduler-inclusive length to past KV before pricing the
+    # current token. Reverting only that conversion reproduces the older
+    # section 4.11 capture (655.9411158961074 W, coverage 0.9070317503277924).
+    for name, expected in {"power_w": 655.957349601573, "power_coverage": 0.907023184956731}.items():
         assert native_summary[name] == pytest.approx(expected)
         assert report.metrics[name] == native_summary[name]
 
@@ -440,18 +507,39 @@ def _fpm_engine() -> dict:
     }
 
 
-def test_prediction_spec_lowers_fpm_forward_model_onto_the_rank() -> None:
+def test_prediction_spec_lowers_fpm_forward_model_into_canonical_timing() -> None:
     parsed = CorePredictionConfig.model_validate({"engine": _fpm_engine()})
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
-    assert deployment.agg_engine_args["aic_forward_model"] == "fpm"
-    assert "timing_model" not in deployment.agg_engine_args
-    assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
+    timing = deployment.agg_engine_args["timing_model"]
+    assert timing["type"] == "external"
+    assert timing["provider"] == "aic"
+    assert timing["config"]["estimation_mode"] == "fpm_interpolation"
+    assert timing["config"]["fallback_policy"] == "deny"
+    assert timing["config"]["worker_type"] == "aggregated"
+    assert "aic_forward_model" not in deployment.agg_engine_args
+    config = deployment.performance_model_metadata["aggregated"]["config"]
+    assert all(value == timing["config"][name] for name, value in config.items())
+    assert config["estimation_mode"] == "fpm_interpolation"
+    assert config["fallback_policy"] == "deny"
+    assert config["worker_type"] == "aggregated"
+    assert "forward_model" not in config
+    assert config["model"] == parsed.engine.model
+    assert config["system"] == parsed.engine.hardware
+    assert config["backend"] == parsed.engine.backend
+    assert config["backend_version"] == parsed.engine.backend_version
+    assert (config["tp"], config["pp"], config["attention_dp"], config["moe_tp_size"], config["moe_ep_size"]) == (
+        4,
+        1,
+        1,
+        4,
+        1,
+    )
 
 
 @pytest.mark.parametrize("explicit_mode", [False, True])
 def test_prediction_spec_omits_the_forward_model_rank_field_for_op_level(monkeypatch, explicit_mode: bool) -> None:
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
@@ -495,9 +583,34 @@ def test_prediction_spec_lowers_forward_model_per_role_in_disaggregated_mode() -
     deployment = prediction_to_replay_spec(parsed).backend_deployment
 
     assert "aic_forward_model" not in deployment.prefill_engine_args
-    assert deployment.decode_engine_args["aic_forward_model"] == "fpm"
-    assert deployment.performance_model_metadata["prefill"]["config"]["forward_model"] == "op_level"
-    assert deployment.performance_model_metadata["decode"]["config"]["forward_model"] == "fpm"
+    assert "aic_forward_model" not in deployment.decode_engine_args
+    assert deployment.decode_engine_args["timing_model"]["type"] == "external"
+    assert deployment.decode_engine_args["timing_model"]["provider"] == "aic"
+    assert deployment.decode_engine_args["timing_model"]["config"]["fallback_policy"] == "deny"
+    prefill = deployment.prefill_engine_args["timing_model"]["config"]
+    decode = deployment.decode_engine_args["timing_model"]["config"]
+    assert prefill["estimation_mode"] == "auto"
+    assert prefill["worker_type"] == "prefill"
+    assert decode["estimation_mode"] == "fpm_interpolation"
+    assert decode["worker_type"] == "decode"
+    for role, identity in (("prefill", prefill), ("decode", decode)):
+        config = deployment.performance_model_metadata[role]["config"]
+        assert all(value == identity[name] for name, value in config.items())
+        assert config["estimation_mode"] == ("auto" if role == "prefill" else "fpm_interpolation")
+        assert config["worker_type"] == role
+        assert "forward_model" not in config
+        assert config["fallback_policy"] == "deny"
+        assert config["model"] == engine["model"]
+        assert config["system"] == engine["hardware"]
+        assert config["backend"] == engine["backend"]
+        assert config["backend_version"] == engine["backend_version"]
+        assert (config["tp"], config["pp"], config["attention_dp"], config["moe_tp_size"], config["moe_ep_size"]) == (
+            4,
+            1,
+            1,
+            4,
+            1,
+        )
 
 
 _SMALL_TRAFFIC = {
@@ -735,7 +848,7 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
     validate(stdout["details"], schema)
     sections = stdout["details"]["sections"]
-    assert set(sections) == {"summary", "memory", "time", "energy"}
+    assert set(sections) == {"summary", "memory", "time", "energy", "source"}
     assert saved["power_diagnostics"]["power_w"] is None
     assert stdout["summary"]["power_w"] is None
     memory = sections["memory"]["roles"]["aggregated"]
@@ -749,7 +862,23 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     assert "wall_time_ms" not in sections["time"]["serving_metrics"]
     assert "duration_ms" not in sections["time"]["serving_metrics"]
     assert stdout["summary"]["duration_ms"] > 0
-    assert "phases" not in sections["time"]
+    timing = sections["time"]["diagnostics"]
+    assert timing["status"] == "available"
+    assert timing["scope"] == "accumulated_active_forward_pass_per_gpu"
+    assert sections["source"]["status"] == "available"
+    assert len(timing["phases"]) == 2
+    for phase, source in zip(timing["phases"], sections["source"]["phases"], strict=True):
+        assert phase["latency_ms"] == pytest.approx(sum(op["latency_ms"] for op in phase["operations"]))
+        assert phase["operations"]
+        assert any(op["sol"] is not None for op in phase["operations"])
+        for op, provenance in zip(phase["operations"], source["operations"], strict=True):
+            assert provenance == {key: op[key] for key in ("name", "latency_ms", "source", "fallbacks")}
+            assert isinstance(op["fallbacks"], list)
+            if op["sol"] is None:
+                assert op["sol_unavailable_reason"]
+            elif op["sol"]["latency_ms"] > 0:
+                assert op["latency_to_sol_ratio"] == pytest.approx(op["latency_ms"] / op["sol"]["latency_ms"])
+    assert "performance_diagnostics" not in stdout["summary"]
     # Repeating the same prediction without diagnostics keeps modeled metrics identical.
     plain_out = tmp_path / "plain"
     assert main(["predict", "-c", str(path), "--format", "json", "--output-dir", str(plain_out)]) == 0
@@ -777,5 +906,32 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, 
     assert memory["stage"] == "before_native_capacity_adjustments"
     assert memory["estimated_num_gpu_blocks"] > 0
     assert "num_gpu_blocks" not in memory
-    assert set(sections) == {"summary", "memory", "time", "energy"}
+    assert set(sections) == {"summary", "memory", "time", "energy", "source"}
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
+    assert sections["time"]["diagnostics"]["status"] == "unavailable"
+    assert sections["source"]["status"] == "unavailable"
+    assert "whole-model FPM" in sections["source"]["unavailable_reason"]
+
+
+@pytest.mark.parametrize("prefix,reused", [(3, 0), (4, 4), (5, 4), (7, 4)])
+def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic(prefix, reused) -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"]["kv_cache"]["block_size"] = 4
+    report = _run(
+        {
+            "traffic": {
+                "source": {
+                    "type": "synthetic",
+                    "input_tokens": 8,
+                    "output_tokens": 2,
+                    "cached_prefix_tokens": prefix,
+                },
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 2},
+            },
+            "engine": engine,
+        }
+    )
+
+    records = report.metadata["native_report"]["per_request"]
+    assert [row["reused_input_tokens"] for row in records] == [0, reused]

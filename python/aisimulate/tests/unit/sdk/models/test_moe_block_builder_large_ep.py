@@ -46,17 +46,17 @@ import pandas as pd
 import pytest
 import yaml
 
-import aiconfigurator_core.sdk.operations as ops
-from aiconfigurator_core.sdk import common, config
-from aiconfigurator_core.sdk.models.blocks import MoEBlockShape, build_moe_block_ops
-from aiconfigurator_core.sdk.models.helpers import _get_model_info
-from aiconfigurator_core.sdk.operations.base import resolve_op_data_path
-from aiconfigurator_core.sdk.perf_database import get_database
+import aisimulate_core.sdk.operations as ops
+from aisimulate_core.sdk import common, config
+from aisimulate_core.sdk.models.blocks import MoEBlockShape, build_moe_block_ops
+from aisimulate_core.sdk.models.helpers import _get_model_info
+from aisimulate_core.sdk.operations.base import resolve_op_data_path
+from aisimulate_core.sdk.perf_database import get_database
 
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-SYSTEMS_ROOT = REPO_ROOT / "aic-core" / "src" / "aiconfigurator_core" / "systems"
+SYSTEMS_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems"
 SYSTEMS_DATA_ROOT = SYSTEMS_ROOT / "data"
 
 DSR1 = "deepseek-ai/DeepSeek-R1"
@@ -134,7 +134,7 @@ def _lat(op, db, x):
     # Composite getters re-wrap children as Rust base classes (no shim kit),
     # so evaluate through the single-op plumbing directly — the exact call
     # the shells' token-shape ``_engine_query`` mapped to.
-    from aiconfigurator_core.sdk import engine
+    from aisimulate_core.sdk import engine
 
     return float(engine._evaluate_single_op(db, op, is_context=True, batch_size=1, s=1, x=int(x)))
 
@@ -428,8 +428,8 @@ def _legacy_trtllm_moe_latency(db, phase, x, enable_eplb, num_slots):
     """The legacy TrtLLMWideEPMoE query, recomputed via the unified
     expert-compute twin (the retired ``query_wideep_moe_compute`` shim's
     exact construction) through the engine's single-op plumbing."""
-    from aiconfigurator_core.sdk import engine
-    from aiconfigurator_core.sdk.operations.moe_comm import MoEExpertCompute
+    from aisimulate_core.sdk import engine
+    from aisimulate_core.sdk.operations.moe_comm import MoEExpertCompute
 
     op = MoEExpertCompute(
         "wideep_moe_query",

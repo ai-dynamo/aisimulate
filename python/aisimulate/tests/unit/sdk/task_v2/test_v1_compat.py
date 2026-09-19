@@ -5,8 +5,8 @@
 
 import pytest
 
-from aiconfigurator.sdk import task_v2
-from aiconfigurator.sdk.task_v1_compat import convert_v1_to_v2, is_v1_config
+from aisimulate.sdk import task_v2
+from aisimulate.sdk.task_v1_compat import convert_v1_to_v2, is_v1_config
 
 pytestmark = pytest.mark.unit
 

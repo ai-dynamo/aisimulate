@@ -16,7 +16,7 @@ from tools.forward_perf_gate import PROTOCOL_VERSION, cases, measurement, worker
 from tools.forward_perf_gate import run as gate_run
 from tools.prediction_regression_gate import grid
 
-from aiconfigurator.sdk.errors import (
+from aisimulate.sdk.errors import (
     EmpiricalNotImplementedError,
     MissingSystemFlopsError,
     PerfDataNotAvailableError,
@@ -81,7 +81,7 @@ def test_workflow_filters_cover_matrix_dependencies() -> None:
     matches_path = runpy.run_path(str(repo_root / "scripts/select_forward_perf.py"))["matches_path"]
     dependencies = set()
     for case in cases.expand_cases():
-        root = "python/aisimulate/src/aiconfigurator_core"
+        root = "python/aisimulate/src/aisimulate_core"
         model_config = f"{root}/model_configs/{case['model_path'].replace('/', '--')}_config.json"
         assert (repo_root / model_config).is_file()
         dependencies.add(model_config)
@@ -89,8 +89,8 @@ def test_workflow_filters_cover_matrix_dependencies() -> None:
     assert all(matches_path(path) for path in dependencies)
     for unrelated in (
         "docs/cli/user-guide.md",
-        "python/aisimulate/src/aiconfigurator_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
-        "python/aisimulate/src/aiconfigurator_core/systems/data/a100_sxm/gemm/vllm/data.parquet",
+        "python/aisimulate/src/aisimulate_core/model_configs/meta-llama--Meta-Llama-3.1-8B_config.json",
+        "python/aisimulate/src/aisimulate_core/systems/data/a100_sxm/gemm/vllm/data.parquet",
     ):
         assert not matches_path(unrelated)
 

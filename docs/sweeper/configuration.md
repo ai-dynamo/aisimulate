@@ -87,10 +87,17 @@ configuration for each candidate.
 | `systems_paths` | omitted | preserve configured SDK/environment discovery; an explicit list sets ordered request-scoped roots, with `default` selecting the packaged Core root |
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
-| `context_length` | `None` | optional KV-feasibility sequence length |
+| `context_length` | `None` | optional KV-feasibility and runtime prompt-plus-output token limit |
 | `parallel_configs` | `[]` | optional pinned parallel configurations |
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
+
+An explicit positive `context_length` is passed as AISimulate's internal
+`max_model_len` for vLLM, TRT-LLM, and SGLang in both aggregated and
+prefill/decode deployments. Prompts at or above the limit are rejected, and
+generation stops when prompt plus output reaches the limit. When omitted,
+Sweeper leaves this runtime limit unset. See [engine context limits](../core-api.md#engine-context-limits)
+for the normalized contract and backend frontend differences.
 
 Each engine role also has lists for `max_num_batched_tokens` and `max_num_seqs`, plus pinned block
 size, GPU-memory-utilization, prefix-caching, and `<role>_forward_model` fields (`op_level` by default,
@@ -253,3 +260,41 @@ the removed KVBM search fields.
 
 See [Native vLLM host-offload prediction](../cli/user-guide.md#native-vllm-host-offload-prediction)
 for a complete YAML example and CLI command.
+
+### Pinned engine and request controls
+
+Engine controls are pinned for a study; they do not add optimizer dimensions.
+`SearchSpace` accepts `enable_eplb`, `wideep_num_slots`, `moe_backend`,
+`attention_backend`, `gemm_quant_mode`, `moe_quant_mode`, `kvcache_quant_mode`,
+`fmha_quant_mode`, and `comm_quant_mode`. They travel in the canonical
+`ForwardPassPerfModelConfig` through exact candidate construction, saved
+prediction YAML, and native replay. Quantization overrides also participate in
+KV feasibility and capacity-cache identity. EPLB, slots, and MoE backend
+selection require an MoE model; nondefault MoE backends require SGLang.
+Collected FPM interpolation rejects EPLB, slot, and MoE-backend overrides that
+its cells cannot represent. Custom timing, AFD, and analytical encoder runs
+reject these model controls.
+
+`aic_nextn` is the compute-side MTP draft depth (0–5); zero disables MTP.
+For a positive depth, set `nextn_accepted`
+explicitly to the expected number of accepted draft tokens, between zero and
+that depth. Replay realizes a fractional expected count with guaranteed whole
+tokens followed by one Bernoulli token; it does not estimate model acceptance.
+`enable_chunked_prefill` is optional and applies to aggregated/prefill roles;
+omission preserves the backend default.
+
+`Workload.cached_prefix_tokens` is an exact shared prefix for synthetic traffic.
+It must fit the shortest generated input, including a configured random-length
+range. It creates shared tokens and does not prewarm the KV cache: the first
+request is cold, and subsequent reuse follows backend cache and block rules.
+Positive cached prefixes are unsupported for AFD and AFD+PD.
+
+The model controls above and synthetic cached prefixes are supported by
+`--stack engine`. Optional runners, including Dynamo, must explicitly advertise
+these capabilities before accepting them; older adapters are rejected before
+replay. Their downstream schemas and synthetic-input bindings require separate
+qualification.
+
+Use `context_length` for the sequence limit and each role's existing memory
+fraction controls for KV sizing. The deprecated `enable_wideep` switch is not
+exposed; current topology selects the MoE execution regime.

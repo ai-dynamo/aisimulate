@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator.cli.api import cli_estimate
+from aisimulate.legacy_cli.api import cli_estimate
 
 pytestmark = pytest.mark.unit
 
@@ -53,12 +53,12 @@ COMMON = dict(
 
 @pytest.mark.parametrize("consumer", ["cli_estimate", "task"])
 def test_aggregate_prices_different_draft_work_at_identical_verification_width(consumer):
-    from aiconfigurator.sdk.task_v2 import Task
-    from aiconfigurator_core.sdk import common, models
-    from aiconfigurator_core.sdk.config import ModelConfig
-    from aiconfigurator_core.sdk.perf_database import get_database_view
-    from aiconfigurator_core.sdk.rust_engine_step import _cached_engine_handle
-    from aiconfigurator_core.sdk.speculation import SpeculationConfig
+    from aisimulate.sdk.task_v2 import Task
+    from aisimulate_core.sdk import common, models
+    from aisimulate_core.sdk.config import ModelConfig
+    from aisimulate_core.sdk.perf_database import get_database_view
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
+    from aisimulate_core.sdk.speculation import SpeculationConfig
 
     costs, tpots = [], []
     for tree in ([1, 1, 1], [3]):
@@ -168,7 +168,7 @@ class TestEstimateSpeculativeBlock:
 
 @pytest.mark.parametrize("mode", ["afd", "disagg"])
 def test_unsupported_scheme_estimate_fails_before_database_lookup(monkeypatch, mode):
-    import aiconfigurator.sdk.perf_database as perf_database
+    import aisimulate.sdk.perf_database as perf_database
 
     def unexpected_database_lookup(*args, **kwargs):
         pytest.fail("unsupported speculative estimate reached a database lookup")
@@ -220,15 +220,15 @@ def _args(cli_parser, *extra):
     ],
 )
 def test_cli_draft_count_uses_scheme_parameter(cli_parser, method, token_key):
-    from aiconfigurator.cli.main import _speculative_block_from_args
+    from aisimulate.legacy_cli.main import _speculative_block_from_args
 
     args = _args(cli_parser, "--spec-method", method, "--spec-num-draft-tokens", "3")
     assert _speculative_block_from_args(args)["params"] == {token_key: 3}
 
 
 def test_cli_flags_reach_real_estimate(cli_parser, monkeypatch, capsys):
-    import aiconfigurator.cli.api as cli_api
-    import aiconfigurator.cli.main as cli_main
+    import aisimulate.legacy_cli.api as cli_api
+    import aisimulate.legacy_cli.main as cli_main
 
     results = []
     estimate = cli_api.cli_estimate
@@ -258,8 +258,8 @@ def test_cli_flags_reach_real_estimate(cli_parser, monkeypatch, capsys):
 def test_cli_aggregate_draft_flags_price_full_native_draft_work(cli_parser, monkeypatch, capsys):
     import math
 
-    import aiconfigurator.cli.api as cli_api
-    import aiconfigurator.cli.main as cli_main
+    import aisimulate.legacy_cli.api as cli_api
+    import aisimulate.legacy_cli.main as cli_main
 
     results, draft_costs = [], []
     estimate = cli_api.cli_estimate
@@ -307,7 +307,7 @@ def test_cli_aggregate_draft_flags_price_full_native_draft_work(cli_parser, monk
 
 
 def test_cli_mtp_uses_block_acceptance_with_legacy_depth(cli_parser):
-    from aiconfigurator.cli.main import _resolve_and_validate_nextn
+    from aisimulate.legacy_cli.main import _resolve_and_validate_nextn
 
     args = _args(
         cli_parser,
@@ -325,14 +325,14 @@ def test_cli_mtp_uses_block_acceptance_with_legacy_depth(cli_parser):
 
 
 def test_cli_orphan_scheme_flags_are_rejected(cli_parser):
-    from aiconfigurator.cli.main import _run_estimate_mode
+    from aisimulate.legacy_cli.main import _run_estimate_mode
 
     with pytest.raises(SystemExit, match="requires --spec-method"):
         _run_estimate_mode(_args(cli_parser, "--spec-num-draft-tokens", "3"))
 
 
 def test_cli_epd_rejects_scheme_instead_of_ignoring_it(cli_parser):
-    from aiconfigurator.cli.main import _run_estimate_mode
+    from aisimulate.legacy_cli.main import _run_estimate_mode
 
     args = _args(
         cli_parser,
@@ -350,16 +350,16 @@ def test_cli_epd_rejects_scheme_instead_of_ignoring_it(cli_parser):
 
 @pytest.mark.parametrize("depth", [1, 3])
 def test_cli_mtp_block_preserves_auto_depth(cli_parser, monkeypatch, depth):
-    from aiconfigurator.cli.main import _resolve_and_validate_nextn
+    from aisimulate.legacy_cli.main import _resolve_and_validate_nextn
 
-    monkeypatch.setattr("aiconfigurator.cli.main.resolve_nextn_auto", lambda path: depth)
+    monkeypatch.setattr("aisimulate.legacy_cli.main.resolve_nextn_auto", lambda path: depth)
     args = _args(cli_parser, "--nextn", "auto", "--spec-method", "mtp", "--spec-accepted-tokens", "0.7")
     _resolve_and_validate_nextn(args)
     assert (args.nextn, args.nextn_accepted) == (depth, 0.7)
 
 
 def test_estimate_mtp_block_without_depth_preserves_resolved_auto(monkeypatch):
-    monkeypatch.setattr("aiconfigurator.cli.api._resolve_nextn_auto", lambda path: 1)
+    monkeypatch.setattr("aisimulate.legacy_cli.api._resolve_nextn_auto", lambda path: 1)
     explicit = cli_estimate(
         mode="static_gen", nextn="auto", speculative={"method": "mtp", "accepted_tokens": 0.7}, **COMMON
     )

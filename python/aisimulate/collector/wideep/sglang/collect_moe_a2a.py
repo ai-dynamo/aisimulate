@@ -4,7 +4,7 @@
 """Standalone multi-node MoE all-to-all (DeepEP) comm collector.
 
 Produces the unified ``moe_a2a_perf`` table consumed by
-``aiconfigurator_core.sdk.operations.moe_comm.load_moe_a2a_data``. Two DeepEP
+``aisimulate_core.sdk.operations.moe_comm.load_moe_a2a_data``. Two DeepEP
 kernel families are measured, both under ``comm_dtype="default"`` (the dtype
 key the SDK's DeepEP legs use — moe_comm.py:191, :205):
 

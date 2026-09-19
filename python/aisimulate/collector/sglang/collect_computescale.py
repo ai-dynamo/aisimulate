@@ -7,10 +7,9 @@ __compat__ = "sglang==0.5.14"
 
 import pkg_resources
 import torch
-from sgl_kernel import sgl_per_token_quant_fp8
-
 from collector.case_generator import get_compute_scale_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
+from sgl_kernel import sgl_per_token_quant_fp8
 
 
 def get_computescale_test_cases():

@@ -9,10 +9,10 @@ import logging
 import math
 from dataclasses import dataclass
 
-from aiconfigurator.sdk.memory import KVCacheEstimator
-from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
-from aiconfigurator_core.sdk.fpm_profile import FpmModelProfile
-from aiconfigurator_core.sdk.perf_database import load_system_spec
+from aisimulate.sdk.memory import KVCacheEstimator
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+from aisimulate_core.sdk.fpm_profile import FpmModelProfile
+from aisimulate_core.sdk.perf_database import load_system_spec
 
 from .capabilities import ModelCapabilityProfile
 from .types import ParallelTopology

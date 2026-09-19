@@ -26,10 +26,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from aiconfigurator.generator.naive import _estimate_model_weight_bytes
-from aiconfigurator_core.sdk import perf_database
-from aiconfigurator_core.sdk.models import check_is_moe
-from aiconfigurator_core.sdk.utils import get_model_config_from_model_path
+from aisimulate.generator.naive import _estimate_model_weight_bytes
+from aisimulate_core.sdk import perf_database
+from aisimulate_core.sdk.models import check_is_moe
+from aisimulate_core.sdk.utils import get_model_config_from_model_path
 
 from .kv_estimate import (
     DEFAULT_MAX_BATCH_SIZE,
@@ -133,6 +133,8 @@ def parallel_configs_for(
     role_runtime: dict[str, tuple[int, int, float] | tuple[int, int, float, int | None]] | None = None,
     systems_paths: list[str] | None = None,
     fpm_profile: dict[str, Any] | None = None,
+    model_controls: dict[str, str | int | bool] | None = None,
+    nextn: int = 0,
 ) -> list[ReplicaParallelConfig] | list[DisaggParallelConfig]:
     """Resolve the model/hardware, then enumerate the parallel configs that fit
     the GPU budget and can hold a ``max_seq_len``-token sequence.
@@ -154,7 +156,7 @@ def parallel_configs_for(
     """
     profile = None
     if fpm_profile is not None:
-        from aiconfigurator_core.sdk.fpm_profile import load_fpm_profile
+        from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 
         profile = load_fpm_profile(fpm_profile)
         if profile.model != model_name:
@@ -237,6 +239,8 @@ def parallel_configs_for(
             max_batch_size=role_batch,
             memory_fraction=role_memory,
             **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"model_controls": model_controls} if model_controls else {}),
+            **({"nextn": nextn} if nextn else {}),
         )
 
     if deployment_mode == "agg":

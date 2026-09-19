@@ -5,8 +5,8 @@
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator_core.sdk.operations.moe_comm import MOE_A2A_BACKENDS, nodes_for
+from aisimulate.sdk import common
+from aisimulate_core.sdk.operations.moe_comm import MOE_A2A_BACKENDS, nodes_for
 
 pytestmark = pytest.mark.unit
 

@@ -96,8 +96,8 @@ def no_models_or_timing_data(monkeypatch):
     def forbidden(*_args, **_kwargs):
         pytest.fail("profile collection constructed a model or consulted timing data")
 
-    from aiconfigurator_core.sdk import engine, memory, models, perf_database
-    from aiconfigurator_core.sdk.models import base
+    from aisimulate_core.sdk import engine, memory, models, perf_database
+    from aisimulate_core.sdk.models import base
 
     monkeypatch.setattr(models, "_MODEL_REGISTRY", {})
     monkeypatch.setattr(base, "_MODEL_REGISTRY", {})

@@ -3,16 +3,15 @@
 The core API is delivered through the repository's two release artifacts at
 the same version:
 
-- the `aisimulate` Python wheel, imported as `aisimulate_core` or through the
-  compatibility namespace `aiconfigurator_core`;
+- the `aisimulate` Python wheel, whose estimator API is `aisimulate_core`;
 - the `aisimulate-core` Rust crate, imported as `aisimulate_core`.
 
 The single wheel owns the application, estimator SDK, model and system data,
 and unified native PyO3 extension. It does not depend on another core
 distribution or on Dynamo. The crate owns the compiled engine, forward-pass
 model, Replay runtime, KV-cache request/response types, and the embedded
-Rust-to-Python construction path. The legacy `aiconfigurator_core` Python
-namespace remains available during the AIC 0.12.0 compatibility window.
+Rust-to-Python construction path. Legacy Python import namespaces are removed
+in AISimulate 0.13.0; see the [Python migration guide](python-source-migration.md).
 
 ## Stable Python facade
 
@@ -75,10 +74,40 @@ engine-spec formats.
 Results are `list[tuple[str, float, float, str]]`, containing
 `(name, latency_ms, energy_wms, source)` with repeated operation names folded
 together. Energy is in watt-milliseconds and is zero when power data is
-unavailable. An empty operation list returns an empty list. Both
-`aisimulate_core.AicEngine` and `aiconfigurator_core.AicEngine` expose this
+unavailable. An empty operation list returns an empty list. `aisimulate_core.AicEngine` exposes this
 method; `EngineHandle` provides an annotated SDK wrapper with the same query
 options.
+
+## Engine context limits
+
+`EngineConfig.max_model_len` is an optional positive prompt-plus-output token
+limit for vLLM, TRT-LLM, and SGLang. Recipe adapters can map TRT-LLM
+`max_seq_len` and SGLang `context_length` to this field.
+
+- A prompt at or above the limit is rejected before prefill computation.
+- A decode destination rejects such a prompt before queuing the handoff or
+  reserving KV blocks, even when destination admission is deferred.
+- Terminal rejection removes the request's outstanding Belady input demand
+  before subsequent cache admission and eviction.
+- Generation stops when prompt plus output reaches the limit, including
+  speculative bursts and requests with explicit output token IDs. Reports
+  retain the requested output length and count only tokens actually generated.
+- TRT-LLM completion reservations and SGLang output reservations use the capped
+  output budget. Physical KV capacity remains a separate constraint.
+- The limit applies to aggregated workers and both roles in disaggregated replay.
+  An unset limit preserves the existing backend behavior.
+
+The prediction compiler and recommendation deployment builder pass explicit
+`engine.context_length` values to every backend. Prediction with
+`context_length: max` retains its existing behavior: vLLM resolves model
+metadata, while TRT-LLM and SGLang leave the scheduler limit unset.
+
+This is the simulator's normalized context-limit contract. It does not model
+backend-version-specific frontend validation margins or automatic prompt
+truncation. Successful replay alone does not establish silicon timing accuracy.
+See the [SGLang GPU parity observations](https://github.com/ai-dynamo/aisimulate/pull/261#pullrequestreview-5250881045)
+for stricter boundary behavior; they do not establish a fixed token offset
+across versions or configurations.
 
 ## KV-cache capacity reservation
 
@@ -153,6 +182,32 @@ config = ForwardPassPerfModelConfig(
 model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
+
+### Engine identity controls
+
+The canonical configuration also carries quantization overrides and
+`attention_backend`, `moe_backend`, `enable_eplb` (default `false`), and
+`wideep_num_slots` (default absent). These controls reach model construction,
+KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend
+selection require an MoE model. Collected FPM interpolation cannot represent
+EPLB, slots, or MoE backend overrides; it rejects an explicit incompatible
+request and is skipped during automatic selection for those identities.
+
+Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add
+`moe_backend: None`, `enable_eplb: false`, and `wideep_num_slots: None`.
+`ForwardPassPerfModelConfig::new(...)` supplies these defaults. This extends
+the canonical configuration introduced by #242.
+
+Rust callers constructing `SyntheticTraceSpec` must also add
+`cached_prefix_tokens: 0` to preserve existing prefix-sharing behavior. A positive
+value creates shared input tokens; cache hits still depend on runtime state.
+The value must align to the trace's `block_size` and must not exceed any sampled
+input length. Unified replay uses one-token trace blocks for an exact prefix,
+then applies the engine's cache block size when calculating reuse.
+
+`nextn` remains compute-side identity. Expected accepted draft tokens are a
+simulator workload assumption, supplied separately by the unified CLI as
+`engine.nextn_accepted`; they do not tune the estimator.
 
 ### Selection and fallback
 
@@ -319,6 +374,24 @@ missing-data sentinel, not evidence of a zero-power operation. See the
 aggregation rules, and public output boundary. Typed per-op energy alone does
 not make unified replay power available.
 
+## Static phase diagnostics
+
+The canonical `ForwardPassPerfModel` returned by `best_available` exposes
+`static_phase_diagnostics(batch_size, context_length, prefix, prefill)` in Rust; the Python
+`RustForwardPassPerfModel` wrapper accepts the same named arguments (with `prefix=0`).
+It returns name-folded operation latency/energy, source tags, executed MoE communication
+measurement substitutions, and optional SOL latency/compute/memory evidence. Decode means one
+step at `context_length + 1`; prefill removes the cached prefix. Values precede learned online
+correction. Whole-model estimators reject operation decomposition; missing SOL implementations
+carry explicit reasons without changing the selected latency estimate.
+
+Replay requests this evidence through `ReplayOutputRequirements(capture_performance_diagnostics=True)`.
+`TimingOperationEvidence.details` is optional; providers without it must retain `None` (Rust
+struct literals must initialize the new field). The constructor keeps it absent by default.
+The CLI's time/source reports sum the observed phase work, including repeated cached timing
+queries, and preserve distinct fallback records while folding repeated operation names.
+Identical substitutions are deduplicated, so record counts are not execution counts.
+
 ## Replay timing evidence
 
 The runtime-neutral `TimingModel` contract exposes optional accumulated
@@ -357,18 +430,14 @@ past-KV coordinate rather than the op-level mean-context coordinate.
   role/options signatures and separate estimator constructors. This is a source
   migration: use `ForwardPassPerfModelConfig::new(...)` in Rust or the SDK config
   class in Python, and use the explicit migration helper for saved EngineConfig
-  values. Downstream Dynamo callers must migrate before this API is released;
+  values. Downstream Dynamo callers must migrate before this API's stable release;
   keep the crate and wheel versions aligned at the coordinated minor release.
-- Publication is blocked by [the release gate](../.github/release-gates.json)
-  until [Dynamo #14065](https://github.com/ai-dynamo/dynamo/pull/14065) is refreshed,
-  merged, and its Planner/wheel smoke validated against this API. Both scheduled
-  nightly CI and approved manual dispatch run `scripts/check_release_migrations.py`
-  before staging and the downstream publish trigger. Manual dispatch may select
-  a main/release commit, but both the workflow revision's policy and the selected
-  commit's migration declarations must pass before publication. The checker runs
-  from the workflow revision; missing or malformed target gates fail closed.
-  Clear the pending entry in a reviewed change only after the migration evidence
-  is available.
+- [The migration checklist](../.github/release-gates.json) and
+  `scripts/check_release_migrations.py` apply before stable publication. Clear the
+  pending entry in a reviewed change after downstream validation and merge.
+  There is currently no standalone stable-publication workflow in this repository;
+  that release process must invoke the checker for both its policy and target
+  declarations (`--target-gates`). Missing or malformed declarations fail closed.
 - The raw PyO3 class and ergonomic SDK wrapper intentionally share the name
   `RustForwardPassPerfModel`; callers should import from `aisimulate_core.sdk`
   unless they specifically need the JSON-oriented native binding.

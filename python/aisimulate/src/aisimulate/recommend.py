@@ -11,8 +11,9 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from .aic import resolve_model_context_length
+from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS
 from .config.traffic import TrafficPredictionConfig
 from .config_adapter import (
     CompiledSweepProvider,
@@ -170,6 +171,15 @@ def recommendation_to_sweeper(
     ):
         if name in engine:
             search_space[name] = deepcopy(engine[name])
+    search_space.update(
+        {
+            name: deepcopy(engine[name])
+            for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
+            if name in engine
+        }
+    )
+    if engine.get("nextn"):
+        search_space["aic_nextn"] = engine["nextn"]
     search_space["role_estimator_controls"] = {
         ("agg" if role == "aggregated" else role): {
             name: deepcopy(raw.get("timing", {})[name])
@@ -659,7 +669,11 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
     if source_type == "synthetic":
-        result.update(isl=source.get("input_tokens", 1024), osl=source.get("output_tokens", 128))
+        result.update(
+            isl=source.get("input_tokens", 1024),
+            osl=source.get("output_tokens", 128),
+            cached_prefix_tokens=source.get("cached_prefix_tokens", 0),
+        )
         if source.get("images") is not None:
             result["images"] = deepcopy(source["images"])
         count = stop.get("requests") if isinstance(stop, dict) else None
@@ -754,6 +768,8 @@ def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
         "target": target,
         "strict_sla": config.optimization.strict_sla,
     }
+    if config.optimization.constraints.min_goodput_rps is not None:
+        payload["min_goodput_rps"] = config.optimization.constraints.min_goodput_rps
     sla = config.evaluation.sla
     if sla is not None:
         payload["sla"] = sla.model_dump(mode="json", exclude_none=True)
@@ -787,6 +803,11 @@ def _candidate_prediction(
         engine["systems_paths"] = sample["systems_paths"]
     if sample.get("fpm_profile") is not None:
         engine["fpm_profile"] = deepcopy(sample["fpm_profile"])
+    for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
+        if sample.get(name) is not None:
+            engine[name] = sample[name]
+    if sample.get("aic_nextn"):
+        engine["nextn"] = sample["aic_nextn"]
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
     if deployment.forward_pass_estimators:
         for name in (
