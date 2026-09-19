@@ -539,6 +539,7 @@ pub enum ModelFamily {
     MinimaxM3,
     Qwen3Vl,
     Qwen3VlMoe,
+    DeepSeekV41,
 }
 
 impl ModelFamily {
@@ -552,6 +553,7 @@ impl ModelFamily {
             Self::DeepSeek => "DEEPSEEK",
             Self::DeepSeekV32 => "DEEPSEEKV32",
             Self::DeepSeekV4 => "DEEPSEEKV4",
+            Self::DeepSeekV41 => "DEEPSEEKV41",
             Self::KimiK25 => "KIMIK25",
             Self::NemotronNas => "NEMOTRONNAS",
             Self::NemotronH => "NEMOTRONH",

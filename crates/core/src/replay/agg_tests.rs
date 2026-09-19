@@ -473,8 +473,9 @@ fn g3_zero_time_restore_finishes_without_future_arrival_in_both_scopes() {
         );
         let report = run_engine_replay(input).unwrap();
         assert_eq!(report.request_counts.completed_requests, 3);
-        // Native decode timing has a 1ms floor even for fixed decode_ms=0.
-        assert_eq!(report.throughput.duration_ms, 201.0);
+        // Restore, prefill and fixed decode are all zero-time, so the final
+        // request completes at its 200ms arrival without a synthetic floor.
+        assert_eq!(report.throughput.duration_ms, 200.0);
         let g3 = report.g3_offload.unwrap();
         assert!(g3.read.completed_jobs > 0);
         assert!(g3.lookup_hits <= g3.lookup_probes);
@@ -607,17 +608,18 @@ fn g3_zero_duration_promotions_under_temporary_g2_pressure_fall_back_and_drain()
             rank["g3_offload"]["write_bandwidth_gbps"] = json!(0.001);
             rank["g3_offload"]["shared_write_bandwidth_gbps"] = json!(0.001);
         });
-        // First prefix writes finish at2001ms. A generation-only full block
+        // First prefix writes finish at2000ms. A generation-only full block
         // evicts one G1 block without a G2 prompt store. X evicts the other G1
-        // block and starts a slow write at2008ms, pinning one G2 slot.
+        // block and starts a slow write at2007ms, pinning one G2 slot.
         // The final request's zero-time reads must not
         // alternate forever in the other slot or fabricate a protected hit.
         let report = run_engine_replay(input).unwrap();
         assert_eq!(report.request_counts.completed_requests, 4);
-        assert_eq!(report.throughput.duration_ms, 2010.0);
+        // The final restore and fixed decode take zero time after arrival.
+        assert_eq!(report.throughput.duration_ms, 2009.0);
         let stats = report.g3_offload.unwrap();
         // Both reads start at the current lookup time2009; neither is backdated
-        // to X's2008 boundary, and the A/B cycle terminates at this timestamp.
+        // to X's2007 boundary, and the A/B cycle terminates at this timestamp.
         assert_eq!(stats.read.completed_jobs, 2);
         assert_eq!(stats.read.completed_bytes, 2_000_000);
         assert_eq!(stats.pending_blocks, 0);
@@ -652,8 +654,8 @@ fn g3_post_lookup_touch_can_evict_a_later_prefix_block() {
     assert_eq!(report.request_counts.completed_requests, 4);
     // At100ms A is missing. Reserving it precedes the full-prefix touch, so
     // it evicts the older B; reserving B then evicts X. Both blocks must be
-    // read in one batch:2ms first-byte +2ms data, followed by1ms decode.
-    assert_eq!(report.throughput.duration_ms, 105.0);
+    // read in one batch:2ms first-byte +2ms data, followed by zero-time fixed decode.
+    assert_eq!(report.throughput.duration_ms, 100.0 + 2.0 + 2.0);
     let stats = report.g3_offload.unwrap();
     assert_eq!(stats.read.completed_jobs, 1);
     assert_eq!(stats.read.completed_bytes, 2_000_000);
@@ -688,7 +690,8 @@ fn g3_idle_gap_does_not_consume_first_byte_or_transfer_time_before_arrival() {
         });
         let report = run_engine_replay(input).unwrap();
         assert_eq!(report.request_counts.completed_requests, 4);
-        assert_eq!(report.throughput.duration_ms, arrival + 4.0);
+        // One block pays 2ms first-byte +1ms data; fixed decode adds zero.
+        assert_eq!(report.throughput.duration_ms, arrival + 2.0 + 1.0);
         let stats = report.g3_offload.unwrap();
         assert_eq!(stats.read.completed_jobs, 1);
         assert_eq!(stats.read.completed_bytes, 1_000_000);
