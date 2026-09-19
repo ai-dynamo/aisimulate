@@ -259,12 +259,34 @@ marked it N/A.
 ### Numerical and installed-package evidence
 
 [Native numerical checks](../scripts/check_prediction_numerics.py) exercise
-eight frozen queries: dense Qwen3-32B and MoE MiniMax-M2.5, prefill/decode, and
-short/long sequences. The [manifest](../.github/prediction-numerical-sentinels.json)
-records a full baseline commit that must resolve in the checkout. Tolerances
-are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
+16 frozen queries on B200: eight vLLM 0.24.0 queries for dense Qwen3-32B and
+MoE MiniMax-M2.5, plus four Qwen3-32B queries each for TRT-LLM 1.3.0rc20 and
+SGLang 0.5.14. Every backend covers prefill/decode and short/long sequences.
+The [manifest](../.github/prediction-numerical-sentinels.json)
+records a full baseline commit that must resolve in the checkout. Fast CI and
+the numerical-check job explicitly fetch that SHA from `origin` if missing;
+full branch history alone can omit a baseline from a squashed PR. Fetch or
+commit-validation failures remain errors. Fetch-only mode does not load the
+AISimulate runtime; the subsequent checks validate the complete manifest.
+To prepare a checkout locally, run:
+
+```sh
+python scripts/check_prediction_numerics.py --fetch-baseline-only
+```
+
+Tolerances are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
+
+Composition/correction tests use the measured FP8 GEMM lane in the vLLM 0.24.0
+fixture after removal of its invalid FP8-block rows. Installed-wheel checks
+resolve the canonical `ForwardPassPerfModelConfig` and `ForwardPassPerfOptions`
+exports and verify their object identity. The AFD qualification golden retains
+all numerical values; its replay hash includes the empty
+`forward_pass_estimators` field added by the unified estimator schema.
+The heterogeneous prefill/decode CLI round trip verifies each role's system
+inside `timing_model.config`, along with the external AIC provider, and retains
+the recommendation-versus-replay metric checks.
 
 The FP8-block data correction in PR #244 changes only the MiniMax cases to
 enable declared reuse: their vLLM 0.24.0 primary data no longer contains
@@ -275,6 +297,14 @@ exactly. With corrected data, the prefill baselines change from
 39.364559 / 7396.437641 ms to 6.956580 / 2192.966039 ms (short/long cases).
 The four Qwen baselines and all tolerances remain unchanged. These are
 prediction-stability values, not measured whole-model accuracy.
+
+The 16-case manifest was reproduced from runtime and packaged data at
+`d066e918705b98e2d55eed55743ce8d225f129ea`. The original eight vLLM values
+were reproduced exactly and retained unchanged. The eight added backend values
+use the same four dense-model query shapes and SILICON mode, without shared
+layer reuse. These operator-level queries complement the engine integration
+tests for context limits; they do not measure E2E gym MAPE or incorporate the
+separate TRT-LLM data collection in PR #264.
 
 The broader [prediction comparison](../python/aisimulate/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks
@@ -349,9 +379,17 @@ Main branch nightly CI builds the approved release surface: one `aisimulate` whe
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
 `main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
 by its zero-padded ten-digit workflow run number, for example
-`0.12.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
+`0.13.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
 retries retain the same version, and later dates sort after earlier dates. Builds
 use pinned tooling and record checksums and provenance.
+
+Development nightlies must be available before downstream consumers can validate
+and merge an API migration. Pending entries in
+[the stable-release migration checklist](../.github/release-gates.json) therefore
+do not block scheduled or approved manual nightlies. Build, compliance, wheel-smoke,
+FPE qualification, and security requirements continue to apply. Publish the nightly,
+validate and merge the downstream migration against that wheel, then complete the
+migration checklist before a stable release.
 
 Python dependency licenses are checked in isolated jobs on both architectures
 before building or staging. Artifacts are then staged directly to internal
@@ -491,6 +529,7 @@ for pinned scheduler settings, measurement selection, and provenance.
 | **Require Fast CI** failed or timed out | Open the linked/latest standalone Fast run for the same branch and SHA; resolve its failure or dispatch Fast CI first, then rerun Full CI |
 | `Fast CI Success` failed with missing or skipped substantive jobs | Inspect the required job results and cancellation history; draft status and labels do not skip Fast CI |
 | Full CI job skipped | Read **Select Full CI Scope** and the aggregate summary; only explicit N/A is acceptable |
+| Full CI canceled after another PR run starts | A newer run replaced validation in the same PR/branch concurrency group; inspect the replacement run's SHA and results |
 | `Full CI Success` green, workflow still `waiting` | Validation finished; main/release wheel staging may be waiting for `automated-release` approval |
 | New nightly pending, earlier nightly waiting | Nightly's single concurrency group includes protected staging; an unapproved run can hold later validation behind it |
 | Prediction Regression green with reported drift | Working-case regression checks passed; review the numerical changes in the report |
@@ -528,6 +567,35 @@ gh workflow run fast-ci.yml --repo ai-dynamo/aisimulate \
 gh workflow run ci.yml --repo ai-dynamo/aisimulate \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
 ```
+
+Manual runs provide diagnostic validation. GitHub does not count job checks
+from `workflow_dispatch` toward required PR status checks, even when the run
+uses the current PR SHA. See [GitHub's required-check troubleshooting guide](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated).
+For PR merge-gate validation, a maintainer admits the reviewed current head
+through copy-pr-bot; the resulting trusted-copy **push** launches eligible
+Fast and Full CI runs:
+
+```bash
+ci_pr=123  # Replace with the reviewed PR to validate.
+ci_sha="$(gh pr view "${ci_pr}" --repo ai-dynamo/aisimulate --json headRefOid --jq .headRefOid)"
+gh pr comment "${ci_pr}" --repo ai-dynamo/aisimulate \
+  --body "/ok to test ${ci_sha}"
+```
+
+Full CI cancels older queued and running validation for the same trusted
+`pull-request/N` copy. Manual dispatches on that copy share the push run's
+concurrency group: they can cancel an eligible push run without satisfying its
+required check. Preserve the push-triggered validation for the current PR
+head. If it fails transiently, retry its failed jobs with `gh run rerun RUN_ID
+--failed` after confirming that the run still targets the current head.
+
+Manual source-branch runs replace only runs on the same branch. Different PRs
+remain independent. Main, `release/*`, and tag runs use unique groups, so later
+runs cannot cancel their validation or protected staging. Concurrency only
+applies to runs using the updated workflow; existing runs and older branches
+are not retroactively covered. A replacement still needs successful eligible
+checks for its exact SHA. Re-running an old revision can replace a newer run
+in the same group: always verify the current PR head before retrying validation.
 
 Standalone Fast CI accepts these manual inputs:
 

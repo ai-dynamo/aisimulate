@@ -20,7 +20,7 @@ import pytest
 
 pytestmark = pytest.mark.unit
 ROOT = Path(__file__).resolve().parents[4]
-BACKENDS = ROOT / "src" / "aiconfigurator_core" / "sdk" / "backends"
+BACKENDS = ROOT / "src" / "aisimulate_core" / "sdk" / "backends"
 GIB = 1 << 30
 
 
@@ -50,8 +50,8 @@ def _source_backends():
             if isinstance(node, ast.FunctionDef) and node.name in methods:
                 for imported in [n for n in node.body if isinstance(n, ast.ImportFrom)]:
                     assert imported.module in {
-                        "aiconfigurator_core.sdk.speculation",
-                        "aiconfigurator_core.sdk.speculation.mtp",
+                        "aisimulate_core.sdk.speculation",
+                        "aisimulate_core.sdk.speculation.mtp",
                     }
                 node.body = [n for n in node.body if not isinstance(n, ast.ImportFrom)]
                 selected.body.append(node)
@@ -73,6 +73,8 @@ def backends():
 def _model(*, tp=4, dp=1, ep=1, hidden_size=7168, heads=128):
     return SimpleNamespace(
         context_ops=[SimpleNamespace(get_weights=lambda: 2 * GIB)],
+        get_resident_weights_bytes=lambda: 2 * GIB,
+        get_additional_activation_bytes=lambda _tokens: 0,
         model_family="DEEPSEEKV4",
         _num_heads=heads,
         _head_size=512,
@@ -136,8 +138,8 @@ def test_legacy_deepseek_and_existing_hybrid_behavior_are_preserved(backends, ba
 
 
 def test_installed_backends_match_source_isolated_budget():
-    vllm = pytest.importorskip("aiconfigurator_core.sdk.backends.vllm_backend")
-    trtllm = pytest.importorskip("aiconfigurator_core.sdk.backends.trtllm_backend")
+    vllm = pytest.importorskip("aisimulate_core.sdk.backends.vllm_backend")
+    trtllm = pytest.importorskip("aisimulate_core.sdk.backends.trtllm_backend")
     for backend in (vllm.VLLMBackend(), trtllm.TRTLLMBackend()):
         assert _activation_gib(backend, _model(), 8192) == pytest.approx(13.9375)
         assert _activation_gib(backend, _model(tp=1, dp=8, ep=8), 8192) == pytest.approx(25.9375)

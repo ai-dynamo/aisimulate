@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-import importlib
-import sys
 from pathlib import Path
 
 import pytest
@@ -10,56 +8,12 @@ import yaml
 pytestmark = pytest.mark.unit
 
 
-def _find_repo_root(start: Path) -> Path:
-    """Find repository root.
-
-    In the Docker test image we copy `src/` and `tests/` into `/workspace/` but do
-    not copy `pyproject.toml`, so we detect the repo root via `src/aiconfigurator/`.
-    """
-    start = start.resolve()
-    for parent in [start, *start.parents]:
-        if (parent / "src" / "aiconfigurator").is_dir():
-            return parent
-    raise RuntimeError("Cannot find repository root (expected src/aiconfigurator/)")
-
-
 @pytest.fixture(scope="module")
 def perf_database():
-    """
-    Import the local aiconfigurator.sdk.perf_database module from src/,
-    ensuring it takes precedence over any installed package.
-    """
-    project_root = _find_repo_root(Path(__file__))
-    src_path = project_root / "src"
-    saved_sys_path = list(sys.path)
-    sys.path.insert(0, str(src_path))
+    """Use the test environment's package, including its native runtime."""
+    import aisimulate.sdk.perf_database as perf_database
 
-    saved_aiconfigurator_modules = {}
-
-    # Purge already-imported site-packages version if present
-    for key in list(sys.modules.keys()):
-        if key in {"aiconfigurator", "aiconfigurator_core"} or key.startswith(
-            ("aiconfigurator.", "aiconfigurator_core.")
-        ):
-            saved_aiconfigurator_modules[key] = sys.modules.pop(key)
-
-    try:
-        import aiconfigurator.sdk.perf_database as perf_database
-
-        importlib.reload(perf_database)
-        yield perf_database
-
-    finally:
-        sys.path[:] = saved_sys_path
-        # Drop the isolated legacy/canonical module pair, then restore both module
-        # graphs together so imported class references in other test modules do not
-        # point at a reloaded canonical implementation.
-        for key in list(sys.modules.keys()):
-            if key in {"aiconfigurator", "aiconfigurator_core"} or key.startswith(
-                ("aiconfigurator.", "aiconfigurator_core.")
-            ):
-                sys.modules.pop(key)
-        sys.modules.update(saved_aiconfigurator_modules)
+    return perf_database
 
 
 @pytest.fixture
@@ -251,15 +205,15 @@ def test_estimate_only_database_can_load_without_perf_files(perf_database):
     the estimate-only capability survives the query-stack retirement.
     """
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     db = perf_database.get_database("h100_pcie", "trtllm", "estimate", allow_missing_data=True)
 
     assert db is not None
     db.set_default_database_mode(common.DatabaseMode.SOL)
     assert db.get_default_database_mode() == common.DatabaseMode.SOL
-    from aiconfigurator_core.sdk.engine import _evaluate_single_op
-    from aiconfigurator_core.sdk.operations.elementwise import ElementWise
+    from aisimulate_core.sdk.engine import _evaluate_single_op
+    from aisimulate_core.sdk.operations.elementwise import ElementWise
 
     # The retired query_mem_op shim's exact twin, evaluated under the
     # database's live SOL mode through the single-op plumbing.
@@ -455,7 +409,7 @@ def test_empirical_and_silicon_views_use_distinct_shared_layer_templates(perf_da
 
 
 def test_database_view_configuration_is_isolated_and_same_key_is_reused(perf_database):
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     template = perf_database.get_database("b200_sxm", "trtllm", "1.3.0rc20", database_mode="SILICON")
     template.set_default_database_mode(common.DatabaseMode.SILICON)
@@ -511,7 +465,7 @@ def test_database_view_configuration_is_isolated_and_same_key_is_reused(perf_dat
 def test_configured_view_cache_normalizes_keys_and_separates_roots(perf_database):
     import copy
 
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     template = perf_database.get_database("b200_sxm", "trtllm", "1.3.0rc20", database_mode="SILICON")
     template.clear_runtime_caches()
@@ -539,7 +493,7 @@ def test_configured_view_cache_normalizes_keys_and_separates_roots(perf_database
 
 
 def test_clearing_template_runtime_caches_refreshes_configured_copy(perf_database):
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     template = perf_database.get_database("b200_sxm", "trtllm", "1.3.0rc20", database_mode="SILICON")
     template.clear_runtime_caches()
@@ -566,7 +520,7 @@ def test_clearing_template_runtime_caches_refreshes_configured_copy(perf_databas
 
 
 def test_configured_view_rejects_incompatible_shared_layer_template(perf_database):
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     silicon_template = perf_database.get_database("b200_sxm", "trtllm", "1.3.0rc20", database_mode="SILICON")
 

@@ -16,10 +16,10 @@ from __future__ import annotations
 
 import pytest
 
-from aiconfigurator_core.sdk import common, models
-from aiconfigurator_core.sdk import config as sdk_config
-from aiconfigurator_core.sdk.speculation import SpeculationConfig
-from aiconfigurator_core.sdk.speculation.dspark import DSparkScheme
+from aisimulate_core.sdk import common, models
+from aisimulate_core.sdk import config as sdk_config
+from aisimulate_core.sdk.speculation import SpeculationConfig
+from aisimulate_core.sdk.speculation.dspark import DSparkScheme
 
 pytestmark = pytest.mark.unit
 

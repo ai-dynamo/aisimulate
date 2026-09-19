@@ -632,8 +632,7 @@ def test_real_cli_unknown_multimodal_decoder_lists_missing_resource_bounds_witho
 def test_bundled_modelopt_string_cache_config_creates_complete_request(tmp_path, monkeypatch):
     _terminal(monkeypatch)
     config_path = (
-        Path(__file__).parents[2]
-        / "src/aiconfigurator_core/model_configs/Qwen--Qwen3-32B-FP8-Static-PerTensor_config.json"
+        Path(__file__).parents[2] / "src/aisimulate_core/model_configs/Qwen--Qwen3-32B-FP8-Static-PerTensor_config.json"
     )
     source, resources = _files(
         tmp_path,

@@ -4,7 +4,7 @@
 
 Converts the two legacy presence-only marker files into the structured yaml
 siblings the loader now reads yaml-first (`_version_dir_state` in
-`aic-core/src/aiconfigurator_core/sdk/perf_database.py`), one conversion per
+`src/aisimulate_core/sdk/perf_database.py`), one conversion per
 version dir, in place — no cross-family replication (the family-layout
 migration, PR 2, already made every marker dir single-family):
 
@@ -13,7 +13,7 @@ migration, PR 2, already made every marker dir single-family):
   (a real data file, not another marker/sidecar), with `from_version` set to
   the NEWEST such sibling per `packaging.version.Version` ordering (textually
   duplicated from `parse_support_matrix_version`,
-  `aic-core/src/aiconfigurator_core/sdk/common.py:15` — this is today's
+  `src/aisimulate_core/sdk/common.py:15` — this is today's
   effective newest-first donor, so behavior is preserved). A marker whose
   siblings hold no table at all (nothing to inherit) is dead data: fail
   closed and list the offender rather than emit an empty declaration.
@@ -57,7 +57,7 @@ tree's plan is empty).
     migrate_markers.py --data-root DATA --verify   # structural + round-trip checks
 
 `--verify` also round-trips every generated file through the real loader
-parser (`aiconfigurator_core.sdk.perf_database._parse_reuse_yaml` /
+parser (`aisimulate_core.sdk.perf_database._parse_reuse_yaml` /
 `_load_collection_meta_yaml`) — this is a one-shot migration tool, not a
 hot-path predicate, so taking the aic-core dependency for real-parser
 verification is worth it (unlike e.g. `prediction_regression_gate/grid.py`'s
@@ -176,7 +176,7 @@ class ScanResult:
 
 
 # --- version ordering (textually duplicated from parse_support_matrix_version, ---
-# --- aic-core/src/aiconfigurator_core/sdk/common.py:15) --------------------------
+# --- src/aisimulate_core/sdk/common.py:15) --------------------------
 
 
 def _parse_version(version: str) -> Version | None:
@@ -476,7 +476,7 @@ def verify_tree(data_root: Path) -> list[str]:
         errors.append("legacy marker .txt file(s) remain: " + ", ".join(stray_markers))
 
     try:
-        from aiconfigurator_core.sdk.perf_database import (
+        from aisimulate_core.sdk.perf_database import (
             _load_collection_meta_yaml,
             _parse_reuse_yaml,
         )

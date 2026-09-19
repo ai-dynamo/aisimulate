@@ -234,7 +234,7 @@ The memory precheck compares complete per-rank resource estimates against 90% of
 
 ## Provide identity and resource metadata
 
-For a model without an analytical class, create a JSON or YAML FPM profile and pass `--fpm-profile /path/to/model-profile.yaml` to `onboard init`. The request embeds the complete profile; ordinary prediction and recommendation use the same object under `engine.fpm_profile`. The profile schema is [FpmModelProfile](../python/aisimulate/src/aiconfigurator_core/sdk/fpm_profile.py). It rejects missing fields, unknown fields, conflicting identities and mutable revision placeholders.
+For a model without an analytical class, create a JSON or YAML FPM profile and pass `--fpm-profile /path/to/model-profile.yaml` to `onboard init`. The request embeds the complete profile; ordinary prediction and recommendation use the same object under `engine.fpm_profile`. The profile schema is [FpmModelProfile](../python/aisimulate/src/aisimulate_core/fpm_profile.py). It rejects missing fields, unknown fields, conflicting identities and mutable revision placeholders.
 
 | Profile fields | Required meaning |
 | --- | --- |

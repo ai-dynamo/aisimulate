@@ -635,10 +635,10 @@ def _activation_estimate(
 
 
 def packaged_hardware_path(system: str) -> Path:
-    """Locate wheel-owned metadata without importing the native compatibility package."""
+    """Locate wheel-owned metadata without importing the estimator SDK or native runtime."""
     if not isinstance(system, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", system):
         raise ValueError("system must be a packaged system name, not a path")
-    return Path(__file__).resolve().parents[2] / "aiconfigurator_core" / "systems" / f"{system}.yaml"
+    return Path(__file__).resolve().parents[2] / "aisimulate_core" / "systems" / f"{system}.yaml"
 
 
 def _hardware_estimates(request: SupportRequest | None) -> dict[str, tuple[int, str]]:

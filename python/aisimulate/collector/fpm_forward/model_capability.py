@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aiconfigurator.sdk.common import MULTIMODAL_TEXT_CONFIG_KEY
-from aiconfigurator.sdk.memory import NaiveKVCacheEstimator
-from aiconfigurator.sdk.utils import (
+from aisimulate.sdk.common import MULTIMODAL_TEXT_CONFIG_KEY
+from aisimulate.sdk.memory import NaiveKVCacheEstimator
+from aisimulate.sdk.utils import (
     HuggingFaceDownloadError,
     _attach_hf_quant_config,
     _attach_inferred_quant_fields,

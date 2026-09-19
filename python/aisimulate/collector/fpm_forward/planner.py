@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from aiconfigurator_core.sdk.fpm_profile import FpmDeploymentProfile, FpmModelProfile, load_fpm_profile
+from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile, FpmModelProfile, load_fpm_profile
 
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
 from .config import PARALLEL_AXES, FPMCollectionOptions
@@ -30,7 +30,7 @@ from .types import ParallelTopology
 logger = logging.getLogger(__name__)
 
 _INSTALLED_DISTRIBUTION = "aisimulate"
-_INSTALLED_PAYLOAD_ROOTS = frozenset(("aiconfigurator", "aisimulate", "collector"))
+_INSTALLED_PAYLOAD_ROOTS = frozenset(("aisimulate_core", "aisimulate", "collector"))
 _INSTALLED_PLANNER_PATH = PurePosixPath("collector/fpm_forward/planner.py")
 _REQUIRED_INSTALLED_FPM_PAYLOAD = frozenset(
     (

@@ -12,10 +12,10 @@ from unittest.mock import patch
 
 import pytest
 
-from aiconfigurator.sdk import common, config
-from aiconfigurator.sdk.backends.base_backend import BaseBackend
-from aiconfigurator.sdk.models import Gemma4MixModel, HybridMoEModel
-from aiconfigurator.sdk.utils import (
+from aisimulate.sdk import common, config
+from aisimulate.sdk.backends.base_backend import BaseBackend
+from aisimulate.sdk.models import Gemma4MixModel, HybridMoEModel
+from aisimulate.sdk.utils import (
     _parse_hf_config_json,
     enumerate_parallel_config,
     enumerate_ttft_tpot_constraints,
@@ -1272,8 +1272,8 @@ class TestHybridMoEModelBuilder:
 class TestGetModelConfigFromHFID:
     """Test getting model config from HuggingFace ID."""
 
-    @patch("aiconfigurator.sdk.utils._download_hf_json")
-    @patch("aiconfigurator.sdk.utils._download_hf_config")
+    @patch("aisimulate.sdk.utils._download_hf_json")
+    @patch("aisimulate.sdk.utils._download_hf_config")
     def test_successful_download(self, mock_download, mock_download_quant):
         """Test successful download from HuggingFace."""
         mock_config = {
@@ -1303,7 +1303,7 @@ class TestSafeMkdir:
 
     def test_safe_mkdir_exists(self):
         """Test that safe_mkdir function exists and is importable."""
-        from aiconfigurator.sdk.utils import safe_mkdir
+        from aisimulate.sdk.utils import safe_mkdir
 
         assert callable(safe_mkdir)
 
@@ -1351,36 +1351,36 @@ class TestParseCompressedTensorsQuant:
     # --- input guards ---
 
     def test_none_input(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         assert parse_compressed_tensors_quant(None) == (None, frozenset())
 
     def test_non_dict_input(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         assert parse_compressed_tensors_quant("not-a-dict") == (None, frozenset())
 
     def test_empty_config_groups(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         assert parse_compressed_tensors_quant({"config_groups": {}}) == (None, frozenset())
 
     # --- base_algo detection ---
 
     def test_int4_base_algo(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         algo, _ = parse_compressed_tensors_quant(self._make_quant_config(4, "int"))
         assert algo == "int4_wo"
 
     def test_int8_base_algo(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         algo, _ = parse_compressed_tensors_quant(self._make_quant_config(8, "int"))
         assert algo == "int8_wo"
 
     def test_fp8_base_algo(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         algo, _ = parse_compressed_tensors_quant(self._make_quant_config(8, "float"))
         assert algo == "fp8"
@@ -1394,7 +1394,7 @@ class TestParseCompressedTensorsQuant:
     )
     def test_block_fp8_base_algo(self, strategy, block_structure):
         """Either compressed-tensors block signal selects block-scaled FP8."""
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         cfg = self._make_quant_config(8, "float")
         cfg["config_groups"]["group_0"]["weights"].update(
@@ -1409,19 +1409,19 @@ class TestParseCompressedTensorsQuant:
     # --- ignored_categories detection ---
 
     def test_no_ignore_empty_set(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=[]))
         assert ignored == frozenset()
 
     def test_attention_pattern_detected(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=["re:.*self_attn.*"]))
         assert "attention" in ignored
 
     def test_routing_experts_pattern_detected(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(
             self._make_quant_config(4, "int", ignore=["re:.*mlp\\.experts\\..*"])
@@ -1430,14 +1430,14 @@ class TestParseCompressedTensorsQuant:
 
     def test_shared_experts_pattern_detected_not_routing(self):
         """re:.*shared_experts.* must categorize as shared_experts, NOT routing_experts."""
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=["re:.*shared_experts.*"]))
         assert "shared_experts" in ignored
         assert "routing_experts" not in ignored
 
     def test_dense_mlp_pattern_detected(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(
             self._make_quant_config(4, "int", ignore=["re:.*mlp\\.(gate|up|gate_up|down)_proj.*"])
@@ -1445,7 +1445,7 @@ class TestParseCompressedTensorsQuant:
         assert "dense_mlp" in ignored
 
     def test_lm_head_pattern_detected(self):
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         _, ignored = parse_compressed_tensors_quant(self._make_quant_config(4, "int", ignore=["lm_head"]))
         assert "lm_head" in ignored
@@ -1455,7 +1455,7 @@ class TestParseCompressedTensorsQuant:
     def test_kimi_k25_actual_config(self):
         """Kimi K2.5: attention + shared_experts + dense_mlp + lm_head all ignored.
         Only routing experts are quantized → those four categories in ignored set."""
-        from aiconfigurator.sdk.utils import parse_compressed_tensors_quant
+        from aisimulate.sdk.utils import parse_compressed_tensors_quant
 
         cfg = self._make_quant_config(
             4,
@@ -1476,8 +1476,8 @@ class TestParseCompressedTensorsQuant:
 
     def test_kimi_k25_maps_to_correct_sdk_modes(self):
         """Kimi K2.5 compressed-tensors config → gemm=bfloat16, moe=int4_wo."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
 
         raw_config = {
             "quant_algo": "compressed-tensors",
@@ -1498,8 +1498,8 @@ class TestParseCompressedTensorsQuant:
 
     def test_all_layers_quantized_maps_both_modes(self):
         """No ignore list → both gemm and moe overrides are set."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
 
         raw_config = {
             "quant_algo": "compressed-tensors",
@@ -1511,8 +1511,8 @@ class TestParseCompressedTensorsQuant:
 
     def test_redhat_dsv4_maps_block_fp8_attention_and_fp4_experts(self):
         """The real RedHatAI DSV4 quant layout maps attention and experts independently."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
 
         fp8_weights = {
             "num_bits": 8,
@@ -1550,9 +1550,9 @@ class TestParseCompressedTensorsQuant:
 
     def test_modelopt_mixed_precision_config_groups_map_sdk_modes(self):
         """ModelOpt MIXED_PRECISION config groups map FP8 dense layers and NVFP4 routed experts."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         raw_config = _attach_inferred_quant_fields(
             {
@@ -1598,9 +1598,9 @@ class TestParseCompressedTensorsQuant:
 
     def test_modelopt_mixed_precision_hf_quant_layers_map_sdk_modes(self):
         """Standalone hf_quant_config.json MIXED_PRECISION metadata no longer raises unsupported quant_algo."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         raw_config = _attach_inferred_quant_fields(
             {
@@ -1633,9 +1633,9 @@ class TestParseCompressedTensorsQuant:
         q/k/v/o + MSA index projections + dense MLP + shared expert = MXFP8,
         routed experts w1/w2/w3 = NVFP4 group_size 16, kv_cache_quant_algo null.
         """
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         prefix = "language_model.model.layers"
         raw_config = _attach_inferred_quant_fields(
@@ -1672,9 +1672,9 @@ class TestParseCompressedTensorsQuant:
 
     def test_modelopt_mixed_precision_mxfp8_config_group_not_misread_as_per_tensor_fp8(self):
         """A config_groups MXFP8 entry (8-bit float, group_size 32) maps to fp8_block, not fp8_static."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         raw_config = _attach_inferred_quant_fields(
             {
@@ -1696,9 +1696,9 @@ class TestParseCompressedTensorsQuant:
 
     def test_modelopt_mixed_precision_mxfp8_wins_over_per_tensor_fp8_for_gemms(self):
         """A checkpoint mixing MXFP8 and per-tensor FP8 dense layers keeps the block-scaled lane."""
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
-        from aiconfigurator.sdk.utils import _attach_inferred_quant_fields
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
 
         raw_config = _attach_inferred_quant_fields(
             {
@@ -1721,8 +1721,8 @@ class TestParseCompressedTensorsQuant:
         assert overrides["moe_quant_mode"] == common.MoEQuantMode.fp8_block
 
     def test_expert_dtype_fp4_is_deepseek_v4_specific(self):
-        from aiconfigurator.sdk import common
-        from aiconfigurator.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk import common
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
 
         raw_config = {"expert_dtype": "fp4"}
 

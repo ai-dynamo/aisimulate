@@ -68,11 +68,14 @@ _IMPORT_GUARD = """
 import sys
 from pathlib import Path
 
-blocked = ('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas', 'aiconfigurator_core', 'aisimulate_core')
+blocked = ('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas', 'aiconfigurator',
+           'aiconfigurator_core', 'aisimulate_core._native', 'aisimulate_core.sdk')
 
 def assert_lightweight():
     loaded = [name for name in sys.modules if any(name == item or name.startswith(item + '.') for item in blocked)]
     assert not loaded, loaded
+    core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
+    assert core <= {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}, core
 
 class RejectRuntimeImports:
     def find_spec(self, fullname, path=None, target=None):

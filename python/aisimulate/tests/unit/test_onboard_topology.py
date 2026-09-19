@@ -443,14 +443,20 @@ def test_cold_supervised_preview_does_not_import_execution_or_model_code(tmp_pat
     script = """
 import importlib.abc
 import sys
+blocked = ('aiconfigurator', 'aiconfigurator_core', 'aisimulate.sdk', 'aisimulate_core.sdk',
+           'aisimulate_core._native', 'aisimulate._native', 'aisimulate._runtime',
+           'collector', 'huggingface_hub', 'transformers', 'numpy', 'pandas', 'pyarrow', 'torch')
 class Guard(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        blocked = ('collector', 'huggingface_hub', 'transformers', 'aisimulate._native', 'aisimulate._runtime')
-        if fullname.startswith(blocked) or '.sdk.models' in fullname:
+        if any(fullname == name or fullname.startswith(name + '.') for name in blocked):
             raise AssertionError('unexpected execution import: ' + fullname)
 sys.meta_path.insert(0, Guard())
 from aisimulate.supervision import main
-raise SystemExit(main(sys.argv[1:]))
+code = main(sys.argv[1:])
+assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules for prefix in blocked)
+core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
+assert core <= {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}, core
+raise SystemExit(code)
 """
     result = subprocess.run([sys.executable, "-c", script, *command], text=True, capture_output=True, timeout=30)
     assert result.returncode == 0, result.stderr

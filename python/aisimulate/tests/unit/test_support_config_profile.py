@@ -434,9 +434,9 @@ def test_weight_quantization_does_not_select_runtime_attention_or_kv_dtype(tmp_p
     ],
 )
 def test_config_quantization_uses_existing_fpm_checkpoint_identity(tmp_path, quant, gemm, moe):
-    from aiconfigurator_core.sdk.models.helpers import _infer_quant_modes_from_raw_config
-    from aiconfigurator_core.sdk.utils import _infer_quantization_fields
     from aisimulate.support.fpm import fpm_cli_args
+    from aisimulate_core.sdk.models.helpers import _infer_quant_modes_from_raw_config
+    from aisimulate_core.sdk.utils import _infer_quantization_fields
 
     config = _config(tmp_path, quantization_config=quant)
     draft = derive_profile(config, _request(), _runtime(weights_bytes=1024))
@@ -629,8 +629,7 @@ def test_optional_moe_metadata_preserves_count_validation(tmp_path, facts, match
 
 def test_bundled_modelopt_string_kv_scheme_preserves_usable_geometry():
     path = (
-        Path(__file__).parents[2]
-        / "src/aiconfigurator_core/model_configs/Qwen--Qwen3-32B-FP8-Static-PerTensor_config.json"
+        Path(__file__).parents[2] / "src/aisimulate_core/model_configs/Qwen--Qwen3-32B-FP8-Static-PerTensor_config.json"
     )
     config = load_model_config(path)
     draft = derive_profile(config, _request(tensor_parallel=4))
@@ -645,7 +644,7 @@ def test_bundled_modelopt_string_kv_scheme_preserves_usable_geometry():
 def test_bundled_custom_layout_keeps_null_geometry_unresolved():
     path = (
         Path(__file__).parents[2]
-        / "src/aiconfigurator_core/model_configs/nvidia--Llama-3_3-Nemotron-Super-49B-v1_config.json"
+        / "src/aisimulate_core/model_configs/nvidia--Llama-3_3-Nemotron-Super-49B-v1_config.json"
     )
     config = load_model_config(path)
     draft = derive_profile(config, _request(), _runtime())
@@ -678,7 +677,7 @@ def test_selected_topology_and_context_must_match_structural_config(tmp_path):
 def test_real_minimax_and_glm_extract_independent_facts_without_naive_storage_rules(
     filename, architecture, context, quant, kv
 ):
-    path = Path(__file__).parents[2] / "src/aiconfigurator_core/model_configs" / filename
+    path = Path(__file__).parents[2] / "src/aisimulate_core/model_configs" / filename
     config = load_model_config(path)
     draft = derive_profile(config, _request("moe", tensor_parallel=4))
     assert config.suggestions["architecture"] == architecture

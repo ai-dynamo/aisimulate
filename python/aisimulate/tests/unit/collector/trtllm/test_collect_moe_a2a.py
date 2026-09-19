@@ -11,7 +11,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from collector.wideep.trtllm import collect_moe_a2a as a2a
 
 pytestmark = pytest.mark.unit

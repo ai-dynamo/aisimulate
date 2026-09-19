@@ -128,7 +128,7 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
 
 
 def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any], dict[Path, bytes]]:
-    source_spec = Path(__file__).resolve().parents[2] / "aiconfigurator_core/systems" / f"{request.identity.gpu}.yaml"
+    source_spec = Path(__file__).resolve().parents[2] / "aisimulate_core/systems" / f"{request.identity.gpu}.yaml"
     if not source_spec.is_file():
         raise ValueError(
             f"GPU {request.identity.gpu!r} has no packaged system specification; "
@@ -205,7 +205,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
         },
     }
     if request.fpm_profile is not None:
-        from aiconfigurator_core.sdk.memory import estimate_kv_cache
+        from aisimulate_core.sdk.memory import estimate_kv_cache
 
         deployment = request.profile_deployment()
         scheduler = prediction["engine"]["workers"]["aggregated"]["scheduler"]
@@ -337,7 +337,7 @@ def check_plan(request: SupportRequest, root: Path) -> None:
     if saved != request:
         raise ValueError(f"saved request identity in {root} differs from the requested plan")
     if request.fpm_profile is not None and (root / "fpm-model-profile.json").exists():
-        from aiconfigurator_core.sdk.fpm_profile import load_fpm_profile
+        from aisimulate_core.sdk.fpm_profile import load_fpm_profile
 
         try:
             profile = load_fpm_profile((root / "fpm-model-profile.json").read_text(encoding="utf-8"))

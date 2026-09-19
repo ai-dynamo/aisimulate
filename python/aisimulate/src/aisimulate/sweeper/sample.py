@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from .afd_parallel import AFDParallelConfig
-from .config import SearchSpace
+from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
 # Pinned deployment/runtime scalars folded in so the selected sample stands alone.
@@ -20,6 +20,9 @@ _DEPLOYMENT_PINNED = (
     "context_length",
     "startup_time",
     "aic_nextn",
+    "nextn_accepted",
+    "enable_chunked_prefill",
+    *ENGINE_MODEL_CONTROL_FIELDS,
 )
 
 # engine knobs per branch: searched batching + pinned scalars.

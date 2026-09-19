@@ -14,9 +14,9 @@ parity goldens. What stays Python-owned is the util-LEVEL admission table
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations import util_empirical
-from aiconfigurator.sdk.operations.gemm import _GEMM_QUANT_UTIL_LEVEL
+from aisimulate.sdk import common
+from aisimulate.sdk.operations import util_empirical
+from aisimulate.sdk.operations.gemm import _GEMM_QUANT_UTIL_LEVEL
 
 pytestmark = pytest.mark.unit
 

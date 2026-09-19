@@ -31,8 +31,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any
 
-from aiconfigurator_core.sdk.memory import estimate_kv_cache
-from aiconfigurator_core.sdk.perf_database import get_latest_database_version
+from aisimulate_core.sdk.memory import estimate_kv_cache
+from aisimulate_core.sdk.perf_database import get_latest_database_version
 
 from .forward_pass_estimator import resolve_systems_paths
 from .parallel_enum import ParallelShape
@@ -63,7 +63,7 @@ def resolve_backend_version(
 
     resolved_paths = list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None
     if requested_version is not None:
-        from aiconfigurator_core.sdk.perf_database import get_supported_databases
+        from aisimulate_core.sdk.perf_database import get_supported_databases
 
         available = get_supported_databases(**({"systems_paths": resolved_paths} if resolved_paths is not None else {}))
         versions = available.get(hardware_sku, {}).get(backend, [])
@@ -98,6 +98,7 @@ def estimate_kv_tokens(
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     nextn: int = 0,
     fpm_profile: dict[str, Any] | None = None,
+    model_controls: dict[str, str | int | bool] | None = None,
 ) -> int | None:
     """Per-rank KV-cache capacity (in tokens) for ``shape``, or ``None`` when the
     shape leaves no KV budget (weights + activations already fill VRAM -> OOM).
@@ -120,6 +121,7 @@ def estimate_kv_tokens(
             moe_tp_size=shape.moe_tp,
             moe_ep_size=shape.moe_ep,
             nextn=nextn,
+            **(model_controls or {}),
             systems_path=(list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None),
             allow_naive_fallback=False,
             **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
@@ -151,6 +153,8 @@ def feasible_shape_tokens(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     fpm_profile: dict[str, Any] | None = None,
+    model_controls: dict[str, str | int | bool] | None = None,
+    nextn: int = 0,
 ) -> dict[ParallelShape, int]:
     """Map each *feasible* shape to its KV-cache token capacity.
 
@@ -173,6 +177,8 @@ def feasible_shape_tokens(
             max_batch_size=max_batch_size,
             memory_fraction=memory_fraction,
             **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"model_controls": model_controls} if model_controls else {}),
+            **({"nextn": nextn} if nextn else {}),
         )
         if tokens is not None and tokens > max_seq_len:
             feasible[shape] = tokens

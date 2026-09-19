@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk.perf_database import (
     get_latest_database_version,
     get_supported_databases,
 )
@@ -146,10 +146,7 @@ def test_selector_cross_backend_donor_expands_to_all_system_backends():
     # via manifest-gated cross-backend fill (shared-tier kernel sources); the
     # selector must not narrow to the collecting backend.
     combos = _combos_from_changed_paths(
-        [
-            "python/aisimulate/src/aiconfigurator_core/systems/data/gb200/"
-            "linear_attention/sglang/0.5.14/gdn_perf.parquet"
-        ],
+        ["python/aisimulate/src/aisimulate_core/systems/data/gb200/linear_attention/sglang/0.5.14/gdn_perf.parquet"],
         _FAKE_SUPPORTED,
     )
     assert combos == {("gb200", "sglang"), ("gb200", "trtllm"), ("gb200", "vllm")}
@@ -157,7 +154,7 @@ def test_selector_cross_backend_donor_expands_to_all_system_backends():
 
 def test_selector_system_yaml_expands_to_all_system_backends():
     combos = _combos_from_changed_paths(
-        ["python/aisimulate/src/aiconfigurator_core/systems/l40s.yaml"],
+        ["python/aisimulate/src/aisimulate_core/systems/l40s.yaml"],
         _FAKE_SUPPORTED,
     )
     assert combos == {("l40s", backend) for backend in _FAKE_SUPPORTED["l40s"]}
@@ -166,10 +163,10 @@ def test_selector_system_yaml_expands_to_all_system_backends():
 def test_selector_ignores_unrelated_and_unknown_paths():
     combos = _combos_from_changed_paths(
         [
-            "python/aisimulate/src/aiconfigurator/cli/main.py",
+            "python/aisimulate/src/aisimulate/legacy_cli/main.py",
             "README.md",
-            "python/aisimulate/src/aiconfigurator_core/systems/support_matrix/foo.yaml",
-            "python/aisimulate/src/aiconfigurator_core/systems/data/unknown_system/gemm/trtllm/1.0/gemm_perf.parquet",
+            "python/aisimulate/src/aisimulate_core/systems/support_matrix/foo.yaml",
+            "python/aisimulate/src/aisimulate_core/systems/data/unknown_system/gemm/trtllm/1.0/gemm_perf.parquet",
         ],
         _FAKE_SUPPORTED,
     )
@@ -192,7 +189,7 @@ def test_selected_combos_unset_and_all_run_full_matrix(monkeypatch):
 FULL_MATRIX_TRIGGER_PATHS = [
     # Global reuse/source manifests govern cross-backend/cross-system fill
     # routing.
-    "python/aisimulate/src/aiconfigurator_core/systems/perf_data_reuse_manifest.yaml",
+    "python/aisimulate/src/aisimulate_core/systems/perf_data_reuse_manifest.yaml",
     # compiled Rust database, engine, operator, and Python-binding paths
     "crates/core/src/perfmodel/perf_database/interpolation.rs",
     "crates/core/src/perfmodel/engine/runtime.rs",
@@ -200,20 +197,20 @@ FULL_MATRIX_TRIGGER_PATHS = [
     "crates/core/src/perfmodel/common/system_spec.rs",
     "crates/core/src/perfmodel/py.rs",
     # Python loader facade + shared SDK types used by the notebook
-    "python/aisimulate/src/aiconfigurator_core/sdk/perf_database.py",
-    "python/aisimulate/src/aiconfigurator_core/sdk/engine.py",
-    "python/aisimulate/src/aiconfigurator_core/sdk/common.py",
-    "python/aisimulate/src/aiconfigurator_core/sdk/system_spec.py",
-    "python/aisimulate/src/aiconfigurator_core/sdk/operations/base.py",
+    "python/aisimulate/src/aisimulate_core/sdk/perf_database.py",
+    "python/aisimulate/src/aisimulate_core/sdk/engine.py",
+    "python/aisimulate/src/aisimulate_core/sdk/common.py",
+    "python/aisimulate/src/aisimulate_core/sdk/system_spec.py",
+    "python/aisimulate/src/aisimulate_core/sdk/operations/base.py",
     # the sanity tooling and this selector itself
     "python/aisimulate/tools/sanity_check/create_charts.py",
     "python/aisimulate/tools/sanity_check/sanity_full_matrix_triggers.txt",
     "python/aisimulate/tests/e2e/tools/test_sanity_check.py",
 ]
 DIFF_SCOPED_PATHS = [
-    "python/aisimulate/src/aiconfigurator_core/systems/data/gb200/gemm/trtllm/1.3.0rc20/gemm_perf.parquet",
-    "python/aisimulate/src/aiconfigurator_core/systems/gb200.yaml",
-    "python/aisimulate/src/aiconfigurator/cli/main.py",
+    "python/aisimulate/src/aisimulate_core/systems/data/gb200/gemm/trtllm/1.3.0rc20/gemm_perf.parquet",
+    "python/aisimulate/src/aisimulate_core/systems/gb200.yaml",
+    "python/aisimulate/src/aisimulate/legacy_cli/main.py",
 ]
 
 

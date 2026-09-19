@@ -28,7 +28,7 @@ cases:
       - release_artifact_contract
 
   - id: prediction
-    paths: [python/aisimulate/src/aiconfigurator/generator/base.py]
+    paths: [python/aisimulate/src/aisimulate/generator/base.py]
     run_all: false
     selected:
       - platform_wheels
@@ -40,7 +40,7 @@ cases:
       - release_artifact_contract
 
   - id: collector-data
-    paths: [python/aisimulate/src/aiconfigurator_core/systems/data/b200/op.parquet]
+    paths: [python/aisimulate/src/aisimulate_core/systems/data/b200/op.parquet]
     run_all: false
     selected:
       - platform_wheels

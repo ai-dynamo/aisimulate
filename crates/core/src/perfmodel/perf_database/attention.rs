@@ -4,7 +4,7 @@
 //! Attention family perf tables: context, generation, encoder.
 //!
 //! Mirrors the raw table layout used by Python's
-//! `aiconfigurator.sdk.operations.attention.{ContextAttention,
+//! `aisimulate.sdk.operations.attention.{ContextAttention,
 //! GenerationAttention, EncoderAttention}._query_*_table` SILICON paths.
 //!
 //! Each variant nests its data as `(discrete keys) -> 3-D grid` where the
@@ -1411,13 +1411,13 @@ mod tests {
     fn b200_vllm_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/vllm/0.24.0")
+            .join("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/vllm/0.24.0")
     }
 
     fn b200_sxm_spec() -> SystemSpec {
         let systems_yaml = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems/b200_sxm.yaml");
+            .join("python/aisimulate/src/aisimulate_core/systems/b200_sxm.yaml");
         SystemSpec::load(&systems_yaml).expect("b200_sxm.yaml must parse")
     }
     fn lanes(names: &[&str]) -> Vec<String> {
@@ -1748,7 +1748,7 @@ mod tests {
     fn b200_sglang_0514_data_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/sglang/0.5.14")
+            .join("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/sglang/0.5.14")
     }
 
     /// Two-lane in-memory context table: `head` carries only the `hs=128`

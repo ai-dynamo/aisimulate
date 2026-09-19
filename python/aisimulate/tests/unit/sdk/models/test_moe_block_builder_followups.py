@@ -21,10 +21,10 @@ from __future__ import annotations
 
 import pytest
 
-import aiconfigurator_core.sdk.operations as ops
-from aiconfigurator_core.sdk import common, config
-from aiconfigurator_core.sdk.models import get_model
-from aiconfigurator_core.sdk.models.blocks.moe import MoEBlockShape, build_moe_block_ops
+import aisimulate_core.sdk.operations as ops
+from aisimulate_core.sdk import common, config
+from aisimulate_core.sdk.models import get_model
+from aisimulate_core.sdk.models.blocks.moe import MoEBlockShape, build_moe_block_ops
 
 pytestmark = pytest.mark.unit
 
@@ -105,7 +105,7 @@ class TestDispatchQuantMode:
     def test_hybrid_dispatches_stay_quant_agnostic_via_the_param(self, monkeypatch):
         """The hybrid family now passes ``dispatch_quant_mode=None`` through its
         builder call instead of resetting the returned ops."""
-        from aiconfigurator_core.sdk.models import hybrid_moe
+        from aisimulate_core.sdk.models import hybrid_moe
 
         calls = []
         original = hybrid_moe.build_moe_block_ops
@@ -127,7 +127,7 @@ class TestHybridRenameLoopSelfDefense:
         """A returned op name that does not start with the phase would be
         silently mangled by the ``len(phase)`` slice; the rename loop must
         assert instead."""
-        from aiconfigurator_core.sdk.models import hybrid_moe
+        from aisimulate_core.sdk.models import hybrid_moe
 
         def bogus_builder(*args, **kwargs):
             return [ops.ElementWise("bogus_marker", 1, 8, 8, 0.8)]

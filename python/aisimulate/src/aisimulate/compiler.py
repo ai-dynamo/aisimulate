@@ -8,12 +8,13 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from .aic import (
+from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
     resolve_model_context_length,
 )
 from .config.cli import CorePredictionConfig
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
@@ -95,7 +96,7 @@ def prediction_to_replay_spec(
 def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> BackendDeploymentSpec:
     if deployment.backend_version not in {"current", "previous", "next"}:
         return deployment
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     updates = {}
     metadata = dict(deployment.performance_model_metadata)
@@ -186,7 +187,7 @@ def _deployment(
         )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
     if mode == "disagg":
-        from aiconfigurator_core.sdk.perf_database import load_system_spec
+        from aisimulate_core.sdk.perf_database import load_system_spec
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 
@@ -393,10 +394,21 @@ def _worker_performance_model_metadata(
             "attention_dp_size": parallel.attention_data,
             "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
             "moe_ep_size": parallel.moe_expert if sharded_moe else None,
-            "nextn": None,
+            "nextn": engine.nextn or None,
             **({"speculation": engine.speculation.cost_config()} if engine.speculation is not None else {}),
             "forward_model": worker.timing.forward_model,
             **({"systems_paths": engine.systems_paths} if engine.systems_paths is not None else {}),
+            **{
+                name: getattr(engine, name)
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+                if getattr(engine, name) not in (None, False)
+            },
+            **({"decoder_replay": True} if engine.decoder_replay else {}),
+            **{
+                field: getattr(engine, field)
+                for field in ("database_mode", "enable_shared_layer", "strict_provenance")
+                if getattr(engine, field) is not None
+            },
         },
     }
 
@@ -442,6 +454,12 @@ def _worker_engine_args(
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 
         payload["systems_path"] = list(resolve_systems_paths(engine.systems_paths))
+    if engine.decoder_replay:
+        payload["aic_decoder_replay"] = True
+    for field in ("database_mode", "enable_shared_layer", "strict_provenance"):
+        value = getattr(engine, field)
+        if value is not None:
+            payload[f"aic_{field}"] = value
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
     if parallel.moe_tensor * parallel.moe_expert > 1:
@@ -450,7 +468,7 @@ def _worker_engine_args(
     if worker.timing.type == "default" and worker.timing.forward_model != "op_level":
         # Only the non-default forward model is spelled out, so op_level specs stay byte-identical.
         payload["aic_forward_model"] = worker.timing.forward_model
-    if backend == "vllm":
+    if backend == "vllm" or isinstance(engine.context_length, int):
         payload["max_model_len"] = (
             engine.context_length
             if isinstance(engine.context_length, int)
@@ -492,7 +510,7 @@ def _worker_engine_args(
         ):
             payload.pop(name, None)
     if worker.timing.type == "default" and engine.mode != "afd" and engine.workers.encoder is None:
-        from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
         from .sweeper.forward_pass_estimator import resolve_systems_paths
 
@@ -505,12 +523,17 @@ def _worker_engine_args(
             backend=backend,
             backend_version=engine.backend_version,
             worker_type=role,
+            decoder_replay=engine.decoder_replay,
+            enable_shared_layer=engine.enable_shared_layer,
+            strict_provenance=bool(engine.strict_provenance),
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,
             moe_tp_size=parallel.moe_tensor if sharded_moe else None,
             moe_ep_size=parallel.moe_expert if sharded_moe else None,
             kv_block_size=block_size,
+            nextn=engine.nextn,
+            **{name: getattr(engine, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
             speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
             estimation_mode=timing.estimation_mode or engine.estimation_mode,
             fallback_policy=timing.fallback_policy or engine.fallback_policy,
@@ -521,7 +544,7 @@ def _worker_engine_args(
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
             systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
         )
-        timing_config = canonical.to_dict()
+        timing_config = omit_inactive_moe_controls(canonical.to_dict())
         for key in (
             "gpu_memory_utilization",
             "mem_fraction_static",
@@ -536,6 +559,11 @@ def _worker_engine_args(
         for key in tuple(payload):
             if key.startswith("aic_") and key != "aic_nextn":
                 payload.pop(key)
+    if engine.enable_chunked_prefill is not None and role != "decode":
+        payload["enable_chunked_prefill"] = engine.enable_chunked_prefill
+    if engine.nextn:
+        payload["aic_nextn"] = engine.nextn
+        payload["aic_nextn_accepted"] = engine.nextn_accepted
     host_offload = cache.host_offload
     if host_offload is not None:
         payload["kv_cache_bytes_per_token"] = _resolve_kv_bytes_per_token(
@@ -582,6 +610,7 @@ def _resolve_kv_bytes_per_token(
             if engine.fpm_profile is not None
             else {}
         ),
+        **({"kvcache_quant_mode": engine.kvcache_quant_mode} if engine.kvcache_quant_mode else {}),
     )
 
 
@@ -617,7 +646,9 @@ def _traffic(
         return workload, None
 
     if isinstance(source, SyntheticSource):
-        workload.update(isl=source.input_tokens, osl=source.output_tokens)
+        workload.update(
+            isl=source.input_tokens, osl=source.output_tokens, cached_prefix_tokens=source.cached_prefix_tokens
+        )
         if source.images is not None:
             workload["images"] = source.images.model_dump(mode="json")
         stop_count = stop.requests if stop is not None else None

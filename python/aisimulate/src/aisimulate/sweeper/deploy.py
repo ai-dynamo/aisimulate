@@ -9,7 +9,8 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
+from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control, omit_inactive_moe_controls
 from ..config.engine import NgramSpeculationConfig
 from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
@@ -62,6 +63,10 @@ def _engine_args_payload(
     forward_pass_estimator: ForwardPassEstimatorSpec | None = None,
 ) -> dict[str, Any]:
     """Build the runner-neutral engine argument payload for one role."""
+    if any(is_active_engine_model_control(name, sample.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS) and (
+        forward_pass_estimator is None or sample.get(f"{role}_timing_model") is not None
+    ):
+        raise ValueError("engine model controls require a resolved canonical forward-pass estimator for every role")
     prefix = _role_prefix(role)
     tp = int(sample[f"{prefix}tp"])
     attention_dp = int(sample[f"{prefix}attention_dp"])
@@ -98,14 +103,14 @@ def _engine_args_payload(
         from .forward_pass_estimator import resolve_systems_paths
 
         payload["systems_path"] = list(resolve_systems_paths(sample["systems_paths"]))
-    if backend == "vllm" and sample.get("context_length") is not None:
+    if sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
     if sample.get("speculation") is not None:
         payload["speculation"] = dict(sample["speculation"])
-    if sample.get("aic_nextn") is not None:
+    if sample.get("aic_nextn"):
         payload["aic_nextn"] = int(sample["aic_nextn"])
     forward_model = sample.get(f"{role}_forward_model")
     if forward_model is not None and forward_model != "op_level":
@@ -134,7 +139,11 @@ def _engine_args_payload(
         ):
             payload.pop(name, None)
     if forward_pass_estimator is not None and sample.get(f"{role}_timing_model") is None:
-        payload["timing_model"] = {"type": "external", "provider": "aic", "config": dict(forward_pass_estimator.config)}
+        payload["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": omit_inactive_moe_controls(forward_pass_estimator.config),
+        }
         if memory_fraction_field in payload:
             payload["timing_model"]["config"][memory_fraction_field] = payload[memory_fraction_field]
         payload["tensor_parallel_size"] = tp
@@ -144,6 +153,10 @@ def _engine_args_payload(
         for key in tuple(payload):
             if key.startswith("aic_") and key != "aic_nextn":
                 payload.pop(key)
+    if sample.get("enable_chunked_prefill") is not None and role != "decode":
+        payload["enable_chunked_prefill"] = sample["enable_chunked_prefill"]
+    if sample.get("nextn_accepted") is not None:
+        payload["aic_nextn_accepted"] = sample["nextn_accepted"]
     host_offload = sample.get(f"{role}_native_host_offload")
     if host_offload is not None:
         configured_bytes = sample[f"{role}_kv_bytes_per_token"]
@@ -155,6 +168,7 @@ def _engine_args_payload(
                 moe_tp_size=moe_tp,
                 moe_ep_size=moe_ep,
                 **_profile_kv_args(sample, role, backend_version),
+                **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if configured_bytes == "auto"
             else int(configured_bytes)
@@ -169,6 +183,7 @@ def _engine_args_payload(
                 moe_tp_size=int(sample["prefill_moe_tp"]),
                 moe_ep_size=int(sample["prefill_moe_ep"]),
                 **_profile_kv_args(sample, "prefill", backend_version),
+                **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if transfer_geometry == "auto"
             else int(transfer_geometry)

@@ -141,7 +141,7 @@ finally gives the "可以跑/不可以跑" regression a hard gate, which V1 neve
 ### 2.5 The accuracy layer (run_silicon)
 
 `make_silicon_refs.py` curates ~35 anchor points from
-`src/aiconfigurator/systems/silicon_sample.csv` (real e2e measurements with
+`src/aisimulate_core/systems/silicon_sample.csv` (real e2e measurements with
 provenance; a 2026-04 dump of the internal benchmark DB): up to 2 configs per
 (system, backend, mode) group, verified to predict OK at curation time.
 `run_silicon.py` predicts each anchor (measured backend_version when local
@@ -219,7 +219,7 @@ to new-side statistics with exit 0.
 
 | piece | file(s) |
 |---|---|
-| SDK shared-layer knob | `src/aiconfigurator/sdk/perf_database.py` + `tests/unit/sdk/test_perf_database_shared_layer.py` |
+| SDK shared-layer knob | `src/aisimulate/sdk/perf_database.py` + `tests/unit/sdk/test_perf_database_shared_layer.py` |
 | Tier-1 grid policy | `tools/prediction_regression_gate/grid.py` — 9 shape points, 3 parallelism layouts per family, quant default+fp8 (+nvfp4 on Blackwell-family systems) |
 | Tier-1 collector | `tools/prediction_regression_gate/collect_static.py` — multiprocess over combos, `--output-dir`/`--systems`/`--backends`/`--versions latest\|all` |
 | Tier-2 collector | `tools/prediction_regression_gate/run_tier2.py` + `tier2_configs.yaml` (16 configs) |

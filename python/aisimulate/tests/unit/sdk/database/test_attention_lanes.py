@@ -34,7 +34,7 @@ import pickle
 
 import pytest
 
-from aiconfigurator.sdk.common import FMHAQuantMode, KVCacheQuantMode
+from aisimulate.sdk.common import FMHAQuantMode, KVCacheQuantMode
 
 pytestmark = pytest.mark.unit
 
@@ -230,7 +230,7 @@ def _route_lane_density_through_the_stub(monkeypatch):
     test seam ``tests/unit/sdk/database/conftest.py`` already uses for
     ``fetch_table_view`` (``stub_perf_db`` / ``comprehensive_perf_db``).
     """
-    import aiconfigurator_core.sdk.engine_table_view as _etv
+    import aisimulate_core.sdk.engine_table_view as _etv
 
     real_fetch = _etv.fetch_attention_lane_density
 
@@ -243,11 +243,11 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_nineteen():
+def test_engine_spec_schema_version_is_twenty():
     """FpmForward interpolation extends the positional operation payload."""
-    from aiconfigurator.sdk import engine
+    from aisimulate.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 19
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 20
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():
@@ -255,7 +255,7 @@ def test_lanes_outside_the_known_vocabulary_stay_reachable():
     vocabulary — trtllm ships ``torch_flow*``, vllm ships ``vllm_*``, and neither
     has a ``"default"`` lane. Those rows must still be reachable (they are the
     ONLY rows there), after every named lane in the resolved order."""
-    from aiconfigurator_core.sdk.operations.attention import lane_walk_order
+    from aisimulate_core.sdk.operations.attention import lane_walk_order
 
     raw = {"torch_flow": _ctx_lane(_SLOW_LATENCY), "torch_flow_flashinfer": _ctx_lane(_FAST_LATENCY)}
 
@@ -274,7 +274,7 @@ def test_donor_tier_prefers_the_data_richest_lane_over_the_alphabetic_one(lane_s
     "f" < "t". The map-resolved head lane keeps its position; only the donor
     tiers re-order.
     """
-    from aiconfigurator_core.sdk.operations.attention import lane_walk_order, resolve_lane_order
+    from aisimulate_core.sdk.operations.attention import lane_walk_order, resolve_lane_order
 
     sparse = _ctx_lane(_SLOW_LATENCY, head_size=64)  # 1 slice
     dense = _ctx_lane(_FAST_LATENCY, head_size=64)
@@ -294,7 +294,7 @@ def test_ties_on_slice_count_are_broken_by_row_count():
     """vllm's context table carries ``…trtllmprefill`` and ``…trtllmdecode`` with
     an IDENTICAL slice footprint; only the row count identifies the substantive
     lane, and a name tie-break would hand the context table to the decode variant."""
-    from aiconfigurator_core.sdk.operations.attention import lane_walk_order
+    from aisimulate_core.sdk.operations.attention import lane_walk_order
 
     prefill = _ctx_lane(_SLOW_LATENCY)  # full (n, s, b) grid
     decode = _ctx_lane(_FAST_LATENCY)
@@ -317,7 +317,7 @@ def test_pinned_override_head_is_exempt_from_donor_density_ranking(lane_systems_
     alphabetical donor tier (``fa3`` sorts first), so the override collapsed into
     the donor tier and the densest lane took the head.
     """
-    from aiconfigurator_core.sdk.operations.attention import lane_walk_order, resolve_lane_order
+    from aisimulate_core.sdk.operations.attention import lane_walk_order, resolve_lane_order
 
     sparse = _ctx_lane(_SLOW_LATENCY, head_size=64)
     dense = _ctx_lane(_FAST_LATENCY, head_size=64)
@@ -339,7 +339,7 @@ def test_pinned_framework_default_head_is_exempt_from_donor_density_ranking(lane
     reconstruction classified the pinned head as donor tier, so the densest lane
     silently replaced the framework default the map exists to express.
     """
-    from aiconfigurator_core.sdk.operations.attention import lane_walk_order, resolve_lane_order
+    from aisimulate_core.sdk.operations.attention import lane_walk_order, resolve_lane_order
 
     sparse = _ctx_lane(_SLOW_LATENCY, head_size=64)
     dense = _ctx_lane(_FAST_LATENCY, head_size=64)
@@ -374,7 +374,7 @@ def test_resolved_lane_order_for_op_ranks_donors_from_real_density_not_the_blind
     donors fall back to alphabetical order (``'flashinfer'`` before
     ``'trtllm_mha'``) -- the production bug this guards against.
     """
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     sparse = _ctx_lane(_SLOW_LATENCY, head_size=64)  # 1 slice
     dense = _ctx_lane(_FAST_LATENCY, head_size=64)
@@ -405,7 +405,7 @@ def test_resolved_lane_order_for_op_fails_closed_on_an_unmapped_backend_version(
     framework default (PR #1519 review, jasonqinzhou P1: shipped B200 vllm
     0.22.0/0.19.0 tables have no map entry).
     """
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     raw = {"torch_flow": _ctx_lane(_SLOW_LATENCY), "torch_flow_flashinfer": _ctx_lane(_FAST_LATENCY)}
     db = _StubDatabase(lane_systems_root, context_lanes=raw)
@@ -423,7 +423,7 @@ def test_resolved_lane_order_for_op_fails_closed_on_a_missing_sm_row(lane_system
     """A mapped backend/version whose map has no row for THIS sm_version is
     just as unmapped as an unknown version: no override, no evidence, fail
     closed to ``["default"]``."""
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     raw = {"flashinfer": _ctx_lane(_SLOW_LATENCY), "trtllm_mha": _ctx_lane(_FAST_LATENCY)}
     db = _StubDatabase(lane_systems_root, context_lanes=raw, sm_version=999)  # no sm row in the fixture map
@@ -438,7 +438,7 @@ def test_explicit_override_is_translated_to_the_backends_stored_labels(lane_syst
     STORED labels — a verbatim ``triton`` pin can never match a vllm table and
     every query would silently fall through to the density-ranked donor
     (PR #1519 review, jasonqinzhou P1)."""
-    from aiconfigurator_core.sdk.attention_lanes import resolve_attention_lane_order
+    from aisimulate_core.sdk.attention_lanes import resolve_attention_lane_order
 
     order = resolve_attention_lane_order("vllm", "0.22.0", 100, "triton", lane_systems_root)
     assert order[0] == "vllm_triton_attn"
@@ -461,12 +461,12 @@ def test_unsupported_backend_override_pairs_are_rejected_not_donor_served(lane_s
     """An override the backend's tables cannot serve must raise the typed
     error (the CLI reports it as an expected ``Error:`` line) instead of being
     silently accepted and served by an arbitrary donor lane."""
-    from aiconfigurator_core.sdk.attention_lanes import (
+    from aisimulate_core.sdk.attention_lanes import (
         UnsupportedAttentionBackendError,
         resolve_attention_lane_order,
     )
-    from aiconfigurator_core.sdk.errors import is_expected_cli_error
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.errors import is_expected_cli_error
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     # fa3 is a Hopper sglang kernel; no vllm table collects it.
     with pytest.raises(UnsupportedAttentionBackendError, match=r"fa3.*vllm"):
@@ -491,8 +491,8 @@ def test_unsupported_backend_override_pairs_are_rejected_not_donor_served(lane_s
 
 def test_explicit_override_without_database_is_rejected():
     """A missing database cannot silently discard an explicit lane choice."""
-    from aiconfigurator_core.sdk.errors import UnsupportedAttentionBackendError, is_expected_cli_error
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.errors import UnsupportedAttentionBackendError, is_expected_cli_error
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     with pytest.raises(
         UnsupportedAttentionBackendError,
@@ -506,15 +506,15 @@ def test_explicit_override_without_database_is_rejected():
 @pytest.mark.parametrize("override", [None, "default"], ids=["unset", "default"])
 def test_non_specific_override_without_database_uses_default_lane(override):
     """Only non-specific intent may use the database-free safe fallback."""
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     assert resolved_lane_order_for_op(None, "_context_attention_data", override) == ["default"]
 
 
 def test_explicit_override_propagates_unexpected_density_resolution_failure(lane_systems_root, monkeypatch):
     """Unexpected resolver failures must not silently discard user intent."""
-    import aiconfigurator_core.sdk.engine_table_view as engine_table_view
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    import aisimulate_core.sdk.engine_table_view as engine_table_view
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     db = _StubDatabase(lane_systems_root, context_lanes={"fa3": _ctx_lane(_FAST_LATENCY)})
 
@@ -534,8 +534,8 @@ def test_framework_default_path_warns_and_falls_back_on_unexpected_density_failu
     """Only non-specific intent retains the observable safe fallback."""
     import logging
 
-    import aiconfigurator_core.sdk.engine_table_view as engine_table_view
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    import aisimulate_core.sdk.engine_table_view as engine_table_view
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     db = _StubDatabase(lane_systems_root, context_lanes={"triton": _ctx_lane(_FAST_LATENCY)})
 
@@ -544,7 +544,7 @@ def test_framework_default_path_warns_and_falls_back_on_unexpected_density_failu
 
     monkeypatch.setattr(engine_table_view, "fetch_attention_lane_density", _fail_density)
 
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator_core.sdk.operations.attention"):
+    with caplog.at_level(logging.WARNING, logger="aisimulate_core.sdk.operations.attention"):
         order = resolved_lane_order_for_op(db, "_context_attention_data", override)
 
     assert order == ["default"]
@@ -567,15 +567,15 @@ def test_real_shipped_vllm_0220_b200_table_unset_override_fails_closed_and_trito
       tried before inherited donor-version lanes.
     - An unsupported pair (``fa3`` on vllm) must raise, not donor-serve.
     """
-    from aiconfigurator_core.sdk.attention_lanes import UnsupportedAttentionBackendError
-    from aiconfigurator_core.sdk.engine import _evaluate_single_op
-    from aiconfigurator_core.sdk.engine_table_view import fetch_attention_lane_density
-    from aiconfigurator_core.sdk.operations.attention import (
+    from aisimulate_core.sdk.attention_lanes import UnsupportedAttentionBackendError
+    from aisimulate_core.sdk.engine import _evaluate_single_op
+    from aisimulate_core.sdk.engine_table_view import fetch_attention_lane_density
+    from aisimulate_core.sdk.operations.attention import (
         ContextAttention,
         GenerationAttention,
         resolved_lane_order_for_op,
     )
-    from aiconfigurator_core.sdk.perf_database import get_database
+    from aisimulate_core.sdk.perf_database import get_database
 
     db = get_database("b200_sxm", "vllm", "0.22.0", allow_unlisted_version=True)
 
@@ -633,9 +633,9 @@ def test_real_shipped_vllm_0220_b200_donor_only_override_pin_stays_first():
     label exists only in the shared layer, but provenance tiering must not
     move it behind requested-version lanes.
     """
-    from aiconfigurator_core.sdk.engine_table_view import fetch_attention_lane_density
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
-    from aiconfigurator_core.sdk.perf_database import get_database
+    from aisimulate_core.sdk.engine_table_view import fetch_attention_lane_density
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.perf_database import get_database
 
     table_attr = "_context_attention_data"
     db = get_database("b200_sxm", "vllm", "0.22.0", allow_unlisted_version=True)
@@ -664,10 +664,10 @@ def test_real_shipped_sglang_0514_b200_rejects_supported_but_absent_override(tab
     a different kernel.  Every loaded phase table must therefore contain at
     least one translated label for a named override.
     """
-    from aiconfigurator_core.sdk.attention_lanes import UnsupportedAttentionBackendError
-    from aiconfigurator_core.sdk.engine_table_view import fetch_attention_lane_density
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
-    from aiconfigurator_core.sdk.perf_database import get_database
+    from aisimulate_core.sdk.attention_lanes import UnsupportedAttentionBackendError
+    from aisimulate_core.sdk.engine_table_view import fetch_attention_lane_density
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.perf_database import get_database
 
     db = get_database("b200_sxm", "sglang", "0.5.14", allow_unlisted_version=True)
     density = fetch_attention_lane_density(db, table_attr)
@@ -690,7 +690,7 @@ def test_vllm_0240_primary_lanes_precede_shared_donors(table_attr, override):
     ``attention_backend=default`` has the same framework-default semantics as
     an unset override.
     """
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     lane_factory = _ctx_lane if table_attr == "_context_attention_data" else _gen_lane
     primary = {
@@ -769,7 +769,7 @@ def _max_db(systems_root, **kwargs):
 
 
 def test_resolved_lane_order_for_op_selects_architecture_default_without_override(arch_lane_systems_root):
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     db = _max_db(
         arch_lane_systems_root,
@@ -791,7 +791,7 @@ def test_resolved_lane_order_for_op_selects_architecture_default_without_overrid
 def test_resolver_honors_architecture_default_and_named_override_on_sm100(
     arch_lane_systems_root, override, expected_lane
 ):
-    from aiconfigurator_core.sdk.attention_lanes import resolve_attention_lane_order
+    from aisimulate_core.sdk.attention_lanes import resolve_attention_lane_order
 
     order = resolve_attention_lane_order(
         backend="sglang",
@@ -806,7 +806,7 @@ def test_resolver_honors_architecture_default_and_named_override_on_sm100(
 
 
 def test_resolved_lane_order_for_op_architecture_default_generation_twin(arch_lane_systems_root):
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     db = _max_db(
         arch_lane_systems_root,
@@ -818,7 +818,7 @@ def test_resolved_lane_order_for_op_architecture_default_generation_twin(arch_la
 
 
 def test_resolved_lane_order_for_op_override_wins_over_architecture_default(arch_lane_systems_root):
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     db = _max_db(
         arch_lane_systems_root,
@@ -831,7 +831,7 @@ def test_resolved_lane_order_for_op_override_wins_over_architecture_default(arch
 
 
 def test_resolved_lane_order_for_op_unlisted_architecture_is_unaffected(arch_lane_systems_root):
-    from aiconfigurator_core.sdk.operations.attention import resolved_lane_order_for_op
+    from aisimulate_core.sdk.operations.attention import resolved_lane_order_for_op
 
     db = _max_db(
         arch_lane_systems_root,
@@ -845,7 +845,7 @@ def test_resolved_lane_order_for_op_unlisted_architecture_is_unaffected(arch_lan
 
 
 def test_lane_order_cache_distinguishes_architectures(arch_lane_systems_root):
-    from aiconfigurator_core.sdk.operations.attention import resolve_lane_order
+    from aisimulate_core.sdk.operations.attention import resolve_lane_order
 
     db = _max_db(arch_lane_systems_root)
     assert resolve_lane_order(db, None, _MAX_ARCHITECTURE)[0] == "trtllm_mha"
@@ -865,8 +865,8 @@ def test_lane_order_cache_distinguishes_architectures(arch_lane_systems_root):
 
 
 def _context_op_with_lane_order(order):
-    from aiconfigurator.sdk import common
-    from aiconfigurator_core.sdk.operations.attention import ContextAttention
+    from aisimulate.sdk import common
+    from aisimulate_core.sdk.operations.attention import ContextAttention
 
     op = ContextAttention(
         "ctx_attn",
@@ -886,8 +886,8 @@ def _context_op_with_lane_order(order):
 
 
 def _generation_op_with_lane_order(order):
-    from aiconfigurator.sdk import common
-    from aiconfigurator_core.sdk.operations.attention import GenerationAttention
+    from aisimulate.sdk import common
+    from aisimulate_core.sdk.operations.attention import GenerationAttention
 
     op = GenerationAttention("gen_attn", 1.0, 32, 8, common.KVCacheQuantMode.fp8, 0, 128, True)
     op._lane_order = list(order)
@@ -944,9 +944,9 @@ def test_generation_qk_norm_is_present_in_rust_wire_spec():
 
 
 def test_generation_qk_norm_contributes_latency_through_python_query():
-    from aiconfigurator.sdk import common
-    from aiconfigurator_core.sdk.operations.attention import GenerationAttention
-    from aiconfigurator_core.sdk.perf_database import get_database
+    from aisimulate.sdk import common
+    from aisimulate_core.sdk.operations.attention import GenerationAttention
+    from aisimulate_core.sdk.perf_database import get_database
 
     database = get_database("b200_sxm", "vllm", "0.24.0")
     plain = GenerationAttention("gen", 1.0, 64, 4, common.KVCacheQuantMode.fp8, 0, 128, False)

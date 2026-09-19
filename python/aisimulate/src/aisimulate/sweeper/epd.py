@@ -50,10 +50,10 @@ def resolve_encoder_pools(
     gpu_budget: int | None = None,
 ) -> dict[str, EncoderPoolSpec]:
     """Shared AIC resolution for search domains and one concrete CLI prediction."""
-    from aiconfigurator.sdk.sweep import _get_encoder_worker_candidates
-    from aiconfigurator_core.sdk.backends.base_backend import BaseBackend
-    from aiconfigurator_core.sdk.config import RuntimeConfig
-    from aiconfigurator_core.sdk.perf_database import get_database_view
+    from aisimulate.sdk.sweep import _get_encoder_worker_candidates
+    from aisimulate_core.sdk.backends.base_backend import BaseBackend
+    from aisimulate_core.sdk.config import RuntimeConfig
+    from aisimulate_core.sdk.perf_database import get_database_view
 
     images = workload.images
     if images is None:
@@ -152,7 +152,7 @@ def add_encoder_choices(branches, catalog):
 
 def apply_encoder_overlay(report: ReplayReport, spec: ReplaySpec) -> ReplayReport:
     """Reuse AIC rate/TTFT composition; never label this as per-request replay."""
-    from aiconfigurator.sdk.sweep import _overlay_encoder_stage
+    from aisimulate.sdk.sweep import _overlay_encoder_stage
 
     encoder = spec.backend_deployment.encoder
     if encoder is None:

@@ -292,8 +292,8 @@ def test_context_and_concurrency_can_rule_out_previously_small_workers(tmp_path,
 
 @pytest.mark.parametrize("extra_token", [0, 1])
 def test_full_context_boundary_matches_existing_plan_admission(tmp_path, monkeypatch, extra_token):
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.support.plan import create_plan
+    from aisimulate_core.sdk import perf_database
 
     # Hand-counted TP1 tensors plus the existing 70 MiB minimum activation estimate.
     total = 13472 + 70 * 1024**2 + 64 * (4096 + extra_token)
@@ -445,11 +445,13 @@ def test_cold_process_suggestions_do_not_import_native_runtime_models_or_timing_
     _config(tmp_path)
     code = """
 import builtins, importlib.abc, json, sys
+forbidden = ('aiconfigurator', 'aiconfigurator_core', 'aisimulate.sdk', 'aisimulate_core.sdk',
+             'aisimulate_core._native', 'aisimulate._native', 'aisimulate._runtime',
+             'aisimulate.runner', 'aisimulate.engine', 'transformers', 'huggingface_hub',
+             'collector', 'numpy', 'pandas', 'pyarrow', 'torch')
 class NoRuntime(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        forbidden = ('aiconfigurator_core', 'aisimulate._runtime', 'aisimulate.runner', 'aisimulate.engine',
-                     'transformers', 'huggingface_hub', 'collector', 'pandas', 'pyarrow', 'torch')
-        if fullname.startswith(forbidden):
+        if any(fullname == name or fullname.startswith(name + '.') for name in forbidden):
             raise AssertionError('unexpected dependency: ' + fullname)
 sys.meta_path.insert(0, NoRuntime())
 from aisimulate.support.config_profile import load_model_config
@@ -460,7 +462,9 @@ report = suggest_topologies(load_model_config(sys.argv[1]), request, json.loads(
 assert report.default is not None
 assert report.default.draft.resolved['runtime_overhead_bytes'] == 3758096384
 assert report.default.draft.resolved['comm_overhead_bytes'] == 0
-assert not any(name.startswith(('aiconfigurator_core', 'aisimulate._runtime')) for name in sys.modules)
+assert not any(name == prefix or name.startswith(prefix + '.') for name in sys.modules for prefix in forbidden)
+core = {name for name in sys.modules if name == 'aisimulate_core' or name.startswith('aisimulate_core.')}
+assert core <= {'aisimulate_core', 'aisimulate_core.fpm_profile', 'aisimulate_core.quantization'}, core
 print(json.dumps(report.to_dict()))
 """
     source = Path(__file__).parents[2] / "src"
