@@ -211,6 +211,23 @@ findings:
       identity as sglang 0.5.17.'
     applies_to:
     - moonshotai/Kimi-K3
+  vllm_0290_dsa_attention_swap:
+    statement: 'vllm 0.29.0/SM90: the sparse-MLA/DSA attention path changed implementation — probes now record FlashAttnMLASparseImpl
+      and the 0.24-era dsa_nsa/triton kernel-family mix no longer appears for DeepSeek-V3.2 and the GLM-5.x family
+      (7 models, all still pass). Consequences: (1) attention perf data for these models must be recollected on
+      0.29; (2) kernel_taxonomy.yaml needs rules for the new kernel names before attention identity is machine-adjudicable
+      again (backlog). Also observed: Kimi-K2.5 W4A16 MoE binding class renamed (CompressedTensorsWNA16MarlinMoEMethod
+      -> CompressedTensorsWNA16MoEMethod) while the executed kernel is unchanged (marlin_moe_wna16::Marlin) — class
+      names alone are not identity. Evidence: records.jsonl 0.24-vs-0.29 diff, 2026-09-19.'
+    applies_to:
+    - deepseek-ai/DeepSeek-V3.2
+    - zai-org/GLM-5
+    - zai-org/GLM-5-FP8
+    - zai-org/GLM-5.1
+    - zai-org/GLM-5.1-FP8
+    - zai-org/GLM-5.2
+    - zai-org/GLM-5.2-FP8
+    - moonshotai/Kimi-K2.5
   vllm_0290_dsv4_cutedsl:
     statement: 'vllm 0.29.0/SM90 REGRESSION: the whole DeepseekV4 family (8 checkpoints, all quant artifacts) fails
       at first forward — 0.29 routes head=512 CUDA compression unconditionally to the new cutedsl kernel (models/deepseek_v4/compressor.py:407
