@@ -33,13 +33,17 @@ tables:
     #   - pipeline 63299076 (RadixArk id, nvfp4, kernel_source
     #     sglang_flashinfer_trtllm_moe): 3159 rows landed, full grid, zero
     #     failures.
-    # Concatenated 9153 rows total; keys disjoint by construction (moe_dtype
-    # partitions bfloat16/fp8_block/nvfp4, verified zero duplicate keys
-    # across all non-latency columns before landing) and disjoint from
-    # every other version. The archived result/collection_meta.yaml from
-    # each pipeline attests its distinct attempted case set; schema v2 keeps
-    # both events instead of collapsing their provenance.
-    rows: 9153
+    #   - Slurm job 790951 (AIC-1781, collector branch 6c138f3, fp8_block,
+    #     kernel_source sglang_flashinfer_trtllm_moe): 3159 rows, full grid,
+    #     zero failures. This is the deployment-pinned FlashInfer TRT-LLM MoE
+    #     lane and intentionally coexists with the stock fp8_block triton lane.
+    # Concatenated 12312 rows total; keys are disjoint by kernel_source and
+    # moe_dtype (verified zero duplicate keys across all non-latency columns)
+    # and disjoint from every other version. The archived
+    # result/collection_meta.yaml from each pipeline attests its distinct
+    # attempted case set; schema v2 keeps all three events instead of
+    # collapsing their provenance.
+    rows: 12312
     status: complete
     collections:
       - collector_ref: cdbfd10329a1cf73bf07677ab25614dccfce2379
@@ -52,5 +56,11 @@ tables:
         collector_hash: sha256:7c92ba48f717cb849096921e8da59f11e5fca3468ec6907e9348fcbfbc5bb24e
         case_plan_hash: sha256:141ee9344439aa9b5595de0d952c993ba1df20389aa7685470b3877eebd9495d
         collected_at: '2026-08-18'
+        rows: 3159
+        status: complete
+      - collector_ref: 6c138f3bd73cd51f128c375c3055801ea4f24ef8
+        collector_hash: sha256:9d62acbd82e19b5920557465ed815f9100e46fececca0970d1258fe6f1bfd744
+        case_plan_hash: sha256:f2b134ac3e8fa59f0ff258abeeb0a9d3ff10c78f3adec0f1c8c0f95b1d62160d
+        collected_at: '2026-09-18'
         rows: 3159
         status: complete
