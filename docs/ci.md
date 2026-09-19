@@ -568,31 +568,34 @@ gh workflow run ci.yml --repo ai-dynamo/aisimulate \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
 ```
 
-Full CI cancels older queued and running validation for the same trusted
-`pull-request/N` copy, including manual dispatches on that copy. To replace an
-automatic PR run manually, first verify that its trusted copy matches the PR's
-current head, then dispatch on the copy:
+Manual runs provide diagnostic validation. GitHub does not count job checks
+from `workflow_dispatch` toward required PR status checks, even when the run
+uses the current PR SHA. See [GitHub's required-check troubleshooting guide](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated).
+For PR merge-gate validation, a maintainer admits the reviewed current head
+through copy-pr-bot; the resulting trusted-copy **push** launches eligible
+Fast and Full CI runs:
 
 ```bash
-ci_pr=123  # Replace with the PR to validate.
+ci_pr=123  # Replace with the reviewed PR to validate.
 ci_sha="$(gh pr view "${ci_pr}" --repo ai-dynamo/aisimulate --json headRefOid --jq .headRefOid)"
-ci_copy_sha="$(gh api "repos/ai-dynamo/aisimulate/git/ref/heads/pull-request/${ci_pr}" --jq .object.sha)"
-if [[ "${ci_copy_sha}" == "${ci_sha}" ]]; then
-  gh workflow run ci.yml --repo ai-dynamo/aisimulate \
-    --ref "pull-request/${ci_pr}" -f expected_sha="${ci_sha}"
-else
-  echo "Trusted copy must be refreshed to the current PR head before dispatch."
-fi
+gh pr comment "${ci_pr}" --repo ai-dynamo/aisimulate \
+  --body "/ok to test ${ci_sha}"
 ```
 
-Manual source-branch runs replace only runs on the same branch; use the trusted
-copy above to share the automatic PR run's concurrency group. Different PRs
+Full CI cancels older queued and running validation for the same trusted
+`pull-request/N` copy. Manual dispatches on that copy share the push run's
+concurrency group: they can cancel an eligible push run without satisfying its
+required check. Preserve the push-triggered validation for the current PR
+head. If it fails transiently, retry its failed jobs with `gh run rerun RUN_ID
+--failed` after confirming that the run still targets the current head.
+
+Manual source-branch runs replace only runs on the same branch. Different PRs
 remain independent. Main, `release/*`, and tag runs use unique groups, so later
 runs cannot cancel their validation or protected staging. Concurrency only
 applies to runs using the updated workflow; existing runs and older branches
-are not retroactively covered. A replacement still needs successful checks for
-its exact SHA. Re-running an old revision can replace a newer run in the same
-group: dispatch the current PR head when replacing validation.
+are not retroactively covered. A replacement still needs successful eligible
+checks for its exact SHA. Re-running an old revision can replace a newer run
+in the same group: always verify the current PR head before retrying validation.
 
 Standalone Fast CI accepts these manual inputs:
 
