@@ -512,23 +512,43 @@ def _create_attention_module(
     # (MLA backends only support bfloat16, not float32).
     from vllm.utils.torch_utils import set_default_torch_dtype
 
+    use_legacy = bool(os.environ.get("AIC_DSA_LEGACY_MODULE"))
     with set_current_vllm_config(vllm_config), set_default_torch_dtype(vllm_config.model_config.dtype):
-        attn_module = DeepseekV2MLAAttention(
-            vllm_config=vllm_config,
-            config=hf_config,
-            hidden_size=hf_config.hidden_size,
-            num_heads=num_heads,
-            qk_nope_head_dim=hf_config.qk_nope_head_dim,
-            qk_rope_head_dim=hf_config.qk_rope_head_dim,
-            v_head_dim=hf_config.v_head_dim,
-            q_lora_rank=hf_config.q_lora_rank if hasattr(hf_config, "q_lora_rank") else None,
-            kv_lora_rank=hf_config.kv_lora_rank,
-            max_position_embeddings=hf_config.max_position_embeddings,
-            cache_config=vllm_config.cache_config,
-            quant_config=vllm_config.quant_config,
-            prefix="model.layers.0.self_attn",
-            topk_indices_buffer=topk_indices_buffer,
-        )
+        if attn_type == "dsa" and not use_legacy:
+            # 0.29 serving builds the DSV32-specific module (registry.py:94
+            # routes DeepseekV32ForCausalLM to vllm.models.deepseek_v32; its
+            # DeepseekV32Attention fuses the indexer prelude), NOT the generic
+            # DeepseekV2MLAAttention this collector historically used — the
+            # path_diff gate caught the prelude-fusion divergence. Construct
+            # the serving-same class (deepseek_v32/attention.py:118-131).
+            from vllm.models.deepseek_v32.attention import DeepseekV32Attention
+            attn_module = DeepseekV32Attention(
+                vllm_config=vllm_config,
+                config=hf_config,
+                prefix="model.layers.0.self_attn",
+                topk_indices_buffer=topk_indices_buffer,
+            )
+        else:
+            if attn_type == "dsa" and use_legacy:
+                print("  [AB-ONLY] AIC_DSA_LEGACY_MODULE=1: building the LEGACY generic "
+                      "DeepseekV2MLAAttention — NOT serving-parity on 0.29; rows are for "
+                      "comparison only, never for the database")
+            attn_module = DeepseekV2MLAAttention(
+                vllm_config=vllm_config,
+                config=hf_config,
+                hidden_size=hf_config.hidden_size,
+                num_heads=num_heads,
+                qk_nope_head_dim=hf_config.qk_nope_head_dim,
+                qk_rope_head_dim=hf_config.qk_rope_head_dim,
+                v_head_dim=hf_config.v_head_dim,
+                q_lora_rank=hf_config.q_lora_rank if hasattr(hf_config, "q_lora_rank") else None,
+                kv_lora_rank=hf_config.kv_lora_rank,
+                max_position_embeddings=hf_config.max_position_embeddings,
+                cache_config=vllm_config.cache_config,
+                quant_config=vllm_config.quant_config,
+                prefix="model.layers.0.self_attn",
+                topk_indices_buffer=topk_indices_buffer,
+            )
 
     # Serialized block-scaled FP8 creates weight params on meta device;
     # to() cannot copy meta tensors, so use to_empty() when needed.
@@ -887,7 +907,7 @@ def run_mla_module(
 
     # 2. Create KV cache + metadata
     with set_current_vllm_config(vllm_config):
-        kv_cache, attn_metadata, _, indexer_kv_cache, indexer_metadata = _create_kv_cache_and_metadata(
+        kv_cache, attn_metadata, common_attn_metadata, indexer_kv_cache, indexer_metadata = _create_kv_cache_and_metadata(
             vllm_config=vllm_config,
             attn_type=attn_type,
             batch_size=batch_size,
@@ -988,10 +1008,20 @@ def run_mla_module(
     attn_metadata_dict = {attn_layer_name: attn_metadata}
     if indexer_metadata is not None:
         attn_metadata_dict[indexer_layer_name] = indexer_metadata
-    exit_stack.enter_context(set_forward_context(attn_metadata_dict, vllm_config))
+    # 0.29: DeepseekV32Attention reads per-layer slot mappings from
+    # forward_context.slot_mapping (attention.py:303-306@v0.29.0 — a dict
+    # keyed by layer name); mirror serving's population with the SAME slot
+    # tensor the metadata was built from.
+    _slot = getattr(common_attn_metadata, "slot_mapping", None)
+    _slot_map = ({name: _slot for name in attn_metadata_dict} if _slot is not None else None)
+    exit_stack.enter_context(set_forward_context(
+        attn_metadata_dict, vllm_config, slot_mapping=_slot_map))
     try:
         with torch.inference_mode():
-            attn_module.forward(positions, hidden_states, None)
+            _fwd_args = ((positions, hidden_states)
+                         if type(attn_module).__name__ == "DeepseekV32Attention"
+                         else (positions, hidden_states, None))
+            attn_module.forward(*_fwd_args)
     except torch.cuda.OutOfMemoryError as e:
         print(f"  Dry run OOM: {e}")
         _cleanup()
@@ -1009,7 +1039,7 @@ def run_mla_module(
 
     # 5. Benchmark
     def kernel_func():
-        attn_module.forward(positions, hidden_states, None)
+        attn_module.forward(*_fwd_args)
 
     # DSA context captures a ~18 GiB flashmla-sparse scratch into the CUDA
     # graph's private pool on big shapes. PyTorch doesn't reclaim that pool
@@ -1051,7 +1081,10 @@ def run_mla_module(
     # Aligns with sdk/models.py which uses architectures[0] throughout.
     hf_cfg = vllm_config.model_config.hf_config
     architecture = getattr(hf_cfg, "architectures", [getattr(hf_cfg, "model_type", "unknown")])[0]
-    mla_layer = attn_module.mla_attn.mla_attn
+    # legacy generic module nests the layer (module.mla_attn.mla_attn);
+    # DeepseekV32Attention IS the MLAAttention layer itself
+    mla_layer = (attn_module if not hasattr(attn_module, "mla_attn")
+                 else attn_module.mla_attn.mla_attn)
     backend_name = _mla_backend_name(mla_layer, attn_type, is_context, attn_metadata)
     actual_kv_cache_dtype = "fp8" if mla_layer.kv_cache_dtype.startswith("fp8") else "bfloat16"
 

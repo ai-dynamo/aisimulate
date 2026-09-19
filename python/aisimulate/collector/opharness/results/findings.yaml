@@ -229,17 +229,18 @@ findings:
     - zai-org/GLM-5.2-FP8
     - moonshotai/Kimi-K2.5
   vllm_0290_dsa_lane_indexer_drift:
-    statement: 'path_diff gate on the 0.29 DSA lane, final precision after three instrument fixes it forced (whole-run
-      kernel tables in the vllm probe; profiled prefill phase; launcher-vs-kernel name dedup both sides): SPARSE
-      CORE ALIGNED — at seq>index_topk the lane executes serving''s exact sparse path (cp_gather_indexer_k_quant_cache
-      + sm90_fp8_mqa_logits + topKPerRowPrefill + fa3 flash::FlashAttnFwdSm90). Remaining REAL divergence is prelude
-      fusion: the lane builds the generic DeepseekV2MLAAttention module whose indexer prelude runs unfused (_fused_indexer_q_rope_quant_kernel
-      + vllm::indexer_k_quant_and_cache_kernel) while serving''s DSV32 nvidia model fuses those into other kernels
-      — module-level timings therefore price a different prelude. Next adaptation: construct the serving-same DSV32
-      nvidia fused module. OPEN PUZZLE: short-seq branch choice disagrees (lane s512 takes the dense-MHA early-exit
-      per use_dense_mha = max_seq<=index_topk, serving''s 32-token prefill still ran sparse topk) — suspect dense_mha_metadata_layer_name
-      resolution differs; unresolved. Verdicts: results/pathdiff/vllm-0.29.0/*.json (incl. s4096 sparse-branch case),
-      2026-09-19.'
+    statement: 'RESOLVED 2026-09-19 (same day): the 029 lane now constructs the serving-same DeepseekV32Attention
+      (vllm.models.deepseek_v32.attention:118 — 0.29 routes DeepseekV32ForCausalLM to the DSV32-specific fused implementation,
+      registry.py:94) instead of the generic DeepseekV2MLAAttention the 0.24 collector used. Adaptations, each serving-cited:
+      forward arity (positions, hidden_states — no residual arg), forward_context.slot_mapping dict populated per
+      layer name (attention.py:303-306), perf-log layer accessor (DSV32Attention IS the MLAAttention layer, no .mla_attn
+      nesting). path_diff verdicts ALL ALIGNED (bf16 s512, bf16 s4096 sparse branch, fp8-kv) with zero kernel drift
+      — the fused prelude (fused_norm_rope) now matches serving, and the short-seq dense/sparse branch puzzle dissolved
+      with the module swap (same class, same branch logic). Perf delta of construction parity (H20, same GPU, back-to-back):
+      context b1 s512 1.76→1.97 ms (+12% — the fused serving prelude is SLOWER at tiny seq here), context b1 s4096
+      26.25→26.88 ms (+2.4%), generation b4 s2048 0.209→0.189 ms (-9.6%). Non-trivial deltas = the old construction
+      was mispricing the module; serving-parity rows are the only trustworthy ones. Legacy construction remains
+      behind AIC_DSA_LEGACY_MODULE=1 for A/B only (loud banner, never for data).'
     applies_to:
     - family:sparse_attention
     - collector.vllm.collect_mla_module_029
