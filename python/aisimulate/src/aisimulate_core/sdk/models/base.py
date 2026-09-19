@@ -345,6 +345,9 @@ class BaseModel:
         gathered_heads = n_local * dcp
 
         def nccl(suffix: str, kind: str, elements_per_token: int):
+            # The NCCL table is keyed by the collective's whole buffer (nccl-tests
+            # `size`: the all-gather receive buffer, the reduce-scatter input, the
+            # all-to-all per-rank buffer), matching `context_cp_all_gather`.
             return ops.NCCL(
                 f"{name}_dcp_{suffix}",
                 scale,
@@ -354,16 +357,19 @@ class BaseModel:
                 comm_quant_mode=comm_quant_mode,
             )
 
-        collectives = [nccl("q_all_gather", "all_gather", n_local * q_dim)]
+        # Every rank contributes its n_local query heads; the gathered buffer
+        # holds all of them.
+        collectives = [nccl("q_all_gather", "all_gather", gathered_heads * q_dim)]
         # Partial-output merge (vllm/v1/attention/ops/dcp.py). Both styles pay
         # the collectives AND the elementwise passes around them; the latter
         # are launch/latency-bound at decode batch sizes but add up over the
         # layers, so they are priced explicitly.
         if self._dcp_comm_style() == "ag_rs":
             # `cp_lse_ag_out_rs`: all-gather the fp32 LSE (2 half-elements per
-            # gathered head), `correct_attn_out` rescales the partial outputs in
-            # place, then reduce-scatter the corrected outputs by head.
-            collectives.append(nccl("lse_all_gather", "all_gather", gathered_heads * 2))
+            # gathered head from each of the dcp ranks), `correct_attn_out`
+            # rescales the partial outputs in place, then reduce-scatter the
+            # corrected outputs by head.
+            collectives.append(nccl("lse_all_gather", "all_gather", gathered_heads * 2 * dcp))
             collectives.append(
                 ops.ElementWise(f"{name}_dcp_lse_correct", scale, gathered_heads * v_dim, gathered_heads * v_dim)
             )
