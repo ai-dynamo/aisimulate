@@ -84,6 +84,13 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="dsa_context_module",
+        # A validated 0.29.0 lane exists (collect_mla_module_029.py: the 0.29
+        # release swapped the sparse-MLA impl; SM90 smokes pass and the
+        # selector matches the serving probe). Routing it is BLOCKED on an
+        # owner granularity decision: the sparse_attention family also owns
+        # the dsv4_*/glm5_* tables, and DSV4 is broken on 0.29 (mandatory
+        # cutedsl compress kernel misalignment) — the family must split
+        # before dsa can move pins independently.
         module="collector.vllm.collect_mla_module",
         get_func="get_dsa_context_module_test_cases",
         run_func="run_mla_module_worker",
