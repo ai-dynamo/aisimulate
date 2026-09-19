@@ -375,6 +375,12 @@ def _worker_performance_model_metadata(
             "nextn": None,
             **({"speculation": engine.speculation.cost_config()} if engine.speculation is not None else {}),
             "forward_model": worker.timing.forward_model,
+            **({"decoder_replay": True} if engine.decoder_replay else {}),
+            **{
+                field: getattr(engine, field)
+                for field in ("database_mode", "enable_shared_layer", "strict_provenance")
+                if getattr(engine, field) is not None
+            },
         },
     }
 
@@ -416,6 +422,12 @@ def _worker_engine_args(
         payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
+    if engine.decoder_replay:
+        payload["aic_decoder_replay"] = True
+    for field in ("database_mode", "enable_shared_layer", "strict_provenance"):
+        value = getattr(engine, field)
+        if value is not None:
+            payload[f"aic_{field}"] = value
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
     if parallel.moe_tensor * parallel.moe_expert > 1:
@@ -475,6 +487,9 @@ def _worker_engine_args(
             backend=backend,
             backend_version=engine.backend_version,
             worker_type=role,
+            decoder_replay=engine.decoder_replay,
+            enable_shared_layer=engine.enable_shared_layer,
+            strict_provenance=bool(engine.strict_provenance),
             tp=parallel.tensor,
             pp=parallel.pipeline,
             attention_dp=parallel.attention_data,

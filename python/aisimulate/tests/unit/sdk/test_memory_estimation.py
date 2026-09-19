@@ -286,6 +286,10 @@ def test_prefill_workspace_respects_backend_kv_pool(monkeypatch, backend, extra_
         def get_kvcache_max_tokens(self, budget):
             return int(budget // 1024)
 
+        def get_kvcache_batch_capacity(self, budget, max_batch_size):
+            assert max_batch_size == 128
+            return self.get_kvcache_max_tokens(budget)
+
     class Backend:
         def _get_memory_usage(self, *args, num_tokens, **kwargs):
             return {"weights": 59, "activations": num_tokens / 1024, "others": 2, "nccl": 1}

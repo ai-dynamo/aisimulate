@@ -91,6 +91,10 @@ _AIC_TIMING_FIELD_ALIASES = {
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
+    "decoder_replay": ("decoder_replay", "aic_decoder_replay"),
+    "database_mode": ("database_mode", "aic_database_mode"),
+    "enable_shared_layer": ("enable_shared_layer", "shared_layer", "aic_enable_shared_layer"),
+    "strict_provenance": ("strict_provenance", "aic_strict_provenance"),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -1312,6 +1316,9 @@ def _materialize_engine_role(
         value = rank.pop(configured[0])
         if target in {"pp", "moe_tp_size", "moe_ep_size"}:
             value = _positive_int(value, f"engine provider {role} {target}")
+        elif target in {"decoder_replay", "enable_shared_layer", "strict_provenance"}:
+            if not isinstance(value, bool):
+                raise ValueError(f"engine provider {role} {target} must be a boolean")
         elif not isinstance(value, str) or not value:
             raise ValueError(f"engine provider {role} {target} must be a string")
         if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
