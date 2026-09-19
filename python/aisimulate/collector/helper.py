@@ -3465,7 +3465,7 @@ def power_law_deepep_decode(num_tokens, num_experts, topk, ep, alpha):
 _AIC_MODEL_CONFIG_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "src",
-    "aiconfigurator",
+    "aisimulate_core",
     "model_configs",
 )
 
@@ -3564,7 +3564,7 @@ def _resolve_local_model_path(model_id: str) -> str:
         1. Existing filesystem path. Must be a directory containing
            ``config.json`` — a file path or a directory without ``config.json``
            raises rather than silently falling through to HF download.
-        2. AIC's bundled configs in ``src/aiconfigurator/model_configs/``
+        2. AIC's bundled configs in ``src/aisimulate_core/model_configs/``
            (``<owner>--<name>_config.json``, with an optional
            ``..._hf_quant_config.json`` side-car).
         3. HuggingFace ``hf_hub_download``: ``config.json`` is required

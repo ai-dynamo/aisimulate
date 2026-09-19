@@ -8,7 +8,7 @@ minimal SGLang engine setup, simulating an EP world of ``moe_ep_size`` ranks on
 one GPU by loading only the rank-local expert shard. The module owns rank-local
 model runner construction, warmup/measurement and emission of the unified
 ``moe_expert_compute_perf`` rows (one table, ``inference_phase`` column) consumed by
-``aiconfigurator_core.sdk.operations.moe_comm.load_moe_expert_compute_data``.
+``aisimulate_core.sdk.operations.moe_comm.load_moe_expert_compute_data``.
 
 Shapes are DECLARED: every benchmarked geometry comes from the
 ``model_case_values.moe`` rows marked ``wideep: true`` crossed with the

@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.cli import report_and_save
+from aisimulate.legacy_cli import report_and_save
 
 pytestmark = pytest.mark.unit
 

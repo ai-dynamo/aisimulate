@@ -57,17 +57,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=parse_detail_sections,
         default=(),
         metavar="SECTIONS",
-        help="comma-separated summary,memory,time,energy, or all; energy reports unavailable evidence",
+        help="comma-separated summary,memory,time,energy,source, or all; unavailable evidence is explicit",
     )
     subparsers.choices["predict"].add_argument(
         "--diagnostics", choices=("power",), help="compatibility alias for power diagnostics; prefer --detail energy"
     )
     subparsers.choices["predict"].add_argument(
+        "--detail-top-n",
         "--diagnostics-top-n",
+        dest="diagnostics_top_n",
         type=_positive_int,
         default=12,
         metavar="N",
-        help="maximum operations per phase in energy detail tables (default: 12)",
+        help="maximum operations per phase in detail tables; JSON retains all operations (default: 12)",
     )
     subparsers.choices["predict"].add_argument(
         "--online",

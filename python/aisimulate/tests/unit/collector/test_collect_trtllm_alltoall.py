@@ -15,7 +15,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
 from collector import provenance
 from collector.network.slurm import collect_trtllm_alltoall as ata
 
@@ -66,7 +65,7 @@ def _two_sided_result() -> ata.AlltoallBenchmarkResult:
 # The oracle: the engine's legacy trtllm alltoall adapter maps, frozen here
 # because the SDK-side Python twins retired with the parsers (the
 # deprecation-cleanup PR). Source of truth:
-#   aic-core/rust/aiconfigurator-core/src/perf_database/moe_a2a.rs
+#   crates/core/src/perfmodel/perf_database/moe_a2a.rs
 #     legacy_trtllm_backend       (kernel_source -> comm_backend)
 #     legacy_trtllm_phase_dtype   (op_name -> (phase, pinned comm_dtype))
 # consumed by the query table AND the table-view fold. A drift here would put
@@ -85,7 +84,7 @@ _ENGINE_OP_TO_PHASE_DTYPE = {
 # Rust match arms the frozen literals above must keep mirroring; checked as
 # TEXT (same style as test_collector_schema_contract's twin pins — no imports
 # across the module boundary, and no FFI export for a pub(crate) internal).
-_ENGINE_ADAPTER_SOURCE = "aic-core/rust/aiconfigurator-core/src/perf_database/moe_a2a.rs"
+_ENGINE_ADAPTER_SOURCE = REPO_ROOT.parents[1] / "crates/core/src/perfmodel/perf_database/moe_a2a.rs"
 _ENGINE_ADAPTER_ARMS = (
     '"NVLinkTwoSided" => Some("nvlink_two_sided")',
     '"NVLinkOneSided" => Some("nvlink_one_sided")',
@@ -100,7 +99,7 @@ def test_mappings_mirror_the_engine_legacy_trtllm_adapter():
     assert ata.KERNEL_SOURCE_TO_COMM_BACKEND == _ENGINE_KERNEL_TO_BACKEND
     assert ata.OP_TO_PHASE_DTYPE == _ENGINE_OP_TO_PHASE_DTYPE
 
-    engine_source = (REPO_ROOT / _ENGINE_ADAPTER_SOURCE).read_text()
+    engine_source = _ENGINE_ADAPTER_SOURCE.read_text()
     for arm in _ENGINE_ADAPTER_ARMS:
         assert arm in engine_source, f"engine adapter arm drifted: {arm}"
 
@@ -211,10 +210,10 @@ def test_comparability_new_writer_leaf_equals_adapted_legacy_leaf(tmp_path):
     # each adapter must independently land equal measurements on equal keys.
     import pandas as pd
     import yaml
-
-    from aiconfigurator_core.sdk.engine_table_view import fetch_table_view
-    from aiconfigurator_core.sdk.perf_database import PerfDatabase
     from collector.helper import finalize_perf_files, log_perf
+
+    from aisimulate_core.sdk.engine_table_view import fetch_table_view
+    from aisimulate_core.sdk.perf_database import PerfDatabase
 
     root = tmp_path / "systems"
     root.mkdir()

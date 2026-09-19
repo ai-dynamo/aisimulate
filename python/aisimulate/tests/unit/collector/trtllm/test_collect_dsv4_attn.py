@@ -8,7 +8,6 @@ from types import ModuleType, SimpleNamespace
 from typing import ClassVar
 
 import pytest
-
 from collector.model_cases import build_collection_case_plan
 from collector.registry_types import PerfFile
 from collector.trtllm.registry import REGISTRY

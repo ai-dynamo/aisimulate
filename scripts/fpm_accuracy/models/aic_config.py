@@ -69,7 +69,7 @@ def map_worker_config_to_aic(
     record: WorkerConfigRecord,
     overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build the strict AISim EngineConfig used by op and FPM predictors."""
+    """Map shared AISim engine fields; adapters enforce estimator capabilities."""
 
     unknown = set(overrides or {}) - AIC_ENGINE_CONFIG_FIELDS
     if unknown:

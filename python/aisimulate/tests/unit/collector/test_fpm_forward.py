@@ -16,8 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from aiconfigurator.sdk.utils import HuggingFaceDownloadError
 from collector.fpm_forward.capabilities import resolve_model_capability
 from collector.fpm_forward.config import FPMCollectionOptions, PrefillSamplingProfile, add_fpm_arguments
 from collector.fpm_forward.database import (
@@ -35,6 +33,8 @@ from collector.fpm_forward.planner import (
 )
 from collector.fpm_forward.topology import enumerate_fpm_topologies
 from collector.fpm_forward.types import ParallelTopology
+
+from aisimulate.sdk.utils import HuggingFaceDownloadError
 
 pytestmark = pytest.mark.unit
 
@@ -1959,14 +1959,14 @@ def test_formal_database_requires_family_measured_version_in_curated_tree(tmp_pa
 
 def test_curated_systems_root_resolves_to_the_sdk_default_tree():
     """The default publication root must be the tree the SDK's
-    --systems-paths default actually reads (the aiconfigurator_core package
+    --systems-paths default actually reads (the aisimulate_core package
     data), not a repo-relative guess."""
 
     from collector.fpm_forward.database import _curated_systems_root
 
     root = _curated_systems_root()
     assert root.parts[-2:] == ("systems", "data")
-    assert "aiconfigurator_core" in root.parts
+    assert "aisimulate_core" in root.parts
     assert root.is_dir()
 
 
@@ -2353,7 +2353,7 @@ def test_missing_perf_data_stays_runnable_under_memory_admission(monkeypatch):
     """Coverage gaps are not structural invalidity: collection may be exactly
     what fills them, so strict admission must not reject them."""
 
-    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
     def unavailable(*_args, **_kwargs):
         raise PerfDataNotAvailableError("no perf rows for this shape")

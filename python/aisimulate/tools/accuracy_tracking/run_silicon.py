@@ -65,7 +65,7 @@ def _estimate_kwargs(row: dict) -> dict:
 
 
 def predict_ref(row: dict) -> dict:
-    from aiconfigurator.cli.api import cli_estimate
+    from aisimulate.legacy_cli.api import cli_estimate
 
     kwargs = _estimate_kwargs(row)
 

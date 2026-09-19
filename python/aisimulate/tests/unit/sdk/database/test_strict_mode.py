@@ -33,9 +33,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations.base import resolve_op_data_path
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk import common
+from aisimulate.sdk.operations.base import resolve_op_data_path
+from aisimulate.sdk.perf_database import (
     _STRICT_VALIDATED_REQUESTS,
     PerfDatabase,
     _new_database_dict,

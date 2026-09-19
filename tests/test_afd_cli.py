@@ -81,6 +81,14 @@ def _pure_prediction() -> dict:
     }
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_afd_rejects_unsupported_chunked_prefill_control(enabled) -> None:
+    raw = _pure_prediction()
+    raw["engine"]["enable_chunked_prefill"] = enabled
+    with pytest.raises(ValidationError, match="enable_chunked_prefill is unsupported for AFD"):
+        CorePredictionConfig.model_validate(raw)
+
+
 def test_afd_prediction_lowers_to_measured_replay_contract() -> None:
     performance_model = _AFDPerformanceModel()
     config = CorePredictionConfig.model_validate(_pure_prediction())
@@ -311,3 +319,22 @@ def test_afd_recommendation_emits_prediction_ready_candidate() -> None:
     assert selected.prediction_config["engine"]["afd"]["combined_with_pd"] is True
     assert set(selected.prediction_config["engine"]["workers"]) == {"prefill"}
     CorePredictionConfig.model_validate(selected.prediction_config)
+
+
+@pytest.mark.parametrize("command", ["prediction", "recommendation"])
+@pytest.mark.parametrize("combined", [False, True])
+def test_afd_rejects_cached_prefix_at_public_boundary(command, combined):
+    raw = _pure_prediction()
+    raw["traffic"]["source"]["cached_prefix_tokens"] = 4
+    raw["engine"]["afd"]["combined_with_pd"] = combined
+    if combined:
+        raw["engine"]["afd"]["phase"] = "decode"
+        raw["engine"]["workers"] = {"prefill": {}}
+    cls = CorePredictionConfig
+    if command == "recommendation":
+        cls = CoreRecommendationConfig
+        raw["optimization"] = {}
+        raw["engine"]["afd"].pop("n_a_nodes")
+        raw["engine"]["afd"].pop("n_f_nodes")
+    with pytest.raises(ValidationError, match="cached_prefix_tokens is unsupported for AFD"):
+        cls.model_validate(raw)

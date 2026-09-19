@@ -28,6 +28,61 @@ def _engine() -> dict:
     }
 
 
+@pytest.mark.parametrize(
+    "load",
+    [
+        {"type": "concurrency", "concurrency": 32},
+        {"type": "constant_rate", "requests_per_second": 10},
+        {"type": "poisson", "requests_per_second": 10, "seed": 17},
+    ],
+)
+@pytest.mark.parametrize("minimum", [9, 10])
+def test_min_gpus_lowers_fixed_traffic_and_load_constraint(load, minimum):
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {**_engine(), "mode": "aggregated", "context_length": 4096},
+            "traffic": {"source": {"type": "synthetic"}, "load": load, "stop": {"requests": 100}},
+            "evaluation": {"sla": {"itl_ms": 30}},
+            "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": minimum}},
+        }
+    )
+    lowered = recommendation_to_sweeper(config)
+    assert lowered.goal.target.value == "min_gpus"
+    assert lowered.goal.requires_aggregate_sla
+    assert lowered.goal.min_goodput_rps == minimum
+    assert lowered.goal.sla.itl_ms == 30
+    assert lowered.workload.load_type == load["type"]
+    if load["type"] == "concurrency":
+        assert lowered.workload.concurrency == load["concurrency"]
+        assert lowered.workload.request_rate is None
+    else:
+        assert lowered.workload.request_rate == load["requests_per_second"]
+        assert lowered.workload.concurrency is None
+        if load["type"] == "poisson":
+            assert lowered.workload.arrival_seed == load["seed"]
+
+
+@pytest.mark.parametrize(
+    ("load", "minimum", "error"),
+    [
+        ({"type": "constant_rate", "requests_per_second": 10}, None, "requires constraints.min_goodput_rps"),
+        ({"type": "constant_rate", "requests_per_second": 10}, 11, "cannot exceed"),
+        ({"type": "concurrency", "concurrency": {"choices": [1, 32]}}, None, "fixed synthetic"),
+        ({"type": "kv_capacity_fraction", "fraction": 0.5}, None, "fixed synthetic"),
+    ],
+)
+def test_min_gpus_rejects_missing_capacity_target_or_variable_load(load, minimum, error):
+    with pytest.raises(ValidationError, match=error):
+        CoreRecommendationConfig.model_validate(
+            {
+                "engine": {**_engine(), "mode": "aggregated"},
+                "traffic": {"source": {"type": "synthetic"}, "load": load, "stop": {"requests": 100}},
+                "evaluation": {"sla": {"itl_ms": 30}},
+                "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": minimum}},
+            }
+        )
+
+
 def test_prediction_uses_reviewed_default_traffic() -> None:
     config = CorePredictionConfig.model_validate({"engine": _engine()})
 
@@ -950,9 +1005,9 @@ def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
 
 @pytest.mark.parametrize("policy", [None, []])
 def test_candidate_preserves_default_vs_disabled_transfers_and_pinned_capacity(policy):
-    from aiconfigurator_core.sdk import ForwardPassPerfModelConfig
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
     config = _fpm_recommendation()
     smart = recommendation_to_sweeper(config)
@@ -1184,8 +1239,8 @@ def test_pd_predict_rejects_unknown_worker_hardware_before_runtime(role, backend
 def test_pd_predict_accepts_worker_hardware_from_configured_system_paths(monkeypatch, tmp_path, role):
     import yaml
 
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate_core.sdk import perf_database
 
     system_paths = perf_database.get_systems_paths()
     spec = perf_database.load_system_spec("gb200")
@@ -1257,7 +1312,7 @@ def test_role_systems_roots_reach_prediction_and_search_preflight(tmp_path, mode
     from aisimulate.compiler import prediction_to_replay_spec
     from aisimulate.sweeper.search_space import enumerate_branches
 
-    packaged = Path(str(files("aiconfigurator_core") / "systems"))
+    packaged = Path(str(files("aisimulate_core") / "systems"))
     roles = ("aggregated",) if mode == "aggregated" else ("prefill", "decode")
     workers = {}
     for role in roles:

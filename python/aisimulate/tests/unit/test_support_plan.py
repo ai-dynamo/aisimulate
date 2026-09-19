@@ -54,11 +54,11 @@ class _OfflinePerfModel:
 
     @classmethod
     def best_available(cls, request):
-        import aiconfigurator_core
+        import aisimulate_core
 
         payload = request.to_dict()
         cls.requests.append(payload)
-        config = json.loads(aiconfigurator_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
+        config = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
         return cls(config)
 
     def __init__(self, config):
@@ -191,6 +191,50 @@ def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path
     assert not (root / "evidence.yaml").exists()
 
 
+def test_onboarding_plan_and_preview_do_not_import_estimator_runtime(tmp_path):
+    request = tmp_path / "request.json"
+    request.write_text(_request().model_dump_json())
+    root = tmp_path / "plan"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            """
+import importlib.abc
+import sys
+from pathlib import Path
+
+blocked = ("aisimulate._runtime", "aisimulate_core", "aiconfigurator", "aiconfigurator_core",
+           "numpy", "pandas", "torch", "transformers", "huggingface_hub", "collector")
+
+class NoEstimatorRuntime(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        assert not any(fullname == name or fullname.startswith(name + ".") for name in blocked), fullname
+
+sys.meta_path.insert(0, NoEstimatorRuntime())
+from aisimulate.supervision import main
+
+request, output = sys.argv[1:]
+assert main(["onboard", "plan", "--config", request, "--output-dir", output, "--format", "json"]) == 0
+assert main(["onboard", "collect-fpm", "--config", request, "--output-dir", output]) == 0
+assert (Path(output) / "systems/h200_sxm.yaml").is_file()
+assert not any(name == prefix or name.startswith(prefix + ".") for name in sys.modules for prefix in blocked)
+""",
+            str(request),
+            str(root),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (root / "fpm-checkpoint").exists()
+    assert not (root / "fpm-artifacts").exists()
+
+
 @pytest.mark.parametrize("model_kind,preset,moe_tensor", [("dense", "tp", 1), ("moe", "pure_tp", 4)])
 def test_plan_collects_one_chosen_worker_and_bounds_recommendation(tmp_path, model_kind, preset, moe_tensor):
     from aisimulate.recommend import recommendation_to_sweeper
@@ -231,10 +275,10 @@ def test_one_worker_allocation_keeps_one_pilot_even_with_two_candidate_limit(tmp
 @pytest.mark.parametrize("seed", [0, 7, 42])
 @pytest.mark.parametrize("model_kind,moe_tensor", [("dense", 1), ("moe", 4)])
 def test_emitted_recommendations_evaluate_both_replica_choices(tmp_path, monkeypatch, seed, model_kind, moe_tensor):
-    from aiconfigurator_core.sdk import RustForwardPassPerfModel
     from aisimulate.main import build_parser
     from aisimulate.recommend import run_recommendation
     from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+    from aisimulate_core.sdk import RustForwardPassPerfModel
 
     # Keep process-local doubles in this orchestration test. The real lowering,
     # estimator resolver, sampler, resource admission and scoring still run.
@@ -317,7 +361,7 @@ import json
 from pathlib import Path
 from typing import ClassVar
 
-from aiconfigurator_core.sdk import RustForwardPassPerfModel
+from aisimulate_core.sdk import RustForwardPassPerfModel
 import aisimulate.main as cli
 import aisimulate.sweeper.search_space as search_space
 from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig

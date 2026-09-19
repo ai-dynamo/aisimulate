@@ -519,7 +519,7 @@ def test_supervisor_argument_and_output_setup_do_not_import_runtime():
             (
                 "import sys; import aisimulate.supervision, aisimulate.cli_args, aisimulate.output; "
                 "assert not any(name in sys.modules for name in "
-                "('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas', 'aiconfigurator_core'))"
+                "('aisimulate._runtime', 'aisimulate.sweeper', 'numpy', 'pandas', 'aisimulate_core'))"
             ),
         ],
         check=True,

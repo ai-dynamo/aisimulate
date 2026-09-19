@@ -15,9 +15,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.generator.api import generate_backend_artifacts
-from aiconfigurator.generator.rendering.engine import _select_versioned_template
-from aiconfigurator.generator.utils import resolve_backend_version_for_dynamo
+from aisimulate.generator.api import generate_backend_artifacts
+from aisimulate.generator.rendering.engine import _select_versioned_template
+from aisimulate.generator.utils import resolve_backend_version_for_dynamo
 
 pytestmark = pytest.mark.unit
 
@@ -292,7 +292,7 @@ def test_release_1_2_0_backend_version_matrix():
 
 
 def test_sglang_0_5_11_cli_template_is_version_specific():
-    template_dir = _REPO_ROOT / "src" / "aiconfigurator" / "generator" / "config" / "backend_templates" / "sglang"
+    template_dir = _REPO_ROOT / "src" / "aisimulate" / "generator" / "config" / "backend_templates" / "sglang"
     selected = _select_versioned_template(
         list(template_dir.glob("cli_args*.j2")),
         "cli_args",

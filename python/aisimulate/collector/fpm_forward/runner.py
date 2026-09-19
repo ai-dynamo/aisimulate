@@ -30,7 +30,7 @@ from typing import Any
 
 import yaml
 
-from aiconfigurator.fpm_contract import (
+from aisimulate.fpm_contract import (
     FPM_AUXILIARY_KINDS,
     FPM_BENCHMARK_RESULT_GLOB,
     FPM_CELL_LABEL,
@@ -1103,9 +1103,9 @@ def _render_cell(
     *,
     smoke: bool = False,
 ) -> dict[str, Any]:
-    from aiconfigurator.generator.api import generate_from_request
-    from aiconfigurator.generator.naive import build_naive_generator_params
-    from aiconfigurator.generator.request import from_legacy_params
+    from aisimulate.generator.api import generate_from_request
+    from aisimulate.generator.naive import build_naive_generator_params
+    from aisimulate.generator.request import from_legacy_params
 
     overrides = _cell_generator_overrides(
         plan,

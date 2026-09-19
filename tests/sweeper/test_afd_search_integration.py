@@ -51,6 +51,12 @@ def _topology(*, n_a_nodes: int = 1, n_f_nodes: int = 1) -> dict:
     }
 
 
+@pytest.mark.parametrize("mode", ["afd", "afd+pd"])
+def test_afd_rejects_chunked_prefill_control(mode):
+    with pytest.raises(ValidationError, match="enable_chunked_prefill is unsupported for AFD"):
+        _config(mode, enable_chunked_prefill=True)
+
+
 def _config(mode: str, **search_overrides) -> SmartSearchConfig:
     search_space = {
         "model_name": "example/model",

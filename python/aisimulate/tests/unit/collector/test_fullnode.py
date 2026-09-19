@@ -14,7 +14,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import yaml
-
 from collector import fullnode, provenance
 from collector.framework_manifest import CollectorRuntime
 

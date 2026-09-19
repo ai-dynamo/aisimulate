@@ -7,7 +7,6 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-
 from collector.case_generator import get_common_mhc_test_cases
 from collector.model_cases import build_collection_case_plan
 from collector.registry_types import PerfFile

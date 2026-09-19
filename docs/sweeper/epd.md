@@ -44,10 +44,13 @@ CLI EPD requires `source.type: synthetic`, a fixed integer concurrency, and an
 absolute request count or `requests_per_load_unit`. Traces, sessions, arrival-rate
 loads, concurrency search, adapters, online execution and per-request capture
 are rejected. Language timing must be default `op_level`, with static workers.
-Recommendation GPU budgets include all encoder and language GPUs; minimum-GPU
-constraints and goodput objectives remain unsupported. Recommendation SLA bounds
-require `strict_sla: true`; prediction preserves these as aggregate-mean bounds,
-never per-request goodput.
+Recommendation GPU budgets include all encoder and language GPUs. The `min_gpus`
+objective selects the smallest qualifying fixed-concurrency EPD configuration and
+always enforces aggregate-mean SLA bounds, even without `strict_sla: true`.
+Other recommendation objectives require `strict_sla: true` when SLA bounds are set.
+The separate `min_candidate_gpus` constraint (`min_gpu_budget` in the SDK),
+`min_goodput_rps`, request-rate traffic, and goodput objectives remain unsupported.
+Prediction preserves SLA bounds as aggregate means, never per-request goodput.
 
 `prediction.json` contains aggregate `summary` metrics and `metadata` identifying
 `analytical_epd_overlay`, the complete resolved encoder, GPU totals and SLA
@@ -102,7 +105,8 @@ measured watts. Encoder power is not a prediction of total deployment power.
 The first integration intentionally rejects traces, variable token lengths,
 sessions, prefix-sharing workloads, KV-load search, custom language timing,
 whole-model FPM, dynamic pools, adapters and per-request goodput objectives.
-Aggregate SLA bounds require `strict_sla: true`. Encoder queueing, CPU overhead,
+Aggregate SLA bounds require `strict_sla: true` except for `min_gpus`, which always
+enforces them. Encoder queueing, CPU overhead,
 embedding transfer, variable-image traces and deployment generation remain out
 of scope. Estimation support does not establish silicon accuracy.
 

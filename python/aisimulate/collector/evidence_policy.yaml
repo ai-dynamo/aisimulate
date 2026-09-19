@@ -20,7 +20,7 @@ thresholds:
   parquet_diff_median_pct: 5
 
 # SM-generation membership for the fleet (design AIC-1219 review fix): which
-# systems (aic-core/src/aiconfigurator_core/systems/*.yaml) belong to which
+# systems (src/aisimulate_core/systems/*.yaml) belong to which
 # generation. Used to scope pin_version/collector_code evidence requirements
 # to the SM generations a changed entry's `systems` actually touch, instead
 # of demanding evidence from every generation regardless of relevance (e.g.

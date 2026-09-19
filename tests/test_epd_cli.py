@@ -5,7 +5,7 @@
 
 import json
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import pytest
@@ -13,11 +13,12 @@ import yaml
 
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
-from aisimulate.config.epd import encoder_prediction_fields, validate_epd_prediction_mapping
+from aisimulate.config.epd import _language_execution, encoder_prediction_fields, validate_epd_prediction_mapping
 from aisimulate.main import main
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
 from aisimulate.runner import EngineReplayRunnerFactory
 from aisimulate.sweeper import SmartSearchConfig, Sweeper, SweepResult
+from aisimulate.sweeper.result import CandidateStatus
 
 
 def _prediction(mode="aggregated"):
@@ -84,9 +85,31 @@ def _recommendation(mode="aggregated"):
     return raw
 
 
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_epd_language_policy_normalizes_only_equivalent_default(mode):
+    from aisimulate.config.epd import _language_execution
+
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(mode)))
+    expected = _language_execution(spec)
+    legacy = deepcopy(spec)
+    deployment = legacy.backend_deployment
+    arguments = (
+        [deployment.agg_engine_args]
+        if mode == "aggregated"
+        else [deployment.prefill_engine_args, deployment.decode_engine_args]
+    )
+    for args in arguments:
+        assert args.pop("aic_database_mode") == "SILICON"
+    assert _language_execution(legacy) == expected
+    # A genuinely different estimator policy must still reject a callback.
+    arguments[0]["aic_database_mode"] = "SOL"
+    assert _language_execution(legacy) != expected
+
+
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated", "heterogeneous"])
 @pytest.mark.parametrize("relative_stop", [False, True])
-def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_stop):
+@pytest.mark.parametrize("target", ["throughput_per_gpu", "min_gpus"])
+def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_stop, target):
     raw = _recommendation("disaggregated" if mode == "heterogeneous" else mode)
     if mode == "heterogeneous":
         raw["engine"]["workers"]["decode"]["hardware"] = "gb200"
@@ -94,7 +117,8 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_
         raw["traffic"]["stop"] = {"requests_per_load_unit": 2.0}
     # Exercise strict aggregate SLA and retention in the selected prediction.
     raw["evaluation"] = {"sla": {"ttft_ms": 10000.0}}
-    raw["optimization"]["strict_sla"] = True
+    raw["optimization"]["target"] = target
+    raw["optimization"]["strict_sla"] = target != "min_gpus"
     path = tmp_path / "search.yaml"
     path.write_text(yaml.safe_dump(raw))
     root = tmp_path / "recommend"
@@ -103,6 +127,11 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_
     result = SweepResult.from_json((root / "recommendation.json").read_text())
     assert result.selected_candidates
     candidate = result.selected_candidates[0]
+    if target == "min_gpus":
+        assert candidate.used_gpus == min(
+            c.used_gpus for c in result.candidates if c.status is CandidateStatus.FEASIBLE
+        )
+        assert candidate.score == -candidate.used_gpus
     saved = root / "recommendations" / "0001.yaml"
     concrete = CorePredictionConfig.from_yaml(saved)
     spec = prediction_to_replay_spec(concrete)
@@ -136,6 +165,69 @@ def test_native_cli_epd_recommend_yaml_predict(tmp_path, capsys, mode, relative_
     table_output = tmp_path / "table"
     assert main(["predict", "-c", str(saved), "--output-dir", str(table_output)]) == 0
     assert "aggregate estimates" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+def test_epd_language_execution_omitted_version_uses_current(mode):
+    from aisimulate_core.sdk import perf_database
+
+    raw = _prediction(mode)
+    raw["engine"]["backend_version"] = None
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+
+    execution = _language_execution(spec)
+
+    current = perf_database.get_version_slots("h200_sxm", "sglang")["current"]
+    assert {role["rank"]["timing_model"]["config"]["backend_version"] for role in execution.values()} == {current}
+
+
+@pytest.mark.parametrize("root_field", ["systems_paths", "systems_path"])
+def test_epd_language_execution_uses_the_timing_systems_root(tmp_path, root_field):
+    from aisimulate_core.sdk import perf_database
+
+    bundled = Path(perf_database.__file__).resolve().parents[1] / "systems"
+    system = yaml.safe_load((bundled / "h200_sxm.yaml").read_text())
+    system["data_dir"] = str(bundled / system["data_dir"])
+    (tmp_path / "h200_sxm.yaml").write_text(yaml.safe_dump(system))
+    custom_version = perf_database.get_version_slots("h200_sxm", "sglang")["next"]
+    (tmp_path / "query_versions.yaml").write_text(yaml.safe_dump({"defaults": {"sglang": {"current": custom_version}}}))
+
+    raw = _prediction()
+    raw["engine"]["backend_version"] = None
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    deployment = spec.backend_deployment
+    args = {
+        **deployment.agg_engine_args,
+        "timing_model": {
+            "type": "external",
+            "provider": "aic",
+            "config": {
+                "model": raw["engine"]["model"],
+                "system": raw["engine"]["hardware"],
+                "backend": raw["engine"]["backend"],
+                "tp": 1,
+                "attention_dp": 1,
+                root_field: [str(tmp_path)] if root_field == "systems_paths" else str(tmp_path),
+            },
+        },
+    }
+    spec = replace(spec, backend_deployment=replace(deployment, agg_engine_args=args))
+
+    execution = _language_execution(spec)
+
+    assert execution["aggregated"]["rank"]["timing_model"]["config"]["backend_version"] == custom_version
+
+
+def test_epd_language_execution_without_a_database_fails(monkeypatch):
+    from aisimulate_core.sdk import perf_database
+
+    raw = _prediction()
+    raw["engine"]["backend_version"] = None
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    monkeypatch.setattr(perf_database, "get_latest_database_version", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(ValueError, match="no perf database.*h200_sxm.*sglang"):
+        _language_execution(spec)
 
 
 @pytest.mark.parametrize(
@@ -386,8 +478,8 @@ def test_epd_callback_preserves_equivalent_defaults_and_stops(mode, inferred_cap
 @pytest.mark.parametrize("backends", [["sglang", "vllm"], ["vllm", "sglang"], ["vllm"]])
 @pytest.mark.parametrize("absence", ["database", "version"])
 def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, backends, absence):
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.sweeper import kv_estimate
+    from aisimulate_core.sdk import perf_database
 
     original_database = perf_database.get_database_view
     original_version = kv_estimate.get_latest_database_version
