@@ -1187,6 +1187,22 @@ remains separate and fixed capacity is still required. `prediction.json` and sav
 performance metadata report `state_cache` with `source` (`inferred`, `overridden`,
 or `disabled`), resolved bytes, padding, and rounded allocation.
 
+The reusable SDK API is `aisimulate_core.sdk.estimate_state_cache`, alongside
+`estimate_kv_cache` (also available from `aisimulate.capacity`). It accepts either
+`model_path` or a loaded HF `model_config`, plus backend/topology/dtype/block
+settings, and returns `bytes_per_request` with raw bytes and layout provenance.
+It does not require a CLI configuration or estimate pool capacity:
+
+```python
+from aisimulate_core.sdk import estimate_state_cache
+
+state = estimate_state_cache(
+    model_config=hf_config_dict, backend="vllm", tp_size=tp,
+    block_size=block_size, kv_bytes_per_token=bytes_per_token,
+)
+bytes_per_request = state["bytes_per_request"]
+```
+
 State caching currently supports `predict --stack engine` with aggregated vLLM and fixed G1 capacity.
 Other runner stacks must explicitly advertise state-cache support; unsupported stacks reject it before execution.
 It cannot be combined with host/G3 offload or disaggregated mode, and is not available in
