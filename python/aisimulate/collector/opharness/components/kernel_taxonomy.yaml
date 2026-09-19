@@ -15,13 +15,15 @@
 schema: aic-kernel-taxonomy/v1
 
 rules:
+  - {backend: vllm_kernel, role: infra,
+     match: "flashinfer_concat_mla_k|ConcatMLAKKernel|BatchQKApplyRotaryPosIds"}
   # ---------------------------------------------------------------- attention
   - {backend: fa3, role: attention,
-     match: "^flash::(FlashAttnFwd|prepare_varlen)|^sgl_kernel::fwd$|vllmvllm_flash_attncuteflash_fwd_sm90"}
+     match: "^flash::(FlashAttnFwd|prepare_varlen)|^sgl_kernel::fwd$|vllmvllm_flash_attncuteflash_fwd_sm90|^_vllm_fa3_C::fwd$"}
   - {backend: flashmla, role: attention,
      match: "flash_fwd_splitkv_mla|flash_fwd_mla_combine|fwd_kvcache_mla|get_mla_metadata|flash_mla"}
   - {backend: dsa_nsa, role: attention,
-     match: "sparse_attn_fwd_kernel|_gqa_share_sparse|_flash_attn_fwd_with_block_score|_decode_score_kernel|_merge_topk_attn_out"}
+     match: "sparse_attn_fwd_kernel|_gqa_share_sparse|_flash_attn_fwd_with_block_score|_decode_score_kernel|_merge_topk_attn_out|_fused_indexer_q_rope_quant_kernel|indexer_k_quant_and_cache|cp_gather_indexer_k_quant_cache|topKPerRow"}
   - {backend: trtllm_mha, role: attention,
      match: "^fmha_v2_flash_attention|^kernel_mha$|masked_multihead_attention_kernel"}
   - {backend: triton, role: attention,

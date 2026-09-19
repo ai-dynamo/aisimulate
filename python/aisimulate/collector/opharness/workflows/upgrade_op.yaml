@@ -14,7 +14,7 @@ steps:
   done_when: {check: matrix_complete}
 - id: path_aligned
   actor: script
-  done_when: {check: component_pending, args: {component: path_diff}}
+  done_when: {check: path_verdicts_aligned}
 - id: customizations_retested
   actor: ai
   done_when: {check: customizations_retested}
