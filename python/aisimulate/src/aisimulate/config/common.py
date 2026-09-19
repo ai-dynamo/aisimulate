@@ -127,6 +127,7 @@ class ExecutionConfig(StrictModel):
 class CandidateConstraints(StrictModel):
     min_candidate_gpus: PositiveStrictInt | None = None
     max_candidate_gpus: PositiveStrictInt = 32
+    min_goodput_rps: PositiveFiniteFloat | None = None
 
     @model_validator(mode="after")
     def _validate_bounds(self) -> CandidateConstraints:
@@ -142,6 +143,7 @@ class OptimizationConfig(StrictModel):
         "throughput_per_user",
         "goodput",
         "goodput_per_gpu",
+        "min_gpus",
         "ttft",
         "e2e_latency",
         "pareto",
@@ -149,6 +151,12 @@ class OptimizationConfig(StrictModel):
     hardware: str | None = None
     strict_sla: bool = Field(default=False, strict=True)
     constraints: CandidateConstraints = Field(default_factory=CandidateConstraints)
+
+    @model_validator(mode="after")
+    def _validate_min_goodput(self) -> OptimizationConfig:
+        if self.constraints.min_goodput_rps is not None and self.target != "min_gpus":
+            raise ValueError("min_goodput_rps is only supported with min_gpus")
+        return self
 
     @field_validator("hardware")
     @classmethod

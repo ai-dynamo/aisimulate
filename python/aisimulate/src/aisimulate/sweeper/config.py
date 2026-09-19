@@ -47,18 +47,20 @@ class OptimizationTarget(str, Enum):
     E2E_LATENCY = "e2e_latency"  # minimize mean end-to-end latency
     GOODPUT = "goodput"  # maximize SLA-satisfying throughput
     GOODPUT_PER_GPU = "goodput_per_gpu"  # maximize goodput / avg GPU (tok/s/gpu)
+    # Standalone AISimulate only; Dynamo integration does not support this target.
+    MIN_GPUS = "min_gpus"  # minimize provisioned GPUs subject to workload/SLA constraints
     PARETO = "pareto"  # multi-objective: Pareto front over pareto_objectives
 
     @property
     def maximize(self) -> bool:
-        """True when larger is better (everything except e2e_latency).
+        """True for maximized scalar targets.
 
         Raises for ``pareto`` — it has no single direction; use the per-objective
         directions in :attr:`OptimizationGoal.pareto_objectives` instead.
         """
         if self is OptimizationTarget.PARETO:
             raise ValueError("'pareto' is multi-objective and has no scalar direction")
-        return self not in {OptimizationTarget.TTFT, OptimizationTarget.E2E_LATENCY}
+        return self not in {OptimizationTarget.TTFT, OptimizationTarget.E2E_LATENCY, OptimizationTarget.MIN_GPUS}
 
 
 class SLATarget(BaseModel):
@@ -88,8 +90,8 @@ class SLATarget(BaseModel):
         return any(value is not None for value in (self.ttft_ms, self.itl_ms, self.e2e_ms))
 
 
-# Goodput-based scalar targets — the only ones that need an SLA (their metric counts
-# only SLA-satisfying requests). Used to gate the SLA requirement on both the scalar
+# Goodput-based scalar targets count only SLA-satisfying requests.
+# Used to gate their SLA requirement on both the scalar
 # target and the per-objective list under a pareto goal.
 _SLA_TARGETS = frozenset({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})
 
@@ -107,7 +109,8 @@ class OptimizationGoal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target: OptimizationTarget = OptimizationTarget.THROUGHPUT
-    sla: SLATarget | None = None  # required for goodput / goodput_per_gpu (scalar or pareto objective)
+    # Required for min_gpus and for goodput / goodput_per_gpu (scalar or Pareto objective).
+    sla: SLATarget | None = None
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
     pareto_objectives: list[OptimizationTarget] | None = None
@@ -115,6 +118,11 @@ class OptimizationGoal(BaseModel):
     # enabled, configured SLA bounds also gate aggregate mean metrics before
     # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
     strict_sla: bool = Field(default=False, strict=True)
+    min_goodput_rps: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
+
+    @property
+    def requires_aggregate_sla(self) -> bool:
+        return self.strict_sla or self.target is OptimizationTarget.MIN_GPUS
 
     @property
     def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
@@ -139,6 +147,8 @@ class OptimizationGoal(BaseModel):
                 raise ValueError("a pareto goal needs at least 2 objectives")
             if OptimizationTarget.PARETO in objs:
                 raise ValueError("pareto_objectives cannot contain 'pareto' itself (objectives must be scalar)")
+            if OptimizationTarget.MIN_GPUS in objs:
+                raise ValueError("min_gpus is a constrained scalar target, not a Pareto objective")
             if len(set(objs)) != len(objs):
                 raise ValueError(f"pareto_objectives must be distinct, got {[o.value for o in objs]}")
             effective = set(objs)
@@ -150,8 +160,12 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require at least one SLA bound")
-        if self.strict_sla and (self.sla is None or not self.sla.has_bound):
+        if self.strict_sla and not has_sla:
             raise ValueError("strict_sla requires at least one SLA bound")
+        if self.target is OptimizationTarget.MIN_GPUS and not has_sla:
+            raise ValueError("min_gpus requires at least one SLA bound")
+        if self.min_goodput_rps is not None and self.target is not OptimizationTarget.MIN_GPUS:
+            raise ValueError("min_goodput_rps is only supported with min_gpus")
         return self
 
 
@@ -1122,6 +1136,40 @@ class SmartSearchConfig(BaseModel):
     sweep: SweepConfig = Field(default_factory=SweepConfig)
 
     @model_validator(mode="after")
+    def _validate_min_gpus(self) -> SmartSearchConfig:
+        if self.goal.target is not OptimizationTarget.MIN_GPUS:
+            return self
+        workload = self.workload
+        if self.adapters:
+            raise ValueError("min_gpus requires static engine pools without adapters")
+        if (
+            workload.trace_path is not None
+            or workload.trace_paths is not None
+            or workload.source_type not in (None, "synthetic")
+            or workload.turns_per_session != 1
+            or workload.kv_load_ratio is not None
+            or workload.load_search_field is not None
+            or workload.load_choices is not None
+            or workload.load_range is not None
+        ):
+            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
+        allowed_load_types = (
+            {None, "constant_rate", "poisson"} if workload.request_rate is not None else {None, "concurrency"}
+        )
+        if workload.load_type not in allowed_load_types:
+            raise ValueError("min_gpus requires a synthetic load_type matching the fixed load field")
+        if workload.request_rate is not None:
+            if self.goal.min_goodput_rps is None:
+                raise ValueError("min_gpus with request-rate traffic requires min_goodput_rps")
+            if self.goal.min_goodput_rps > workload.request_rate:
+                raise ValueError("min_goodput_rps cannot exceed the offered request rate")
+        elif workload.concurrency is None:
+            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
+        if self.search_space.encoder is not None and self.goal.min_goodput_rps is not None:
+            raise ValueError("analytical EPD cannot enforce min_goodput_rps")
+        return self
+
+    @model_validator(mode="after")
     def _validate_epd(self) -> SmartSearchConfig:
         encoder, workload = self.search_space.encoder, self.workload
         if workload.cached_prefix_tokens and set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
@@ -1139,7 +1187,7 @@ class SmartSearchConfig(BaseModel):
         if encoder.backend_version is not None and len(set(self.search_space.backend)) != 1:
             raise ValueError("encoder.backend_version requires a single backend")
         targets = self.goal.resolved_pareto_objectives if self.goal.is_pareto else [self.goal.target]
-        if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.strict_sla):
+        if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.requires_aggregate_sla):
             raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
         workload.require_fixed_epd()
         for role in ("agg", "prefill", "decode"):
