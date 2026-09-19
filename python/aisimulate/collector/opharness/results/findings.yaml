@@ -363,7 +363,8 @@ findings:
       collector captures (collectors run eager, so their kernels were all visible). Fix in code, generic
       (no per-model case): tables now come from the kineto DEVICE event stream (every executed kernel appears
       there, graph-replayed or not), CPU-tree walk kept as fallback. Second generalized knob from the same
-      episode: probe prompt length is now --isl / AIC_PROBE_ISL (default 32, recorded as probe_isl) because
+      episode: probe prompt length is now --isl / AIC_PROBE_ISL (default 4096, owner-set 2026-09-19; the
+      historical implicit value was 32; recorded per-record as probe_isl) because
       shape-conditional serving paths (M3 sparse threshold at topk_blocks*block_size tokens, FA split-KV)
       are invisible below their thresholds — coverage is a parameter, never a per-model special case.
       MiniMax-M3 and Meta-Llama-3.1-8B 0.29 raws re-probed at isl 4096 and superseded (old raws kept in
