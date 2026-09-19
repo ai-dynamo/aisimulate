@@ -11,11 +11,9 @@ t = yaml.safe_load(open('targets.yaml'))
 for be, cfg in t['backends'].items():
     for ver, img in cfg['images'].items():
         print(f"{be}|{ver}|{img}")
-print("vllmbase|img|" + t['tooling']['vllm_probe_base_image'])
 PY
 )
 
-VLLM_BASE=""
 # the checkout itself declares which compiled core it needs — read, don't pin
 CORE_WHEEL=$(python3 -c "
 import re
@@ -23,35 +21,14 @@ print(re.search(r'aiconfigurator-core==([\w.]+)', open('aic/pyproject.toml').rea
 for pin in "${PINS[@]}"; do
   IFS='|' read -r be ver img <<< "$pin"
   case "$be" in
-    vllmbase) VLLM_BASE="$img" ;;
-    vllm)     ;;  # built below from VLLM_BASE
+    vllm)     docker pull "$img" ;;
     *)        docker pull "$img" ;;
   esac
 done
 
-# --- vllm-probe:<ver>-fix ----------------------------------------------------
-# tilelang ships a broken libcudart stub (libcudart_stub.so) whose unresolved
-# symbol poisons flashinfer.comm's ctypes load; tilelang is a HARD dep of DSV4
-# mhc on vllm. Replace stubs with symlinks to the real libcudart.
-docker pull "$VLLM_BASE"
-cid=$(docker run -d --entrypoint bash "$VLLM_BASE" -c 'sleep infinity')
-docker exec "$cid" bash -lc '
-  set -e
-  real=$(ldconfig -p | grep -m1 "libcudart.so.13\|libcudart.so.12" | awk "{print \$NF}")
-  for stub in $(python3 - <<PY
-import glob, tilelang, os
-root = os.path.dirname(tilelang.__file__)
-print("\n".join(glob.glob(root + "/**/libcudart*", recursive=True)))
-PY
-  ); do ln -sf "$real" "$stub"; done
-  python3 -c "import flashinfer.comm" # must import cleanly now
-'
-VLLM_TAG=$(python3 -c "
-import yaml
-t = yaml.safe_load(open('targets.yaml'))
-print(list(t['backends']['vllm']['images'].values())[0])")
-docker commit "$cid" "$VLLM_TAG"
-docker rm -f "$cid"
+# (vllm-probe:<ver>-fix retired with the 0.29.0 pin: official images since
+#  0.27.1 ship tilelang without the broken libcudart stub — findings
+#  vllm_024_image_tilelang_stub records the full history.)
 
 # --- generator CLI venv (golden pipeline) ------------------------------------
 # The golden loop invokes the REAL `aiconfigurator cli generate` command.

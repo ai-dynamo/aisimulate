@@ -10,9 +10,9 @@ backends:
       0.5.16: lmsysorg/sglang:v0.5.16
   vllm:
     versions:
-    - 0.24.0
+    - 0.29.0
     images:
-      0.24.0: vllm-probe:0.24.0-fix
+      0.29.0: vllm/vllm-openai:v0.29.0
     cli_extra_args:
     - --generator-set
     - params.agg.extra_cli_args=["--benchmark-mode","agg"]
@@ -201,6 +201,20 @@ families:
     - nvidia/Kimi-K3-NVFP4
     - nvidia/DeepSeek-V3.2-NVFP4
     checkpoint_overrides:
+      nvidia/Nemotron-H-56B-Base-8K:
+        cli_extra_args:
+          vllm:
+            args:
+            - --generator-set
+            - params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.6"]
+            fact: 'vllm 0.29.0/SM90: the generator-rendered default OOMs the mamba profile run
+              (_state_passing_fwd tries 8GiB with 4GiB free on a 143GB GPU). Root knob is max_num_seqs
+              (seqs=64 alone passes, facts/ab_nemoh_seq_0290.json) but the generator rule engine floors
+              max_batch_size at 512 (pipeline.py: 512 if x<512 else x*2) and SILENTLY IGNORES unknown
+              params.agg keys — so the expressible rescue is gpu-memory-utilization 0.6 via
+              extra_cli_args (A/B facts/ab_nemoh_mem_0290.json, 2026-09-19; replaces the backend-level
+              extra_cli_args, hence benchmark-mode is repeated). Real deployments of the default
+              config hit the same OOM.'
       nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
         dummy_overrides:
           hfquant_exclude_from_sibling: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
@@ -308,6 +322,5 @@ platform:
   - h100_sxm
   - h200_sxm
 tooling:
-  vllm_probe_base_image: vllm/vllm-openai:v0.24.0
   note: 'aiconfigurator-core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
-    pins live here. Why the -fix image exists: see findings.yaml vllm_024_image_tilelang_stub.'
+    pins live here. vllm-probe:0.24.0-fix retired with the 0.29.0 pin (stubs gone since 0.27.1) — history in findings vllm_024_image_tilelang_stub.'

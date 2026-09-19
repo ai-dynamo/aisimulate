@@ -28,8 +28,6 @@ import yaml
 # workspace: where dummy_models/, archive/ and probe outputs live
 ROOT = Path(os.environ.get("AIC_PROBE_WORKSPACE", Path.cwd()))
 # generator source: this repo by default; override to pin a specific checkout
-# vendored layout: this file lives at <pkg>/collector/facts/, the generator
-# at <pkg>/src/aiconfigurator — resolve relative to the package root
 AIC_SRC = os.environ.get("AIC_GENERATOR_SRC",
                          str(Path(__file__).resolve().parents[3] / "src"))
 if AIC_SRC not in sys.path:
@@ -65,7 +63,7 @@ def render_golden(run: dict) -> Path | None:
     cmd += list(run.get("cli_extra_args") or [])
     cmd_txt = shlex.join(cmd)
     import subprocess as _sp
-    gen_commit = _sp.run(["git", "-C", AIC_SRC, "rev-parse", "--short", "HEAD"],
+    gen_commit = _sp.run(["git", "-C", str(ROOT / "aic"), "rev-parse", "--short", "HEAD"],
                          capture_output=True, text=True).stdout.strip()
     stamp = gdir / "command.txt"
     # cache valid only for the SAME command rendered by the SAME generator code
@@ -77,7 +75,7 @@ def render_golden(run: dict) -> Path | None:
         shutil.rmtree(gdir)
     gdir.mkdir(parents=True)
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(Path(AIC_SRC))  # vendored aiconfigurator_core lives beside aiconfigurator
+    env["PYTHONPATH"] = str(ROOT / "aic" / "aic-core" / "src")
     r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=900)
     stamp.write_text(cmd_txt + f"\n# generator={gen_commit}\n# exit={r.returncode}\n")
     (gdir / "render.log").write_text((r.stdout or "")[-8000:] + (r.stderr or "")[-8000:])
@@ -256,7 +254,7 @@ def _generator_src_commit() -> dict:
     return {"generator_src": repo, "generator_commit": rev, "generator_branch": branch or "detached"}
 
 
-def emit_queues(runs: list[dict], n_gpus: int, gpu_offset: int, plan_name: str) -> None:
+def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
     SCRATCH_QUEUES.mkdir(parents=True, exist_ok=True)
     src_info = _generator_src_commit()
     for run in runs:
@@ -264,14 +262,17 @@ def emit_queues(runs: list[dict], n_gpus: int, gpu_offset: int, plan_name: str) 
             run.update(src_info)
     (ROOT / "archive" / "raw").mkdir(parents=True, exist_ok=True)
     (ROOT / "archive" / "run_sh").mkdir(parents=True, exist_ok=True)
-    queues: dict[int, list[str]] = {g: [] for g in range(gpu_offset, gpu_offset + n_gpus)}
+    queues: dict[int, list[str]] = {g: [] for g in gpu_list}
     for i, run in enumerate(r for r in runs if "skip" not in r):
-        g = gpu_offset + i % n_gpus
+        g = gpu_list[i % len(gpu_list)]
         head = (f"[ -f {ROOT}/archive/raw/{run['id']}.json ] && "
                 f"echo 'skip [{run['id']}] (done)' || {{ "
                 f"echo '### [{run['id']}] {run['backend']} {run['repo']} {run['variant']} "
                 f"{run['version']} tp{run['tp']}' && timeout 1500 docker run --rm "
                 f"--gpus '\"device={g}\"' --shm-size 16g -e HF_HUB_OFFLINE=1 "
+                # host runs an MPS daemon; probes must NOT attach (a fake pipe
+                # dir makes the CUDA client fall back to a normal context)
+                f"-e CUDA_MPS_PIPE_DIRECTORY=/nonexistent-no-mps "
                 f"-v {ROOT}:{WORK} -v {ROOT}/jitcache:/root/.cache "
                 f"-e TRITON_CACHE_DIR=/root/.cache/triton -e DG_JIT_CACHE_DIR=/root/.cache/deep_gemm ")
         if run["backend"] == "sglang":
@@ -625,8 +626,23 @@ def _fail_cause(note: str) -> str:
 
 
 def build_matrix(targets: dict) -> None:
-    plans = {"sglang": "plan_roster_sgl.json", "vllm": "plan_roster_vllm.json",
-             "trtllm": "plan_roster_trt.json"}
+    # resolve each backend's plan by the PINNED version (hardcoded names went
+    # stale on the first version bump): pick the plan file whose runs carry
+    # (backend, pinned version); ties break to the most recently written
+    pins = {be: (cfg.get("versions") or ["?"])[0] for be, cfg in targets["backends"].items()}
+    plans: dict = {}
+    for pf in sorted((ROOT / "archive").glob("plan*.json"), key=lambda q: q.stat().st_mtime):
+        try:
+            runs = json.loads(pf.read_text())
+        except Exception:
+            continue
+        for be, ver in pins.items():
+            if any(isinstance(r, dict) and r.get("backend") == be and r.get("version") == ver
+                   and "skip" not in r for r in runs):
+                plans[be] = pf.name
+    missing = sorted(set(pins) - set(plans))
+    if missing:
+        raise SystemExit(f"--matrix: no plan file matches the pinned version for {missing} — emit queues first")
     # pass+custom means PER-CHECKPOINT facts-derived args (backend-level
     # generator-sets like --benchmark-mode apply to every run and are not
     # a customization of this model)
@@ -730,6 +746,8 @@ def main() -> None:
     ap.add_argument("--full", action="store_true", help="all variants x all pinned versions (default: representative)")
     ap.add_argument("--gpus", type=int, default=4)
     ap.add_argument("--gpu-offset", type=int, default=0)
+    ap.add_argument("--gpu-list", default=None,
+                    help="comma list of GPU indices (overrides --gpus/--gpu-offset; for boxes with busy GPUs)")
     ap.add_argument("--backends", default="sglang", help="comma list: sglang,vllm")
     ap.add_argument("--only", default=None,
                     help="comma list of repo substrings — plan/queues cover only matching checkpoints")
@@ -758,7 +776,9 @@ def main() -> None:
             print(json.dumps(r))
         return
     if args.emit_queues:
-        emit_queues(runs, args.gpus, args.gpu_offset, args.plan_name)
+        gpu_list = ([int(x) for x in args.gpu_list.split(",")] if args.gpu_list
+                    else list(range(args.gpu_offset, args.gpu_offset + args.gpus)))
+        emit_queues(runs, gpu_list, args.plan_name)
 
 
 if __name__ == "__main__":
