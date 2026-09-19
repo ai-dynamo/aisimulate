@@ -168,7 +168,7 @@ class StateCachePredictionConfig(StrictModel):
     """Sizing input; only resolved bytes cross the native engine boundary."""
 
     bytes_per_request: PositiveU64 | None = None
-    layout: str = "vllm-gdn-a474da28"
+    layout: str = "auto"
     model_dtype: StateDtype = "auto"
     mamba_cache_dtype: MambaCacheDtype = "auto"
     mamba_ssm_cache_dtype: MambaCacheDtype = "auto"
