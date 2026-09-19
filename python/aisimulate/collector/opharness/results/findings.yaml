@@ -211,6 +211,43 @@ findings:
       identity as sglang 0.5.17.'
     applies_to:
     - moonshotai/Kimi-K3
+  vllm_0290_dsv4_cutedsl:
+    statement: 'vllm 0.29.0/SM90 REGRESSION: the whole DeepseekV4 family (8 checkpoints, all quant artifacts) fails
+      at first forward — 0.29 routes head=512 CUDA compression unconditionally to the new cutedsl kernel (models/deepseek_v4/compressor.py:407
+      ''head=512 on CUDA always uses cutedsl'', no fallback flag), which raises tvm_ffi ''Misaligned Tensor data
+      on argument #3'' on state_cache [n0,n1,1024] float32. No escape: kv-auto is still refused (''fp8_ds_mla layout
+      only supports fp8 kv-cache, got auto'', facts/ab_dsv4_kvauto_0290.json), so the mandatory path crashes. On
+      0.24.0 the same checkpoints ran as pass+custom. Evidence archive/raw (plan_vllm_0290) + A/B, 2026-09-19.'
+    applies_to:
+    - deepseek-ai/DeepSeek-V4-Flash
+    - deepseek-ai/DeepSeek-V4-Pro
+    - deepseek-ai/DeepSeek-V4-Flash-0731
+    - deepseek-ai/DeepSeek-V4-Pro-0813
+    - nvidia/DeepSeek-V4-Flash-NVFP4
+    - nvidia/DeepSeek-V4-Pro-NVFP4
+    - sgl-project/DeepSeek-V4-Flash-FP8
+    - sgl-project/DeepSeek-V4-Pro-FP8
+  vllm_0290_nemoh_profile_oom:
+    statement: 'vllm 0.29.0/SM90: Nemotron-H mamba profile run OOMs under the generator-rendered default (_state_passing_fwd
+      allocates 8GiB with ~4GiB free on 143GB). Root knob is max_num_seqs (64 alone passes; batched-tokens reduction
+      alone does not) but TWO generator walls block the direct fix: the rule engine floors max_batch_size at 512
+      (pipeline.py ''512 if x<512 else x*2'') and unknown params.agg keys are SILENTLY IGNORED instead of rejected.
+      Expressible rescue: gpu-memory-utilization 0.6 via extra_cli_args (now the checkpoint''s cli_extra_args).
+      Evidence facts/ab_nemoh_{seq,tok,small,mem}_0290.json, 2026-09-19.'
+    applies_to:
+    - nvidia/Nemotron-H-56B-Base-8K
+    - generator:rule-engine
+  vllm_0290_upgrades:
+    statement: 'vllm 0.24.0 -> 0.29.0 improvements confirmed on SM90: Kimi-K3 and Kimi-K3-NVFP4 now pass (arch registered,
+      as predicted by the 0.27.1 probe); Gemma-4-26B-A4B-NVFP4 passes (0.24''s tied-embedding NotImplementedError
+      and the NVFP4 MoE path both fixed); Gemma-4-31B-IT-NVFP4 passes after a DUMMY fidelity fix — 0.29''s transformers
+      loads the multimodal processor, so dummies must carry processor_config.json (fetch it with configs/tokenizers
+      during onboarding; the 26B dummy already had it, the 31B one did not).'
+    applies_to:
+    - moonshotai/Kimi-K3
+    - nvidia/Kimi-K3-NVFP4
+    - nvidia/Gemma-4-26B-A4B-NVFP4
+    - nvidia/Gemma-4-31B-IT-NVFP4
   vllm_fp8kv:
     statement: 'vllm 0.24/SM90: head-576 MLA has NO attention backend with fp8 KV; kv-auto(bf16) resolves DeepseekV2MLAAttention+SparseAttnIndexer
       and runs. Door 1 engine kv dtype (fp8 ckpts) = config_gap, kv-auto A/B passes; door 2 ckpt hf_quant kv_cache_quant_algo:FP8
