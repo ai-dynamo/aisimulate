@@ -935,6 +935,16 @@ def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
     assert config.estimation_mode == "auto"
     assert config.fallback_policy == "deny"
     assert config.estimator_config == {}
+    assert config.moe_kernel_source is None
+
+    pinned = ForwardPassPerfModelConfig(
+        model="m",
+        system="s",
+        backend="vllm",
+        worker_type="decode",
+        moe_kernel_source="sglang_flashinfer_trtllm_moe",
+    )
+    assert pinned.to_dict()["moe_kernel_source"] == "sglang_flashinfer_trtllm_moe"
 
 
 def _supported_fpm_config() -> dict[str, object]:
@@ -1343,14 +1353,14 @@ def test_sparse_cp_ops_emit_cp_fields_in_spec():
     assert spec["attn_kind"] == "Csa"
 
 
-def test_engine_config_json_identity_disambiguates_collapsed_quant_modes():
+def test_engine_config_json_identity_disambiguates_collapsed_quant_modes_and_moe_lanes():
     """Two models differing only in a wire-collapsed dtype (sq vs int8_wo both
     -> "int8") or an identity-omitted ModelConfig field (moe_backend) must get
     DISTINCT handle-cache keys — sharing one cached handle silently returns
     the other model's latencies."""
     from aisimulate.sdk import common
 
-    def _model(gemm_mode, moe_backend=None):
+    def _model(gemm_mode, moe_backend=None, moe_kernel_source=None):
         cfg = SimpleNamespace(
             tp_size=8,
             pp_size=1,
@@ -1365,6 +1375,7 @@ def test_engine_config_json_identity_disambiguates_collapsed_quant_modes():
             comm_quant_mode=None,
             moe_backend=moe_backend,
             attention_backend=None,
+            moe_kernel_source=moe_kernel_source,
             # enable_wideep dropped from the fixture: the deprecated flag left
             # the engine identity (constant False; moe_comm_backend +
             # num_gpus_per_node carry the regime).
@@ -1386,6 +1397,11 @@ def test_engine_config_json_identity_disambiguates_collapsed_quant_modes():
         _model(common.GEMMQuantMode.sq, moe_backend="deepep_moe"), database
     )
     assert key_sq != key_deepep, "moe_backend must participate in the cache identity"
+
+    key_flashinfer = rust_engine_step._engine_config_json(
+        _model(common.GEMMQuantMode.sq, moe_kernel_source="sglang_flashinfer_trtllm_moe"), database
+    )
+    assert key_sq != key_flashinfer, "a pinned MoE lane must not reuse the default handle"
 
 
 def test_engine_config_json_identity_includes_database_policy():

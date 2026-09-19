@@ -319,6 +319,7 @@ def _engine_config_dict(
         # Always a literal version directory name, never a slot alias — the
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
+        "moe_kernel_source": getattr(cfg, "moe_kernel_source", None),
         "kv_block_size": kv_block_size,
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
         # ParallelMapping (flattened)
@@ -419,6 +420,7 @@ def compile_engine(
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -469,6 +471,7 @@ def compile_engine(
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,
             attention_backend=attention_backend,
+            moe_kernel_source=moe_kernel_source,
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,

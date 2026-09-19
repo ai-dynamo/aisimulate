@@ -520,6 +520,7 @@ class SearchSpace(BaseModel):
     enable_eplb: bool = Field(default=False, strict=True)
     wideep_num_slots: int | None = Field(default=None, strict=True, gt=0)
     moe_backend: str | None = None
+    moe_kernel_source: str | None = None
     attention_backend: str | None = None
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None

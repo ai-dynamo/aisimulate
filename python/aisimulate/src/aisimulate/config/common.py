@@ -216,6 +216,7 @@ ENGINE_MODEL_CONTROL_FIELDS = (
     "enable_eplb",
     "wideep_num_slots",
     "moe_backend",
+    "moe_kernel_source",
     "attention_backend",
     "gemm_quant_mode",
     "moe_quant_mode",
@@ -239,7 +240,7 @@ def is_active_engine_model_control(name: str, value: Any) -> bool:
 def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
     """Keep additive defaults out of timing payloads parsed by older runners."""
     result = dict(config)
-    for name in ("moe_backend", "wideep_num_slots", "enable_eplb"):
+    for name in ("moe_backend", "moe_kernel_source", "wideep_num_slots", "enable_eplb"):
         if not is_active_engine_model_control(name, result.get(name)):
             result.pop(name, None)
     return result

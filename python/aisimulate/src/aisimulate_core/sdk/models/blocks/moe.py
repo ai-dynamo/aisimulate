@@ -296,6 +296,8 @@ def _default_moe_block_ops(
     # attribute keep working; absent/uncovered phase means the fused path below.
     comm_backend = (getattr(cfg, "moe_comm_backend", None) or {}).get(inference_phase)
     if comm_backend:
+        if getattr(cfg, "moe_kernel_source", None) is not None:
+            raise ValueError("moe_kernel_source is unsupported when moe_comm_backend selects the large-EP MoE graph")
         return _large_ep_block_ops(
             comm_backend,
             prefix=prefix,
@@ -397,6 +399,7 @@ def _default_moe_block_ops(
                 quant_mode,
                 workload_distribution,
                 cfg.attention_dp_size,
+                moe_kernel_source=cfg.moe_kernel_source,
             ),
             ops.MoEDispatch(
                 f"{prefix}_moe_post_dispatch",
