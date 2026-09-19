@@ -476,7 +476,9 @@ impl AicTimingModel {
     ) -> Result<Arc<ValidatedTimingPhase>> {
         let prefill = mode == "static_ctx";
         if batch_size == 0 || (prefill && isl <= prefix) {
-            return Ok(Arc::new(ValidatedTimingPhase::default()));
+            static EMPTY: std::sync::OnceLock<Arc<ValidatedTimingPhase>> =
+                std::sync::OnceLock::new();
+            return Ok(Arc::clone(EMPTY.get_or_init(Default::default)));
         }
         let key = (batch_size, isl, osl, prefix, prefill);
         if let Some(phase) = self.phase_cache.get(&key) {
@@ -3253,17 +3255,50 @@ mod tests {
     #[test]
     fn empty_provider_evidence_rejects_nonzero_work() {
         pyo3::prepare_freethreaded_python();
-        let engine = Python::with_gil(|py| {
-            Py::new(py, PerOpEvidenceProbe::default())
-                .unwrap()
-                .into_any()
-        });
-        let timing = python_timing_model(engine, false);
+        let engine = Python::with_gil(|py| Py::new(py, PerOpEvidenceProbe::default()).unwrap());
+        let timing = python_timing_model(
+            Python::with_gil(|py| engine.clone_ref(py).into_any()),
+            false,
+        );
         assert!(timing.predict_prefill_ms(99, 128, 0).is_err());
         assert!(timing.predict_decode_ms(99, 12800, 128, 16384).is_err());
-        assert_eq!(timing.predict_prefill_ms(0, 128, 0).unwrap(), 0.0);
-        assert_eq!(timing.predict_decode_ms(0, 0, 128, 16384).unwrap(), 0.0);
-        assert_eq!(timing.predict_prefill_ms(99, 128, 128).unwrap(), 0.0);
+        let empty = timing
+            .predict_phase_evidence(0, 128, 1, 0, "static_ctx")
+            .unwrap();
+        for seeded in [false, true] {
+            if seeded {
+                timing.predict_prefill_ms(2, 128, 0).unwrap();
+                timing.predict_decode_ms(2, 258, 128, 1024).unwrap();
+            }
+            let before = timing.evidence_summary();
+            let calls = Python::with_gil(|py| {
+                engine
+                    .borrow(py)
+                    .calls
+                    .load(std::sync::atomic::Ordering::Relaxed)
+            });
+            for _ in 0..2 {
+                assert_eq!(timing.predict_prefill_ms(0, 128, 0).unwrap(), 0.0);
+                assert_eq!(timing.predict_decode_ms(0, 0, 128, 16384).unwrap(), 0.0);
+                assert_eq!(timing.predict_prefill_ms(99, 128, 128).unwrap(), 0.0);
+                assert!(Arc::ptr_eq(
+                    &empty,
+                    &timing
+                        .predict_phase_evidence(99, 128, 1, 128, "static_ctx")
+                        .unwrap()
+                ));
+                assert_eq!(timing.evidence_summary(), before);
+            }
+            Python::with_gil(|py| {
+                assert_eq!(
+                    engine
+                        .borrow(py)
+                        .calls
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                    calls
+                )
+            });
+        }
     }
 
     #[test]
