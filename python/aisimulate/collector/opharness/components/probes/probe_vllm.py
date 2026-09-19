@@ -111,11 +111,14 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--trace", action="store_true")
     ap.add_argument("--py-paths", action="store_true")
-    # Probe prompt length. 32 is the historical default; shape-conditional
-    # serving paths (M3 sparse-vs-dense threshold at topk_blocks*block_size
-    # tokens, FA split-KV) are invisible below their thresholds, so coverage
-    # is a parameter, never a per-model special case.
-    ap.add_argument("--isl", type=int, default=int(os.environ.get("AIC_PROBE_ISL", "32")))
+    # Probe prompt length. Default 4096 (owner decision 2026-09-19): sparse
+    # models gate their real path on sequence length (M3 sparse-vs-dense
+    # threshold at topk_blocks*block_size = 2048 tokens, FA split-KV), so a
+    # short prompt records the wrong serving truth. 32 was the historical
+    # default and hid those paths; records carry probe_isl so evidence from
+    # both eras stays distinguishable. Coverage is a parameter, never a
+    # per-model special case.
+    ap.add_argument("--isl", type=int, default=int(os.environ.get("AIC_PROBE_ISL", "4096")))
     args = ap.parse_args()
 
     rec: dict = {"run_sh": args.run_sh, "errors": {}, "probe_isl": None}
