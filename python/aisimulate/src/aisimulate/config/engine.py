@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictBool, field_validator, model_validator
 
 from .common import (
     ENGINE_MODEL_CONTROL_FIELDS,
@@ -378,6 +378,9 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
+    decoder_replay: StrictBool = False
+    enable_shared_layer: StrictBool | None = None
+    strict_provenance: StrictBool | None = None
     context_length: PositiveInt | Literal["max"] = "max"
     speculation: NgramSpeculationConfig | None = None
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)

@@ -116,6 +116,9 @@ pub struct ForwardPassPerfModelConfig {
     pub speculation: Option<ForwardPassSpeculationConfig>,
     #[serde(default)]
     pub kv_block_size: Option<u32>,
+    /// Preserve DeepSeek V4.1 decoder replay execution identity.
+    #[serde(default)]
+    pub decoder_replay: bool,
     #[serde(default)]
     #[serde(alias = "forward_model")]
     pub estimation_mode: EstimationMode,
@@ -171,6 +174,7 @@ impl ForwardPassPerfModelConfig {
             nextn: 0,
             speculation: None,
             kv_block_size: None,
+            decoder_replay: false,
             estimation_mode: EstimationMode::Auto,
             database_mode: DatabaseMode::default(),
             transfer_policy: None,

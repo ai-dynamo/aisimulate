@@ -1055,6 +1055,7 @@ struct EngineBuildRequest {
     kv_block_size: Option<u32>,
     systems_path: Option<String>,
     forward_model: Option<String>,
+    decoder_replay: bool,
     database_mode: Option<String>,
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
@@ -1103,6 +1104,7 @@ impl AicEngineBuilder {
                 kv_block_size: None,
                 systems_path: None,
                 forward_model: None,
+                decoder_replay: false,
                 database_mode: None,
                 shared_layer: None,
                 transfer_policy: None,
@@ -1115,6 +1117,12 @@ impl AicEngineBuilder {
     /// Python's default (op_level).
     pub fn forward_model(mut self, forward_model: &str) -> Self {
         self.request.forward_model = Some(forward_model.to_owned());
+        self
+    }
+
+    /// Select the verified V4.1 bounded decoder execution profile.
+    pub fn decoder_replay(mut self, enabled: bool) -> Self {
+        self.request.decoder_replay = enabled;
         self
     }
 
@@ -1390,6 +1398,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("enable_eplb", request.enable_eplb)?;
         kwargs.set_item("wideep_num_slots", request.wideep_num_slots)?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
+        kwargs.set_item("decoder_replay", request.decoder_replay)?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
@@ -1483,6 +1492,7 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         kv_block_size: config.kv_block_size,
         systems_path: Some(systems_path.to_owned()),
         forward_model: Some(forward_model.to_owned()),
+        decoder_replay: config.decoder_replay,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
@@ -1543,6 +1553,7 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         kv_block_size: config.kv_block_size,
         systems_path: systems_path.map(str::to_owned),
         forward_model: config.forward_model.clone(),
+        decoder_replay: config.decoder_replay,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
@@ -1725,6 +1736,7 @@ impl PyForwardPassPerfModel {
             nextn: request.nextn,
             speculation: request.speculation,
             kv_block_size: request.kv_block_size,
+            decoder_replay: request.decoder_replay,
             estimation_mode,
             database_mode: legacy.database_mode,
             transfer_policy: request.transfer_policy,
@@ -1948,6 +1960,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            decoder_replay: false,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,

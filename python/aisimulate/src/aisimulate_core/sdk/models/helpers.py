@@ -33,6 +33,7 @@ _MOE_MODEL_FAMILIES = {
     "DEEPSEEK",
     "DEEPSEEKV32",
     "DEEPSEEKV4",
+    "DEEPSEEKV41",
     "KIMIK25",
     "KIMIK3",
     "HYBRIDMOE",
@@ -642,6 +643,12 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
     ):
         overrides["moe_quant_mode"] = common.MoEQuantMode.w4a8_mxfp4_mxfp8
 
+    if (
+        architecture == "DeepseekV41ForCausalLM"
+        and str(raw_config.get("quantization_config", {}).get("expert_dtype", "")).lower() == "fp4"
+    ):
+        overrides["moe_quant_mode"] = common.MoEQuantMode.w4a8_mxfp4_mxfp8
+
     # KVCache quant mode
     # TODO: support fp4 kv cache
     if kv_cache_algo == "fp8":
@@ -652,7 +659,7 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
         raise ValueError(f"Unsupported kv cache algorithm: {kv_cache_algo}")
 
     # DSV4 sparse attention requires FP8 KV cache across all backends.
-    if architecture == "DeepseekV4ForCausalLM":
+    if architecture in {"DeepseekV4ForCausalLM", "DeepseekV41ForCausalLM"}:
         overrides["kvcache_quant_mode"] = common.KVCacheQuantMode.fp8
 
     # FMHA quant mode
@@ -792,10 +799,14 @@ def _is_dsv4_fp4_expert_model(model_path: str) -> bool:
     ``expert_dtype`` and return False.
     """
     info = _get_model_info(model_path)
-    if info.get("architecture") != "DeepseekV4ForCausalLM":
+    architecture = info.get("architecture")
+    if architecture not in {"DeepseekV4ForCausalLM", "DeepseekV41ForCausalLM"}:
         return False
     raw_config = info.get("raw_config", {})
-    if str(raw_config.get("expert_dtype") or "").lower() != "fp4":
+    expert_config = (
+        raw_config.get("quantization_config", {}) if architecture == "DeepseekV41ForCausalLM" else raw_config
+    )
+    if str(expert_config.get("expert_dtype") or "").lower() != "fp4":
         return False
     _gemm_algos, moe_algos = _collect_mixed_precision_layer_algos(raw_config)
     return "nvfp4" not in moe_algos

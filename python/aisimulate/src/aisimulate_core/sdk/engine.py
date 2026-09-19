@@ -47,7 +47,7 @@ import aisimulate_core
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
-from aisimulate_core.sdk.models.helpers import resolve_sglang_mla_compute
+from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
 from aisimulate_core.sdk.operations import FPMForwardOp
 from aisimulate_core.sdk.operations.base import Operation
 from aisimulate_core.sdk.perf_database import load_system_spec
@@ -319,6 +319,7 @@ def _engine_config_dict(
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
         "kv_block_size": kv_block_size,
+        "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
         # ParallelMapping (flattened)
         "tp_size": int(cfg.tp_size or 1),
         "pp_size": int(cfg.pp_size or 1),
@@ -425,6 +426,7 @@ def compile_engine(
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    decoder_replay: bool = False,
     database_mode: str | None = None,
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
@@ -474,6 +476,8 @@ def compile_engine(
 
         if not check_is_moe(model_path):
             raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
+    model_config.decoder_replay = decoder_replay
+    resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the

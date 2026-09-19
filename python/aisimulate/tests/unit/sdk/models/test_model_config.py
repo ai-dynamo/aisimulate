@@ -107,6 +107,7 @@ class TestSupportedModels:
             ("deepseek-ai/DeepSeek-V3", True),
             ("deepseek-ai/DeepSeek-V3.2", True),
             ("deepseek-ai/DeepSeek-V4-Flash", True),
+            ("deepseek-ai/DeepSeek-V4.1-Flash", True),
             ("deepseek-ai/DeepSeek-V4-Pro", True),
             ("sgl-project/DeepSeek-V4-Flash-FP8", True),
             ("sgl-project/DeepSeek-V4-Pro-FP8", True),
