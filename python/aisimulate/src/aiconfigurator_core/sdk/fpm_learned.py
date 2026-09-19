@@ -162,9 +162,12 @@ def _unwrap_record(raw: dict[str, Any]) -> dict[str, Any] | None:
             fpm = candidate
     if fpm is None:
         return None
-    for key in ("observed_at_unix_ms", "recv_ms"):
-        if key in raw and key not in fpm:
-            fpm[key] = raw[key]
+    # The trace sink keeps the wall-clock stamp on the envelope (``event``);
+    # the ZMQ sink keeps it on the top level. Accept both.
+    for holder in (raw, event if isinstance(event, dict) else {}):
+        for key in ("observed_at_unix_ms", "recv_ms"):
+            if key in holder and key not in fpm:
+                fpm[key] = holder[key]
     return fpm
 
 

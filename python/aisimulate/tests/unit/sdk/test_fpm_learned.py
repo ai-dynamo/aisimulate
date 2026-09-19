@@ -129,11 +129,23 @@ def test_iter_records_and_group_by_counter(tmp_path) -> None:
     with gzip.open(path, "wt", encoding="utf-8") as handle:
         # flat sink record, Dynamo trace envelope, heartbeat, junk line
         handle.write(json.dumps(_decode_fpm(2, 100, 0.01, rank=0, counter=7)) + "\n")
-        handle.write(json.dumps({"event": {"fpm": _decode_fpm(3, 200, 0.012, rank=1, counter=7)}}) + "\n")
+        handle.write(
+            json.dumps(
+                {
+                    "event": {
+                        "observed_at_unix_ms": 1_789_743_132_982,
+                        "fpm": _decode_fpm(3, 200, 0.012, rank=1, counter=7),
+                    }
+                }
+            )
+            + "\n"
+        )
         handle.write(json.dumps(_decode_fpm(0, 0, 0.0, rank=0, counter=8)) + "\n")
         handle.write("not json\n")
     records = list(fpm_learned.iter_fpm_records([path]))
     assert len(records) == 3
+    # the trace sink keeps the wall-clock stamp on the envelope; it must survive unwrapping
+    assert records[1]["observed_at_unix_ms"] == 1_789_743_132_982
     single = fpm_learned.group_iterations(records, "none")
     assert len(single) == 2  # heartbeat dropped
     joined = fpm_learned.group_iterations(records, "counter")
