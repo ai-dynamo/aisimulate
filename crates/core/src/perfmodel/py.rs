@@ -1041,6 +1041,8 @@ struct EngineBuildRequest {
     attention_dp_size: u32,
     moe_tp_size: Option<u32>,
     moe_ep_size: Option<u32>,
+    cp_size: Option<u32>,
+    dcp_size: Option<u32>,
     gemm_quant_mode: Option<String>,
     moe_quant_mode: Option<String>,
     kvcache_quant_mode: Option<String>,
@@ -1090,6 +1092,8 @@ impl AicEngineBuilder {
                 attention_dp_size: 1,
                 moe_tp_size: None,
                 moe_ep_size: None,
+                cp_size: None,
+                dcp_size: None,
                 gemm_quant_mode: None,
                 moe_quant_mode: None,
                 kvcache_quant_mode: None,
@@ -1178,6 +1182,15 @@ impl AicEngineBuilder {
     pub fn moe_parallelism(mut self, tp_size: Option<u32>, ep_size: Option<u32>) -> Self {
         self.request.moe_tp_size = tp_size;
         self.request.moe_ep_size = ep_size;
+        self
+    }
+
+    /// Set optional prefill context parallelism (`cp_size`, widens the attention
+    /// side) and decode context parallelism (`dcp_size`, stripes the decode KV
+    /// across the existing TP ranks). Unset keeps both at one.
+    pub fn context_parallelism(mut self, cp_size: Option<u32>, dcp_size: Option<u32>) -> Self {
+        self.request.cp_size = cp_size;
+        self.request.dcp_size = dcp_size;
         self
     }
 
@@ -1388,6 +1401,8 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("attention_dp_size", request.attention_dp_size)?;
         kwargs.set_item("moe_tp_size", request.moe_tp_size)?;
         kwargs.set_item("moe_ep_size", request.moe_ep_size)?;
+        kwargs.set_item("cp_size", request.cp_size.unwrap_or(1))?;
+        kwargs.set_item("dcp_size", request.dcp_size.unwrap_or(1))?;
         kwargs.set_item("gemm_quant_mode", request.gemm_quant_mode.as_deref())?;
         kwargs.set_item("moe_quant_mode", request.moe_quant_mode.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", request.kvcache_quant_mode.as_deref())?;
@@ -1478,6 +1493,8 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         attention_dp_size: config.attention_dp,
         moe_tp_size: config.moe_tp_size,
         moe_ep_size: config.moe_ep_size,
+        cp_size: config.cp_size,
+        dcp_size: config.dcp_size,
         gemm_quant_mode: config.gemm_quant_mode.clone(),
         moe_quant_mode: config.moe_quant_mode.clone(),
         kvcache_quant_mode: config.kvcache_quant_mode.clone(),
@@ -1534,6 +1551,8 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         attention_dp_size: config.parallel.attention_dp_size.unwrap_or(1),
         moe_tp_size: config.parallel.moe_tp_size,
         moe_ep_size: config.parallel.moe_ep_size,
+        cp_size: config.parallel.cp_size,
+        dcp_size: config.parallel.dcp_size,
         gemm_quant_mode: gemm_quant_name(config.quantization.weight_dtype.as_ref())
             .map(str::to_owned),
         moe_quant_mode: moe_quant_name(config.quantization.moe_dtype.as_ref()).map(str::to_owned),
@@ -1728,6 +1747,8 @@ impl PyForwardPassPerfModel {
             attention_dp: request.attention_dp_size,
             moe_tp_size: request.moe_tp_size,
             moe_ep_size: request.moe_ep_size,
+            cp_size: request.cp_size,
+            dcp_size: request.dcp_size,
             gemm_quant_mode: request.gemm_quant_mode,
             moe_quant_mode: request.moe_quant_mode,
             fmha_quant_mode: request.fmha_quant_mode,
@@ -1938,6 +1959,7 @@ mod tests {
                 cp_size: 1,
                 lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
                 apply_rope: true,
+                dcp_size: 1,
             }),
         ]
     }
@@ -1965,6 +1987,7 @@ mod tests {
                 use_qk_norm: false,
                 scale_num_tokens: 1,
                 verify_query_tokens: 0,
+                dcp_size: 1,
             }),
         ]
     }
@@ -1987,6 +2010,7 @@ mod tests {
                 moe_tp_size: Some(1),
                 moe_ep_size: Some(8),
                 cp_size: None,
+                dcp_size: None,
             },
             quantization: QuantizationConfig {
                 weight_dtype: None,

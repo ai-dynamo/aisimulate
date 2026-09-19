@@ -207,6 +207,7 @@ def _deployment(
     if mode == "agg":
         assert engine.workers.aggregated is not None
         worker = engine.workers.aggregated
+        _require_exclusive_context_parallelism(worker)
         parallel = _parallel_mapping(worker, prefix="")
         return BackendDeploymentSpec(
             parallel_config=parallel,
@@ -218,6 +219,7 @@ def _deployment(
     assert engine.workers.prefill is not None and engine.workers.decode is not None
     prefill = engine.workers.prefill
     decode = engine.workers.decode
+    _require_disaggregated_context_parallelism(engine.backend, prefill, decode)
     transfer_bytes_per_token = None
     if engine.kv_transfer is not None:
         transfer_bytes_per_token = _resolve_kv_bytes_per_token(
@@ -269,6 +271,15 @@ def _afd_deployment(
     companion: ReplicaParallelConfig | None = None
     if companion_worker is not None:
         parallel = companion_worker.parallelism
+        # The AFD companion's ParallelShape, GPU accounting and provenance carry
+        # tp/pp/attention_dp/moe only; a CP knob here would price a wider worker
+        # than the topology reports. Fail closed until AFD models CP explicitly.
+        if parallel.prefill_context != 1 or parallel.decode_context != 1:
+            raise ValueError(
+                f"AFD companion ({companion_role}) workers do not support context parallelism: got "
+                f"parallelism.prefill_context={parallel.prefill_context}, "
+                f"parallelism.decode_context={parallel.decode_context}; set both to 1"
+            )
         companion = ReplicaParallelConfig(
             shape=ParallelShape(
                 tp=parallel.tensor,
@@ -345,9 +356,65 @@ def _afd_deployment(
     )
 
 
+def _require_exclusive_context_parallelism(worker: WorkerPredictionConfig) -> None:
+    """Aggregated workers model prefill CP and decode CP as mutually exclusive.
+
+    This is a deployment-topology rule, deliberately NOT a ModelConfig rule:
+    disaggregated deployments carry the two knobs on different workers, so the
+    same ModelConfig fields are valid there without any cross-check. In one
+    aggregated engine the frameworks either do not compose the two at all
+    (SGLang's prefill CP and DCP paths never reference each other) or only for
+    a narrow model class (vLLM: sparse MLA with ``ag_rs``), so the simulator
+    prices them one at a time.
+    """
+    parallel = worker.parallelism
+    if parallel.prefill_context > 1 and parallel.decode_context > 1:
+        raise ValueError(
+            "aggregated workers support at most one of parallelism.prefill_context and "
+            f"parallelism.decode_context above 1 (got prefill_context={parallel.prefill_context}, "
+            f"decode_context={parallel.decode_context}); use a disaggregated deployment to apply "
+            "prefill CP on the prefill worker and decode CP on the decode worker"
+        )
+
+
+def _require_disaggregated_context_parallelism(
+    backend: str, prefill: WorkerPredictionConfig, decode: WorkerPredictionConfig
+) -> None:
+    """Disaggregated roles carry their own knobs, with two layout constraints.
+
+    A prefill engine gains nothing from striping its KV (the KV only passes
+    through), so decode CP on the prefill worker is accepted only as the
+    PCP+DCP layout, i.e. equal to its prefill CP. vLLM's NIXL connector
+    additionally refuses to pair a replicated-PCP prefill (pcp > 1, dcp = 1)
+    with a DCP-sharded decode, and requires the two DCP sizes to divide one
+    another (``nixl/base_worker.py``). SGLang re-lays the KV out per decode
+    DCP rank on the prefill side and has no such pairing rule.
+    """
+    p, d = prefill.parallelism, decode.parallelism
+    if p.decode_context not in (1, p.prefill_context):
+        raise ValueError(
+            f"prefill workers accept parallelism.decode_context only as 1 or equal to prefill_context "
+            f"(got decode_context={p.decode_context}, prefill_context={p.prefill_context}); a prefill "
+            "engine only stripes its KV to match a PCP+DCP layout"
+        )
+    if backend != "vllm" or d.decode_context == 1:
+        return
+    if p.prefill_context > 1 and p.decode_context == 1:
+        raise ValueError(
+            f"vLLM cannot pair a replicated-PCP prefill worker (prefill_context={p.prefill_context}, "
+            f"decode_context=1) with a DCP-sharded decode worker (decode_context={d.decode_context}); "
+            "set the prefill worker's decode_context equal to its prefill_context or drop one knob"
+        )
+    if d.decode_context % p.decode_context and p.decode_context % d.decode_context:
+        raise ValueError(
+            f"vLLM requires the prefill and decode DCP sizes to divide one another (got prefill "
+            f"decode_context={p.decode_context}, decode decode_context={d.decode_context})"
+        )
+
+
 def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[str, JSONValue]:
     parallel = worker.parallelism
-    return {
+    mapping: dict[str, JSONValue] = {
         f"{prefix}replicas": parallel.replicas,
         f"{prefix}tp": parallel.tensor,
         f"{prefix}pp": parallel.pipeline,
@@ -355,6 +422,23 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
     }
+    mapping.update(_context_parallel_knobs(parallel, f"{prefix}cp", f"{prefix}dcp"))
+    return mapping
+
+
+def _context_parallel_knobs(parallel: Any, cp_key: str, dcp_key: str) -> dict[str, int]:
+    """The two context-parallel knobs, spelled out only when set.
+
+    cp=dcp=1 deployments, engine args, perf-model metadata and estimator
+    identities stay byte-identical to pre-CP outputs (and comparable with the
+    sweeper's parallel_config, which never carries the knobs).
+    """
+    knobs: dict[str, int] = {}
+    if parallel.prefill_context != 1:
+        knobs[cp_key] = parallel.prefill_context
+    if parallel.decode_context != 1:
+        knobs[dcp_key] = parallel.decode_context
+    return knobs
 
 
 def _worker_performance_model_metadata(
@@ -362,7 +446,7 @@ def _worker_performance_model_metadata(
 ) -> dict[str, JSONValue]:
     parallel = worker.parallelism
     sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
-    return {
+    metadata: dict[str, Any] = {
         "provider": "aic",
         "config": {
             "backend": engine.backend,
@@ -389,6 +473,8 @@ def _worker_performance_model_metadata(
             },
         },
     }
+    metadata["config"].update(_context_parallel_knobs(parallel, "cp_size", "dcp_size"))
+    return metadata
 
 
 def _worker_engine_args(
@@ -436,6 +522,7 @@ def _worker_engine_args(
             payload[f"aic_{field}"] = value
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
+    payload.update(_context_parallel_knobs(parallel, "aic_cp_size", "aic_dcp_size"))
     if parallel.moe_tensor * parallel.moe_expert > 1:
         payload["aic_moe_tp_size"] = parallel.moe_tensor
         payload["aic_moe_ep_size"] = parallel.moe_expert
@@ -478,6 +565,8 @@ def _worker_engine_args(
             "aic_model_path",
             "aic_moe_tp_size",
             "aic_moe_ep_size",
+            "aic_cp_size",
+            "aic_dcp_size",
         ):
             payload.pop(name, None)
     if worker.timing.type == "default" and engine.mode != "afd" and engine.workers.encoder is None:
@@ -501,6 +590,7 @@ def _worker_engine_args(
             attention_dp=parallel.attention_data,
             moe_tp_size=parallel.moe_tensor if sharded_moe else None,
             moe_ep_size=parallel.moe_expert if sharded_moe else None,
+            **_context_parallel_knobs(parallel, "cp_size", "dcp_size"),
             kv_block_size=block_size,
             nextn=engine.nextn,
             **{name: getattr(engine, name) for name in ENGINE_MODEL_CONTROL_FIELDS},

@@ -193,6 +193,43 @@ pub struct ContextAttentionOp {
     /// Appended at the struct tail because bincode payloads are positional.
     #[serde(default = "default_apply_rope")]
     pub apply_rope: bool,
+    /// Decode context parallelism on the SAME engine (aggregated serving):
+    /// the persistent KV is striped across `dcp_size` ranks, so a prefill
+    /// with cached context (`prefix > 0`) must first all-gather the other
+    /// ranks' stripes of that context (vLLM `_context_parallel_compute_prefill_context`
+    /// / `dcp_manager.kv_gather`, SGLang `all_gather_kv_cache_for_*_extend`).
+    /// The new-token attention itself is unchanged: every rank computes it for
+    /// its own heads and only WRITES its stripe. Defaults to 1; tail-appended
+    /// (schema v20).
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
+    pub dcp_size: u32,
+}
+
+/// Prefill-side cost of a DCP-striped KV: all-gather `batch * prefix` cached
+/// tokens (`kv_elems_per_token`, in comm half-elements) over `dcp` ranks.
+/// Zero when there is no DCP or no cached context.
+pub(crate) fn dcp_context_gather(
+    db: &PerfDatabase,
+    name: &str,
+    kv_elems_per_token: f64,
+    dcp: u32,
+    batch_size: u32,
+    prefix: u32,
+) -> Result<Option<PerformanceResult>, AicError> {
+    if dcp <= 1 || prefix == 0 || batch_size == 0 {
+        return Ok(None);
+    }
+    let gather = crate::operators::NcclOp::new(
+        format!("{name}_dcp_context_gather"),
+        1.0,
+        kv_elems_per_token,
+        dcp,
+        "all_gather",
+    );
+    Ok(Some(gather.query(db, batch_size.saturating_mul(prefix))?))
 }
 
 /// Lane precedence for ops built without an explicit order (Rust-side
@@ -230,6 +267,7 @@ impl ContextAttentionOp {
             cp_size: 1,
             lane_order: default_lane_order(),
             apply_rope: true,
+            dcp_size: 1,
         }
     }
 
@@ -361,6 +399,16 @@ impl ContextAttentionOp {
         // (the mem-op extras carry zero energy) and the sources merge.
         result = result.plus(extra.scaled(1.1));
 
+        // Decode CP on the same engine: gather the cached context stripes
+        // (per-rank K+V of `prefix` tokens, in comm half-elements).
+        let kv_elems =
+            2.0 * (self.n_kv * self.head_size) as f64 * self.kv_cache_dtype.mapping().memory / 2.0;
+        if let Some(gather) =
+            dcp_context_gather(db, &self.name, kv_elems, self.dcp_size, batch_size, prefix)?
+        {
+            result = result.plus(gather);
+        }
+
         if seq_imbalance_correction_scale != 1.0 {
             // Python `result * scale` scales latency AND energy.
             result = result.scaled(seq_imbalance_correction_scale);
@@ -415,6 +463,27 @@ pub struct GenerationAttentionOp {
     /// and the ideal-peak guard are both physical bounds.
     #[serde(default)]
     pub verify_query_tokens: u32,
+    /// Decode context parallelism (vLLM `-dcp` / SGLang `--dcp-size`). The
+    /// KV cache is striped by token position across `dcp_size` ranks of the
+    /// attention group; each rank all-gathers the group's query heads, attends
+    /// them over its own `ceil(kv / dcp)` stripe, and the partial outputs are
+    /// merged by LSE (the merge collectives are separate NCCL ops emitted by
+    /// the model class). So the kernel prices `n * dcp` query heads against a
+    /// `1/dcp` KV read; `n_kv` (per-rank, TP-replicated) and the batch are
+    /// unchanged. Defaults to 1 (no DCP). Appended at the struct tail because
+    /// bincode payloads are positional (schema v20).
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
+    pub dcp_size: u32,
+}
+
+/// Decode-CP kernel geometry shared by every decode attention operator:
+/// `(query heads seen by the kernel, per-rank KV tokens)` for `dcp` ranks.
+pub(crate) fn dcp_geometry(n_local: u32, kv_tokens: u32, dcp: u32) -> (u32, u32) {
+    let dcp = dcp.max(1);
+    (n_local * dcp, kv_tokens.div_ceil(dcp))
 }
 
 impl GenerationAttentionOp {
@@ -437,6 +506,7 @@ impl GenerationAttentionOp {
             use_qk_norm: false,
             scale_num_tokens: 1,
             verify_query_tokens: 0,
+            dcp_size: 1,
         }
     }
 
@@ -457,12 +527,15 @@ impl GenerationAttentionOp {
             )));
         }
         let seq_batch = batch_size / width;
+        // Decode CP: the kernel sees the whole DCP group's query heads over
+        // this rank's 1/dcp KV stripe (see the `dcp_size` field docs).
+        let (n_kernel, kv_local) = dcp_geometry(self.n, kv_seq_tokens, self.dcp_size);
         let mut result = query_generation_attention_table(
             db,
             &self.lane_order,
             seq_batch,
-            kv_seq_tokens,
-            self.n,
+            kv_local,
+            n_kernel,
             self.n_kv,
             self.head_size,
             self.window_size,
@@ -479,9 +552,9 @@ impl GenerationAttentionOp {
                     self.head_size,
                     self.window_size,
                     self.kv_cache_dtype,
-                    self.n as f64,
+                    n_kernel as f64,
                     seq_batch as f64,
-                    kv_seq_tokens as f64,
+                    kv_local as f64,
                     attn_flops,
                 );
                 let block_math_ms = sol.math_ms * self.verify_query_tokens as f64;
@@ -1352,6 +1425,38 @@ mod tests {
             .join("../..")
             .join("python/aisimulate/src/aisimulate_core/systems");
         PerfDatabase::load(&systems_root, "b200_sxm", "vllm", "0.24.0").expect("db must load")
+    }
+
+    /// The striped-KV context gather is owed only when something is striped
+    /// (dcp > 1) AND something is cached (prefix > 0); it is an all-gather over
+    /// `batch * prefix` tokens, so it grows with the cached context.
+    #[test]
+    fn dcp_context_gather_prices_only_striped_cached_context() {
+        let db = b200_vllm_db();
+        let kv_elems = 576.0;
+        assert!(
+            dcp_context_gather(&db, "context_mla", kv_elems, 1, 4, 30_720)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dcp_context_gather(&db, "context_mla", kv_elems, 8, 4, 0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dcp_context_gather(&db, "context_mla", kv_elems, 8, 0, 30_720)
+                .unwrap()
+                .is_none()
+        );
+        let small = dcp_context_gather(&db, "context_mla", kv_elems, 8, 4, 4_096)
+            .unwrap()
+            .expect("striped cached context is gathered");
+        let large = dcp_context_gather(&db, "context_mla", kv_elems, 8, 4, 30_720)
+            .unwrap()
+            .expect("striped cached context is gathered");
+        assert!(small.latency_ms > 0.0);
+        assert!(large.latency_ms > small.latency_ms);
     }
 
     /// The walk order Python serializes for a no-override op on
@@ -2528,5 +2633,54 @@ mod tests {
         let result = op.query(&db, 512, 4096, 1.0).unwrap();
         assert_eq!(result.source, Source::Sol);
         assert_eq!(result.latency_ms, result.sol.unwrap().time_ms());
+    }
+
+    /// Decode CP: a rank with `n` local heads and `dcp` stripes prices exactly
+    /// like an un-striped kernel over `n * dcp` heads and `kv / dcp` tokens,
+    /// and strictly cheaper than the same rank without DCP (the KV read is
+    /// the decode bottleneck and shrinks by `dcp`).
+    #[test]
+    fn generation_attention_dcp_prices_gathered_heads_over_kv_stripe() {
+        let db = b200_vllm_db().with_mode(DatabaseMode::Sol, Default::default());
+        let mut striped = GenerationAttentionOp::new("gen", 16, 1, 128, KvCacheQuantMode::Fp8);
+        striped.dcp_size = 4;
+        let gathered = GenerationAttentionOp::new("gen", 64, 1, 128, KvCacheQuantMode::Fp8);
+        let plain = GenerationAttentionOp::new("gen", 16, 1, 128, KvCacheQuantMode::Fp8);
+        let a = striped.query(&db, 32, 8192, 1.0).unwrap();
+        let b = gathered.query(&db, 32, 2048, 1.0).unwrap();
+        let c = plain.query(&db, 32, 8192, 1.0).unwrap();
+        assert!((a.latency_ms - b.latency_ms).abs() < 1e-12);
+        assert!(a.latency_ms < c.latency_ms);
+        assert_eq!(dcp_geometry(16, 8193, 4), (64, 2049));
+        assert_eq!(dcp_geometry(16, 8192, 1), (16, 8192));
+    }
+
+    /// Prefill on a DCP-striped engine pays a cached-context gather that
+    /// scales with the prefix and vanishes without one.
+    #[test]
+    fn context_attention_dcp_gathers_cached_context_only_when_prefix_present() {
+        let db = b200_vllm_db().with_mode(DatabaseMode::Sol, Default::default());
+        let plain = with_vllm_lanes_ctx(ContextAttentionOp::new(
+            "ctx",
+            16,
+            1,
+            128,
+            KvCacheQuantMode::Fp8,
+            FmhaQuantMode::Bfloat16,
+        ));
+        let mut striped = plain.clone();
+        striped.dcp_size = 4;
+        let no_prefix = (
+            plain.query(&db, 8, 512, 0, 1.0).unwrap().latency_ms,
+            striped.query(&db, 8, 512, 0, 1.0).unwrap().latency_ms,
+        );
+        assert!((no_prefix.0 - no_prefix.1).abs() < 1e-12);
+        let with_prefix = (
+            plain.query(&db, 8, 512, 8192, 1.0).unwrap().latency_ms,
+            striped.query(&db, 8, 512, 8192, 1.0).unwrap().latency_ms,
+        );
+        assert!(with_prefix.1 > with_prefix.0);
+        let longer = striped.query(&db, 8, 512, 16384, 1.0).unwrap().latency_ms;
+        assert!(longer - with_prefix.1 > 0.0);
     }
 }

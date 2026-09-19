@@ -445,6 +445,62 @@ def test_resolver_uses_exact_topology_version_pins_and_isolates_cached_configs(m
     assert (seen[-1].tp, seen[-1].kv_block_size, seen[-1].backend_version) == (4, 1, None)
 
 
+def test_resolver_carries_context_parallel_columns_into_the_estimator_identity(monkeypatch):
+    # A dcp=8 candidate must not resolve to (or share a cache entry with) the
+    # dcp=1 estimator: the native engine is built from this request.
+    import aisimulate_core
+    from aisimulate.sweeper.config import SearchSpace
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    seen = []
+
+    class Model:
+        def __init__(self, config):
+            seen.append(config)
+            self.config = json.loads(
+                aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(config.to_dict()))
+            )
+            self.config["backend_version"] = "0.24.0"
+            self.config["estimation_mode"] = "op_level"
+
+        def diagnostics(self):
+            return {
+                "readiness": "ready",
+                "provenance": {"config": self.config, "selected_systems_root": self.config["systems_paths"][0]},
+            }
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(RustForwardPassPerfModel, "best_available", Model)
+    space = SearchSpace(model_name="deepseek-ai/DeepSeek-V3", hardware_sku="h200_sxm", backend=["vllm"])
+    resolver = ForwardPassEstimatorResolver(space)
+    sample = {
+        "deployment_mode": "agg",
+        "model_name": space.model_name,
+        "hardware_sku": space.hardware_sku,
+        "backend": "vllm",
+        "tp": 8,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 8,
+        "agg_block_size": 64,
+    }
+    plain = resolver.resolve_candidate(sample)["agg"]
+    striped = resolver.resolve_candidate({**sample, "dcp": 8})["agg"]
+    assert len(seen) == 2
+    assert (seen[0].cp_size, seen[0].dcp_size) == (None, None)
+    assert (seen[1].cp_size, seen[1].dcp_size) == (None, 8)
+    # Unit knobs stay out of the serialized identity; a set knob is carried.
+    assert "dcp_size" not in plain.config and "cp_size" not in plain.config
+    assert striped.config["dcp_size"] == 8
+
+    # Prefill CP folds into the width identity; the sample carries the wider MoE side.
+    resolver.resolve_candidate({**sample, "tp": 1, "moe_ep": 8, "cp": 8})
+    assert (seen[-1].tp, seen[-1].cp_size, seen[-1].dcp_size) == (1, 8, None)
+
+
 def test_search_rejects_unknown_controls_and_policies_on_custom_timing():
     from aisimulate.sweeper.config import SearchSpace
 

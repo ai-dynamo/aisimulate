@@ -50,7 +50,20 @@ pub struct ContextMlaOp {
     /// pre-CP specs -> 1 (no sharding).
     #[serde(default = "crate::operators::gemm::default_seq_split")]
     pub cp_size: u32,
+    /// Decode context parallelism on the same engine: prefill with cached
+    /// context all-gathers the other ranks' latent-KV stripes first. See
+    /// `ContextAttentionOp::dcp_size`. Defaults to 1; tail-appended (schema v20).
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
+    pub dcp_size: u32,
 }
+
+/// Absorbed-MLA latent KV per token: `kv_lora_rank (512) + qk_rope_head_dim (64)`
+/// elements, the DeepSeek-V3-family geometry every MLA op in this crate assumes
+/// (the same constant the Python models spell as `kv_lora_rank + qk_rope_head_dim`).
+pub(crate) const MLA_LATENT_KV_ELEMS: f64 = 576.0;
 
 impl ContextMlaOp {
     pub fn new(
@@ -66,6 +79,7 @@ impl ContextMlaOp {
             kv_cache_dtype,
             fmha_quant_mode,
             cp_size: 1,
+            dcp_size: 1,
         }
     }
 
@@ -94,12 +108,24 @@ impl ContextMlaOp {
         // balanced chunks, c = ceil(isl / 2cp). Mirrors Python
         // `ContextMLA.query` and `operators/attention.rs::ContextAttentionOp`.
         // Latency and energy both sum across the chunks (Python `__add__`).
-        let result = if self.cp_size > 1 {
+        let mut result = if self.cp_size > 1 {
             let c = isl.div_ceil(2 * self.cp_size).max(1);
             ctx(c, prefix)?.plus(ctx(c, prefix + isl - c)?)
         } else {
             ctx(isl, prefix)?
         };
+        // Decode CP on the same engine: gather the cached latent-KV stripes.
+        let kv_elems = MLA_LATENT_KV_ELEMS * self.kv_cache_dtype.mapping().memory / 2.0;
+        if let Some(gather) = crate::operators::attention::dcp_context_gather(
+            db,
+            &self.name,
+            kv_elems,
+            self.dcp_size,
+            batch_size,
+            prefix,
+        )? {
+            result = result.plus(gather);
+        }
         Ok(result.clamp_non_negative().scaled(self.scale_factor))
     }
 }
@@ -110,6 +136,16 @@ pub struct GenerationMlaOp {
     pub scale_factor: f64,
     pub num_heads: u32,
     pub kv_cache_dtype: KvCacheQuantMode,
+    /// Decode context parallelism: the absorbed-MLA decode kernel prices
+    /// `num_heads * dcp` query heads (the DCP group's gathered queries) over
+    /// this rank's `ceil(s / dcp)` latent-KV stripe. See
+    /// [`GenerationAttentionOp::dcp_size`](crate::operators::GenerationAttentionOp).
+    /// Defaults to 1; appended at the struct tail (schema v20).
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
+    pub dcp_size: u32,
 }
 
 impl GenerationMlaOp {
@@ -119,6 +155,7 @@ impl GenerationMlaOp {
             scale_factor: 1.0,
             num_heads,
             kv_cache_dtype,
+            dcp_size: 1,
         }
     }
 
@@ -128,8 +165,10 @@ impl GenerationMlaOp {
         batch_size: u32,
         s: u32,
     ) -> Result<PerformanceResult, AicError> {
+        let (heads, s_local) =
+            crate::operators::attention::dcp_geometry(self.num_heads, s, self.dcp_size);
         let result =
-            query_generation_mla_table(db, batch_size, s, self.num_heads, self.kv_cache_dtype)?;
+            query_generation_mla_table(db, batch_size, s_local, heads, self.kv_cache_dtype)?;
         Ok(result.clamp_non_negative().scaled(self.scale_factor))
     }
 }
@@ -151,6 +190,16 @@ pub struct MlaModuleOp {
     /// it — the layout change is gated by the ENGINE_SPEC_SCHEMA_VERSION bump.
     #[serde(default)]
     pub native_num_heads: Option<u32>,
+    /// Decode context parallelism; read by the GENERATION variant only:
+    /// the fused decode module prices `num_heads * dcp` gathered heads over
+    /// this rank's `ceil(s / dcp)` latent-KV stripe (the module's projection
+    /// GEMMs stay rank-local: the frameworks shard those by TP and gather
+    /// the query afterwards). Defaults to 1; tail-appended (schema v20).
+    #[serde(
+        default = "crate::operators::gemm::default_seq_split",
+        deserialize_with = "crate::operators::gemm::deserialize_positive_split"
+    )]
+    pub dcp_size: u32,
 }
 
 impl MlaModuleOp {
@@ -169,6 +218,7 @@ impl MlaModuleOp {
             fmha_quant_mode,
             gemm_quant_mode,
             native_num_heads: None,
+            dcp_size: 1,
         }
     }
 
@@ -179,7 +229,7 @@ impl MlaModuleOp {
         isl: u32,
         prefix: u32,
     ) -> Result<PerformanceResult, AicError> {
-        let result = query_context_mla_module_table(
+        let mut result = query_context_mla_module_table(
             db,
             batch_size,
             isl,
@@ -190,6 +240,19 @@ impl MlaModuleOp {
             self.gemm_quant_mode,
             self.native_num_heads,
         )?;
+        // Decode CP on the same engine: gather the cached latent-KV stripes
+        // (the fused module carries one `dcp_size` for both phases).
+        let kv_elems = MLA_LATENT_KV_ELEMS * self.kv_cache_dtype.mapping().memory / 2.0;
+        if let Some(gather) = crate::operators::attention::dcp_context_gather(
+            db,
+            &self.name,
+            kv_elems,
+            self.dcp_size,
+            batch_size,
+            prefix,
+        )? {
+            result = result.plus(gather);
+        }
         Ok(result.clamp_non_negative().scaled(self.scale_factor))
     }
 
@@ -201,11 +264,13 @@ impl MlaModuleOp {
     ) -> Result<PerformanceResult, AicError> {
         // No fmha arg: the generation module table has no fmha axis (decode
         // compute dtype follows the kv-cache dtype).
+        let (heads, s) =
+            crate::operators::attention::dcp_geometry(self.num_heads, s, self.dcp_size);
         let result = query_generation_mla_module_table(
             db,
             batch_size,
             s,
-            self.num_heads,
+            heads,
             self.kv_cache_dtype,
             self.gemm_quant_mode,
             self.native_num_heads,
@@ -844,6 +909,22 @@ mod tests {
     use std::path::PathBuf;
 
     const REPO_ROOT_HINT: &str = env!("CARGO_MANIFEST_DIR");
+
+    /// Decode CP on absorbed MLA: `heads * dcp` gathered heads over a `s / dcp`
+    /// latent-KV stripe, cheaper than the un-striped rank.
+    #[test]
+    fn generation_mla_dcp_prices_gathered_heads_over_kv_stripe() {
+        let db = b200_vllm_db().with_mode(DatabaseMode::Sol, Default::default());
+        let mut striped = GenerationMlaOp::new("mla", 16, KvCacheQuantMode::Fp8);
+        striped.dcp_size = 8;
+        let gathered = GenerationMlaOp::new("mla", 128, KvCacheQuantMode::Fp8);
+        let plain = GenerationMlaOp::new("mla", 16, KvCacheQuantMode::Fp8);
+        let a = striped.query(&db, 32, 16384).unwrap();
+        let b = gathered.query(&db, 32, 2048).unwrap();
+        let c = plain.query(&db, 32, 16384).unwrap();
+        assert!((a.latency_ms - b.latency_ms).abs() < 1e-12);
+        assert!(a.latency_ms < c.latency_ms);
+    }
 
     fn b200_vllm_db() -> PerfDatabase {
         let systems_root = PathBuf::from(REPO_ROOT_HINT)

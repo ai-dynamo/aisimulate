@@ -131,6 +131,10 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 18 (speculation migration): Generation attention gained verify_query_tokens
 #   and FPM forward gained verify_width, both positional bincode fields.
 #   TokenScale was appended to remap draft query widths before op lookup.
+# - 19 (DeepSeek-V4.1 review): Dsv41Attention gained a positional
+#   kv_cache_layout.
+# - 20 (decode context parallelism): Generation/Context attention, MLA, DSA
+#   and MLAModule ops gained a tail-appended `dcp_size` (positional bincode).
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
@@ -328,6 +332,9 @@ def _engine_config_dict(
         "moe_tp_size": _opt_int(getattr(cfg, "moe_tp_size", None)),
         "moe_ep_size": _opt_int(getattr(cfg, "moe_ep_size", None)),
         "cp_size": _opt_int(getattr(cfg, "cp_size", None)),
+        # Decode CP joins the identity too: a dcp variant prices decode attention
+        # and KV capacity differently, so it must never share a compiled handle.
+        "dcp_size": _opt_int(getattr(cfg, "dcp_size", None)),
         # QuantizationConfig (flattened)
         "weight_dtype": _rust_quant_to_dtype(getattr(cfg, "gemm_quant_mode", None)),
         "moe_dtype": _rust_moe_quant_to_dtype(getattr(cfg, "moe_quant_mode", None)),
@@ -422,6 +429,8 @@ def compile_engine(
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
     nextn: int = 0,
     speculation: dict | None = None,
     kv_block_size: int | None = None,
@@ -472,6 +481,8 @@ def compile_engine(
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
+            cp_size=cp_size,
+            dcp_size=dcp_size,
             speculation=resolved_speculation,
         )
         # Apply MTP BEFORE get_model so the walked op lists carry the
@@ -681,6 +692,7 @@ def build_database_probe_spec_json(
         "moe_tp_size": None,
         "moe_ep_size": None,
         "cp_size": None,
+        "dcp_size": None,
         "weight_dtype": None,
         "moe_dtype": None,
         "activation_dtype": None,

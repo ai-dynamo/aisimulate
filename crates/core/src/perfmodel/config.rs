@@ -83,7 +83,12 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
 //   separating physical backend KV payload from attention arithmetic precision.
 //   Its appended enum changes positional bincode layout; old JSON defaults only.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
+// - 20 (decode context parallelism): the context/generation attention, MLA,
+//   MLA-module, wide-EP MLA and DSA ops gained a tail-appended `dcp_size`
+//   (gathered query heads over a 1/dcp KV stripe; striped-context gather).
+//   Claimed 19 on its own branch alongside the DeepSeek-V4.1 change; renumbered
+//   at merge (same precedent as 15 and 18).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 20;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -215,6 +220,14 @@ pub struct ParallelMapping {
     /// re-derived from this field.
     #[serde(default)]
     pub cp_size: Option<u32>,
+    /// Decode-context-parallel size (vLLM `-dcp` / SGLang `--dcp-size`): the
+    /// decode KV cache is striped by token position across ranks inside the
+    /// attention group. Part of the engine identity so dcp variants get
+    /// distinct compiled handles. `None`/1 means no DCP. Like `cp_size`, the
+    /// per-op math is carried on the ops themselves, not re-derived here.
+    /// Additive-optional: absent in older payloads.
+    #[serde(default)]
+    pub dcp_size: Option<u32>,
 }
 
 /// Precision/quantization dtypes. Flattened into [`EngineConfig`]. Field

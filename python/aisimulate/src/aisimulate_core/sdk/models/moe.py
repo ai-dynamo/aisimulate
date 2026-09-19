@@ -37,6 +37,14 @@ class MOEModel(BaseModel):
         return backend_name == "sglang"
 
     @classmethod
+    def supports_dcp(cls, backend_name: str) -> bool:
+        # GQA decode CP on vLLM (FlashAttention / FlashInfer); see llama.py.
+        return backend_name == "vllm"
+
+    def _dcp_kv_head_replication(self) -> int | None:
+        return int(self.config.tp_size) // max(1, int(self._num_kv_heads))
+
+    @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:
         moe_args = (model_info["topk"], model_info["num_experts"], model_info["moe_inter_size"])
         base_args = (

@@ -2455,3 +2455,110 @@ def test_engine_step_backend_is_validated_at_task_construction():
     assert _task(engine_step_backend="rust").engine_step_backend == "rust"
     assert _task(engine_step_backend="RUST").engine_step_backend == "rust"
     assert _task(engine_step_backend=None).engine_step_backend is None
+
+
+# ---------------------------------------------------------------------------
+# Context parallelism: prefill CP candidates vs the per-role decode-CP scalar
+# ---------------------------------------------------------------------------
+
+
+def _disagg_task(**overrides) -> Task:
+    # sglang: the only backend whose prefill CP is modeled (enumerate_parallel_config
+    # rejects cp>1 elsewhere), so the CP candidates below are actually enumerated.
+    kwargs = {
+        "serving_mode": "disagg",
+        "prefill_model_path": "deepseek-ai/DeepSeek-V3",
+        "prefill_system_name": "h200_sxm",
+        "prefill_backend_name": "sglang",
+        "decode_model_path": "deepseek-ai/DeepSeek-V3",
+        "decode_system_name": "h200_sxm",
+        "decode_backend_name": "sglang",
+        "total_gpus": 32,
+    }
+    kwargs.update(overrides)
+    return Task(**kwargs)
+
+
+def test_decode_prefill_cp_candidates_are_enumerated_not_rejected():
+    """The old ``decode CP must be 1`` gate is gone: a decode worker's prefill-CP
+    list is priced as given (the optimizer, not a gate, decides it is useless)."""
+    t = _disagg_task(decode_cp_candidates=[1, 2])
+    tuples = list(t.iter_parallel("decode"))
+    assert tuples
+    assert all(len(tup) == 6 for tup in tuples)
+
+
+def test_decode_prefill_cp_defaults_to_one():
+    assert _disagg_task().decode_cp_candidates == [1]
+
+
+def test_role_dcp_size_reaches_model_config():
+    t = _disagg_task(decode_dcp_size=8)
+    assert t.build_model_config(role="decode").dcp_size == 8
+    assert t.build_model_config(role="prefill").dcp_size == 1
+
+
+def test_malformed_role_dcp_size_is_rejected_not_defaulted():
+    t = _disagg_task(decode_dcp_size=0)
+    with pytest.raises(ValueError, match="dcp_size must be a positive integer"):
+        t.build_model_config(role="decode")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "needle"),
+    [
+        # A prefill engine stripes its KV only as the PCP+DCP layout.
+        ({"prefill_dcp_size": 4}, "PCP\\+DCP layout"),
+        ({"prefill_dcp_size": 2, "prefill_cp_candidates": [1, 2]}, "PCP\\+DCP layout"),
+        # vLLM NIXL: replicated PCP cannot feed a DCP-sharded decode; DCP sizes divide one another.
+        (
+            {"prefill_backend_name": "vllm", "prefill_cp_candidates": [2], "decode_dcp_size": 8},
+            "replicated-PCP",
+        ),
+        (
+            {"prefill_backend_name": "vllm", "prefill_cp_candidates": [4], "prefill_dcp_size": 4, "decode_dcp_size": 6},
+            "divide one another",
+        ),
+    ],
+)
+def test_disagg_prefill_context_parallel_layout_rules(overrides, needle):
+    # Task validates its parallel space on construction, so the rule fires there.
+    with pytest.raises(ValueError, match=needle):
+        list(_disagg_task(**overrides).iter_parallel("prefill"))
+
+
+def test_disagg_allows_prefill_cp_and_decode_dcp_on_different_workers():
+    """SGLang re-lays the KV out per decode DCP rank on the prefill side: no pairing rule."""
+    t = _disagg_task(prefill_cp_candidates=[1, 2], decode_dcp_size=8)
+    assert list(t.iter_parallel("prefill"))
+    assert list(t.iter_parallel("decode"))
+    assert t.build_model_config(role="decode").dcp_size == 8
+
+
+def test_agg_rejects_prefill_cp_candidates_combined_with_dcp():
+    # Task construction already enumerates the agg search space (fmha data
+    # fallback), so the topology rule fires at construction time.
+    with pytest.raises(ValueError, match="at most one of prefill CP and decode CP"):
+        Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V3",
+            system_name="h200_sxm",
+            backend_name="sglang",
+            total_gpus=8,
+            dcp_size=8,
+            agg_cp_candidates=[1, 2],
+        )
+
+
+def test_agg_dcp_with_pinned_prefill_cp_enumerates_and_reaches_model_config():
+    t = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V3",
+        system_name="h200_sxm",
+        backend_name="sglang",
+        total_gpus=8,
+        dcp_size=8,
+        agg_cp_candidates=[1],
+    )
+    assert list(t.iter_parallel("agg"))
+    assert t.build_model_config(role="agg").dcp_size == 8

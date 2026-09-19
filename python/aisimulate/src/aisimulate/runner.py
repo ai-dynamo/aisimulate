@@ -84,6 +84,8 @@ _AIC_TIMING_FIELD_ALIASES = {
     "pp": ("aic_pp_size",),
     "moe_tp_size": ("moe_tp_size", "aic_moe_tp_size"),
     "moe_ep_size": ("moe_ep_size", "aic_moe_ep_size"),
+    "cp_size": ("cp_size", "aic_cp_size"),
+    "dcp_size": ("dcp_size", "aic_dcp_size"),
     "gemm_dtype": ("gemm_dtype", "aic_gemm_dtype"),
     "moe_dtype": ("moe_dtype", "aic_moe_dtype"),
     "fmha_dtype": ("fmha_dtype", "aic_fmha_dtype"),
@@ -1190,6 +1192,11 @@ def _materialize_engine_role(
         memory_diagnostics[role] = role_memory
     capacity_materialized = False
     num_gpu_blocks_is_explicit = False
+    # A nested canonical timing config carries the CP knobs too; check them
+    # against parallel_config BEFORE capacity materialization resolves them
+    # into AIC inputs, so a mismatch cannot size the KV cache for one topology
+    # while the deployment reports another.
+    _require_nested_context_parallel_match(role_config, parallel_config, role)
     if "rank" not in role_config:
         num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
         for name in ("aic_backend_version", "backend_version"):
@@ -1373,7 +1380,7 @@ def _materialize_engine_role(
         if not configured:
             continue
         value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
+        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots", "cp_size", "dcp_size"}:
             value = _positive_int(value, f"engine provider {role} {target}")
         elif target in {"enable_eplb", "decoder_replay", "enable_shared_layer", "strict_provenance"}:
             if not isinstance(value, bool):
@@ -1383,6 +1390,15 @@ def _materialize_engine_role(
         if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
             raise ValueError(
                 f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
+            )
+        if target in {"cp_size", "dcp_size"}:
+            # Same contract as tp / attention_dp: a directly supplied deployment
+            # must not price one CP topology while parallel_config reports another.
+            _require_parallel_match(
+                parallel_config,
+                f"{parallel_prefix}{'cp' if target == 'cp_size' else 'dcp'}",
+                value,
+                f"engine provider {role} {target}",
             )
         aic_timing_overrides[target] = value
 
@@ -1664,6 +1680,37 @@ def _sample_synthetic_lengths(
     if lower == 0:
         raise ValueError(f"random_range_ratio={random_range_ratio} gives a zero-token lower bound for length {upper}")
     return [rng.randint(lower, upper) for _ in range(count)]
+
+
+def _require_nested_context_parallel_match(
+    role_config: Mapping[str, JSONValue],
+    parallel_config: Mapping[str, JSONValue],
+    role: str,
+) -> None:
+    """Reject ``timing_model.config.cp_size/dcp_size`` that disagree with ``parallel_config``.
+
+    The timing model may sit at the top level (flat CLI/Sweeper form) or under
+    the nested ``rank`` descriptor (execution-level input); both are checked.
+    """
+    rank_config = role_config.get("rank")
+    timing_source: Mapping[str, JSONValue] = rank_config if isinstance(rank_config, Mapping) else role_config
+    timing = timing_source.get("timing_model")
+    if not isinstance(timing, dict) or timing.get("type") != "external" or timing.get("provider") != "aic":
+        return
+    nested = timing.get("config")
+    if not isinstance(nested, dict):
+        return
+    prefix = "" if role == "aggregated" else f"{role}_"
+    for target, parallel_field in (("cp_size", "cp"), ("dcp_size", "dcp")):
+        value = nested.get(target)
+        if value is None:
+            continue
+        _require_parallel_match(
+            parallel_config,
+            f"{prefix}{parallel_field}",
+            _positive_int(value, f"engine provider {role} timing_model.config.{target}"),
+            f"engine provider {role} timing_model.config.{target}",
+        )
 
 
 def _require_parallel_match(

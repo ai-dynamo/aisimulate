@@ -57,6 +57,11 @@ class ForwardPassEstimatorResolver:
         prefix = _role_prefix(role)
         moe_tp = int(sample[f"{prefix}moe_tp"])
         moe_ep = int(sample[f"{prefix}moe_ep"])
+        # Context-parallel knobs are optional columns (the compiler spells them
+        # out only when != 1); keep 1 out of the identity so pre-CP candidates
+        # resolve to the same estimator as before.
+        cp_size = int(sample.get(f"{prefix}cp") or 1)
+        dcp_size = int(sample.get(f"{prefix}dcp") or 1)
         block_size = sample[f"{role}_block_size"]
         if block_size is None:
             block_size = _DEFAULT_BLOCK_SIZE[backend]
@@ -78,6 +83,8 @@ class ForwardPassEstimatorResolver:
             attention_dp=int(sample[f"{prefix}attention_dp"]),
             moe_tp_size=moe_tp if moe_tp * moe_ep > 1 else None,
             moe_ep_size=moe_ep if moe_tp * moe_ep > 1 else None,
+            cp_size=cp_size if cp_size != 1 else None,
+            dcp_size=dcp_size if dcp_size != 1 else None,
             nextn=int(nextn or 0),
             **{name: getattr(self._search_space, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
             speculation=self._search_space.speculation.cost_config()

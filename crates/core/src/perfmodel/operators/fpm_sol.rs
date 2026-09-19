@@ -273,22 +273,37 @@ fn context_attention_sol(
     }
     let fq_mem = op.fmha_quant_mode.mapping().memory;
     extra += mem_op_sol_ms(spec, k_num * fq_mem) + mem_op_sol_ms(spec, k_num * fq_mem); // kv write (k_num == v_num)
-    (fmha + extra * 1.1) * op.scale_factor
+    // Decode CP on the same engine: all-gather the cached-context KV stripes
+    // (per-rank K+V of `p` tokens, comm half-elements) over the DCP group.
+    let gather = if op.dcp_size > 1 && p > 0.0 {
+        let kv_elems =
+            2.0 * (op.n_kv * op.head_size) as f64 * op.kv_cache_dtype.mapping().memory / 2.0;
+        nccl_sol(spec, op.dcp_size, "all_gather", b * p * kv_elems, 2.0)
+    } else {
+        0.0
+    };
+    (fmha + extra * 1.1 + gather) * op.scale_factor
 }
 
 /// Generation-attention SOL plus the optional Q/K RMSNorm fused extra. There
 /// is no 5-sample smoothing and no prefix in SOL mode.
 fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f64, s: f64) -> f64 {
+    // Decode CP: the kernel sees the DCP group's `n * dcp` gathered query
+    // heads over this rank's `ceil(s / dcp)` KV stripe (op-level
+    // `GenerationAttentionOp::dcp_size` docs); the Q/K norm extra below stays
+    // on the rank-local heads because it runs before the query gather.
+    let dcp = op.dcp_size.max(1) as f64;
     let (n, n_kv, h, w) = (
-        op.n as f64,
+        op.n as f64 * dcp,
         op.n_kv as f64,
         op.head_size as f64,
         op.window_size as f64,
     );
+    let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
     let kv_len = if op.window_size > 0 {
-        (s - 1.0).min(w)
+        (s_local - 1.0).min(w)
     } else {
-        s - 1.0
+        s_local - 1.0
     };
     // fp8 KV -> fp8 compute; everything else (incl. int8 KV) -> bf16 compute.
     let compute = if op.kv_cache_dtype == crate::common::enums::KvCacheQuantMode::Fp8 {
@@ -304,7 +319,7 @@ fn generation_attention_sol(op: &GenerationAttentionOp, spec: &SystemSpec, b: f6
     let sol_mem = mem / spec.gpu.mem_bw * 1000.0;
     let mut latency = sol_math.max(sol_mem);
     if op.use_qk_norm {
-        let q_num = n * h;
+        let q_num = op.n as f64 * h;
         let k_num = n_kv * h;
         let qk_norm =
             2.0 * mem_op_sol_ms(spec, q_num * 2.0) + 2.0 * mem_op_sol_ms(spec, k_num * 2.0);
@@ -382,7 +397,22 @@ fn dsa_context_module_sol(
     } else {
         w * sol(false) + (1.0 - w) * sol(true)
     };
-    Ok(ms.max(0.0) * op.scale_factor)
+    // Decode CP on the same engine: all-gather the cached latent-KV stripes plus
+    // the indexer K cache weighted by the full-indexer fraction (mirrors
+    // `DsaModuleOp::query_context`'s `dcp_context_gather`).
+    let gather = if op.dcp_size > 1 && p > 0 {
+        let kv_elems = crate::operators::dsa::dsa_cached_context_gather_elems(op.kv_cache_dtype, w);
+        nccl_sol(
+            spec,
+            op.dcp_size,
+            "all_gather",
+            b as f64 * p as f64 * kv_elems,
+            2.0,
+        )
+    } else {
+        0.0
+    };
+    Ok((ms.max(0.0) + gather) * op.scale_factor)
 }
 
 /// Whole-forward SOL leaf for the DSA generation module (`Op::DsaGeneration`): the
@@ -397,14 +427,18 @@ fn dsa_generation_module_sol(
 ) -> Result<f64, AicError> {
     let dims = dsa_dims(&op.architecture);
     let flops = dsa_generation_sol_flops(spec, op.gemm_quant_mode)?;
+    // Decode CP geometry mirrors `DsaModuleOp::query_generation`: gathered
+    // heads over this rank's KV stripe (top-k kept whole; upper bound).
+    let dcp = op.dcp_size.max(1) as f64;
+    let s_local = if dcp > 1.0 { ceil_div(s, dcp) } else { s };
     let ms = dsa_generation_sol_ms(
         spec,
         dims,
         op.kv_cache_dtype,
         op.gemm_quant_mode,
         b.round().max(1.0) as i64,
-        s.round().max(1.0) as i64,
-        op.num_heads as i64,
+        s_local.round().max(1.0) as i64,
+        (op.num_heads as f64 * dcp) as i64,
         flops,
     );
     Ok(ms.max(0.0) * op.scale_factor)
@@ -748,6 +782,7 @@ mod tests {
             cp_size: 1,
             lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
             apply_rope: true,
+            dcp_size: 1,
         };
         let (b, sq, p) = (4.0, 682.6666666666666_f64, 128.5_f64);
         let (n, n_kv, h) = (48.0, 8.0, 128.0);
@@ -790,6 +825,7 @@ mod tests {
             use_qk_norm: false,
             scale_num_tokens: 1,
             verify_query_tokens: 0,
+            dcp_size: 1,
         };
         let (b, sq) = (256.0, 8441.75_f64);
         let kv_len = sq - 1.0;
@@ -985,6 +1021,52 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("no Rust implementation for op mamba2")
+        );
+    }
+
+    /// Decode CP in the whole-forward SOL leaf: `n * dcp` gathered heads over
+    /// a `ceil(s / dcp)` KV stripe, identical to the un-striped equivalent.
+    #[test]
+    fn generation_attention_fpm_sol_applies_dcp_geometry() {
+        let d = db();
+        let mut striped =
+            GenerationAttentionOp::new("generation_attention", 12, 1, 128, KvCacheQuantMode::Fp8);
+        striped.dcp_size = 4;
+        let gathered =
+            GenerationAttentionOp::new("generation_attention", 48, 1, 128, KvCacheQuantMode::Fp8);
+        let plain =
+            GenerationAttentionOp::new("generation_attention", 12, 1, 128, KvCacheQuantMode::Fp8);
+        let a = op_sol_latency_ms(
+            &Op::GenerationAttention(striped),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        let b = op_sol_latency_ms(
+            &Op::GenerationAttention(gathered),
+            &d,
+            256.0,
+            256.0,
+            2048.0,
+            0.0,
+        )
+        .unwrap();
+        let c = op_sol_latency_ms(
+            &Op::GenerationAttention(plain),
+            &d,
+            256.0,
+            256.0,
+            8192.0,
+            0.0,
+        )
+        .unwrap();
+        assert!((a - b).abs() < 1e-9, "striped {a} vs gathered {b}");
+        assert!(
+            a < c,
+            "dcp must shrink the KV-read-bound decode roofline: {a} vs {c}"
         );
     }
 

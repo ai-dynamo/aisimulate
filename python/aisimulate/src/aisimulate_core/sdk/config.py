@@ -28,6 +28,13 @@ def normalize_kernel_backend(
         raise ValueError(f"{field_name} must be one of {choices}, got {value!r}.") from exc
 
 
+def validate_parallel_size(name: str, value: object) -> int:
+    """Return ``value`` when it is a positive ``int`` (not ``bool``); raise ``ValueError`` otherwise."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer, got {value!r}")
+    return value
+
+
 def has_video_input(
     *,
     num_videos: int = 0,
@@ -81,6 +88,18 @@ class ModelConfig:
     # from backend_name when cp_size > 1; default "none". Dense models branch on
     # this in their op pipeline; GLM-5 DSA ignores it (handled in ContextDSAModule).
     cp_style: str = "none"
+    # Decode context parallelism (vLLM ``-dcp`` / SGLang ``--dcp-size`` / TRT-LLM
+    # Helix): stripes the DECODE KV cache by token position across ranks that
+    # already belong to the attention group, so it does NOT fold into attn_width
+    # or total_gpus_per_worker. ``cp_size`` (prefill CP) and ``dcp_size`` are
+    # orthogonal per-phase knobs; whether one deployment may set both is a
+    # deployment/topology-layer decision (agg vs disagg), not a ModelConfig one.
+    dcp_size: int = 1
+    # DCP partial-output merge collective: "ag_rs" (query all-gather + LSE
+    # all-gather + output reduce-scatter; vLLM default) or "a2a" (query
+    # all-gather + one packed all-to-all; SGLang default on CUDA). None picks
+    # the backend default in BaseModel._dcp_comm_style.
+    dcp_comm: str | None = None
     workload_distribution: str = "power_law"
     # EPD: this worker hosts only the language model -- the vision encoder
     # is served elsewhere (mirrors SGLang --language-only).  Like tp_size,
@@ -134,6 +153,8 @@ class ModelConfig:
     decoder_replay: bool = False
 
     def __post_init__(self) -> None:
+        validate_parallel_size("cp_size", self.cp_size)
+        validate_parallel_size("dcp_size", self.dcp_size)
         self.moe_backend = normalize_kernel_backend(self.moe_backend, common.MoEBackend, "moe_backend")
         self.attention_backend = normalize_kernel_backend(
             self.attention_backend,
