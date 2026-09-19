@@ -11,6 +11,13 @@ parallelism, then consumes the newly collected data from an external directory.
 It assumes an existing, working GPU collection environment. Fill in the
 collection inputs from that environment before executing GPU steps.
 
+For a new model, start with the [self-service config/profile workflow](../../../../docs/fpm-self-service.md#onboard-with-an-agent)
+for direct FPM interpolation without an op-level model class, and record the
+[model metadata and intended execution route](model-integration.md). This
+campaign's prediction examples use a registered analytical class; the
+model-integration guide describes the optional registered-model/SOL procedure
+for that route.
+
 ```text
 Freeze plan -> GPU smoke -> GPU collection -> validate and publish pair
                                                 |
