@@ -76,7 +76,7 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
         # bounded decoder tail from a full forward at the same coordinates.
         raise NotImplementedError("decoder_replay requires FPM tables with execution_profile identity")
 
-    if int(getattr(model.config, "dcp_size", 1) or 1) > 1:
+    if model.config.dcp_size > 1:
         # The whole-forward tables are keyed WITHOUT dcp (their `cp` column is
         # prefill CP and every shipped cell is cp=1), so a dcp>1 request would
         # silently reuse dcp=1 measurements. Fail loud until the collector

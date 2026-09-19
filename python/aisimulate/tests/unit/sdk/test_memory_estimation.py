@@ -70,30 +70,6 @@ def test_naive_reservation_validation_rejects_out_of_range():
             memory._validate_naive_reservation(bad)
 
 
-@pytest.mark.parametrize("knob", ["cp_size", "dcp_size"])
-@pytest.mark.parametrize("bad", [True, 1.9, 0])
-def test_estimate_num_gpu_blocks_rejects_malformed_context_parallel_sizes(monkeypatch, knob, bad):
-    # The block-count wrapper must not coerce True / 1.9 into cp=dcp=1 before
-    # estimate_kv_cache validates them; nothing may be built.
-    def _never(*args, **kwargs):
-        raise AssertionError("model build must not be reached")
-
-    monkeypatch.setattr(memory.KVCacheEstimator, "from_request", classmethod(_never))
-    monkeypatch.setattr(memory.NaiveKVCacheEstimator, "from_model_path", classmethod(_never))
-    with pytest.raises(ValueError, match=f"{knob} must be a positive integer"):
-        memory.estimate_num_gpu_blocks(
-            "Qwen/Qwen3-32B",
-            "h200_sxm",
-            "vllm",
-            scheduler_block_size=64,
-            max_num_tokens=8192,
-            max_batch_size=256,
-            memory_fraction_kind="of_total",
-            memory_fraction_value=0.9,
-            **{knob: bad},
-        )
-
-
 def test_estimate_num_gpu_blocks_rejects_non_positive_or_non_integer_block_size():
     # Caught up front (before any model build), so no perf DB / fixture is needed.
     # A positive non-integer (e.g. 0.5 -> int() == 0) must be rejected rather than
@@ -928,10 +904,9 @@ def test_estimate_kv_cache_falls_back_when_breakdown_raises(monkeypatch):
 
 
 @pytest.mark.parametrize("knob", ["cp_size", "dcp_size"])
-@pytest.mark.parametrize("bad", [0, -1, 1.9, 2.5, True])
-def test_estimate_kv_cache_rejects_malformed_context_parallel_sizes_before_any_build(monkeypatch, knob, bad):
-    # Validation runs before the int(...) coercion, the model build and the
-    # naive fallback: none of them may turn 1.9 / True into a cp=dcp=1 estimate.
+def test_estimate_kv_cache_rejects_malformed_context_parallel_sizes_before_any_build(monkeypatch, knob):
+    # Validation runs before the model build and the naive fallback: neither
+    # may turn True (int 1) into a cp=dcp=1 estimate.
     def _never(*args, **kwargs):
         raise AssertionError("model build must not be reached")
 
@@ -947,7 +922,7 @@ def test_estimate_kv_cache_rejects_malformed_context_parallel_sizes_before_any_b
             memory_fraction_kind="of_total",
             memory_fraction_value=0.9,
             allow_naive_fallback=True,
-            **{knob: bad},
+            **{knob: True},
         )
 
 

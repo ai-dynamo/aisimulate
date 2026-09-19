@@ -29,13 +29,7 @@ def normalize_kernel_backend(
 
 
 def validate_parallel_size(name: str, value: object) -> int:
-    """Return ``value`` when it is a positive integer parallel size; raise otherwise.
-
-    The one rule every CP / DCP entry point shares (ModelConfig, KV-capacity
-    estimation, Task roles, the deployment generator): booleans, fractions,
-    ``None`` and non-positive values fail loudly instead of collapsing to a
-    different (cp = dcp = 1) topology.
-    """
+    """Return ``value`` when it is a positive ``int`` (not ``bool``); raise ``ValueError`` otherwise."""
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer, got {value!r}")
     return value

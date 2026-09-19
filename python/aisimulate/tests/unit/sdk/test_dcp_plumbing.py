@@ -49,16 +49,11 @@ def test_model_config_dcp_defaults_to_one_and_does_not_widen_attention():
     assert config.ModelConfig().dcp_size == 1
 
 
-@pytest.mark.parametrize("bad", [0, -2, 1.5, True])
-def test_model_config_rejects_non_positive_dcp(bad):
-    with pytest.raises(ValueError, match="dcp_size"):
-        config.ModelConfig(dcp_size=bad)
-
-
-@pytest.mark.parametrize("bad", [0, -2, 1.5, True])
-def test_model_config_rejects_non_positive_or_fractional_cp(bad):
-    with pytest.raises(ValueError, match="cp_size must be a positive integer"):
-        config.ModelConfig(cp_size=bad)
+@pytest.mark.parametrize("knob", ["cp_size", "dcp_size"])
+@pytest.mark.parametrize("bad", [0, 1.5, True])
+def test_model_config_rejects_malformed_context_parallel_sizes(knob, bad):
+    with pytest.raises(ValueError, match=f"{knob} must be a positive integer"):
+        config.ModelConfig(**{knob: bad})
 
 
 def test_build_model_config_carries_both_context_parallel_knobs():

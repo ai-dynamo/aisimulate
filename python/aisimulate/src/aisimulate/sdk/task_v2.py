@@ -2055,17 +2055,6 @@ class Task:
     def _set_role_attr(self, role: str, name: str, value: Any) -> None:
         setattr(self, name if role == "agg" else f"{role}_{name}", value)
 
-    def _role_dcp_size(self, role: str) -> int:
-        """The role's decode-CP size, validated rather than defaulted.
-
-        ``Task`` is a plain dataclass, so a direct construction can carry 0,
-        ``False`` or ``None``; those must fail loudly instead of silently
-        modeling the worker with DCP disabled.
-        """
-        return config.validate_parallel_size(
-            "dcp_size" if role == "agg" else f"{role}_dcp_size", self._role_attr(role, "dcp_size")
-        )
-
     # =====================================================================
     # Builders consumed by sweep.py
     # =====================================================================
@@ -2124,7 +2113,7 @@ class Task:
             moe_tp_size=parallel[3] if parallel is not None else 1,
             moe_ep_size=parallel[4] if parallel is not None else 1,
             cp_size=parallel[5] if parallel is not None else 1,
-            dcp_size=self._role_dcp_size(role),
+            dcp_size=self._role_attr(role, "dcp_size"),
             gemm_quant_mode=self._role_attr(role, "gemm_quant_mode"),
             moe_quant_mode=self._role_attr(role, "moe_quant_mode"),
             kvcache_quant_mode=self._role_attr(role, "kvcache_quant_mode"),
@@ -2243,7 +2232,7 @@ class Task:
         # a narrow model class). Disaggregated roles carry each knob on its own
         # worker, so no cross-check applies there. Fail loud instead of silently
         # dropping the user's prefill-CP candidates.
-        dcp_size = self._role_dcp_size(role)
+        dcp_size = self._role_attr(role, "dcp_size")
         if role == "agg" and dcp_size > 1 and any(c > 1 for c in cp_list):
             raise ValueError(
                 f"aggregated workers support at most one of prefill CP and decode CP above 1; got "

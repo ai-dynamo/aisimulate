@@ -28,15 +28,6 @@ def _msa_sparse_implementation(task_config) -> str | None:
     )
 
 
-def _task_model_family(task_config) -> str | None:
-    """``Task.model_family`` when the task resolved a model; None for bare test doubles."""
-    try:
-        family = getattr(task_config, "model_family", None)
-    except Exception:
-        return None
-    return str(family) if isinstance(family, str) and family else None
-
-
 def _deep_merge(target: dict, extra: dict | None) -> dict:
     """
     Recursively merge the contents of the 'extra' dictionary into 'target',
@@ -211,7 +202,7 @@ def task_config_to_generator_config(
             decode_context_parallel_size=worker_payload.pop("decode_context_parallel_size", 1),
             dcp_comm_backend=worker_payload.pop("dcp_comm_backend", None),
             architecture=getattr(task_config, "architecture", None),
-            model_family=_task_model_family(task_config),
+            model_family=getattr(task_config, "model_family", None) or None,
         )
         # cp_strategy follows the architecture (SGLang rejects zigzag for DSA
         # at startup); an override may only restate it.

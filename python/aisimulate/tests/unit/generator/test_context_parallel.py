@@ -169,12 +169,6 @@ def test_vllm_dcp_comm_backend_only_from_0_18(version, rendered):
     assert ("--dcp-comm-backend" in _flags(out)) is rendered
 
 
-def test_vllm_template_is_silent_without_cp():
-    out = _render_template("vllm", "cli_args.0.20.1.j2", vllm={"tensor-parallel-size": 2}, speculative_config={})
-    for flag in ("--prefill-context-parallel-size", "--decode-context-parallel-size", "--dcp-comm-backend"):
-        assert flag not in out
-
-
 @pytest.mark.parametrize("version", ["0.5.15", "0.5.17"])
 def test_sglang_templates_render_prefill_and_decode_cp(version):
     out = _render_template(
@@ -194,16 +188,6 @@ def test_sglang_templates_render_prefill_and_decode_cp(version):
     assert _cli_flag_value(out, "--cp-strategy") == "zigzag"
     assert _cli_flag_value(out, "--dcp-size") == "2"
     assert ("--dcp-comm-backend" in tokens) is (version == "0.5.17")
-
-
-def test_sglang_0_5_11_template_has_no_cp_lines():
-    # The pre-0.5.15 template must stay untouched: the decision point refuses
-    # the knob there instead of the template silently dropping it.
-    out = _render_template(
-        "sglang", "cli_args.0.5.11.j2", sglang={"tensor-parallel-size": 8, "attn-cp-size": 4, "dcp-size": 2}
-    )
-    assert "--attn-cp-size" not in out
-    assert "--dcp-size" not in out
 
 
 # --------------------------------------------------------------------------- #

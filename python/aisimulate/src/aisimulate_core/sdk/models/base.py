@@ -341,8 +341,6 @@ class BaseModel:
         import aisimulate_core.sdk.operations as ops
 
         dcp = int(self.config.dcp_size)
-        if dcp <= 1:
-            return []
         comm_quant_mode = self.config.comm_quant_mode
         gathered_heads = n_local * dcp
         collectives = [
@@ -390,9 +388,9 @@ class BaseModel:
                 "across ranks that already belong to the attention group."
             )
         limit = self._dcp_kv_head_replication()
-        if limit is not None and dcp > max(1, int(limit)):
+        if limit is not None and dcp > limit:
             raise ValueError(
-                f"dcp_size={dcp} exceeds the KV-head replication of this layout ({max(1, int(limit))}): "
+                f"dcp_size={dcp} exceeds the KV-head replication of this layout ({limit}): "
                 "GQA decode CP only de-duplicates kv heads that TP replicates (dcp <= tp / kv_heads)."
             )
 
@@ -422,13 +420,11 @@ class BaseModel:
         Every top-level decode attention op gets ``_dcp_size`` and is followed
         by its merge collectives. Draft ops are left alone (the frameworks
         replicate the draft KV on every DCP rank). Called by ``get_model``
-        after construction for classes that declare ``supports_dcp``; a class
-        that declares support but exposes no rewritable decode attention op
-        fails loud instead of silently pricing decode as unsharded.
+        after construction when ``dcp_size > 1``; a class that declares
+        ``supports_dcp`` but exposes no rewritable decode attention op fails
+        loud instead of silently pricing decode as unsharded.
         """
         dcp = int(self.config.dcp_size)
-        if dcp <= 1:
-            return
         self._validate_dcp_topology()
         rewritten: list = []
         touched = 0
@@ -480,7 +476,7 @@ class BaseModel:
         sequence. Both frameworks widen the logical page by ``dcp`` so the
         per-rank stripe stays balanced to within one token.
         """
-        return max(1, int(self.config.dcp_size))
+        return int(self.config.dcp_size)
 
     def get_kvcache_elements_per_token(self) -> int:
         """KV cache size per token (per GPU) summed over all layers, in elements.

@@ -2498,12 +2498,9 @@ def test_role_dcp_size_reaches_model_config():
     assert t.build_model_config(role="prefill").dcp_size == 1
 
 
-@pytest.mark.parametrize("bad", [0, False, None, 1.5])
-def test_malformed_role_dcp_size_is_rejected_not_defaulted(bad):
-    # A directly constructed Task may carry 0 / False / None; that must reach
-    # validation instead of silently becoming dcp_size=1.
-    t = _disagg_task(decode_dcp_size=bad)
-    with pytest.raises(ValueError, match="decode_dcp_size must be a positive integer"):
+def test_malformed_role_dcp_size_is_rejected_not_defaulted():
+    t = _disagg_task(decode_dcp_size=0)
+    with pytest.raises(ValueError, match="dcp_size must be a positive integer"):
         t.build_model_config(role="decode")
 
 

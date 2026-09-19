@@ -399,14 +399,8 @@ class KVCacheEstimator:
         # rank-local budget of B bytes holds the tokens whose FULL KV is B * dcp
         # bytes, because every token's KV is spread over the dcp ranks; the
         # inverse must see the same striping as the per-token figure below.
-        def model_tokens_from_bytes(budget: float) -> int:
-            return model.get_kvcache_batch_capacity(budget, max_batch_size)
-
-        tokens_from_kv_bytes: TokensFromBytes = model_tokens_from_bytes
-        if kv_divisor != 1.0:
-
-            def tokens_from_kv_bytes(kv_budget_bytes: float) -> int:
-                return int(model_tokens_from_bytes(float(kv_budget_bytes) * kv_divisor))
+        def tokens_from_kv_bytes(kv_budget_bytes: float) -> int:
+            return int(model.get_kvcache_batch_capacity(float(kv_budget_bytes) * kv_divisor, max_batch_size))
 
         return cls(
             {
@@ -1104,8 +1098,7 @@ def estimate_kv_cache(
     _validate_tolerance(tolerance_fraction)
     _validate_naive_reservation(naive_kv_reservation)
     _validate_cuda_graph_reservation(cuda_graph_reserved_bytes)
-    # Before the int(...) coercion, the model build and the naive fallback:
-    # 1.9 / True / 0 must fail here, not size a cp=dcp=1 topology.
+    # Before the model build and the naive fallback, which would swallow the error.
     validate_parallel_size("cp_size", cp_size)
     validate_parallel_size("dcp_size", dcp_size)
     fraction = float(memory_fraction_value)
