@@ -273,15 +273,26 @@ def main() -> None:
 
             from vllm import SamplingParams
             prompt = {"prompt_token_ids": list(range(32))}
-            engine.add_request("probe0", prompt, SamplingParams(max_tokens=2, temperature=0))
-            engine.step()  # prefill warmup for lazy JIT / autotune
+            # warmup request: lazy JIT / autotune happen off-profile
+            engine.add_request("warm0", {"prompt_token_ids": list(range(32))},
+                               SamplingParams(max_tokens=2, temperature=0))
+            while engine.has_unfinished_requests():
+                engine.step()
             try:
                 _exp = torch._C._profiler._ExperimentalConfig(verbose=True)
             except Exception:
                 _exp = None
-            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-                         with_stack=True,
-                         **({"experimental_config": _exp} if _exp else {})) as p:
+            _prof_kw = dict(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                            with_stack=True,
+                            **({"experimental_config": _exp} if _exp else {}))
+            # TWO phases, both profiled: prefill kernels (indexer quant/rope,
+            # context attention) are DIFFERENT from decode's — excluding
+            # prefill from the profile blinded the path-alignment gate
+            engine.add_request("probe0", prompt, SamplingParams(max_tokens=2, temperature=0))
+            with profile(**_prof_kw) as p_pre:
+                engine.step()  # prefill
+                torch.cuda.synchronize()
+            with profile(**_prof_kw) as p:
                 while engine.has_unfinished_requests():
                     engine.step()
                 torch.cuda.synchronize()
@@ -312,7 +323,21 @@ def main() -> None:
                 for c in getattr(ev, "cpu_children", None) or []:
                     collect(c, acc, paths, seen)
 
-            for ev in p.profiler.function_events:
+            # whole-run kernel table: span attribution goes blind when a
+            # release moves kernel launches out of module.forward (vllm 0.29
+            # sparse-MLA did exactly that) — walk the SAME kineto event tree
+            # unconditionally so nothing executed is ever invisible; this is
+            # the orphan source build_ops consumes (decode_kernels).
+            for phase_key, prof in (("prefill_kernels", p_pre), ("decode_kernels", p)):
+                _acc: dict = {}
+                _seen: set = set()
+                for ev in prof.profiler.function_events:
+                    collect(ev, _acc, {}, _seen)
+                rec[phase_key] = [
+                    {"kernel": n, "us": round(a["us"], 1), "launches": a["launches"]}
+                    for n, a in sorted(_acc.items(), key=lambda kv: -kv[1]["us"])
+                ]
+            for ev in list(p_pre.profiler.function_events) + list(p.profiler.function_events):
                 if ev.name.startswith("AIC::"):
                     slot = spans.setdefault(ev.name, {"calls": 0, "kernels": {}, "py_paths": {}})
                     slot["calls"] += 1

@@ -1,0 +1,63 @@
+{
+ "verdict": "diverged",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "collector_backends": [
+  "cublas",
+  "dsa_nsa",
+  "fa3",
+  "vllm_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "dsa_nsa",
+  "fa3",
+  "sgl_kernel",
+  "triton",
+  "triton_fused_moe",
+  "vllm_kernel"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": {
+  "dsa_nsa": {
+   "collector_only_kernels": [
+    "_C_cache_ops::indexer_k_quant_and_cache",
+    "_fused_indexer_q_rope_quant_kernel",
+    "vllm::indexer_k_quant_and_cache_kernel"
+   ],
+   "serving_kernels": [
+    "vllm::cp_gather_indexer_k_quant_cache_kernel",
+    "vllm::topKPerRowPrefill"
+   ]
+  },
+  "fa3": {
+   "collector_only_kernels": [
+    "_vllm_fa3_C::fwd"
+   ],
+   "serving_kernels": [
+    "flash::FlashAttnFwdCombine",
+    "flash::FlashAttnFwdSm90",
+    "flash::prepare_varlen_num_blocks_kernel"
+   ]
+  }
+ },
+ "serving_kernels_matched_in_collector": [
+  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
+  "cublasLt::splitKreduce_kernel",
+  "deep_gemm::fp8_gemm_kernel_swapAB",
+  "flash::FlashAttnFwdSm90",
+  "flash::prepare_varlen_num_blocks_kernel",
+  "fused_moe_kernel",
+  "namespace",
+  "per_token_group_quant_8bit_kernel",
+  "tensorrt_llm::kernels::fp8_blockscale_gemm::scale_1x128_kernel"
+ ],
+ "collector_unmatched_kernels": [
+  "kernel"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

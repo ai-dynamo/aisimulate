@@ -46,7 +46,7 @@ HERE = Path(__file__).resolve().parent
 HARNESS = HERE.parent
 ROOT = Path(os.environ.get("AIC_PROBE_WORKSPACE", Path.cwd()))
 
-IMPLEMENTED_COMPONENTS = {"probe_driver", "dummies", "probes", "build_images", "workflow_check"}
+IMPLEMENTED_COMPONENTS = {"probe_driver", "dummies", "probes", "build_images", "workflow_check", "path_diff"}
 
 
 def _load_targets() -> dict:
@@ -161,6 +161,19 @@ def pred_customizations_retested(p):
     return True, f"all {len(custom)} customizations retested"
 
 
+def pred_path_verdicts_aligned(p):
+    """path_diff verdict files exist for this (fw, version) and every one is
+    'aligned' — profiler-measured on both sides; class names never count."""
+    vd = HARNESS / "results" / "pathdiff" / f"{p['fw']}-{p['version']}"
+    files = sorted(vd.glob("*.json")) if vd.exists() else []
+    if not files:
+        return False, f"no path_diff verdicts under results/pathdiff/{p['fw']}-{p['version']}/"
+    bad = [f.name for f in files if json.loads(f.read_text()).get("verdict") != "aligned"]
+    if bad:
+        return False, f"diverged verdicts: {bad[:3]}"
+    return True, f"{len(files)} verdicts, all aligned"
+
+
 def pred_model_inputs_ready(p):
     """configs fetched for the repo, or a signed owner exclusion."""
     repo = p["repo"]
@@ -221,7 +234,7 @@ def pred_model_fails_dispositioned(p):
 
 
 PREDICATES = {fn.__name__[5:]: fn for fn in [
-    pred_component_pending, pred_pin_is, pred_plan_has_version,
+    pred_component_pending, pred_pin_is, pred_plan_has_version, pred_path_verdicts_aligned,
     pred_matrix_complete, pred_fails_root_caused, pred_customizations_retested,
     pred_model_inputs_ready, pred_dummies_built, pred_model_probed,
     pred_model_fails_dispositioned,

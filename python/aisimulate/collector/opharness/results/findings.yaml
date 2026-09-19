@@ -228,6 +228,19 @@ findings:
     - zai-org/GLM-5.2
     - zai-org/GLM-5.2-FP8
     - moonshotai/Kimi-K2.5
+  vllm_0290_dsa_lane_indexer_drift:
+    statement: 'path_diff gate (profiler-measured both sides, one taxonomy) on the 0.29 DSA lane vs serving: attention
+      core ALIGNED (fa3 family, flash::FlashAttnFwdSm90/Combine/prepare_varlen on both sides — required TWO probe
+      fixes it also caught: vllm probe recorded no whole-run kernel table so span-blind kernels were invisible,
+      and prefill ran as un-profiled warmup so context-phase kernels were missing entirely; both fixed, prefill_kernels/decode_kernels
+      now always dumped). Indexer sub-path DIVERGED (kernel drift inside dsa_nsa): the lane executes 0.24-era indexer_k_quant_and_cache
+      + _fused_indexer_q_rope_quant and NO topk kernel, while serving 0.29 runs cp_gather_indexer_k_quant_cache
+      + topKPerRowPrefill. The lane''s DSA perf rows are NOT trustworthy until its indexer construction is re-adapted
+      to 0.29 serving (next task on the lane; it is parked unrouted anyway). Verdicts: results/pathdiff/vllm-0.29.0/*.json,
+      2026-09-19.'
+    applies_to:
+    - family:sparse_attention
+    - collector.vllm.collect_mla_module_029
   vllm_0290_dsv4_cutedsl:
     statement: 'vllm 0.29.0/SM90 REGRESSION: the whole DeepseekV4 family (8 checkpoints, all quant artifacts) fails
       at first forward — 0.29 routes head=512 CUDA compression unconditionally to the new cutedsl kernel (models/deepseek_v4/compressor.py:407
