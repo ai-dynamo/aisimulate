@@ -31,7 +31,7 @@ ROOT = Path(os.environ.get("AIC_PROBE_WORKSPACE", Path.cwd()))
 # vendored layout: this file lives at <pkg>/collector/facts/, the generator
 # at <pkg>/src/aiconfigurator — resolve relative to the package root
 AIC_SRC = os.environ.get("AIC_GENERATOR_SRC",
-                         str(Path(__file__).resolve().parents[2] / "src"))
+                         str(Path(__file__).resolve().parents[3] / "src"))
 if AIC_SRC not in sys.path:
     sys.path.insert(0, AIC_SRC)
 WORK = "/work"  # container mount of ROOT
@@ -722,7 +722,7 @@ def build_matrix(targets: dict) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--targets", type=Path, default=Path(__file__).parent / "targets.yaml")
+    ap.add_argument("--targets", type=Path, default=Path(__file__).resolve().parents[1] / "targets.yaml")
     ap.add_argument("--plan", action="store_true")
     ap.add_argument("--emit-queues", action="store_true")
     ap.add_argument("--check-coverage", action="store_true",
