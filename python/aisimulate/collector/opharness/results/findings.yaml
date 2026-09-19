@@ -254,6 +254,20 @@ findings:
     applies_to:
     - nvidia/Nemotron-H-56B-Base-8K
     - generator:rule-engine
+  vllm_0290_sparse_family_split_needed:
+    statement: 'OWNER DECISION NEEDED (op granularity): the sparse_attention family lumps dsa_* with dsv4_*/glm5_*
+      tables, but the 0.29.0 upgrade forks their fates — DSA collects fine on 0.29 (lane collect_mla_module_029.py,
+      SM90 smokes green: FLASH_ATTN_MLA_SPARSE for bf16-kv, FLASHMLA_SPARSE for fp8-kv — kv dtype now forks the
+      backend, both keys need collection; selector matches the serving probe) while DSV4 is broken on 0.29 (mandatory
+      cutedsl compress misalignment). Family pins are the manifest''s granularity, so dsa cannot move to 0.29 until
+      the family splits. The 0.29 lane is parked unrouted; registry/manifest stay consistently on 0.24. This is
+      the first live instance of the copy-on-upgrade mechanism: base lane frozen, all 0.29 adaptation (indexer builder
+      block_table_width, serving citation v1/worker/utils.py:276-283 + block_table.py:29-49) in the fork.'
+    applies_to:
+    - family:sparse_attention
+    - deepseek-ai/DeepSeek-V3.2
+    - zai-org/GLM-5.x
+    - deepseek-ai/DeepSeek-V4-*
   vllm_0290_upgrades:
     statement: 'vllm 0.24.0 -> 0.29.0 improvements confirmed on SM90: Kimi-K3 and Kimi-K3-NVFP4 now pass (arch registered,
       as predicted by the 0.27.1 probe); Gemma-4-26B-A4B-NVFP4 passes (0.24''s tied-embedding NotImplementedError
