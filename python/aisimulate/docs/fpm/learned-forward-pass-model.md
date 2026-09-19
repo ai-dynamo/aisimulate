@@ -76,9 +76,13 @@ python -m aiconfigurator_core.sdk.fpm_learned train \
   - 32 HiSim-style request slots sorted by past KV descending, each
     `(present, past, extend)` (preset `hisim`).
   The per-request groups need the producer to emit `extend_lengths` /
-  `past_kv_lengths` in `scheduled_requests` (the Dynamo `InstrumentedScheduler`
-  extension shipped with the DSV4-Flash campaign overlay); on aggregates-only
-  streams they are NaN and the trees route them through `missing_left`.
+  `past_kv_lengths` in `scheduled_requests`. Both Dynamo backends have an
+  additive patch for it: vLLM in `InstrumentedScheduler._extract_scheduled`,
+  SGLang in `metrics_reporter._build_scheduled_request_metrics` (taken from
+  the schedule-time `batch.extend_lens` / `batch.prefix_lens`, because the
+  per-request attributes are already reset when the metrics are emitted). On
+  aggregates-only streams they are NaN and the trees route them through
+  `missing_left`.
   `--features` takes a preset name or a comma-separated list; the default is
   `sglang18` (the 18 per-request features). Aggregate-only streams must opt in
   with `--features v1`.
@@ -141,6 +145,37 @@ designed to absorb exactly this kind of constant factor.
 On aggregates-only features (`v1`) the same experiments give 3.04% / 2.04%
 (Qwen) and comparable Flash numbers; the per-request features matter most
 where batches are large and heterogeneous.
+
+### DeepSeek-V4.1-Flash on the Dynamo SGLang runtime
+
+Same traffic and topology, SGLang runtime `1.6.0-deepseek-v4.1-flash-dev.1`
+(TP4/EP4, page size 256, mooncake disaggregation, 262k context),
+2026-09-19, `sglang18` features, train c16/32/64/128 → test c24/48/96:
+
+| Test tier | decode steps | decode MAPE (median) | p95 |
+| --- | --- | --- | --- |
+| c24 | 140k | 0.65% (0.47%) | 1.8% |
+| c48 | 119k | 0.94% (0.70%) | 2.5% |
+| c96 | 92k | 1.66% (1.16%) | 5.0% |
+| all | 350k | 1.01% (0.66%) | 3.0% |
+
+The SGLang decode engine is predicted at least as well as the vLLM ones. A
+second pair whose training boot lost the c64/c128 tiers (prefill-engine OOM)
+gives 0.67% / 1.72% on c24 / c48 but 13.7% on c96, three times the trained
+maximum: cover the intended concurrency range when collecting, the model
+does not extrapolate.
+
+The SGLang prefill engine is a different story: 22% MAPE (11% median, p95
+65%) on 5.4k steps, and the same 21% on a random split of a single run, so
+it is not a train/test mismatch. The step time is bimodal for identical batch
+shapes: grouping single-request steps by (extend, past) bucket, the
+within-bucket p90/p10 spread averages 0.69× the median, with a ~200 ms floor
+that sometimes doubles regardless of the extend length. Only the full 16k
+chunks (the bulk of the prefill time) are tight (1–11% spread). Summed over a
+tier the prediction is within 5% of the observed prefill time
+(time-weighted MAE 21%). This is a property of the disaggregated SGLang
+prefill loop's `wall_time`, not of the feature set: `v1`, `sglang18` and
+`hisim` all land at 22%.
 
 ## Limitations
 
