@@ -48,6 +48,7 @@ from .resources import (
     workload_bounds,
 )
 from .stack import StackResolutionError, resolve_runner_factory
+from .support.cli import run_support_command
 from .sweeper.provider import AdapterReplaySpec
 from .sweeper.replay import ReplayOutputRequirements
 
@@ -292,6 +293,13 @@ def _write_resource_plan(args, plan: dict[str, Any]) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+    if args.command == "onboard":
+        try:
+            return run_support_command(args)
+        except (ValidationError, ValueError, OSError) as exc:
+            parser.error(str(exc))
+        except KeyboardInterrupt:
+            return 130
     # Stack resolution deliberately precedes opening the configuration file.
     try:
         factory = resolve_runner_factory(args.stack)

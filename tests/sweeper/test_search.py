@@ -155,7 +155,7 @@ def _stub(monkeypatch, branch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [branch],
     )
-    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be, systems_paths=None: "1.3.0rc10")
 
 
 def _pc(*, tp=4, replicas=2):
@@ -307,7 +307,7 @@ def test_heterogeneous_disagg_materializes_role_hardware_and_provenance(monkeypa
     )
     version_calls = []
 
-    def resolve_version(hardware, backend):
+    def resolve_version(hardware, backend, *, systems_paths=None):
         version_calls.append((hardware, backend))
         return "0.24.0"
 
@@ -1097,7 +1097,7 @@ def test_projection_stall_only_stops_current_branch(monkeypatch):
         "enumerate_branches",
         lambda config, *, max_seq_len=None, runner_capabilities=None: [agg, disagg],
     )
-    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be: "1.3.0rc10")
+    monkeypatch.setattr(search_mod, "resolve_backend_version", lambda hw, be, systems_paths=None: "1.3.0rc10")
     seen = []
 
     class RepeatingSampler(_FakeSampler):

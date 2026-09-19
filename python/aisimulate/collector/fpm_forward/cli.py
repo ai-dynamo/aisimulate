@@ -16,7 +16,7 @@ from collector.model_cases import build_collection_case_plan
 from .config import add_fpm_arguments, add_fpm_generator_arguments
 from .entry import resolve_inputs, resolve_run_inputs, run_resolved
 
-_INPUT_ERRORS = (FileNotFoundError, RuntimeError, TypeError, ValueError)
+_INPUT_ERRORS = (OSError, RuntimeError, TypeError, ValueError)
 
 
 def _parser() -> argparse.ArgumentParser:

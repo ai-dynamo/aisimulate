@@ -376,6 +376,7 @@ def _worker_performance_model_metadata(
             "nextn": engine.nextn or None,
             **({"speculation": engine.speculation.cost_config()} if engine.speculation is not None else {}),
             "forward_model": worker.timing.forward_model,
+            **({"systems_paths": engine.systems_paths} if engine.systems_paths is not None else {}),
             **{
                 name: getattr(engine, name)
                 for name in ENGINE_MODEL_CONTROL_FIELDS
@@ -428,6 +429,10 @@ def _worker_engine_args(
         payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
+    if engine.systems_paths is not None and worker.timing.type != "default":
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+        payload["systems_path"] = list(resolve_systems_paths(engine.systems_paths))
     if engine.decoder_replay:
         payload["aic_decoder_replay"] = True
     for field in ("database_mode", "enable_shared_layer", "strict_provenance"):
@@ -473,6 +478,7 @@ def _worker_engine_args(
         if capacity.type == "default":
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
+            "systems_path",
             "aic_backend_version",
             "aic_system",
             "aic_model_path",

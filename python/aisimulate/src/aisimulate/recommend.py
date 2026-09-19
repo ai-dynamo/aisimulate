@@ -791,6 +791,8 @@ def _candidate_prediction(
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
+    if sample.get("systems_paths") is not None:
+        engine["systems_paths"] = sample["systems_paths"]
     for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
         if sample.get(name) is not None:
             engine[name] = sample[name]

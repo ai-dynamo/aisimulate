@@ -15,6 +15,7 @@ from .common import (
     IntegerRange,
     NumericRange,
     StrictModel,
+    SystemsPath,
     is_active_engine_model_control,
 )
 
@@ -300,9 +301,18 @@ class EstimatorPolicyConfig(StrictModel):
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
     systems_paths: list[str] | None = None
+    systems_path: SystemsPath | None = Field(default=None, exclude=True)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _migrate_systems_path(self):
+        if self.systems_path is not None:
+            if self.systems_paths is not None and self.systems_paths != [self.systems_path]:
+                raise ValueError("systems_path conflicts with systems_paths")
+            self.systems_paths = [self.systems_path]
+        return self
 
     @field_validator("database_mode", mode="before")
     @classmethod
@@ -326,13 +336,15 @@ class EstimatorPolicyConfig(StrictModel):
         custom_policy = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
-            or self.systems_paths not in (None, ["default"])
             or self.estimation_mode != "auto"
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)
         )
         roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
         unsupported_provider = "afd" in modes or getattr(workers, "encoder", None) is not None
+        if self.systems_paths not in (None, ["default"]) and unsupported_provider:
+            unsupported = "AFD" if "afd" in modes else "analytical encoder pools"
+            raise ValueError(f"engine.systems_paths does not support {unsupported}")
         if unsupported_provider and any(
             worker is not None
             and (

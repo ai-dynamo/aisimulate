@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from .detail import parse_detail_sections
+from .support.cli import add_support_parser
 
 
 class _CliConfigError(ValueError):
@@ -75,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="pace prediction against the real wall clock instead of virtual time",
     )
+    add_support_parser(subparsers)
     return parser
 
 

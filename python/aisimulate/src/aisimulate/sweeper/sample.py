@@ -133,6 +133,8 @@ def unroll_sample(
 
     for key in _DEPLOYMENT_PINNED:
         sample[key] = getattr(search_space, key)
+    if search_space.systems_paths is not None:
+        sample["systems_paths"] = search_space.systems_paths
 
     if mode == "disagg":
         sample["prefill_hardware_sku"] = search_space.hardware_sku_for("prefill")

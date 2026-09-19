@@ -552,7 +552,7 @@ def test_optimizer_guided_run_emits_complete_ledger_and_top_n(monkeypatch):
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "1.0",
+        lambda hardware, backend, systems_paths=None: "1.0",
     )
 
     result = Sweeper(
@@ -611,7 +611,7 @@ def test_strict_sla_rejection_is_preserved_in_the_candidate_ledger(monkeypatch):
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "1.0",
+        lambda hardware, backend, systems_paths=None: "1.0",
     )
     config_data = _config().model_dump(mode="python")
     config_data["goal"] = {
@@ -643,7 +643,7 @@ def test_same_batch_failed_duplicates_are_counted_as_coalesced_hits(monkeypatch)
         knob_choices={"backend": ["trtllm"]},
     )
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "1.0")
 
     result = Sweeper(
         runner_factory=_FailingRunnerFactory(),
@@ -669,7 +669,7 @@ def test_zero_or_missing_sample_latency_preserves_ranked_sampler_feedback(
         knob_choices={"backend": ["trtllm"]},
     )
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *args, **kwargs: [branch])
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args: "1.0")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *args, systems_paths=None: "1.0")
 
     seen = {}
 
@@ -726,7 +726,7 @@ def test_optimizer_guided_result_separates_unsupported_and_runtime_failure(monke
     monkeypatch.setattr(
         search_module,
         "resolve_backend_version",
-        lambda hardware, backend: "1.0",
+        lambda hardware, backend, systems_paths=None: "1.0",
     )
 
     result = Sweeper(
@@ -798,7 +798,7 @@ def test_sweep_keeps_feasible_result_when_another_candidate_exceeds_resources(mo
         knob_choices={"backend": ["trtllm"]},
     )
     monkeypatch.setattr(search_module, "enumerate_branches", lambda *a, **kw: [branch])
-    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *a: "1.0")
+    monkeypatch.setattr(search_module, "resolve_backend_version", lambda *a, systems_paths=None: "1.0")
 
     class ResourceFactory(_RunnerFactory):
         def admit_wave(self, specs):

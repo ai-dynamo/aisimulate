@@ -244,7 +244,7 @@ def estimate_num_gpu_blocks(
     attention_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
-    systems_path: str | None = None,
+    systems_path: str | list[str] | None = None,
     cuda_graph_reserved_bytes: int = 0,
     diagnostics: dict[str, Any] | None = None,
 ) -> int:

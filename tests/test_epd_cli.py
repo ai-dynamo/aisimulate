@@ -488,7 +488,7 @@ def test_epd_native_search_preserves_available_backends(monkeypatch, caplog, bac
         return None if backend == "vllm" else original_database(system, backend, version, **kwargs)
 
     def latest_version(system, backend, **kwargs):
-        return None if backend == "vllm" else original_version(system, backend)
+        return None if backend == "vllm" else original_version(system, backend, **kwargs)
 
     raw = _recommendation()
     raw["engine"]["workers"]["encoder"]["replicas"] = 1
