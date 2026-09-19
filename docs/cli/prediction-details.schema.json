@@ -468,7 +468,8 @@
             },
             "unavailable_reason": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "pattern": "\\S"
             }
           },
           "required": [
@@ -971,7 +972,8 @@
         },
         "comm_backend": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "requested_ep_size": {
           "type": "integer",
@@ -1005,7 +1007,8 @@
       "properties": {
         "name": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "latency_ms": {
           "type": "number",
@@ -1013,7 +1016,8 @@
         },
         "source": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "fallbacks": {
           "oneOf": [
@@ -1042,7 +1046,8 @@
       "properties": {
         "name": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "latency_ms": {
           "type": "number",
@@ -1050,7 +1055,8 @@
         },
         "source": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "fallbacks": {
           "oneOf": [
@@ -1160,7 +1166,8 @@
       "properties": {
         "name": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "latency_ms": {
           "type": "number",
@@ -1228,7 +1235,8 @@
       "properties": {
         "name": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         },
         "operations": {
           "type": "array",
@@ -1267,7 +1275,8 @@
         },
         "unavailable_reason": {
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "pattern": "\\S"
         }
       },
       "required": [

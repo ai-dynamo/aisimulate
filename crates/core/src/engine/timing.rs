@@ -96,7 +96,7 @@ impl TimingOperationEvidence {
 
     fn canonicalized(mut self) -> Result<Self> {
         ensure!(
-            !self.name.is_empty(),
+            !self.name.trim().is_empty(),
             "timing evidence operation name cannot be empty"
         );
         ensure!(
@@ -139,6 +139,23 @@ impl TimingOperationEvidence {
                         .iter()
                         .all(|v| v.is_finite() && *v >= 0.0),
                     "invalid SOL evidence"
+                );
+            }
+            for fallback in &details.fallbacks {
+                ensure!(
+                    matches!(fallback.inference_phase.as_str(), "context" | "generation"),
+                    "invalid fallback inference phase"
+                );
+                ensure!(
+                    !fallback.comm_backend.trim().is_empty(),
+                    "fallback comm backend cannot be empty"
+                );
+                ensure!(
+                    fallback.requested_ep_size > 0
+                        && fallback.requested_node_num > 0
+                        && fallback.measurement_ep_size > 0
+                        && fallback.measurement_node_num > 0,
+                    "fallback topology sizes must be positive"
                 );
             }
         }
@@ -658,6 +675,60 @@ mod tests {
             assert_eq!(
                 TimingPhaseEvidence::try_from_operations(vec![op]).is_ok(),
                 valid
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_fallback_records_are_validated_at_the_public_boundary() {
+        use crate::perfmodel::engine::diagnostics::{ExecutedFallback, OperationDetails};
+        for name in ["", " \t\n"] {
+            assert!(
+                TimingOperationEvidence::new(name, 2.0, None, TimingEvidenceSource::Estimated)
+                    .is_err()
+            );
+        }
+        let valid = ExecutedFallback {
+            inference_phase: "context".into(),
+            comm_backend: "deepep_ll".into(),
+            requested_ep_size: 16,
+            requested_node_num: 2,
+            measurement_ep_size: 8,
+            measurement_node_num: 1,
+        };
+        let mut records = vec![(valid.clone(), true)];
+        for (key, value) in [
+            ("inference_phase", serde_json::json!("generation")),
+            ("inference_phase", serde_json::json!("invalid")),
+            ("comm_backend", serde_json::json!(" \t\n")),
+            ("requested_ep_size", serde_json::json!(0)),
+            ("requested_node_num", serde_json::json!(0)),
+            ("measurement_ep_size", serde_json::json!(0)),
+            ("measurement_node_num", serde_json::json!(0)),
+        ] {
+            let mut record = serde_json::to_value(&valid).unwrap();
+            record[key] = value.clone();
+            records.push((
+                serde_json::from_value(record).unwrap(),
+                value == serde_json::json!("generation"),
+            ));
+        }
+        for (fallback, expected_valid) in records {
+            let mut operation = TimingOperationEvidence::new(
+                "dispatch",
+                2.0,
+                None,
+                TimingEvidenceSource::Estimated,
+            )
+            .unwrap();
+            operation.details = Some(OperationDetails {
+                sol: None,
+                sol_unavailable_reason: Some("unsupported operation".into()),
+                fallbacks: vec![valid.clone(), fallback],
+            });
+            assert_eq!(
+                TimingPhaseEvidence::try_from_operations(vec![operation]).is_ok(),
+                expected_valid
             );
         }
     }

@@ -1523,6 +1523,46 @@ def test_performance_detail_rejects_missing_fields_and_preserves_valid_records(p
 
 
 @pytest.mark.parametrize(
+    "path",
+    [
+        ("unavailable_reason",),
+        ("phases", 0, "name"),
+        ("phases", 0, "sol_unavailable_reason"),
+        ("phases", 0, "operations", 0, "name"),
+        ("phases", 0, "operations", 0, "source"),
+        ("phases", 0, "operations", 0, "sol_unavailable_reason"),
+        ("phases", 0, "operations", 0, "fallbacks", 0, "comm_backend"),
+    ],
+)
+def test_diagnostic_string_contract_rejects_whitespace_in_schema_and_adapter(performance_record, path):
+    from jsonschema import Draft202012Validator
+
+    from aisimulate.detail import build_prediction_details, performance_diagnostics
+
+    if path == ("unavailable_reason",):
+        performance_record.update(status="unavailable", phases=[], unavailable_reason="unsupported")
+    details = build_prediction_details({"performance_diagnostics": performance_record}, ("time", "source"))
+    record = details["sections"]["time"]["diagnostics"]
+    target = record
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = " \t\n"
+    validator = Draft202012Validator(_detail_schema())
+    assert not validator.is_valid(details)
+    with pytest.raises(ValueError, match="nonempty string"):
+        performance_diagnostics({"performance_diagnostics": record})
+
+    # Source uses separate phase/operation definitions, and omits SOL fields.
+    if path[-1] != "sol_unavailable_reason":
+        del details["sections"]["time"]
+        target = details["sections"]["source"]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = " \t\n"
+        assert not validator.is_valid(details)
+
+
+@pytest.mark.parametrize(
     "sol,reason,ratio,valid",
     [
         (None, None, None, False),
