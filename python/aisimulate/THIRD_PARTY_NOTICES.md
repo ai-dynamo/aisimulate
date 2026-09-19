@@ -105,6 +105,29 @@ claim that AIConfigurator is owned by an unaffiliated third party.
 
 ## vLLM
 
+The grouped-cache config derivation and metadata regression tests in
+`src/aisimulate/support/config_profile.py`,
+`tests/unit/test_support_config_profile.py`, and
+`tests/unit/test_support_topology.py` are adapted and modified from vLLM's
+Inkling cache layout, decoder state construction, and configuration defaults at
+commit `98dff2a81d747d1dba01a47f939f48c3526d4206`:
+
+- [`vllm/models/inkling/nvidia/sconv_swa_attn.py`](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/sconv_swa_attn.py)
+- [`vllm/models/inkling/nvidia/model.py`](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/nvidia/model.py)
+- [`vllm/models/inkling/configs.py`](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/models/inkling/configs.py)
+
+Copyright contributors to the vLLM project.
+
+This material is licensed under Apache-2.0; the upstream license at the
+identified revision is available at:
+https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/LICENSE
+
+AISimulate modifies these contracts for metadata-only rank-local aggregate
+cache sizing and validation, without constructing runtime tensors or a model.
+The derived tests use original synthetic geometries and do not copy a
+checkpoint fixture. The derived files retain the upstream copyright and
+identify the modified source material.
+
 The inference-mode scope and MSA query-position metadata integration in
 `collector/vllm/collect_mla_module.py` and
 `collector/vllm/collect_msa_module.py` are adapted (modified) from serving

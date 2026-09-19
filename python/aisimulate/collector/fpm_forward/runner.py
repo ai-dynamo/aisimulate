@@ -935,16 +935,27 @@ def _cell_generator_overrides(
         "--max-model-len",
         str(plan.options.vllm_max_model_len),
     ]
-    if cell.workload_kind == "prefill" and not smoke:
+    max_num_tokens = getattr(plan.options, "max_num_batched_tokens", None)
+    max_num_seqs = getattr(plan.options, "max_num_seqs", None)
+    if getattr(plan, "fpm_profile", None) is not None:
+        deployment_profile = plan.deployment_profile(cell)
+        assert deployment_profile is not None
+        resources = deployment_profile.resources
+        max_num_tokens = resources.max_num_tokens if max_num_tokens is None else max_num_tokens
+        max_num_seqs = resources.max_batch_size if max_num_seqs is None else max_num_seqs
+    if cell.workload_kind == "prefill":
         profile = plan.options.prefill_sampling
+        if not smoke or getattr(plan.options, "max_prefill_isl", None) is not None:
+            max_num_tokens = profile.max_total_prefill_tokens
+        if profile.max_batch_size is not None:
+            max_num_seqs = profile.max_batch_size
+    if cell.workload_kind == "prefill" and not smoke:
         compilation_config = {
             "cudagraph_capture_sizes": list(profile.cudagraph_capture_sizes),
             "max_cudagraph_capture_size": profile.max_cudagraph_capture_size,
         }
         scheduler_args.extend(
             [
-                "--max-num-batched-tokens",
-                str(profile.max_total_prefill_tokens),
                 "--compilation-config",
                 json.dumps(compilation_config, sort_keys=True, separators=(",", ":")),
                 "--prefill-max-new-token-samples",
@@ -953,8 +964,6 @@ def _cell_generator_overrides(
                 str(profile.max_kv_read_token_samples),
             ]
         )
-        if profile.max_batch_size is not None:
-            scheduler_args.extend(["--max-num-seqs", str(profile.max_batch_size)])
     elif smoke:
         if cell.workload_kind == "prefill":
             scheduler_args.extend(
@@ -976,16 +985,12 @@ def _cell_generator_overrides(
                     "2",
                 ]
             )
-    if getattr(plan, "fpm_profile", None) is not None:
-        deployment_profile = plan.deployment_profile(cell)
-        assert deployment_profile is not None
-        resources = deployment_profile.resources
-        # Native point generation sees the declared scheduler bounds before
-        # any cases are queued. Never discard runtime cases to fit a profile.
-        if "--max-num-batched-tokens" not in scheduler_args:
-            scheduler_args.extend(["--max-num-batched-tokens", str(resources.max_num_tokens)])
-        if "--max-num-seqs" not in scheduler_args:
-            scheduler_args.extend(["--max-num-seqs", str(resources.max_batch_size)])
+    # Native point generation sees the runtime bounds before any cases are
+    # queued. Each flag is emitted once, after resolving the phase's bounds.
+    if max_num_tokens is not None:
+        scheduler_args.extend(["--max-num-batched-tokens", str(max_num_tokens)])
+    if max_num_seqs is not None:
+        scheduler_args.extend(["--max-num-seqs", str(max_num_seqs)])
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
     if architecture == "GlmMoeDsaForCausalLM":

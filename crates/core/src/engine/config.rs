@@ -11,6 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::engine::common::speculative::normalize_conditional_accept_rates;
 use crate::engine::handoff::TransferTimingMode;
 use crate::engine::timing::{TimingModel, TimingModelConfig, built_in_timing_model};
+use crate::perfmodel::FpmCacheGroup;
 
 const DEFAULT_MAX_PREFILL_TOKENS: usize = 16_384;
 const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8_192;
@@ -329,7 +330,8 @@ pub struct EngineConfig {
     /// Use [`Self::for_backend`] instead of changing this field on
     /// [`Self::default`] when backend-dependent defaults are desired.
     pub backend: Backend,
-    /// Physical G1 capacity in blocks.
+    /// Physical G1 capacity in blocks for a linear cache. Retained as a
+    /// positive compatibility field and ignored when `kv_cache_groups` is set.
     #[serde(default = "default_num_gpu_blocks")]
     pub num_gpu_blocks: usize,
     /// KV block size in tokens.
@@ -387,6 +389,12 @@ pub struct EngineConfig {
     /// Physical KV-cache bytes occupied by one token for host offload.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kv_cache_bytes_per_token: Option<usize>,
+    /// Rank-local cache group geometry. An empty list retains the linear pool.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kv_cache_groups: Vec<FpmCacheGroup>,
+    /// Shared physical budget for `kv_cache_groups`, including page padding.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kv_cache_capacity_bytes: Option<u64>,
     /// Optional framework-native host-offload simulation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,
@@ -450,6 +458,10 @@ struct EngineConfigWire {
     #[serde(default)]
     kv_cache_bytes_per_token: Option<usize>,
     #[serde(default)]
+    kv_cache_groups: Vec<FpmCacheGroup>,
+    #[serde(default)]
+    kv_cache_capacity_bytes: Option<u64>,
+    #[serde(default)]
     native_host_offload: Option<NativeHostOffloadConfig>,
     #[serde(default)]
     g3_offload: Option<crate::engine::G3OffloadConfig>,
@@ -495,6 +507,8 @@ impl<'de> Deserialize<'de> for EngineConfig {
             emit_kv_token_ids: wire.emit_kv_token_ids,
             kv_transfer_bytes_per_token: wire.kv_transfer_bytes_per_token,
             kv_cache_bytes_per_token: wire.kv_cache_bytes_per_token,
+            kv_cache_groups: wire.kv_cache_groups,
+            kv_cache_capacity_bytes: wire.kv_cache_capacity_bytes,
             native_host_offload: wire.native_host_offload,
             g3_offload: wire.g3_offload,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
@@ -530,6 +544,8 @@ impl Default for EngineConfig {
             emit_kv_token_ids: false,
             kv_transfer_bytes_per_token: None,
             kv_cache_bytes_per_token: None,
+            kv_cache_groups: Vec::new(),
+            kv_cache_capacity_bytes: None,
             native_host_offload: None,
             g3_offload: None,
             kv_transfer_bandwidth: None,
@@ -624,6 +640,49 @@ impl EngineConfig {
             self.kv_cache_bytes_per_token.is_none_or(|bytes| bytes > 0),
             "kv_cache_bytes_per_token must be positive"
         );
+        if self.kv_cache_groups.is_empty() {
+            ensure!(
+                self.kv_cache_capacity_bytes.is_none(),
+                "kv_cache_capacity_bytes requires kv_cache_groups"
+            );
+        } else {
+            ensure!(
+                self.backend == Backend::Vllm && self.worker_type == WorkerType::Aggregated,
+                "kv_cache_groups currently require backend=vllm and worker_type=aggregated"
+            );
+            ensure!(
+                !self.enable_prefix_caching,
+                "kv_cache_groups currently require enable_prefix_caching=false"
+            );
+            ensure!(
+                self.native_host_offload.is_none() && self.g3_offload.is_none(),
+                "kv_cache_groups currently support only HBM without host or G3 offload"
+            );
+            ensure!(
+                self.aic_nextn.is_none(),
+                "kv_cache_groups currently do not support speculative decoding"
+            );
+            ensure!(
+                !self.emit_kv_events && !self.emit_kv_token_ids,
+                "kv_cache_groups currently do not support KV event or token-ID emission"
+            );
+            ensure!(
+                self.kv_cache_bytes_per_token.is_none()
+                    && self.kv_transfer_bytes_per_token.is_none()
+                    && self.kv_transfer_bandwidth.is_none(),
+                "kv_cache_groups cannot use linear cache or KV transfer byte geometry"
+            );
+            ensure!(
+                self.kv_cache_capacity_bytes
+                    .is_some_and(|bytes| bytes > 0 && bytes <= (1u64 << 53)),
+                "kv_cache_groups require positive kv_cache_capacity_bytes at most 2^53"
+            );
+            let mut names = std::collections::HashSet::new();
+            for group in &self.kv_cache_groups {
+                group.validate()?;
+                ensure!(names.insert(&group.name), "duplicate KV cache group name");
+            }
+        }
         if let Some(g3) = &self.g3_offload {
             g3.validate()?;
             anyhow::ensure!(
@@ -807,6 +866,63 @@ mod tests {
         }))
         .unwrap_err();
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn grouped_cache_round_trips_and_rejects_unsupported_runtime_modes() {
+        let wire = serde_json::json!({
+            "backend": "vllm",
+            "enable_prefix_caching": false,
+            "kv_cache_capacity_bytes": 1024,
+            "kv_cache_groups": [{
+                "name": "window", "kind": "attention", "num_layers": 4,
+                "block_size_tokens": 4, "page_size_bytes": 64, "sliding_window": 8
+            }]
+        });
+        let config: EngineConfig = serde_json::from_value(wire.clone()).unwrap();
+        config.validate().unwrap();
+        let reloaded: EngineConfig =
+            serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+        assert_eq!(config, reloaded);
+        for (key, value, expected) in [
+            ("backend", serde_json::json!("sglang"), "backend=vllm"),
+            (
+                "worker_type",
+                serde_json::json!("decode"),
+                "worker_type=aggregated",
+            ),
+            (
+                "enable_prefix_caching",
+                serde_json::json!(true),
+                "enable_prefix_caching=false",
+            ),
+            ("aic_nextn", serde_json::json!(1), "speculative"),
+            ("emit_kv_events", serde_json::json!(true), "KV event"),
+            (
+                "kv_cache_bytes_per_token",
+                serde_json::json!(64),
+                "linear cache",
+            ),
+            (
+                "kv_cache_capacity_bytes",
+                serde_json::json!(0),
+                "positive kv_cache_capacity_bytes",
+            ),
+            (
+                "native_host_offload",
+                serde_json::json!({"num_host_blocks": 1}),
+                "only HBM",
+            ),
+        ] {
+            let mut unsupported = wire.clone();
+            unsupported[key] = value;
+            let config: EngineConfig = serde_json::from_value(unsupported).unwrap();
+            let error = config.validate().unwrap_err();
+            assert!(error.to_string().contains(expected), "{key}: {error}");
+        }
+        let linear = serde_json::to_value(EngineConfig::default()).unwrap();
+        assert!(linear.get("kv_cache_groups").is_none());
+        assert!(linear.get("kv_cache_capacity_bytes").is_none());
     }
 
     #[test]

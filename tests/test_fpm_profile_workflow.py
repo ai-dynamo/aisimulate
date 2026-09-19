@@ -609,8 +609,6 @@ def test_onboard_dep_keeps_full_identity_and_checks_resources_before_collection(
                 "model_kind": "moe",
                 "framework_version": "0.25.1",
                 "gpu": "h200_sxm",
-                "gpu_count": 2,
-                "gpus_per_node": 2,
                 "interconnect": "NVLink",
             },
             "search": {
@@ -624,8 +622,8 @@ def test_onboard_dep_keeps_full_identity_and_checks_resources_before_collection(
         }
     )
     plan = create_plan(request, tmp_path)
-    assert plan["fpm"]["worker_gpus"] == 2
-    assert plan["search"]["candidates"][0]["total_gpus"] == 2
+    assert plan["fpm"]["collection_gpus_required"] == 2
+    assert plan["search"]["candidates"][0]["required_gpus"] == 2
     assert plan["resources"]["source"] == "profile"
     assert plan["resources"]["total_kv_size_tokens"] > 4096
     loaded = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml")
@@ -642,8 +640,10 @@ def test_onboard_dep_keeps_full_identity_and_checks_resources_before_collection(
     tampered = json.loads(profile_path.read_text())
     tampered["deployments"][0]["fmha_quant_mode"] = "fp8"
     profile_path.write_text(json.dumps(tampered))
-    with pytest.raises(ValueError, match="differs from the requested identity"):
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    with pytest.raises(ValueError, match="fpm-model-profile[.]json was modified or missing"):
         check_plan(request, tmp_path)
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
 
 
 @pytest.mark.parametrize(
@@ -691,8 +691,6 @@ def test_generated_glm_collector_plan_preserves_backend_and_rank_local_bounds(
                 "model_kind": "moe",
                 "framework_version": "0.25.1",
                 "gpu": "b200_sxm",
-                "gpu_count": 8,
-                "gpus_per_node": 8,
                 "interconnect": "NVLink",
             },
             "search": {
@@ -714,10 +712,14 @@ def test_generated_glm_collector_plan_preserves_backend_and_rank_local_bounds(
     assert collected["counts"]["cells"] == 2
     assert {cell["parallel_strategy"] for cell in collected["cells"]} == {preset}
     assert collected["options"]["moe_backend"] == moe_backend
+    assert collected["options"]["vllm_max_model_len"] == 8192
+    assert collected["options"]["max_num_batched_tokens"] == max_tokens
+    assert collected["options"]["max_num_seqs"] == max_sequences
     sampling = collected["options"]["prefill_sampling"]
-    expected_tokens = min(max_tokens, 1024 * max_sequences)
-    assert sampling["max_total_prefill_tokens"] == expected_tokens
+    assert sampling["max_total_prefill_tokens"] == max_tokens
     assert sampling["max_batch_size"] == max_sequences
+    assert collected["point_generation"]["method"] == "native_self_benchmark"
+    assert collected["point_generation"]["planned_point_count"] is None
     assert collected["topology_memory_admission"][0]["activation_envelope"]["scope"] == "rank_local"
     prediction = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml")
     scheduler = prediction.engine.workers.aggregated.scheduler
@@ -725,11 +727,28 @@ def test_generated_glm_collector_plan_preserves_backend_and_rank_local_bounds(
     assert scheduler.max_sequences == max_sequences
     assert prediction.traffic.load.concurrency == 8
     assert prediction.traffic.stop.requests == 8
-    assert "timing coverage" in plan["fpm"]["sampling"]
+
+    updated_input = request.model_dump(mode="json")
+    updated_input["workload"].update(input_tokens=64, output_tokens=16, concurrency=2, request_count=4)
+    updated_request = SupportRequest.model_validate(updated_input)
+    updated_plan = create_plan(updated_request, tmp_path, overwrite=True)
+    assert updated_plan["request_id"] == plan["request_id"]
+    assert updated_plan["validation_id"] != plan["validation_id"]
+    assert updated_plan["fpm"] == plan["fpm"]
+    assert updated_plan["resources"] == plan["resources"]
+    updated_command = json.loads((tmp_path / "commands.json").read_text())["fpm_plan_local"]
+    assert updated_command == command
+    assert collector_cli.main(updated_command[3:]) == 0
+    assert json.loads(capsys.readouterr().out) == collected
+    updated_prediction = CorePredictionConfig.from_yaml(tmp_path / "predict/pilot.yaml")
+    assert updated_prediction.traffic.source.input_tokens == 64
+    assert updated_prediction.traffic.source.output_tokens == 16
+    assert updated_prediction.traffic.load.concurrency == 2
+    assert updated_prediction.traffic.stop.requests == 4
 
 
 def test_onboard_rejects_profile_below_collector_minimum_token_axis(profile, tmp_path):
-    profile["deployments"][0]["resources"]["max_num_tokens"] = 1
+    profile["deployments"][0]["resources"].update(max_num_tokens=1, max_batch_size=1)
     request = SupportRequest.model_validate(
         {
             "identity": {
@@ -738,16 +757,16 @@ def test_onboard_rejects_profile_below_collector_minimum_token_axis(profile, tmp
                 "model_kind": "moe",
                 "framework_version": "0.25.1",
                 "gpu": "h200_sxm",
-                "gpu_count": 2,
-                "gpus_per_node": 2,
                 "interconnect": "NVLink",
             },
             "search": {"tensor_parallel": 2, "context_length": 4096},
             "fpm_profile": profile,
         }
     )
+    output = tmp_path / "plan"
     with pytest.raises(ValueError, match="FPM collection requires.*at least 2"):
-        create_plan(request, tmp_path)
+        create_plan(request, output)
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(
@@ -775,8 +794,6 @@ def test_onboard_cli_embeds_profile_and_preserves_topology(profile, tmp_path, tp
                 "0.25.1",
                 "--gpu",
                 "h200_sxm",
-                "--gpu-count",
-                "2",
                 "--interconnect",
                 "NVLink",
                 "--context-length",

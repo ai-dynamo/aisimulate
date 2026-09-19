@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -121,7 +122,9 @@ else:
 
 
 @pytest.mark.parametrize("command", ["predict", "recommend"])
-@pytest.mark.parametrize("case", ["no-profile", "profile", "unknown-quant", "boolean-topology", "wrong-model"])
+@pytest.mark.parametrize(
+    "case", ["no-profile", "profile", "mixed-profile", "unknown-quant", "boolean-topology", "wrong-model"]
+)
 def test_supervised_profile_validation_is_runtime_free(command: str, case: str, tmp_path: Path) -> None:
     """Exercise the real parser and envelope validation before the child starts."""
     raw = _config()
@@ -130,6 +133,15 @@ def test_supervised_profile_validation_is_runtime_free(command: str, case: str, 
     error = ""
     if case == "no-profile":
         del raw["engine"]["fpm_profile"]
+    elif case == "mixed-profile":
+        grouped = deepcopy(raw["engine"]["fpm_profile"]["deployments"][0])
+        grouped["tp"] = 2
+        grouped["resources"]["cache_layout"] = "grouped"
+        grouped["resources"].pop("kv_bytes_per_token")
+        grouped["resources"]["cache_groups"] = [
+            {"name": "full", "kind": "attention", "num_layers": 1, "block_size_tokens": 64, "page_size_bytes": 64}
+        ]
+        raw["engine"]["fpm_profile"]["deployments"].append(grouped)
     elif case == "unknown-quant":
         raw["engine"]["fpm_profile"]["deployments"][0]["fmha_quant_mode"] = "unsupported"
         error = "unknown FPM fmha_quant_mode"

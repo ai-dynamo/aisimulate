@@ -2,6 +2,102 @@
 
 This file adds explicit repository-wide development guards.
 
+## FPM model onboarding
+
+When asked to onboard a model for FPM simulation on designated hardware, follow
+[Onboard with an agent](docs/fpm-self-service.md#onboard-with-an-agent) in the FPM
+self-service guide. Use the checkout's `aisimulate onboard` CLI and current help.
+Follow its six stages: inspect the model and target; choose the worker and
+review runtime/collection limits; derive, review and save the profile; plan
+collection; collect and verify data; validate replay and run ordinary
+prediction/recommendation. Start by asking only for a missing
+Hugging Face model ID (`organization/model-name`) and target GPU platform. Accept
+an already supplied local config, profile or checkpoint path instead of requiring
+a Hub ID; do not ask for both an ID and a config upfront. For a Hub ID, retrieve
+the config using available Hub access as described in stage 1. Reuse supplied
+facts and inspect the config/profile before asking for derivable metadata; defer
+other questions to their stage and help the user choose the worker topology.
+At stage 2, inspect `aisimulate onboard init --model-config PATH --suggest-parallel`
+with the actual checkpoint/revision, runtime, GPU, interconnect and collection
+options. This read-only JSON preview reports model/hardware-aware TP choices and
+MoE TP/DEP/TEP alternatives, exact flags, resource sources and missing inputs.
+Ask for unresolved shared precision/layout facts rather than guessing. Only a
+complete declared/estimated byte budget can establish an `estimated_fit` default;
+the shortlist is not a performance ranking or runtime qualification. Present the
+default and alternatives, choose one exact topology per plan, and preserve any
+explicit topology choice. If no default exists, explain the missing inputs and
+select a candidate before collecting its rank-local bounds. Byte overrides are
+specific to the chosen tuple; use explicit topology flags with those bounds.
+Inspect full-attention, sliding-window and supported convolution retention
+before choosing linear or grouped cache resources. For grouped resources,
+derive available geometry, then request unresolved runtime `cache_block_sizes`
+after choosing the topology; model config cannot determine these block sizes.
+Review/edit the complete `cache_groups` JSON and provenance. Each
+`page_size_bytes` is the rank-local aggregate over every layer in that group,
+including runtime padding; config-derived packed pages are minimum estimates.
+Never replace grouped storage with an averaged `kv_bytes_per_token` or scalar
+token capacity. Use the canonical native cache budget for group footprint and
+transient prefill admission; unresolved resource assumptions remain explicit.
+Derive the minimum collection GPUs from attention TP times attention DP (TP4
+requires four GPUs). Do not ask for total available GPUs, cluster node allocation
+or replica budgets during onboarding. Preserve target hardware, runtime and
+interconnect characteristics; verify actual collection resources before execution.
+Generated predict/recommend configs validate one worker. Deployment replicas and
+optimization GPU budgets belong to ordinary predict/recommend configurations.
+
+Review context, scheduler and prefill capture limits independently of validation
+traffic. Fresh config/profile defaults use the smaller of the declared context
+and 256,000 tokens, profile scheduler bounds or 8,192 tokens/256 sequences, and a
+2,048-token prefill CUDA graph capture limit. Explain and allow edits to these
+initial policies; they establish neither capacity nor timing coverage. Do not
+require fixed input/output lengths, concurrency, TTFT or TPOT during intake.
+Those flags customize optional synthetic examples only. Maximum sequences does
+not reserve maximum context for every sequence or request every prefill batch.
+Follow the [shared collection policy](docs/fpm-self-service.md#how-the-collection-grid-is-determined):
+AISimulate sets runtime limits, prefill capture sizes and some sample caps;
+Dynamo combines them with the deployed image's sampling defaults and runtime
+feasibility checks to generate the exact grid. Prefill capture overrides change
+the engine configuration and must match the serving target. A complete generated
+grid does not establish AgentX/direct-FPM query coverage; do not invent a separate
+AgentX collection grid.
+
+After verifying the formal data pair, use `aisimulate onboard validate-fpm`
+with a local Weka trace and a separate validation output directory. Follow the
+guide's pinned AgentX reference and current cold aggregated, one-lane, HBM-only,
+non-speculative scope. Preserve target model projection and strict direct FPM
+with denied fallback. Read `validation.json` together with native query coverage
+and request completion evidence. Coverage counts native lookup resolutions,
+including interpolation and failures; cached timing reuse is not another query.
+Missing timing stops replay and preserves partial evidence, which cannot certify
+the remainder of the trace. Report coverage and silicon accuracy separately.
+Reuse verified v2 collection plans for validation-only changes; legacy v1 plans
+need a new directory as described in the guide.
+
+Grouped cache execution currently requires cold aggregated vLLM with PP1, CP1,
+HBM-only storage, no speculative decoding and `prefix_caching: false`. Preserve
+that setting in generated predict/recommend and validation configs. Native
+allocation shares one byte budget across groups, retains full history or the
+declared window, and charges temporary prefill pages. Window eviction does not
+shorten logical request progress or FPM query context. Prefix reuse, offload/G3,
+disaggregation and scalar capacity overrides are unsupported for grouped caches.
+
+Do not reject a checkpoint solely because it is multimodal. Read its unambiguous
+`text_config`, or its flat text-decoder fields, and explain that FPM models only
+the text decoder. Multimodal encoders, projectors, preprocessing and other
+non-text components and their resource costs are excluded; full multimodal
+deployment memory and latency are not modeled. Preserve this scope in the
+reviewed profile's provenance and require explicit bounds for unknown decoder
+resources. Keep validation of incompatible decoder/cache semantics intact.
+
+Report the current stage, its result or blocker, and the next action. Resume from
+validated artifacts and accepted decisions instead of repeating the intake.
+Stage transitions are not additional approval gates. Preserve explicit review
+and acceptance of the exact profile, user overrides/provenance, and existing
+execution authorization as described in the guide's terminal and headless flows.
+The config/profile route requires neither an op-level model class nor
+per-operation silicon data. Report planning, collection, simulation and measured
+accuracy separately.
+
 ## Performance Model Changes
 
 Before changing a performance model, its configuration, or a caller in Rust,

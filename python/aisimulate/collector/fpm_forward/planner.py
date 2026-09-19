@@ -15,14 +15,14 @@ import json
 import logging
 import os
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile, FpmModelProfile, load_fpm_profile
 
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
-from .config import PARALLEL_AXES, FPMCollectionOptions
+from .config import FPM_MAX_PREFILL_ISL, PARALLEL_AXES, VLLM_AUTO_FIT_MAX_MODEL_LEN, FPMCollectionOptions
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
 from .topology import enumerate_fpm_topologies, topology_strategy
 from .types import ParallelTopology
@@ -649,7 +649,41 @@ def build_collection_plan(
     )
     policies = _backend_policies(options, collector_config, backend=backend)
     if profile is not None:
-        _validate_profile_identities(profile, capability, candidate_topologies, policies, model_path, system, backend)
+        deployments = _validate_profile_identities(
+            profile, capability, candidate_topologies, policies, model_path, system, backend
+        )
+        if options.vllm_max_model_len > profile.context_length:
+            raise ValueError(
+                f"--fpm-max-model-len={options.vllm_max_model_len} exceeds "
+                f"FPM profile context_length={profile.context_length}"
+            )
+        max_prefill_isl = options.max_prefill_isl
+        if max_prefill_isl is None:
+            max_prefill_isl = options.max_num_batched_tokens
+            if max_prefill_isl is None:
+                max_prefill_isl = min(
+                    [FPM_MAX_PREFILL_ISL, *(deployment.resources.max_num_tokens for deployment in deployments)]
+                )
+        options = replace(
+            options,
+            vllm_max_model_len=(
+                profile.context_length
+                if options.vllm_max_model_len == VLLM_AUTO_FIT_MAX_MODEL_LEN
+                else options.vllm_max_model_len
+            ),
+            max_prefill_isl=max_prefill_isl,
+        )
+        # Validate the shared decode envelope as well as narrower prefill
+        # controls before memory admission can queue or drop any deployment.
+        for deployment in deployments:
+            resources = deployment.resources
+            options.validate_scheduler_limits(
+                profile_max_num_tokens=resources.max_num_tokens, profile_max_batch_size=resources.max_batch_size
+            )
+            resources.validate_envelope(
+                max_num_tokens=options.max_num_batched_tokens or max_prefill_isl,
+                max_batch_size=options.max_num_seqs or options.max_prefill_batch_size or resources.max_batch_size,
+            )
     topologies, topology_memory_admission = filter_memory_infeasible_topologies(
         backend=backend,
         model_path=model_path,
@@ -658,7 +692,7 @@ def build_collection_plan(
         topologies=candidate_topologies,
         max_new_tokens=options.prefill_sampling.max_total_prefill_tokens,
         fpm_profile=profile,
-        max_batch_size=options.max_prefill_batch_size,
+        max_batch_size=options.prefill_sampling.max_batch_size,
     )
     weight_quantization = capability.dtype.gemm_quant_mode
     runnable_dtype_pairs = {
@@ -763,7 +797,7 @@ def _validate_profile_identities(
     model_path: str,
     system: str,
     backend: str,
-) -> None:
+) -> tuple[FpmDeploymentProfile, ...]:
     """Require a resource declaration for every requested cell, before admission."""
     if profile.architecture != capability.architecture:
         raise ValueError(
@@ -782,6 +816,7 @@ def _validate_profile_identities(
         "enable_wideep",
         "enable_eplb",
     )
+    deployments = []
     for topology in topologies:
         deployment = profile.select(
             model=model_path,
@@ -795,6 +830,7 @@ def _validate_profile_identities(
             moe_ep_size=topology.moe_ep,
             cp_size=topology.cp,
         )
+        deployments.append(deployment)
         for kv_dtype in capability.dtype.kv_cache_dtypes:
             for policy in policies:
                 resolved = [
@@ -818,3 +854,4 @@ def _validate_profile_identities(
                         f"FPM collection profile identity mismatch: {conflicts}; supply a profile matching "
                         "the collection configuration. The profile does not override serving dispatch."
                     )
+    return tuple(deployments)

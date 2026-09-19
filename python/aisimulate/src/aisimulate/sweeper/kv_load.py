@@ -6,13 +6,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cache
 from typing import Any
 
 from .config import ENGINE_MODEL_CONTROL_FIELDS, Workload
 from .forward_pass_estimator import resolve_systems_paths
-from .kv_estimate import estimate_kv_tokens
+from .kv_estimate import DEFAULT_MEMORY_FRACTION, estimate_grouped_cache_budget, estimate_kv_tokens
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
 
@@ -28,6 +28,8 @@ class KVLoadResolution:
     concurrency: int
     concurrency_capacity: int
     role_capacity_tokens: dict[str, int]
+    role_capacity_bytes: dict[str, int] = field(default_factory=dict)
+    role_request_cache_bytes: dict[str, int] = field(default_factory=dict)
 
 
 @cache
@@ -124,6 +126,93 @@ def _role_capacity_tokens(
     return per_rank_usable_tokens * config.shape.dp * config.replicas
 
 
+def _role_grouped_capacity(
+    sample: dict[str, Any],
+    *,
+    role: str,
+    config: ReplicaParallelConfig,
+    backend_version: str,
+    context_length: int,
+) -> tuple[int, int, int] | None:
+    resolved = sample.get("forward_pass_estimators", {}).get(role, {}).get("config")
+    if resolved is None:
+        timing = sample.get(f"{role}_timing_model")
+        if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
+            resolved = timing.get("config")
+            if not isinstance(resolved, dict):
+                raise ValueError(f"{role} external AIC timing config must be a mapping")
+        else:
+            resolved = {}
+    profile = resolved.get("fpm_profile", sample.get("fpm_profile"))
+    if profile is None:
+        return None
+    from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+    shape = config.shape
+    identity = {
+        "model": str(resolved.get("model", resolved.get("model_path", sample["model_name"]))),
+        "system": str(resolved.get("system", sample.get(f"{role}_hardware_sku") or sample["hardware_sku"])),
+        "backend": str(resolved.get("backend", sample["backend"])),
+        "backend_version": resolved.get("backend_version") or backend_version,
+    }
+    deployment = load_fpm_profile(profile).select(
+        **identity,
+        tp_size=shape.tp,
+        pp_size=shape.pp,
+        attention_dp_size=shape.dp,
+        moe_tp_size=shape.moe_tp,
+        moe_ep_size=shape.moe_ep,
+    )
+    if deployment.resources.cache_layout != "grouped":
+        return None
+    if role != "agg" or sample.get(f"{role}_num_gpu_blocks") is not None:
+        raise ValueError("grouped FPM cache requires aggregated replay without fixed scalar blocks")
+    roots = resolved.get("systems_paths")
+    if not roots and resolved.get("systems_path"):
+        roots = [resolved["systems_path"]]
+    controls = {
+        name: resolved.get(name, sample.get(name))
+        for name in ENGINE_MODEL_CONTROL_FIELDS
+        if resolved.get(name, sample.get(name)) is not None
+        and not (name == "enable_eplb" and resolved.get(name, sample.get(name)) is False)
+    }
+    # Validate the actual scheduler envelope before using a one-token forward
+    # for steady-decode occupancy. Fixed non-KV bounds do not change with this
+    # footprint query; only the per-request cache peak changes.
+    deployment.resources.validate_envelope(
+        max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
+        max_batch_size=int(sample[f"{role}_max_num_seqs"]),
+    )
+    try:
+        budget = estimate_grouped_cache_budget(
+            shape,
+            model_name=identity["model"],
+            hardware_sku=identity["system"],
+            backend=identity["backend"],
+            backend_version=identity["backend_version"],
+            fpm_profile=profile,
+            context_length=context_length,
+            max_num_tokens=1,
+            max_batch_size=int(sample[f"{role}_max_num_seqs"]),
+            memory_fraction=float(
+                sample[f"{role}_gpu_memory_utilization"]
+                if sample.get(f"{role}_gpu_memory_utilization") is not None
+                else DEFAULT_MEMORY_FRACTION
+            ),
+            systems_paths=list(resolve_systems_paths(roots or sample.get("systems_paths"))),
+            model_controls=controls,
+            nextn=int(resolved.get("nextn", sample.get("aic_nextn")) or 0),
+        )
+    except ValueError as exc:
+        if "no KV budget" in str(exc):
+            raise InfeasibleKVCapacity(str(exc)) from exc
+        raise
+    per_rank_bytes = budget["total_kv_size_bytes"]
+    per_request_bytes = budget["request_peak_cache_bytes"]
+    ranks = shape.dp * config.replicas
+    return per_rank_bytes * ranks, per_request_bytes, (per_rank_bytes // per_request_bytes) * ranks
+
+
 def resolve_kv_load(
     sample: dict[str, Any],
     *,
@@ -153,20 +242,38 @@ def resolve_kv_load(
     else:
         raise TypeError(f"unsupported parallel config for KV load: {type(parallel_config).__name__}")
 
-    capacities = {
-        role: _role_capacity_tokens(sample, role=role, config=config, backend_version=backend_version)
-        for role, config in role_configs.items()
-    }
     expected_tokens_per_request = int(workload.isl) + int(workload.osl) // 2
     if expected_tokens_per_request <= 0:
         raise InfeasibleKVCapacity(
             f"kv_load_ratio requires positive average tokens per request, got isl={workload.isl}, osl={workload.osl}"
         )
-    concurrency_capacity = capacities[load_role] // expected_tokens_per_request
+    capacities = {}
+    capacity_bytes = {}
+    request_bytes = {}
+    request_capacities = {}
+    for role, config in role_configs.items():
+        grouped = _role_grouped_capacity(
+            sample,
+            role=role,
+            config=config,
+            backend_version=backend_version,
+            context_length=expected_tokens_per_request,
+        )
+        if grouped is not None:
+            capacity_bytes[role], request_bytes[role], request_capacities[role] = grouped
+        else:
+            capacities[role] = _role_capacity_tokens(
+                sample,
+                role=role,
+                config=config,
+                backend_version=backend_version,
+            )
+            request_capacities[role] = capacities[role] // expected_tokens_per_request
+    concurrency_capacity = request_capacities[load_role]
     if concurrency_capacity < 1:
         raise InfeasibleKVCapacity(
-            f"{load_role} KV capacity {capacities[load_role]} tokens cannot hold the "
-            f"estimated {expected_tokens_per_request} tokens per in-flight request"
+            f"{load_role} KV capacity cannot hold one request at "
+            f"{expected_tokens_per_request} average tokens per in-flight request"
         )
     concurrency = max(1, int(float(ratio) * concurrency_capacity))
     return KVLoadResolution(
@@ -174,4 +281,6 @@ def resolve_kv_load(
         concurrency=concurrency,
         concurrency_capacity=concurrency_capacity,
         role_capacity_tokens=capacities,
+        role_capacity_bytes=capacity_bytes,
+        role_request_cache_bytes=request_bytes,
     )

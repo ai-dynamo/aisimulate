@@ -24,11 +24,13 @@
 
 mod config;
 mod correction;
+pub(crate) mod coverage;
 mod estimator;
 mod metrics;
 mod model;
 mod options;
 mod regression;
+mod resources;
 mod samples;
 
 #[cfg(test)]
@@ -38,6 +40,7 @@ pub use config::{
     EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig,
     ForwardPassSpeculationConfig,
 };
+pub use coverage::{FpmQueryCoverage, FpmQueryCoverageCounts, FpmQueryGap, FpmQueryPurpose};
 pub use estimator::*;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
@@ -47,3 +50,7 @@ pub use model::{
     ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
 };
 pub use options::ForwardPassPerfOptions;
+pub use resources::{
+    FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
+    FpmCacheLayout, FpmResourceConfig,
+};

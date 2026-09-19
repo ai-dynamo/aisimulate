@@ -9,6 +9,8 @@
 
 use uuid::Uuid;
 
+use super::grouped::{GroupedKvPool, GroupedLease};
+
 use crate::engine::belady::BeladyOracle;
 pub(crate) use crate::engine::cache::vllm_block_pool::SourceReuseDependency;
 use crate::engine::cache::vllm_block_pool::{
@@ -59,6 +61,7 @@ pub(crate) struct BlockRequestLease {
     /// Present only while newly acquired capacity awaits a scheduler-installed
     /// write fence. The default path does not allocate this state.
     pending_capacity_writes: Option<Box<PendingCapacityWrites>>,
+    grouped: Option<GroupedLease>,
 }
 
 impl BlockRequestLease {
@@ -75,6 +78,7 @@ impl BlockRequestLease {
             entries,
             allocated_tokens: 0,
             pending_capacity_writes: None,
+            grouped: None,
         }
     }
 
@@ -87,6 +91,9 @@ impl BlockRequestLease {
     }
 
     pub(crate) fn resident_block_count(&self) -> usize {
+        if let Some(grouped) = &self.grouped {
+            return grouped.blocks();
+        }
         self.entries
             .iter()
             .filter(|entry| entry.copy.is_some())
@@ -239,9 +246,19 @@ pub(crate) struct VllmKvManager {
     kv_event_publishers: KvEventPublishers,
     dp_rank: u32,
     next_event_id: u64,
+    grouped: Option<GroupedKvPool>,
 }
 
 impl VllmKvManager {
+    pub(crate) fn set_grouped_cache(&mut self, grouped: GroupedKvPool) {
+        assert!(!self.enable_prefix_caching);
+        self.grouped = Some(grouped);
+    }
+
+    pub(crate) fn grouped(&self) -> Option<&GroupedKvPool> {
+        self.grouped.as_ref()
+    }
+
     pub(crate) fn set_belady_oracle(&mut self, oracle: BeladyOracle) {
         self.pool.set_belady_oracle(oracle);
     }
@@ -264,6 +281,7 @@ impl VllmKvManager {
             kv_event_publishers,
             dp_rank,
             next_event_id: 0,
+            grouped: None,
         }
     }
 
@@ -279,6 +297,22 @@ impl VllmKvManager {
         reusable_prefix_blocks: usize,
     ) -> NativeAllocation<usize> {
         lease.debug_assert_owner(owner);
+        if let Some(grouped) = &mut self.grouped {
+            assert_eq!(reusable_prefix_blocks, 0);
+            let previous_blocks = lease.resident_block_count();
+            if !grouped.allocate(
+                &mut lease.grouped,
+                lease.allocated_tokens,
+                cumulative_tokens,
+            ) {
+                return NativeAllocation::CapacityExhausted;
+            }
+            lease.allocated_tokens = cumulative_tokens;
+            return NativeAllocation::Ready {
+                value: lease.resident_block_count().saturating_sub(previous_blocks),
+                dependencies: Vec::new(),
+            };
+        }
         let previous_blocks = lease
             .allocated_tokens
             .div_ceil(self.block_size)
@@ -772,6 +806,9 @@ impl VllmKvManager {
     }
 
     fn release_lease_entries(&mut self, lease: &mut BlockRequestLease) {
+        if let Some(grouped) = &mut self.grouped {
+            grouped.release(&mut lease.grouped);
+        }
         lease.pending_capacity_writes = None;
         for entry in lease.entries.iter_mut().rev() {
             if let Some(copy) = entry.copy.take() {
@@ -1082,7 +1119,9 @@ impl VllmKvManager {
     }
 
     pub(crate) fn num_active_blocks(&self) -> usize {
-        self.pool.num_active()
+        self.grouped
+            .as_ref()
+            .map_or_else(|| self.pool.num_active(), GroupedKvPool::active_blocks)
     }
 
     pub(crate) fn num_inactive_blocks(&self) -> usize {
