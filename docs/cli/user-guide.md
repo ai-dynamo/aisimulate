@@ -1153,10 +1153,12 @@ addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. Th
 
 Use `state_cache: {}` to infer one state per rank; `bytes_per_request` overrides
 inference without loading model geometry. Omit `state_cache` or set it to `null`
-to disable it. Inference supports Qwen3-Next and Qwen3.5 text/MoE GDN geometry,
-TP with divisible heads, and PP=1. The default `layout: vllm-gdn-a474da28` pins
-vLLM commit `a474da28131f61684849b31e29af0eebaaedc383`, independently of the
-timing database version. Other layouts (including KDA/Mamba2) and PP>1 require
+to disable it. With `layout: auto` (default), inference selects Qwen3-Next/Qwen3.5
+GDN or KimiLinear/Kimi-K3 KDA geometry. The resolved layouts are
+`vllm-gdn-a474da28` and `vllm-kda-a474da28`, pinned to vLLM commit
+`a474da28131f61684849b31e29af0eebaaedc383`, independently of the timing database
+version. Either layout can be selected explicitly. TP must divide the recurrent
+heads; PP must be 1. Unknown layouts, PP>1, and speculative KDA execution require
 an explicit byte override.
 
 Optional `model_dtype` accepts `auto` (default), `float16`, `bfloat16`, or `float32`.
@@ -1165,15 +1167,23 @@ matching this vLLM revision. Auto state dtypes follow
 vLLM: conv follows model dtype; Qwen3.5 SSM uses the model's `mamba_ssm_dtype`
 when present, otherwise it follows conv. Qwen3-Next SSM follows conv. An explicit
 `mamba_ssm_cache_dtype` overrides the model field. Set `model_dtype` explicitly
-when the model config is missing its dtype or uses float32, whose vLLM auto downcast depends on hardware. Speculation adds
-its draft-token count to the conv-state length.
+when the model config is missing its dtype or uses float32, whose vLLM auto
+downcast depends on hardware. Speculation adds its draft-token count to the GDN
+conv-state length. KDA has three conv windows
+and one FP32 recurrent matrix; it accepts only `auto` or `float32` for
+`mamba_ssm_cache_dtype`. Changing KDA `model_dtype` from the HF dtype also
+requires an explicit `mamba_cache_dtype`. K3 uses the nested text config and its
+1-based KDA/MLA layer lists. The size represents one state, without a snapshot-slot multiplier.
 
 Supply the **resolved vLLM block geometry**: per-layer attention page size is
 `block_size * bytes_per_token / full_attention_layers`. Inference pads each
 recurrent layer to that page size and rejects geometry smaller than its tensors.
-Simulator block rounding then applies to the total per-rank state. Checkpoint
-copies are accounted for by the state manager, not this estimate. Pool-capacity
-estimation remains separate and fixed capacity is still required. `prediction.json` and saved deployment
+Simulator block rounding then applies to the total per-rank state. For manually
+normalized token geometry, keep `block_size * bytes_per_token` equal to the actual
+per-rank block bytes; do not divide recurrent state by DCP again. This pinned
+vLLM version does not support hybrid DCP execution. Checkpoint copies are
+accounted for by the state manager, not this estimate. Pool-capacity estimation
+remains separate and fixed capacity is still required. `prediction.json` and saved deployment
 performance metadata report `state_cache` with `source` (`inferred`, `overridden`,
 or `disabled`), resolved bytes, padding, and rounded allocation.
 

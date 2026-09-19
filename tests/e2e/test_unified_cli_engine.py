@@ -139,7 +139,10 @@ def test_engine_cli_case_matrix_is_complete() -> None:
     assert tuple(path.name for path in _RECOMMEND_CASES) == _EXPECTED_RECOMMEND_CASES
 
 
-@pytest.mark.parametrize("state_enabled,expected_duration_ms", [(False, 4.0), (True, 8.0), ("auto", 8.0)])
+@pytest.mark.parametrize(
+    "state_enabled,expected_duration_ms",
+    [(False, 4.0), (True, 8.0), ("auto", 8.0), ("auto-kda", 8.0), ("auto-k3", 8.0)],
+)
 def test_manual_state_cache_runs_through_native_engine(
     tmp_path: Path, state_enabled: bool | str, expected_duration_ms: float
 ) -> None:
@@ -173,7 +176,7 @@ traffic:
         payload = yaml.safe_load(config.read_text(encoding="utf-8"))
         del payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"]
         config.write_text(yaml.safe_dump(payload), encoding="utf-8")
-    if state_enabled == "auto":
+    if state_enabled in ("auto", "auto-kda", "auto-k3"):
         model = tmp_path / "model"
         model.mkdir()
         (model / "config.json").write_text(
@@ -190,9 +193,31 @@ traffic:
                 }
             )
         )
+        if state_enabled == "auto-kda":
+            (model / "config.json").write_text(
+                json.dumps(
+                    {
+                        "model_type": "kimi_linear",
+                        "num_hidden_layers": 4,
+                        "dtype": "bfloat16",
+                        "linear_attn_config": {
+                            "num_heads": 2,
+                            "head_dim": 8,
+                            "short_conv_kernel_size": 4,
+                            "kda_layers": [1, 2, 3],
+                            "full_attn_layers": [4],
+                        },
+                    }
+                )
+            )
         payload = yaml.safe_load(config.read_text(encoding="utf-8"))
         payload["engine"]["model"] = str(model)
         payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"] = {}
+        if state_enabled == "auto-k3":
+            payload["engine"]["model"] = "moonshotai/Kimi-K3"
+            worker = payload["engine"]["workers"]["aggregated"]
+            worker["parallelism"] = {"tensor": 8}
+            worker["kv_cache"].update(block_size=768, bytes_per_token=27648, capacity={"type": "fixed", "blocks": 6})
         config.write_text(yaml.safe_dump(payload), encoding="utf-8")
     output = tmp_path / "state-cache"
     result = _run_cli(
@@ -213,11 +238,17 @@ traffic:
     assert summary["completed_requests"] == 4
     assert report.get("summary", report)["completed_requests"] == 4
     state = report["state_cache"]["aggregated"]
-    assert state["source"] == ("inferred" if state_enabled == "auto" else "overridden" if state_enabled else "disabled")
-    if state_enabled == "auto":
-        assert state["bytes_per_request"] == 3072
-        assert state["raw_bytes_per_layer"] == 896
-    # Six blocks fit two token-only requests, but only one with its two state blocks.
+    assert state["source"] == (
+        "inferred"
+        if state_enabled in ("auto", "auto-kda", "auto-k3")
+        else "overridden"
+        if state_enabled
+        else "disabled"
+    )
+    if state_enabled in ("auto", "auto-kda", "auto-k3"):
+        assert state["bytes_per_request"] == (61046784 if state_enabled == "auto-k3" else 3072)
+        assert state["raw_bytes_per_layer"] == {"auto": 896, "auto-kda": 800, "auto-k3": 814080}[state_enabled]
+    # Six blocks fit two token-only requests, but only one with its state allocation.
     assert summary["duration_ms"] == pytest.approx(expected_duration_ms)
     assert report.get("summary", report)["duration_ms"] == pytest.approx(expected_duration_ms)
 

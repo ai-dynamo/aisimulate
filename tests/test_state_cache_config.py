@@ -368,7 +368,7 @@ def test_gdn_tensor_geometry(gdn_model, tp, num_spec, conv_dtype, ssm_dtype, exp
 @pytest.mark.parametrize(
     "change,reason",
     [
-        ({"model_type": "kimi_linear"}, "unknown model"),
+        ({"model_type": "mamba2"}, "unknown model"),
         ({"torch_dtype": "float32"}, "set model_dtype"),
         ({"linear_num_key_heads": 0}, "linear_num_key_heads"),
         ({"layer_types": ["unknown"] * 4}, "layer_types"),
@@ -516,3 +516,129 @@ def test_qwen35_unknown_model_ssm_dtype_requires_override(gdn_model, invalid):
 def test_cache_dtype_accepts_only_pinned_vllm_cli_values(field):
     with pytest.raises(ValidationError, match=field):
         CorePredictionConfig.model_validate(_public(state_cache={field: "bfloat16"}))
+
+
+@pytest.fixture
+def kda_model(tmp_path):
+    geometry = {
+        "model_type": "kimi_linear",
+        "num_hidden_layers": 4,
+        "dtype": "bfloat16",
+        "linear_attn_config": {
+            "num_heads": 4,
+            "head_dim": 8,
+            "short_conv_kernel_size": 4,
+            "kda_layers": [1, 2, 3],
+            "full_attn_layers": [4],
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(geometry))
+    return tmp_path, geometry
+
+
+@pytest.mark.parametrize("tp,conv_dtype,raw_bytes", [(1, "auto", 1600), (2, "auto", 800), (1, "float32", 2176)])
+def test_kda_single_working_state_geometry(kda_model, forbid_estimators, tp, conv_dtype, raw_bytes):
+    path, _ = kda_model
+    payload = _auto_public(path, mamba_cache_dtype=conv_dtype)
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {"tensor": tp}
+    worker["kv_cache"].update(bytes_per_token=48, capacity={"type": "fixed", "blocks": 8})
+    config = CorePredictionConfig.model_validate(payload)
+    config = CorePredictionConfig.model_validate(config.model_dump(mode="json"))
+    assert config.engine.workers.aggregated.kv_cache.state_cache.layout == "auto"
+    spec = prediction_to_replay_spec(config)
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["layout"] == "vllm-kda-a474da28"
+    assert info["raw_bytes_per_layer"] == raw_bytes  # Three conv windows + one FP32 matrix, not five slots.
+    assert info["ssm_dtype"] == "float32"
+    assert info["bytes_per_request"] == 9216
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 9216}
+
+
+@pytest.mark.parametrize(
+    "key,value,error",
+    [
+        ("kda_layers", [0, 1, 2], "1-based"),
+        ("kda_layers", [1, 1, 2], "duplicate"),
+        ("kda_layers", [True, 2, 3], "1-based"),
+        ("full_attn_layers", [3, 4], "partition"),
+        ("kda_layers", [1, 2], "partition"),
+        ("full_attn_layers", [], "1-based"),
+        ("num_heads", 0, "num_heads"),
+        ("head_dim", None, "head_dim"),
+        ("num_k_heads", 2, "asymmetric"),
+    ],
+)
+def test_kda_rejects_unrecognized_geometry(kda_model, key, value, error):
+    path, geometry = kda_model
+    geometry["linear_attn_config"][key] = value
+    (path / "config.json").write_text(json.dumps(geometry))
+    with pytest.raises(ValueError, match=error):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(_auto_public(path)))
+
+
+def test_kda_requires_fixed_fp32_recurrent_dtype(kda_model):
+    with pytest.raises(ValueError, match="always uses float32"):
+        prediction_to_replay_spec(
+            CorePredictionConfig.model_validate(_auto_public(kda_model[0], mamba_ssm_cache_dtype="float16"))
+        )
+
+
+def test_kda_rejects_gdn_layout_and_unqualified_speculation(kda_model):
+    with pytest.raises(ValueError, match="does not match"):
+        prediction_to_replay_spec(
+            CorePredictionConfig.model_validate(_auto_public(kda_model[0], layout="vllm-gdn-a474da28"))
+        )
+    payload = _auto_public(kda_model[0])
+    payload["engine"]["speculation"] = {"kind": "ngram", "num_speculative_tokens": 2, "acceptance_rates": [0.5, 0.5]}
+    with pytest.raises(ValueError, match="speculative KDA"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+
+
+@pytest.mark.parametrize("tp,raw_bytes", [(1, 6512640), (2, 3256320), (8, 814080)])
+def test_shipped_k3_nested_geometry(tp, raw_bytes, forbid_estimators):
+    payload = _auto_public("moonshotai/Kimi-K3")
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {"tensor": tp}
+    worker["kv_cache"].update(block_size=6144, bytes_per_token=27648, capacity={"type": "fixed", "blocks": 8})
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["recurrent_layers_per_rank"] == 69
+    assert info["raw_bytes_per_layer"] == raw_bytes
+    assert info["bytes_per_request"] == 488374272
+    assert info["state_blocks"] == 3
+    assert info["allocated_bytes_per_request"] == 509607936  # 69/24 pages rounds up only after the per-rank sum.
+
+
+def test_k3_explicit_effective_token_geometry_does_not_reshard_state():
+    payload = _auto_public("moonshotai/Kimi-K3")
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {"tensor": 8}
+    worker["kv_cache"].update(block_size=12288, bytes_per_token=1728, capacity={"type": "fixed", "blocks": 8})
+    info = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(payload)
+    ).backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["raw_bytes_per_layer"] == 814080
+    assert info["padded_bytes_per_layer"] == 884736
+    assert info["bytes_per_request"] == 61046784
+    assert info["allocated_bytes_per_request"] == 63700992
+
+    worker["kv_cache"].update(block_size=1536, bytes_per_token=13824)
+    physical = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(payload)
+    ).backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert physical == info  # Byte-geometry normalization, not a DCP execution qualification.
+
+
+def test_kda_model_dtype_override_requires_explicit_cache_dtype(kda_model):
+    with pytest.raises(ValueError, match="explicit mamba_cache_dtype"):
+        prediction_to_replay_spec(
+            CorePredictionConfig.model_validate(_auto_public(kda_model[0], model_dtype="float16"))
+        )
+    payload = _auto_public(kda_model[0], model_dtype="float16", mamba_cache_dtype="float16")
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["bytes_per_token"] = 32
+    info = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(payload)
+    ).backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["conv_dtype"] == "float16"
+    assert info["raw_bytes_per_layer"] == 1600
