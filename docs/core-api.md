@@ -183,6 +183,32 @@ model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
 
+### Engine identity controls
+
+The canonical configuration also carries quantization overrides and
+`attention_backend`, `moe_backend`, `enable_eplb` (default `false`), and
+`wideep_num_slots` (default absent). These controls reach model construction,
+KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend
+selection require an MoE model. Collected FPM interpolation cannot represent
+EPLB, slots, or MoE backend overrides; it rejects an explicit incompatible
+request and is skipped during automatic selection for those identities.
+
+Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add
+`moe_backend: None`, `enable_eplb: false`, and `wideep_num_slots: None`.
+`ForwardPassPerfModelConfig::new(...)` supplies these defaults. This extends
+the canonical configuration introduced by #242.
+
+Rust callers constructing `SyntheticTraceSpec` must also add
+`cached_prefix_tokens: 0` to preserve existing prefix-sharing behavior. A positive
+value creates shared input tokens; cache hits still depend on runtime state.
+The value must align to the trace's `block_size` and must not exceed any sampled
+input length. Unified replay uses one-token trace blocks for an exact prefix,
+then applies the engine's cache block size when calculating reuse.
+
+`nextn` remains compute-side identity. Expected accepted draft tokens are a
+simulator workload assumption, supplied separately by the unified CLI as
+`engine.nextn_accepted`; they do not tune the estimator.
+
 ### Selection and fallback
 
 `estimation_mode` defaults to `auto`; `fallback_policy` defaults to `deny`.

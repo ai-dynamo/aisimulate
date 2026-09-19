@@ -72,6 +72,8 @@ struct RuntimeTraffic {
     #[serde(default)]
     osl: Option<usize>,
     #[serde(default)]
+    cached_prefix_tokens: Option<usize>,
+    #[serde(default)]
     request_count: Option<usize>,
     #[serde(default)]
     turns_per_session: Option<usize>,
@@ -209,6 +211,12 @@ struct AicTimingConfig {
     systems_paths: Vec<PathBuf>,
     #[serde(default)]
     attention_backend: Option<String>,
+    #[serde(default)]
+    moe_backend: Option<String>,
+    #[serde(default)]
+    enable_eplb: bool,
+    #[serde(default)]
+    wideep_num_slots: Option<u32>,
     #[serde(default, alias = "shared_layer")]
     enable_shared_layer: Option<bool>,
     #[serde(default)]
@@ -281,6 +289,9 @@ impl AicTimingConfig {
             transfer_policy: self.transfer_policy.clone(),
             systems_paths: roots,
             attention_backend: self.attention_backend.clone(),
+            moe_backend: self.moe_backend.clone(),
+            enable_eplb: self.enable_eplb,
+            wideep_num_slots: self.wideep_num_slots,
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
         })
@@ -630,6 +641,10 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
         kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
+        kwargs.set_item("moe_backend", config.moe_backend.as_deref())?;
+        kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
+        kwargs.set_item("enable_eplb", config.enable_eplb)?;
+        kwargs.set_item("wideep_num_slots", config.wideep_num_slots)?;
         kwargs.set_item(
             "cuda_graph_reserved_bytes",
             config.cuda_graph_reserved_bytes,
@@ -1110,8 +1125,16 @@ fn build_runtime_input(
     } else {
         1
     };
+    let cached_prefix_tokens = traffic.cached_prefix_tokens.unwrap_or(0);
     let trace = Trace::synthetic(SyntheticTraceSpec {
-        block_size: engine_block_size,
+        // A one-token trace block preserves prefixes that are not aligned to
+        // the engine's scheduler block size. The driver still hashes them at
+        // `engine_block_size` when it constructs replay requests.
+        block_size: if cached_prefix_tokens == 0 {
+            engine_block_size
+        } else {
+            1
+        },
         num_sessions: sessions,
         turns_per_session: turns,
         input_tokens: LengthSpec {
@@ -1122,6 +1145,7 @@ fn build_runtime_input(
             mean: traffic.osl.context("synthetic traffic requires osl")?,
             stddev: 0.0,
         },
+        cached_prefix_tokens,
         shared_prefix_ratio: traffic.shared_prefix_ratio.unwrap_or(0.0),
         num_prefix_groups: traffic.num_prefix_groups.unwrap_or(0),
         first_turn_arrivals: synthetic_arrivals(&traffic)?,
@@ -2090,6 +2114,9 @@ mod tests {
             transfer_policy: None,
             systems_paths: Vec::new(),
             attention_backend: None,
+            moe_backend: None,
+            enable_eplb: false,
+            wideep_num_slots: None,
             enable_shared_layer: None,
             strict_provenance: false,
             systems_path: None,
