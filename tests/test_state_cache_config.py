@@ -648,13 +648,12 @@ def test_public_state_estimator_accepts_loaded_config_without_loader(gdn_model, 
     from copy import deepcopy
     from types import MappingProxyType
 
-    from aisimulate_core.sdk import estimate_state_cache
-    from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
+    from aisimulate_core.sdk import estimate_state_cache, state_memory
 
     geometry = gdn_model[1]
     before = deepcopy(geometry)
     monkeypatch.setattr(
-        NaiveKVCacheEstimator, "_load_config", lambda *a, **k: pytest.fail("loaded config must not reload")
+        state_memory, "_load_state_config", lambda *a, **k: pytest.fail("loaded config must not reload")
     )
     result = estimate_state_cache(
         model_config=MappingProxyType(geometry), backend="vllm", block_size=64, kv_bytes_per_token=16
@@ -763,12 +762,9 @@ def test_cli_override_and_disabled_skip_public_estimator(sizing, monkeypatch):
     ],
 )
 def test_public_state_estimator_validates_before_loading(overrides, error, monkeypatch):
-    from aisimulate_core.sdk import estimate_state_cache
-    from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
+    from aisimulate_core.sdk import estimate_state_cache, state_memory
 
-    monkeypatch.setattr(
-        NaiveKVCacheEstimator, "_load_config", lambda *a, **k: pytest.fail("invalid inputs must not load")
-    )
+    monkeypatch.setattr(state_memory, "_load_state_config", lambda *a, **k: pytest.fail("invalid inputs must not load"))
     args = {
         "backend": "vllm",
         "block_size": 64,
@@ -796,26 +792,27 @@ def test_public_state_estimator_requires_one_model_source(sources, error):
         estimate_state_cache(**sources, backend="vllm", block_size=64, kv_bytes_per_token=16)
 
 
-def test_public_state_estimator_download_is_opt_in(gdn_model, monkeypatch):
-    from aisimulate_core.sdk import estimate_state_cache
-    from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
+def test_public_state_estimator_download_is_opt_in(gdn_model, tmp_path, monkeypatch):
+    from aisimulate_core.sdk import estimate_state_cache, utils
 
     calls = []
 
-    def load(name, *, allow_hf_config_download):
-        calls.append((name, allow_hf_config_download))
-        return gdn_model[1] if allow_hf_config_download else None
+    def download(name):
+        calls.append(name)
+        return gdn_model[1]
 
-    monkeypatch.setattr(NaiveKVCacheEstimator, "_load_config", load)
+    monkeypatch.setenv("AICONFIGURATOR_MODEL_CONFIGS_PATH", str(tmp_path))
+    monkeypatch.setattr(utils, "_download_hf_config", download)
     with pytest.raises(ValueError, match="cannot load"):
         estimate_state_cache("uncached/model", backend="vllm", block_size=64, kv_bytes_per_token=16)
+    assert calls == []
     assert (
         estimate_state_cache(
             "uncached/model", backend="vllm", block_size=64, kv_bytes_per_token=16, allow_hf_config_download=True
         )["bytes_per_request"]
         == 3072
     )
-    assert calls == [("uncached/model", False), ("uncached/model", True)]
+    assert calls == ["uncached/model"]
 
 
 def test_public_state_estimator_checks_total_u64_overflow(gdn_model):
@@ -825,3 +822,83 @@ def test_public_state_estimator_checks_total_u64_overflow(gdn_model):
         estimate_state_cache(
             model_config=gdn_model[1], backend="vllm", block_size=64, kv_bytes_per_token=((1 << 64) - 1) // 64
         )
+
+
+@pytest.mark.parametrize("allow_download", [False, True])
+def test_state_estimator_uses_cached_model_outside_fpm_default_set(tmp_path, gdn_model, monkeypatch, allow_download):
+    from aisimulate_core.sdk import estimate_state_cache, utils
+    from aisimulate_core.sdk.common import DefaultHFModels
+
+    model = "coverage/new-state-model"
+    assert model not in DefaultHFModels
+    (tmp_path / "coverage--new-state-model_config.json").write_text(json.dumps(gdn_model[1]))
+    monkeypatch.setenv("AICONFIGURATOR_MODEL_CONFIGS_PATH", str(tmp_path))
+    monkeypatch.setattr(utils, "_download_hf_config", lambda *a: pytest.fail("cached configuration must not download"))
+    result = estimate_state_cache(
+        model, backend="vllm", block_size=64, kv_bytes_per_token=16, allow_hf_config_download=allow_download
+    )
+    assert result["bytes_per_request"] == 3072
+
+
+def test_state_estimator_does_not_replace_invalid_cached_config(tmp_path, monkeypatch):
+    from aisimulate_core.sdk import estimate_state_cache, utils
+
+    (tmp_path / "coverage--invalid_config.json").write_text("{invalid json")
+    monkeypatch.setenv("AICONFIGURATOR_MODEL_CONFIGS_PATH", str(tmp_path))
+    monkeypatch.setattr(utils, "_download_hf_config", lambda *a: pytest.fail("invalid cached data must not fall back"))
+    with pytest.raises(ValueError):
+        estimate_state_cache(
+            "coverage/invalid", backend="vllm", block_size=64, kv_bytes_per_token=16, allow_hf_config_download=True
+        )
+
+
+@pytest.mark.parametrize(
+    "model,block_size,kv_bytes_per_token,raw_per_layer,state_bytes",
+    [
+        ("Qwen/Qwen3.5-27B", 832, 32768, 1603584, 81788928),
+        ("Qwen/Qwen3.5-122B-A10B", 2112, 12288, 2134016, 77856768),
+        ("Qwen/Qwen3.5-397B-A17B", 2112, 15360, 2134016, 97320960),
+        ("Qwen/Qwen3.8-2.4T-A95B", 2112, 47104, 4255744, 298450944),
+    ],
+)
+def test_additional_model_gpu_state_goldens(model, block_size, kv_bytes_per_token, raw_per_layer, state_bytes):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    # Frozen H100 TP=2 tensor/page measurements from vLLM a474da28; PR #293.
+    # Qwen3.8 text geometry uses the pinned conditional-generation wrapper.
+    result = estimate_state_cache(
+        model, backend="vllm", tp_size=2, block_size=block_size, kv_bytes_per_token=kv_bytes_per_token
+    )
+    assert result["raw_bytes_per_layer"] == raw_per_layer
+    assert result["bytes_per_request"] == state_bytes
+    assert result["ssm_dtype"] == "float32"
+
+
+@pytest.mark.parametrize(
+    "base,quantized,kv_bytes_per_token",
+    [
+        ("Qwen/Qwen3.5-122B-A10B", "nvidia/Qwen3.5-122B-A10B-NVFP4", 12288),
+        ("Qwen/Qwen3.5-397B-A17B", "nvidia/Qwen3.5-397B-A17B-NVFP4", 15360),
+        ("Qwen/Qwen3.8-2.4T-A95B", "Qwen/Qwen3.8-2.4T-A95B-FP8", 47104),
+    ],
+)
+def test_weight_quantization_does_not_change_state_dtype(base, quantized, kv_bytes_per_token):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    controls = {"backend": "vllm", "tp_size": 2, "block_size": 4096, "kv_bytes_per_token": kv_bytes_per_token}
+    assert estimate_state_cache(base, **controls) == estimate_state_cache(quantized, **controls)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "nvidia/Nemotron-H-56B-Base-8K",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
+        "MiniMaxAI/MiniMax-M3",
+    ],
+)
+def test_unqualified_recurrent_families_do_not_silently_become_zero(model):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    with pytest.raises(ValueError, match="unknown model geometry"):
+        estimate_state_cache(model, backend="vllm", block_size=8192, kv_bytes_per_token=65536)

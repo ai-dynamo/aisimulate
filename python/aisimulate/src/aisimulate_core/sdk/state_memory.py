@@ -122,9 +122,7 @@ def estimate_state_cache(
     else:
         if not isinstance(model_path, str) or not model_path.strip():
             raise ValueError("model_path must be a nonempty string")
-        from .memory import NaiveKVCacheEstimator
-
-        raw = NaiveKVCacheEstimator._load_config(model_path, allow_hf_config_download=allow_hf_config_download)
+        raw = _load_state_config(model_path, allow_hf_config_download=allow_hf_config_download)
         if not isinstance(raw, Mapping):
             raise _unsupported(f"cannot load model config {model_path!r}")
     config = raw.get("text_config", raw)
@@ -267,3 +265,24 @@ def _kda_layer_counts(config: Mapping[str, Any]) -> tuple[int, int]:
     if groups[0] & groups[1] or groups[0] | groups[1] != set(range(1, count + 1)):
         raise _unsupported("KDA and full-attention layer IDs must partition every model layer")
     return len(groups[0]), len(groups[1])
+
+
+def _load_state_config(model_path: str, *, allow_hf_config_download: bool) -> Mapping[str, Any] | None:
+    """Use the shared HF loaders without requiring membership in the FPM model set."""
+    from pathlib import Path
+
+    from .utils import (
+        _download_hf_config,
+        _get_model_config_path,
+        _load_local_config,
+        _load_pre_downloaded_hf_config,
+    )
+
+    if Path(model_path).is_dir():
+        return _load_local_config(model_path)
+    cached_path = _get_model_config_path() / f"{model_path.replace('/', '--')}_config.json"
+    if cached_path.is_file():
+        return _load_pre_downloaded_hf_config(model_path)
+    if allow_hf_config_download:
+        return _download_hf_config(model_path)
+    return None
