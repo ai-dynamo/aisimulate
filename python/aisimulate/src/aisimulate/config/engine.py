@@ -1,4 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # SPDX-License-Identifier: Apache-2.0
 
 """Typed engine input for prediction and recommendation."""
@@ -158,6 +159,9 @@ class StateCacheConfig(StrictModel):
 
 
 StateDtype = Literal["auto", "float16", "bfloat16", "float32"]
+# Accepted overrides adapted from vLLM's MambaDType (Apache-2.0); modified for this schema.
+# https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/vllm/config/cache.py
+MambaCacheDtype = Literal["auto", "float16", "float32"]
 
 
 class StateCachePredictionConfig(StrictModel):
@@ -166,8 +170,8 @@ class StateCachePredictionConfig(StrictModel):
     bytes_per_request: PositiveU64 | None = None
     layout: str = "vllm-gdn-a474da28"
     model_dtype: StateDtype = "auto"
-    mamba_cache_dtype: StateDtype = "auto"
-    mamba_ssm_cache_dtype: StateDtype = "auto"
+    mamba_cache_dtype: MambaCacheDtype = "auto"
+    mamba_ssm_cache_dtype: MambaCacheDtype = "auto"
 
     def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
         if self.bytes_per_request is None:

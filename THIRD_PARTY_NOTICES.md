@@ -990,12 +990,14 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 
 ## vLLM recurrent-state sizing
 
-`src/aisimulate/state_size.py` is adapted and modified from vLLM commit
+`src/aisimulate/state_size.py` and the cache-dtype controls in
+`src/aisimulate/config/engine.py` are adapted and modified from vLLM commit
 `a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
 `vllm/model_executor/layers/mamba/mamba_utils.py`,
-`vllm/model_executor/models/{qwen3_next,qwen3_5}.py`,
+`vllm/model_executor/models/{config,qwen3_next,qwen3_5}.py`,
 `vllm/transformers_utils/configs/{qwen3_next,qwen3_5,qwen3_5_moe}.py`,
-`vllm/platforms/interface.py`, and `vllm/v1/kv_cache_interface.py`.
+`vllm/platforms/interface.py`, `vllm/v1/kv_cache_interface.py`, and
+`vllm/config/cache.py`.
 The modified implementation uses CPU-only arithmetic, restricts supported layouts,
 and adds AISimulate validation and diagnostics.
 
