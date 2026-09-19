@@ -111,7 +111,7 @@ class SearchProfile(StrictModel):
 
 
 class CollectionSpec(StrictModel):
-    """Rank-local runtime bounds; Dynamo generates the measurement grid."""
+    """AISimulate runtime and capture limits for Dynamo's native grid generation."""
 
     max_num_tokens: PositiveStrictInt | None = None
     max_batch_size: PositiveStrictInt | None = None

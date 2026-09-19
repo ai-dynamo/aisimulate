@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 
 `aisimulate onboard` guides onboarding a new model for FPM simulation on your designated hardware platform. It records the model, runtime, target GPU system and interconnect, plans one TP, DEP, or TEP worker, and derives the minimum GPUs required to collect that worker's timings. You review the resource and collection limits, collect whole-forward timings through Dynamo self-benchmark, then validate their query coverage using ordinary trace replay. It also produces ordinary `predict` and `recommend` configurations for the selected worker.
 
-Collection limits and validation traffic are separate inputs. Dynamo self-benchmark generates its sampling grid from CUDA graph sizes and runtime bounds. AgentX traces exercise the resulting FPM library through replay; their variable request lengths do not require a fixed input/output length or latency target during onboarding.
+Collection limits and validation traffic are separate inputs. AISimulate sets runtime limits, prefill capture sizes and some sample caps; Dynamo self-benchmark combines them with the deployed image's sampling defaults and runtime feasibility checks to generate the exact grid. AgentX traces exercise the resulting FPM library through replay; their variable request lengths do not require a fixed input/output length or latency target during onboarding.
 
 Planning works before the model has an AISimulate model class or measured FPM timings. With a supplied FPM profile, planning validates the declared deployment identity and estimates memory admission from your resource bounds. Runtime compatibility and data readiness remain **unchecked**, and accuracy is **not assessed**. This setup does not provision GPUs or run target preflight checks.
 
@@ -69,7 +69,7 @@ Model identity, runtime and topology are not profile-review edit fields. If they
 
 Follow [Plan, preview, and explicitly execute](#plan-preview-and-explicitly-execute) using a new output directory. Inspect `support-plan.json`, the embedded/saved profile, generated prediction/recommendation configs and `commands.json`. Run `onboard collect-fpm` without `--execute` to print the collector command; this does not run the collector's own plan or check the target runtime. Inspect the read-only collector plan when its input environment is available and identify any missing prerequisites.
 
-Explain the minimum collection GPUs, rank-local scheduler/resource envelope and sampling scope. Dynamo self-benchmark owns the point grid; the plan supplies runtime and capture limits, without deriving a second grid from trace requests. One onboarding plan selects one parallel tuple and generates single-worker validation configs. Use separate requests/output directories for additional tuples. Actual collection resources and placement must be checked in the collector environment before execution. The synthetic request count does not bound timing samples or collection duration.
+Explain the minimum collection GPUs, rank-local scheduler/resource envelope and [shared collection policy](#how-the-collection-grid-is-determined). AISimulate configures collection inputs and Dynamo generates the exact points; the plan does not derive a second grid from trace requests. One onboarding plan selects one parallel tuple and generates single-worker validation configs. Use separate requests/output directories for additional tuples. Actual collection resources and placement must be checked in the collector environment before execution. The synthetic request count does not bound timing samples or collection duration.
 
 ### 5. Collect and verify data
 
@@ -140,8 +140,8 @@ These settings define the runtime envelope used for profile sizing, collection a
 | --- | --- |
 | `--context-length` | Maximum input plus output tokens for one request. Fresh config/profile-based setup uses `min(declared context, 256000)`; identifier-only setup uses 256,000 until reviewed. The saved field remains `search.context_length`. |
 | `--max-num-tokens` | Scheduled token budget per attention-DP rank. Use the supplied profile's bound, or an initial policy of 8,192. Saved as `collection.max_num_tokens` when explicitly set. |
-| `--max-batch-size` | Scheduler sequence bound per attention-DP rank. Use the supplied profile's bound, or an initial policy of 256. It is independent of validation concurrency. Saved as `collection.max_batch_size` when explicitly set. |
-| `--max-prefill-cudagraph-size` | Prefill CUDA graph capture limit passed to the collector, initially 2,048. Match the target serving configuration. Saved as `collection.max_prefill_cudagraph_size` when explicitly set. |
+| `--max-batch-size` | Scheduler sequence bound per attention-DP rank. Use the supplied profile's bound, or an initial policy of 256. It is independent of validation concurrency and does not request every prefill batch up to the bound. Saved as `collection.max_batch_size` when explicitly set. |
+| `--max-prefill-cudagraph-size` | Prefill CUDA graph capture limit, initially 2,048. AISimulate uses it to override the formal prefill engine's compilation configuration; match the target serving configuration. Saved as `collection.max_prefill_cudagraph_size` when explicitly set. |
 
 Profile resource bounds must cover the selected scheduler envelope. Conflicting declarations fail rather than silently clipping the request. With config-based setup, editing scheduler bounds recomputes dependent estimates; review those estimates again. An explicit byte override remains your declared bound until you edit it.
 
@@ -332,7 +332,24 @@ For a diagnostic run, add `--execute --smoke`; `--limit N` also requires `--smok
 
 Planning and collection reject concurrent onboarding operations. The persistent `.support.lock` file uses an OS advisory lock; ownership is released when the process exits, including after an abrupt termination. Leave the file in place. Request validation, saved onboarding-plan checks, and collector input resolution exit 2. Failures after collector execution starts, including a frozen checkpoint identity mismatch, exit 1 with a concise message. Interruption exits 130.
 
-Dynamo self-benchmark generates the actual point grid after runtime initialization, using CUDA graph sizes and available runtime bounds. The onboarding command supplies `--fpm-max-model-len`, `--fpm-max-num-batched-tokens` and `--fpm-max-num-seqs` to both prefill and decode workers. Prefill sampling uses the reviewed scheduled-token and sequence limits, plus the capture limit; `--fpm-max-prefill-isl` is a total new-token budget, not a per-request context limit. DEP does not multiply these rank-local settings by GPU count. The runtime chooses the actual sampling coordinates; onboarding does not build a separate trace-derived grid or promise a sample count or collection duration.
+### How the collection grid is determined
+
+AISimulate and Dynamo jointly determine what is collected. For formal collection, their responsibilities are:
+
+| Part of collection policy | Responsibility |
+| --- | --- |
+| Runtime bounds | AISimulate forwards the reviewed per-request context, scheduled-token and sequence bounds to prefill and decode workers. |
+| Prefill capture sizes and sample caps | AISimulate constructs the capture-size list and overrides the prefill engine's compilation configuration. It also derives and passes prefill new-token and KV-read sample caps from the capture sizes and runtime bounds. These caps are inputs to Dynamo, not an exact point list. |
+| Remaining sampling defaults | The collector inherits formal prefill batch-sample and decode-sample caps from the deployed Dynamo image. Inspect that image's defaults; a scheduler sequence bound does not request every prefill batch up to the bound. |
+| Exact point generation | Dynamo self-benchmark combines those inputs with the initialized engine's capture sizes, KV capacity and runtime feasibility checks to generate and admit the actual points. |
+
+The prefill compilation override changes the engine being measured, so its capture configuration must match the serving target. The deployed image's inherited sampling defaults can also change the collected set. Inspect both the generated collector configuration and that image's behavior; runtime bounds alone do not describe the full sampling policy.
+
+The onboarding `support-plan.json` records the reviewed bounds in `fpm.runtime_limits` and summarizes grid generation in `fpm.sampling`. The collector plan's `point_generation.prefill_sampling` expands AISimulate's prefill capture list and sample caps. Its `point_generation` owner remains Dynamo because Dynamo generates the exact runtime points; that ownership does not mean all collection policy comes from Dynamo.
+
+The onboarding command supplies `--fpm-max-model-len`, `--fpm-max-num-batched-tokens` and `--fpm-max-num-seqs` to both prefill and decode workers. `--fpm-max-prefill-isl` is a total new-token budget, not a per-request context limit. DEP does not multiply these rank-local settings by GPU count. Onboarding does not build a separate trace-derived grid or promise a sample count or collection duration.
+
+Native artifact completion and skip checks account for the generated grid. A complete grid does not guarantee that AgentX replay or another direct-FPM caller can resolve every requested query. Validate those query shapes separately, using the published measurements and supported interpolation.
 
 Direct collector callers can set the same shared runtime flags. With a supplied FPM profile, omitted limits use that profile's bounds; without one, an omitted context retains the existing vLLM `-1` auto-fit behavior. Explicit limits must be positive and cannot exceed the supplied profile or contradict the prefill sampling bounds. Inspect the generated command and collector plan before committing GPU time. Successful formal collection publishes the FPM Parquet file and metadata pair into the plan's local systems data directory; diagnostic success alone does not provide that pair. Validate the worker's actual FPM query shapes afterward, including summed queries for DEP.
 

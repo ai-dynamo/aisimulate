@@ -42,8 +42,13 @@ and 256,000 tokens, profile scheduler bounds or 8,192 tokens/256 sequences, and 
 initial policies; they establish neither capacity nor timing coverage. Do not
 require fixed input/output lengths, concurrency, TTFT or TPOT during intake.
 Those flags customize optional synthetic examples only. Maximum sequences does
-not reserve maximum context for every sequence. Dynamo self-benchmark owns the
-grid generated from capture sizes and runtime bounds; do not invent a separate
+not reserve maximum context for every sequence or request every prefill batch.
+Follow the [shared collection policy](docs/fpm-self-service.md#how-the-collection-grid-is-determined):
+AISimulate sets runtime limits, prefill capture sizes and some sample caps;
+Dynamo combines them with the deployed image's sampling defaults and runtime
+feasibility checks to generate the exact grid. Prefill capture overrides change
+the engine configuration and must match the serving target. A complete generated
+grid does not establish AgentX/direct-FPM query coverage; do not invent a separate
 AgentX collection grid.
 
 After verifying the formal data pair, use `aisimulate onboard validate-fpm`

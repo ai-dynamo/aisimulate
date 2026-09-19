@@ -65,7 +65,9 @@ def add_support_parser(subparsers: Any) -> None:
             "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
             "--model, --model-revision, --model-kind, --framework-version, --gpu, and --interconnect. "
             "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
-            "topologies; other routes default to TP1. Dynamo self-benchmark generates the collection grid. "
+            "topologies; other routes default to TP1. AISimulate sets runtime limits, prefill capture sizes and "
+            "some sample caps; Dynamo self-benchmark combines them with image sampling defaults and runtime "
+            "feasibility checks to generate the exact grid. A complete grid does not establish query coverage. "
             "Synthetic workload and SLA options customize optional validation examples only. "
             "Set deployment replicas and GPU budgets in ordinary predict/recommend configs."
         ),
@@ -121,12 +123,16 @@ def add_support_parser(subparsers: Any) -> None:
         "--max-num-tokens", type=int, help="Rank-local scheduled token budget; profile bound or initial policy 8192."
     )
     init.add_argument(
-        "--max-batch-size", type=int, help="Rank-local scheduler sequence bound; profile bound or initial policy 256."
+        "--max-batch-size",
+        type=int,
+        help="Rank-local scheduler sequence bound; profile bound or initial policy 256. "
+        "Does not request every prefill batch.",
     )
     init.add_argument(
         "--max-prefill-cudagraph-size",
         type=int,
-        help="Collector prefill CUDA graph capture limit; default 2048. Match the target runtime.",
+        help="Prefill CUDA graph capture limit; default 2048. "
+        "Overrides the prefill engine configuration; match the serving target.",
     )
     init.add_argument("--ttft-ms", type=float, help="Synthetic validation TTFT target in ms (default: 1000).")
     init.add_argument("--tpot-ms", type=float, help="Synthetic validation TPOT target in ms (default: 100).")
@@ -442,7 +448,13 @@ def _review_config_profile(
         settings = request.collection_settings()
         print(f"  Runtime context limit: {request.search.context_length} tokens per request.")
         print(f"  Collection: {json.dumps(settings, sort_keys=True)}")
-        print("  Dynamo generates the grid; exact points and total KV capacity resolve at runtime.")
+        print("  AISimulate sets runtime limits, prefill capture sizes and prefill new-token/KV sample caps.")
+        print(
+            "  Dynamo combines them with image sampling defaults and runtime feasibility checks to generate the grid."
+        )
+        print("  Prefill capture overrides configure the engine; match the serving target.")
+        print("  The sequence bound does not request every prefill batch; total KV capacity resolves at runtime.")
+        print("  A complete generated grid does not establish AgentX/direct-FPM query coverage.")
         print("  Synthetic validation traffic and SLAs do not determine these collection limits.")
         print("  Resource *_bytes values are bytes per rank; kv_bytes_per_token is bytes per cached token per rank.")
         print("  max_num_tokens/max_batch_size are per-rank scheduler limits. Estimates require runtime verification.")

@@ -37,9 +37,13 @@ queries fail explicitly. See [execution-route selection and interpolation rules]
 for exact-point, curve and two-sided interpolation coverage.
 
 Each plan selects one exact TP, DEP or TEP worker; use separate requests and
-output directories for alternatives. Dynamo self-benchmark owns the collection
-grid, using the reviewed runtime and CUDA graph capture bounds. Validation
-traffic is supplied separately after a formal timing pair is verified. The
+output directories for alternatives. Follow the
+[shared collection policy](../../../../docs/fpm-self-service.md#how-the-collection-grid-is-determined):
+AISimulate sets runtime limits, prefill capture sizes and some sample caps;
+Dynamo combines them with the deployed image's sampling defaults and runtime
+feasibility checks to generate the exact grid. A complete generated grid does
+not establish direct-FPM query coverage. Validation traffic is supplied
+separately after a formal timing pair is verified. The
 current [AgentX coverage check](../../../../docs/fpm-self-service.md#validate-fpm-query-coverage-with-agentx-replay)
 uses cold aggregated replay, one client lane, HBM-only cache and no speculative
 decoding. Missing timing stops replay and retains partial evidence; that evidence
