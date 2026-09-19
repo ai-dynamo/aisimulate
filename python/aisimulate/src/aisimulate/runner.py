@@ -420,6 +420,10 @@ class EngineReplayRunner:
             record_per_request=output_requirements.capture_per_request,
             memory_diagnostics=memory_diagnostics,
         )
+        if output_requirements.capture_performance_diagnostics:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["capture_performance_diagnostics"] = True
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,
@@ -458,6 +462,7 @@ class EngineReplayRunner:
                 output_requirements.include_raw_report
                 or output_requirements.capture_per_request
                 or output_requirements.capture_memory_diagnostics
+                or output_requirements.capture_performance_diagnostics
             ),
         )
         if encoder is not None:

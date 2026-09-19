@@ -599,6 +599,30 @@ def test_mixed_timing_still_enforces_cold_regression_on_default_role():
         ForwardPassEstimatorResolver(space).resolve_candidate(sample)
 
 
+def test_canonical_operation_diagnostics_include_native_sol_and_provenance():
+    model = RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig(
+            model="Qwen/Qwen3-32B",
+            system="h200_sxm",
+            backend="vllm",
+            backend_version="0.24.0",
+            worker_type="aggregated",
+            tp=2,
+            estimation_mode="op_level",
+        )
+    )
+    rows = model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=64)
+    assert rows
+    assert any(row["details"]["sol"] is not None for row in rows)
+    assert all(isinstance(row["details"]["fallbacks"], list) and row["source"] for row in rows)
+    assert model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=128) == []
+    with pytest.raises(ValueError, match="prefix"):
+        model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=129)
+
+    with pytest.raises(ValueError, match="token count"):
+        model.static_phase_diagnostics(batch_size=2**32 - 1, context_length=2, prefill=True)
+
+
 @pytest.mark.parametrize("typed", [True, False])
 def test_explicit_regression_does_not_require_discovered_systems_roots(monkeypatch, tmp_path, typed):
     monkeypatch.setenv("AICONFIGURATOR_SYSTEMS_PATH", str(tmp_path / "missing"))

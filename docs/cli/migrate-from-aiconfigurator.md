@@ -49,7 +49,7 @@ installed above.
 | AIC command | Path to use | Key difference |
 |---|---|---|
 | `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#54-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Normal summaries include serving metrics and [power and coverage](#411-power-and-energy-analysis). Use `predict --detail summary,memory,time` for optional detail sections. [Example](#410-inspect-prediction-details). `predict --detail energy` adds [energy diagnostics](#411-power-and-energy-analysis) on supported engine paths. [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes and [remaining diagnostic gaps](#detailed-diagnostics). |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Normal summaries include serving metrics and [power and coverage](#411-power-and-energy-analysis). Use `predict --detail summary,memory,time` for optional detail sections. [Example](#410-inspect-prediction-details). `predict --detail energy` adds [energy diagnostics](#411-power-and-energy-analysis) on supported engine paths. [Static estimate modes are intentionally not migrated](#531-static-estimates). See [provider-specific diagnostic limits](#detailed-diagnostics). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
 | `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
@@ -825,8 +825,9 @@ aisimulate predict --config prediction.yaml --detail summary,memory,time \
 | --- | --- |
 | `summary` | Existing serving prediction metrics. |
 | `memory` | Initial per-rank capacity estimate and available memory components, with `stage: before_native_capacity_adjustments`. |
-| `time` | Existing serving latency metrics in milliseconds; no phase/operation breakdown or SOL comparison. |
-| `all` | The three sections above plus the [energy diagnostics in section 4.11](#411-power-and-energy-analysis). |
+| `time` | Serving latency statistics plus native accumulated phase/operation latency, SOL comparisons, and latency/SOL ratios. |
+| `source` | Per-operation source tags and executed MoE communication measurement substitutions. |
+| `all` | All five selectors, including [energy diagnostics in section 4.11](#411-power-and-energy-analysis). |
 
 **Captured result for the `prediction.yaml` above** (AISimulate 0.12.0 with this detail
 implementation, 2026-09-15; simulation results, latency/throughput rounded):
@@ -854,15 +855,17 @@ The terminal identifies skipped sections with reasons. `prediction.json` stores 
 exported estimate. Its block count is an initial estimate, not a final runtime allocation.
 Analytical EPD retains available language-worker estimates and identifies the missing encoder
 component breakdown; it does not claim a complete EPD memory report.
-`source` remains unsupported and is rejected. `energy` is supported, and `all` includes it;
-see [section 4.11](#411-power-and-energy-analysis) for energy evidence and availability.
+`time` and `source` operation evidence requires the native op-level engine path. SOL gaps carry
+null values and explicit reasons; source records preserve executed measurement substitutions.
+`--detail-top-n` bounds tables only; JSON keeps complete evidence. See
+[section 4.11](#411-power-and-energy-analysis) for energy availability.
 For recommendation details, run `predict --detail` on a saved recommendation YAML.
 See the [detail output contract](user-guide.md#prediction-details).
 
 **What changed:** AISimulate reports the configured serving workload, rather than reproducing
-AIC's fixed-batch estimate. Its `time` section contains serving latency metrics. Phase and
-per-operation timing, SOL comparisons, and other unsupported diagnostics remain
-[separate gaps](#detailed-diagnostics).
+AIC's fixed-batch estimate. Its `time` section separates request statistics from accumulated
+scheduled forward-pass work per GPU; operation sums are not wall-clock or request latency.
+[Provider availability limits](#detailed-diagnostics) remain explicit.
 
 <a id="power-and-energy-analysis"></a>
 <a id="54-power-and-energy-analysis"></a>
@@ -872,7 +875,7 @@ per-operation timing, SOL comparisons, and other unsupported diagnostics remain
 **Migration status: implemented by the power stack.** Normal engine prediction and
 recommendation summaries always show both power fields; `--detail energy` adds a breakdown.
 Section 4.10 retains the captured output from the initial three-section detail implementation.
-This extension adds `energy` and includes it in `--detail all`; `source` remains unsupported.
+`--detail all` includes both `energy` and the operation provenance in `source`.
 The native engine runner exports phase and operation evidence with op-level timing on supported
 topologies. The external Dynamo Python adapter's diagnostics export is not qualified by this
 stack; missing exports receive an explicit unavailable reason.
@@ -1304,24 +1307,25 @@ aiconfigurator cli estimate \
 <a id="detailed-diagnostics"></a>
 <a id="532-detailed-diagnostics"></a>
 
-#### 5.3.2 Remaining detailed-diagnostic gaps
+#### 5.3.2 Detailed-diagnostic availability limits
 
-The initial `summary`, `memory`, `time`, and `all` selectors are covered in
-[section 4.10](#410-inspect-prediction-details). The power stack adds `energy` and includes it in
-`all`, as shown in [section 4.11](#411-power-and-energy-analysis). Keep AIC `estimate --detail`
-when you need these additional diagnostic capabilities:
+All five selectors (`summary,memory,time,energy,source`) are supported by `predict`; `all`
+requests them together. [Section 4.10](#410-inspect-prediction-details) covers timing and
+provenance; [section 4.11](#411-power-and-energy-analysis) covers energy.
 
-| Remaining gap | AIC selector and evidence |
-| --- | --- |
-| Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
-| Per-operation data provenance and fallback information | `source`. |
+The native op-level engine exports scheduled phase/operation timings, SOL comparisons, source
+tags, and executed MoE communication measurement substitutions. An operation without a SOL
+implementation keeps its actual timing and provenance and reports the SOL reason. These
+comparisons use the same scheduled shapes and do not replace the selected estimator.
 
-AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests
-`summary,memory,time,energy`. AISimulate energy evidence requires a supported engine path;
-the external Dynamo Python adapter's diagnostics export remains unqualified. Available AIC
-sections depend on the estimate mode and data;
-static-mode `--detail energy` can display `<no energy data>` when operation-energy data is
-absent. For specialized fixed-batch diagnostics, use the compatibility
+Whole-model FPM and latency-only providers do not expose per-operation timing/source evidence.
+Analytical EPD/AFD overlays and the external Dynamo Python adapter do not export a qualified
+combined operation report. Such paths retain explicit unavailable reasons; serving timing
+statistics remain available where exported. Source tags describe the engine's provenance
+classification, not full file/row lineage. Fallback records describe executed measurement
+substitutions, not every estimator-construction attempt.
+
+For specialized fixed-batch diagnostics, keep the compatibility
 [static-estimate workflow](#531-static-estimates).
 
 <a id="deployment-artifacts"></a>
