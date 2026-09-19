@@ -109,7 +109,8 @@ class OptimizationGoal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target: OptimizationTarget = OptimizationTarget.THROUGHPUT
-    sla: SLATarget | None = None  # required for goodput / goodput_per_gpu (scalar or pareto objective)
+    # Required for min_gpus and for goodput / goodput_per_gpu (scalar or Pareto objective).
+    sla: SLATarget | None = None
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
     pareto_objectives: list[OptimizationTarget] | None = None
@@ -1152,6 +1153,11 @@ class SmartSearchConfig(BaseModel):
             or workload.load_range is not None
         ):
             raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
+        allowed_load_types = (
+            {None, "constant_rate", "poisson"} if workload.request_rate is not None else {None, "concurrency"}
+        )
+        if workload.load_type not in allowed_load_types:
+            raise ValueError("min_gpus requires a synthetic load_type matching the fixed load field")
         if workload.request_rate is not None:
             if self.goal.min_goodput_rps is None:
                 raise ValueError("min_gpus with request-rate traffic requires min_goodput_rps")

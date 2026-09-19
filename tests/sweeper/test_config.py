@@ -75,6 +75,33 @@ def test_min_gpus_sdk_accepts_goodput_floor_equal_to_offered_request_rate():
     assert config.goal.min_goodput_rps == config.workload.request_rate == 10
 
 
+@pytest.mark.parametrize(
+    ("load", "load_type", "valid"),
+    [
+        ({"concurrency": 2}, None, True),
+        ({"concurrency": 2}, "concurrency", True),
+        ({"concurrency": None, "request_rate": 10}, None, True),
+        ({"concurrency": None, "request_rate": 10}, "constant_rate", True),
+        ({"concurrency": None, "request_rate": 10}, "poisson", True),
+        ({"concurrency": None, "request_rate": 10}, "trace_timestamps", False),
+        ({"concurrency": None, "request_rate": 10}, "concurrency", False),
+        ({"concurrency": 2}, "poisson", False),
+        ({"concurrency": 2}, "unknown", False),
+    ],
+)
+def test_min_gpus_sdk_validates_synthetic_load_type(load, load_type, valid):
+    args = {
+        "search_space": _search_space(),
+        "workload": _workload(**load, load_type=load_type),
+        "goal": {"target": "min_gpus", "sla": {"itl_ms": 30}, "min_goodput_rps": 5},
+    }
+    if valid:
+        assert SmartSearchConfig(**args).workload.load_type == load_type
+    else:
+        with pytest.raises(ValidationError, match="synthetic load_type"):
+            SmartSearchConfig(**args)
+
+
 def test_backend_only_yaml_and_adapter_search_space_load(tmp_path):
     path = tmp_path / "sweep.yaml"
     path.write_text(

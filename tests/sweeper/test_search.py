@@ -187,6 +187,8 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     ("small_report", "reason", "failed"),
     [
         ({"goodput_request_throughput_rps": 4.99}, "load_constraint", False),
+        ({"goodput_request_throughput_rps": 0.0}, "load_constraint", False),
+        ({"goodput_request_throughput_rps": -1.0}, "runner_contract", True),
         ({"mean_e2e_latency_ms": 101.0}, "sla_constraint", False),
         ({"num_e2e_latency_samples": 0.0}, "sla_constraint", False),
         ({"goodput_request_throughput_rps": None}, "runner_contract", True),

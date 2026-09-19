@@ -57,6 +57,41 @@ def test_min_gpus_uses_provisioned_count_not_time_average_or_throughput():
         score_report(REPORT, OptimizationTarget.MIN_GPUS)
 
 
+@pytest.mark.parametrize(("target", "expected_gpus"), [("goodput_per_gpu", 4), ("min_gpus", 2)])
+def test_efficiency_and_minimum_gpu_selection_have_distinct_expected_results(target, expected_gpus):
+    # Synthetic one-second reports, ten output tokens per SLA-qualified request.
+    # Efficiency: 40/1=40, 100/2=50, 400/4=100 tok/s/GPU -> four GPUs.
+    # Sizing at 10 qualified requests/s: one GPU fails; two is the smallest feasible count.
+    goal = OptimizationGoal(
+        target=target,
+        sla=SLATarget(itl_ms=30),
+        strict_sla=True,
+        min_goodput_rps=10 if target == "min_gpus" else None,
+    )
+    candidates = [
+        make_candidate(
+            {"used_gpus": gpus},
+            dict(
+                REPORT,
+                duration_ms=1000,
+                gpu_hours=gpus / 3600,
+                completed_requests=rps,
+                num_ttft_samples=rps,
+                num_tpot_samples=rps,
+                num_e2e_latency_samples=rps,
+                request_throughput_rps=rps,
+                output_throughput_tok_s=10 * rps,
+                goodput_completed_requests=rps,
+                goodput_request_throughput_rps=rps,
+                goodput_output_throughput_tok_s=10 * rps,
+            ),
+            goal.target,
+        )
+        for gpus, rps in [(1, 4), (2, 10), (4, 40)]
+    ]
+    assert analyze_candidates(candidates, goal)[0].used_gpus == expected_gpus
+
+
 def test_min_gpus_filters_full_pool_before_ranking_and_breaks_ties_by_goodput_and_latency():
     goal = OptimizationGoal(target="min_gpus", sla=SLATarget(itl_ms=30), min_goodput_rps=10)
 

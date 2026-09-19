@@ -953,13 +953,14 @@ def _score_prepared(
             )
     load_violations = minimum_goodput_violations(report, goal.min_goodput_rps)
     if load_violations:
-        missing_metric = "goodput_request_throughput_rps" not in report
+        measured_goodput = report.get("goodput_request_throughput_rps")
+        invalid_metric = measured_goodput is None or measured_goodput < 0
         return _EvalResult(
             candidate=None,
             observe_metrics=None,
-            outcome="failed" if missing_metric else "infeasible",
+            outcome="failed" if invalid_metric else "infeasible",
             reason=f"minimum goodput constraint: {'; '.join(load_violations)}",
-            reason_category=ReasonCategory.RUNNER_CONTRACT if missing_metric else ReasonCategory.LOAD_CONSTRAINT,
+            reason_category=ReasonCategory.RUNNER_CONTRACT if invalid_metric else ReasonCategory.LOAD_CONSTRAINT,
             runner_metadata=replay_result.metadata,
             report_metrics=report,
         )

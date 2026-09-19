@@ -161,7 +161,7 @@ def minimum_goodput_violations(report: Mapping[str, float], minimum: float | Non
     if minimum is None:
         return ()
     value = report.get("goodput_request_throughput_rps")
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
         return ("goodput_request_throughput_rps is missing or invalid",)
     if value < minimum:
         return (f"goodput_request_throughput_rps={value:g} < min_goodput_rps={minimum:g}",)
