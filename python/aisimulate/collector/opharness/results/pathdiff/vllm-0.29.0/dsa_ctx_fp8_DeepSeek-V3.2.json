@@ -24,23 +24,11 @@
  "kernel_drift": {
   "dsa_nsa": {
    "collector_only_kernels": [
-    "_C_cache_ops::indexer_k_quant_and_cache",
     "_fused_indexer_q_rope_quant_kernel",
     "vllm::indexer_k_quant_and_cache_kernel"
    ],
    "serving_kernels": [
-    "vllm::cp_gather_indexer_k_quant_cache_kernel",
-    "vllm::topKPerRowPrefill"
-   ]
-  },
-  "fa3": {
-   "collector_only_kernels": [
-    "_vllm_fa3_C::fwd"
-   ],
-   "serving_kernels": [
-    "flash::FlashAttnFwdCombine",
-    "flash::FlashAttnFwdSm90",
-    "flash::prepare_varlen_num_blocks_kernel"
+    "vllm::cp_gather_indexer_k_quant_cache_kernel"
    ]
   }
  },

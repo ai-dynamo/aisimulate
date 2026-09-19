@@ -790,6 +790,19 @@ def _create_kv_cache_and_metadata(
             common_prefix_len=prefix_len,
             common_attn_metadata=common_attn_metadata,
         )
+        if os.environ.get("AIC_DEBUG_IDXMETA"):  # diagnostic dump, no behavior change
+            _pre = getattr(indexer_metadata, "prefill", None)
+            print(f"[idxmeta] type={type(indexer_metadata).__name__} "
+                  f"prefill={type(_pre).__name__ if _pre is not None else None} "
+                  f"decode={getattr(indexer_metadata, 'decode', None) is not None}")
+            if _pre is not None:
+                _ch = getattr(_pre, "chunks", None)
+                print(f"[idxmeta] chunks={None if _ch is None else len(_ch)}")
+                for _c in (_ch or [])[:1]:
+                    for _f in dir(_c):
+                        _v = getattr(_c, _f, None)
+                        if not _f.startswith("_") and isinstance(_v, (int, bool, float)):
+                            print(f"[idxmeta]   chunk.{_f} = {_v}")
         _populate_indexer_kv_cache(
             indexer_kv_cache=indexer_kv_cache,
             common_attn_metadata=common_attn_metadata,
