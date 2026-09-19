@@ -1111,6 +1111,47 @@ def _run_comparison_base(
     return result, output
 
 
+def _full_ci_concurrency_group(event: str, ref: str, run_id: str) -> str:
+    configuration = _workflow("ci.yml")["concurrency"]
+    assert configuration["cancel-in-progress"] == "true"
+    prefix, expression = configuration["group"].split("${{", 1)
+    expression = expression.rsplit("}}", 1)[0]
+    values = {
+        "github.event_name": event,
+        "github.ref": ref,
+        "github.run_id": run_id,
+    }
+    expression = re.sub(r"github\.[\w_]+", lambda match: repr(values[match[0]]), expression)
+    expression = expression.replace("&&", " and ").replace("||", " or ").replace("!startsWith", "not startsWith")
+    return prefix + str(
+        eval(
+            " ".join(expression.splitlines()),
+            {"__builtins__": {}},
+            {"startsWith": str.startswith},
+        )
+    )
+
+
+def test_full_ci_replaces_same_pr_across_trusted_and_manual_runs():
+    group = _full_ci_concurrency_group("push", "refs/heads/pull-request/159", "101")
+    assert group == _full_ci_concurrency_group("push", "refs/heads/pull-request/159", "102")
+    assert group == _full_ci_concurrency_group("workflow_dispatch", "refs/heads/pull-request/159", "103")
+    assert group != _full_ci_concurrency_group("push", "refs/heads/pull-request/160", "105")
+
+
+def test_full_ci_manual_source_branches_replace_only_their_branch():
+    group = _full_ci_concurrency_group("workflow_dispatch", "refs/heads/feature", "101")
+    assert group == _full_ci_concurrency_group("workflow_dispatch", "refs/heads/feature", "102")
+    assert group != _full_ci_concurrency_group("workflow_dispatch", "refs/heads/other-feature", "103")
+    assert group != _full_ci_concurrency_group("push", "refs/heads/pull-request/159", "104")
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/heads/release/0.12.0", "refs/tags/v0.12.0"])
+def test_full_ci_preserves_every_lifecycle_and_tag_run(event, ref):
+    assert _full_ci_concurrency_group(event, ref, "101") != _full_ci_concurrency_group(event, ref, "102")
+
+
 def test_fast_ci_is_standalone_with_an_exact_commit_prerequisite() -> None:
     fast_ci = _workflow("fast-ci.yml")
     assert "workflow_call" not in fast_ci["on"]
