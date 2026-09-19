@@ -45,6 +45,7 @@ from typing import Any
 
 import aisimulate_core
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
+from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
@@ -440,6 +441,13 @@ def compile_engine(
     decomposed), ``context_ops`` and ``generation_ops`` into OpSpecs and returns
     the bytes produced by the Rust ``engine_spec_bincode_from_json`` pyfunction.
     """
+    if not isinstance(decoder_replay, bool):
+        raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
+    if decoder_replay and (model_path != DEEPSEEK_V41_MODEL_PATH or backend != "sglang"):
+        raise InvalidEngineConfigurationError(
+            f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
+        )
+
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
     from aisimulate_core.sdk.speculation import SpeculationConfig
