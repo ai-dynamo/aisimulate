@@ -990,7 +990,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 
 ## vLLM recurrent-state sizing
 
-`src/aisimulate/state_size.py` and the cache-dtype controls in
+`src/aisimulate_core/sdk/state_memory.py` and the cache-dtype controls in
 `src/aisimulate/config/engine.py` are adapted and modified from vLLM commit
 `a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
 `vllm/model_executor/layers/mamba/mamba_utils.py`,

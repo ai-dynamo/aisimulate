@@ -735,3 +735,186 @@ def test_kda_model_dtype_override_requires_explicit_cache_dtype(kda_model):
     ).backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
     assert info["conv_dtype"] == "float16"
     assert info["raw_bytes_per_layer"] == 1600
+
+
+def test_public_state_estimator_accepts_loaded_config_without_loader(gdn_model, monkeypatch):
+    from copy import deepcopy
+    from types import MappingProxyType
+
+    from aisimulate_core.sdk import estimate_state_cache
+    from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
+
+    geometry = gdn_model[1]
+    before = deepcopy(geometry)
+    monkeypatch.setattr(
+        NaiveKVCacheEstimator, "_load_config", lambda *a, **k: pytest.fail("loaded config must not reload")
+    )
+    result = estimate_state_cache(
+        model_config=MappingProxyType(geometry), backend="vllm", block_size=64, kv_bytes_per_token=16
+    )
+    assert geometry == before
+    assert result["bytes_per_request"] == 3072
+    assert result["raw_bytes_per_request"] == 2688
+    assert result["padding_bytes_per_request"] == 384
+    assert result["backend"] == "vllm"
+    assert result["backend_revision"] == result["vllm_revision"]
+    assert "state_blocks" not in result and "allocated_bytes_per_request" not in result
+
+
+@pytest.mark.parametrize("fixture_name", ["gdn_model", "kda_model"])
+def test_public_state_estimator_path_and_config_agree(request, fixture_name):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    path, geometry = request.getfixturevalue(fixture_name)
+    controls = {"backend": "vllm", "block_size": 64, "kv_bytes_per_token": 48}
+    assert estimate_state_cache(str(path), **controls) == estimate_state_cache(model_config=geometry, **controls)
+
+
+def test_public_state_estimator_has_no_pool_capacity_dependency(forbid_estimators, monkeypatch):
+    from aisimulate_core.sdk import estimate_state_cache, memory
+
+    monkeypatch.setattr(
+        memory, "estimate_kv_cache", lambda **k: pytest.fail("state size must not estimate pool capacity")
+    )
+    result = estimate_state_cache(
+        "moonshotai/Kimi-K3", backend="vllm", tp_size=8, block_size=768, kv_bytes_per_token=27648
+    )
+    assert result["bytes_per_request"] == 61046784
+    assert result["raw_bytes_per_request"] == 56171520
+    assert result["padding_bytes_per_request"] == 4875264
+
+
+def test_cli_passes_complete_state_controls_to_public_estimator(gdn_model, monkeypatch):
+    from aisimulate import state_size
+    from aisimulate_core.sdk import estimate_state_cache
+
+    calls = []
+
+    def record(model_path, **kwargs):
+        calls.append((model_path, kwargs))
+        return estimate_state_cache(model_path, **kwargs)
+
+    monkeypatch.setattr(state_size, "estimate_state_cache", record)
+    payload = _auto_public(
+        gdn_model[0],
+        layout="vllm-gdn-a474da28",
+        model_dtype="bfloat16",
+        mamba_cache_dtype="float16",
+        mamba_ssm_cache_dtype="float32",
+    )
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {"tensor": 2}
+    worker["kv_cache"]["bytes_per_token"] = 32
+    payload["engine"]["speculation"] = {"kind": "ngram", "num_speculative_tokens": 2, "acceptance_rates": [0.5, 0.5]}
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert calls == [
+        (
+            str(gdn_model[0]),
+            {
+                "backend": "vllm",
+                "tp_size": 2,
+                "pp_size": 1,
+                "block_size": 64,
+                "kv_bytes_per_token": 32,
+                "model_dtype": "bfloat16",
+                "mamba_cache_dtype": "float16",
+                "mamba_ssm_cache_dtype": "float32",
+                "num_speculative_tokens": 2,
+                "layout": "vllm-gdn-a474da28",
+                "allow_hf_config_download": True,
+            },
+        )
+    ]
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 6144}
+
+
+@pytest.mark.parametrize("sizing", [None, {"bytes_per_request": 1500}])
+def test_cli_override_and_disabled_skip_public_estimator(sizing, monkeypatch):
+    from aisimulate import state_size
+
+    monkeypatch.setattr(state_size, "estimate_state_cache", lambda *a, **k: pytest.fail("inference is not requested"))
+    prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(state_cache=sizing)))
+
+
+@pytest.mark.parametrize(
+    "overrides,error",
+    [
+        ({"backend": "sglang"}, "backend"),
+        ({"tp_size": True}, "tp_size"),
+        ({"tp_size": 0}, "tp_size"),
+        ({"pp_size": 2}, "PP=1"),
+        ({"block_size": 1}, "block_size"),
+        ({"kv_bytes_per_token": "16"}, "kv_bytes_per_token"),
+        ({"kv_bytes_per_token": 1 << 63}, "overflows"),
+        ({"num_speculative_tokens": -1}, "num_speculative_tokens"),
+        ({"num_speculative_tokens": True}, "num_speculative_tokens"),
+        ({"model_dtype": "fp8"}, "model_dtype"),
+        ({"mamba_cache_dtype": "bfloat16"}, "mamba_cache_dtype"),
+        ({"mamba_ssm_cache_dtype": "bfloat16"}, "mamba_ssm_cache_dtype"),
+        ({"layout": []}, "layout"),
+        ({"allow_hf_config_download": "false"}, "allow_hf_config_download"),
+    ],
+)
+def test_public_state_estimator_validates_before_loading(overrides, error, monkeypatch):
+    from aisimulate_core.sdk import estimate_state_cache
+    from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
+
+    monkeypatch.setattr(
+        NaiveKVCacheEstimator, "_load_config", lambda *a, **k: pytest.fail("invalid inputs must not load")
+    )
+    args = {
+        "backend": "vllm",
+        "block_size": 64,
+        "kv_bytes_per_token": 16,
+        "allow_hf_config_download": True,
+        **overrides,
+    }
+    with pytest.raises(ValueError, match=error):
+        estimate_state_cache("must-not-load", **args)
+
+
+@pytest.mark.parametrize(
+    "sources,error",
+    [
+        ({}, "exactly one"),
+        ({"model_path": "model", "model_config": {}}, "exactly one"),
+        ({"model_config": []}, "mapping"),
+        ({"model_path": ""}, "nonempty"),
+    ],
+)
+def test_public_state_estimator_requires_one_model_source(sources, error):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    with pytest.raises(ValueError, match=error):
+        estimate_state_cache(**sources, backend="vllm", block_size=64, kv_bytes_per_token=16)
+
+
+def test_public_state_estimator_download_is_opt_in(gdn_model, monkeypatch):
+    from aisimulate_core.sdk import estimate_state_cache
+    from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
+
+    calls = []
+
+    def load(name, *, allow_hf_config_download):
+        calls.append((name, allow_hf_config_download))
+        return gdn_model[1] if allow_hf_config_download else None
+
+    monkeypatch.setattr(NaiveKVCacheEstimator, "_load_config", load)
+    with pytest.raises(ValueError, match="cannot load"):
+        estimate_state_cache("uncached/model", backend="vllm", block_size=64, kv_bytes_per_token=16)
+    assert (
+        estimate_state_cache(
+            "uncached/model", backend="vllm", block_size=64, kv_bytes_per_token=16, allow_hf_config_download=True
+        )["bytes_per_request"]
+        == 3072
+    )
+    assert calls == [("uncached/model", False), ("uncached/model", True)]
+
+
+def test_public_state_estimator_checks_total_u64_overflow(gdn_model):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    with pytest.raises(ValueError, match="bytes_per_request"):
+        estimate_state_cache(
+            model_config=gdn_model[1], backend="vllm", block_size=64, kv_bytes_per_token=((1 << 64) - 1) // 64
+        )
