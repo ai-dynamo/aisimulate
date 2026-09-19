@@ -309,6 +309,17 @@ class RustForwardPassPerfModel:
         """
         self._inner.tune_with_fpms(_json_dumps(_normalize_tuning_iterations(iterations)))
 
+    def static_phase_diagnostics(
+        self, *, batch_size: int, context_length: int, prefill: bool, prefix: int = 0
+    ) -> list[dict[str, Any]]:
+        """Native op-level evidence for one static phase, before online correction.
+
+        Decode evaluates one step at ``context_length + 1``. SOL is an analytic
+        comparison and does not change timing. Unsupported SOL families carry
+        a reason; whole-model estimators reject operation decomposition.
+        """
+        return json.loads(self._inner.static_phase_diagnostics(batch_size, context_length, prefix, prefill))
+
     def diagnostics(self) -> dict[str, Any]:
         """API: ``model.diagnostics() -> dict[str, Any]``.
 

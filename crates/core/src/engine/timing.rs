@@ -69,6 +69,7 @@ pub struct TimingOperationEvidence {
     pub latency_ms: f64,
     pub covered_latency_ms: f64,
     pub source: TimingEvidenceSource,
+    pub details: Option<crate::perfmodel::engine::diagnostics::OperationDetails>,
 }
 
 impl TimingOperationEvidence {
@@ -88,13 +89,14 @@ impl TimingOperationEvidence {
             latency_ms,
             covered_latency_ms,
             source,
+            details: None,
         }
         .canonicalized()
     }
 
     fn canonicalized(mut self) -> Result<Self> {
         ensure!(
-            !self.name.is_empty(),
+            !self.name.trim().is_empty(),
             "timing evidence operation name cannot be empty"
         );
         ensure!(
@@ -119,6 +121,44 @@ impl TimingOperationEvidence {
             self.covered_latency_ms,
             self.latency_ms
         );
+        if let Some(details) = &self.details {
+            ensure!(
+                details.sol.is_some() != details.sol_unavailable_reason.is_some(),
+                "SOL evidence requires exactly one of a value or an unavailable reason"
+            );
+            ensure!(
+                details
+                    .sol_unavailable_reason
+                    .as_ref()
+                    .is_none_or(|reason| !reason.trim().is_empty()),
+                "SOL unavailable reason cannot be empty"
+            );
+            if let Some(sol) = &details.sol {
+                ensure!(
+                    [sol.latency_ms, sol.math_ms, sol.memory_ms]
+                        .iter()
+                        .all(|v| v.is_finite() && *v >= 0.0),
+                    "invalid SOL evidence"
+                );
+            }
+            for fallback in &details.fallbacks {
+                ensure!(
+                    matches!(fallback.inference_phase.as_str(), "context" | "generation"),
+                    "invalid fallback inference phase"
+                );
+                ensure!(
+                    !fallback.comm_backend.trim().is_empty(),
+                    "fallback comm backend cannot be empty"
+                );
+                ensure!(
+                    fallback.requested_ep_size > 0
+                        && fallback.requested_node_num > 0
+                        && fallback.measurement_ep_size > 0
+                        && fallback.measurement_node_num > 0,
+                    "fallback topology sizes must be positive"
+                );
+            }
+        }
         self.energy_wms = self.energy_wms.filter(|energy| *energy > 0.0);
         if self.energy_wms.is_none() {
             self.covered_latency_ms = 0.0;
@@ -137,6 +177,39 @@ impl TimingOperationEvidence {
             (None, None) => None,
         };
         combined.source = combined.source.merge(other.source);
+        combined.details = match (combined.details, other.details) {
+            (Some(mut left), Some(right)) => {
+                left.sol = match (left.sol, right.sol) {
+                    (Some(mut a), Some(b)) => {
+                        a.latency_ms += b.latency_ms;
+                        a.math_ms += b.math_ms;
+                        a.memory_ms += b.memory_ms;
+                        Some(a)
+                    }
+                    _ => None,
+                };
+                if left.sol.is_none() {
+                    left.sol_unavailable_reason = left
+                        .sol_unavailable_reason
+                        .or(right.sol_unavailable_reason)
+                        .or_else(|| Some("some accumulated operations lack SOL evidence".into()));
+                }
+                for fallback in right.fallbacks {
+                    if !left.fallbacks.contains(&fallback) {
+                        left.fallbacks.push(fallback);
+                    }
+                }
+                Some(left)
+            }
+            (Some(mut details), None) | (None, Some(mut details)) => {
+                details.sol = None;
+                details.sol_unavailable_reason.get_or_insert_with(|| {
+                    "some accumulated operations lack diagnostic evidence".into()
+                });
+                Some(details)
+            }
+            (None, None) => None,
+        };
         *self = combined.canonicalized()?;
         Ok(())
     }
@@ -607,6 +680,145 @@ mod tests {
     }
 
     #[test]
+    fn sol_evidence_requires_one_explicit_availability_state() {
+        use crate::perfmodel::engine::diagnostics::{OperationDetails, SolDiagnostics};
+        for (has_sol, reason, valid) in [
+            (false, None, false),
+            (false, Some(""), false),
+            (false, Some("  "), false),
+            (false, Some("unsupported operation"), true),
+            (true, Some("unsupported operation"), false),
+            (true, None, true),
+        ] {
+            let mut op =
+                TimingOperationEvidence::new("test", 2.0, None, TimingEvidenceSource::Estimated)
+                    .unwrap();
+            op.details = Some(OperationDetails {
+                sol: has_sol.then_some(SolDiagnostics {
+                    latency_ms: 1.0,
+                    math_ms: 0.0,
+                    memory_ms: 1.0,
+                }),
+                sol_unavailable_reason: reason.map(str::to_string),
+                fallbacks: Vec::new(),
+            });
+            assert_eq!(
+                TimingPhaseEvidence::try_from_operations(vec![op]).is_ok(),
+                valid
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_fallback_records_are_validated_at_the_public_boundary() {
+        use crate::perfmodel::engine::diagnostics::{ExecutedFallback, OperationDetails};
+        for name in ["", " \t\n"] {
+            assert!(
+                TimingOperationEvidence::new(name, 2.0, None, TimingEvidenceSource::Estimated)
+                    .is_err()
+            );
+        }
+        let valid = ExecutedFallback {
+            inference_phase: "context".into(),
+            comm_backend: "deepep_ll".into(),
+            requested_ep_size: 16,
+            requested_node_num: 2,
+            measurement_ep_size: 8,
+            measurement_node_num: 1,
+        };
+        let mut records = vec![(valid.clone(), true)];
+        for (key, value) in [
+            ("inference_phase", serde_json::json!("generation")),
+            ("inference_phase", serde_json::json!("invalid")),
+            ("comm_backend", serde_json::json!(" \t\n")),
+            ("requested_ep_size", serde_json::json!(0)),
+            ("requested_node_num", serde_json::json!(0)),
+            ("measurement_ep_size", serde_json::json!(0)),
+            ("measurement_node_num", serde_json::json!(0)),
+        ] {
+            let mut record = serde_json::to_value(&valid).unwrap();
+            record[key] = value.clone();
+            records.push((
+                serde_json::from_value(record).unwrap(),
+                value == serde_json::json!("generation"),
+            ));
+        }
+        for (fallback, expected_valid) in records {
+            let mut operation = TimingOperationEvidence::new(
+                "dispatch",
+                2.0,
+                None,
+                TimingEvidenceSource::Estimated,
+            )
+            .unwrap();
+            operation.details = Some(OperationDetails {
+                sol: None,
+                sol_unavailable_reason: Some("unsupported operation".into()),
+                fallbacks: vec![valid.clone(), fallback],
+            });
+            assert_eq!(
+                TimingPhaseEvidence::try_from_operations(vec![operation]).is_ok(),
+                expected_valid
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_diagnostics_preserve_known_fallbacks_in_both_orders() {
+        use crate::perfmodel::engine::diagnostics::{
+            ExecutedFallback, OperationDetails, SolDiagnostics,
+        };
+        let plain =
+            TimingOperationEvidence::new("dispatch", 2.0, None, TimingEvidenceSource::Estimated)
+                .unwrap();
+        let mut detailed = plain.clone();
+        detailed.details = Some(OperationDetails {
+            sol: Some(SolDiagnostics {
+                latency_ms: 1.0,
+                math_ms: 0.0,
+                memory_ms: 1.0,
+            }),
+            sol_unavailable_reason: None,
+            fallbacks: vec![ExecutedFallback {
+                inference_phase: "generation".into(),
+                comm_backend: "deepep_ll".into(),
+                requested_ep_size: 16,
+                requested_node_num: 2,
+                measurement_ep_size: 8,
+                measurement_node_num: 1,
+            }],
+        });
+        for prior_reason in [None, Some("unsupported shape")] {
+            let mut detailed = detailed.clone();
+            if let Some(reason) = prior_reason {
+                let details = detailed.details.as_mut().unwrap();
+                details.sol = None;
+                details.sol_unavailable_reason = Some(reason.into());
+            }
+            for ops in [
+                vec![plain.clone(), detailed.clone()],
+                vec![detailed.clone(), plain.clone()],
+            ] {
+                let phase = TimingPhaseEvidence::try_from_operations(ops).unwrap();
+                assert_eq!(phase.latency_ms, 4.0);
+                let details = phase.operations[0].details.as_ref().unwrap();
+                assert_eq!(
+                    details.fallbacks,
+                    detailed.details.as_ref().unwrap().fallbacks
+                );
+                assert!(details.sol.is_none());
+                assert_eq!(
+                    details.sol_unavailable_reason.as_deref(),
+                    Some(
+                        prior_reason
+                            .unwrap_or("some accumulated operations lack diagnostic evidence")
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
     fn zero_energy_is_canonicalized_to_missing() {
         let operation = TimingOperationEvidence::new(
             "attention",
@@ -659,6 +871,7 @@ mod tests {
             latency_ms: 10.0,
             covered_latency_ms: 10.0,
             source: TimingEvidenceSource::Empirical,
+            details: None,
         };
 
         let raw_phase = TimingPhaseEvidence {

@@ -621,6 +621,35 @@ impl ForwardPassPerfModel {
         &self.options
     }
 
+    /// Native operation evidence for one static prefill or decode step. Values
+    /// precede learned online correction; SOL is a comparison only. Whole-model
+    /// estimators cannot provide an operation decomposition and fail explicitly.
+    pub fn static_phase_diagnostics(
+        &self,
+        batch_size: u32,
+        context_length: u32,
+        prefix: u32,
+        prefill: bool,
+    ) -> Result<Vec<crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError>
+    {
+        if self
+            .provenance
+            .as_ref()
+            .is_some_and(|p| p.selected_estimation_mode != EstimationMode::OpLevel)
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "operation diagnostics require op_level estimation".into(),
+            ));
+        }
+        self.native_engine()
+            .ok_or_else(|| {
+                AicError::InvalidEngineConfig(
+                    "operation diagnostics require a native op-level estimator".into(),
+                )
+            })?
+            .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+    }
+
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
         match &self.mode {
             ForwardPassPerfMode::Native { engine, .. } => Some(Arc::clone(engine)),
