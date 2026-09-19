@@ -15,8 +15,17 @@ pytestmark = [
 ]
 
 
+@pytest.mark.parametrize(
+    "version_fields",
+    [
+        {"backend_version": "test-version"},
+        {"aic_backend_version": "test-version"},
+        {"aic_backend_version": None, "backend_version": "test-version"},
+    ],
+)
 def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
     monkeypatch,
+    version_fields,
 ) -> None:
     calls = []
 
@@ -29,6 +38,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
         {
             "engine_type": "vllm",
             "aic_backend": "vllm",
+            **version_fields,
             "aic_system": "h200_sxm",
             "aic_model_path": "test-model",
             "aic_attention_dp_size": 2,
@@ -44,6 +54,7 @@ def test_materializer_sets_rank_local_capacity_without_forwarding_nextn(
     assert lowered["num_gpu_blocks"] == 46000
     assert lowered["dp_size"] == 2
     assert calls[0]["attention_dp_size"] == 2
+    assert calls[0]["backend_version"] == "test-version"
     assert calls[0]["pp_size"] == 3
     assert calls[0]["systems_path"] == "/tmp/custom-systems.yaml"
     assert calls[0]["max_num_sequences"] == 37
@@ -60,9 +71,16 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
         calls.append((args, kwargs))
         return 123
 
-    from aisimulate_core.sdk import memory
+    from aisimulate_core.sdk import memory, perf_database
 
     monkeypatch.setattr(memory, "estimate_num_gpu_blocks", estimate)
+    version_calls = []
+
+    def latest(system, backend, *, systems_paths):
+        version_calls.append((system, backend, systems_paths))
+        return "test-current"
+
+    monkeypatch.setattr(perf_database, "get_latest_database_version", latest)
     blocks = aic.estimate_num_gpu_blocks(
         backend_name="vllm",
         system="h200_sxm",
@@ -81,7 +99,8 @@ def test_capacity_wrapper_owns_backend_defaults_and_quant_normalization(
     assert blocks == 123
     args, kwargs = calls[0]
     assert args == ("test-model", "h200_sxm", "vllm")
-    assert kwargs["backend_version"] == "0.19.0"
+    assert kwargs["backend_version"] == "test-current"
+    assert version_calls == [("h200_sxm", "vllm", "/tmp/custom-systems.yaml")]
     assert kwargs["memory_fraction_kind"] == "of_total"
     assert kwargs["memory_fraction_value"] == 0.9
     assert kwargs["pp_size"] == 3
@@ -104,6 +123,11 @@ def test_explicit_capacity_is_preserved_without_estimation(monkeypatch) -> None:
         "aic_backend": "vllm",
         "aic_model_path": "test-model",
         "num_gpu_blocks": 17,
+        "timing_model": {
+            "type": "external",
+            "provider": "aic",
+            "config": {"systems_paths": ["/path/that/does/not/exist"]},
+        },
     }
     assert aic.materialize_aic_num_gpu_blocks(raw) == raw
 
@@ -137,3 +161,96 @@ def test_materializer_preserves_explicit_zero_values(monkeypatch) -> None:
     assert calls[0]["gpu_memory_utilization"] == 0.0
     assert calls[0]["mem_fraction_static"] == 0.0
     assert calls[0]["free_gpu_memory_fraction"] == 0.0
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+@pytest.mark.parametrize("timing", ["default", "fixed", "polynomial"])
+def test_prediction_omitted_version_uses_current_database_for_capacity(monkeypatch, backend, timing):
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config import CorePredictionConfig
+    from aisimulate_core.sdk import perf_database
+
+    expected = perf_database.get_version_slots("h200_sxm", backend)["current"]
+    get_database = perf_database.get_database
+    versions = []
+
+    def recorded_database(*args, **kwargs):
+        database = get_database(*args, **kwargs)
+        versions.append(database.version)
+        return database
+
+    monkeypatch.setattr(perf_database, "get_database", recorded_database)
+    timing_config = {"type": timing}
+    if timing == "fixed":
+        timing_config.update(prefill_ms=1, decode_ms=1)
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "model": "Qwen/Qwen3-32B-FP8",
+                "hardware": "h200_sxm",
+                "backend": backend,
+                "context_length": 4096,
+                "workers": {"aggregated": {"parallelism": {"tensor": 2}, "timing": timing_config}},
+            }
+        }
+    )
+    deployment = prediction_to_replay_spec(config).backend_deployment
+    args = aic.materialize_aic_num_gpu_blocks(deployment.agg_engine_args)
+    assert args["num_gpu_blocks"] > 0
+    assert versions and set(versions) == {expected}
+    assert config.engine.backend_version is None
+    if timing == "default":
+        assert args["timing_model"]["config"]["backend_version"] == expected
+    else:
+        assert args["timing_model"]["type"] == timing
+
+
+@pytest.mark.parametrize("version", ["current", "next", "0.24.0", "0.19.0"])
+def test_capacity_preserves_explicit_backend_version(monkeypatch, version):
+    from aisimulate_core.sdk import memory, perf_database
+
+    monkeypatch.setattr(
+        perf_database,
+        "get_latest_database_version",
+        lambda *_args, **_kwargs: pytest.fail("explicit versions must not be replaced"),
+    )
+    versions = []
+
+    def estimate(*args, **kwargs):
+        versions.append(kwargs["backend_version"])
+        return 128
+
+    monkeypatch.setattr(memory, "estimate_num_gpu_blocks", estimate)
+    assert (
+        aic.estimate_num_gpu_blocks(
+            backend_name="vllm",
+            backend_version=version,
+            system="h200_sxm",
+            model_path="test-model",
+            tp_size=1,
+            block_size=64,
+            max_num_batched_tokens=4096,
+        )
+        == 128
+    )
+    assert versions == [version]
+
+
+def test_capacity_without_a_database_fails_before_estimation(monkeypatch):
+    from aisimulate_core.sdk import memory, perf_database
+
+    monkeypatch.setattr(perf_database, "get_latest_database_version", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        memory,
+        "estimate_num_gpu_blocks",
+        lambda *_args, **_kwargs: pytest.fail("missing versions must fail before estimation"),
+    )
+    with pytest.raises(ValueError, match="no perf database.*unsupported-test-gpu.*vllm"):
+        aic.estimate_num_gpu_blocks(
+            backend_name="vllm",
+            system="unsupported-test-gpu",
+            model_path="test-model",
+            tp_size=1,
+            block_size=64,
+            max_num_batched_tokens=4096,
+        )
