@@ -95,6 +95,7 @@ def test_stable_function_signatures() -> None:
         "gemm_quant_mode: 'str | None' = None, moe_quant_mode: 'str | None' = None, "
         "kvcache_quant_mode: 'str | None' = None, fmha_quant_mode: 'str | None' = None, "
         "comm_quant_mode: 'str | None' = None, attention_backend: 'str | None' = None, "
+        "moe_backend: 'str | None' = None, enable_eplb: 'bool' = False, wideep_num_slots: 'int | None' = None, "
         "nextn: 'int' = 0, "
         "speculation: 'dict | None' = None, "
         "kv_block_size: 'int | None' = None, "

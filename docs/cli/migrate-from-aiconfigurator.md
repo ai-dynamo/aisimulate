@@ -407,9 +407,11 @@ prefill savings.
 
 To model reuse, enable `engine.workers.<role>.kv_cache.prefix_caching` on a supported backend and
 supply shared prefixes through a [trace](user-guide.md#trace-source) or
-[synthetic sessions](user-guide.md#synthetic-session-source). Enabling caching alone does not
-create shared input. Session `shared_prefix_ratio` and `prefix_groups` describe workload sharing;
-they do not guarantee a cache-hit count or ratio. This KV prefix reuse is separate from ngram
+[synthetic sessions](user-guide.md#synthetic-session-source). For independent synthetic requests,
+set `traffic.source.cached_prefix_tokens` to share an exact number of input tokens, as shown in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). This also preserves a cold first
+request. Enabling caching alone does not create shared input. Session `shared_prefix_ratio` and
+`prefix_groups` describe workload sharing; they do not guarantee a cache-hit count or ratio. This KV prefix reuse is separate from ngram
 prompt-lookup speculative decoding.
 
 Keep the bundled AIC compatibility CLI for controlled cached-prefix what-if estimates or
@@ -537,6 +539,78 @@ policy, estimator mode, and full estimator configuration for a subsequent predic
 current native correction stores and the latest role-bound regression routing remain unchanged.
 The unified CLI does not expose AIC's per-operation source breakdown shown above; keep the
 compatibility CLI or SDK for that diagnostic.
+
+<a id="preserve-pinned-engine-and-request-controls"></a>
+
+#### 4.6.3 Preserve pinned engine and request controls
+
+The unified `predict` and `recommend` configurations accept the following flat
+`engine` controls. They use the same canonical estimator interface as estimator
+selection and fallback policy.
+
+| AIC control | Unified configuration |
+| --- | --- |
+| `nextn`, `nextn_accepted` | `engine.nextn`, `engine.nextn_accepted` (both required for MTP) |
+| Chunked prefill | `engine.enable_chunked_prefill` (omit for backend default) |
+| EPLB and redundant expert slots | `engine.enable_eplb`, `engine.wideep_num_slots` |
+| MoE and attention kernel backends | `engine.moe_backend`, `engine.attention_backend` |
+| Quantization overrides | `engine.gemm_quant_mode`, `engine.moe_quant_mode`, `engine.kvcache_quant_mode`, `engine.fmha_quant_mode`, `engine.comm_quant_mode` |
+| Exact synthetic shared prefix | `traffic.source.cached_prefix_tokens` |
+| Maximum sequence length | Existing `engine.context_length` |
+| GPU memory fraction | Existing `engine.workers.<role>.kv_cache.capacity.memory_fraction` |
+
+`enable_wideep` is obsolete: topology now determines the MoE execution regime.
+The new model controls require default timing on every language role. AFD and
+analytical encoder configurations reject them. Backend/model compatibility is
+validated by the canonical constructor before simulation. Use `--stack engine`
+for these controls and exact synthetic shared prefixes. Older Dynamo adapters
+do not support them and fail capability validation before replay. Explicit MTP
+expected acceptance also requires an opt-in runner capability; legacy acceptance-rate
+payloads retain their existing compatibility. AFD and
+AFD+PD reject positive `cached_prefix_tokens`.
+
+This recommendation example preserves a token-exact shared prefix and explicit
+KV quantization while using the existing capacity field:
+
+```yaml
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  estimation_mode: op_level
+  fallback_policy: deny
+  kvcache_quant_mode: fp8
+  enable_chunked_prefill: true
+  workers:
+    aggregated:
+      kv_cache:
+        capacity:
+          memory_fraction: 0.85
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+    cached_prefix_tokens: 256
+  load:
+    type: concurrency
+    concurrency: 8
+  stop:
+    requests: 32
+optimization:
+  constraints:
+    max_candidate_gpus: 8
+```
+
+For MTP-capable models, specify both `engine.nextn: 2` and
+`engine.nextn_accepted: 1.25`. The accepted count is a workload assumption:
+replay uses one guaranteed accepted draft token and a 25% chance of a second.
+Saved candidate YAML retains these values and all engine model controls.
+A shared prefix does not mean a prewarmed cache; the first request remains cold.
+Only complete cache blocks can be reused, so a shared prefix shorter than the
+engine cache block size can produce zero hits.
 
 <a id="predict-and-search-analytical-epd"></a>
 
@@ -1304,13 +1378,17 @@ alone does not establish support for an entire CLI workflow.
 
 <a id="estimator-controls-and-speculative-decoding"></a>
 
-### 5.6 Estimator controls and speculative decoding
+<a id="56-estimator-controls-and-speculative-decoding"></a>
+
+### 5.6 Remaining estimator and speculative-decoding gaps
 
 For supported estimator selection, fallback, database/transfer policies, system roots, and
 regression/correction tuning, see [section 4.6](#46-select-and-configure-performance-estimators).
-The controls below continue to use AIC or the estimator SDK: explicit quantization/kernel
-selectors, exact cached-prefix assumptions, and non-ngram speculative decoding. Per-operation source
-diagnostics also remain on the compatibility CLI or SDK.
+Unified prediction and recommendation also support pinned quantization/kernel controls and
+MTP with explicit accepted-token assumptions; see [section 4.6.3](#preserve-pinned-engine-and-request-controls).
+Ngram prediction and recommendation are covered in [section 4.12](#412-ngram-prompt-lookup-speculative-decoding).
+Fixed-batch estimates, fixed cached-token assumptions, speculative schemes beyond MTP and ngram,
+and per-operation source diagnostics continue to use the compatibility CLI or SDK.
 
 **Pin quantization and select an attention implementation.** For a dense-model decode estimate
 with explicit BF16 compute/cache settings and the framework's default attention implementation:
@@ -1327,8 +1405,10 @@ aiconfigurator cli estimate \
 ```
 
 **Result to inspect:** the printed configuration and timing/source breakdown use the requested
-settings. Supported selectors depend on the backend and data. MoE-specific quantization and kernel
-selectors also use AIC/SDK controls; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
+settings. Supported selectors depend on the backend and data. For serving simulation, pin the
+same supported quantization and kernel selectors through the unified `engine` fields in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). The static estimate and source
+breakdown above remain compatibility features; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
 
 <a id="exact-cached-prefix-estimates"></a>
 
@@ -1349,11 +1429,15 @@ aiconfigurator cli estimate \
 **Result to inspect:** the summary prints `Prefix: 256`, followed by the timing breakdown for that
 assumption. AISimulate supports prefix-cache simulation, but `kv_cache.prefix_caching: true` enables
 reuse instead of setting a fixed cached-token count. Session shared-prefix settings describe
-workload sharing. Keep AIC when you require its exact cached-token assumption.
+workload sharing. `traffic.source.cached_prefix_tokens` likewise sets an exact shared prefix for
+synthetic requests, with a cold first request and reuse governed by cache state. Keep AIC when
+you require its fixed cached-token assumption.
 
 **Other speculative-decoding schemes.** Ngram prediction and recommendation are covered in
-[section 4.12](#412-ngram-prompt-lookup-speculative-decoding). MTP, EAGLE-3, DFlash, DSpark, and
-standalone draft models still use the compatibility CLI or SDK, subject to
+[section 4.12](#412-ngram-prompt-lookup-speculative-decoding). The unified CLI supports MTP through
+`engine.nextn` and an explicit `engine.nextn_accepted`, as shown in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). Neither path predicts acceptance rates.
+EAGLE-3, DFlash, DSpark, and standalone draft models still use the compatibility CLI or SDK, subject to
 [scheme-specific configuration and limits](../../python/aisimulate/src/aisimulate_core/sdk/speculation/README.md#estimate-command).
 
 <a id="legacy-search-domains-and-topology-coverage"></a>

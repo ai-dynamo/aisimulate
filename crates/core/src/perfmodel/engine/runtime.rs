@@ -509,19 +509,10 @@ impl Engine {
     }
 
     pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
-        let Some((prefill, decode)) = self.fpm_ops() else {
-            return super::readiness::validate(
-                &self.db,
-                self.context_ops.iter().chain(&self.generation_ops),
-            );
-        };
-        self.db
-            .fpm_forward
-            .select_cell(&prefill.match_identity, &prefill.model_path)?;
-        self.db
-            .fpm_forward
-            .select_cell(&decode.match_identity, &decode.model_path)?;
-        Ok(())
+        super::readiness::validate(
+            &self.db,
+            self.context_ops.iter().chain(&self.generation_ops),
+        )
     }
 
     /// Shared perf database handle.
@@ -3759,6 +3750,44 @@ mod tests {
             generation_ops_list,
         );
         (spec, db)
+    }
+
+    #[test]
+    fn fpm_readiness_checks_granular_draft_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("data/b200_sxm/vllm/0.24.0")).unwrap();
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.path().join("b200_sxm.yaml"),
+        )
+        .unwrap();
+        for missing_gemm in [false, true] {
+            let tail = if missing_gemm {
+                Op::Gemm(GemmOp::new("draft_gemm", 16, 16, GemmQuantMode::Bfloat16))
+            } else {
+                generation_ops().remove(0)
+            };
+            let (spec, _) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![tail], vec![]);
+            let mut db = PerfDatabase::load(tmp.path(), "b200_sxm", "vllm", "0.24.0").unwrap();
+            db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                "vllm",
+                "0.25.1",
+            ));
+            let engine = Engine::build(spec, Arc::new(db)).unwrap();
+            let result = engine.validate_forward_pass_readiness();
+            if missing_gemm {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("gemm_perf.parquet")
+                );
+            } else {
+                result.unwrap();
+            }
+        }
     }
 
     /// Hybrid shape validation: draft tails are legal; a width/nextn
