@@ -121,6 +121,7 @@ class ForwardPassPerfModelConfig:
     nextn: int = 0
     speculation: dict[str, Any] | None = None
     kv_block_size: int | None = None
+    decoder_replay: bool = False
     estimation_mode: str = "auto"
     database_mode: str = "SILICON"
     transfer_policy: str | tuple[str, ...] | None = None
@@ -1202,6 +1203,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "comm": _raw_quant_name(getattr(model_config, "comm_quant_mode", None)),
                     },
                     "model_config": {
+                        "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
                         "cp_style": getattr(model_config, "cp_style", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
                         "overwrite_num_layers": getattr(model_config, "overwrite_num_layers", None),

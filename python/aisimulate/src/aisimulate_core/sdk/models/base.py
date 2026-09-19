@@ -162,6 +162,20 @@ class BaseModel:
     def activation_hidden_size(self) -> int:
         return self._num_heads * self._head_size
 
+    def get_additional_activation_bytes(self, num_tokens: int) -> float:
+        """Architecture-specific buffers beyond the backend's generic workspace."""
+        return 0.0
+
+    def get_resident_weights_bytes(self) -> float:
+        """Resident target weights per TP/EP rank, before PP division.
+
+        Models with phase-dependent execution can override this inventory;
+        skipping token work must never remove resident decoder weights.
+        Scheme-owned draft weights are accounted for separately, including
+        any draft weights absent from the materialized context-op subset.
+        """
+        return float(sum(op.get_weights() for op in self.context_ops if not op._name.startswith("draft_")))
+
     # ------------------------------------------------------------------
     # Context parallelism (CP) declaration + comm factory (1145-style).
     # GLM-5 DSA does NOT use these -- it handles CP inside ContextDSAModule.
@@ -287,6 +301,10 @@ class BaseModel:
         if budget <= 0.0 or per_token <= 0.0:
             return 0
         return int(budget // per_token)
+
+    def get_kvcache_batch_capacity(self, kv_budget_bytes: float, max_batch_size: int) -> int:
+        """Total-token capacity; models with per-request state may reserve it here."""
+        return self.get_kvcache_max_tokens(kv_budget_bytes)
 
     def _binary_search_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
         """Monotonic-search inverse of :meth:`get_kvcache_bytes_per_sequence`.

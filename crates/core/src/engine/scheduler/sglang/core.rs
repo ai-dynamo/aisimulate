@@ -788,6 +788,27 @@ impl SglangCore {
         if let Some(oracle) = &self.belady {
             oracle.retire_requests(rejected.iter().map(|signal| signal.uuid));
         }
+        // Only providers with fallible geometry validation need to preserve the
+        // admission state. Normal polynomial and unrestricted AIC passes avoid
+        // copying radix metadata. Lease checkpoints never become independent owners.
+        let admission_checkpoint = (!self.waiting.is_empty()
+            && self.config.perf_model.prefill_batch_validation_can_fail())
+        .then(|| {
+            let waiting = self
+                .waiting
+                .iter()
+                .map(|request| {
+                    (
+                        request.uuid,
+                        request.materialized_tokens,
+                        request.allocated_tokens,
+                        request.kv_lease.admission_checkpoint(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (self.kv_manager.begin_admission(), waiting)
+        });
+        let running_before_admission = self.running.len();
         let mut admissions = self.promote_prebuilt_ready();
         let materialized_waiting = !self.prebuilt_ready.is_empty();
         apply_schedule_policy(&mut self.waiting, &self.kv_manager, &self.config);
@@ -808,6 +829,56 @@ impl SglangCore {
             AdmissionStage::FreshKv => Default::default(),
         };
 
+        let batch_size = admit.can_run.len();
+        let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
+        let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
+        let prefill_time = (|| {
+            self.config.perf_model.validate_prefill_batch(
+                &admit
+                    .prefill_fpm
+                    .iter()
+                    .map(|item| (item.tokens_computed, item.prefix_tokens))
+                    .collect::<Vec<_>>(),
+            )?;
+            simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)
+        })();
+        let prefill_time = match prefill_time {
+            Ok(duration) => {
+                if let Some((checkpoint, _)) = admission_checkpoint {
+                    self.kv_manager.commit_admission(checkpoint);
+                }
+                duration
+            }
+            Err(error) => {
+                // A retry is still part of the caller's prepared group round;
+                // it must not consume the prefill interval a second time.
+                self.group_pass_prepared = grouped;
+                if let Some((checkpoint, waiting)) = admission_checkpoint {
+                    self.kv_manager.rollback_admission(checkpoint);
+                    let mut requests = self
+                        .waiting
+                        .drain(..)
+                        .chain(admit.can_run)
+                        .map(|request| (request.uuid, request))
+                        .collect::<rustc_hash::FxHashMap<_, _>>();
+                    for (uuid, materialized, allocated, lease) in waiting {
+                        let mut request =
+                            requests.remove(&uuid).expect("admission request retained");
+                        request.kv_lease.restore_admission(lease);
+                        request.materialized_tokens = materialized;
+                        request.allocated_tokens = allocated;
+                        request.debug_assert_invariants(self.config.block_size);
+                        self.waiting.push_back(request);
+                    }
+                    debug_assert!(requests.is_empty());
+                }
+                for request in self.running.drain(running_before_admission..).rev() {
+                    self.prebuilt_ready.push_front(request);
+                }
+                return Err(error);
+            }
+        };
+
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
             if let Some(collector) = collector.as_deref_mut() {
@@ -817,12 +888,6 @@ impl SglangCore {
 
         // Capture per-request prefill FPM data before dispersing can_run.
         let prefill_fpm = admit.prefill_fpm;
-
-        let batch_size = admit.can_run.len();
-        let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
-        let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
-        let prefill_time =
-            simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
 
         // This committed prefill retires the whole request's input forecast exactly once.
         // Later chunks and preemption recomputation intentionally do not restore demand:

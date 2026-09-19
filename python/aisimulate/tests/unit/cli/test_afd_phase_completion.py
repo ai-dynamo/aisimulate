@@ -20,6 +20,17 @@ from aisimulate.sdk.performance_result import MoECommFallback
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _fake_model_architecture(monkeypatch):
+    """Keep the synthetic model local while exercising the AFD capability guard."""
+
+    def resolve_model(model_path):
+        assert model_path == "test-model"
+        return {"architecture": "DeepseekV3ForCausalLM"}
+
+    monkeypatch.setattr("aisimulate_core.sdk.utils.get_model_config_from_model_path", resolve_model)
+
+
 def _fake_phase_metrics(
     *,
     t_a_layer: float,
