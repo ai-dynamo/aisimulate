@@ -228,6 +228,24 @@ findings:
     - zai-org/GLM-5.2
     - zai-org/GLM-5.2-FP8
     - moonshotai/Kimi-K2.5
+  vllm_0290_dsa_blackwell_paths_unvalidated:
+    statement: 'SOURCE-DERIVED, HARDWARE-UNVALIDATED (no Blackwell box; every claim needs an on-silicon path_diff
+      verdict before any data ships). vllm 0.29 DSV32 sparse attention on Blackwell: module class is SM-independent
+      (registry.py:94 -> DeepseekV32Attention; fused_norm_rope prelude has no SM gate) so the 029 lane''s construction
+      carries over. Backend candidates differ wholesale (platforms/cuda.py:95-143, major==10, ordering per vllm#35807):
+      bf16-kv heads>16 -> FLASHMLA_SPARSE first; fp8-kv or heads<=16 -> FLASHINFER_MLA_SPARSE first. SM90''s first
+      choice FLASH_ATTN_MLA_SPARSE does not exist above SM9x (flashattn_mla_sparse.py:71-72 major==9 only). FLASHMLA_SPARSE
+      itself forks internals by family (flashmla_sparse.py:239,287: decode thresholds head128 1024-vs-256, SM-partitioning).
+      Indexer forks too (indexer.py:475-503): family-100 uses varlen_paged_mqa_logits + native decode for all next_n;
+      SM90 uses flattened query lens. B200 vs B300: NO distinction anywhere on this vllm chain (major==10 family
+      semantics, no 103 special-case) — but sglang DOES gate on SM103 (K3 SP collective), so SM100/SM103 must be
+      validated separately. SM120: TRITON_MLA + FLASHINFER_MLA_SPARSE_SM120 (cuda.py:130-134). Consequence: DSA
+      attention perf rows are strictly per-SM; nothing collected on H20 represents Blackwell.'
+    applies_to:
+    - family:sparse_attention
+    - platform:sm100
+    - platform:sm103
+    - platform:sm120
   vllm_0290_dsa_lane_indexer_drift:
     statement: 'RESOLVED 2026-09-19 (same day): the 029 lane now constructs the serving-same DeepseekV32Attention
       (vllm.models.deepseek_v32.attention:118 — 0.29 routes DeepseekV32ForCausalLM to the DSV32-specific fused implementation,
