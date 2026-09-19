@@ -1,0 +1,25 @@
+{
+ "verdict": "aligned",
+ "repo": "meta-llama/Meta-Llama-3.1-8B",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "collector_backends": [
+  "fa3"
+ ],
+ "serving_backends": [
+  "cublas",
+  "fa3"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "flash::FlashAttnFwdSm90",
+  "flash::prepare_varlen_num_blocks_kernel",
+  "namespace",
+  "vllm::reshape_and_cache_flash_kernel"
+ ],
+ "collector_unmatched_kernels": [
+  "void at::native::radixSortKVInPlace<-2, -1, 32, 32, long, long, unsigned int>"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

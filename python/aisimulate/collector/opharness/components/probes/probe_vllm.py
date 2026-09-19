@@ -111,9 +111,14 @@ def main() -> None:
     ap.add_argument("--out", required=True)
     ap.add_argument("--trace", action="store_true")
     ap.add_argument("--py-paths", action="store_true")
+    # Probe prompt length. 32 is the historical default; shape-conditional
+    # serving paths (M3 sparse-vs-dense threshold at topk_blocks*block_size
+    # tokens, FA split-KV) are invisible below their thresholds, so coverage
+    # is a parameter, never a per-model special case.
+    ap.add_argument("--isl", type=int, default=int(os.environ.get("AIC_PROBE_ISL", "32")))
     args = ap.parse_args()
 
-    rec: dict = {"run_sh": args.run_sh, "errors": {}}
+    rec: dict = {"run_sh": args.run_sh, "errors": {}, "probe_isl": None}
     try:
         import torch
         rec["device_capability"] = "sm%d%d" % torch.cuda.get_device_capability()
@@ -272,9 +277,10 @@ def main() -> None:
                 rec["errors"]["attn_hook"] = f"{type(e).__name__}: {e}"[:200]
 
             from vllm import SamplingParams
-            prompt = {"prompt_token_ids": list(range(32))}
+            rec["probe_isl"] = args.isl
+            prompt = {"prompt_token_ids": list(range(args.isl))}
             # warmup request: lazy JIT / autotune happen off-profile
-            engine.add_request("warm0", {"prompt_token_ids": list(range(32))},
+            engine.add_request("warm0", {"prompt_token_ids": list(range(args.isl))},
                                SamplingParams(max_tokens=2, temperature=0))
             while engine.has_unfinished_requests():
                 engine.step()
@@ -325,14 +331,41 @@ def main() -> None:
 
             # whole-run kernel table: span attribution goes blind when a
             # release moves kernel launches out of module.forward (vllm 0.29
-            # sparse-MLA did exactly that) — walk the SAME kineto event tree
-            # unconditionally so nothing executed is ever invisible; this is
-            # the orphan source build_ops consumes (decode_kernels).
+            # sparse-MLA did exactly that) — and the CPU event tree goes blind
+            # to kernels replayed inside CUDA graphs (no CPU launch event:
+            # vllm 0.29 M3 runs its whole graph-safe attend+indexer under
+            # full cudagraph, so serving evidence showed ZERO attend kernels).
+            # Ground truth is the kineto DEVICE event stream — every executed
+            # kernel appears there, graph-replayed or not; the CPU-tree walk
+            # stays as fallback. This is the orphan source build_ops consumes
+            # (decode_kernels).
+            def device_kernel_table(prof):
+                acc: dict = {}
+                try:
+                    from torch.autograd import DeviceType
+                    for kev in prof.profiler.kineto_results.events():
+                        try:
+                            if kev.device_type() != DeviceType.CUDA:
+                                continue
+                        except Exception:
+                            continue
+                        name = kev.name()
+                        dur = (kev.duration_ns() / 1e3
+                               if hasattr(kev, "duration_ns") else kev.duration_us())
+                        a = acc.setdefault(name, {"us": 0.0, "launches": 0})
+                        a["us"] += dur
+                        a["launches"] += 1
+                except Exception:
+                    return None
+                return acc or None
+
             for phase_key, prof in (("prefill_kernels", p_pre), ("decode_kernels", p)):
-                _acc: dict = {}
-                _seen: set = set()
-                for ev in prof.profiler.function_events:
-                    collect(ev, _acc, {}, _seen)
+                _acc = device_kernel_table(prof)
+                if _acc is None:
+                    _acc = {}
+                    _seen: set = set()
+                    for ev in prof.profiler.function_events:
+                        collect(ev, _acc, {}, _seen)
                 rec[phase_key] = [
                     {"kernel": n, "us": round(a["us"], 1), "launches": a["launches"]}
                     for n, a in sorted(_acc.items(), key=lambda kv: -kv[1]["us"])
