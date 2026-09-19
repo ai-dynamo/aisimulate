@@ -434,10 +434,10 @@ trial range. Speedup is the batch median divided by the recursive median.
 | Input data | Capacity | Batch update (µs) | Recursive update (µs) | Speedup |
 |---|---:|---:|---:|---:|
 | Toy | 64 | 7.078 [7.006–7.136] | 0.812 [0.788–0.823] | 8.7× |
-| Toy | 8,192 | 736.844 [717.487–750.102] | 1.120 [1.034–1.257] | 657.9× |
 | H200 / MiniMax-M2.7 / prefill | 64 | 7.093 [6.995–7.299] | 0.818 [0.781–0.840] | 8.7× |
-| H200 / MiniMax-M2.7 / prefill | 8,192 | 738.917 [710.320–774.915] | 1.770 [1.706–1.889] | 417.6× |
 | B200 / MiniMax-M3 NVFP4 / decode | 64 | 6.909 [6.815–7.027] | 0.807 [0.780–0.831] | 8.6× |
+| Toy | 8,192 | 736.844 [717.487–750.102] | 1.120 [1.034–1.257] | 657.9× |
+| H200 / MiniMax-M2.7 / prefill | 8,192 | 738.917 [710.320–774.915] | 1.770 [1.706–1.889] | 417.6× |
 | B200 / MiniMax-M3 NVFP4 / decode | 8,192 | 737.600 [720.991–754.895] | 2.288 [2.195–2.434] | 322.3× |
 
 Outside the timed region, **6,150 fits and 50,835,900 raw/floored
