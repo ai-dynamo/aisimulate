@@ -419,8 +419,9 @@ def test_deepseek_v41_rejected_topology_keeps_all_probe_evidence(topology, error
     assert all(result.latency_ms is None and result.failure_stage == "build" for result in results)
     assert all(result.error_type == type(error).__name__ and result.error_message == str(error) for result in results)
     assert all(
-        result.tp_size == topology.tp_size and result.attention_dp_size == topology.attention_dp_size
+        getattr(result, field) == getattr(topology, field)
         for result in results
+        for field in ("tp_size", "pp_size", "attention_dp_size", "moe_tp_size", "moe_ep_size", "cp_size")
     )
 
 
