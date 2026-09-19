@@ -529,6 +529,7 @@ for pinned scheduler settings, measurement selection, and provenance.
 | **Require Fast CI** failed or timed out | Open the linked/latest standalone Fast run for the same branch and SHA; resolve its failure or dispatch Fast CI first, then rerun Full CI |
 | `Fast CI Success` failed with missing or skipped substantive jobs | Inspect the required job results and cancellation history; draft status and labels do not skip Fast CI |
 | Full CI job skipped | Read **Select Full CI Scope** and the aggregate summary; only explicit N/A is acceptable |
+| Full CI canceled after another PR run starts | A newer run replaced validation in the same PR/branch concurrency group; inspect the replacement run's SHA and results |
 | `Full CI Success` green, workflow still `waiting` | Validation finished; main/release wheel staging may be waiting for `automated-release` approval |
 | New nightly pending, earlier nightly waiting | Nightly's single concurrency group includes protected staging; an unapproved run can hold later validation behind it |
 | Prediction Regression green with reported drift | Working-case regression checks passed; review the numerical changes in the report |
@@ -566,6 +567,35 @@ gh workflow run fast-ci.yml --repo ai-dynamo/aisimulate \
 gh workflow run ci.yml --repo ai-dynamo/aisimulate \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
 ```
+
+Manual runs provide diagnostic validation. GitHub does not count job checks
+from `workflow_dispatch` toward required PR status checks, even when the run
+uses the current PR SHA. See [GitHub's required-check troubleshooting guide](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated).
+For PR merge-gate validation, a maintainer admits the reviewed current head
+through copy-pr-bot; the resulting trusted-copy **push** launches eligible
+Fast and Full CI runs:
+
+```bash
+ci_pr=123  # Replace with the reviewed PR to validate.
+ci_sha="$(gh pr view "${ci_pr}" --repo ai-dynamo/aisimulate --json headRefOid --jq .headRefOid)"
+gh pr comment "${ci_pr}" --repo ai-dynamo/aisimulate \
+  --body "/ok to test ${ci_sha}"
+```
+
+Full CI cancels older queued and running validation for the same trusted
+`pull-request/N` copy. Manual dispatches on that copy share the push run's
+concurrency group: they can cancel an eligible push run without satisfying its
+required check. Preserve the push-triggered validation for the current PR
+head. If it fails transiently, retry its failed jobs with `gh run rerun RUN_ID
+--failed` after confirming that the run still targets the current head.
+
+Manual source-branch runs replace only runs on the same branch. Different PRs
+remain independent. Main, `release/*`, and tag runs use unique groups, so later
+runs cannot cancel their validation or protected staging. Concurrency only
+applies to runs using the updated workflow; existing runs and older branches
+are not retroactively covered. A replacement still needs successful eligible
+checks for its exact SHA. Re-running an old revision can replace a newer run
+in the same group: always verify the current PR head before retrying validation.
 
 Standalone Fast CI accepts these manual inputs:
 
