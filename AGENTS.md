@@ -16,6 +16,17 @@ a Hub ID; do not ask for both an ID and a config upfront. For a Hub ID, retrieve
 the config using available Hub access as described in stage 1. Reuse supplied
 facts and inspect the config/profile before asking for derivable metadata; defer
 other questions to their stage and help the user choose the worker topology.
+At stage 2, inspect `aisimulate onboard init --model-config PATH --suggest-parallel`
+with the actual checkpoint/revision, runtime, GPU, interconnect and workload
+options. This read-only JSON preview reports model/hardware-aware TP choices and
+MoE TP/DEP/TEP alternatives, exact flags, resource sources and missing inputs.
+Ask for unresolved shared precision/layout facts rather than guessing. Only a
+complete declared/estimated byte budget can establish an `estimated_fit` default;
+the shortlist is not a performance ranking or runtime qualification. Present the
+default and alternatives, choose one exact topology per plan, and preserve any
+explicit topology choice. If no default exists, explain the missing inputs and
+select a candidate before collecting its rank-local bounds. Byte overrides are
+specific to the chosen tuple; use explicit topology flags with those bounds.
 Derive the minimum collection GPUs from attention TP times attention DP (TP4
 requires four GPUs). Do not ask for total available GPUs, cluster node allocation
 or replica budgets during onboarding. Preserve target hardware, runtime and

@@ -15,9 +15,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from importlib.resources import files
 from pathlib import Path
 from typing import Any
 
@@ -634,10 +634,17 @@ def _activation_estimate(
     )
 
 
+def packaged_hardware_path(system: str) -> Path:
+    """Locate wheel-owned metadata without importing the native compatibility package."""
+    if not isinstance(system, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", system):
+        raise ValueError("system must be a packaged system name, not a path")
+    return Path(__file__).resolve().parents[2] / "aiconfigurator_core" / "systems" / f"{system}.yaml"
+
+
 def _hardware_estimates(request: SupportRequest | None) -> dict[str, tuple[int, str]]:
     if request is None:
         return {}
-    resource = files("aiconfigurator_core").joinpath("systems", request.identity.gpu + ".yaml")
+    resource = packaged_hardware_path(request.identity.gpu)
     if not resource.is_file():
         return {}
     payload = resource.read_bytes()

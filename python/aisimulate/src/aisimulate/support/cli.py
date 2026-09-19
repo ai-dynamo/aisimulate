@@ -35,6 +35,7 @@ from .config_profile import (
 from .fpm import run_fpm
 from .plan import create_plan, request_id
 from .schema import FPMDeployment, SearchProfile, SloSpec, SupportIdentity, SupportRequest, WorkloadSpec
+from .topology import TopologySuggestions, suggest_topologies
 
 
 def add_support_parser(subparsers: Any) -> None:
@@ -54,7 +55,8 @@ def add_support_parser(subparsers: Any) -> None:
             "Use --interactive for terminal prompts. --model-config derives supported local model metadata; "
             "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
             "--model, --model-revision, --model-kind, --framework-version, --gpu, and --interconnect. "
-            "Collection GPUs are derived from the selected topology; TP1 and a small synthetic workload are defaults. "
+            "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
+            "topologies; other routes default to TP1. A small synthetic workload is the default. "
             "Set deployment replicas and GPU budgets in ordinary predict/recommend configs."
         ),
     )
@@ -75,7 +77,9 @@ def add_support_parser(subparsers: Any) -> None:
     init.add_argument("--tokenizer-revision")
     init.add_argument("--chat-template-revision")
     init.add_argument("--aisimulate-revision", help="Optional pinned AISimulate source revision.")
-    init.add_argument("--tensor-parallel", type=int, help="Attention tensor-parallel size (default: 1).")
+    init.add_argument(
+        "--tensor-parallel", type=int, help="Attention tensor-parallel size; bypasses model-config suggestions."
+    )
     init.add_argument("--attention-data-parallel", type=int, help="Attention data-parallel size (default: 1).")
     init.add_argument("--moe-tensor-parallel", type=int, help="Expert tensor-parallel size (default: TP for MoE).")
     init.add_argument("--moe-expert-parallel", type=int, help="Expert-parallel size (default: 1).")
@@ -88,6 +92,11 @@ def add_support_parser(subparsers: Any) -> None:
         "--resource-overrides",
         metavar="PATH",
         help="Flat JSON/YAML profile field overrides; requires --model-config. Resource bytes are per rank.",
+    )
+    init.add_argument(
+        "--suggest-parallel",
+        action="store_true",
+        help="Preview model-config topology suggestions as JSON; no prompts or writes, including to --output.",
     )
     init.add_argument("--input-tokens", type=int, help="Input tokens per request (default: 1024).")
     init.add_argument("--output-tokens", type=int, help="Output tokens per request (default: 128).")
@@ -255,12 +264,14 @@ def _require_terminal() -> None:
         )
 
 
-def _guided_request(args: argparse.Namespace) -> SupportRequest:
+def _guided_request(args: argparse.Namespace, *, skip_topology: bool = False) -> SupportRequest:
     _require_terminal()
     print("Onboard a model for FPM simulation on a target hardware platform.")
     print("Select one TP, DEP, or TEP worker and a small synthetic workload on vLLM.")
     print("Enter accepts a displayed default. Ctrl-C cancels without saving. Supplied options skip their prompts.")
     for name in _PROMPTS:
+        if skip_topology and name == "tensor_parallel":
+            continue
         if getattr(args, name) is None:
             _prompt(args, name)
     return _validate_guided_request(args)
@@ -441,16 +452,24 @@ def _review_config_profile(
         overrides, draft, request = staged, updated, validated
 
 
-def _config_request(args: argparse.Namespace) -> SupportRequest:
+_TOPOLOGY_OPTIONS = ("tensor_parallel", "attention_data_parallel", "moe_tensor_parallel", "moe_expert_parallel")
+
+
+def _explicit_topology(args: argparse.Namespace) -> bool:
+    return any(getattr(args, name) is not None for name in _TOPOLOGY_OPTIONS)
+
+
+def _config_inputs(args: argparse.Namespace) -> tuple[ModelConfig, dict[str, Any], SupportRequest]:
     config = load_model_config(args.model_config)
     overrides = _load_resource_overrides(args.resource_overrides)
     preview = derive_profile(config, None, overrides)
-    print(f"Model config source: {Path(args.model_config).expanduser()} (SHA-256 {config.sha256}).")
-    for name, note in config.notes.items():
-        print(f"Config {name}: {note}")
-    for name in ("architecture", "context_length", "num_experts"):
-        if name in preview.resolved:
-            print(f"{name}: {preview.resolved[name]} (source: {preview.sources[name]})")
+    if not args.suggest_parallel:
+        print(f"Model config source: {Path(args.model_config).expanduser()} (SHA-256 {config.sha256}).")
+        for name, note in config.notes.items():
+            print(f"Config {name}: {note}")
+        for name in ("architecture", "context_length", "num_experts"):
+            if name in preview.resolved:
+                print(f"{name}: {preview.resolved[name]} (source: {preview.sources[name]})")
     if args.interactive:
         _require_terminal()
         for name in ("architecture", "context_length", "num_experts"):
@@ -468,7 +487,7 @@ def _config_request(args: argparse.Namespace) -> SupportRequest:
             preview.resolved["context_length"], SearchProfile.model_fields["context_length"].default
         )
     if args.interactive:
-        request = _guided_request(args)
+        request = _guided_request(args, skip_topology=not _explicit_topology(args))
     else:
         try:
             request = _request_from_args(args)
@@ -484,6 +503,92 @@ def _config_request(args: argparse.Namespace) -> SupportRequest:
                 + "\nThen supply unresolved profile fields with --resource-overrides PATH (flat JSON/YAML), "
                 "or use --interactive."
             ) from exc
+    return config, overrides, request
+
+
+def _topology_summary(suggestions: TopologySuggestions) -> str:
+    lines = [
+        "Suggested worker topologies (collection starting points, not a performance ranking):",
+        f"  Hardware: {suggestions.hardware.source}; {suggestions.hardware.assumption}",
+    ]
+    for number, candidate in enumerate(suggestions.candidates, 1):
+        default = " (default)" if candidate == suggestions.default else ""
+        lines.append(
+            f"  {number}. {candidate.family}, {candidate.required_gpus} GPUs, {candidate.status}{default}: "
+            + shlex.join(candidate.cli_flags)
+        )
+        lines.extend(f"     {reason}" for reason in candidate.reasons)
+        lines.extend(f"     Missing {name}: {reason}" for name, reason in candidate.missing.items())
+    if not suggestions.candidates:
+        lines.append("  No eligible topology remains in the automatic hardware domain.")
+        for candidate in suggestions.rejected_candidates:
+            lines.append(
+                f"  Rejected {candidate.family}, {candidate.required_gpus} GPUs: " + "; ".join(candidate.reasons)
+            )
+    lines.append("Runtime compatibility, actual GPU availability and measured performance remain unchecked.")
+    return "\n".join(lines)
+
+
+def _select_topology(
+    args: argparse.Namespace, config: ModelConfig, overrides: dict[str, Any], request: SupportRequest
+) -> SupportRequest:
+    while True:
+        try:
+            suggestions = suggest_topologies(config, request, overrides)
+            if args.interactive and suggestions.candidates:
+                shared = derive_profile(config, None, overrides)
+                while names := [name for name in shared.missing if not _memory_field(name)]:
+                    overrides, shared = _prompt_profile_value(config, None, overrides, shared, names[0])
+                suggestions = suggest_topologies(config, request, overrides)
+            break
+        except (ProfileRequestError, ValidationError) as exc:
+            if not args.interactive:
+                raise
+            _correct_option(args, exc, require_known_field=True)
+            request = _validate_guided_request(args)
+    summary = _topology_summary(suggestions)
+    if not suggestions.candidates or (not args.interactive and suggestions.default is None):
+        raise ValueError(
+            "No fully assessed topology default is available.\n"
+            + summary
+            + "\nSupply shared precision/layout inputs with --resource-overrides or use --interactive. "
+            "For rank-local byte bounds, select an exact topology with the displayed flags first. "
+            "Explicit topology may be outside the automatic shortlist."
+        )
+    print(summary)
+    selected = suggestions.default
+    if args.interactive:
+        default = suggestions.candidates.index(selected) + 1 if selected is not None else None
+        if default is None:
+            print("Memory fit is unresolved; select a candidate explicitly, then provide its missing per-rank bounds.")
+        while True:
+            answer = input(
+                f"Choose topology 1-{len(suggestions.candidates)}"
+                + (f" [{default}]" if default is not None else "")
+                + " (or cancel): "
+            ).strip()
+            if answer.lower() == "cancel":
+                raise KeyboardInterrupt
+            if not answer and default is not None:
+                break
+            if answer.isdecimal() and 1 <= int(answer) <= len(suggestions.candidates):
+                selected = suggestions.candidates[int(answer) - 1]
+                break
+            print("Enter a displayed candidate number or cancel. Enter accepts only a fully assessed default.")
+    assert selected is not None
+    print(
+        f"Selected {selected.family} with {selected.required_gpus} collection GPUs: " + shlex.join(selected.cli_flags)
+    )
+    for name, value in selected.topology.items():
+        setattr(args, name, value)
+    return selected.apply(request)
+
+
+def _config_request(args: argparse.Namespace) -> SupportRequest:
+    automatic = not _explicit_topology(args)
+    config, overrides, request = _config_inputs(args)
+    if automatic:
+        request = _select_topology(args, config, overrides, request)
     while True:
         try:
             draft = derive_profile(config, request, overrides)
@@ -528,6 +633,16 @@ def _config_request(args: argparse.Namespace) -> SupportRequest:
 def _init(args: argparse.Namespace) -> int:
     if args.resource_overrides and not args.model_config:
         raise ValueError("--resource-overrides requires --model-config")
+    if args.suggest_parallel:
+        if not args.model_config:
+            raise ValueError("--suggest-parallel requires --model-config")
+        if args.interactive or args.fpm_profile or args.profile or _explicit_topology(args):
+            raise ValueError(
+                "--suggest-parallel cannot be combined with --interactive, profiles, or explicit topology flags"
+            )
+        config, overrides, request = _config_inputs(args)
+        _print(suggest_topologies(config, request, overrides).to_dict(), "json")
+        return 0
     _request_target(args.output, overwrite=args.overwrite)
     try:
         if args.model_config:
