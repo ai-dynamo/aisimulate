@@ -515,19 +515,36 @@ def _create_attention_module(
     use_legacy = bool(os.environ.get("AIC_DSA_LEGACY_MODULE"))
     with set_current_vllm_config(vllm_config), set_default_torch_dtype(vllm_config.model_config.dtype):
         if attn_type == "dsa" and not use_legacy:
-            # 0.29 serving builds the DSV32-specific module (registry.py:94
-            # routes DeepseekV32ForCausalLM to vllm.models.deepseek_v32; its
-            # DeepseekV32Attention fuses the indexer prelude), NOT the generic
-            # DeepseekV2MLAAttention this collector historically used — the
-            # path_diff gate caught the prelude-fusion divergence. Construct
-            # the serving-same class (deepseek_v32/attention.py:118-131).
-            from vllm.models.deepseek_v32.attention import DeepseekV32Attention
-            attn_module = DeepseekV32Attention(
-                vllm_config=vllm_config,
-                config=hf_config,
-                prefix="model.layers.0.self_attn",
-                topk_indices_buffer=topk_indices_buffer,
-            )
+            # GENERIC serving-parity construction (owner rule 2026-09-19:
+            # config in -> the module SERVING would build comes out; never a
+            # per-model class import — that is how the prelude-fusion drift
+            # was born). Resolve the model class through the framework's own
+            # registry (exactly serving's routing, registry.resolve_model_cls),
+            # instantiate the WHOLE model on the meta device (free), and
+            # extract layer 0's attention submodule. Attention layers register
+            # themselves into static_forward_context during init, which is
+            # what _create_kv_cache_and_metadata reads — same as serving.
+            from vllm.model_executor.models.registry import ModelRegistry
+            model_cls, _resolved = ModelRegistry.resolve_model_cls(
+                hf_config.architectures, vllm_config.model_config)
+            with torch.device("meta"):
+                _meta_model = model_cls(vllm_config=vllm_config, prefix="")
+            attn_module = None
+            for _n, _m in _meta_model.named_modules():
+                if _n.endswith("layers.0.self_attn"):
+                    attn_module = _m
+                    break
+            if attn_module is None:  # no fallback: raise, never substitute
+                raise RuntimeError(
+                    f"framework model {model_cls.__name__} exposes no "
+                    "layers.0.self_attn — extend the extraction, do not pin a class")
+            # the model allocated its shared topk buffer on meta; swap in the
+            # real one the collector allocated (same shape contract)
+            for _n, _m in attn_module.named_modules():
+                if getattr(_m, "topk_indices_buffer", None) is not None:
+                    _m.topk_indices_buffer = topk_indices_buffer
+            if getattr(attn_module, "topk_indices_buffer", None) is not None:
+                attn_module.topk_indices_buffer = topk_indices_buffer
         else:
             if attn_type == "dsa" and use_legacy:
                 print("  [AB-ONLY] AIC_DSA_LEGACY_MODULE=1: building the LEGACY generic "
