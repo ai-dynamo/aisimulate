@@ -1,0 +1,18 @@
+# Customization retest record for the vllm 0.24.0 -> 0.29.0 upgrade.
+# Verdict per repo: still_needed | dropped. Evidence: bare-default A/B on
+# 0.29.0 (facts/ab_dsv4_kvauto_0290.json) — the DeepseekV4 assert
+# 'fp8_ds_mla layout only supports fp8 kv-cache, got auto' is unchanged and
+# arch-level, so the kv fp8 requirement holds for the whole family. NOTE the
+# customization is still REQUIRED yet no longer SUFFICIENT: with fp8 kv the
+# mandatory cutedsl compress path crashes (see findings vllm_0290_dsv4_cutedsl).
+deepseek-ai/DeepSeek-V4-Flash: still_needed
+deepseek-ai/DeepSeek-V4-Flash-0731: still_needed
+deepseek-ai/DeepSeek-V4-Pro: still_needed
+deepseek-ai/DeepSeek-V4-Pro-0813: still_needed
+nvidia/DeepSeek-V4-Flash-NVFP4: still_needed
+nvidia/DeepSeek-V4-Pro-NVFP4: still_needed
+sgl-project/DeepSeek-V4-Flash-FP8: still_needed
+sgl-project/DeepSeek-V4-Pro-FP8: still_needed
+# Added DURING this campaign (not carried over from 0.24.0): the bare default
+# OOMs on 0.29.0 (finding vllm_0290_nemoh_profile_oom), rescue A/B'd same day.
+nvidia/Nemotron-H-56B-Base-8K: still_needed
