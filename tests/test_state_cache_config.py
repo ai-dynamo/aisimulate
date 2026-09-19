@@ -345,7 +345,7 @@ def test_inferred_size_roundtrip_and_native_wire(gdn_model, forbid_estimators):
 )
 def test_gdn_tensor_geometry(gdn_model, tp, num_spec, conv_dtype, ssm_dtype, expected):
     path, geometry = gdn_model
-    # SGLang's model dtype field must not override vLLM's cache controls.
+    # Qwen3-Next does not apply Qwen3.5's model-specific SSM dtype hook.
     geometry["mamba_ssm_dtype"] = "float32"
     (path / "config.json").write_text(json.dumps(geometry))
     payload = _auto_public(path, mamba_cache_dtype=conv_dtype, mamba_ssm_cache_dtype=ssm_dtype)
@@ -424,7 +424,8 @@ def test_qwen35_nested_text_config(gdn_model):
     assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 3072}
 
 
-def test_shipped_qwen_model_geometry():
+@pytest.mark.parametrize("tp,bytes_per_token,raw_bytes", [(1, 20480, 2146304), (2, 10240, 1073152), (4, 10240, 536576)])
+def test_shipped_qwen_model_geometry(tp, bytes_per_token, raw_bytes):
     model = "Qwen/Qwen3.5-35B-A3B"
     from aisimulate_core.sdk.memory import NaiveKVCacheEstimator
 
@@ -434,10 +435,10 @@ def test_shipped_qwen_model_geometry():
     payload = _auto_public(model)
     payload["engine"]["workers"]["aggregated"].update(
         {
-            "parallelism": {"tensor": 4},
+            "parallelism": {"tensor": tp},
             "kv_cache": {
-                "block_size": 1024,
-                "bytes_per_token": 10240,
+                "block_size": 1088,
+                "bytes_per_token": bytes_per_token,
                 "capacity": {"type": "fixed", "blocks": 8},
                 "state_cache": {},
             },
@@ -447,7 +448,8 @@ def test_shipped_qwen_model_geometry():
     info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
     config = raw.get("text_config", raw)
     assert info["recurrent_layers_per_rank"] == config["num_hidden_layers"] * 3 // 4
-    assert info["raw_bytes_per_layer"] == 274432
+    assert info["raw_bytes_per_layer"] == raw_bytes
+    assert info["ssm_dtype"] == "float32"
     assert info["source"] == "inferred"
 
 
@@ -467,3 +469,50 @@ def test_existing_typed_state_config_remains_accepted():
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
     assert spec.backend_deployment.agg_engine_args["state_cache"] == STATE
     assert spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]["source"] == "overridden"
+
+
+@pytest.mark.parametrize("model_type", ["qwen3_5_text", "qwen3_5_moe_text"])
+@pytest.mark.parametrize(
+    "ssm_override,expected_dtype,expected_raw",
+    [
+        ("auto", "float32", 1408),
+        ("float16", "float16", 896),
+    ],
+)
+def test_qwen35_model_ssm_dtype_and_override(gdn_model, model_type, ssm_override, expected_dtype, expected_raw):
+    path, geometry = gdn_model
+    geometry.update(model_type=model_type, mamba_ssm_dtype="float32")
+    (path / "config.json").write_text(json.dumps({"text_config": geometry}))
+    payload = _auto_public(path, mamba_ssm_cache_dtype=ssm_override)
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["bytes_per_token"] = 32
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["ssm_dtype"] == expected_dtype
+    assert info["raw_bytes_per_layer"] == expected_raw
+
+
+def test_qwen35_model_ssm_dtype_rejects_undersized_page(gdn_model):
+    path, geometry = gdn_model
+    geometry.update(model_type="qwen3_5_moe_text", mamba_ssm_dtype="float32")
+    (path / "config.json").write_text(json.dumps({"text_config": geometry}))
+    with pytest.raises(ValueError, match="attention page is smaller"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(_auto_public(path)))
+
+
+@pytest.mark.parametrize("invalid", ["unsupported", "", 0, True, [], {}])
+def test_qwen35_unknown_model_ssm_dtype_requires_override(gdn_model, invalid):
+    path, geometry = gdn_model
+    geometry.update(model_type="qwen3_5_text", mamba_ssm_dtype=invalid)
+    (path / "config.json").write_text(json.dumps({"text_config": geometry}))
+    with pytest.raises(ValueError, match="unsupported model mamba_ssm_dtype"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(_auto_public(path)))
+    spec = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(_auto_public(path, mamba_ssm_cache_dtype="float16"))
+    )
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 3072}
+
+
+@pytest.mark.parametrize("field", ["mamba_cache_dtype", "mamba_ssm_cache_dtype"])
+def test_cache_dtype_accepts_only_pinned_vllm_cli_values(field):
+    with pytest.raises(ValidationError, match=field):
+        CorePredictionConfig.model_validate(_public(state_cache={field: "bfloat16"}))

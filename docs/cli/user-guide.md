@@ -1159,11 +1159,13 @@ vLLM commit `a474da28131f61684849b31e29af0eebaaedc383`, independently of the
 timing database version. Other layouts (including KDA/Mamba2) and PP>1 require
 an explicit byte override.
 
-Optional `model_dtype`, `mamba_cache_dtype`, and `mamba_ssm_cache_dtype` accept
-`auto` (default), `float16`, `bfloat16`, or `float32`. Auto state dtypes follow
-vLLM: conv follows model dtype, SSM follows conv, ignoring SGLang-specific model
-fields. Set `model_dtype` explicitly when the model config is missing its dtype
-or uses float32, whose vLLM auto downcast depends on hardware. Speculation adds
+Optional `model_dtype` accepts `auto` (default), `float16`, `bfloat16`, or `float32`.
+`mamba_cache_dtype` and `mamba_ssm_cache_dtype` accept `auto`, `float16`, or `float32`,
+matching this vLLM revision. Auto state dtypes follow
+vLLM: conv follows model dtype; Qwen3.5 SSM uses the model's `mamba_ssm_dtype`
+when present, otherwise it follows conv. Qwen3-Next SSM follows conv. An explicit
+`mamba_ssm_cache_dtype` overrides the model field. Set `model_dtype` explicitly
+when the model config is missing its dtype or uses float32, whose vLLM auto downcast depends on hardware. Speculation adds
 its draft-token count to the conv-state length.
 
 Supply the **resolved vLLM block geometry**: per-layer attention page size is

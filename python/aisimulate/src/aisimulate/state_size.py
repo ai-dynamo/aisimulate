@@ -20,7 +20,7 @@
 # Modified: CPU-only sizing, strict support checks and AISimulate diagnostics.
 # Adapted from https://github.com/vllm-project/vllm/tree/a474da28131f61684849b31e29af0eebaaedc383
 # Original paths: vllm/model_executor/layers/mamba/mamba_utils.py,
-# vllm/model_executor/models/{qwen3_next,qwen3_5}.py,
+# vllm/model_executor/models/{config,qwen3_next,qwen3_5}.py,
 # vllm/transformers_utils/configs/{qwen3_next,qwen3_5,qwen3_5_moe}.py,
 # vllm/platforms/interface.py, vllm/v1/kv_cache_interface.py.
 
@@ -117,7 +117,16 @@ def _infer(engine: EnginePredictionConfig, worker: WorkerPredictionConfig) -> di
         if model_dtype not in ("float16", "bfloat16"):
             raise _unsupported("set model_dtype for missing, float32 or unsupported model dtype")
     conv_dtype = model_dtype if sizing.mamba_cache_dtype == "auto" else sizing.mamba_cache_dtype
-    ssm_dtype = conv_dtype if sizing.mamba_ssm_cache_dtype == "auto" else sizing.mamba_ssm_cache_dtype
+    ssm_dtype = sizing.mamba_ssm_cache_dtype
+    if ssm_dtype == "auto" and config["model_type"] in {"qwen3_5_text", "qwen3_5_moe_text"}:
+        # vLLM's model-specific config hook runs before the shared calculator.
+        ssm_dtype = config.get("mamba_ssm_dtype", "auto")
+        if ssm_dtype is None:
+            ssm_dtype = "auto"
+    if ssm_dtype == "auto":
+        ssm_dtype = conv_dtype
+    if not isinstance(ssm_dtype, str) or ssm_dtype not in _WIDTH:
+        raise _unsupported("unsupported model mamba_ssm_dtype; set mamba_ssm_cache_dtype")
     num_spec = engine.speculation.num_speculative_tokens if engine.speculation else 0
     conv = (2 * kh * kd + vh * vd) // tp * (kernel - 1 + num_spec) * _WIDTH[conv_dtype]
     temporal = vh // tp * vd * kd * _WIDTH[ssm_dtype]
