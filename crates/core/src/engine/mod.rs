@@ -39,6 +39,7 @@ pub use protocol::{
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
+#[cfg(feature = "python")]
 pub(crate) use timing::{TimingEvidenceAccumulator, ValidatedTimingPhase};
 pub use timing::{
     TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,

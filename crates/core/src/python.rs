@@ -390,6 +390,9 @@ impl AicTimingConfig {
 
 type PhaseEvidenceKey = (u32, u32, u32, u32, bool);
 
+#[cfg(test)]
+type PythonPerOpEntries = Vec<(String, f64, f64, String)>;
+
 enum AicPhaseProvider {
     Native(Arc<PerfEngine>),
     /// Keep the original bridge as an independent test reference and probe seam.
@@ -505,6 +508,10 @@ impl AicTimingModel {
         let phase = match &self.phase_provider {
             #[cfg(test)]
             AicPhaseProvider::NativeEntries(entries) => {
+                ensure!(
+                    !entries.is_empty(),
+                    "AIC {mode} returned empty operation evidence for nonzero work"
+                );
                 phase_evidence_from_native_entries(entries.clone())?
             }
             AicPhaseProvider::Native(engine) => {
@@ -521,7 +528,11 @@ impl AicTimingModel {
                     .and_then(|mode| {
                         engine.reset_provenance();
                         engine
-                            .run_static_per_op(&runtime, mode, 32)
+                            .run_static_per_op(
+                                &runtime,
+                                mode,
+                                crate::perfmodel::engine::DEFAULT_STATIC_STRIDE,
+                            )
                             .map_err(crate::py::aic_to_py)
                     })
                     .map_err(|error| anyhow!("AIC {mode} evidence prediction failed: {error}"))?;
@@ -558,10 +569,7 @@ impl AicTimingModel {
         osl: u32,
         prefix: u32,
         mode: &str,
-    ) -> PyResult<(
-        Vec<(String, f64, f64, String)>,
-        Vec<(String, f64, f64, String)>,
-    )> {
+    ) -> PyResult<(PythonPerOpEntries, PythonPerOpEntries)> {
         Python::with_gil(|py| {
             let kwargs = PyDict::new(py);
             kwargs.set_item("batch_size", batch_size)?;
@@ -572,14 +580,11 @@ impl AicTimingModel {
             kwargs.set_item("seq_imbalance_correction_scale", 1.0)?;
             kwargs.set_item("gen_seq_imbalance_correction_scale", 1.0)?;
             kwargs.set_item("mode", mode)?;
-            kwargs.set_item("stride", 32)?;
+            kwargs.set_item("stride", crate::perfmodel::engine::DEFAULT_STATIC_STRIDE)?;
             self.engine
                 .bind(py)
                 .call_method("run_static_per_op", (), Some(&kwargs))?
-                .extract::<(
-                    Vec<(String, f64, f64, String)>,
-                    Vec<(String, f64, f64, String)>,
-                )>()
+                .extract::<(PythonPerOpEntries, PythonPerOpEntries)>()
         })
     }
 
@@ -2206,7 +2211,7 @@ mod tests {
         }
     }
 
-    fn timing_model(engine: Py<PyAny>, use_fpm_decode_totals: bool) -> AicTimingModel {
+    fn python_timing_model(engine: Py<PyAny>, use_fpm_decode_totals: bool) -> AicTimingModel {
         AicTimingModel {
             engine,
             diagnostic_model: None,
@@ -2243,7 +2248,7 @@ mod tests {
             AicPhaseProvider::Native(engine) => Arc::clone(engine),
             AicPhaseProvider::Python | AicPhaseProvider::NativeEntries(_) => unreachable!(),
         };
-        let bridge = Python::with_gil(|py| timing_model(native.engine.clone_ref(py), false));
+        let bridge = Python::with_gil(|py| python_timing_model(native.engine.clone_ref(py), false));
         let check =
             |native: &AicTimingModel, bridge: &AicTimingModel, args| {
                 let (batch, isl, osl, prefix, mode) = args;
@@ -2297,6 +2302,62 @@ mod tests {
             check(&native, &bridge, args); // Cache hits must retain the same behavior.
         }
 
+        // Exercise the shipping adapter through its public timing entrypoints,
+        // including accumulation on cache hits and changes in query geometry.
+        for (prefill, batch, length, prefix) in [
+            (true, 4, 1024, 128),
+            (true, 4, 1024, 128),
+            (true, 4, 1536, 256),
+            (false, 1, 129, 0),
+            (false, 1, 129, 0),
+            (false, 1, 257, 0),
+        ] {
+            let key = if prefill {
+                (batch as u32, length as u32, 1, prefix as u32, true)
+            } else {
+                (batch as u32, length as u32 - 1, 2, 0, false)
+            };
+            let cached = native.phase_cache.get(&key);
+            let predict = |timing: &AicTimingModel| {
+                if prefill {
+                    timing.predict_prefill_ms(batch, length, prefix)
+                } else {
+                    timing.predict_decode_ms(batch, batch * length, length, 16384)
+                }
+                .unwrap()
+            };
+            assert_eq!(predict(&native).to_bits(), predict(&bridge).to_bits());
+            if let Some(cached) = cached {
+                assert!(Arc::ptr_eq(&cached, &native.phase_cache.get(&key).unwrap()));
+            }
+            let actual = native.evidence_summary().unwrap();
+            let expected = bridge.evidence_summary().unwrap();
+            assert_eq!(actual, expected);
+            for (a, b) in [
+                (&actual.prefill, &expected.prefill),
+                (&actual.decode, &expected.decode),
+            ] {
+                let bits = |phase: &TimingPhaseEvidence| {
+                    std::iter::once((phase.latency_ms, phase.energy_wms, phase.covered_latency_ms))
+                        .chain(
+                            phase
+                                .operations
+                                .iter()
+                                .map(|op| (op.latency_ms, op.energy_wms, op.covered_latency_ms)),
+                        )
+                        .map(|(latency, energy, covered)| {
+                            (
+                                latency.to_bits(),
+                                energy.map(f64::to_bits),
+                                covered.to_bits(),
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                };
+                assert_eq!(bits(a), bits(b));
+            }
+        }
+
         // Exercise a real missing-data error through both callers. Only the
         // test engine is synthetic; the production constructor is unchanged.
         let missing_op = |phase| {
@@ -2328,7 +2389,7 @@ mod tests {
             .unwrap(),
         );
         let mut native = Python::with_gil(|py| {
-            timing_model(
+            python_timing_model(
                 Py::new(
                     py,
                     crate::AicEngine::from_shared_engine(Arc::clone(&missing)),
@@ -2338,7 +2399,7 @@ mod tests {
                 false,
             )
         });
-        let bridge = Python::with_gil(|py| timing_model(native.engine.clone_ref(py), false));
+        let bridge = Python::with_gil(|py| python_timing_model(native.engine.clone_ref(py), false));
         native.phase_provider = AicPhaseProvider::Native(missing);
         for mode in ["static_ctx", "static_gen"] {
             let error = native
@@ -2986,7 +3047,7 @@ mod tests {
     fn fpm_decode_timing_queries_exact_past_kv_total() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let timing = timing_model(engine, true);
+        let timing = python_timing_model(engine, true);
 
         let latency = timing
             .predict_decode_ms(35, 546_081, 15_602, 546_048)
@@ -3000,7 +3061,7 @@ mod tests {
     fn fpm_decode_timing_caps_logical_past_kv_at_physical_capacity() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let timing = timing_model(engine, true);
+        let timing = python_timing_model(engine, true);
 
         let latency = timing
             .predict_decode_ms(35, 546_116, 15_603, 546_048)
@@ -3013,7 +3074,7 @@ mod tests {
     fn op_level_decode_timing_converts_inclusive_mean_to_past_kv() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let timing = timing_model(engine, false);
+        let timing = python_timing_model(engine, false);
 
         let latency = timing
             .predict_decode_ms(35, 546_081, 15_602, 546_048)
@@ -3035,7 +3096,7 @@ mod tests {
     fn bounded_replay_rejects_heterogeneous_actual_prefill_geometry() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
-        let mut timing = timing_model(engine, false);
+        let mut timing = python_timing_model(engine, false);
         timing.decoder_replay = true;
         for geometry in [vec![], vec![(3, 1536)], vec![(129, 128), (129, 128)]] {
             timing.validate_prefill_batch(&geometry).unwrap();
@@ -3059,7 +3120,7 @@ mod tests {
                 .unwrap()
                 .into_any()
         });
-        let timing = timing_model(engine, false);
+        let timing = python_timing_model(engine, false);
 
         assert_eq!(timing.predict_prefill_ms(2, 128, 0).unwrap(), 10.0);
         assert_eq!(timing.predict_decode_ms(2, 258, 128, 1024).unwrap(), 4.0);
@@ -3084,7 +3145,7 @@ mod tests {
     fn repeated_shapes_reuse_provider_evidence_and_accumulate_every_step() {
         pyo3::prepare_freethreaded_python();
         let engine = Python::with_gil(|py| Py::new(py, PerOpEvidenceProbe::default()).unwrap());
-        let timing = timing_model(
+        let timing = python_timing_model(
             Python::with_gil(|py| engine.clone_ref(py).into_any()),
             false,
         );
@@ -3122,7 +3183,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_native_diagnostics_reject_nonzero_work() {
+    fn empty_native_evidence_and_diagnostics_reject_nonzero_work() {
         use crate::perfmodel::engine::{Engine, spec::EngineSpec};
         use crate::perfmodel::fpm::ForwardPassPerfOptions;
         pyo3::prepare_freethreaded_python();
@@ -3141,43 +3202,52 @@ mod tests {
             "tp_size": 1, "pp_size": 1
         }))
         .unwrap();
-        let native = Engine::build(EngineSpec::new(config, vec![], vec![]), Arc::new(db)).unwrap();
+        let native =
+            Arc::new(Engine::build(EngineSpec::new(config, vec![], vec![]), Arc::new(db)).unwrap());
         let engine = Python::with_gil(|py| {
             Py::new(py, PerOpEvidenceProbe::default())
                 .unwrap()
                 .into_any()
         });
-        let mut timing = timing_model(engine, false);
+        let mut timing = python_timing_model(engine, false);
+        timing.phase_provider = AicPhaseProvider::Native(Arc::clone(&native));
         timing.diagnostic_model = Some(ForwardPassPerfModel::from_engine(
-            Arc::new(native),
+            native,
             ForwardPassPerfOptions::default(),
         ));
-        for mode in ["static_ctx", "static_gen"] {
-            let error = timing
-                .predict_phase_evidence(1, 128, 2, 0, mode)
-                .unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains(&format!("AIC {mode} returned empty operation diagnostics"))
-            );
+        for kind in ["diagnostics", "evidence"] {
+            for mode in ["static_ctx", "static_gen"] {
+                let error = timing
+                    .predict_phase_evidence(1, 128, 2, 0, mode)
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("AIC {mode} returned empty operation {kind}"))
+                );
+                assert_eq!(
+                    timing
+                        .predict_phase_evidence(0, 128, 2, 0, mode)
+                        .unwrap()
+                        .as_phase()
+                        .latency_ms,
+                    0.0
+                );
+            }
             assert_eq!(
                 timing
-                    .predict_phase_evidence(0, 128, 2, 0, mode)
+                    .predict_phase_evidence(1, 128, 2, 128, "static_ctx")
                     .unwrap()
                     .as_phase()
                     .latency_ms,
                 0.0
             );
+            assert_eq!(
+                timing.evidence_summary(),
+                Some(TimingEvidenceSummary::default())
+            );
+            timing.diagnostic_model = None;
         }
-        assert_eq!(
-            timing
-                .predict_phase_evidence(1, 128, 2, 128, "static_ctx")
-                .unwrap()
-                .as_phase()
-                .latency_ms,
-            0.0
-        );
     }
 
     #[test]
@@ -3188,7 +3258,7 @@ mod tests {
                 .unwrap()
                 .into_any()
         });
-        let timing = timing_model(engine, false);
+        let timing = python_timing_model(engine, false);
         assert!(timing.predict_prefill_ms(99, 128, 0).is_err());
         assert!(timing.predict_decode_ms(99, 12800, 128, 16384).is_err());
         assert_eq!(timing.predict_prefill_ms(0, 128, 0).unwrap(), 0.0);
@@ -3258,11 +3328,27 @@ mod tests {
             assert_eq!(a.coverage.to_bits(), b.coverage.to_bits());
         };
         pyo3::prepare_freethreaded_python();
-        let mut timing = Python::with_gil(|py| timing_model(py.None(), false));
+        let mut timing = Python::with_gil(|py| python_timing_model(py.None(), false));
         timing.phase_provider = AicPhaseProvider::NativeEntries(vec![row("seed", 1.0, 2.0, "sol")]);
         timing.predict_decode_ms(1, 65, 64, 1024).unwrap();
         let cached = timing.phase_cache.get(&(1, 63, 2, 0, false)).unwrap();
         let before = timing.evidence_summary().unwrap();
+        timing.phase_provider = AicPhaseProvider::NativeEntries(Vec::new());
+        for _ in 0..2 {
+            let error = timing.predict_decode_ms(1, 129, 128, 1024).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "AIC static_gen returned empty operation evidence for nonzero work"
+            );
+            assert!(timing.phase_cache.get(&(1, 127, 2, 0, false)).is_none());
+            assert!(Arc::ptr_eq(
+                &cached,
+                &timing.phase_cache.get(&(1, 63, 2, 0, false)).unwrap()
+            ));
+            let after = timing.evidence_summary().unwrap();
+            assert_bits(&after.prefill, &before.prefill);
+            assert_bits(&after.decode, &before.decode);
+        }
         for entries in cases {
             let checked = phase_evidence_from_entries(
                 entries
