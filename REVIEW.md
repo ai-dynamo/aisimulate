@@ -33,11 +33,65 @@ also require a Codex review of the same commit. The risk level changes review
 depth, not merge authority: every tier still requires the applicable CODEOWNER
 approval.
 
+A draft or a PR excluded by the configured title/label filters is not eligible
+for maintainer Full CI admission on the strength of a skipped CodeRabbit check.
+When the work is ready, remove those exclusions, mark it non-draft, and obtain
+substantive CodeRabbit review of the current head. There is no replacement-review
+waiver in this policy. An automatic copy-branch coverage run does not satisfy
+this review requirement or grant merge permission.
+
 | Risk | Review before Full CI | Human merge gate |
 | --- | --- | --- |
 | Low | Fast CI and CodeRabbit | Applicable CODEOWNER |
 | Medium | Fast CI, CodeRabbit, and Codex | Applicable CODEOWNER |
 | High | Fast CI, CodeRabbit, and Codex | CODEOWNER plus relevant domain, architecture, security, or release owner |
+
+Choose the highest tier warranted by the changed behavior and explain it in the
+PR's review map. Low risk covers documentation and mechanical changes with no
+runtime or enforcement change. Medium risk covers bounded behavior changes with
+known consumers and reproducible validation. High risk includes numerical-model
+or performance-data changes, public compatibility, cross-layer architecture,
+and changes to security, runner trust, or release authority. A small diff is not
+by itself low risk. The responsible CODEOWNER confirms the tier; a bot suggestion
+can prompt escalation but cannot waive the required reviews.
+
+### Review handoff and finding disposition
+
+Before marking a PR ready for review, fill in the template's risk rationale,
+responsible CODEOWNER, and expert escalation fields. Use the generated root
+[CODEOWNERS](CODEOWNERS) and GitHub's requested-reviewer list to route the changed
+paths. Name the owning team while an individual reviewer is being assigned;
+record the responsible reviewer once that person accepts the handoff. For
+changes spanning owners, identify who coordinates the handoff and request the
+other affected owners. A GitHub code-owner approval can be satisfied by one of
+several listed owners; it does not prove every relevant expert reviewed the
+change.
+
+For high-risk work, name the domain, architecture, security, or release owner
+and the question requiring their decision. The same person may cover CODEOWNER
+and expert roles when qualified; record both roles explicitly. For other tiers,
+write N/A or name the expert needed for a specific uncertainty. Route an
+unanswered request or a disputed tier/finding through the owning team, then the
+repository maintainers if needed. Routine handoffs do not require a particular
+maintainer or project lead.
+
+Reviewers should acknowledge an accepted handoff, give an expected review time
+or name a replacement, and distinguish **blocking** findings from **follow-up**
+suggestions. Authors should answer each actionable thread with the fixing
+commit and validation, a reasoned disagreement, or an agreed follow-up issue.
+If review or a fix is delayed, update the PR with the owner and next step; do not
+treat silence as approval.
+
+Keep blocking findings in GitHub review conversations until corrected or the
+reviewer accepts an evidence-backed disposition. P0/P1 findings block Full CI
+admission; other required findings may be addressed while Full CI runs but still
+block merge. A follow-up is non-blocking only when the responsible reviewer
+agrees and the PR links an issue with an owner and scope. Do not hide a blocker
+by resolving its thread or moving it to the backlog. After a push, refresh the
+reviewed SHA, relevant reviews, CI links, and outstanding findings in the PR;
+review completion requires the current head and resolved required conversations.
+
+### CI evidence and admission
 
 Fast CI contains quick deterministic checks: source and legal policy, generated
 CODEOWNERS integrity, lint, syntax compilation, whitespace, and Rust formatting.
