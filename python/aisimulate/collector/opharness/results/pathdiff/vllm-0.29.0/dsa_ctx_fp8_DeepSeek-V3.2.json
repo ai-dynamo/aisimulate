@@ -1,11 +1,10 @@
 {
- "verdict": "diverged",
+ "verdict": "aligned",
  "repo": "deepseek-ai/DeepSeek-V3.2",
  "framework": "vllm",
  "version": "0.29.0",
  "collector_backends": [
   "cublas",
-  "dsa_nsa",
   "fa3",
   "vllm_kernel"
  ],
@@ -21,17 +20,7 @@
   "vllm_kernel"
  ],
  "collector_only_signal": [],
- "kernel_drift": {
-  "dsa_nsa": {
-   "collector_only_kernels": [
-    "_fused_indexer_q_rope_quant_kernel",
-    "vllm::indexer_k_quant_and_cache_kernel"
-   ],
-   "serving_kernels": [
-    "vllm::cp_gather_indexer_k_quant_cache_kernel"
-   ]
-  }
- },
+ "kernel_drift": null,
  "serving_kernels_matched_in_collector": [
   "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
@@ -45,6 +34,8 @@
   "tensorrt_llm::kernels::fp8_blockscale_gemm::scale_1x128_kernel"
  ],
  "collector_unmatched_kernels": [
+  "_fused_norm_rope_kernel",
+  "_fused_q_kernel",
   "kernel"
  ],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
