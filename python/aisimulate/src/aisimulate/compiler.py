@@ -206,11 +206,13 @@ def _deployment(
     }
     if mode == "agg":
         assert engine.workers.aggregated is not None
-        worker = engine.workers.aggregated
+        worker, vl_metadata = _resolve_host_profile(engine, engine.workers.aggregated, workload)
         parallel = _parallel_mapping(worker, prefix="")
         return BackendDeploymentSpec(
             parallel_config=parallel,
-            performance_model_metadata={"aggregated": _worker_performance_model_metadata(engine, worker)},
+            performance_model_metadata={
+                "aggregated": {**_worker_performance_model_metadata(engine, worker), **vl_metadata},
+            },
             agg_engine_args=_worker_engine_args(
                 engine,
                 worker,
@@ -362,6 +364,27 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
         f"{prefix}moe_tp": parallel.moe_tensor,
         f"{prefix}moe_ep": parallel.moe_expert,
     }
+
+
+def _resolve_host_profile(
+    engine: EnginePredictionConfig, worker: WorkerPredictionConfig, workload: dict[str, JSONValue]
+) -> tuple[WorkerPredictionConfig, dict[str, JSONValue]]:
+    """Fill the worker's host and frontend tables from its measured profile, if it names one."""
+    if worker.host_profile is None:
+        return worker, {}
+    from .vl.profile import load_host_profile, lower_host_profile, match_host_profile, profile_id
+
+    profile = load_host_profile(worker.host_profile.path)
+    images = workload.get("images")
+    match_host_profile(
+        profile,
+        model=engine.model,
+        frontend=worker.host_profile.frontend,
+        image_encoding=str(images.get("encoding", "png")) if isinstance(images, dict) else "png",
+    )
+    host, frontend = lower_host_profile(profile, tensor_parallel=worker.parallelism.tensor)
+    resolved = worker.model_copy(update={"host": host, "frontend": frontend, "host_profile": None})
+    return resolved, {"vl": {"host_profile_id": profile_id(profile), "frontend": worker.host_profile.frontend}}
 
 
 def _worker_performance_model_metadata(

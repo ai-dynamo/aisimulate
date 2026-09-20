@@ -254,6 +254,13 @@ class FrontendPredictionConfig(StrictModel):
     stages: list[FrontendStageConfig] = Field(min_length=1)
 
 
+class HostProfileConfig(StrictModel):
+    """Take the host and frontend tables from a measured profile instead of spelling them out."""
+
+    path: str = Field(min_length=1)
+    frontend: Literal["python", "rust"]
+
+
 class VisionPredictionConfig(StrictModel):
     """Vision encoder hosted on the language worker."""
 
@@ -271,13 +278,21 @@ class WorkerPredictionConfig(StrictModel):
     startup_seconds: float = Field(default=0.0, ge=0.0)
     host: HostPredictionConfig | None = None
     frontend: FrontendPredictionConfig | None = None
+    host_profile: HostProfileConfig | None = None
     vision: VisionPredictionConfig | None = None
 
     @model_validator(mode="after")
     def _validate_host_features(self) -> WorkerPredictionConfig:
         if self.frontend is not None and self.host is None:
             raise ValueError("frontend requires host")
+        if self.host_profile is not None and (self.host is not None or self.frontend is not None):
+            raise ValueError("host_profile replaces explicit host and frontend tables")
         return self
+
+    @property
+    def hosts_scheduler_thread(self) -> bool:
+        """Whether this worker models its scheduler thread, explicitly or from a profile."""
+        return self.host is not None or self.host_profile is not None
 
 
 class EncoderPredictionConfig(StrictModel):
@@ -724,7 +739,7 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
 def native_vl_worker(engine) -> WorkerPredictionConfig | None:
     """The aggregated worker that hosts the vision encoder for image workloads, if any."""
     worker = getattr(engine.workers, "aggregated", None)
-    if worker is None or getattr(worker, "host", None) is None:
+    if worker is None or not getattr(worker, "hosts_scheduler_thread", False):
         return None
     return worker
 
@@ -732,7 +747,7 @@ def native_vl_worker(engine) -> WorkerPredictionConfig | None:
 def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
     for role in ("aggregated", "prefill", "decode"):
         worker = getattr(engine.workers, role)
-        if worker is None or (worker.host is None and worker.vision is None):
+        if worker is None or (not worker.hosts_scheduler_thread and worker.vision is None):
             continue
         if engine.backend != "sglang":
             raise ValueError(f"workers.{role}.host and workers.{role}.vision are supported only for backend=sglang")

@@ -150,3 +150,73 @@ def test_native_vl_schema_rejects_unsupported(kind):
         worker["timing"] = {"type": "fixed", "prefill_ms": 1.0, "decode_ms": 1.0}
     with pytest.raises(ValidationError):
         CorePredictionConfig.model_validate(deepcopy(raw))
+
+
+def _host_profile(**overrides):
+    worker = _prediction()["engine"]["workers"]["aggregated"]
+    profile = {
+        "schema_version": 1,
+        "identity": {
+            "sglang_revision": "0bcd822377da7b5718e674eaf9c870d349424dd1",
+            "model": "Qwen/Qwen3-VL-8B-Instruct",
+            "frontend": "python",
+            "image_encoding": "png",
+        },
+        "host": worker["host"],
+        "frontend": worker["frontend"],
+        "tp_sync_ms": {"2": 0.4},
+        "provenance": {"sampled_on": "example-host"},
+    }
+    profile.update(overrides)
+    return profile
+
+
+def test_host_profile_lowers_to_the_explicit_tables(tmp_path):
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(_host_profile()))
+    explicit = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(_prediction())
+    )
+    raw = _prediction()
+    worker = raw["engine"]["workers"]["aggregated"]
+    del worker["host"], worker["frontend"]
+    worker["host_profile"] = {"path": str(path), "frontend": "python"}
+    profiled = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    assert (
+        profiled.backend_deployment.agg_engine_args
+        == explicit.backend_deployment.agg_engine_args
+    )
+    vl = profiled.backend_deployment.performance_model_metadata["aggregated"]["vl"]
+    assert vl["frontend"] == "python" and len(vl["host_profile_id"]) == 16
+
+    worker["parallelism"]["tensor"] = 2
+    tp2 = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    assert tp2.backend_deployment.agg_engine_args["sglang"]["host"]["tp_sync_ms"] == 0.4
+
+
+@pytest.mark.parametrize("kind", ["frontend", "encoding", "tp_sync", "missing"])
+def test_host_profile_mismatches_fail_closed(tmp_path, kind):
+    raw = _prediction()
+    worker = raw["engine"]["workers"]["aggregated"]
+    del worker["host"], worker["frontend"]
+    profile = _host_profile()
+    if kind == "frontend":
+        worker["host_profile"] = {"path": "", "frontend": "rust"}
+        expected = "frontend: profile='python', prediction='rust'"
+    elif kind == "encoding":
+        raw["traffic"]["source"]["images"]["encoding"] = "jpeg"
+        expected = "image_encoding: profile='png', prediction='jpeg'"
+    elif kind == "tp_sync":
+        worker["parallelism"]["tensor"] = 4
+        expected = "no tp_sync_ms entry for tensor parallel 4"
+    else:
+        profile["missing"] = ["launch_extend"]
+        expected = "lacks measured costs for: launch_extend"
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    worker["host_profile"] = {
+        "path": str(path),
+        "frontend": worker.get("host_profile", {}).get("frontend", "python"),
+    }
+    with pytest.raises(ValueError, match=expected):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
