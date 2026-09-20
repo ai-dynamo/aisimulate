@@ -1,0 +1,74 @@
+diff --git a/components/src/dynamo/common/forward_pass_metrics.py b/components/src/dynamo/common/forward_pass_metrics.py
+index f656ee7..54b7630 100644
+--- a/components/src/dynamo/common/forward_pass_metrics.py
++++ b/components/src/dynamo/common/forward_pass_metrics.py
+@@ -118,6 +118,16 @@ class ScheduledRequestMetrics(
+     # High variance means a mix of short and long sequences decoding together.
+     var_decode_kv_tokens: float = 0.0
+ 
++    # Per-request batch composition (FPM v1 extension, optional; empty on
++    # producers that do not emit it). One entry per scheduled request (prefill
++    # chunks and decode steps alike), sorted by past_kv_lengths descending:
++    #   extend_lengths[i]  = tokens computed for request i in this iteration
++    #   past_kv_lengths[i] = KV tokens already present for request i (prefix
++    #                        cache hits + earlier chunks, or the decode context)
++    # Consumers that only need aggregates keep using the fields above.
++    extend_lengths: list[int] = msgspec.field(default_factory=list)
++    past_kv_lengths: list[int] = msgspec.field(default_factory=list)
++
+ 
+ class QueuedRequestMetrics(
+     msgspec.Struct,
+diff --git a/components/src/dynamo/vllm/instrumented_scheduler.py b/components/src/dynamo/vllm/instrumented_scheduler.py
+index cbc2a12..49e1128 100644
+--- a/components/src/dynamo/vllm/instrumented_scheduler.py
++++ b/components/src/dynamo/vllm/instrumented_scheduler.py
+@@ -2057,26 +2057,35 @@ class InstrumentedScheduler(AsyncScheduler):
+         prefill_lengths = WelfordAccumulator()
+         sum_prefill_kv_tokens = 0
+         decode_kv = WelfordAccumulator()
++        # per-request (extend, past) pairs -> FPM extend_lengths / past_kv_lengths
++        pairs: list[tuple[int, int]] = []
+ 
+         for req in new_reqs:
+             if self._bench_new_request_counts_as_decode(req.req_id):
+                 decode_kv.add(req.num_computed_tokens)
++                pairs.append((num_scheduled.get(req.req_id, 1), req.num_computed_tokens))
+                 continue
+             num_prefill += 1
+-            sum_prefill_tokens += num_scheduled.get(req.req_id, 0)
++            ext = num_scheduled.get(req.req_id, 0)
++            sum_prefill_tokens += ext
+             prompt_len = len(req.prompt_token_ids) if req.prompt_token_ids else 0
+             prefill_lengths.add(prompt_len)
+             sum_prefill_kv_tokens += req.num_computed_tokens
++            pairs.append((ext, req.num_computed_tokens))
+             self._prompt_len_per_req[req.req_id] = prompt_len
+ 
+         for i, req_id in enumerate(cached.req_ids):
++            past = cached.num_computed_tokens[i]
++            ext = num_scheduled.get(req_id, 0)
+             if cached.is_context_phase(req_id):
+                 num_prefill += 1
+-                sum_prefill_tokens += num_scheduled.get(req_id, 0)
++                sum_prefill_tokens += ext
+                 prefill_lengths.add(self._prompt_len_per_req.get(req_id, 0))
+-                sum_prefill_kv_tokens += cached.num_computed_tokens[i]
++                sum_prefill_kv_tokens += past
+             else:
+-                decode_kv.add(cached.num_computed_tokens[i])
++                decode_kv.add(past)
++            pairs.append((ext, past))
++        pairs.sort(key=lambda t: (-t[1], -t[0]))
+ 
+         return ScheduledRequestMetrics(
+             num_prefill_requests=num_prefill,
+@@ -2086,6 +2095,8 @@ class InstrumentedScheduler(AsyncScheduler):
+             num_decode_requests=decode_kv.n,
+             sum_decode_kv_tokens=decode_kv.s,
+             var_decode_kv_tokens=decode_kv.variance(),
++            extend_lengths=[e for e, _ in pairs],
++            past_kv_lengths=[p for _, p in pairs],
+         )
+ 
+     def _bench_new_request_counts_as_decode(self, req_id: str) -> bool:

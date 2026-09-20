@@ -1,0 +1,61 @@
+diff --git a/python/sglang/srt/managers/scheduler_components/metrics_reporter.py b/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
+index f8be4ab..d9f697d 100644
+--- a/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
++++ b/python/sglang/srt/managers/scheduler_components/metrics_reporter.py
+@@ -376,10 +376,18 @@ class SchedulerMetricsReporter:
+         else:
+             prefill_reqs = []
+ 
++        pairs = []  # (extend, past) per scheduled request, schedule-time values
++        _ext = getattr(batch, 'extend_lens', None)
++        _pre = getattr(batch, 'prefix_lens', None)
++        _from_batch = bool(prefill_reqs) and _ext is not None and _pre is not None and len(_ext) == len(batch.reqs) == len(_pre)
++        if _from_batch:
++            pairs = [(int(e), int(p)) for e, p in zip(_ext, _pre)]
+         if prefill_reqs:
+             stats = batch.prefill_stats
+             for req in prefill_reqs:
+                 prefill_lengths.add(len(req.origin_input_ids))
++                if not _from_batch:
++                    pairs.append((int(getattr(req, 'extend_input_len', 0) or 0), (len(req.prefix_indices) if getattr(req, 'prefix_indices', None) is not None else 0)))
+             num_prefill_requests = stats.num_new_seqs if stats else len(prefill_reqs)
+             sum_prefill_tokens = stats.log_input_tokens if stats else 0
+             sum_prefill_kv_tokens = sum(len(req.prefix_indices) for req in prefill_reqs)
+@@ -388,9 +396,13 @@ class SchedulerMetricsReporter:
+         if batch.forward_mode.is_mixed():
+             for req in batch.decoding_reqs or []:
+                 decode_kv.add(req.seqlen)
++                if not _from_batch:
++                    pairs.append((1, int(req.seqlen)))
+         elif batch.forward_mode.is_decode():
+             for sl in batch.seq_lens_cpu:
+                 decode_kv.add(int(sl))
++                pairs.append((1, int(sl)))
++        pairs.sort(key=lambda t: (-t[1], -t[0]))
+ 
+         return ScheduledRequestMetrics(
+             num_prefill_requests=num_prefill_requests,
+@@ -400,6 +412,8 @@ class SchedulerMetricsReporter:
+             num_decode_requests=decode_kv.count,
+             sum_decode_kv_tokens=decode_kv.total,
+             var_decode_kv_tokens=decode_kv.variance(),
++            extend_lengths=[e for e, _ in pairs],
++            past_kv_lengths=[p for _, p in pairs],
+         )
+ 
+     def _build_queued_request_metrics(self):
+diff --git a/python/sglang/srt/observability/forward_pass_metrics.py b/python/sglang/srt/observability/forward_pass_metrics.py
+index e271bd6..dfb26d2 100644
+--- a/python/sglang/srt/observability/forward_pass_metrics.py
++++ b/python/sglang/srt/observability/forward_pass_metrics.py
+@@ -77,6 +77,10 @@ class ScheduledRequestMetrics(
+     num_decode_requests: int = 0
+     sum_decode_kv_tokens: int = 0
+     var_decode_kv_tokens: float = 0.0
++    # per-request batch composition (Dynamo FPM extension): one entry per scheduled request,
++    # sorted by past_kv_lengths descending; extend = tokens computed this step, past = KV already present
++    extend_lengths: list[int] = msgspec.field(default_factory=list)
++    past_kv_lengths: list[int] = msgspec.field(default_factory=list)
+ 
+ 
+ class QueuedRequestMetrics(

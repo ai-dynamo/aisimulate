@@ -74,7 +74,9 @@ presets (`sglang18`, `hisim`) need two additive, aligned lists in
 "past_kv_lengths": [32768, 7100, 950]  // KV tokens already present before the step
 ```
 
-Producer patches (version stays 1, additive fields):
+Producer patches (version stays 1, additive fields; **not merged upstream**,
+shipped here as [`patches/`](patches/README.md) with the upstream commits they
+apply to):
 
 - vLLM: `dynamo/common/forward_pass_metrics.py` (two optional list fields on
   `ScheduledRequestMetrics`) and `dynamo/vllm/instrumented_scheduler.py`
