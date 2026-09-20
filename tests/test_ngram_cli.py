@@ -127,7 +127,7 @@ def test_native_replay_samples_conditional_progress_per_verification(mode):
 
 
 def test_native_aic_compiles_ngram_cost_without_mtp_draft_layers(monkeypatch):
-    from aiconfigurator_core.sdk import engine
+    from aisimulate_core.sdk import engine
 
     calls = []
     original = engine.compile_engine
@@ -153,6 +153,47 @@ def test_native_aic_compiles_ngram_cost_without_mtp_draft_layers(monkeypatch):
     assert report.metrics["completed_requests"] == 1
     assert report.metrics["mean_e2e_latency_ms"] > 0
     assert calls and all(call["speculation"] == _COST and call["nextn"] == 0 for call in calls)
+
+
+def test_canonical_estimator_round_trip_preserves_prompt_lookup_cost():
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    config = ForwardPassPerfModelConfig(
+        model="meta-llama/Meta-Llama-3.1-8B",
+        system="h200_sxm",
+        backend="vllm",
+        backend_version="0.24.0",
+        worker_type="aggregated",
+        speculation=deepcopy(_COST),
+    )
+    for _ in range(2):
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            provenance = model.diagnostics()["provenance"]
+            assert provenance["selected_estimation_mode"] == "op_level"
+            assert provenance["config"]["speculation"] == _COST
+            assert provenance["config"]["nextn"] == 0
+            config = ForwardPassPerfModelConfig(**provenance["config"])
+        finally:
+            model.close()
+
+
+@pytest.mark.parametrize("mode", ["fpm_interpolation", "fpm_regression"])
+def test_canonical_prompt_lookup_rejects_unsupported_estimators(mode):
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    with pytest.raises(ValueError, match="ngram speculation requires op_level timing"):
+        RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig(
+                model="m",
+                system="s",
+                backend="vllm",
+                worker_type="aggregated",
+                speculation=deepcopy(_COST),
+                estimation_mode=mode,
+                fallback_policy="allow",
+            )
+        )
 
 
 def test_recommend_predict_round_trip_preserves_speculation(tmp_path):
@@ -254,7 +295,7 @@ def test_ngram_sweeper_ignores_inactive_roles_until_selected(mode, inactive_role
 
 
 def test_generator_does_not_silently_drop_prompt_lookup():
-    from aiconfigurator.generator.request import SweeperCandidateError, from_sweeper_candidate
+    from aisimulate.generator.request import SweeperCandidateError, from_sweeper_candidate
 
     with pytest.raises(SweeperCandidateError, match="ngram deployment generation is unsupported"):
         from_sweeper_candidate({"config": {"speculation": _SPEC}})
@@ -301,3 +342,10 @@ def test_online_prediction_rejects_ngram():
     config = CorePredictionConfig.model_validate(_prediction())
     with pytest.raises(ValueError, match="offline engine stack"):
         prediction_to_replay_spec(config, execution_mode="online")
+
+
+def test_ngram_rejects_mtp_combination_before_compilation():
+    raw = _prediction(timing="default")
+    raw["engine"].update(nextn=2, nextn_accepted=1)
+    with pytest.raises(ValidationError, match="speculation cannot be combined with nextn"):
+        CorePredictionConfig.model_validate(raw)

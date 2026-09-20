@@ -5,7 +5,7 @@
 
 import pytest
 
-from aiconfigurator.cli import main as cli_main
+from aisimulate.legacy_cli import main as cli_main
 
 pytestmark = pytest.mark.unit
 

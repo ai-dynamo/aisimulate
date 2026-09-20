@@ -17,7 +17,7 @@ import os
 import pytest
 import yaml
 
-from aiconfigurator_core.sdk import perf_database as pdb
+from aisimulate_core.sdk import perf_database as pdb
 
 pytestmark = pytest.mark.unit
 

@@ -48,6 +48,7 @@ from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearch
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
 from .epd import add_encoder_choices, resolve_encoder_catalog
+from .forward_pass_estimator import ForwardPassEstimatorResolver
 from .kv_estimate import resolve_backend_version
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
@@ -87,7 +88,7 @@ from .result import (
 )
 from .sample import unroll_sample
 from .sampler import BranchSampler, Suggestion, make_branch_sampler
-from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate
+from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate, minimum_goodput_violations
 from .search_space import BranchSpace, ConditionalDimensionSpace, enumerate_branches
 
 logger = logging.getLogger(__name__)
@@ -575,6 +576,7 @@ def _materialize_one(
     afd_performance_model: AFDPerformanceModel | None = None,
     prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
     encoder_catalog: Mapping[str, Any] | None = None,
+    estimator_resolver: ForwardPassEstimatorResolver | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
     epd_snapshot = None
@@ -603,7 +605,13 @@ def _materialize_one(
                     runner_metadata={},
                     config_snapshot=epd_snapshot,
                 )
-        backend_version = config.search_space.backend_version
+        estimator_resolver = estimator_resolver or ForwardPassEstimatorResolver(config.search_space)
+        forward_pass_estimators = estimator_resolver.resolve_candidate(sample)
+        backend_version = (
+            next(iter(forward_pass_estimators.values())).backend_version
+            if forward_pass_estimators
+            else config.search_space.requested_backend_version(selection["backend"])
+        )
         if backend_version is None:
             if sample["deployment_mode"] == "disagg":
                 role_hardware = {role: sample[f"{role}_hardware_sku"] for role in ("prefill", "decode")}
@@ -627,6 +635,7 @@ def _materialize_one(
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
         sample["backend_version"] = backend_version
+        sample["forward_pass_estimators"] = {role: asdict(value) for role, value in forward_pass_estimators.items()}
         concurrency = config.workload.concurrency
         workload_payload = config.workload.model_dump(mode="json")
         if "traffic_load" in selection:
@@ -668,7 +677,9 @@ def _materialize_one(
             sample["concurrency"] = concurrency
         if encoder is not None:
             epd_snapshot = deepcopy(sample)
-        backend_deployment = build_backend_deployment(sample, backend_version=backend_version, encoder=encoder)
+        backend_deployment = build_backend_deployment(
+            sample, backend_version=backend_version, encoder=encoder, forward_pass_estimators=forward_pass_estimators
+        )
         if sample["deployment_mode"] in {"afd", "afd+pd"}:
             backend_deployment = attach_afd_measurements(
                 backend_deployment,
@@ -927,7 +938,7 @@ def _score_prepared(
             runner_metadata=replay_result.metadata,
             report_metrics=report,
         )
-    if goal.strict_sla:
+    if goal.requires_aggregate_sla:
         assert goal.sla is not None  # OptimizationGoal validates this invariant.
         violations = aggregate_sla_violations(report, goal.sla)
         if violations:
@@ -940,6 +951,19 @@ def _score_prepared(
                 runner_metadata=replay_result.metadata,
                 report_metrics=report,
             )
+    load_violations = minimum_goodput_violations(report, goal.min_goodput_rps)
+    if load_violations:
+        measured_goodput = report.get("goodput_request_throughput_rps")
+        invalid_metric = measured_goodput is None or measured_goodput < 0
+        return _EvalResult(
+            candidate=None,
+            observe_metrics=None,
+            outcome="failed" if invalid_metric else "infeasible",
+            reason=f"minimum goodput constraint: {'; '.join(load_violations)}",
+            reason_category=ReasonCategory.RUNNER_CONTRACT if invalid_metric else ReasonCategory.LOAD_CONSTRAINT,
+            runner_metadata=replay_result.metadata,
+            report_metrics=report,
+        )
     # A completed replay with no qualifying latency samples is a modeled
     # infeasible outcome, not a runner failure. This preserves the intent of the
     # former worst-rank sentinel without putting non-finite scores in SweepResult.
@@ -1090,6 +1114,7 @@ class Sweeper:
         prediction_config_factory = self._prediction_config_factory
         afd_performance_model = self._afd_performance_model
 
+        estimator_resolver = ForwardPassEstimatorResolver(config.search_space)
         goal = config.goal
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
@@ -1534,6 +1559,7 @@ class Sweeper:
                         prepared, build_result = _materialize_one(
                             suggestion.selection,
                             suggestion.parallel_config,
+                            estimator_resolver=estimator_resolver,
                             config=config,
                             goal=goal,
                             providers=resolved_providers,

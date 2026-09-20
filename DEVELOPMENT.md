@@ -49,7 +49,7 @@ pre-commit install --config python/aisimulate/.pre-commit-config.yaml
 ```
 
 The development environment includes:
-- The `aisimulate` package and its `aiconfigurator`, `aiconfigurator_core`, and
+- The `aisimulate` package and its `aiconfigurator`, `aisimulate_core`, and
   `aisimulate_core` compatibility namespaces in editable mode
 - All runtime dependencies
 - Development tools: `ruff`, `pre-commit`, `pytest` and related plugins
@@ -57,8 +57,8 @@ The development environment includes:
 ## AIConfigurator mirror boundaries
 
 Keep upstream AIC Python code/data in
-`python/aisimulate/src/aiconfigurator/` and
-`python/aisimulate/src/aiconfigurator_core/`. AISimulate-specific compatibility
+`python/aisimulate/src/aisimulate/` and
+`python/aisimulate/src/aisimulate_core/`. AISimulate-specific compatibility
 glue belongs in `python/aisimulate/src/aisimulate_core/`, not in those mirrors.
 The corresponding Rust mirror is `crates/core/src/perfmodel/`. See the
 repository's [AIC synchronization guide](docs/aic-sync.md) before applying an

@@ -11,8 +11,9 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from .aic import resolve_model_context_length
+from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS
 from .config.traffic import TrafficPredictionConfig
 from .config_adapter import (
     CompiledSweepProvider,
@@ -151,6 +152,43 @@ def recommendation_to_sweeper(
         "gpu_budget": optimization.constraints.max_candidate_gpus,
         "min_gpu_budget": optimization.constraints.min_candidate_gpus,
         "context_length": (resolve_model_context_length(model) if context == "max" else context),
+    }
+    for name in (
+        "database_mode",
+        "transfer_policy",
+        "systems_paths",
+        "estimation_mode",
+        "fallback_policy",
+        "estimator_config",
+    ):
+        if name in engine:
+            search_space[name] = deepcopy(engine[name])
+    search_space.update(
+        {
+            name: deepcopy(engine[name])
+            for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
+            if name in engine
+        }
+    )
+    if engine.get("nextn"):
+        search_space["aic_nextn"] = engine["nextn"]
+    search_space["role_estimator_controls"] = {
+        ("agg" if role == "aggregated" else role): {
+            name: deepcopy(raw.get("timing", {})[name])
+            for name in (
+                "estimation_mode",
+                "fallback_policy",
+                "estimator_config",
+                "systems_paths",
+                "database_mode",
+                "transfer_policy",
+            )
+            if name in raw.get("timing", {})
+        }
+        for role, raw in workers.items()
+        if role in {"aggregated", "prefill", "decode"}
+        and not set(modes) & {"afd", "afd+pd"}
+        and workers.get("encoder") is None
     }
     if engine.get("speculation") is not None:
         search_space["speculation"] = deepcopy(engine["speculation"])
@@ -402,7 +440,10 @@ def _role_search_space(
             result[f"{legacy_role}_timing_model"] = {"type": "polynomial"}
         else:
             result[f"{legacy_role}_timing_model"] = None
-        result[f"{legacy_role}_forward_model"] = timing.get("forward_model", "op_level")
+        if timing.get("estimation_mode") is not None:
+            result[f"{legacy_role}_forward_model"] = (
+                "fpm" if timing["estimation_mode"] == "fpm_interpolation" else "op_level"
+            )
         result[f"{legacy_role}_fpm_parquet_path"] = timing.get("fpm_parquet_path")
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
     # Remove empty internal maps so legacy serialization remains concise.
@@ -621,7 +662,11 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
     if source_type == "synthetic":
-        result.update(isl=source.get("input_tokens", 1024), osl=source.get("output_tokens", 128))
+        result.update(
+            isl=source.get("input_tokens", 1024),
+            osl=source.get("output_tokens", 128),
+            cached_prefix_tokens=source.get("cached_prefix_tokens", 0),
+        )
         if source.get("images") is not None:
             result["images"] = deepcopy(source["images"])
         count = stop.get("requests") if isinstance(stop, dict) else None
@@ -716,6 +761,8 @@ def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
         "target": target,
         "strict_sla": config.optimization.strict_sla,
     }
+    if config.optimization.constraints.min_goodput_rps is not None:
+        payload["min_goodput_rps"] = config.optimization.constraints.min_goodput_rps
     sla = config.evaluation.sla
     if sla is not None:
         payload["sla"] = sla.model_dump(mode="json", exclude_none=True)
@@ -745,7 +792,23 @@ def _candidate_prediction(
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
+    for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
+        if sample.get(name) is not None:
+            engine[name] = sample[name]
+    if sample.get("aic_nextn"):
+        engine["nextn"] = sample["aic_nextn"]
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
+    if deployment.forward_pass_estimators:
+        for name in (
+            "database_mode",
+            "transfer_policy",
+            "systems_paths",
+            "estimation_mode",
+            "fallback_policy",
+            "estimator_config",
+        ):
+            if name in raw_engine:
+                engine[name] = deepcopy(raw_engine[name])
     if sample.get("speculation") is not None:
         engine["speculation"] = deepcopy(sample["speculation"])
     if deployment.encoder is not None:
@@ -800,6 +863,20 @@ def _candidate_prediction(
             timing = {"type": "default", "forward_model": sample.get(f"{role}_forward_model") or "op_level"}
             if sample.get(f"{role}_fpm_parquet_path") is not None:
                 timing["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
+        estimator = deployment.forward_pass_estimators.get(role)
+        if estimator is not None:
+            resolved = estimator.config
+            timing = {
+                "type": "default",
+                "estimation_mode": resolved["estimation_mode"],
+                "fallback_policy": "deny",
+                "estimator_config": deepcopy(resolved["estimator_config"]),
+            }
+            # Per-role roots can differ; preserve them next to the role's timing.
+            timing["systems_paths"] = list(resolved["systems_paths"])
+            timing["database_mode"] = resolved["database_mode"]
+            policy = resolved["transfer_policy"]
+            timing["transfer_policy"] = list(policy) if policy is not None else None
         kv_cache = {
             "block_size": block_size,
             "prefix_caching": sample[f"{role}_enable_prefix_caching"],

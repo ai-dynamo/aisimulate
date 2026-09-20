@@ -7,9 +7,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from aiconfigurator.sdk.backends.sglang_backend import SGLANGBackend
-from aiconfigurator.sdk.backends.trtllm_backend import TRTLLMBackend
-from aiconfigurator.sdk.backends.vllm_backend import VLLMBackend
+from aisimulate.sdk.backends.sglang_backend import SGLANGBackend
+from aisimulate.sdk.backends.trtllm_backend import TRTLLMBackend
+from aisimulate.sdk.backends.vllm_backend import VLLMBackend
 
 pytestmark = pytest.mark.unit
 

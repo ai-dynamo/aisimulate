@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-
 from collector.wideep.backend_contracts import DEEPEP_COLLECTOR_CONTRACTS, contract_for
 
 pytestmark = pytest.mark.unit

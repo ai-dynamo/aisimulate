@@ -8,11 +8,11 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from aiconfigurator.sdk.common import (
+from aisimulate.sdk.common import (
     BackendName,
     PerfDataFilename,
 )
-from aiconfigurator.sdk.perf_database import (
+from aisimulate.sdk.perf_database import (
     LoadedOpData,
     PerfDatabase,
     _resolve_perf_data_path,
@@ -62,7 +62,7 @@ def test_perf_database_finalize_loaded_data_converts_defaultdicts():
 
 
 def test_generation_dsa_load_data_binds_each_raw_attribute_independently(tmp_path):
-    from aiconfigurator.sdk.operations.dsa import GenerationDSAModule
+    from aisimulate.sdk.operations.dsa import GenerationDSAModule
 
     database = SimpleNamespace(
         systems_root=str(tmp_path),
@@ -96,7 +96,7 @@ def test_generation_dsa_load_data_binds_each_raw_attribute_independently(tmp_pat
 
 
 def test_nccl_load_data_tolerates_null_misc(tmp_path):
-    from aiconfigurator.sdk.operations.communication import NCCL
+    from aisimulate.sdk.operations.communication import NCCL
 
     database = SimpleNamespace(
         systems_root=str(tmp_path),
@@ -117,7 +117,7 @@ def test_nccl_load_data_tolerates_null_misc(tmp_path):
 
 
 def test_get_database_with_yaml_and_data_path(tmp_path, monkeypatch):
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
     system = "testsys"
     backend = "cuda"
     version = "v1"
@@ -148,7 +148,7 @@ def test_get_database_with_yaml_and_data_path(tmp_path, monkeypatch):
 
 
 def test_get_all_databases(tmp_path, monkeypatch):
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
     systems_dir = tmp_path / "systems_dir"
     systems_dir.mkdir()
 
@@ -182,7 +182,7 @@ def test_get_all_databases(tmp_path, monkeypatch):
 
 
 def test_get_all_databases_does_not_seed_formula_only_cache_with_shared_database(tmp_path, monkeypatch):
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
     systems_dir = tmp_path / "systems_dir"
     systems_dir.mkdir()
     (systems_dir / "testsys.yaml").write_text("data_dir: data\n")
@@ -208,7 +208,7 @@ def test_get_all_databases_does_not_seed_formula_only_cache_with_shared_database
 
 
 def test_get_database_uses_default_systems_paths(tmp_path, monkeypatch):
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
     system = "testsys"
     backend = "cuda"
     version = "v1"
@@ -235,7 +235,7 @@ def test_get_database_uses_default_systems_paths(tmp_path, monkeypatch):
 
 
 def test_get_database_conflict_returns_first(tmp_path, monkeypatch):
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
     system = "h100"
     backend = "trtllm"
     version = "v1"
@@ -258,7 +258,7 @@ def test_get_database_conflict_returns_first(tmp_path, monkeypatch):
 
 
 def test_get_all_databases_system_config_conflict(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
     caplog.set_level("WARNING")
     system = "h100"
 
@@ -285,7 +285,7 @@ def test_get_all_databases_system_config_conflict(tmp_path, monkeypatch, caplog)
 
 
 def test_get_all_databases_conflicting_backend_version_keeps_first(tmp_path, monkeypatch, caplog):
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.PerfDatabase", DummyPerfDatabase)
     caplog.set_level("WARNING")
     system = "h100"
 
@@ -416,9 +416,9 @@ def test_comprehensive_router_survives_scoped_stub_patch(mutable_comprehensive_p
     comprehensive singleton must be built BEFORE the scoped stub patch is
     active, or the singleton itself is constructed through the stubbed fetch
     and every later same-worker test reads a bf16-only singleton."""
-    from aiconfigurator.sdk.operations import warm_all_op_data
-    from aiconfigurator.sdk.operations.base import clear_all_op_caches
-    from aiconfigurator.sdk.operations.gemm import GEMM
+    from aisimulate.sdk.operations import warm_all_op_data
+    from aisimulate.sdk.operations.base import clear_all_op_caches
+    from aisimulate.sdk.operations.gemm import GEMM
 
     db = mutable_comprehensive_perf_db
     clear_all_op_caches()

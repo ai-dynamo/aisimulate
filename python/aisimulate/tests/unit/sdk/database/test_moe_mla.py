@@ -15,7 +15,7 @@ from Python is the policy/provenance surface below.
 
 import pytest
 
-from aiconfigurator.sdk import common
+from aisimulate.sdk import common
 
 pytestmark = pytest.mark.unit
 
@@ -34,7 +34,7 @@ class TestTransferPolicyAndProvenance:
             common.resolve_transfer_policy("not_a_kind")
 
     def test_worst_provenance_picks_least_confident(self):
-        from aiconfigurator.sdk.operations import util_empirical as ue
+        from aisimulate.sdk.operations import util_empirical as ue
 
         assert ue.worst_provenance(set()) == "silicon"  # nothing fired
         assert ue.worst_provenance({"empirical"}) == "empirical"

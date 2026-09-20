@@ -21,8 +21,8 @@ from functools import cache
 
 import pytest
 
-from aiconfigurator.cli.api import cli_support
-from aiconfigurator.sdk.perf_database import get_latest_database_version
+from aisimulate.legacy_cli.api import cli_support
+from aisimulate.sdk.perf_database import get_latest_database_version
 
 pytestmark = [pytest.mark.e2e, pytest.mark.build, pytest.mark.support_matrix]
 

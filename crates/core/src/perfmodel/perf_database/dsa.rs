@@ -1335,7 +1335,7 @@ mod tests {
     fn b200_sxm_spec() -> SystemSpec {
         let systems_yaml = PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems/b200_sxm.yaml");
+            .join("python/aisimulate/src/aisimulate_core/systems/b200_sxm.yaml");
         SystemSpec::load(&systems_yaml).expect("b200_sxm.yaml must parse")
     }
 
@@ -1556,7 +1556,7 @@ mod tests {
     /// PYTHONPATH=src python3 -c "
     /// import tempfile, os, types
     /// import pandas as pd
-    /// from aiconfigurator.sdk.operations.dsa import ContextDSAModule
+    /// from aisimulate.sdk.operations.dsa import ContextDSAModule
     /// tmp = tempfile.mkdtemp()
     /// data_dir = os.path.join(tmp, 'data', 'vllm', '1.0'); os.makedirs(data_dir)
     /// pd.DataFrame([
@@ -1710,8 +1710,8 @@ mod tests {
     /// ```text
     /// PYTHONPATH=src python3 -c "
     /// import pandas as pd, tempfile, os
-    /// from aiconfigurator.sdk.operations.dsa import load_context_dsa_module_data, _select_dsa_backend
-    /// from aiconfigurator.sdk import common
+    /// from aisimulate.sdk.operations.dsa import load_context_dsa_module_data, _select_dsa_backend
+    /// from aisimulate.sdk import common
     /// tmp = tempfile.mkdtemp(); f = os.path.join(tmp, 'dsa_context_module_perf.parquet')
     /// base = dict(architecture='DeepseekV32ForCausalLM', mla_dtype='bfloat16',
     ///             kv_cache_dtype='bfloat16', gemm_type='bfloat16',
@@ -1996,8 +1996,8 @@ mod tests {
     /// ```text
     /// PYTHONPATH=src python3 -c "
     /// import pandas as pd, tempfile, os
-    /// from aiconfigurator.sdk.operations.dsa import load_generation_dsa_module_data
-    /// from aiconfigurator.sdk import common
+    /// from aisimulate.sdk.operations.dsa import load_generation_dsa_module_data
+    /// from aisimulate.sdk import common
     /// tmp = tempfile.mkdtemp(); f = os.path.join(tmp, 'dsa_generation_module_perf.parquet')
     /// base = dict(architecture='DeepseekV32ForCausalLM', mla_dtype='bfloat16',
     ///             kv_cache_dtype='bfloat16', gemm_type='bfloat16', num_heads=128,

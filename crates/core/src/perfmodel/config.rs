@@ -102,7 +102,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   batch/query widths and FpmForwardOp gained verify_width. Upstream used
 //   14/15, already occupied here; these are positional bincode layout changes.
 //   TokenScale was appended to remap draft query widths before op lookup.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 18;
+// - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
+//   separating physical backend KV payload from attention arithmetic precision.
+//   Its appended enum changes positional bincode layout; old JSON defaults only.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -142,6 +145,10 @@ pub struct EngineConfig {
     /// extension with `.metadata.json`.
     #[serde(default)]
     pub fpm_parquet_path: Option<PathBuf>,
+
+    /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
+    #[serde(default)]
+    pub decoder_replay: bool,
 
     // KV
     pub kv_block_size: Option<u32>,

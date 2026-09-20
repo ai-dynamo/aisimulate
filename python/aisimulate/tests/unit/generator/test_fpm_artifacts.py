@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from aiconfigurator.fpm_contract import (
+from aisimulate.fpm_contract import (
     FPM_BARRIER_TIMEOUT_ENV,
     FPM_CELL_LABEL,
     FPM_ENV_EXPORTED_VARS,
@@ -36,10 +36,10 @@ from aiconfigurator.fpm_contract import (
     FPM_RUN_ID_ENV,
     FPM_RUN_SCRIPT_FILENAME,
 )
-from aiconfigurator.generator.aggregators import generate_config_from_input_dict
-from aiconfigurator.generator.api import generate_backend_artifacts
-from aiconfigurator.generator.main import main as generator_main
-from aiconfigurator.generator.rendering.engine import render_backend_templates
+from aisimulate.generator.aggregators import generate_config_from_input_dict
+from aisimulate.generator.api import generate_backend_artifacts
+from aisimulate.generator.main import main as generator_main
+from aisimulate.generator.rendering.engine import render_backend_templates
 
 pytestmark = pytest.mark.unit
 
@@ -1514,7 +1514,7 @@ def test_fpm_orchestrator_schema_default_resolves_to_lws():
     # Defaults are Jinja-evaluated; an unquoted identifier silently resolves
     # to None and only the builder's None fallback saves it. Pin the schema
     # default itself so the declaration stays truthful on its own.
-    from aiconfigurator.generator.rendering.schemas import apply_defaults
+    from aisimulate.generator.rendering.schemas import apply_defaults
 
     resolved = apply_defaults("K8sConfig", {}, backend="vllm")
     assert resolved.get("fpm_orchestrator") == "lws"

@@ -82,9 +82,9 @@ export FPM_RUN=/absolute/new/path/m27-h200-tp4
 mkdir -p "$(dirname "$FPM_RUN")"
 mkdir "$FPM_RUN"
 mkdir -p "$FPM_RUN/systems/data"
-cp "$AIS_REPO/python/aisimulate/src/aiconfigurator_core/systems/h200_sxm.yaml" \
+cp "$AIS_REPO/python/aisimulate/src/aisimulate_core/systems/h200_sxm.yaml" \
   "$FPM_RUN/systems/"
-cp "$AIS_REPO/python/aisimulate/src/aiconfigurator_core/systems/query_versions.yaml" \
+cp "$AIS_REPO/python/aisimulate/src/aisimulate_core/systems/query_versions.yaml" \
   "$FPM_RUN/systems/"
 ```
 
@@ -398,7 +398,7 @@ knobs must match the collected identity. This example uses checkpoint defaults.
 For explicitly collected nondefault precision, use the SDK's
 `gemm_quant_mode`, `moe_quant_mode`, `fmha_quant_mode`, `kvcache_quant_mode`, and
 `comm_quant_mode` arguments with the corresponding enum names as strings. See
-[the compile API](../../src/aiconfigurator_core/sdk/engine.py).
+[the compile API](../../src/aisimulate_core/sdk/engine.py).
 
 This guide copies the version policy file and uses literal backend versions.
 If the collected version is already queryable, omit
@@ -466,7 +466,7 @@ config = str(Path(sys.argv[2]).resolve(strict=True))
 output = str(Path(sys.argv[3]).resolve())
 os.environ["AICONFIGURATOR_SYSTEMS_PATH"] = root
 
-from aiconfigurator_core.sdk.perf_database import set_systems_paths
+from aisimulate_core.sdk.perf_database import set_systems_paths
 
 set_systems_paths([root])
 print(f"FPM systems_root={root}", file=sys.stderr)

@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +38,72 @@ from scripts.select_full_ci import COMPONENTS, select_components
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW_ROOT = REPOSITORY_ROOT / ".github" / "workflows"
 ACTION_ROOT = REPOSITORY_ROOT / ".github" / "actions"
+
+
+def test_stable_release_migrations_require_reviewed_clearance(tmp_path):
+    from scripts.check_release_migrations import GATES, require_completed_migrations
+
+    with pytest.raises(RuntimeError, match="dynamo/pull/14065"):
+        require_completed_migrations(GATES)
+    path = tmp_path / "gates.json"
+    path.write_text(json.dumps({"pending_migrations": []}))
+    require_completed_migrations(path)
+    for invalid in ({}, {"pending_migrations": None}, {"pending_migrations": [{}]}):
+        path.write_text(json.dumps(invalid))
+        with pytest.raises(ValueError):
+            require_completed_migrations(path)
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        require_completed_migrations(path)
+
+
+def test_nightly_can_publish_the_wheel_needed_by_pending_downstream_migrations():
+    workflow = _workflow("nightly-ci.yml")
+    serialized_workflow = json.dumps(workflow)
+    assert "check_release_migrations.py" not in serialized_workflow
+    assert "release-gates.json" not in serialized_workflow
+    jobs = workflow["jobs"]
+    guard = jobs["changes-guard"]
+    commands = "\n".join(_run_commands(job) for job in jobs.values() if "steps" in job)
+    assert "check_release_migrations.py" not in commands
+    assert "release-gates.json" not in commands
+    assert not any(step.get("uses", "").startswith("actions/checkout@") for step in guard["steps"])
+    steps = [step.get("id") for step in guard["steps"]]
+    assert steps.index("target") < steps.index("version") < steps.index("decide")
+    assert guard["outputs"]["dev-version"] == "${{ steps.version.outputs.dev-version }}"
+    build = jobs["build-artifacts"]
+    assert "scripts/apply_dev_version.py" in _run_commands(build)
+    assert {"changes-guard", "manual-approval", "python-compliance"} <= set(build["needs"])
+    assert "needs.changes-guard.outputs.should-build == 'true'" in build["if"]
+    publish = jobs["trigger-gitlab-security"]
+    assert {"build-artifacts", "manual-approval", "fpe-support-matrix", "license-evidence"} <= set(publish["needs"])
+    for name in ("build-artifacts", "fpe-support-matrix", "license-evidence"):
+        assert f"needs.{name}.result == 'success'" in publish["if"]
+
+
+@pytest.mark.parametrize(
+    "current,target,expected",
+    [
+        ("clear", "clear", 0),
+        ("clear", "pending", 1),
+        ("pending", "clear", 1),
+        ("clear", "missing", 1),
+        ("clear", "malformed", 1),
+    ],
+)
+def test_stable_publication_checks_current_policy_and_selected_target(tmp_path, monkeypatch, current, target, expected):
+    from scripts import check_release_migrations as checker
+
+    paths = {}
+    for name, state in (("current", current), ("target", target)):
+        paths[name] = tmp_path / f"{name}.json"
+        if state == "missing":
+            continue
+        pending = [] if state == "clear" else [{"pull_request": "migration/pr/1", "requirement": "Migrate consumer"}]
+        document = {} if state == "malformed" else {"pending_migrations": pending}
+        paths[name].write_text(json.dumps(document))
+    monkeypatch.setattr(checker, "GATES", paths["current"])
+    assert checker.main(["--target-gates", str(paths["target"])]) == expected
 
 
 def test_forward_perf_selects_before_allocating_the_benchmark_runner():
@@ -154,7 +221,7 @@ def _forward_api(pages, *, count=None, after=None, canonical="a" * 40):
                 [
                     {
                         "filename": "archive/old.py",
-                        "previous_filename": "python/aisimulate/src/aiconfigurator_core/foo.py",
+                        "previous_filename": "python/aisimulate/src/aisimulate_core/foo.py",
                     }
                 ]
             ],
@@ -185,11 +252,11 @@ def test_forward_perf_uses_complete_pr_files(pages, count, expected):
         ("Cargo.toml.bak", False),
         ("crates/core/src/engine/nested/predict.rs", True),
         ("crates/core/src/engine-other/predict.rs", False),
-        ("python/aisimulate/src/aiconfigurator_core/example.py", True),
-        ("python/aisimulate/src/aiconfigurator_core/unrelated/example.py", False),
-        ("python/aisimulate/src/aiconfigurator_core/systems/h100_sxm.yaml", True),
+        ("python/aisimulate/src/aisimulate_core/example.py", True),
+        ("python/aisimulate/src/aisimulate_core/unrelated/example.py", False),
+        ("python/aisimulate/src/aisimulate_core/systems/h100_sxm.yaml", True),
         (
-            "python/aisimulate/src/aiconfigurator_core/systems/unrelated/nested.yaml",
+            "python/aisimulate/src/aisimulate_core/systems/unrelated/nested.yaml",
             False,
         ),
     ],
@@ -617,6 +684,14 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "test_core_public_api.py" not in application_commands
     assert "test_core_public_api.py" not in compatibility_commands
 
+    contract_steps = [
+        step for step in jobs["application-tests"]["steps"] if step.get("if") == "matrix.shard.suite == 'contracts'"
+    ]
+    assert len(contract_steps) == 1
+    contract_command = contract_steps[0]["run"]
+    assert "--ignore=tests/fpm_accuracy" not in contract_command
+    assert "--ignore=tests/test_ci_workflow_contracts.py" in contract_command
+
     recommendation_path = "tests/e2e/cli/test_cli_recommend.py"
     recommendation_steps = [
         step for step in jobs["application-tests"]["steps"] if recommendation_path in step.get("run", "")
@@ -642,6 +717,12 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert "test_engine_step_parity.py" in regression_commands
     assert "test_compile_engine_parity.py" in regression_commands
     assert regression_commands.count("-c python/aisimulate/pytest.ini") == 2
+    assert regression_commands.index("check_prediction_numerics.py --fetch-baseline-only") < regression_commands.index(
+        "check_prediction_numerics.py --output"
+    )
+    policy_commands = _run_commands(_workflow("fast-ci.yml")["jobs"]["policy"])
+    fetch = "check_prediction_numerics.py --fetch-baseline-only"
+    assert policy_commands.index(fetch) < policy_commands.index("tests/test_ci_qualification.py")
 
     feature_mode_commands = _run_commands(jobs["rust-feature-modes"])
     assert "cargo test --workspace --features embed-python,replay-bench" in feature_mode_commands
@@ -813,9 +894,9 @@ def test_platform_wheel_build_and_verifiers_cover_collector_payload() -> None:
     ).read_text()
 
     assert "COPY python/aisimulate/collector/ /workspace/python/aisimulate/collector/" in dockerfile
-    assert "ln -s ../src /workspace/python/aisimulate/aic-core/src" in dockerfile
-    assert "test -d /workspace/python/aisimulate/src/aiconfigurator/model_configs" in dockerfile
-    assert "test -d /workspace/python/aisimulate/src/aiconfigurator/systems" in dockerfile
+    assert "ln -s ../src" not in dockerfile
+    assert "test -d /workspace/python/aisimulate/src/aisimulate_core/model_configs" in dockerfile
+    assert "test -d /workspace/python/aisimulate/src/aisimulate_core/systems" in dockerfile
     assert '"cases/**/*.yaml"' in release_verifier
     assert '"fpm_forward/**/*.py"' in release_verifier
     assert '"collector/fpm_forward/runtime/fpm_exec.sh"' in installed_verifier
@@ -1028,6 +1109,47 @@ def _run_comparison_base(
     )
     output = dict(line.split("=", 1) for line in output_path.read_text().splitlines()) if output_path.exists() else {}
     return result, output
+
+
+def _full_ci_concurrency_group(event: str, ref: str, run_id: str) -> str:
+    configuration = _workflow("ci.yml")["concurrency"]
+    assert configuration["cancel-in-progress"] == "true"
+    prefix, expression = configuration["group"].split("${{", 1)
+    expression = expression.rsplit("}}", 1)[0]
+    values = {
+        "github.event_name": event,
+        "github.ref": ref,
+        "github.run_id": run_id,
+    }
+    expression = re.sub(r"github\.[\w_]+", lambda match: repr(values[match[0]]), expression)
+    expression = expression.replace("&&", " and ").replace("||", " or ").replace("!startsWith", "not startsWith")
+    return prefix + str(
+        eval(
+            " ".join(expression.splitlines()),
+            {"__builtins__": {}},
+            {"startsWith": str.startswith},
+        )
+    )
+
+
+def test_full_ci_replaces_same_pr_across_trusted_and_manual_runs():
+    group = _full_ci_concurrency_group("push", "refs/heads/pull-request/159", "101")
+    assert group == _full_ci_concurrency_group("push", "refs/heads/pull-request/159", "102")
+    assert group == _full_ci_concurrency_group("workflow_dispatch", "refs/heads/pull-request/159", "103")
+    assert group != _full_ci_concurrency_group("push", "refs/heads/pull-request/160", "105")
+
+
+def test_full_ci_manual_source_branches_replace_only_their_branch():
+    group = _full_ci_concurrency_group("workflow_dispatch", "refs/heads/feature", "101")
+    assert group == _full_ci_concurrency_group("workflow_dispatch", "refs/heads/feature", "102")
+    assert group != _full_ci_concurrency_group("workflow_dispatch", "refs/heads/other-feature", "103")
+    assert group != _full_ci_concurrency_group("push", "refs/heads/pull-request/159", "104")
+
+
+@pytest.mark.parametrize("event", ["push", "workflow_dispatch"])
+@pytest.mark.parametrize("ref", ["refs/heads/main", "refs/heads/release/0.12.0", "refs/tags/v0.12.0"])
+def test_full_ci_preserves_every_lifecycle_and_tag_run(event, ref):
+    assert _full_ci_concurrency_group(event, ref, "101") != _full_ci_concurrency_group(event, ref, "102")
 
 
 def test_fast_ci_is_standalone_with_an_exact_commit_prerequisite() -> None:
@@ -1323,7 +1445,7 @@ def test_fpe_job_uses_required_container_without_legacy_lfs_data() -> None:
             "-C",
             str(REPOSITORY_ROOT),
             "ls-files",
-            "python/aisimulate/src/aiconfigurator_core/systems/**/*.txt",
+            "python/aisimulate/src/aisimulate_core/systems/**/*.txt",
         ],
         text=True,
     ).splitlines()
@@ -1734,7 +1856,7 @@ def test_full_ci_selector_maps_python_rust_and_data_boundaries() -> None:
     assert rust_plan["components"]["collector_data"] is True
     assert rust_plan["components"]["cargo_deny"] is False
 
-    data_plan = select_components(["python/aisimulate/src/aiconfigurator_core/systems/data/b200/op.parquet"])
+    data_plan = select_components(["python/aisimulate/src/aisimulate_core/systems/data/b200/op.parquet"])
     assert data_plan["components"]["collector_data"] is True
     assert data_plan["components"]["prediction_regression"] is True
     assert data_plan["components"]["engine_golden_regression"] is True
@@ -2700,6 +2822,11 @@ new AsyncFunction('github', 'context', 'core', process.argv[2])(github, context,
     )
 
 
+def _current_product_version():
+    manifest = tomllib.loads((REPOSITORY_ROOT / "python/aisimulate/pyproject.toml").read_text())
+    return manifest["project"]["version"]
+
+
 def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
     from packaging.version import Version
 
@@ -2716,20 +2843,26 @@ def test_nightly_versions_are_unique_date_ordered_and_stable_across_retries():
         versions.append(value["dev-version"])
         assert json.loads(_nightly_version(date, number).stdout) == value
     assert versions == ["202609170000001234", "202609170000001235", "202609180000001236"]
-    assert Version("0.12.0.dev20260917") < Version("0.12.0.dev" + versions[0])
-    assert [Version("0.12.0.dev" + v) for v in versions] == sorted(Version("0.12.0.dev" + v) for v in versions)
+    base_version = _current_product_version()
+    assert Version(f"{base_version}.dev20260917") < Version(f"{base_version}.dev{versions[0]}")
+    stamped_versions = [Version(f"{base_version}.dev{version}") for version in versions]
+    assert stamped_versions == sorted(stamped_versions)
     for number in (0, -1, 10000000000, "invalid"):
         assert _nightly_version("2026-09-17T00:00:00Z", number).returncode != 0
 
 
 @pytest.mark.parametrize("suffix", [".dev20260917", ".dev202609170000001234"])
-@pytest.mark.parametrize("base_version", ["0.12.0", "0.11.0"])
+@pytest.mark.parametrize("base_version", [None, "0.12.0"], ids=["current", "historical"])
 def test_current_release_tools_stamp_and_validate_historical_manifests(tmp_path, suffix, base_version):
+    current_version = _current_product_version()
+    base_version = base_version or current_version
     for name in ("Cargo.toml", "crates/core/Cargo.toml", "python/aisimulate/pyproject.toml"):
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(
-            (REPOSITORY_ROOT / name).read_text().replace('version = "0.12.0"', f'version = "{base_version}"')
+            (REPOSITORY_ROOT / name)
+            .read_text()
+            .replace(f'version = "{current_version}"', f'version = "{base_version}"')
         )
     for args in (
         ["init", "-q"],

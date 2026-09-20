@@ -10,9 +10,9 @@ import logging
 import pandas as pd
 import pytest
 
-from aiconfigurator.cli.main import _run_estimate_mode, build_default_tasks
-from aiconfigurator.cli.report_and_save import _plot_worker_setup_table
-from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
+from aisimulate.legacy_cli.main import _run_estimate_mode, build_default_tasks
+from aisimulate.legacy_cli.report_and_save import _plot_worker_setup_table
+from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
 
 pytestmark = pytest.mark.unit
 
@@ -118,7 +118,7 @@ def test_default_afd_serving_mode_rejects_enable_epd():
 
 
 def test_estimate_epd_warns_from_task_row_before_early_return(cli_parser, monkeypatch, caplog):
-    from aiconfigurator.sdk.task_v2 import Task
+    from aisimulate.sdk.task_v2 import Task
 
     fallback = MoECommFallback("context", "deepep_ht", 32, 8, 8, 1)
 
@@ -151,7 +151,7 @@ def test_estimate_epd_warns_from_task_row_before_early_return(cli_parser, monkey
         ]
     )
 
-    with caplog.at_level(logging.WARNING, logger="aiconfigurator.cli.main"):
+    with caplog.at_level(logging.WARNING, logger="aisimulate.legacy_cli.main"):
         _run_estimate_mode(args)
 
     assert (

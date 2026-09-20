@@ -20,7 +20,7 @@ use crate::engine::belady::BeladyOracle;
 #[cfg(test)]
 use crate::engine::cache::radix_cache::KvPageId;
 use crate::engine::common::protocols::{
-    DirectRequest, KvEventPublishers, MockEngineArgs, WorkerType,
+    DirectRequest, KvEventPublishers, MockEngineArgs, OutputSignal, WorkerType,
 };
 use crate::engine::common::speculative::{
     SpeculativeDecodeSampler, normalize_conditional_accept_rates,
@@ -39,8 +39,6 @@ use super::decode::{
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
-#[cfg(test)]
-use crate::engine::scheduler::accept_length_sample;
 use crate::engine::scheduler::{
     ActiveHandoffRequests, AdmissionInvariant, AdmissionStage, CapturedKvEventBuffer,
     DestinationHolds, EnginePassResult, KvEventVisibility, MockerMetrics, PendingDestinations,
@@ -297,6 +295,13 @@ impl SglangCore {
                     anyhow::bail!("destination handoff {handoff_id:?} is already active");
                 }
                 let request = self.build_request(request);
+                if self
+                    .config
+                    .max_model_len
+                    .is_some_and(|limit| request.prompt_len() >= limit)
+                {
+                    anyhow::bail!("destination prompt must be shorter than max_model_len");
+                }
                 let prompt_footprint = request
                     .prompt_len()
                     .div_ceil(self.config.block_size)
@@ -436,13 +441,27 @@ impl SglangCore {
     }
 
     fn build_request(&self, request: DirectRequest) -> SglangRequest {
-        let max_output_tokens = request.effective_max_output_tokens();
+        // This is the normalized context budget, without SGLang frontend margins.
+        // GPU parity at context_length=128: a 16-token prompt requesting 112
+        // tokens yielded 110; requesting 113 or using a prompt >=122 was rejected.
+        // Reproduce with a pinned version/config before
+        // modeling these differences; they do not establish a fixed token offset.
+        // https://github.com/ai-dynamo/aisimulate/pull/261#pullrequestreview-5250881045
+        let max_output_tokens = request.effective_max_output_tokens().min(
+            self.config
+                .max_model_len
+                .map(|limit| limit.saturating_sub(request.tokens.len()))
+                .unwrap_or(usize::MAX),
+        );
         let output_storage_hint = self.config.output_storage_hint(
             request.tokens.len(),
             max_output_tokens,
             request.output_token_ids.is_some(),
         );
-        SglangRequest::new(request, self.config.block_size, output_storage_hint)
+        let mut request = SglangRequest::new(request, self.config.block_size, output_storage_hint);
+        // Admission, retraction and speculative decode all consume this budget.
+        request.max_output_tokens = max_output_tokens;
+        request
     }
 
     fn complete_source(&mut self, request: SglangRequest) {
@@ -746,6 +765,50 @@ impl SglangCore {
         let defer_prefill = self.prefill_rounds_remaining > 0;
         let remaining_after_round = self.prefill_rounds_remaining.saturating_sub(1);
         let new_token_ratio_before = self.new_token_ratio;
+        let mut rejected = Vec::new();
+        if let Some(limit) = self.config.max_model_len {
+            self.waiting.retain(|request| {
+                if request.prompt_len() < limit {
+                    return true;
+                }
+                rejected.push(OutputSignal {
+                    uuid: request.uuid,
+                    token_id: None,
+                    completed: true,
+                    rejected: true,
+                    cached_tokens: None,
+                    handoff_delay_ms: None,
+                });
+                false
+            });
+        }
+        for signal in &rejected {
+            self.source_holds.remove_request(signal.uuid);
+        }
+        if let Some(oracle) = &self.belady {
+            oracle.retire_requests(rejected.iter().map(|signal| signal.uuid));
+        }
+        // Only providers with fallible geometry validation need to preserve the
+        // admission state. Normal polynomial and unrestricted AIC passes avoid
+        // copying radix metadata. Lease checkpoints never become independent owners.
+        let admission_checkpoint = (!self.waiting.is_empty()
+            && self.config.perf_model.prefill_batch_validation_can_fail())
+        .then(|| {
+            let waiting = self
+                .waiting
+                .iter()
+                .map(|request| {
+                    (
+                        request.uuid,
+                        request.materialized_tokens,
+                        request.allocated_tokens,
+                        request.kv_lease.admission_checkpoint(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            (self.kv_manager.begin_admission(), waiting)
+        });
+        let running_before_admission = self.running.len();
         let mut admissions = self.promote_prebuilt_ready();
         let materialized_waiting = !self.prebuilt_ready.is_empty();
         apply_schedule_policy(&mut self.waiting, &self.kv_manager, &self.config);
@@ -766,6 +829,56 @@ impl SglangCore {
             AdmissionStage::FreshKv => Default::default(),
         };
 
+        let batch_size = admit.can_run.len();
+        let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
+        let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
+        let prefill_time = (|| {
+            self.config.perf_model.validate_prefill_batch(
+                &admit
+                    .prefill_fpm
+                    .iter()
+                    .map(|item| (item.tokens_computed, item.prefix_tokens))
+                    .collect::<Vec<_>>(),
+            )?;
+            simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)
+        })();
+        let prefill_time = match prefill_time {
+            Ok(duration) => {
+                if let Some((checkpoint, _)) = admission_checkpoint {
+                    self.kv_manager.commit_admission(checkpoint);
+                }
+                duration
+            }
+            Err(error) => {
+                // A retry is still part of the caller's prepared group round;
+                // it must not consume the prefill interval a second time.
+                self.group_pass_prepared = grouped;
+                if let Some((checkpoint, waiting)) = admission_checkpoint {
+                    self.kv_manager.rollback_admission(checkpoint);
+                    let mut requests = self
+                        .waiting
+                        .drain(..)
+                        .chain(admit.can_run)
+                        .map(|request| (request.uuid, request))
+                        .collect::<rustc_hash::FxHashMap<_, _>>();
+                    for (uuid, materialized, allocated, lease) in waiting {
+                        let mut request =
+                            requests.remove(&uuid).expect("admission request retained");
+                        request.kv_lease.restore_admission(lease);
+                        request.materialized_tokens = materialized;
+                        request.allocated_tokens = allocated;
+                        request.debug_assert_invariants(self.config.block_size);
+                        self.waiting.push_back(request);
+                    }
+                    debug_assert!(requests.is_empty());
+                }
+                for request in self.running.drain(running_before_admission..).rev() {
+                    self.prebuilt_ready.push_front(request);
+                }
+                return Err(error);
+            }
+        };
+
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
             if let Some(collector) = collector.as_deref_mut() {
@@ -775,12 +888,6 @@ impl SglangCore {
 
         // Capture per-request prefill FPM data before dispersing can_run.
         let prefill_fpm = admit.prefill_fpm;
-
-        let batch_size = admit.can_run.len();
-        let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
-        let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
-        let prefill_time =
-            simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
 
         // This committed prefill retires the whole request's input forecast exactly once.
         // Later chunks and preemption recomputation intentionally do not restore demand:
@@ -855,6 +962,7 @@ impl SglangCore {
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);
         }
+        decode.output_signals.extend(rejected);
 
         if let Some(collector) = collector {
             for signal in &decode.output_signals {
@@ -943,9 +1051,6 @@ impl SglangCore {
             (decode.end_ms - now_ms) / 1000.0,
         );
 
-        #[cfg(test)]
-        let (accept_length_output_tokens, accept_length_decode_forwards) =
-            accept_length_sample(&decode.output_signals);
         debug_assert_sglang_scheduler_state(&self.waiting, &self.running, self.config.block_size);
         if !grouped {
             // Standalone core callers have a one-rank synchronization domain.
@@ -981,10 +1086,7 @@ impl SglangCore {
                 .map(CapturedKvEventBuffer::drain)
                 .unwrap_or_default(),
             fpm: Some(fpm),
-            #[cfg(test)]
-            accept_length_output_tokens,
-            #[cfg(test)]
-            accept_length_decode_forwards,
+            decode_acceptance: decode.decode_acceptance,
         })
     }
 

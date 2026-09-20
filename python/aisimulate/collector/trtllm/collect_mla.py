@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 import tensorrt_llm
 import torch
+from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from tensorrt_llm._torch.attention_backend.interface import (
     AttentionInputType,
     MLAParams,
@@ -29,9 +31,6 @@ from tensorrt_llm.functional import PositionEmbeddingType
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantConfig
 from tensorrt_llm.quantization.mode import QuantAlgo
-
-from collector.case_generator import get_context_mla_case_specs, get_generation_mla_case_specs
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 
 def _mla_tokens_per_block() -> int:

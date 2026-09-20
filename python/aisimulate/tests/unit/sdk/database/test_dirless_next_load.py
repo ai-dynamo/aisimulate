@@ -21,13 +21,13 @@ import pyarrow.parquet as pq
 import pytest
 import yaml
 
-from aiconfigurator_core.sdk import perf_database as pdb
+from aisimulate_core.sdk import perf_database as pdb
 
 pytestmark = pytest.mark.unit
 
 _ALPHA = "h200_sxm"  # real system specs so PerfDatabase can construct
 _BETA = "b200_sxm"
-_REAL_SYSTEMS = Path(__file__).resolve().parents[4] / "src/aiconfigurator_core/systems"
+_REAL_SYSTEMS = Path(__file__).resolve().parents[4] / "src/aisimulate_core/systems"
 
 
 def _write_gemm(root: Path, system: str, version: str) -> None:
@@ -142,7 +142,7 @@ def test_probe_handle_serves_a_dirless_next_database(systems_root):
     # get_database returned the object as valid; the public model-less handle
     # (table views, ad-hoc op-list evaluation) must accept it too — the probe
     # spec carries the same dir-less tolerance as the model spec builder.
-    from aiconfigurator_core.sdk.engine import EngineHandle
+    from aisimulate_core.sdk.engine import EngineHandle
 
     db = pdb.get_database(_BETA, "vllm", "next", systems_paths=systems_root)
     assert db is not None and getattr(db, "dirless_next_load", False)
@@ -153,7 +153,7 @@ def test_probe_handle_serves_a_dirless_next_database(systems_root):
 def test_hybrid_probe_handle_serves_a_dirless_next_database(systems_root):
     """HYBRID's generic missing-data allowance must not hide the more
     specific advertised-next identity required by the Rust load gate."""
-    from aiconfigurator_core.sdk.engine import EngineHandle
+    from aisimulate_core.sdk.engine import EngineHandle
 
     db = pdb.get_database_view(
         _BETA,
@@ -171,7 +171,7 @@ def test_hybrid_probe_handle_serves_a_dirless_next_database(systems_root):
 def test_advertised_next_marks_a_cached_missing_data_candidate(systems_root):
     """A long-lived process may cache an unlisted missing-data identity before
     a development drop promotes that literal to the advertised next slot."""
-    from aiconfigurator_core.sdk.engine import EngineHandle
+    from aisimulate_core.sdk.engine import EngineHandle
 
     cached = pdb.get_database(
         _BETA,

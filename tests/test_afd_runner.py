@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
 from aisimulate.runner import (
     AFDCompanionTiming,
     AICAFDCompanionPerformanceModel,
@@ -21,6 +20,7 @@ from aisimulate.sweeper import (
     ReplayOutputRequirements,
     ReplaySpec,
 )
+from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
 
 def _metadata(*phases: str) -> dict:
@@ -264,6 +264,7 @@ def test_open_loop_tpot_and_sla_include_decode_queueing(
     assert [record["tpot_ms"] for record in report.metadata["per_request"]] == pytest.approx(expected_tpots)
     assert report.metrics["mean_tpot_ms"] == pytest.approx(sum(expected_tpots) / 4)
     assert report.metrics["goodput_completed_requests"] == 1.0
+    assert report.metrics["goodput_request_throughput_rps"] == pytest.approx(1_000.0 / expected_duration)
     assert report.metrics["goodput_output_throughput_tok_s"] == pytest.approx(3_000.0 / expected_duration)
 
 
@@ -417,7 +418,7 @@ def test_aic_companion_rejects_conflicting_identity_before_estimation(
     def unexpected_estimation(*args, **kwargs):
         pytest.fail("conflicting identity must not reach estimation or external engine compilation")
 
-    monkeypatch.setattr("aisimulate.runner.EngineHandle.compile", unexpected_estimation)
+    monkeypatch.setattr("aisimulate.runner.RustForwardPassPerfModel.best_available", unexpected_estimation)
     with pytest.raises(
         ValueError, match=f"{companion_role} AFD companion {canonical_field}=.*conflicts with deployment"
     ):
@@ -527,3 +528,53 @@ def test_afd_runner_rejects_images_before_analytical_dispatch(combined_with_pd):
     spec = replace(spec, workload={**spec.workload, "images": {"height": 448, "width": 448, "count": 1}})
     with pytest.raises(InvalidRunnerError, match="image workloads require an encoder pool"):
         EngineReplayRunnerFactory().create(0).run(spec)
+
+
+@pytest.mark.parametrize("combined", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"aic_nextn": 2, "aic_nextn_accepted": 1.25},
+        {"nextn": 2, "nextn_accepted": 0},
+        {"aic_enable_eplb": True},
+        {"aic_wideep_num_slots": 128},
+        {"aic_moe_backend": "deepep_moe"},
+        {"aic_attention_backend": "fa3"},
+        {"timing_model": {"type": "external", "provider": "aic", "config": {"gemm_quant_mode": "fp8"}}},
+        {"enable_chunked_prefill": True},
+        {"enable_chunked_prefill": False},
+    ],
+)
+def test_direct_afd_replay_rejects_controls_before_analytical_dispatch(combined, nested, overrides, monkeypatch):
+    import aisimulate.runner as runner_module
+
+    spec = _spec(
+        _topology(phase="prefill" if combined else "both", combined_with_pd=combined),
+        companion_role="decode" if combined else None,
+    )
+    field = "decode_engine_args" if combined else "agg_engine_args"
+    rank = {**(getattr(spec.backend_deployment, field) or {}), **overrides}
+    args = {"rank": rank} if nested else rank
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, **{field: args}))
+    monkeypatch.setattr(runner_module, "_run_afd_replay", lambda *a, **kw: pytest.fail("control reached AFD"))
+    with pytest.raises(ValueError, match="unsupported for AFD"):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
+def test_direct_afd_replay_preserves_inactive_model_defaults():
+    spec = _spec(_topology())
+    spec = replace(
+        spec,
+        backend_deployment=replace(
+            spec.backend_deployment,
+            agg_engine_args={
+                "aic_enable_eplb": False,
+                "aic_moe_backend": "default",
+                "aic_wideep_num_slots": None,
+            },
+        ),
+    )
+    report = EngineReplayRunnerFactory().create(0).run(spec)
+    assert report.metrics["completed_requests"] == 4.0
+    assert report.metrics["duration_ms"] == pytest.approx(18.0)

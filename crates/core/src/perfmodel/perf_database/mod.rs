@@ -23,11 +23,11 @@ use crate::operators::util_empirical::{DeltaLookupCache, ProvenanceTier, UtilGri
 
 /// The five known legacy/framework-agnostic backend directory names. Mirrors the
 /// SDK loader's `KNOWN_BACKEND_DIRS`
-/// (`python/aisimulate/src/aiconfigurator_core/sdk/perf_database.py`): any other
+/// (`python/aisimulate/src/aisimulate_core/sdk/perf_database.py`): any other
 /// first-level directory under a system's data dir is a family dir containing
 /// `<backend>/<version>` subtrees.
 /// Keep textually identical to the CANONICAL `_KNOWN_BACKEND_DIRS` in
-/// `python/aisimulate/src/aiconfigurator_core/sdk/operations/base.py`, which lists
+/// `python/aisimulate/src/aisimulate_core/sdk/operations/base.py`, which lists
 /// every copy that must stay in sync (Rust cannot import the Python set).
 const KNOWN_BACKEND_DIRS: [&str; 5] = ["trtllm", "sglang", "vllm", "nccl", "oneccl"];
 
@@ -324,7 +324,7 @@ impl PerfDatabase {
     /// Resolve and parse the system YAML, locate the per-version data
     /// directory, and construct lazy table owners.
     ///
-    /// `systems_root` points at `python/aisimulate/src/aiconfigurator_core/systems`. `system` is a
+    /// `systems_root` points at `python/aisimulate/src/aisimulate_core/systems`. `system` is a
     /// basename like `b200_sxm`. `backend` is `vllm` / `sglang` / `trtllm`.
     /// `version` is the backend version directory name (e.g. `0.24.0`).
     pub fn load(
@@ -847,8 +847,8 @@ impl PerfDatabase {
 /// ```text
 /// cd <repo> && uv run python - <<'PY'
 /// import pandas as pd, yaml, tempfile, os
-/// from aiconfigurator_core.sdk.perf_database import PerfDatabase
-/// from aiconfigurator_core.sdk import common
+/// from aisimulate_core.sdk.perf_database import PerfDatabase
+/// from aisimulate_core.sdk import common
 /// root = tempfile.mkdtemp(); data = os.path.join(root, "data", "vllm", "1.0")
 /// os.makedirs(data)
 /// yaml.safe_dump({...the testsys spec below...},
@@ -930,6 +930,7 @@ pub(crate) mod energy_test_fixtures {
         SystemSpec {
             data_dir: "data".into(),
             gpu: GpuSpec {
+                fp32_flops: None,
                 mem_bw: 7.7e12,
                 mem_bw_empirical_scaling_factor: 0.92,
                 mem_empirical_constant_latency: 2e-6,
@@ -995,7 +996,7 @@ mod tests {
     fn systems_root() -> PathBuf {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems")
+            .join("python/aisimulate/src/aisimulate_core/systems")
     }
 
     #[test]

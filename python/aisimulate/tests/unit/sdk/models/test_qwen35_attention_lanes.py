@@ -19,9 +19,9 @@ import json
 
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk import config as sdk_config
-from aiconfigurator.sdk.models.qwen35 import Qwen35Model
+from aisimulate.sdk import common
+from aisimulate.sdk import config as sdk_config
+from aisimulate.sdk.models.qwen35 import Qwen35Model
 
 pytestmark = pytest.mark.unit
 
@@ -67,7 +67,7 @@ def _build_model(attention_backend):
 
 
 def _attention_ops(model):
-    from aiconfigurator.sdk.operations.attention import ContextAttention, GenerationAttention
+    from aisimulate.sdk.operations.attention import ContextAttention, GenerationAttention
 
     ctx = [op for op in model.context_ops if isinstance(op, ContextAttention)]
     gen = [op for op in model.generation_ops if isinstance(op, GenerationAttention)]
@@ -82,8 +82,8 @@ def test_attention_backend_reaches_both_attention_ops():
     retired per-op ``_attention_backend`` attribute check. A database is
     required: resolution reads backend/version/sm_version/systems_root off it;
     without one, a named override is rejected rather than silently discarded."""
-    from aiconfigurator.sdk.perf_database import get_database
-    from aiconfigurator_core.sdk.engine import _resolve_attention_lane_orders
+    from aisimulate.sdk.perf_database import get_database
+    from aisimulate_core.sdk.engine import _resolve_attention_lane_orders
 
     model = _build_model("trtllm_mha")
     assert model.config.attention_backend == "trtllm_mha"
@@ -100,7 +100,7 @@ def test_attention_backend_reaches_both_attention_ops():
 def test_attention_backend_defaults_to_no_override():
     """Unset knob means no override: the framework-default lane heads the order
     (a ``None`` database still resolves the always-valid ``["default"]``)."""
-    from aiconfigurator_core.sdk.engine import _resolve_attention_lane_orders
+    from aisimulate_core.sdk.engine import _resolve_attention_lane_orders
 
     model = _build_model(None)
     assert model.config.attention_backend is None
@@ -132,9 +132,9 @@ def test_model_config_attention_backend_defaults_to_none():
 
 
 def test_architecture_default_reaches_both_attention_ops_without_override():
-    from aiconfigurator.sdk import models
-    from aiconfigurator.sdk.perf_database import get_database
-    from aiconfigurator_core.sdk.engine import _resolve_attention_lane_orders
+    from aisimulate.sdk import models
+    from aisimulate.sdk.perf_database import get_database
+    from aisimulate_core.sdk.engine import _resolve_attention_lane_orders
 
     def _real_model_config():
         return sdk_config.ModelConfig(
@@ -174,9 +174,9 @@ def test_architecture_default_reaches_both_attention_ops_without_override():
 )
 def test_architecture_default_is_serialized_by_build_engine_spec_json(attention_backend, expected_lane):
     """Exercise architecture and override propagation through the public spec builder."""
-    from aiconfigurator.sdk import models
-    from aiconfigurator.sdk.perf_database import get_database
-    from aiconfigurator_core.sdk.engine import build_engine_spec_json
+    from aisimulate.sdk import models
+    from aisimulate.sdk.perf_database import get_database
+    from aisimulate_core.sdk.engine import build_engine_spec_json
 
     model_config = sdk_config.ModelConfig(
         tp_size=16,
@@ -220,9 +220,9 @@ def test_architecture_default_yields_to_an_explicit_override():
     """Explicit override still wins outright, even for Max's own architecture
     default -- explicit intent stays first-class (owner design, same
     precedence rule ``resolve_attention_lane_tiers`` documents)."""
-    from aiconfigurator.sdk import models
-    from aiconfigurator.sdk.perf_database import get_database
-    from aiconfigurator_core.sdk.engine import _resolve_attention_lane_orders
+    from aisimulate.sdk import models
+    from aisimulate.sdk.perf_database import get_database
+    from aisimulate_core.sdk.engine import _resolve_attention_lane_orders
 
     model_config = sdk_config.ModelConfig(
         tp_size=8,

@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.fpm_contract import (
+from aisimulate.fpm_contract import (
     FPM_ENV_EXPORTED_VARS,
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
 )

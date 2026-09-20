@@ -22,6 +22,10 @@ that all of these observations were deliberately filtered out.
 Native AISim imports remain deferred in the adapted adapters so parser and fake
 predictor tests work without an installed native extension. The real campaign
 checks that the native SDK is installed before evaluating any case.
+When the evaluated wheel provides `ForwardPassPerfModelConfig`, both FPM and
+regression use `best_available(config)`, with explicit mode, worker identity,
+and migrated tuning options. Legacy constructors are used only to evaluate
+older branch wheels that do not provide the canonical configuration type.
 
 Hub cache loading supports repository-local blobs and the marked cache-wide
 shared blob store used by huggingface-hub 1.32. Manifest hashes still bind the
@@ -30,6 +34,12 @@ rejected. Local dataset checkouts retain their strict root boundary. Catalogs,
 configuration and measurement manifests, and FPM sidecars share the strict
 public-contract JSON parser: duplicate keys (including nested keys) and
 non-finite constants fail even when the pinned bytes match their hashes.
+
+Decode context parallelism (`dcp`) is a separate identity dimension from `cp`.
+Legacy manifests, sidecars, and parquet files without `dcp` mean `dcp=1`;
+non-default values must agree across all three. Native FPM currently has no
+DCP input, so `dcp>1` is reported as unsupported with measurements retained in
+coverage. Worker-isolated regression continues to score the same observations.
 
 Listener window and single-rank chronology keys use milliseconds so mixed
 streams preserve predict → score → tune ordering. Missing MoE parallelism

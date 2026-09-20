@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from aiconfigurator.fpm_contract import (
+from aisimulate.fpm_contract import (
     FPM_BENCHMARK_RESULT_GLOB,
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
 )
