@@ -7,13 +7,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field
 
 from ..config.common import StrictModel, load_yaml
-from ..config.engine import FrontendPredictionConfig, HostPredictionConfig, NonNegativeFloat
+from ..config.engine import FrontendPredictionConfig, HostPredictionConfig, HostProfileConfig, NonNegativeFloat
 
 SGLANG_REVISION = "0bcd822377da7b5718e674eaf9c870d349424dd1"
 """The SGLang revision whose scheduler and frontend behavior the cost tables describe."""
@@ -75,6 +76,23 @@ def match_host_profile(profile: HostProfile, *, model: str, frontend: FrontendKi
     ]
     if mismatches:
         raise ValueError("host profile does not match this prediction: " + "; ".join(mismatches))
+
+
+def resolve_host_profile(
+    config: HostProfileConfig, *, model: str, images: Mapping[str, Any], tensor_parallel: int
+) -> tuple[HostProfile, HostPredictionConfig, FrontendPredictionConfig]:
+    """Load, or when configured sample, the profile a worker names and lower it for `images`."""
+    if not Path(config.path).exists() and config.on_missing == "calibrate":
+        from .calibrate import calibrate_in_subprocess
+
+        profile = calibrate_in_subprocess(output=config.path, model=model, frontend=config.frontend, images=images)
+    else:
+        profile = load_host_profile(config.path)
+    match_host_profile(
+        profile, model=model, frontend=config.frontend, image_encoding=str(images.get("encoding", "png"))
+    )
+    host, frontend = lower_host_profile(profile, tensor_parallel=tensor_parallel)
+    return profile, host, frontend
 
 
 def lower_host_profile(

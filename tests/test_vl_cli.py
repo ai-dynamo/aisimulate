@@ -12,8 +12,11 @@ import yaml
 from pydantic import ValidationError
 
 from aisimulate.compiler import prediction_to_replay_spec
-from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
+from aisimulate.config.vl import validate_vl_prediction_mapping
 from aisimulate.main import main
+from aisimulate.recommend import recommendation_to_sweeper
+from aisimulate.sweeper import SweepResult
 
 
 def _prediction():
@@ -264,3 +267,100 @@ def test_missing_profile_is_calibrated_in_an_unsupervised_subprocess(
         ]
         == 5.0
     )
+
+
+def _recommendation():
+    raw = _prediction()
+    worker = raw["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {
+        "preset": False,
+        "replicas": 1,
+        "tensor": 1,
+        "pipeline": 1,
+        "attention_data": 1,
+        "moe_tensor": 1,
+        "moe_expert": 1,
+    }
+    worker["scheduler"]["max_batched_tokens"] = {"choices": [4096, 8192]}
+    raw["optimization"] = {
+        "target": "throughput_per_gpu",
+        "constraints": {"max_candidate_gpus": 2},
+    }
+    raw["optimizer"] = {
+        "algorithm": "random",
+        "max_trials": 2,
+        "parallelism": 1,
+        "candidate_timeout_seconds": 60.0,
+        "seed": 13,
+    }
+    return raw
+
+
+def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
+    path = tmp_path / "search.yaml"
+    path.write_text(yaml.safe_dump(_recommendation()))
+    root = tmp_path / "recommend"
+    assert (
+        main(
+            [
+                "recommend",
+                "-c",
+                str(path),
+                "--output-dir",
+                str(root),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    result = SweepResult.from_json((root / "recommendation.json").read_text())
+    candidate = result.selected_candidates[0]
+    assert candidate.config["prediction_config_supported"] is True
+    assert candidate.config["agg_host"]["launch_extend"]["const_ms"] == 5.0
+
+    saved = root / "recommendations" / "0001.yaml"
+    concrete = CorePredictionConfig.from_yaml(saved)
+    assert concrete.engine.workers.aggregated.host.launch_extend.const_ms == 5.0
+    assert concrete.engine.workers.aggregated.vision.cache_mb == 100
+    output = tmp_path / "predict"
+    assert (
+        main(
+            [
+                "predict",
+                "-c",
+                str(saved),
+                "--output-dir",
+                str(output),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    report = json.loads(capsys.readouterr().out)
+    for key in ("mean_ttft_ms", "mean_e2e_latency_ms", "output_throughput_tok_s"):
+        assert report[key] == pytest.approx(candidate.metrics[key])
+
+    spec = prediction_to_replay_spec(concrete)
+    raw = concrete.model_dump(mode="python", exclude_none=True)
+    validate_vl_prediction_mapping(raw, spec)
+    raw["engine"]["workers"]["aggregated"]["host"]["launch_extend"]["const_ms"] = 1.0
+    with pytest.raises(ValueError, match="prediction-ready"):
+        validate_vl_prediction_mapping(raw, spec)
+
+
+def test_profile_backed_recommendation_keeps_naming_its_profile(tmp_path):
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(_host_profile()))
+    raw = _recommendation()
+    worker = raw["engine"]["workers"]["aggregated"]
+    del worker["host"], worker["frontend"]
+    worker["host_profile"] = {"path": str(path), "frontend": "python"}
+    lowered = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw))
+    space = lowered.search_space
+    assert space.agg_host["launch_extend"]["const_ms"] == 5.0
+    assert space.agg_tp_sync_ms == {"2": 0.4}
+    assert space.agg_host_profile == {**worker["host_profile"], "on_missing": "error"}
+    assert len(space.agg_host_profile_id) == 16

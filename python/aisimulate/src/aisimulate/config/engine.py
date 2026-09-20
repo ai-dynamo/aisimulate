@@ -575,6 +575,7 @@ class ParallelismRecommendationConfig(StrictModel):
 class SchedulerRecommendationConfig(StrictModel):
     max_batched_tokens: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
     max_sequences: PositiveInt | Choices[PositiveInt] | IntegerRange | None = None
+    max_prefill_tokens: PositiveInt | None = None
 
 
 class KvCapacityRecommendationConfig(StrictModel):
@@ -613,6 +614,23 @@ class WorkerRecommendationConfig(StrictModel):
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
     timing: TimingConfig = Field(default_factory=TimingConfig)
     startup_seconds: float = Field(default=0.0, ge=0.0)
+    # Host tables are measured data, not search dimensions; every candidate shares them.
+    host: HostPredictionConfig | None = None
+    frontend: FrontendPredictionConfig | None = None
+    host_profile: HostProfileConfig | None = None
+    vision: VisionPredictionConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_host_features(self) -> WorkerRecommendationConfig:
+        if self.frontend is not None and self.host is None:
+            raise ValueError("frontend requires host")
+        if self.host_profile is not None and (self.host is not None or self.frontend is not None):
+            raise ValueError("host_profile replaces explicit host and frontend tables")
+        return self
+
+    @property
+    def hosts_scheduler_thread(self) -> bool:
+        return self.host is not None or self.host_profile is not None
 
 
 class EncoderRecommendationConfig(StrictModel):
@@ -679,6 +697,7 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
             if unknown:
                 raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
         _validate_recommendation_host_offload(self)
+        _validate_recommendation_host(self, modes=modes, backends=backends)
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
         return self
@@ -834,6 +853,24 @@ def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) ->
     parallel = worker.parallelism
     if parallel.preset not in (False, {}) or parallel.attention_data != 1:
         raise ValueError("host_offload recommendation requires fixed parallelism with attention_data=1")
+
+
+def _validate_recommendation_host(engine: EngineRecommendationConfig, *, modes: set[str], backends: set[str]) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None or (not worker.hosts_scheduler_thread and worker.vision is None):
+            continue
+        if role != "aggregated" or modes != {"aggregated"}:
+            raise ValueError("host recommendation requires concrete mode=aggregated on the aggregated worker")
+        if backends != {"sglang"}:
+            raise ValueError("host recommendation requires concrete backend=sglang")
+        parallel = worker.parallelism
+        if (
+            parallel.preset not in (False, {})
+            or parallel.pipeline not in (None, 1)
+            or parallel.attention_data not in (None, 1)
+        ):
+            raise ValueError("host recommendation requires fixed parallelism with pipeline=1 and attention_data=1")
 
 
 def _validate_worker_roles(*, modes: set[str], workers, has_transfer: bool) -> None:

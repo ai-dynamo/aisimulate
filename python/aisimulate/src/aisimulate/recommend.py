@@ -215,6 +215,7 @@ def recommendation_to_sweeper(
             afd_phase=afd.get("phase") if isinstance(afd, dict) else None,
         )
     )
+    search_space.update(_native_vl_search_space(config, workers))
     if engine.get("workers", {}).get("encoder") is not None:
         encoder = workers["encoder"]
         search_space["encoder"] = {
@@ -445,6 +446,8 @@ def _role_search_space(
                 "fpm" if timing["estimation_mode"] == "fpm_interpolation" else "op_level"
             )
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
+        if legacy_role == "agg" and scheduler.get("max_prefill_tokens") is not None:
+            result["agg_max_prefill_tokens"] = int(scheduler["max_prefill_tokens"])
     # Remove empty internal maps so legacy serialization remains concise.
     if not result["engine_float_ranges"]:
         result.pop("engine_float_ranges")
@@ -454,6 +457,39 @@ def _role_search_space(
         result.pop("engine_log_discrete")
     if not result["engine_integer_log_ranges"]:
         result.pop("engine_integer_log_ranges")
+    return result
+
+
+def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str, Any]) -> dict[str, Any]:
+    """Pinned host, frontend and vision tables shared by every native VL candidate."""
+    aggregated = workers.get("aggregated") if isinstance(workers, dict) else None
+    source = config.traffic.source if config.traffic is not None else None
+    images = getattr(source, "images", None)
+    if not isinstance(aggregated, dict) or images is None or config.engine.workers.encoder is not None:
+        return {}
+    result: dict[str, Any] = {"agg_vision": deepcopy(aggregated.get("vision") or {"cache_mb": 100})}
+    profile_config = aggregated.get("host_profile")
+    if profile_config is None:
+        result["agg_host"] = deepcopy(aggregated.get("host"))
+        result["agg_frontend"] = deepcopy(aggregated.get("frontend"))
+        return result
+    from .config.engine import HostProfileConfig
+    from .vl.profile import profile_id, resolve_host_profile
+
+    # Lower once for a single rank; candidates apply their tensor-parallel sync entry.
+    profile, host, frontend = resolve_host_profile(
+        HostProfileConfig.model_validate(profile_config),
+        model=config.engine.model,
+        images=images.model_dump(mode="json"),
+        tensor_parallel=1,
+    )
+    result.update(
+        agg_host=host.model_dump(mode="json"),
+        agg_frontend=frontend.model_dump(mode="json"),
+        agg_tp_sync_ms=dict(profile.tp_sync_ms),
+        agg_host_profile=deepcopy(profile_config),
+        agg_host_profile_id=profile_id(profile),
+    )
     return result
 
 
@@ -912,6 +948,19 @@ def _candidate_prediction(
         }
         if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
             engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
+        if role == "agg":
+            rendered = engine["workers"][public_role]
+            if sample.get("agg_max_prefill_tokens") is not None:
+                rendered["scheduler"]["max_prefill_tokens"] = sample["agg_max_prefill_tokens"]
+            # A profile-backed candidate keeps naming its profile so predict re-resolves it.
+            if sample.get("agg_host_profile") is not None:
+                rendered["host_profile"] = deepcopy(sample["agg_host_profile"])
+            else:
+                for name in ("host", "frontend"):
+                    if sample.get(f"agg_{name}") is not None:
+                        rendered[name] = deepcopy(sample[f"agg_{name}"])
+            if sample.get("agg_vision") is not None:
+                rendered["vision"] = deepcopy(sample["agg_vision"])
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
         engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 

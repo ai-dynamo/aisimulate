@@ -37,6 +37,13 @@ _AGG_PINNED = (
     "agg_timing_model",
     "agg_forward_model",
     "agg_startup_time",
+    "agg_max_prefill_tokens",
+    "agg_host",
+    "agg_frontend",
+    "agg_host_profile",
+    "agg_host_profile_id",
+    "agg_tp_sync_ms",
+    "agg_vision",
 )
 _PREFILL_SEARCHED = ("prefill_max_num_batched_tokens", "prefill_max_num_seqs")
 _PREFILL_PINNED = (

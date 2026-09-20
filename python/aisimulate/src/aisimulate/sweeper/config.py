@@ -606,6 +606,14 @@ class SearchSpace(BaseModel):
     agg_timing_model: dict[str, Any] | None = None
     agg_forward_model: str = "op_level"
     agg_startup_time: float | None = None
+    # Host-aware SGLang VL replay: pinned tables lowered from the public configuration.
+    agg_max_prefill_tokens: int | None = None
+    agg_host: dict[str, Any] | None = None
+    agg_frontend: dict[str, Any] | None = None
+    agg_host_profile: dict[str, Any] | None = None
+    agg_host_profile_id: str | None = None
+    agg_tp_sync_ms: dict[str, float] | None = None
+    agg_vision: dict[str, Any] | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
     kv_transfer_timing_mode: str = "destination_missing"
@@ -1181,10 +1189,16 @@ class SmartSearchConfig(BaseModel):
         encoder, workload = self.search_space.encoder, self.workload
         if workload.cached_prefix_tokens and set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
             raise ValueError("cached_prefix_tokens is unsupported for AFD")
+        if encoder is None and workload.images is not None:
+            if self.search_space.agg_host is None:
+                raise ValueError("image workloads require search_space.encoder or a host-aware aggregated worker")
+            return self
         if (encoder is None) != (workload.images is None):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
         if encoder is None:
             return self
+        if self.search_space.agg_host is not None:
+            raise ValueError("search_space.encoder and a host-aware aggregated worker are exclusive")
         if any(mode not in {"agg", "disagg"} for mode in self.search_space.deployment_mode):
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if self.adapters:

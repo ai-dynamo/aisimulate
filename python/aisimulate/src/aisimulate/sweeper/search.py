@@ -727,6 +727,11 @@ def _materialize_one(
 
             validate_epd_prediction_mapping(prediction_config, replay_spec)
             sample["prediction_config_supported"] = True
+        elif sample.get("agg_host") is not None and prediction_config_factory is not None:
+            from ..config.vl import validate_vl_prediction_mapping
+
+            validate_vl_prediction_mapping(prediction_config, replay_spec)
+            sample["prediction_config_supported"] = True
     except InfeasibleKVCapacity as exc:
         return None, _EvalResult(
             candidate=None,

@@ -372,31 +372,14 @@ def _resolve_host_profile(
     """Fill the worker's host and frontend tables from its measured profile, if it names one."""
     if worker.host_profile is None:
         return worker, {}
-    from pathlib import Path
-
-    from .vl.profile import load_host_profile, lower_host_profile, match_host_profile, profile_id
+    from .vl.profile import profile_id, resolve_host_profile
 
     images = workload.get("images")
-    if not Path(worker.host_profile.path).exists() and worker.host_profile.on_missing == "calibrate":
-        from .vl.calibrate import calibrate_in_subprocess
-
-        if not isinstance(images, dict):
-            raise ValueError("host_profile.on_missing='calibrate' requires an image workload to sample")
-        profile = calibrate_in_subprocess(
-            output=worker.host_profile.path,
-            model=engine.model,
-            frontend=worker.host_profile.frontend,
-            images=images,
-        )
-    else:
-        profile = load_host_profile(worker.host_profile.path)
-    match_host_profile(
-        profile,
-        model=engine.model,
-        frontend=worker.host_profile.frontend,
-        image_encoding=str(images.get("encoding", "png")) if isinstance(images, dict) else "png",
+    if not isinstance(images, dict):
+        raise ValueError("host_profile requires an image workload")
+    profile, host, frontend = resolve_host_profile(
+        worker.host_profile, model=engine.model, images=images, tensor_parallel=worker.parallelism.tensor
     )
-    host, frontend = lower_host_profile(profile, tensor_parallel=worker.parallelism.tensor)
     resolved = worker.model_copy(update={"host": host, "frontend": frontend, "host_profile": None})
     return resolved, {"vl": {"host_profile_id": profile_id(profile), "frontend": worker.host_profile.frontend}}
 

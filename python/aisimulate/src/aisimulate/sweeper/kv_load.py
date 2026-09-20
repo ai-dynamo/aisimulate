@@ -151,7 +151,8 @@ def resolve_kv_load(
         for role, config in role_configs.items()
     }
     isl = int(workload.isl)
-    if workload.images is not None:
+    images = getattr(workload, "images", None)
+    if images is not None:
         # Visual placeholders occupy KV like text; size the load on the effective prompt.
         from aisimulate_core.sdk.backends.base_backend import BaseBackend
         from aisimulate_core.sdk.config import RuntimeConfig
@@ -159,10 +160,7 @@ def resolve_kv_load(
         isl = BaseBackend.effective_prefill_isl(
             str(sample["model_name"]),
             RuntimeConfig(
-                isl=isl,
-                image_height=workload.images.height,
-                image_width=workload.images.width,
-                num_images_per_request=workload.images.count,
+                isl=isl, image_height=images.height, image_width=images.width, num_images_per_request=images.count
             ),
         )
     expected_tokens_per_request = isl + int(workload.osl) // 2
