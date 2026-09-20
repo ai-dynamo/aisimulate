@@ -22,7 +22,14 @@ use super::types::{
     SyntheticTraceSpec, Trace, TraceFileFormat, TurnTrace, effective_replay_key,
 };
 use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
+use crate::engine::ImageSpec;
 use crate::replay::protocol::DirectRequest;
+
+/// High bits marking a synthetic image placeholder block hash. Distinct from the
+/// cached-prefix (`0xCAC0`) and prefix-group (`0xD00D`) tags so image tokens never
+/// collide with text blocks; identity occupies bits 20..48 and the block index
+/// within the image the low 20 bits.
+const IMAGE_HASH_TAG: u64 = 0x1A6E_0000_0000_0000;
 
 #[derive(Debug, Deserialize)]
 struct RawAppliedComputeAgenticRecord {
@@ -386,6 +393,7 @@ impl TurnTrace {
             strict_priority: self.strict_priority,
             policy_class: self.policy_class.clone(),
             replay_context: None,
+            images: self.images.clone(),
         })
     }
 
@@ -548,6 +556,7 @@ impl MooncakeTraceBuilder {
             priority,
             strict_priority,
             policy_class,
+            images: Vec::new(),
         });
         if let Some(timestamp_ms) = timestamp_ms {
             self.last_timestamps[session_index] = Some(timestamp_ms);
@@ -794,8 +803,30 @@ impl Trace {
                 spec.block_size
             );
         }
+        if let Some(images) = spec.images {
+            // Placeholder spans are token-granular, and a text prefix behind
+            // per-request images is never a shared prompt prefix in the engine.
+            ensure!(
+                spec.block_size == 1,
+                "image workloads require a one-token synthetic trace block_size, got {}",
+                spec.block_size
+            );
+            ensure!(
+                images.count > 0 && images.visual_tokens > 0 && images.patches > 0,
+                "image workloads require positive image count, visual tokens and patches"
+            );
+            ensure!(
+                images.identity_pool != Some(0),
+                "image identity_pool must be positive"
+            );
+            ensure!(
+                spec.cached_prefix_tokens == 0 && spec.shared_prefix_ratio == 0.0,
+                "image workloads cannot combine cached or shared text prefixes"
+            );
+        }
 
         let mut rng = StdRng::seed_from_u64(spec.seed);
+        let mut next_image = 0_u64;
         let mut sessions = Vec::with_capacity(spec.num_sessions);
         let first_arrivals = spec
             .first_turn_arrivals
@@ -811,21 +842,24 @@ impl Trace {
             };
             let mut turns = Vec::with_capacity(spec.turns_per_session);
             for turn_idx in 0..spec.turns_per_session {
-                let input_length = sample_length(&spec.input_tokens, 1, &mut rng);
+                let text_length = sample_length(&spec.input_tokens, 1, &mut rng);
                 let max_output_tokens = sample_length(&spec.output_tokens, 1, &mut rng);
-                if spec.cached_prefix_tokens > input_length {
+                if spec.cached_prefix_tokens > text_length {
                     bail!(
                         "cached_prefix_tokens {} exceeds sampled synthetic input length {}",
                         spec.cached_prefix_tokens,
-                        input_length
+                        text_length
                     );
                 }
+                let (images, mut hash_ids) = synthetic_turn_images(&spec, &mut next_image);
+                let input_length =
+                    text_length + images.iter().map(ImageSpec::visual_tokens).sum::<usize>();
                 let num_blocks = input_length.div_ceil(spec.block_size);
                 let grouped_prefix_blocks =
                     ((num_blocks as f64) * spec.shared_prefix_ratio).round() as usize;
                 let grouped_prefix_blocks = grouped_prefix_blocks.min(num_blocks);
                 let cached_prefix_blocks = spec.cached_prefix_tokens / spec.block_size;
-                let mut hash_ids = Vec::with_capacity(num_blocks);
+                hash_ids.reserve(num_blocks.saturating_sub(hash_ids.len()));
 
                 for block_idx in 0..cached_prefix_blocks {
                     hash_ids.push(0xCA_C0_0000_0000_0000 | block_idx as u64);
@@ -852,6 +886,7 @@ impl Trace {
                     } else {
                         sample_delay_ms(&spec.inter_turn_delays, &mut rng)?
                     },
+                    images,
                     ..Default::default()
                 });
             }
@@ -1834,6 +1869,43 @@ fn extend_applied_compute_agentic_hash_ids(
             .ok_or_else(|| anyhow!("synthetic hash id overflow"))?;
     }
     Ok(())
+}
+
+/// Lay out one turn's image placeholders ahead of its text and return them with
+/// the per-token hash IDs of their placeholder blocks.
+///
+/// Images precede the text like a chat request whose image parts come before
+/// its text part. Identities repeat only inside a configured reuse pool, so two
+/// requests carrying the same image at the same position share prompt tokens
+/// and may reuse each other's KV prefix, exactly as SGLang's padded input IDs do.
+fn synthetic_turn_images(
+    spec: &SyntheticTraceSpec,
+    next_image: &mut u64,
+) -> (Vec<ImageSpec>, Vec<u64>) {
+    let Some(images) = spec.images else {
+        return (Vec::new(), Vec::new());
+    };
+    let mut specs = Vec::with_capacity(images.count);
+    let mut hash_ids = Vec::with_capacity(images.count * images.visual_tokens);
+    let mut token_start = 0;
+    for _ in 0..images.count {
+        let ordinal = *next_image;
+        *next_image += 1;
+        let identity = images.identity_pool.map_or(ordinal, |pool| ordinal % pool);
+        hash_ids.extend((0..images.visual_tokens as u64).map(|block_idx| {
+            IMAGE_HASH_TAG | ((identity & 0x0FFF_FFFF) << 20) | (block_idx & 0x000F_FFFF)
+        }));
+        specs.push(ImageSpec {
+            identity,
+            token_start,
+            token_end: token_start + images.visual_tokens,
+            patches: images.patches,
+            feature_bytes: images.feature_bytes,
+            embedding_bytes: images.embedding_bytes,
+        });
+        token_start += images.visual_tokens;
+    }
+    (specs, hash_ids)
 }
 
 fn sample_delay_ms(spec: &DelaySpec, rng: &mut StdRng) -> Result<f64> {

@@ -1447,6 +1447,7 @@ mod core_behavior {
             output_token_ids: Some(planned.clone()),
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1495,6 +1496,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -1502,6 +1504,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1558,6 +1561,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -1565,6 +1569,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1601,6 +1606,7 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
         }
 
@@ -1660,6 +1666,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(81)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1683,6 +1690,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(uuid),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1725,6 +1733,7 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
         }
 
@@ -1770,6 +1779,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(holder),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (100..112).collect(),
@@ -1777,6 +1787,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(blocked),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (200..204).collect(),
@@ -1784,6 +1795,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(follower),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1854,6 +1866,7 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
         }
 
@@ -1883,6 +1896,7 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
         }
 
@@ -1918,6 +1932,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(short),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (100..104).collect(),
@@ -1925,6 +1940,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: Some(long),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2016,6 +2032,7 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(Uuid::from_u128(1)),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
             core.execute_pass(&mut collector, 0.0);
             assert!(core.is_empty());
@@ -2026,6 +2043,7 @@ mod core_behavior {
                 output_token_ids: None,
                 uuid: Some(Uuid::from_u128(2)),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
             let pass = core.execute_pass(&mut collector, 1.0);
             let fpm = pass.fpm.expect("forward-pass metrics should be present");
@@ -2067,6 +2085,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2094,6 +2113,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2112,6 +2132,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         // Pass 2: r1 decode + r2 prefill (mixed batch)
@@ -2141,6 +2162,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2180,6 +2202,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2224,6 +2247,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -2231,6 +2255,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2268,6 +2293,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (100..112).collect(), // prompt_len = 12
@@ -2275,6 +2301,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2313,6 +2340,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2382,6 +2410,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         // Prefill r1 and decode a few tokens to build up KV
@@ -2396,6 +2425,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         // This pass should trigger preemption

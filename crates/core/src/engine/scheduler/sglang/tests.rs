@@ -23,7 +23,7 @@ use crate::engine::kv_manager::sglang_backend::RadixRequestLease;
 use crate::engine::scheduler::{
     SchedulerCommand, SchedulerCommandResult, SchedulerLifecycleEvent, capture_kv_event_sink,
 };
-use crate::engine::{KvEvent, KvEventData, PressureKind};
+use crate::engine::{ImageSpec, KvEvent, KvEventData, PressureKind};
 
 fn stored_hashes(events: &[KvEvent]) -> Vec<u64> {
     events
@@ -73,6 +73,38 @@ fn direct_request(tokens: Vec<u32>, max_output_tokens: usize) -> DirectRequest {
         arrival_timestamp_ms: None,
         ..Default::default()
     }
+}
+
+#[test]
+fn submitted_requests_keep_their_image_placeholders() {
+    let mut core = SglangCore::new(test_args(16, 1, 8));
+    let images = vec![
+        ImageSpec {
+            identity: 7,
+            token_start: 0,
+            token_end: 3,
+            patches: 12,
+            feature_bytes: 96,
+            embedding_bytes: 128,
+        },
+        ImageSpec {
+            identity: 8,
+            token_start: 3,
+            token_end: 6,
+            patches: 12,
+            feature_bytes: 96,
+            embedding_bytes: 128,
+        },
+    ];
+    let mut request = direct_request(vec![1; 8], 1);
+    request.images = images.clone();
+    core.apply_command(SchedulerCommand::Submit(request))
+        .unwrap();
+    assert_eq!(core.waiting.len(), 1);
+    assert_eq!(core.waiting[0].images, images);
+    assert_eq!(images[1].visual_tokens(), 3);
+    assert!(images[1].overlaps(5, 9));
+    assert!(!images[1].overlaps(6, 9));
 }
 
 #[rstest::rstest]
@@ -388,6 +420,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             kv_lease: zero_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            images: Vec::new(),
         },
         SglangRequest {
             uuid: normal_uuid,
@@ -398,6 +431,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             kv_lease: normal_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            images: Vec::new(),
         },
     ];
 
@@ -449,6 +483,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             kv_lease: r1_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            images: Vec::new(),
         },
         SglangRequest {
             uuid: Uuid::from_u128(90_011),
@@ -459,6 +494,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             kv_lease: r2_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            images: Vec::new(),
         },
     ];
     let result = simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
@@ -490,6 +526,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         materialized_tokens: 0,
         kv_lease: RadixRequestLease::default(),
         allocated_tokens: 0,
+        images: Vec::new(),
     }]);
     let req = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[])
         .can_run
@@ -514,6 +551,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         kv_lease: blocker_alloc.lease,
         materialized_tokens: 3,
         allocated_tokens: 4,
+        images: Vec::new(),
     };
     buffer.drain();
 
@@ -1180,6 +1218,7 @@ mod scheduling {
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
+                images: Vec::new(),
             },
             SglangRequest {
                 uuid: match_uuid,
@@ -1190,6 +1229,7 @@ mod scheduling {
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
+                images: Vec::new(),
             },
         ]);
 
@@ -1223,6 +1263,7 @@ mod scheduling {
                 materialized_tokens: 0,
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
+                images: Vec::new(),
             });
         }
         let unique_uuid = Uuid::new_v4();
@@ -1235,6 +1276,7 @@ mod scheduling {
             materialized_tokens: 0,
             kv_lease: RadixRequestLease::default(),
             allocated_tokens: 0,
+            images: Vec::new(),
         });
 
         apply_schedule_policy(&mut waiting, &kv_manager, &config);
@@ -1265,6 +1307,7 @@ mod core_behavior {
                 output_token_ids: Some(planned.clone()),
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
             sequence.extend_from_slice(&planned);
 
@@ -1327,6 +1370,7 @@ mod core_behavior {
             materialized_tokens: 0,
             kv_lease: RadixRequestLease::default(),
             allocated_tokens: 0,
+            images: Vec::new(),
         }]);
 
         let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
@@ -1358,6 +1402,7 @@ mod core_behavior {
             kv_lease: alloc.lease,
             materialized_tokens: 6,
             allocated_tokens: 8,
+            images: Vec::new(),
         }];
 
         let first = simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
@@ -1402,6 +1447,7 @@ mod core_behavior {
             kv_lease: base_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            images: Vec::new(),
         }];
 
         let mut fast_kv_manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
@@ -1415,6 +1461,7 @@ mod core_behavior {
             kv_lease: fast_alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            images: Vec::new(),
         }];
 
         let base = simulate_decode_step(
@@ -1464,6 +1511,7 @@ mod core_behavior {
                 kv_lease: RadixRequestLease::from_parts(first, 8, 4, kv_manager.cache().root()),
                 materialized_tokens: 8,
                 allocated_tokens: 8,
+                images: Vec::new(),
             },
             SglangRequest {
                 uuid: Uuid::new_v4(),
@@ -1474,6 +1522,7 @@ mod core_behavior {
                 kv_lease: RadixRequestLease::from_parts(second, 5, 4, kv_manager.cache().root()),
                 materialized_tokens: 5,
                 allocated_tokens: 8,
+                images: Vec::new(),
             },
         ];
 
@@ -1505,6 +1554,7 @@ mod core_behavior {
             kv_lease: alloc.lease,
             materialized_tokens: 4,
             allocated_tokens: 4,
+            images: Vec::new(),
         }];
 
         simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
@@ -1533,6 +1583,7 @@ mod core_behavior {
             output_token_ids: None,
             uuid: None,
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let pass = core.execute_pass_internal(None, 0.0);
@@ -1677,6 +1728,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1707,6 +1759,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1723,6 +1776,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         // Pass 2: SGLang runs the r2 prefill batch alone ("run prefill first if possible");
@@ -1758,6 +1812,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r1),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass1 = core.execute_pass(&mut collector, 0.0);
@@ -1778,6 +1833,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(r2),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
         assert_eq!(
@@ -1825,6 +1881,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -1838,6 +1895,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
@@ -2012,6 +2070,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (100..108).collect(),
@@ -2019,6 +2078,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2063,6 +2123,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (100..112).collect(), // prompt_len = 12
@@ -2070,6 +2131,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2112,6 +2174,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2182,6 +2245,7 @@ mod forward_pass_metrics {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
         }
         // Pass 1 admits r1 only (r2 needs its full output reserved); r2 is admitted on the next
@@ -2195,6 +2259,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(fresh),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         let mut now = first.end_ms;
@@ -2270,6 +2335,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(id)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         for _ in 0..16 {
@@ -2299,6 +2365,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass = core.execute_pass(&mut collector, now);
@@ -2331,6 +2398,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         let available_before = core.kv_manager.cache().available_tokens();
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2367,6 +2435,7 @@ mod forward_pass_metrics {
                 output_token_ids: None,
                 uuid: Some(Uuid::from_u128(id)),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
         }
         let mut collector = crate::engine::trace::TraceCollector::default();
@@ -2393,6 +2462,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(7)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass1 = core.execute_pass(&mut collector, 0.0);
@@ -2447,6 +2517,7 @@ mod forward_pass_metrics {
                 output_token_ids: None,
                 uuid: Some(uuid),
                 arrival_timestamp_ms: None,
+                images: Vec::new(),
             });
         }
         let available_before = core.kv_manager.cache().available_tokens();
@@ -2482,6 +2553,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         let mut collector = crate::engine::trace::TraceCollector::default();
         let pass1 = core.execute_pass(&mut collector, 0.0);
@@ -2551,6 +2623,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(1)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
         core.receive(DirectRequest {
             tokens: (100..104).collect(),
@@ -2558,6 +2631,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(2)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         // Run several passes to build up KV pressure
@@ -2572,6 +2646,7 @@ mod forward_pass_metrics {
             output_token_ids: None,
             uuid: Some(Uuid::from_u128(3)),
             arrival_timestamp_ms: None,
+            images: Vec::new(),
         });
 
         // Run more passes — at some point retraction should occur

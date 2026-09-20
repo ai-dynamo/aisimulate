@@ -702,6 +702,7 @@ fn test_turn_to_direct_request_repeats_hash_ids_by_block_size() {
         priority: -2,
         strict_priority: 8,
         policy_class: None,
+        images: Vec::new(),
     };
 
     let request = turn
@@ -776,6 +777,7 @@ fn test_partition_by_session_round_robin_keeps_sessions_intact() {
         inter_turn_delays: DelaySpec::ConstantMs(5.0),
         seed: 7,
         arrival_seed: 42,
+        images: None,
     })
     .unwrap();
 
@@ -813,6 +815,7 @@ fn test_synthetic_prefix_groups_share_prefixes_within_group() {
         inter_turn_delays: DelaySpec::None,
         seed: 42,
         arrival_seed: 42,
+        images: None,
     })
     .unwrap();
 
@@ -852,6 +855,7 @@ fn test_synthetic_exact_cached_prefix_shares_only_requested_tokens() {
         inter_turn_delays: DelaySpec::None,
         seed: 42,
         arrival_seed: 42,
+        images: None,
     })
     .unwrap();
 
@@ -869,6 +873,99 @@ fn test_synthetic_exact_cached_prefix_shares_only_requested_tokens() {
             .len(),
         prompts.len()
     );
+}
+
+fn synthetic_image_spec(identity_pool: Option<u64>, block_size: usize) -> SyntheticTraceSpec {
+    SyntheticTraceSpec {
+        block_size,
+        num_sessions: 4,
+        turns_per_session: 1,
+        input_tokens: LengthSpec {
+            mean: 8,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: 2,
+            stddev: 0.0,
+        },
+        cached_prefix_tokens: 0,
+        shared_prefix_ratio: 0.0,
+        num_prefix_groups: 0,
+        first_turn_arrivals: ArrivalSpec::Burst,
+        inter_turn_delays: DelaySpec::None,
+        seed: 42,
+        arrival_seed: 42,
+        images: Some(SyntheticImages {
+            count: 2,
+            visual_tokens: 3,
+            patches: 12,
+            feature_bytes: 96,
+            embedding_bytes: 128,
+            identity_pool,
+        }),
+    }
+}
+
+#[test]
+fn test_synthetic_images_precede_text_and_share_tokens_only_inside_pool() {
+    let pooled = Trace::synthetic(synthetic_image_spec(Some(2), 1)).unwrap();
+    let prompts = pooled
+        .sessions
+        .iter()
+        .map(|session| {
+            let turn = &session.turns[0];
+            assert_eq!(turn.input_length, 8 + 2 * 3);
+            assert_eq!(
+                turn.images
+                    .iter()
+                    .map(|image| (image.token_start, image.token_end))
+                    .collect::<Vec<_>>(),
+                vec![(0, 3), (3, 6)]
+            );
+            turn.synthesize_tokens(1).unwrap()
+        })
+        .collect::<Vec<_>>();
+    let identities = pooled
+        .sessions
+        .iter()
+        .map(|session| {
+            session.turns[0]
+                .images
+                .iter()
+                .map(|image| image.identity)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    // A pool of two identities repeats every request; the placeholder tokens
+    // repeat with it while the text tail stays unique per request.
+    assert!(identities.iter().all(|ids| ids == &[0, 1]));
+    assert!(prompts.windows(2).all(|pair| pair[0][..6] == pair[1][..6]));
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|tokens| tokens[6..].to_vec())
+            .collect::<HashSet<_>>()
+            .len(),
+        prompts.len()
+    );
+
+    let unique = Trace::synthetic(synthetic_image_spec(None, 1)).unwrap();
+    let placeholders = unique
+        .sessions
+        .iter()
+        .map(|session| session.turns[0].synthesize_tokens(1).unwrap()[..6].to_vec())
+        .collect::<HashSet<_>>();
+    assert_eq!(placeholders.len(), unique.sessions.len());
+    let request = unique.sessions[1].turns[0]
+        .to_direct_request(1, Uuid::from_u128(1), Some(0.0))
+        .unwrap();
+    assert_eq!(request.images, unique.sessions[1].turns[0].images);
+    assert_eq!(request.images[0].identity, 2);
+
+    assert!(Trace::synthetic(synthetic_image_spec(None, 4)).is_err());
+    let mut with_prefix = synthetic_image_spec(None, 1);
+    with_prefix.cached_prefix_tokens = 2;
+    assert!(Trace::synthetic(with_prefix).is_err());
 }
 
 #[test]
@@ -893,6 +990,7 @@ fn test_synthetic_arrival_mode_changes_timestamps_only() {
             inter_turn_delays: DelaySpec::ExponentialMs { mean_ms: 8.0 },
             seed: 99,
             arrival_seed,
+            images: None,
         })
         .unwrap()
     };
@@ -1310,6 +1408,7 @@ fn synthetic_exact_cached_prefix_rejects_unaligned_and_overlong_values() {
             inter_turn_delays: DelaySpec::None,
             seed: 42,
             arrival_seed: 42,
+            images: None,
         })
         .unwrap_err();
         assert!(error.to_string().contains(expected), "{error}");

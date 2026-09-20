@@ -8,6 +8,36 @@ use uuid::Uuid;
 
 use super::{HandoffId, HandoffTransferTiming};
 
+/// One image placeholder span and the encoder shape behind it.
+///
+/// `token_start..token_end` is the half-open placeholder interval inside the
+/// prompt; its length is the image's visual token count. `identity` keys the
+/// vision embedding cache and repeats only when the workload reuses an image.
+/// `patches` is the encoder sequence length before spatial merging;
+/// `feature_bytes` is the processor output moved through host memory and
+/// `embedding_bytes` the encoder output retained by the embedding cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageSpec {
+    pub identity: u64,
+    pub token_start: usize,
+    pub token_end: usize,
+    pub patches: usize,
+    pub feature_bytes: u64,
+    pub embedding_bytes: u64,
+}
+
+impl ImageSpec {
+    /// Placeholder tokens occupied by this image.
+    pub fn visual_tokens(&self) -> usize {
+        self.token_end - self.token_start
+    }
+
+    /// Whether the placeholder interval intersects the half-open `start..end`.
+    pub fn overlaps(&self, start: usize, end: usize) -> bool {
+        self.token_start < end && start < self.token_end
+    }
+}
+
 /// Runtime-neutral request accepted by the rank engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
@@ -20,6 +50,9 @@ pub struct Request {
     /// Optional exact output IDs. Its length overrides `max_output_tokens`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
+    /// Image placeholders inside `tokens`, in prompt order; empty for text-only requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSpec>,
 }
 
 /// Commands supported by the standalone scheduler.

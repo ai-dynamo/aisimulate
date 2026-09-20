@@ -732,6 +732,7 @@ fn lower_requests(
                     prompt_token_source,
                     agentic: None,
                 }),
+                images: Vec::new(),
             })
         })
         .collect::<ReplayResult<Vec<_>>>()?;

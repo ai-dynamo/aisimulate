@@ -3442,6 +3442,7 @@ fn direct_to_native(request: DirectRequest) -> Result<crate::engine::Request> {
         tokens: request.tokens,
         max_output_tokens: request.max_output_tokens,
         output_token_ids: request.output_token_ids,
+        images: request.images,
     })
 }
 

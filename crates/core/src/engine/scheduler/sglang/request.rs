@@ -6,6 +6,7 @@ use std::hash::{Hash, Hasher};
 
 use uuid::Uuid;
 
+use crate::engine::ImageSpec;
 #[cfg(test)]
 use crate::engine::cache::radix_cache::KvPageId;
 use crate::engine::common::protocols::DirectRequest;
@@ -21,11 +22,21 @@ pub(super) struct SglangRequest {
     pub(super) kv_lease: RadixRequestLease,
     pub(super) materialized_tokens: usize,
     pub(super) allocated_tokens: usize,
+    /// Prompt-order image placeholders; empty for text-only requests. Read by
+    /// the host loop and vision cache once those land on top of this contract.
+    #[allow(dead_code)]
+    pub(super) images: Vec<ImageSpec>,
 }
 
 impl SglangRequest {
     pub(super) fn new(req: DirectRequest, block_size: usize, output_storage_hint: usize) -> Self {
         let prompt_len = req.tokens.len();
+        debug_assert!(
+            req.images
+                .iter()
+                .all(|image| image.token_start < image.token_end && image.token_end <= prompt_len),
+            "image placeholders must lie inside the prompt"
+        );
         let max_output_tokens = req.effective_max_output_tokens();
         let output_capacity = output_storage_hint.min(max_output_tokens);
         let mut sequence_tokens = req.tokens;
@@ -48,6 +59,7 @@ impl SglangRequest {
             kv_lease,
             materialized_tokens: 0,
             allocated_tokens: 0,
+            images: req.images,
         }
     }
 

@@ -16,9 +16,10 @@ use crate::replay::{
     ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
     ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
-        ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
-        WekaImportOptions, WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
-        load_agentic_mooncake, load_weka_agentic_graph_with_options,
+        ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticImages,
+        SyntheticTraceSpec, Trace, WekaImportOptions, WekaNestedTimestampBasis,
+        WekaResolvedTimestampBasis, WorkloadDriver, load_agentic_mooncake,
+        load_weka_agentic_graph_with_options,
     },
 };
 use crate::{
@@ -76,6 +77,19 @@ struct RuntimeTraffic {
     osl: Option<usize>,
     #[serde(default)]
     cached_prefix_tokens: Option<usize>,
+    // Fixed per-request image workload resolved by the Python geometry layer.
+    #[serde(default)]
+    image_count: Option<usize>,
+    #[serde(default)]
+    image_visual_tokens: Option<usize>,
+    #[serde(default)]
+    image_patches: Option<usize>,
+    #[serde(default)]
+    image_feature_bytes: Option<u64>,
+    #[serde(default)]
+    image_embedding_bytes: Option<u64>,
+    #[serde(default)]
+    image_identity_pool: Option<u64>,
     #[serde(default)]
     request_count: Option<usize>,
     #[serde(default)]
@@ -920,6 +934,29 @@ fn concrete_session_count(traffic: &RuntimeTraffic) -> Result<usize> {
     Ok(((ratio * load).round() as usize).max(1))
 }
 
+/// Per-request image workload declared by the Python traffic payload, if any.
+fn synthetic_images(traffic: &RuntimeTraffic) -> Result<Option<SyntheticImages>> {
+    let Some(count) = traffic.image_count else {
+        return Ok(None);
+    };
+    Ok(Some(SyntheticImages {
+        count,
+        visual_tokens: traffic
+            .image_visual_tokens
+            .context("image traffic requires image_visual_tokens")?,
+        patches: traffic
+            .image_patches
+            .context("image traffic requires image_patches")?,
+        feature_bytes: traffic
+            .image_feature_bytes
+            .context("image traffic requires image_feature_bytes")?,
+        embedding_bytes: traffic
+            .image_embedding_bytes
+            .context("image traffic requires image_embedding_bytes")?,
+        identity_pool: traffic.image_identity_pool,
+    }))
+}
+
 fn resolve_kv_capacity_concurrency(
     traffic: &mut RuntimeTraffic,
     role: &ReplayRoleConfig,
@@ -939,8 +976,11 @@ fn resolve_kv_capacity_concurrency(
     );
     let isl = traffic.isl.context("KV load requires isl")?;
     let osl = traffic.osl.context("KV load requires osl")?;
+    let visual_tokens =
+        synthetic_images(traffic)?.map_or(0, |images| images.count * images.visual_tokens);
     let expected_tokens = isl
-        .checked_add(osl / 2)
+        .checked_add(visual_tokens)
+        .and_then(|tokens| tokens.checked_add(osl / 2))
         .context("KV-load expected token count overflow")?;
     ensure!(
         expected_tokens > 0,
@@ -1158,11 +1198,13 @@ fn build_runtime_input(
         1
     };
     let cached_prefix_tokens = traffic.cached_prefix_tokens.unwrap_or(0);
+    let images = synthetic_images(&traffic)?;
     let trace = Trace::synthetic(SyntheticTraceSpec {
         // A one-token trace block preserves prefixes that are not aligned to
-        // the engine's scheduler block size. The driver still hashes them at
-        // `engine_block_size` when it constructs replay requests.
-        block_size: if cached_prefix_tokens == 0 {
+        // the engine's scheduler block size and keeps image placeholder spans
+        // token-exact. The driver still hashes them at `engine_block_size`
+        // when it constructs replay requests.
+        block_size: if cached_prefix_tokens == 0 && images.is_none() {
             engine_block_size
         } else {
             1
@@ -1187,6 +1229,7 @@ fn build_runtime_input(
             .map_or(DelaySpec::None, DelaySpec::ConstantMs),
         seed: 0,
         arrival_seed: traffic.arrival_seed.unwrap_or(42),
+        images,
     })?;
     let cap = traffic.concurrency;
     let accumulate = traffic.source_type == "synthetic-session";
