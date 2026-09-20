@@ -193,10 +193,15 @@ selection require an MoE model. Collected FPM interpolation cannot represent
 EPLB, slots, or MoE backend overrides; it rejects an explicit incompatible
 request and is skipped during automatic selection for those identities.
 
+`encoder_parallel` (default absent) compiles a VL model's vision tower with the
+given layout so the estimator can price encoder calls; it requires a model with
+a vision encoder and is part of the estimator identity, cache keys, and
+provenance.
+
 Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add
-`moe_backend: None`, `enable_eplb: false`, and `wideep_num_slots: None`.
-`ForwardPassPerfModelConfig::new(...)` supplies these defaults. This extends
-the canonical configuration introduced by #242.
+`moe_backend: None`, `enable_eplb: false`, `wideep_num_slots: None`, and
+`encoder_parallel: None`. `ForwardPassPerfModelConfig::new(...)` supplies these
+defaults. This extends the canonical configuration introduced by #242.
 
 Rust callers constructing `SyntheticTraceSpec` must also add
 `cached_prefix_tokens: 0` to preserve existing prefix-sharing behavior. A positive
@@ -384,12 +389,16 @@ evidence.
 `TimingModel::predict_vision_ms` prices one vision-encoder batch by image shape
 for the SGLang VL path. Latency-only providers keep the default `None`, and the
 scheduler then rejects image work instead of treating the encoder as free. The
-AIC provider loads the model's encoder operations when the rank hosts the vision
-tower (`EngineConfig::vision`) and evaluates them through the native engine's
-existing ad-hoc op-list API (`evaluate_ops_json`, the same path the Python
-encoder phase uses); the estimator itself is still constructed through
-`ForwardPassPerfModel::best_available`. Encoder operations join the prefill
-phase evidence under their `encoder_*` names.
+AIC provider asks the canonical estimator: `ForwardPassPerfModelConfig`
+carries `encoder_parallel` (`tp` or `dp`), which compiles the model's vision
+tower into the `EngineSpec` `vision` section (schema 20) under that layout, and
+`ForwardPassPerfModel::vision_operations` / `predict_vision_ms` price a call
+over `EncoderImageShape` groups (`sequences`, per-sequence `patch_tokens`,
+`transformer_tokens`, `output_tokens`, `images`). Python exposes the same query
+as `RustForwardPassPerfModel.vision_operations`. A rank hosting the tower
+(`EngineConfig::vision`) requires that setting and fails construction for a
+language-only model. Encoder operations join the prefill phase evidence under
+their `encoder_*` names.
 
 Whole-model FPM timing and the built-in fixed and polynomial timing models are
 latency-only and return `None` from `evidence_summary()`. Consumers must keep

@@ -673,7 +673,7 @@ the current SA convention.
 | `traffic.source.type` | `synthetic` | `x` | `-` | `synthetic`, `synthetic-session`, or `trace`. |
 | `traffic.source.input_tokens` | `1024` | `x` | `-` | Positive; `synthetic` only. |
 | `traffic.source.output_tokens` | `128` | `x` | `-` | Positive; `synthetic` only. |
-| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1), `encoding` (`png` or `jpeg`), and `identity` (`unique` or `{pool: N}`); synthetic only. Requires `engine.workers.encoder` (analytical EPD) or an aggregated SGLang worker with `host` (native VL replay). |
+| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1), `encoding` (`png` or `jpeg`), `identity` (`unique` or `{pool: N}`), and optional `min_pixels`/`max_pixels` (the served processor's rescale budget; defaults to the checkpoint's); synthetic only. Requires `engine.workers.encoder` (analytical EPD) or an aggregated SGLang worker with `host` (native VL replay). |
 | `traffic.source.new_input_tokens_per_turn` | `1024` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.output_tokens_per_turn` | `128` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.session.turns` | `4` | `x` | `-` | At least `2`. |
@@ -998,10 +998,11 @@ engine:
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | `predict` only. Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
 | `engine.workers.<role>.scheduler.max_prefill_tokens` | `null` | `x` | `-` | Positive; SGLang only. Token budget of one EXTEND batch across requests. |
-| `engine.workers.aggregated.host` | Unset | `x` | `-` | SGLang scheduler-thread cost tables (`receive`, `select`, `launch_extend`, `launch_vision`, `launch_decode`, `result`, `tp_sync_ms`, `decode_launch_syncs_previous_gpu`); aggregated SGLang only. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
+| `engine.workers.aggregated.host` | Unset | `x` | `-` | SGLang scheduler-thread cost tables (`receive`, `select`, `prepare_extend`, `launch_extend`, `prepare_vision`, `launch_vision`, `launch_decode`, `result`, `tp_sync_ms`, `decode_launch_syncs_previous_gpu`); aggregated SGLang only. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
 | `engine.workers.aggregated.frontend` | Unset | `x` | `-` | Frontend worker pools (`io_workers`, `processor_workers`, `mm_workers`) and ordered `stages`; requires `host`. |
 | `engine.workers.aggregated.host_profile` | Unset | `x` | `-` | `{path, frontend, on_missing}`: take `host` and `frontend` from a measured profile; exclusive with explicit tables. |
-| `engine.workers.aggregated.vision.cache_mib` | `100` | `x` | `-` | Positive; SGLang multimodal embedding cache for image workloads encoded on the language worker. |
+| `engine.workers.aggregated.vision.cache_mib` | `100` | `x` | `-` | Positive MiB; SGLang multimodal embedding cache for image workloads encoded on the language worker. |
+| `engine.workers.aggregated.vision.encoder_parallel` | `tp` | `x` | `-` | `tp` (SGLang default: the tower is sharded over the tensor-parallel group) or `dp` (`--mm-enable-dp-encoder`); sets encoder timing, collectives, and per-rank tower weights. |
 | `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. Defaults are backend-specific, not version-specific. |
 | `engine.workers.<role>.kv_cache.prefix_caching` | `true` | `x` | `-` | Backend-supported. |
 | `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
@@ -1374,7 +1375,7 @@ engine:
       parallelism: {replicas: 1, tensor: 1}
       scheduler: {max_batched_tokens: 8192, max_sequences: 64}
       host_profile: {path: ./host-profile.json, frontend: python}
-      vision: {cache_mib: 100}
+      vision: {cache_mib: 100, encoder_parallel: tp}
 ```
 
 ```bash
@@ -1384,9 +1385,11 @@ aisimulate predict --stack engine --config vl-prediction.yaml --capture-per-requ
 Cost tables are measured data: write them explicitly under `host` and `frontend`,
 or point `host_profile` at a profile produced by `python -m aisimulate.vl.calibrate`
 on a serving host. A profile that was measured for another model, frontend, image
-encoding, or SGLang revision is rejected, as is one that lacks a cost the deployment
-needs. The summary adds `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
-`mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, and `mean_result_observation_delay_ms`;
+shape, count or encoding, text length, or SGLang revision is rejected, as is one
+that lacks a cost the deployment needs. The summary adds the mean time to first
+token split by milestone, `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
+`mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, and `mean_result_observation_delay_ms`
+(server-internal, ending at scheduler observation);
 `requests.jsonl` adds `frontend_ready_ms`, `scheduler_received_ms`, `selected_ms`,
 and `prefill_complete_ms`. `recommend` accepts the same worker fields as fixed
 data. Mechanics, scope, and validation are described in
