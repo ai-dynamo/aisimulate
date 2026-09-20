@@ -83,6 +83,10 @@ dev = [
     "import-ipynb==0.2",
     "jsonschema>=4.23",
 ]
+learned = [
+    # Offline trainer for the learned forward-pass model (aisimulate_core.sdk.fpm_learned).
+    "scikit-learn>=1.4",
+]
 service = [
     "fastapi>=0.115.12",
     "orjson>=3.10.16",

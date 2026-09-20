@@ -280,6 +280,45 @@ class RustForwardPassPerfModel:
             payload["estimator_config"] = {**estimator_config, "features": features}
         return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_json_dumps(payload)))
 
+    @classmethod
+    def from_learned(
+        cls,
+        source: str | os.PathLike[str] | dict[str, Any],
+        options: dict[str, Any] | None = None,
+    ) -> RustForwardPassPerfModel:
+        """API: ``from_learned(source, options=None)``.
+
+        Description: create a forward-pass model from an offline-trained learned
+        artifact (``aic_fpm_learned_forward_perf`` JSON produced by
+        ``aisimulate_core.sdk.fpm_learned``). ``source`` is an artifact path,
+        the artifact JSON text, or the already-parsed artifact mapping. The
+        artifact binds the worker type and the ordered feature ABI; estimation is
+        the learned prediction times the native-style online correction factor
+        accumulated through ``tune_with_fpms()``. Iterations whose workload kind
+        has no trained store return ``None``.
+        """
+        _configure_default_data_roots()
+        import aisimulate_core
+
+        if isinstance(source, dict):
+            source_text = _json_dumps(source)
+        else:
+            source_text = os.fspath(source)
+        inner = aisimulate_core.RustForwardPassPerfModel.from_learned(
+            source_text,
+            _optional_json_dumps(options),
+        )
+        return cls(inner)
+
+    def learned_feature_names(self) -> list[str] | None:
+        """Ordered feature ABI of a learned model; ``None`` for other modes."""
+        return self._inner.learned_feature_names()
+
+    def learned_metadata(self) -> dict[str, Any] | None:
+        """Trainer metadata embedded in a learned artifact; ``None`` for other modes."""
+        raw = self._inner.learned_metadata()
+        return None if raw is None else json.loads(raw)
+
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
 
