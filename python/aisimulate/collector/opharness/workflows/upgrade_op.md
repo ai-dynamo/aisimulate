@@ -16,11 +16,11 @@ give the same answer twice is a component invocation, never free-hand.
 | 5 | Path alignment | script | `components/path_diff.py` for the family's collector op vs the fresh serving records |
 | 6 | Expired customizations | AI | any `cli_extra_args` whose fact cites the old version: re-run the bare default with `--only`; drop args that became unnecessary, record in findings |
 | 7 | Failure triage | AI | new fails vs old matrix; root-cause per the failure taxonomy; terminal facts -> `results/findings.yaml` (pinned to the new version) |
-| 8 | Recollect + sanity | script | existing collector run for the affected tables, then row-level sanity |
-| 9 | E2E spot check | script | `components/e2e_align.py` on 1-2 representative models |
 
 AI never: re-derives comparison baselines, renames labels outside
 `kernel_taxonomy.yaml`, or concludes "unsupported" from reading code — every
 "the framework does X" claim needs a component-produced record.
 
 Progress is derived, not self-reported: `components/workflow_check.py upgrade_op --param ...` evaluates the sibling `upgrade_op.yaml` manifest against artifacts and names the first actionable step.
+
+Steps 8-9 (recollect sanity, e2e spot check) were removed 2026-09-20 (owner decision): they had been permanent stubs. Row-level sanity is collect.py's executor + classified-failure machinery; an e2e-alignment component gets built the day a workflow actually needs it.

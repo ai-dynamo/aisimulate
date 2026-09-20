@@ -21,9 +21,3 @@ steps:
 - id: failures_root_caused
   actor: ai
   done_when: {check: fails_root_caused}
-- id: recollect_sanity
-  actor: script
-  done_when: {check: component_pending, args: {component: sanity}}
-- id: e2e_spot_check
-  actor: script
-  done_when: {check: component_pending, args: {component: e2e_align}}

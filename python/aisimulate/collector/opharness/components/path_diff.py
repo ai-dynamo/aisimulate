@@ -14,7 +14,7 @@ Two modes:
 
   --diff      (host) Translate BOTH kernel sets — the collector capture and
               the serving probe's records.jsonl entry — through the ONE
-              vocabulary (kernel_taxonomy.yaml) and report the verdict:
+              vocabulary (kernel_taxonomy_<sm>.yaml, AIS_SM, default sm90) and report the verdict:
                 aligned   collector's canonical backend set matches serving's
                           for the op's kernels (subset relation: the collector
                           exercises one op, serving runs the whole model)

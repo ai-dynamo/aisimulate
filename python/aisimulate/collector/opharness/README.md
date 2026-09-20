@@ -33,10 +33,8 @@ opharness/
 | `dummies.py` | build depth-cut, width-true dummy checkpoints (quant/dispatch behave like the real model, load in minutes) |
 | `probe_driver.py` | the G1 driver: golden `cli generate` render -> per-GPU probe queues -> curated records -> results matrices (`--plan/--emit-queues/--records/--matrix/--check-coverage`, `--only` to scope) |
 | `probes/` + `inject/` | in-container identity probes per framework; `inject/sitecustomize.py` is the multi-rank (tp/ep) leg — the filename is the mechanism |
-| `kernel_taxonomy.yaml` | the single kernel-name -> canonical-backend vocabulary every instrument translates through |
-| `decompose.py` | model -> op families + residue (stub; contract in module docstring) |
+| `kernel_taxonomy_<sm>.yaml` | per-SM kernel-name -> canonical-backend vocabulary (both sides of a verdict translate through the SAME file; SMs never share one) |
 | `path_diff.py` | collector op path vs serving, same profiler, same vocabulary (stub) |
-| `e2e_align.py` | AIC prediction vs live measurement on the golden deployment (stub) |
 | `build_images.sh` | rebuild probe images + generator venv from targets.yaml pins |
 
 ## Workflows
@@ -92,3 +90,36 @@ Probing runs on a GPU workspace (`AIC_PROBE_WORKSPACE`) holding dummy_models/,
 archive/ (raw evidence + records.jsonl), and fetched configs; this directory
 holds the instruments and the durable inputs/outputs. See probe_driver's
 docstring for the invocation set.
+
+## Structural policy (owner decisions, 2026-09-20)
+
+1. **Mechanism freeze.** Components are capped at the current set. New
+   capability lands as a field or predicate on an existing component
+   (config_delta is the precedent), never as a new file, unless something is
+   deleted in the same change. The data plane (taxonomy rules, findings,
+   verdicts) grows freely — it is output, not mechanism.
+2. **Versions are not forked — SM is.** Framework-version history lives in
+   git: collectors upgrade IN PLACE when the manifest pin moves (old code is
+   `git checkout <tag>` away; old DATA is permanent under its version key).
+   Family pins below the target version upgrade with it; a pin on an odd
+   version (preview/dev build) gets one validation run or a code/PR-inclusion
+   check against the target release before folding in. SM, by contrast, IS
+   forked — on both planes: per-SM collector files (falls due at the next pin
+   move, together with folding the 029 lanes back into base) and per-SM
+   verdict-plane data (kernel_taxonomy_<sm>.yaml, results/pathdiff/<sm>/,
+   results/retests/<sm>/). Rationale: version copies are serial (one alive at
+   a time — git's case); SM copies are parallel, maintained by different
+   sessions on different machines — physical separation replaces the
+   cross-arch audit discipline and staleness machinery a shared file would
+   demand. Arch-NEUTRAL fixes found on one SM are propagated to sibling files
+   via an explicit cross-SM work order (the B300->H20 block-table fix is the
+   template), never assumed.
+3. **Workspace provisioning** (documents the manual B300 setup): a workspace
+   root holds targets.yaml, dummy_models/ (gen_dummy_models.py), configs/
+   (fetch step), archive/ (run_sh + raw + records.jsonl), facts/, jitcache/,
+   aic/ (predecessor-toolchain checkout for golden renders) + venv_aic
+   (python3.12, aic-core wheel via maturin; see build_images.sh), and the
+   framework images by digest from framework_manifest.yaml. Point
+   AIS_PROBE_WORKSPACE at the root; probes run in-container with the
+   workspace mounted at /work and MPS bypassed
+   (CUDA_MPS_PIPE_DIRECTORY=/nonexistent-no-mps).
