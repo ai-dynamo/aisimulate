@@ -104,8 +104,9 @@ def test_extend_struct_roundtrips_through_msgpack():
     # aggregate-only consumers still decode the same bytes
     legacy = msgspec.msgpack.Decoder(fpm.ForwardPassMetrics).decode(payload)
     assert legacy.scheduled_requests.num_decode_requests == 2
+    # typed decode into the extended struct validates the new lists like any other field
     with pytest.raises(msgspec.ValidationError):
-        ext(extend_lengths=[1], past_kv_lengths=["x"])
+        msgspec.msgpack.Decoder(ext).decode(msgspec.msgpack.encode({"extend_lengths": [1], "past_kv_lengths": ["x"]}))
 
 
 def test_sglang_hook_adds_lists_from_schedule_batch(fake_sglang):
