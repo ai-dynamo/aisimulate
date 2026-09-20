@@ -1283,8 +1283,8 @@ def test_forward_pass_perf_model_best_available_falls_back_on_bad_config() -> No
 
 
 @pytest.mark.integration
-def test_best_available_falls_back_on_malformed_system_yaml(tmp_path: Path) -> None:
-    """Malformed system specs are native-data failures, not hard config errors."""
+def test_best_available_rejects_malformed_system_yaml(tmp_path: Path) -> None:
+    """Corrupt system specs must not be treated as missing estimator coverage."""
     pytest.importorskip("aisimulate_core")
     from aisimulate.sdk.rust_engine_step import RustForwardPassPerfModel
 
@@ -1294,11 +1294,8 @@ def test_best_available_falls_back_on_malformed_system_yaml(tmp_path: Path) -> N
     config = _supported_fpm_config()
     config.update(system_name="broken", systems_path=str(systems_root))
 
-    model = _best_model(RustForwardPassPerfModel, config, "aggregated")
-    diagnostics = model.diagnostics()
-
-    assert diagnostics["source"] == "fallback_regression"
-    assert "YAML error" in diagnostics["last_warning"]
+    with pytest.raises(ValueError, match=r"YAML error.*broken\.yaml"):
+        _best_model(RustForwardPassPerfModel, config, "aggregated")
 
 
 @pytest.mark.integration

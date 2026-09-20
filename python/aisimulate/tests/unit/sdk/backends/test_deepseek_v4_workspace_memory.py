@@ -73,6 +73,8 @@ def backends():
 def _model(*, tp=4, dp=1, ep=1, hidden_size=7168, heads=128):
     return SimpleNamespace(
         context_ops=[SimpleNamespace(get_weights=lambda: 2 * GIB)],
+        get_resident_weights_bytes=lambda: 2 * GIB,
+        get_additional_activation_bytes=lambda _tokens: 0,
         model_family="DEEPSEEKV4",
         _num_heads=heads,
         _head_size=512,

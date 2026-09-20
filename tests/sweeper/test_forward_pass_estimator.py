@@ -597,3 +597,92 @@ def test_mixed_timing_still_enforces_cold_regression_on_default_role():
     }
     with pytest.raises(ForwardPassEstimatorResolutionError, match="prefill is not ready"):
         ForwardPassEstimatorResolver(space).resolve_candidate(sample)
+
+
+def test_canonical_operation_diagnostics_include_native_sol_and_provenance():
+    model = RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig(
+            model="Qwen/Qwen3-32B",
+            system="h200_sxm",
+            backend="vllm",
+            backend_version="0.24.0",
+            worker_type="aggregated",
+            tp=2,
+            estimation_mode="op_level",
+        )
+    )
+    rows = model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=64)
+    assert rows
+    assert any(row["details"]["sol"] is not None for row in rows)
+    assert all(isinstance(row["details"]["fallbacks"], list) and row["source"] for row in rows)
+    assert model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=128) == []
+    with pytest.raises(ValueError, match="prefix"):
+        model.static_phase_diagnostics(batch_size=1, context_length=128, prefill=True, prefix=129)
+
+    with pytest.raises(ValueError, match="token count"):
+        model.static_phase_diagnostics(batch_size=2**32 - 1, context_length=2, prefill=True)
+
+
+@pytest.mark.parametrize("typed", [True, False])
+def test_explicit_regression_does_not_require_discovered_systems_roots(monkeypatch, tmp_path, typed):
+    monkeypatch.setenv("AICONFIGURATOR_SYSTEMS_PATH", str(tmp_path / "missing"))
+    config = dict(
+        model="model", system="system", backend="vllm", worker_type="aggregated", estimation_mode="fpm_regression"
+    )
+    if typed:
+        config = ForwardPassPerfModelConfig(**config)
+    model = RustForwardPassPerfModel.best_available(config)
+    assert model.diagnostics()["provenance"]["config"]["estimation_mode"] == "fpm_regression"
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("estimation_mode", "typo"),
+        ("fallback_policy", "typo"),
+        ("database_mode", "typo"),
+        ("transfer_policy", 3),
+        ("transfer_policy", "typo"),
+        ("estimator_config", []),
+        ("systems_paths", [""]),
+    ],
+)
+def test_search_rejects_invalid_role_policy_before_resolution(field, value):
+    from aisimulate.sweeper.config import SearchSpace
+
+    with pytest.raises(ValueError):
+        SearchSpace(model_name="model", hardware_sku="system", role_estimator_controls={"agg": {field: value}})
+
+
+def test_search_normalizes_role_database_and_transfer_policy():
+    from aisimulate.sweeper.config import SearchSpace
+
+    config = SearchSpace(
+        model_name="model",
+        hardware_sku="system",
+        role_estimator_controls={"agg": {"database_mode": "hybrid", "transfer_policy": "off"}},
+    )
+    assert config.role_estimator_controls["agg"] == {"database_mode": "HYBRID", "transfer_policy": []}
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_explicit_default_moe_backend_compiles_and_preserves_canonical_identity(backend):
+    from aisimulate_core.sdk.config_builders import build_model_config
+    from aisimulate_core.sdk.engine import compile_engine
+
+    assert build_model_config(1, 1, 1, 1, 1, moe_backend="default").moe_backend is None
+    # A dense model is valid because the default does not request a MoE override.
+    compiled = compile_engine("Qwen/Qwen3-32B", "h200_sxm", backend, moe_backend="default")
+    assert compiled is not None
+    config = ForwardPassPerfModelConfig(
+        model="Qwen/Qwen3-32B",
+        system="h200_sxm",
+        backend=backend,
+        worker_type="aggregated",
+        estimation_mode="op_level",
+        moe_backend="default",
+    )
+    resolved = RustForwardPassPerfModel.best_available(config).diagnostics()["provenance"]["config"]
+    assert resolved["moe_backend"] == "default"
+    reloaded = RustForwardPassPerfModel.best_available(resolved).diagnostics()["provenance"]["config"]
+    assert reloaded == resolved

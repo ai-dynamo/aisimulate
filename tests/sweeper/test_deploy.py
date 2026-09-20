@@ -53,6 +53,12 @@ def _agg_deployment(*, space=None, selection=None, parallel_config=AGG_MOE):
     return build_backend_deployment(sample, backend_version=BACKEND_VERSION)
 
 
+def test_zero_speculation_keeps_the_non_speculative_runtime():
+    deployment = _agg_deployment(space=_space(aic_nextn=0))
+    assert "aic_nextn" not in deployment.agg_engine_args
+    assert "aic_nextn_accepted" not in deployment.agg_engine_args
+
+
 def test_agg_backend_deployment_preserves_engine_payload():
     deployment = _agg_deployment()
     engine = deployment.agg_engine_args
@@ -202,10 +208,11 @@ def test_memory_fraction_uses_the_backend_native_field(backend, memory_field):
 
 
 def test_optional_backend_runtime_values_are_forwarded():
-    engine = _agg_deployment(space=_space(startup_time=45.0, aic_nextn=2)).agg_engine_args
+    engine = _agg_deployment(space=_space(startup_time=45.0, aic_nextn=2, nextn_accepted=1.5)).agg_engine_args
 
     assert engine["startup_time"] == 45.0
     assert engine["aic_nextn"] == 2
+    assert engine["aic_nextn_accepted"] == 1.5
 
 
 def test_fixed_host_offload_descriptor_lowers_into_aggregated_engine_args():

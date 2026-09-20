@@ -68,7 +68,13 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
     """Centralized fpm rewrite: each phase list becomes exactly one whole-model
     op. No model class rewrites its own lists; metadata, parallelism, and the
     public model type are unchanged."""
-    from aisimulate_core.sdk.operations.fpm_forward import FPMForwardOp
+    from aisimulate_core.sdk.operations.fpm_forward import _CELL_MATCH_COLUMNS, FPMForwardOp
+
+    if getattr(model.config, "decoder_replay", False) and "execution_profile" not in _CELL_MATCH_COLUMNS:
+        # Rewriting the staged graph is safe only when measured curves are
+        # keyed by execution profile. Legacy FPM cells cannot distinguish the
+        # bounded decoder tail from a full forward at the same coordinates.
+        raise NotImplementedError("decoder_replay requires FPM tables with execution_profile identity")
 
     if model.encoder_ops:
         raise NotImplementedError(
@@ -104,7 +110,7 @@ def _apply_forward_model_fpm(model: BaseModel) -> BaseModel:
     generation_ops = [op for op in model.generation_ops if not op._name.startswith("draft_")]
     draft_context_ops = [op for op in model.context_ops if op._name.startswith("draft_")]
     draft_generation_ops = [op for op in model.generation_ops if op._name.startswith("draft_")]
-    weight_bytes = float(sum(op.get_weights() for op in context_ops))
+    weight_bytes = model.get_resident_weights_bytes()
     prefill_op = FPMForwardOp("prefill", model.config, model.model_path, sol_ops=context_ops, weight_bytes=weight_bytes)
     decode_op = FPMForwardOp(
         "decode", model.config, model.model_path, sol_ops=generation_ops, weight_bytes=weight_bytes
