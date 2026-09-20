@@ -19,6 +19,10 @@
 //! same mechanics over its multimodal worker pool. Processor-sized processor
 //! measurements exclude executor wait, which this queue model supplies. The
 //! queueing arithmetic is independently implemented.
+//!
+//! Every entry point settles the completions due before its instant first, so
+//! the timeline never depends on when the scheduler last looked; requests that
+//! left the last stage wait in an exit buffer until `advance` collects them.
 
 use std::collections::VecDeque;
 
@@ -61,6 +65,9 @@ pub(super) struct FrontendRuntime {
     requests: Vec<Pending>,
     /// Dispatches blocked behind a synchronous tokenizer-manager job, in order.
     loop_queue: VecDeque<Continuation>,
+    /// Requests that left the last stage, with their exit time, until the
+    /// scheduler collects them through `advance`.
+    ready: Vec<(SglangRequest, f64)>,
 }
 
 impl FrontendRuntime {
@@ -81,17 +88,19 @@ impl FrontendRuntime {
             stages,
             requests: Vec::new(),
             loop_queue: VecDeque::new(),
+            ready: Vec::new(),
         }
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.requests.is_empty()
+        self.requests.is_empty() && self.ready.is_empty()
     }
 
     pub(super) fn holds_request(&self, uuid: Uuid) -> bool {
         self.requests
             .iter()
             .any(|pending| pending.request.uuid == uuid)
+            || self.ready.iter().any(|(request, _)| request.uuid == uuid)
     }
 
     fn active_on(&self, resource: FrontendResource) -> usize {
@@ -224,23 +233,25 @@ impl FrontendRuntime {
         }
     }
 
-    /// Move `uuid` past `stage`; the last stage releases the request.
-    fn finish_stage(&mut self, uuid: Uuid, stage: usize) -> Option<SglangRequest> {
+    /// Move `uuid` past `stage`; the last stage releases the request at the
+    /// current instant, whether it completed a job or had none to run.
+    fn finish_stage(&mut self, uuid: Uuid, stage: usize) {
         if stage + 1 == self.stages.len() {
             let index = self
                 .requests
                 .iter()
                 .position(|pending| pending.request.uuid == uuid)
                 .expect("frontend request in flight");
-            return Some(self.requests.remove(index).request);
+            let request = self.requests.remove(index).request;
+            self.ready.push((request, self.now_ms));
+            return;
         }
         self.dispatch(uuid, stage + 1);
-        None
     }
 
     /// Accept a request arriving at `now_ms`.
     pub(super) fn submit(&mut self, request: SglangRequest, now_ms: f64) {
-        self.progress_to(now_ms);
+        self.settle_due(now_ms);
         let uuid = request.uuid;
         self.requests.push(Pending {
             request,
@@ -252,7 +263,7 @@ impl FrontendRuntime {
     }
 
     /// Earliest job completion, recomputed from the active state.
-    pub(super) fn next_deadline_ms(&self) -> Option<f64> {
+    fn next_job_deadline_ms(&self) -> Option<f64> {
         self.stages
             .iter()
             .enumerate()
@@ -264,11 +275,31 @@ impl FrontendRuntime {
             .min_by(f64::total_cmp)
     }
 
+    /// Earliest instant at which `advance` has a request to deliver: a parked
+    /// request's exit time or the next job completion.
+    pub(super) fn next_deadline_ms(&self) -> Option<f64> {
+        self.ready
+            .iter()
+            .map(|(_, ready_ms)| *ready_ms)
+            .chain(self.next_job_deadline_ms())
+            .min_by(f64::total_cmp)
+    }
+
     /// Advance to `now_ms`, returning the requests that left the frontend and when.
     pub(super) fn advance(&mut self, now_ms: f64) -> Vec<(SglangRequest, f64)> {
-        let mut ready = Vec::new();
+        self.settle_due(now_ms);
+        let mut ready = std::mem::take(&mut self.ready);
+        // Requests parked by arrivals and cancellations precede the ones released now.
+        ready.sort_by(|left, right| left.1.total_cmp(&right.1));
+        ready
+    }
+
+    /// Complete every job due by `now_ms` in deadline order, then move the
+    /// clock to `now_ms`. Arrivals and cancellations settle history first so a
+    /// worker freed in the past starts its next job at the right instant.
+    fn settle_due(&mut self, now_ms: f64) {
         while let Some(deadline) = self
-            .next_deadline_ms()
+            .next_job_deadline_ms()
             .filter(|deadline| *deadline <= now_ms)
         {
             // Classify against the deadline before progressing: a residual left by
@@ -308,21 +339,25 @@ impl FrontendRuntime {
                         continue;
                     }
                 }
-                if let Some(request) = self.finish_stage(uuid, index) {
-                    ready.push((request, deadline));
-                }
+                self.finish_stage(uuid, index);
             }
             // Executor pools start their queued jobs before the loop dispatches.
             self.refill();
             self.resume_loop();
         }
         self.progress_to(now_ms);
-        ready
     }
 
-    /// Withdraw a request from every stage it occupies.
+    /// Withdraw a request from every stage it occupies, or from the exit buffer.
     pub(super) fn cancel(&mut self, uuid: Uuid, now_ms: f64) -> Option<SglangRequest> {
-        self.progress_to(now_ms);
+        self.settle_due(now_ms);
+        if let Some(index) = self
+            .ready
+            .iter()
+            .position(|(request, _)| request.uuid == uuid)
+        {
+            return Some(self.ready.remove(index).0);
+        }
         let index = self
             .requests
             .iter()
@@ -490,5 +525,78 @@ mod tests {
         assert_eq!(ready_ids(&ready), [(1, 16.0), (2, 26.0), (3, 36.0)]);
         assert!(pool.is_empty());
         assert_eq!(pool.next_deadline_ms(), None);
+    }
+
+    #[test]
+    fn arrivals_settle_past_completions_before_queueing() {
+        let mut pool = FrontendRuntime::new(config(
+            vec![stage(
+                FrontendResource::MmWorker,
+                FrontendUnit::Request,
+                10.0,
+            )],
+            1,
+        ));
+        pool.submit(request(1, 1), 0.0);
+        pool.submit(request(2, 1), 5.0);
+        // 1 finished at 10 and 2 ran 10..20 before this arrival; the worker is free.
+        pool.submit(request(3, 1), 30.0);
+        assert_eq!(pool.next_deadline_ms(), Some(10.0));
+        assert!(pool.holds_request(Uuid::from_u128(1)));
+        assert_eq!(
+            ready_ids(&pool.advance(100.0)),
+            [(1, 10.0), (2, 20.0), (3, 40.0)]
+        );
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn a_request_without_images_leaves_an_image_stage_at_once() {
+        let mut pool = FrontendRuntime::new(config(
+            vec![stage(FrontendResource::IoDecode, FrontendUnit::Image, 4.0)],
+            2,
+        ));
+        pool.submit(request(1, 0), 7.0);
+        assert!(!pool.is_empty());
+        assert_eq!(pool.next_deadline_ms(), Some(7.0));
+        assert_eq!(ready_ids(&pool.advance(7.0)), [(1, 7.0)]);
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn empty_image_stages_chain_into_the_request_stage() {
+        let mut pool = FrontendRuntime::new(config(
+            vec![
+                stage(FrontendResource::IoDecode, FrontendUnit::Image, 4.0),
+                stage(FrontendResource::Processor, FrontendUnit::Image, 4.0),
+                stage(FrontendResource::MmWorker, FrontendUnit::Request, 5.0),
+            ],
+            1,
+        ));
+        pool.submit(request(1, 0), 3.0);
+        assert_eq!(pool.next_deadline_ms(), Some(8.0));
+        assert_eq!(ready_ids(&pool.advance(8.0)), [(1, 8.0)]);
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn cancelling_another_request_keeps_settled_exits() {
+        let mut pool = FrontendRuntime::new(config(
+            vec![stage(
+                FrontendResource::MmWorker,
+                FrontendUnit::Request,
+                10.0,
+            )],
+            1,
+        ));
+        pool.submit(request(1, 1), 0.0);
+        assert!(pool.cancel(Uuid::from_u128(2), 50.0).is_none());
+        assert!(pool.holds_request(Uuid::from_u128(1)));
+        assert_eq!(ready_ids(&pool.advance(60.0)), [(1, 10.0)]);
+        // A parked request can still be withdrawn before the scheduler collects it.
+        pool.submit(request(3, 1), 60.0);
+        assert!(pool.cancel(Uuid::from_u128(3), 80.0).is_some());
+        assert!(pool.advance(90.0).is_empty());
+        assert!(pool.is_empty());
     }
 }
