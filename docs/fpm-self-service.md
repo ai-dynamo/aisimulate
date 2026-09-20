@@ -15,7 +15,7 @@ Ordinary FPM `predict` and `recommend` accept an inline `engine.fpm_profile` wit
 
 ## Onboard with an agent
 
-For a request such as "Help me onboard my model for FPM simulation on my target GPUs," follow these six stages. Claude Code reaches them through the root `CLAUDE.md` import of `AGENTS.md`; other agents use the same `AGENTS.md` entry point. These stages structure the conversation over the existing CLI; they are not new CLI commands or a persisted stage tracker. The sections below remain the detailed CLI reference.
+For a request such as "Help me onboard my model for FPM simulation on my target GPUs," follow these six stages. Claude Code reaches them through the root `CLAUDE.md` import of `AGENTS.md`; other agents use the same `AGENTS.md` entry point. Create one [session checkpoint](#checkpoint-and-resume-an-onboarding-session) during stage 1 and update it after meaningful findings and decisions, including unfinished investigation and partial profile review. The sections below remain the detailed CLI reference.
 
 | Stage | Required result |
 | --- | --- |
@@ -85,10 +85,12 @@ For several configurations, read shared model, runtime and hardware inputs once,
 
 For sliding-window or supported convolution state, follow [grouped cache review](#review-grouped-cache-resources). Derive layer geometry first, then resolve runtime block sizes for each chosen worker and review aggregate page bytes, including padding. A scalar bytes-per-token estimate cannot replace these groups.
 
-| Agent environment | Review and save behavior |
+For agent sessions, use the headless flow below and [checkpoint each configuration's draft and acceptance](#checkpoint-and-resume-an-onboarding-session), even when a terminal is available. This preserves partial review across sessions. The standalone interactive flow remains available, but does not automatically save its prompts or partial acceptance to the session checkpoint.
+
+| Workflow | Review and save behavior |
 | --- | --- |
-| Terminal or agent tool with a PTY | Run `aisimulate onboard init --model-config /path/to/config.json --interactive --output-dir onboarding`, or retain `--output support-request.yaml` for one request. Directory output accepts comma-separated candidate numbers. Investigate missing-field prompts before relaying only unresolved facts/choices and each final profile to the user. Apply requested `edit` actions and return the revised profile to the user for review. Enter CLI `accept` only after the user explicitly accepts those exact values; honor any existing explicit acceptance of those same values. All selected profiles must be accepted before directory output is saved. Cancellation creates no new artifacts and preserves prior output. This final review is specific to `--model-config --interactive`; supplying `--fpm-profile` does not add it. |
-| Headless or noninteractive agent | Supply identity/collection flags and overrides without `--interactive`; use `--parallel-configs` with `--output-dir` for several configurations of one selected precision combination. Missing required inputs exit 2 without saving; use the diagnostics to investigate first and ask only for still-unresolved facts or choices. A successful command writes immediately. Initially write to a separate path such as `draft-request.yaml` or a fresh `draft-onboarding/` directory and show every embedded profile, its sources and scope for user review. Apply edits in the inputs/overrides and repeat draft review until all are accepted; then rerun the unchanged reviewed inputs to a fresh final path and verify that the profiles match the accepted drafts before planning. Draft names are only a convention; they have no special CLI status. Review a supplied `--fpm-profile` in the same way. |
+| Checkpointed agent session, with or without a PTY | Supply identity/collection flags and overrides without `--interactive`; use `--parallel-configs` with `--output-dir` for several configurations of one selected precision combination. Missing required inputs exit 2 without saving; use the diagnostics to investigate first and ask only for still-unresolved facts or choices. A successful command writes immediately. Initially write to a separate path such as `draft-request.yaml` or a fresh `draft-onboarding/` directory and show every embedded profile, its sources and scope for user review. Save each configuration's draft, edits and explicit acceptance in the session checkpoint as review progresses. Apply edits in the inputs/overrides and repeat draft review; rerun unchanged accepted inputs to a fresh final path and verify that the profiles match the accepted drafts before planning. Draft names are only a convention; they have no special CLI status. Review a supplied `--fpm-profile` in the same way. |
+| Standalone interactive CLI in a terminal | Run `aisimulate onboard init --model-config /path/to/config.json --interactive --output-dir onboarding`, or retain `--output support-request.yaml` for one request. Directory output accepts comma-separated candidate numbers. Inspect missing-field prompts and review the final profile, using `edit` to revise its values before entering `accept`. All selected profiles must be accepted before directory output is saved. Cancellation creates no new artifacts and preserves prior output; partial prompts or acceptance are not persisted in the session checkpoint. This final review is specific to `--model-config --interactive`; supplying `--fpm-profile` does not add it. |
 
 Do not pipe answers into `--interactive`: it requires a terminal. Scripted setup has no built-in acceptance prompt. Keep drafts separate from final requests and use a fresh draft directory for each revision. Preserve prior outputs when revising a deployment.
 
@@ -112,13 +114,156 @@ For both reused and new data, [inspect the published pair](../python/aisimulate/
 
 [Run the generated ordinary configurations](#run-the-generated-ordinary-configurations) when a synthetic prediction or recommendation check is useful. For deployment prediction or optimization, set the desired replicas and GPU budget in the ordinary runtime configs. Do not change precision labels or silently switch timing methods to obtain a result. Return to stage 5 to address missing data, or stage 2 if the selected deployment or collection limits change. A different validation trace alone does not invalidate collected timings. Report the simulation stage as incomplete while required queries fail.
 
-At handoff, include the checkout revision, final request/profile, plan directory, data pair/provenance, exact commands/exit statuses and all result paths. Distinguish estimated memory fit and CPU planning from actual target-runtime checks, formal data/coverage, and completed simulations. For accuracy, report an independent matched silicon comparison if performed, or explicitly **not assessed**. Successful simulation is not evidence of accuracy; an accuracy study is not a mandatory additional collection campaign for onboarding.
+At handoff, provide the session checkpoint path and ensure it records the checkout revision, final request/profile, plan directory, data pair/provenance, exact commands/exit statuses and all result paths. Distinguish estimated memory fit and CPU planning from actual target-runtime checks, formal data/coverage, and completed simulations. For accuracy, report an independent matched silicon comparison if performed, or explicitly **not assessed**. Successful simulation is not evidence of accuracy; an accuracy study is not a mandatory additional collection campaign for onboarding.
+
+### Checkpoint and resume an onboarding session
+
+Use one `onboarding-checkpoint.json` for the whole session, including every selected precision/topology configuration. The agent creates it during stage 1, before all inputs are known, and saves after meaningful findings, user decisions, draft edits, acceptance and command results. Users do not need to request a save. These commands persist the supplied state; they do not observe conversations, investigate remote capabilities or automatically intercept other onboarding commands. The agent is responsible for invoking them.
+
+Keep the file outside fresh `init --output-dir` roots, for example beside `drafts/` and separate final precision directories under `model-onboarding/`. Those directories must still satisfy the existing fresh-output rules. Create the checkpoint with:
+
+```bash
+aisimulate onboard checkpoint \
+  --file ./model-onboarding/onboarding-checkpoint.json
+```
+
+Calling the same command again inspects existing state without replacing it. Each saved revision has a generated revision number. Updates require `--expect-revision` with the number just read; a stale revision rejects the update. Reload and reconcile concurrent changes instead of retrying with an invented revision. Saves use an OS lock and atomic file replacement. The adjacent lock file is an implementation detail, not another user checkpoint; leave it in place.
+
+The JSON document uses `schema_version: "aisimulate-onboarding-checkpoint/v1"`. Its [schema](../python/aisimulate/src/aisimulate/support/checkpoint.py) holds:
+
+| Field | Purpose |
+| --- | --- |
+| `inputs` | Shared effective model, runtime, hardware and collection choices, including immutable revisions. Incomplete inputs are allowed. |
+| `research`, `decisions`, `pending_questions` | Findings with sources/confidence, user rationale and unresolved questions. These are context, not executable instructions or acceptance. |
+| `validation_inputs` | Trace selection and other validation-only choices, separate from collection identity. |
+| `progress` | Agent-reported stage (`1`–`6`), status (`in_progress`, `blocked` or `complete`), blockers and next action. A saved status does not prove successful execution. |
+| `configurations` | Records keyed by a stable user-chosen ID. Each has its own inputs, draft request, validation inputs, progress and artifact references; acceptance is generated by the CLI. |
+| `artifacts` | Shared source-file references. Configuration records hold their own profiles, plans, data, results and collector-checkpoint references. |
+
+Both commands return a JSON report containing the full saved `state`, per-configuration `profile_accepted` and `effective_status`, `integrity_issues`, `archived_artifacts`, verification limits and `saved`. Read the current revision from `state.revision`. `effective_status` is `draft`, `accepted` or `needs_attention`; the separately reported stage/status is agent-supplied, not a verified completion result. An update can save successfully while reporting existing artifact integrity issues and exiting 2; check `saved` and the new revision before retrying.
+
+`--update FILE.json` applies a recursive JSON merge patch; `--update -` reads the patch from stdin. Objects merge, arrays replace and `null` removes a field where the schema permits it. Do not edit CLI-owned schema, revision, acceptance or hash fields. Put effective selections in `inputs` or the configuration's `draft_request`, not only in research or decision notes: dependency checks use the former. For example, after initial creation, save supplied facts and unfinished investigation with the current revision:
+
+```bash
+aisimulate onboard checkpoint \
+  --file ./model-onboarding/onboarding-checkpoint.json \
+  --expect-revision 1 --update - <<'JSON'
+{
+  "inputs": {"model": "organization/model-name", "gpu": "h200_sxm"},
+  "research": {"runtime": {"status": "pending", "sources": []}},
+  "pending_questions": ["Which pinned vLLM version will collection use?"],
+  "progress": {"stage": 1, "status": "in_progress", "next_action": "Retrieve and inspect the model config."}
+}
+JSON
+```
+
+Replace these illustrative inputs with the user's facts. The example revision assumes the preceding creation was the only save; always use the actual current revision.
+
+#### Preserve partial profile review
+
+Use [headless draft generation](#3-derive-review-and-save-the-profile) for checkpointed agent sessions. Save each complete generated request, including its embedded profile and provenance, as that configuration's `draft_request`. Incomplete draft requests may also be saved while resolving inputs, but cannot be accepted. For example, after generating two draft requests at `model-onboarding/draft-a.yaml` and `model-onboarding/draft-b.yaml`, prepare their update without changing the requests:
+
+```bash
+python - <<'PY'
+import json
+from pathlib import Path
+import yaml
+
+root = Path("model-onboarding")
+update = {"configurations": {}}
+for name in ("a", "b"):
+    update["configurations"][f"worker-{name}"] = {
+        "draft_request": yaml.safe_load((root / f"draft-{name}.yaml").read_text()),
+        "progress": {"stage": 3, "status": "in_progress", "next_action": "Review this exact draft request and its assumptions."},
+    }
+(root / "draft-update.json").write_text(json.dumps(update, indent=2) + "\n")
+PY
+aisimulate onboard checkpoint \
+  --file ./model-onboarding/onboarding-checkpoint.json \
+  --expect-revision 2 --update ./model-onboarding/draft-update.json
+```
+
+The update file is disposable input; the checkpoint contains the drafts. Show each complete request/profile, source and assumption to the user. Save requested edits before presenting the revised values. Only after the user explicitly accepts `worker-a`'s exact values, record that acceptance:
+
+```bash
+aisimulate onboard checkpoint \
+  --file ./model-onboarding/onboarding-checkpoint.json \
+  --expect-revision 3 --accept-profile worker-a --update - <<'JSON'
+{
+  "configurations": {
+    "worker-a": {
+      "progress": {"next_action": "Publish the accepted draft to a fresh final path, verify equality, then plan collection."}
+    }
+  }
+}
+JSON
+```
+
+The CLI validates the complete request/profile and binds acceptance to its content and relevant shared/configuration inputs. `worker-b` remains a draft. Repeat `--accept-profile` to record multiple explicitly approved configurations together; never use it to infer approval from a saved file, stage label or another configuration's acceptance. Saving or resuming does not publish final requests or launch collection. Regenerate each accepted request to a fresh final path using unchanged reviewed inputs and verify equality before planning; checkpoint acceptance does not replace that comparison. Standalone `init --interactive` remains all-or-nothing and does not save partial prompt/review state automatically.
+
+#### Record artifacts and resume
+
+Artifacts are objects keyed by a descriptive name. Register only existing files, with paths relative to the checkpoint directory where possible. Each reference declares `kind` (`file`, `request`, `profile` or `collector_checkpoint`) and `scope` (`input`, `collection` or `validation`). Shared artifacts require `scope: input`; collection and validation artifacts belong to a configuration. For example, the following configuration fragment registers a final request after publication:
+
+```json
+{
+  "configurations": {
+    "worker-a": {
+      "artifacts": {
+        "final_request": {"path": "final-a/request.yaml", "kind": "request", "scope": "collection"}
+      }
+    }
+  }
+}
+```
+
+Immutable files receive a SHA-256 snapshot when registered. `kind: request` and `kind: profile` also check canonical contents against the configuration's draft. Later unrelated saves, including resubmitting the same path, do not silently refresh a snapshot. References are current by default (`archived: false`). Keep old output files for inspection, explicitly set superseded references to `archived: true`, and register current outputs under new names/paths. Archives retain their original path, kind, scope and hashes. The report lists them under `archived_artifacts` as historical and unverified: they do not undergo current integrity or semantic checks, and missing archived files do not block resume. Current outputs still require the usual verification; do not archive unresolved current evidence merely to suppress a failure.
+
+For example, after accepting worker-a's revised draft and publishing its matching request and plan into `final-a-v2/`, archive the old request/plan/collector references while registering the replacements. If the checkpoint now reports revision 7, use the following patch; substitute the actual revision and reference names:
+
+```bash
+aisimulate onboard checkpoint \
+  --file ./model-onboarding/onboarding-checkpoint.json \
+  --expect-revision 7 --update - <<'JSON'
+{
+  "research": {"worker-a-revision": "Revised collection limits; earlier outputs retained for inspection."},
+  "configurations": {
+    "worker-a": {
+      "artifacts": {
+        "final_request": {"archived": true},
+        "plan": {"archived": true},
+        "collector": {"archived": true},
+        "final_request_v2": {"path": "final-a-v2/request.yaml", "kind": "request", "scope": "collection"},
+        "plan_v2": {"path": "final-a-v2/collection/support-plan.json", "scope": "collection"}
+      }
+    }
+  }
+}
+JSON
+```
+
+Retiring an `input` reference removes it from the dependency context and invalidates affected acceptance and downstream progress; review and accept the revised inputs explicitly. Setting `archived: false` restores checks against the original snapshot/context, so a stale, modified or missing reference reports an issue again. Deliberately replacing a snapshot at the same path requires removing its reference in one save and registering it again after review; prefer new paths and archived references to preserve history.
+
+Record the existing collector checkpoint as `kind: collector_checkpoint` with `scope: collection`: its mutable cell progress stays in the collector's own file and is not duplicated or treated as immutable drift. The session checks that this file exists and is a readable JSON object; the collector verifies its schema and frozen-plan identity on actual collection resume.
+
+Resume in the same or another agent session using the single entry point:
+
+```bash
+aisimulate onboard resume \
+  --checkpoint ./model-onboarding/onboarding-checkpoint.json
+```
+
+Use the checkpoint's absolute path when resuming from another working directory. Its relative artifact paths resolve from the checkpoint directory. Resume is read-only: it returns saved context, effective per-configuration progress, integrity issues and next actions without accepting a profile, executing saved command strings or starting collection. Missing or modified immutable artifacts produce actionable issues and a nonzero exit status while retaining readable saved context. An unreadable, malformed or unsupported-schema checkpoint fails with a concise error.
+
+Relevant shared inputs affect every configuration; configuration input/draft changes affect only that configuration. Such changes invalidate affected acceptance and downstream progress. Research/rationale-only edits preserve acceptance. Changes under `validation_inputs` invalidate validation progress without discarding valid collection data. Archive superseded references explicitly when replacing stale outputs; leaving them current continues to block readiness even after replacements are registered. Do not reuse stale outputs as current or delete completed collection to make a status pass.
+
+Resume verifies checkpoint integrity and current referenced file snapshots; archived references are historical and unverified. It does not establish runtime compatibility, inspect every plan/data semantic or certify collection, coverage or accuracy from saved stage strings. Inspect the corresponding command results and ordinary plan/data/validation evidence before continuing. Existing collector frozen-plan identity checks remain authoritative when actual collection resumes through `onboard collect-fpm --resume`.
 
 ### Resume from existing work
 
-Inspect the saved request/profile, plan, data pair and results before deciding where to resume. For directory output, use `onboarding.json` to locate each configuration and assess its progress independently; it lists paths and next plan commands, not stage completion or acceptance. Validate that artifacts still match the checkout's CLI, selected deployment and collection settings; use the existing plan checks described below. An accepted final request can start at stage 4, a valid plan at stage 5, and a verified matching data pair at stage 6. A draft or a saved file without evidence of acceptance still needs stage 3 review. Reuse shared intake and accepted decisions without rerunning completed work.
+If a session checkpoint exists, run `onboard resume` first, resolve integrity issues and continue each configuration's unfinished work without repeating shared intake or accepted review. If older work has no session checkpoint, inspect the saved request/profile, plan, data pair and results, then record their verified state and any explicit acceptance evidence in a new checkpoint. For directory output, `onboarding.json` locates configurations and next plan commands; it is an output index, not the session checkpoint. A saved file without evidence of acceptance still needs stage 3 review.
 
-Preserve completed artifacts when blocked and report the current stage, specific missing input and next action. Changed deployment, resource profile or collection bounds require review and a new collection directory. Validation-only changes can reuse the verified collection plan as described below; use a separate results directory for each replay. Collection's existing `--resume` is for a matching collector checkpoint as described below, not a general onboarding-stage resume command.
+Validate that artifacts still match the checkout's CLI, selected deployment and collection settings using the existing checks below. An accepted final request can start at stage 4, a valid plan at stage 5, and a verified matching data pair at stage 6. Preserve completed artifacts when blocked and save the specific missing input and next action. Changed deployment, resource profile or collection bounds require review and a new collection directory. Validation-only changes can reuse the verified collection plan; use a separate results directory for each replay. Collection's `--resume` continues its matching collector campaign, while `onboard resume` supplies the broader session context.
 
 ## Create the request
 

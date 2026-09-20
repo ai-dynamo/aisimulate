@@ -7,6 +7,18 @@ This file adds explicit repository-wide development guards.
 When asked to onboard a model for FPM simulation on designated hardware, follow
 [Onboard with an agent](docs/fpm-self-service.md#onboard-with-an-agent) in the FPM
 self-service guide. Use the checkout's `aisimulate onboard` CLI and current help.
+Create one `onboarding-checkpoint.json` during stage 1, even while inputs are
+incomplete, using the guide's [checkpoint workflow](docs/fpm-self-service.md#checkpoint-and-resume-an-onboarding-session).
+Keep it outside every fresh `init --output-dir` root. Save supplied facts,
+research with sources and confidence, unresolved questions, user decisions and
+per-configuration progress after each meaningful finding, edit or acceptance;
+do not wait for a stage to finish or for the user to request a save. The agent
+must invoke `onboard checkpoint`: other onboarding commands do not automatically
+observe or persist the conversation. When resuming, run
+`aisimulate onboard resume --checkpoint PATH` first, reuse the saved context and
+inspect any integrity issues before continuing. Report the checkpoint path at
+handoff. Use the returned revision for subsequent updates; on a stale-writer
+error, reload and reconcile instead of overwriting newer work.
 Follow its six stages: inspect the model and target; choose the worker and
 review runtime/collection limits; derive, review and save the profile; plan
 collection; collect and verify data; validate replay and run ordinary
@@ -49,8 +61,9 @@ an `estimated_fit` default;
 the shortlist is not a performance ranking or runtime qualification. Present the
 default and alternatives, help select one or more configurations, and preserve
 explicit topology choices. Each generated profile and collection plan still
-uses one exact tuple. Use `--model-config PATH --interactive --output-dir ROOT`
-for guided comma-separated selection, or `--model-config PATH --parallel-configs CONFIGS
+uses one exact tuple. Standalone interactive setup uses
+`--model-config PATH --interactive --output-dir ROOT` for guided comma-separated
+selection. Headless setup uses `--model-config PATH --parallel-configs CONFIGS
 --output-dir ROOT` for a JSON/YAML list of explicit topology fields and optional
 per-entry `resource_overrides`. Retain `--output FILE` for a single request.
 If no default exists, explain the missing inputs and select candidates before
@@ -63,10 +76,18 @@ and precision; page bytes must be derived per precision and tuple. The CLI rejec
 duplicate resolved topologies even with different precision overrides. Use a
 separate fresh output root for each selected precision combination and the existing
 topology list within it; output separation does not make a blocked variant collectible.
-Interactive edits apply only to the profile being reviewed; explicitly accept
-each profile before directory output is saved. A later cancellation or invalid
-profile leaves no new artifacts. Use a fresh or empty root; directory output
-rejects `--overwrite` and never replaces collection results.
+For checkpointed agent sessions, use headless draft generation and save each
+configuration's complete draft request, edits and explicit acceptance separately
+in the checkpoint. Do not mark an unreviewed configuration accepted because
+another configuration was accepted. Use `--accept-profile CONFIG_ID` only after
+the user accepts that exact request/profile; a saved draft never implies
+acceptance. Publish final requests to fresh paths and verify they match the
+accepted drafts before planning. Standalone interactive edits still apply only
+to the profile being reviewed; all profiles must be accepted before directory
+output is saved, and a later cancellation or invalid profile leaves no new
+artifacts. An interactive prompt session does not acquire partial-review
+checkpointing automatically. Use a fresh or empty root; directory output rejects
+`--overwrite` and never replaces collection results.
 Inspect full-attention, sliding-window and supported convolution retention
 before choosing linear or grouped cache resources. For grouped resources,
 derive available geometry, then investigate the pinned cache implementation and
@@ -161,11 +182,26 @@ For directory output, read `onboarding.json` and run each configuration's
 the ordinary plan and preview collection before execution; initialization
 does not launch collection. Use each plan's existing collection and validation
 commands with separate result paths. The index locates configurations and next
-plan commands; it does not record stage completion or acceptance.
+plan commands; it does not replace the session checkpoint.
 
 Report the current stage, its result or blocker, and the next action for each
-configuration. Resume from its validated artifacts and accepted decisions
-instead of repeating shared intake or completed collection.
+configuration. Record artifact references and command results in the session
+checkpoint; preserve the collector's own checkpoints rather than duplicating
+their cell records. Resume from validated artifacts and accepted decisions
+instead of repeating shared intake or completed collection. Checkpoint stage
+labels and saved command strings are agent-supplied context, not proof of
+successful collection, query coverage or accuracy, and must never be executed
+automatically. Recheck the corresponding evidence. Relevant input or profile
+changes invalidate affected acceptance and downstream progress; keep old
+artifacts for inspection and regenerate into new paths. Explicitly mark
+superseded artifact references `archived: true` and record the reason; register
+current outputs under new names/paths as shown in the guide. Archives preserve
+original reference metadata but are historical and unverified, excluded from
+current integrity checks. Do not archive unresolved current evidence to hide
+failures. Retiring an input reference invalidates dependent acceptance; restoring
+an archived reference re-enables its checks. Research-note edits do not require
+renewed profile acceptance. Keep validation-only choices separate
+from collection inputs so they do not discard valid collected data.
 Stage transitions are not additional approval gates. Preserve explicit review
 and acceptance of the exact profile, user overrides/provenance, and existing
 execution authorization as described in the guide's terminal and headless flows.

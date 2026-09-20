@@ -58,6 +58,9 @@ def add_support_parser(subparsers: Any) -> None:
         ),
     )
     actions = onboard.add_subparsers(dest="support_action", required=True)
+    from .checkpoint import add_checkpoint_parsers
+
+    add_checkpoint_parsers(actions)
     init = actions.add_parser(
         "init",
         help="Declare a model, target hardware, worker topology, and FPM collection limits.",
@@ -1121,6 +1124,10 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def run_support_command(args: argparse.Namespace) -> int:
+    if args.support_action in {"checkpoint", "resume"}:
+        from .checkpoint import run_checkpoint_command
+
+        return run_checkpoint_command(args)
     if args.support_action == "validate-fpm":
         from .validation import run_validation
 
