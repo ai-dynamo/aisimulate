@@ -152,32 +152,10 @@ pub(crate) fn validate_forward_pass_metrics(metrics: &ForwardPassMetrics) -> Res
                  past_kv_lengths={past}"
             )));
         }
-        // The aggregates are not an exact function of the lists: producers pad
-        // `sum_prefill_tokens` to the KV page size and may read
-        // `sum_prefill_kv_tokens` after the step (then it also contains this
-        // step's tokens). Both effects only make the aggregates larger, so a
-        // list total above the corresponding aggregate bound is a contradiction.
-        let extend_total: u128 = scheduled
-            .extend_lengths
-            .iter()
-            .map(|&v| u128::from(v))
-            .sum();
-        let past_total: u128 = scheduled
-            .past_kv_lengths
-            .iter()
-            .map(|&v| u128::from(v))
-            .sum();
-        let extend_bound =
-            u128::from(scheduled.sum_prefill_tokens) + u128::from(scheduled.num_decode_requests);
-        let past_bound = u128::from(scheduled.sum_prefill_kv_tokens)
-            + u128::from(scheduled.sum_decode_kv_tokens)
-            + u128::from(scheduled.sum_prefill_tokens);
-        if extend_total > extend_bound || past_total > past_bound {
-            return Err(AicError::InvalidForwardPassMetrics(format!(
-                "per-request lists contradict the aggregates: sum(extend_lengths)={extend_total} \
-                 (bound {extend_bound}), sum(past_kv_lengths)={past_total} (bound {past_bound})"
-            )));
-        }
+        // Totals are deliberately not compared with the aggregates here: with
+        // speculative decoding a decode request extends by 1 + k tokens, and
+        // producers pad / re-read the aggregates after the step. The learned
+        // feature path applies its own consistency check.
     }
     Ok(())
 }

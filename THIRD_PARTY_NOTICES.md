@@ -916,3 +916,27 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 - Modified: development-only two-predictor evaluation, public overview export,
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility. No Plotly assets included.
+
+## SGLang simulator and HiSim feature definitions
+
+The per-request feature set of the learned forward-pass model
+(`REQUEST_FEATURE_NAMES` in `src/aisimulate_core/sdk/fpm_learned.py` and
+`REQUEST_FEATURE_NAMES` in `crates/core/src/perfmodel/fpm/learned.rs`,
+relative to the repository root) is a re-implementation of the 18 batch
+features defined by `MLTimePredictor.FEATURE_NAMES` in the SGLang simulator,
+and the 32 `(present, past, extend)` request slots follow the feature layout
+of HiSim's XGBoost predictor. No upstream source code is copied; the feature
+names, ordering, and formulas were adapted so that models trained for either
+tool line up with this one.
+
+Upstream sources:
+- https://github.com/sgl-project/sglang/blob/59799a368793b9f795baf59b067233a65ad8e38e/tools/sglang-simulator/src/sglang_simulator/time_predictor/ml.py
+  (SGLang, Apache License 2.0; copyright the SGLang project contributors)
+- https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a067d361/hisim/src/hisim/time_predictor/aiconfigurator.py
+  (HiSim, Alibaba tair-kvcache, Apache License 2.0; copyright Alibaba Group)
+
+Both upstream licenses at the identified revisions:
+https://github.com/sgl-project/sglang/blob/59799a368793b9f795baf59b067233a65ad8e38e/LICENSE
+https://github.com/alibaba/tair-kvcache/blob/85402f1a012fb4279be5bb4b57613bb0a067d361/LICENSE
+
+The AISimulate files are modified re-implementations, not verbatim copies.

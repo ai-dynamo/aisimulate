@@ -136,19 +136,27 @@ struct RegressionStores {
     stores: Vec<(ForwardPassRegressionWorkloadKind, BucketedRegression)>,
 }
 
+/// Logical workload stores a worker role can produce (shared by the
+/// regression stores and the learned artifact validator).
+pub(crate) fn workload_kinds_for(
+    worker_type: ForwardPassWorkerType,
+) -> &'static [ForwardPassRegressionWorkloadKind] {
+    use ForwardPassRegressionWorkloadKind::*;
+    match worker_type {
+        ForwardPassWorkerType::Prefill => &[PurePrefill],
+        ForwardPassWorkerType::Decode => &[PureDecode],
+        ForwardPassWorkerType::Aggregated => &[
+            PureDecode,
+            ContainsLocallyMixed,
+            CrossRankAggregated,
+            PurePrefill,
+        ],
+    }
+}
+
 impl RegressionStores {
     fn new(worker_type: ForwardPassWorkerType, options: &ForwardPassPerfOptions) -> Self {
-        use ForwardPassRegressionWorkloadKind::*;
-        let kinds: &[ForwardPassRegressionWorkloadKind] = match worker_type {
-            ForwardPassWorkerType::Prefill => &[PurePrefill],
-            ForwardPassWorkerType::Decode => &[PureDecode],
-            ForwardPassWorkerType::Aggregated => &[
-                PureDecode,
-                ContainsLocallyMixed,
-                CrossRankAggregated,
-                PurePrefill,
-            ],
-        };
+        let kinds = workload_kinds_for(worker_type);
         Self {
             stores: kinds
                 .iter()
@@ -301,7 +309,7 @@ impl ForwardPassPerfModel {
     ///
     /// Description: create a forward-pass model from an offline-trained learned
     /// artifact (`aic_fpm_learned_forward_perf` JSON written by the Python
-    /// `aiconfigurator_core.sdk.fpm_learned` trainer).
+    /// `aisimulate_core.sdk.fpm_learned` trainer).
     ///
     /// `source` is either a filesystem path or the artifact JSON text itself
     /// (detected by a leading `{`). The artifact binds the worker type and the
@@ -311,7 +319,7 @@ impl ForwardPassPerfModel {
     /// trained store return `Ok(None)`.
     pub fn from_learned(source: &str, options: ForwardPassPerfOptions) -> Result<Self, AicError> {
         validate_options(&options)?;
-        let learned = load_learned(source, &options)?;
+        let learned = load_learned(source)?;
         Ok(Self {
             mode: ForwardPassPerfMode::Learned {
                 learned,
@@ -487,14 +495,16 @@ impl ForwardPassPerfModel {
                 if base == 0.0 {
                     return Ok(Some(0.0));
                 }
-                let Some(feature) = IterationFeatures::from_metrics(metrics_by_rank)? else {
-                    return Ok(Some(0.0));
-                };
-                Ok(Some(
-                    base * corrections
-                        .store(feature.workload_kind)
-                        .correction_factor_for(&feature.x),
-                ))
+                // A non-zero base implies scheduled work, so the correction
+                // features exist; fall back to no correction defensively.
+                let factor = IterationFeatures::from_metrics(metrics_by_rank)?
+                    .map(|feature| {
+                        corrections
+                            .store(feature.workload_kind)
+                            .correction_factor_for(&feature.x)
+                    })
+                    .unwrap_or(1.0);
+                Ok(Some(base * factor))
             }
         }
     }
@@ -862,7 +872,17 @@ fn learned_base_ms(
         return Ok(None);
     }
     let vector = IterationFeatureVector::from_metrics(metrics_by_rank);
-    Ok(learned.predict_ms(workload_kind, &vector))
+    if learned.needs_request_features() && !vector.request_lists {
+        // Without the lists every req_*/slot feature is NaN and the trees
+        // would return one constant for every batch. Refuse loudly instead.
+        return Err(AicError::InvalidForwardPassMetrics(
+            "learned artifact uses per-request features but the iteration carries no aligned, \
+             consistent extend_lengths/past_kv_lengths on every active rank; collect with the \
+             per-request FPM hooks (aisimulate_core.fpm_hooks) or train with --features v1"
+                .to_string(),
+        ));
+    }
+    learned.predict_ms(workload_kind, &vector)
 }
 
 #[cfg(feature = "python")]

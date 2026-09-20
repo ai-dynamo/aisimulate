@@ -271,6 +271,8 @@ def test_train_export_roundtrip_matches_sklearn() -> None:
     artifact = fpm_learned.train(rng_iterations, "decode", max_iter=50, min_store_rows=10)
     assert artifact["schema"] == fpm_learned.SCHEMA_NAME
     assert set(artifact["stores"]) == {"pure_decode"}
+    assert artifact["metadata"]["hyperparameters"]["early_stopping"] is False
+    assert artifact["metadata"]["trees_fitted"]["pure_decode"] == len(artifact["stores"]["pure_decode"]["trees"]) == 50
     assert artifact["features"] == list(fpm_learned.REQUEST_FEATURE_NAMES)
     # Exported trees reproduce the in-distribution fit closely.
     report = fpm_learned.evaluate(artifact, rng_iterations)
@@ -307,3 +309,15 @@ def test_rust_model_matches_reference_predictor() -> None:
     assert rust_report["pure_decode"]["mape_pct"] == pytest.approx(ref_report["pure_decode"]["mape_pct"])
     assert model.learned_feature_names() == artifact["features"]
     assert model.diagnostics()["source"] == "learned"
+
+
+def test_build_dataset_rejects_misaligned_request_lists() -> None:
+    bad = _decode_fpm(3, 300, 0.01)
+    bad["scheduled_requests"]["extend_lengths"] = [1, 1]
+    bad["scheduled_requests"]["past_kv_lengths"] = [100, 100]
+    with pytest.raises(ValueError, match="both have 3 entries"):
+        fpm_learned.build_dataset([[bad]], "decode", list(fpm_learned.AGGREGATE_FEATURE_NAMES))
+    ok = _decode_fpm(3, 300, 0.01)
+    ok["scheduled_requests"]["extend_lengths"] = [4, 4, 4]  # speculative decode: >1 token per request is fine
+    ok["scheduled_requests"]["past_kv_lengths"] = [100, 100, 100]
+    assert fpm_learned.build_dataset([[ok]], "decode", list(fpm_learned.AGGREGATE_FEATURE_NAMES))

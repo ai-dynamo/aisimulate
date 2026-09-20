@@ -8,7 +8,7 @@
 //! deployment (Dynamo `DYN_FPM_TRACE`), so the model learns the deployed
 //! engine's actual step time as a function of the scheduled batch. The
 //! artifact is a plain JSON file written by
-//! `aiconfigurator_core.sdk.fpm_learned` (Python, scikit-learn); this module
+//! `aisimulate_core.sdk.fpm_learned` (Python, scikit-learn); this module
 //! is the pure-Rust inference half so the simulation hot path never re-enters
 //! Python.
 //!
@@ -48,7 +48,6 @@ use serde::{Deserialize, Serialize};
 
 use super::metrics::ForwardPassMetrics;
 use super::model::{ForwardPassRegressionWorkloadKind, ForwardPassWorkerType};
-use super::options::ForwardPassPerfOptions;
 use crate::AicError;
 
 pub const LEARNED_SCHEMA_NAME: &str = "aic_fpm_learned_forward_perf";
@@ -281,7 +280,11 @@ impl LearnedForwardPassModel {
             feature_indices,
             feature_names: artifact.features,
             stores: artifact.stores,
-            metadata: artifact.metadata,
+            metadata: if artifact.metadata.is_null() {
+                serde_json::json!({})
+            } else {
+                artifact.metadata
+            },
         })
     }
 
@@ -307,12 +310,24 @@ impl LearnedForwardPassModel {
 
     /// Predict milliseconds for one iteration's named feature vector. Returns
     /// `None` when the workload kind has no trained store.
+    /// `true` when the artifact uses any per-request (`req_*`) or slot feature
+    /// and therefore needs `extend_lengths` / `past_kv_lengths` on the input.
+    pub(crate) fn needs_request_features(&self) -> bool {
+        self.feature_names
+            .iter()
+            .any(|name| name.starts_with("req_") || name.starts_with("slot"))
+    }
+
+    /// Prediction in milliseconds; `Ok(None)` when the artifact has no store
+    /// for `kind`, `Err` when the trees produce a non-finite value.
     pub(crate) fn predict_ms(
         &self,
         kind: ForwardPassRegressionWorkloadKind,
         features: &IterationFeatureVector,
-    ) -> Option<f64> {
-        let store = self.stores.get(&kind)?;
+    ) -> Result<Option<f64>, AicError> {
+        let Some(store) = self.stores.get(&kind) else {
+            return Ok(None);
+        };
         let x: Vec<f64> = self
             .feature_indices
             .iter()
@@ -327,26 +342,18 @@ impl LearnedForwardPassModel {
             LearnedTarget::Ms => raw,
         };
         if !ms.is_finite() {
-            return None;
+            return Err(AicError::InvalidForwardPassMetrics(format!(
+                "learned forward-pass prediction for {kind:?} is not finite ({raw} before the link)"
+            )));
         }
-        Some(ms.max(MIN_POSITIVE_PREDICTION_MS))
+        Ok(Some(ms.max(MIN_POSITIVE_PREDICTION_MS)))
     }
 }
 
 fn allowed_workload_kinds(
     worker_type: ForwardPassWorkerType,
 ) -> &'static [ForwardPassRegressionWorkloadKind] {
-    use ForwardPassRegressionWorkloadKind::*;
-    match worker_type {
-        ForwardPassWorkerType::Prefill => &[PurePrefill],
-        ForwardPassWorkerType::Decode => &[PureDecode],
-        ForwardPassWorkerType::Aggregated => &[
-            PureDecode,
-            ContainsLocallyMixed,
-            CrossRankAggregated,
-            PurePrefill,
-        ],
-    }
+    super::model::workload_kinds_for(worker_type)
 }
 
 fn validate_tree(tree: &LearnedTree, n_features: usize) -> Result<(), String> {
@@ -417,6 +424,9 @@ fn tree_leaf_value(tree: &LearnedTree, x: &[f64]) -> f64 {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct IterationFeatureVector {
     pub(crate) values: Vec<f64>,
+    /// `true` when every active rank carried aligned, consistent per-request
+    /// lists; `false` means the `req_*` features are NaN and the slots empty.
+    pub(crate) request_lists: bool,
 }
 
 impl IterationFeatureVector {
@@ -478,10 +488,18 @@ impl IterationFeatureVector {
                 let mean = dkv / nd;
                 sum_dkv_sq += nd * s.var_decode_kv_tokens.max(0.0) + nd * mean * mean;
             }
+            // Sanity check on the past-KV total: prefix-cache hits and earlier
+            // chunks can only be as large as the aggregates describe (producers
+            // may read `sum_prefill_kv_tokens` after the step, hence the
+            // `+ ptok` slack). Extends are not bounded here: speculative decode
+            // legitimately extends a decode request by more than one token.
+            let past_total: f64 = s.past_kv_lengths.iter().map(|&p| f64::from(p)).sum();
+            let past_consistent = past_total <= pkv + dkv + ptok;
             match pairs.as_mut() {
                 Some(list)
                     if !s.extend_lengths.is_empty()
-                        && s.extend_lengths.len() == s.past_kv_lengths.len() =>
+                        && s.extend_lengths.len() == s.past_kv_lengths.len()
+                        && past_consistent =>
                 {
                     list.extend(
                         s.extend_lengths
@@ -534,6 +552,7 @@ impl IterationFeatureVector {
             attention_pairs.ln_1p(),
             sum_dkv_sq.ln_1p(),
         ]);
+        let request_lists = matches!(&pairs, Some(list) if !list.is_empty());
         match pairs {
             Some(mut list) if !list.is_empty() => {
                 // Sort by past descending, then extend descending (stable slot semantics).
@@ -548,6 +567,10 @@ impl IterationFeatureVector {
                 let sum_ep: f64 = list.iter().map(|(e, p)| e * p).sum();
                 let sum_e2: f64 = list.iter().map(|(e, _)| e * e).sum();
                 let sum_p2: f64 = list.iter().map(|(_, p)| p * p).sum();
+                // Per-request attention proxy e * (p + e / 2) (the SGLang simulator
+                // formula); the aggregate `prefill_attention_pairs` above uses the
+                // balanced-partition estimate e * (p + (e + 1) / 2). Both are mirrored
+                // byte-for-byte in the Python trainer.
                 let sum_attn: f64 = list.iter().map(|(e, p)| e * (p + e / 2.0)).sum();
                 let max_e = list.iter().map(|(e, _)| *e).fold(f64::MIN, f64::max);
                 let min_e = list.iter().map(|(e, _)| *e).fold(f64::MAX, f64::min);
@@ -598,15 +621,15 @@ impl IterationFeatureVector {
             }
         }
         debug_assert_eq!(values.len(), FEATURE_COUNT);
-        Self { values }
+        Self {
+            values,
+            request_lists,
+        }
     }
 }
 
 /// Options-independent artifact loader entry used by the model constructors.
-pub(crate) fn load_learned(
-    source: &str,
-    _options: &ForwardPassPerfOptions,
-) -> Result<LearnedForwardPassModel, AicError> {
+pub(crate) fn load_learned(source: &str) -> Result<LearnedForwardPassModel, AicError> {
     let trimmed = source.trim_start();
     if trimmed.starts_with('{') {
         LearnedForwardPassModel::from_json(source)

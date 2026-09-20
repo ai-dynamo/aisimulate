@@ -139,16 +139,20 @@ python -m aisimulate_core.sdk.fpm_learned train \
     `(present, past, extend)` (preset `hisim`).
   The per-request groups need the `extend_lengths` / `past_kv_lengths`
   producer fields described above. Lists must be aligned and cover every
-  scheduled request; the Rust validator rejects partial vectors. On
-  aggregates-only streams they are NaN and the trees route them through
-  `missing_left`.
+  scheduled request; the Rust validator rejects partial vectors, and an
+  artifact that uses `req_*` / `slot*` features **refuses** (error, not a
+  constant prediction) iterations that carry no consistent lists, because
+  the trees never saw those features missing during training.
   `--features` takes a preset name or a comma-separated list; the default is
   `sglang18` (the 18 per-request features). Aggregate-only streams must opt in
   with `--features v1`.
 - The model is a scikit-learn `HistGradientBoostingRegressor` on
   `log(wall_ms)` per store, exported to plain JSON
   (`schema = aic_fpm_learned_forward_perf`, version 1). No pickle is involved
-  and inference does not need scikit-learn.
+  and inference does not need scikit-learn. Early stopping is off unless
+  `--early-stopping` is passed (sklearn would otherwise enable it above 10k
+  rows with a hidden 10 % validation split); `metadata.trees_fitted` records
+  the trees per store.
 
 The command prints the train-set fit and the holdout accuracy per store
 (MAPE, median and p95 APE), scored through the compiled Rust model, which is
@@ -242,6 +246,12 @@ prefill records themselves are unusable as truth because of the accumulator
 merge, so no prefill cross-mode number is quoted.
 
 ## Limitations
+
+- Learned mode is SDK-only in this release: `best_available(config)` and
+  `EstimationMode` have no learned option yet, so the simulator's replay,
+  sweeper and planner entry points still build native or regression models.
+  Wiring a `learned_artifact` into `ForwardPassPerfModelConfig` is a
+  follow-up.
 
 - Stock Dynamo FPM v1 carries aggregates only (counts, sums, variances). The
   per-request `extend_lengths` / `past_kv_lengths` lists are an additive

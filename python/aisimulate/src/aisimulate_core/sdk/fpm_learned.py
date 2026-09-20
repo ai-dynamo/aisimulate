@@ -247,6 +247,21 @@ def group_iterations(records: Iterable[dict[str, Any]], join_ranks: str = "none"
 # ---------------------------------------------------------------------------
 
 
+def _validate_request_lists(sched: dict[str, Any], index: int) -> None:
+    """Same rule as the Rust validator: both lists empty, or both aligned with one entry per request."""
+    extend = sched.get("extend_lengths") or []
+    past = sched.get("past_kv_lengths") or []
+    if not extend and not past:
+        return
+    expected = int(sched.get("num_prefill_requests", 0)) + int(sched.get("num_decode_requests", 0))
+    if len(extend) != expected or len(past) != expected:
+        raise ValueError(
+            f"iteration {index}: per-request lists must both be empty or both have {expected} entries "
+            f"(num_prefill_requests + num_decode_requests); got extend_lengths={len(extend)}, "
+            f"past_kv_lengths={len(past)}"
+        )
+
+
 def _has_request_lists(sched: dict[str, Any]) -> bool:
     """Both per-request lists present, non-empty and aligned."""
     extend = sched.get("extend_lengths") or []
@@ -422,7 +437,9 @@ def build_dataset(
         raise ValueError(f"unknown features {unknown}; valid names: {list(FEATURE_NAMES)}")
     dataset: dict[str, tuple[list[list[float]], list[float]]] = defaultdict(lambda: ([], []))
     skipped_role = 0
-    for metrics_by_rank in iterations:
+    for index, metrics_by_rank in enumerate(iterations):
+        for fpm in metrics_by_rank:
+            _validate_request_lists(_sched(fpm), index)
         try:
             kind = classify_workload(metrics_by_rank, worker_type)
         except ValueError:
@@ -488,6 +505,7 @@ def train(
     min_samples_leaf: int = 5,
     min_store_rows: int = 20,
     random_state: int = 0,
+    early_stopping: bool = False,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Fit one HGB ensemble per workload store and return the artifact mapping."""
@@ -511,22 +529,28 @@ def train(
         raise ValueError("no trainable iterations (all idle, zero wall_time, or role-incompatible)")
     stores: dict[str, Any] = {}
     counts: dict[str, int] = {}
+    trees: dict[str, int] = {}
     for kind, (rows, y) in sorted(dataset.items()):
         if len(y) < min_store_rows:
             logger.warning("store %s has only %d rows (< %d); skipped", kind, len(y), min_store_rows)
             continue
         y_fit = [math.log(v) for v in y] if target == "log_ms" else list(y)
+        # sklearn's default early_stopping="auto" switches on above 10k rows and
+        # holds out 10 % of them; keep the fit identical across dataset sizes
+        # unless the caller asks for it, and record what was actually fitted.
         model = HistGradientBoostingRegressor(
             max_iter=max_iter,
             learning_rate=learning_rate,
             max_leaf_nodes=max_leaf_nodes,
             min_samples_leaf=min_samples_leaf,
             random_state=random_state,
+            early_stopping=early_stopping,
         )
         model.fit(rows, y_fit)
         stores[kind] = _export_hgb(model)
         counts[kind] = len(y)
-        logger.info("store %s: %d rows, %d trees", kind, len(y), len(stores[kind]["trees"]))
+        trees[kind] = int(getattr(model, "n_iter_", len(stores[kind]["trees"])))
+        logger.info("store %s: %d rows, %d trees", kind, len(y), trees[kind])
     if not stores:
         raise ValueError("every store fell below min_store_rows; nothing to export")
     artifact = {
@@ -544,8 +568,10 @@ def train(
                 "learning_rate": learning_rate,
                 "max_leaf_nodes": max_leaf_nodes,
                 "min_samples_leaf": min_samples_leaf,
+                "early_stopping": early_stopping,
             },
             "train_rows": counts,
+            "trees_fitted": trees,
             **(metadata or {}),
         },
     }
@@ -727,6 +753,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
         min_samples_leaf=args.min_samples_leaf,
         min_store_rows=args.min_store_rows,
         random_state=args.seed,
+        early_stopping=args.early_stopping,
         metadata={
             "sources": [os.fspath(p) for p in args.fpm],
             "join_ranks": args.join_ranks,
@@ -784,6 +811,14 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--max-leaf-nodes", type=int, default=31)
     tr.add_argument("--min-samples-leaf", type=int, default=5)
     tr.add_argument("--min-store-rows", type=int, default=20)
+    tr.add_argument(
+        "--early-stopping",
+        action="store_true",
+        help=(
+            "let sklearn hold out 10%% of each store and stop early "
+            "(off by default; the artifact records the trees fitted)"
+        ),
+    )
     tr.add_argument("--holdout-frac", type=float, default=0.2, help="random holdout fraction (0 disables)")
     tr.add_argument("--holdout-fpm", nargs="*", default=None, help="extra files used only for evaluation")
     tr.add_argument("--seed", type=int, default=0)

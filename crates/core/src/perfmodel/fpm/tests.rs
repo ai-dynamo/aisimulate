@@ -2237,14 +2237,12 @@ fn per_request_lists_must_match_request_counts() {
     partial.scheduled_requests.past_kv_lengths = vec![1000, 1000];
     let err = model.estimate_forward_pass_time_ms(&[partial]).unwrap_err();
     assert!(err.to_string().contains("per-request lists"), "{err}");
-    // Correct lengths but totals no producer can emit (past KV above every aggregate bound).
-    let mut contradictory = decode_fpm(3, 3000, 0.0);
-    contradictory.scheduled_requests.extend_lengths = vec![1, 1, 1];
-    contradictory.scheduled_requests.past_kv_lengths = vec![5000, 5000, 5000];
-    let err = model
-        .estimate_forward_pass_time_ms(&[contradictory])
-        .unwrap_err();
-    assert!(err.to_string().contains("contradict"), "{err}");
+    // Speculative decoding extends decode requests by more than one token; the
+    // shared validator must not reject that (it only checks alignment).
+    let mut spec = decode_fpm(3, 3000, 0.0);
+    spec.scheduled_requests.extend_lengths = vec![4, 4, 4];
+    spec.scheduled_requests.past_kv_lengths = vec![1000, 1000, 1000];
+    assert!(model.estimate_forward_pass_time_ms(&[spec]).unwrap().is_some());
     // Only one of the two lists is present: rejected as well.
     let mut lopsided = decode_fpm(3, 3000, 0.0);
     lopsided.scheduled_requests.past_kv_lengths = vec![1000, 1000, 1000];
@@ -2333,8 +2331,10 @@ fn learned_feature_vector_per_request_and_slots() {
 }
 
 #[test]
-fn learned_model_routes_missing_request_features_via_missing_left() {
-    // Stump on req_max_past with missing_left=false: NaN (no lists) goes right.
+fn learned_model_refuses_request_features_without_lists() {
+    // Stump on req_max_past. With aligned lists the learned route applies; an
+    // iteration without lists (or with lists contradicting the aggregates) is
+    // refused instead of silently routed through missing_left to a constant.
     let artifact = serde_json::json!({
         "schema": "aic_fpm_learned_forward_perf", "schema_version": 1,
         "worker_type": "decode", "target": "ms", "features": ["req_max_past"],
@@ -2364,11 +2364,22 @@ fn learned_model_routes_missing_request_features_via_missing_left() {
             .unwrap(),
         10.0,
     );
-    assert_close(
+    let err = model
+        .estimate_forward_pass_time_ms(&[decode_fpm(2, 200, 0.0)])
+        .unwrap_err();
+    assert!(err.to_string().contains("per-request features"), "{err}");
+    // Lists whose past total exceeds every aggregate bound are treated as absent.
+    let mut contradictory = decode_fpm(2, 200, 0.0);
+    contradictory.scheduled_requests.extend_lengths = vec![1, 1];
+    contradictory.scheduled_requests.past_kv_lengths = vec![5000, 5000];
+    assert!(model.estimate_forward_pass_time_ms(&[contradictory]).is_err());
+    // Idle iterations still estimate zero without consulting the trees.
+    assert_eq!(
         model
-            .estimate_forward_pass_time_ms(&[decode_fpm(2, 200, 0.0)])
-            .unwrap()
+            .estimate_forward_pass_time_ms(&[ForwardPassMetrics::default()])
             .unwrap(),
-        20.0,
+        Some(0.0)
     );
+    // Artifacts without a metadata key expose an empty object, not null.
+    assert!(model.learned_metadata().unwrap().is_object());
 }
