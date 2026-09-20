@@ -33,11 +33,11 @@ use crate::engine::{HandoffId, ImageSpec, TtftMilestone, modeled_duration_ms};
 
 use super::config::SglangConfig;
 use super::decode::{
-    cache_materialized_prefix, cleanup_completed_request, simulate_decode_step_with_sampler,
-    simulate_prefill_first_tokens,
+    cache_materialized_prefix, cache_prefix_through, cleanup_completed_request,
+    simulate_decode_step_with_sampler, simulate_prefill_first_tokens,
 };
 use super::frontend::FrontendRuntime;
-use super::host_loop::{HostLoop, LaunchKind, VisionWork};
+use super::host_loop::{ForwardOutputs, HostLoop, LaunchKind, VisionWork};
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
@@ -642,6 +642,11 @@ impl SglangCore {
         let Some(mut request) = request else {
             return false;
         };
+        if let Some(host) = &mut self.host {
+            // The forward in flight may have produced this request's outputs and
+            // prefix commits; the scheduler never observes them now.
+            host.discard_request(request_id);
+        }
         if let Some(oracle) = &self.belady {
             oracle.retire_requests([request_id]);
         }
@@ -1160,7 +1165,10 @@ impl SglangCore {
                     selected_ms,
                     launch,
                     decode.end_ms - selected_ms,
-                    std::mem::take(&mut decode.output_signals),
+                    ForwardOutputs {
+                        output_signals: std::mem::take(&mut decode.output_signals),
+                        cache_commits: std::mem::take(&mut decode.cache_commits),
+                    },
                 );
                 debug_assert!(
                     observed.is_some() || observed_terminals.is_empty(),
@@ -1176,6 +1184,19 @@ impl SglangCore {
                             });
                     }
                 }
+                let observed = observed.unwrap_or_default();
+                // `maybe_cache_unfinished_req`: the observed forward's prefixes enter the
+                // radix cache now, after this iteration's batch was selected.
+                for (request_id, tokens) in observed.cache_commits {
+                    let request = self
+                        .running
+                        .iter_mut()
+                        .chain(self.waiting.iter_mut())
+                        .find(|request| request.uuid == request_id);
+                    if let Some(request) = request {
+                        cache_prefix_through(request, &mut self.kv_manager, &self.config, tokens);
+                    }
+                }
                 let terminals = self
                     .running
                     .extract_if(.., |request| observed_terminals.contains(&request.uuid))
@@ -1183,7 +1204,7 @@ impl SglangCore {
                 for request in terminals {
                     self.complete_source(request);
                 }
-                (timing.end_ms, observed.unwrap_or_default())
+                (timing.end_ms, observed.output_signals)
             }
             None => (decode.end_ms, std::mem::take(&mut decode.output_signals)),
         };

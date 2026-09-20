@@ -100,10 +100,6 @@ impl SglangRequest {
         self.kv_lease.cached_tokens()
     }
 
-    pub(super) fn page_aligned_materialized_tokens(&self, block_size: usize) -> usize {
-        self.materialized_tokens / block_size * block_size
-    }
-
     pub(super) fn sequence_tokens(&self) -> &[u32] {
         &self.sequence_tokens
     }

@@ -230,7 +230,15 @@ class HostPredictionConfig(StrictModel):
 
     receive: CostFnConfig = Field(default_factory=CostFnConfig)
     select: CostFnConfig = Field(default_factory=CostFnConfig)
+    prepare_extend: CostFnConfig = Field(
+        default_factory=CostFnConfig,
+        description="Input preparation an EXTEND forward waits for before its first kernel.",
+    )
     launch_extend: CostFnConfig = Field(default_factory=CostFnConfig)
+    prepare_vision: CostFnConfig = Field(
+        default_factory=CostFnConfig,
+        description="Feature copies and embedding placement the encoder waits for; per cache-miss image batch.",
+    )
     launch_vision: CostFnConfig = Field(default_factory=CostFnConfig)
     launch_decode: CostFnConfig = Field(default_factory=CostFnConfig)
     result: CostFnConfig = Field(default_factory=CostFnConfig)

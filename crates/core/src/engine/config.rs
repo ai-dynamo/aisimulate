@@ -185,11 +185,18 @@ pub struct HostLoopConfig {
     pub receive: CostFn,
     /// Per iteration that forms a batch: batch selection and forward-batch preparation.
     pub select: CostFn,
-    /// Per EXTEND batch: eager language-model kernel launches.
+    /// Per EXTEND batch, before its first kernel can run: the input preparation
+    /// the forward depends on (input tensors and positions moved to the device).
+    /// The GPU waits for it; kernel enqueueing does not overlap it.
+    pub prepare_extend: CostFn,
+    /// Per EXTEND batch: eager language-model kernel launches, overlapping the forward.
     pub launch_extend: CostFn,
-    /// Per EXTEND batch that encodes cache-miss images: encoder launches, feature
-    /// host-to-device copies, and embedding placement, applied to one encoder
-    /// call over the miss images, their visual tokens, and their feature bytes.
+    /// Per EXTEND batch that encodes cache-miss images, before the encoder can
+    /// run: feature host-to-device copies and embedding placement, applied to one
+    /// encoder call over the miss images, their visual tokens, and their feature bytes.
+    pub prepare_vision: CostFn,
+    /// Per EXTEND batch that encodes cache-miss images: encoder kernel launches,
+    /// overlapping the forward, over the same miss images.
     pub launch_vision: CostFn,
     /// Per DECODE batch: CUDA-graph replay launch.
     pub launch_decode: CostFn,
@@ -208,7 +215,9 @@ impl Default for HostLoopConfig {
         Self {
             receive: CostFn::default(),
             select: CostFn::default(),
+            prepare_extend: CostFn::default(),
             launch_extend: CostFn::default(),
+            prepare_vision: CostFn::default(),
             launch_vision: CostFn::default(),
             launch_decode: CostFn::default(),
             result: CostFn::default(),
@@ -222,7 +231,9 @@ impl HostLoopConfig {
     fn validate(&self) -> Result<()> {
         self.receive.validate("sglang.host.receive")?;
         self.select.validate("sglang.host.select")?;
+        self.prepare_extend.validate("sglang.host.prepare_extend")?;
         self.launch_extend.validate("sglang.host.launch_extend")?;
+        self.prepare_vision.validate("sglang.host.prepare_vision")?;
         self.launch_vision.validate("sglang.host.launch_vision")?;
         self.launch_decode.validate("sglang.host.launch_decode")?;
         self.result.validate("sglang.host.result")?;
