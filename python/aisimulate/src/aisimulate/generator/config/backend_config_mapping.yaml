@@ -141,7 +141,20 @@ parameters:
   trtllm: null
 
 - param_key: max_num_tokens
-  vllm: max-num-batched-tokens
+  # vllm: round the budget UP to a multiple of 64 (never down — a lower
+  # budget can violate scheduler minimums). The runner stores per-cache-group
+  # slot mappings as rows of one 2D buffer whose row width is
+  # max_num_batched_tokens; a budget that is not a multiple of 8 places every
+  # row after the first at a 64-byte-misaligned int64 offset, and
+  # multi-cache-group models (DeepSeek-V4: MLA main + compressor state +
+  # indexer caches) then feed a misaligned slot_mapping into kernels that
+  # assert 64B alignment (cutedsl compress, tvm_ffi "Misaligned Tensor data
+  # on argument #3" @ vllm 0.29.0). Single-variable A/B: 6012 crashes DSV4
+  # at first forward, 6016 (=64*94) and framework defaults pass. vLLM itself
+  # never produces a non-idiomatic budget; rendered configs must not either.
+  vllm:
+    key: max-num-batched-tokens
+    value: "((max_num_tokens + 63) // 64) * 64 if max_num_tokens is defined and max_num_tokens is not none else none"
   sglang: null
   trtllm: max_num_tokens
 
