@@ -134,6 +134,45 @@ def encoder_op_groups_json(
 
 
 @dataclasses.dataclass(frozen=True)
+class ImageGeometry:
+    """Placeholder span and host byte volumes of one preprocessed image."""
+
+    patches: int
+    visual_tokens: int
+    feature_bytes: int
+    embedding_bytes: int
+
+
+def image_geometry(model_path: str, height: int, width: int) -> ImageGeometry:
+    """Geometry of one ``height`` x ``width`` image under the checkpoint's preprocessing.
+
+    ``patches`` is the encoder sequence length, ``visual_tokens`` the prompt
+    placeholder span, ``feature_bytes`` the processor output (fp32 patch pixels)
+    and ``embedding_bytes`` the encoder output kept by the embedding cache (bf16,
+    one copy per projector instance). Shares the token math of the encoder phase."""
+    from aisimulate_core.sdk.utils import (
+        get_model_config_from_model_path,
+        get_vision_encoder_config_from_model_info,
+    )
+
+    enc_cfg = get_vision_encoder_config_from_model_info(get_model_config_from_model_path(model_path))
+    if not isinstance(enc_cfg, common.VisionEncoderConfig):
+        raise ValueError(f"{model_path} has no vision encoder configuration")
+    workload = BaseBackend._encoder_workload_per_visual(
+        RuntimeConfig(image_height=int(height), image_width=int(width), num_images_per_request=1), enc_cfg
+    )
+    if workload.output_tokens_per_image <= 0:
+        raise ValueError(f"{height}x{width} resolves to no visual tokens for {model_path}")
+    patch_pixels = enc_cfg.in_channels * enc_cfg.temporal_patch_size * enc_cfg.patch_size**2
+    return ImageGeometry(
+        patches=workload.transformer_tokens_per_sequence * workload.sequences_per_image,
+        visual_tokens=workload.context_tokens_per_image,
+        feature_bytes=workload.patch_tokens_per_sequence * workload.sequences_per_image * patch_pixels * 4,
+        embedding_bytes=workload.output_tokens_per_image * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances * 2,
+    )
+
+
+@dataclasses.dataclass(frozen=True)
 class _EncoderVisualWorkload:
     """Per-visual token geometry after checkpoint preprocessing."""
 

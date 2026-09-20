@@ -22,6 +22,7 @@ DEFAULT_MEM_FRACTION_STATIC = 0.88
 DEFAULT_FREE_GPU_MEMORY_FRACTION = 0.9
 
 _DEFAULT_AIC_SYSTEM = "h200_sxm"
+_DEFAULT_VLM_CACHE_BYTES = 100 << 20
 _DEFAULT_MAX_NUM_BATCHED_TOKENS = 8192
 _DEFAULT_MAX_NUM_SEQUENCES = 1
 _DEFAULT_BLOCK_SIZES = {"vllm": 64, "sglang": 1, "trtllm": 32}
@@ -213,6 +214,12 @@ def materialize_aic_num_gpu_blocks(
         },
         systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
+        colocated_encoder=bool(lowered.get("vision", False)),
+        reserved_bytes=(
+            int((lowered.get("sglang") or {}).get("vlm_cache_bytes", _DEFAULT_VLM_CACHE_BYTES))
+            if lowered.get("vision")
+            else 0
+        ),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)
@@ -247,6 +254,8 @@ def estimate_num_gpu_blocks(
     systems_path: str | None = None,
     cuda_graph_reserved_bytes: int = 0,
     diagnostics: dict[str, Any] | None = None,
+    colocated_encoder: bool = False,
+    reserved_bytes: int = 0,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -323,6 +332,8 @@ def estimate_num_gpu_blocks(
             },
             systems_path=systems_path,
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
+            colocated_encoder=colocated_encoder,
+            reserved_bytes=reserved_bytes,
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
     )

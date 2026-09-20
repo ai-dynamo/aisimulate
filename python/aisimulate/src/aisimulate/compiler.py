@@ -211,7 +211,14 @@ def _deployment(
         return BackendDeploymentSpec(
             parallel_config=parallel,
             performance_model_metadata={"aggregated": _worker_performance_model_metadata(engine, worker)},
-            agg_engine_args=_worker_engine_args(engine, worker, "aggregated", transfer_bytes_per_token=None),
+            agg_engine_args=_worker_engine_args(
+                engine,
+                worker,
+                "aggregated",
+                transfer_bytes_per_token=None,
+                # Images without a dedicated encoder pool are encoded on the language worker.
+                vision=workload.get("images") is not None and engine.workers.encoder is None,
+            ),
             num_workers=worker.parallelism.replicas,
             **common,
         )
@@ -397,6 +404,7 @@ def _worker_engine_args(
     role: str,
     *,
     transfer_bytes_per_token: int | None,
+    vision: bool = False,
 ) -> dict[str, JSONValue]:
     backend = engine.backend
     parallel = worker.parallelism
@@ -552,6 +560,24 @@ def _worker_engine_args(
         if transfer.bandwidth_gb_per_second is not None:
             payload["kv_transfer_bandwidth"] = transfer.bandwidth_gb_per_second
         payload["kv_transfer_timing_mode"] = transfer.timing_mode
+    if backend == "sglang":
+        # SGLang reads its batch budget from `sglang.*`; the public token knob only
+        # becomes effective on the host-aware VL path so existing predictions keep
+        # their bytes.
+        sglang: dict[str, JSONValue] = {}
+        if worker.host is not None or vision or worker.scheduler.max_prefill_tokens is not None:
+            sglang["chunked_prefill_size"] = worker.scheduler.max_batched_tokens
+        if worker.scheduler.max_prefill_tokens is not None:
+            sglang["max_prefill_tokens"] = worker.scheduler.max_prefill_tokens
+        if vision:
+            sglang["vlm_cache_bytes"] = (worker.vision.cache_mb if worker.vision is not None else 100) << 20
+            payload["vision"] = True
+        if worker.host is not None:
+            sglang["host"] = worker.host.model_dump(mode="json")
+        if sglang:
+            payload["sglang"] = sglang
+        if worker.frontend is not None:
+            payload["frontend"] = worker.frontend.model_dump(mode="json")
     return payload
 
 

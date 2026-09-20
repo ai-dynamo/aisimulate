@@ -169,6 +169,11 @@ class OptimizationGoal(BaseModel):
         return self
 
 
+class ImagePool(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    pool: int = Field(strict=True, gt=0)
+
+
 class ImageWorkload(BaseModel):
     """One fixed image profile shared by every request (AIC encoder semantics)."""
 
@@ -176,6 +181,8 @@ class ImageWorkload(BaseModel):
     height: int = Field(strict=True, gt=0)
     width: int = Field(strict=True, gt=0)
     count: int = Field(default=1, strict=True, gt=0)
+    encoding: Literal["png", "jpeg"] = "png"
+    identity: Literal["unique"] | ImagePool = "unique"
 
 
 class EncoderSearch(BaseModel):

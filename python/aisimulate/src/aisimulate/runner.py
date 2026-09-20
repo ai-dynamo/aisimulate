@@ -354,8 +354,14 @@ class EngineReplayRunner:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
         self.capabilities.require_compatible(spec)
         encoder = spec.backend_deployment.encoder
-        if encoder is None and spec.workload.get("images") is not None:
-            raise InvalidRunnerError("image workloads require an encoder pool")
+        if (
+            encoder is None
+            and spec.workload.get("images") is not None
+            and not (spec.backend_deployment.agg_engine_args or {}).get("vision")
+        ):
+            raise InvalidRunnerError(
+                "image workloads require an encoder pool or an aggregated SGLang worker hosting the vision encoder"
+            )
         if spec.backend_deployment.deployment_mode in {"afd", "afd+pd"}:
             return _run_afd_replay(
                 spec,
@@ -983,6 +989,9 @@ def _materialize_engine_execution_spec(
         traffic = {
             key: value for key, value in spec.workload.items() if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
         }
+        images = spec.workload.get("images")
+        if images is not None and spec.backend_deployment.encoder is None:
+            traffic.update(_image_traffic_fields(spec.backend_deployment, images))
         if traffic.get("trace_format") not in {"dynamo", "weka"}:
             traffic.setdefault("trace_block_size", trace_block_size)
         trace_format = traffic.get("trace_format")
@@ -995,6 +1004,29 @@ def _materialize_engine_execution_spec(
                 traffic["execution_model"] = execution_model
         return {"spec": execution_spec, "traffic": traffic}
     return execution_spec
+
+
+def _image_traffic_fields(deployment: BackendDeploymentSpec, images: Mapping[str, JSONValue]) -> dict[str, JSONValue]:
+    """Lower the public image profile to the placeholder geometry the workload driver lays out."""
+    from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+    args = deployment.agg_engine_args or {}
+    timing = args.get("timing_model") if isinstance(args.get("timing_model"), Mapping) else {}
+    model = args.get("aic_model_path") or (timing.get("config") or {}).get("model")
+    if not isinstance(model, str) or not model:
+        raise ValueError("image workloads require the language model identity in the aggregated engine args")
+    geometry = image_geometry(model, int(images["height"]), int(images["width"]))
+    fields: dict[str, JSONValue] = {
+        "image_count": int(images.get("count", 1)),
+        "image_visual_tokens": geometry.visual_tokens,
+        "image_patches": geometry.patches,
+        "image_feature_bytes": geometry.feature_bytes,
+        "image_embedding_bytes": geometry.embedding_bytes,
+    }
+    identity = images.get("identity", "unique")
+    if isinstance(identity, Mapping):
+        fields["image_identity_pool"] = int(identity["pool"])
+    return fields
 
 
 def _execution_target_model(

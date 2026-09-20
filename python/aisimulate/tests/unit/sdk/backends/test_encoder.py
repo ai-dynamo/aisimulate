@@ -991,3 +991,15 @@ class TestEncoderOpGroupsJson:
         from aisimulate_core.sdk.backends.base_backend import encoder_op_groups_json
 
         assert encoder_op_groups_json("Qwen/Qwen3-8B", "sglang") is None
+
+
+def test_image_geometry_matches_the_qwen3_vl_processor():
+    from aisimulate_core.sdk.backends.base_backend import ImageGeometry, image_geometry
+
+    # 1024x1024 -> 64x64 patches of 16px, merged 2x2 into 1024 visual tokens; each patch
+    # carries 3 x 2 x 16 x 16 fp32 values and each token 4 bf16 embeddings of 4096.
+    assert image_geometry("Qwen/Qwen3-VL-8B-Instruct", 1024, 1024) == ImageGeometry(
+        patches=4096, visual_tokens=1024, feature_bytes=4096 * 6144, embedding_bytes=1024 * 4 * 4096 * 2
+    )
+    with pytest.raises(ValueError, match="no vision encoder"):
+        image_geometry("Qwen/Qwen3-8B", 1024, 1024)

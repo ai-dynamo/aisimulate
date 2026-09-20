@@ -150,7 +150,22 @@ def resolve_kv_load(
         role: _role_capacity_tokens(sample, role=role, config=config, backend_version=backend_version)
         for role, config in role_configs.items()
     }
-    expected_tokens_per_request = int(workload.isl) + int(workload.osl) // 2
+    isl = int(workload.isl)
+    if workload.images is not None:
+        # Visual placeholders occupy KV like text; size the load on the effective prompt.
+        from aisimulate_core.sdk.backends.base_backend import BaseBackend
+        from aisimulate_core.sdk.config import RuntimeConfig
+
+        isl = BaseBackend.effective_prefill_isl(
+            str(sample["model_name"]),
+            RuntimeConfig(
+                isl=isl,
+                image_height=workload.images.height,
+                image_width=workload.images.width,
+                num_images_per_request=workload.images.count,
+            ),
+        )
+    expected_tokens_per_request = isl + int(workload.osl) // 2
     if expected_tokens_per_request <= 0:
         raise InfeasibleKVCapacity(
             f"kv_load_ratio requires positive average tokens per request, got isl={workload.isl}, osl={workload.osl}"

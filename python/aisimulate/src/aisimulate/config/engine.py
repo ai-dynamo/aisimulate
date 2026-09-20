@@ -82,6 +82,9 @@ class ParallelismPredictionConfig(StrictModel):
 class SchedulerPredictionConfig(StrictModel):
     max_batched_tokens: PositiveInt = 8192
     max_sequences: PositiveInt = 256
+    max_prefill_tokens: PositiveInt | None = Field(
+        default=None, description="SGLang only: token budget of one EXTEND batch across requests."
+    )
     prefill_schedule_interval: PositiveInt = Field(
         default=1, description="vLLM only: admit prefill once every N attention-DP group passes."
     )
@@ -212,6 +215,53 @@ class TimingConfig(StrictModel):
         return self
 
 
+class CostFnConfig(StrictModel):
+    """Affine host cost in milliseconds: a constant plus one term per unit of work."""
+
+    const_ms: NonNegativeFloat = 0.0
+    per_request_ms: NonNegativeFloat = 0.0
+    per_image_ms: NonNegativeFloat = 0.0
+    per_ktoken_ms: NonNegativeFloat = 0.0
+    per_mib_ms: NonNegativeFloat = 0.0
+
+
+class HostPredictionConfig(StrictModel):
+    """SGLang scheduler-thread costs; turns each pass into one overlap-loop iteration."""
+
+    receive: CostFnConfig = Field(default_factory=CostFnConfig)
+    select: CostFnConfig = Field(default_factory=CostFnConfig)
+    launch_extend: CostFnConfig = Field(default_factory=CostFnConfig)
+    launch_vision: CostFnConfig = Field(default_factory=CostFnConfig)
+    launch_decode: CostFnConfig = Field(default_factory=CostFnConfig)
+    result: CostFnConfig = Field(default_factory=CostFnConfig)
+    tp_sync_ms: NonNegativeFloat = 0.0
+    decode_launch_syncs_previous_gpu: StrictBool = True
+
+
+class FrontendStageConfig(StrictModel):
+    resource: Literal["tm_loop", "io_decode", "processor", "mm_worker"]
+    unit: Literal["image", "request"]
+    cost: CostFnConfig = Field(default_factory=CostFnConfig)
+    concurrency_scale: list[PositiveFloat] = Field(default_factory=list)
+
+
+class FrontendPredictionConfig(StrictModel):
+    """Frontend worker pools requests cross before the SGLang scheduler."""
+
+    io_workers: PositiveInt = 16
+    processor_workers: PositiveInt = 2
+    mm_workers: PositiveInt = 8
+    stages: list[FrontendStageConfig] = Field(min_length=1)
+
+
+class VisionPredictionConfig(StrictModel):
+    """Vision encoder hosted on the language worker."""
+
+    cache_mb: PositiveInt = Field(
+        default=100, description="SGLang multimodal embedding cache (SGLANG_VLM_CACHE_SIZE_MB)."
+    )
+
+
 class WorkerPredictionConfig(StrictModel):
     hardware: str | None = Field(default=None, min_length=1)
     parallelism: ParallelismPredictionConfig = Field(default_factory=ParallelismPredictionConfig)
@@ -219,6 +269,15 @@ class WorkerPredictionConfig(StrictModel):
     kv_cache: KvCachePredictionConfig = Field(default_factory=KvCachePredictionConfig)
     timing: TimingConfig = Field(default_factory=TimingConfig)
     startup_seconds: float = Field(default=0.0, ge=0.0)
+    host: HostPredictionConfig | None = None
+    frontend: FrontendPredictionConfig | None = None
+    vision: VisionPredictionConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_host_features(self) -> WorkerPredictionConfig:
+        if self.frontend is not None and self.host is None:
+            raise ValueError("frontend requires host")
+        return self
 
 
 class EncoderPredictionConfig(StrictModel):
@@ -425,6 +484,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         _validate_prediction_host_offload(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
+        _validate_prediction_host(self)
         _validate_speculation(self, modes={self.mode}, backends={self.backend})
         return self
 
@@ -655,9 +715,31 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
         for field, backend, default in (
             ("prefill_schedule_interval", "vllm", 1),
             ("prefill_decode_interval", "sglang", 0),
+            ("max_prefill_tokens", "sglang", None),
         ):
             if engine.backend != backend and getattr(worker.scheduler, field) != default:
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
+
+
+def native_vl_worker(engine) -> WorkerPredictionConfig | None:
+    """The aggregated worker that hosts the vision encoder for image workloads, if any."""
+    worker = getattr(engine.workers, "aggregated", None)
+    if worker is None or getattr(worker, "host", None) is None:
+        return None
+    return worker
+
+
+def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None or (worker.host is None and worker.vision is None):
+            continue
+        if engine.backend != "sglang":
+            raise ValueError(f"workers.{role}.host and workers.{role}.vision are supported only for backend=sglang")
+        if engine.mode != "aggregated":
+            raise ValueError(f"workers.{role}.host and workers.{role}.vision require engine.mode='aggregated'")
+        if worker.parallelism.pipeline != 1 or worker.parallelism.attention_data != 1:
+            raise ValueError(f"workers.{role}.host requires pipeline=1 and attention_data=1")
 
 
 def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:

@@ -267,6 +267,24 @@ pub struct TraceLatencyStats {
     pub itl: TraceInterTokenLatencyStats,
     pub e2e: TraceDistributionStats,
     pub output_token_throughput_per_user: TraceDistributionStats,
+    /// Mean time to first token split by scheduler-thread stage; present when a
+    /// host-aware engine reported stages for completed requests.
+    pub host_stages: Option<TraceHostStageStats>,
+}
+
+/// Mean per-request time spent in each host stage on the way to the first token.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TraceHostStageStats {
+    /// Arrival to leaving the frontend pools; zero without a frontend.
+    pub mean_frontend_ms: f64,
+    /// Frontend exit (or arrival) to the scheduler receiving the request.
+    pub mean_scheduler_receive_ms: f64,
+    /// Received to selected into a batch.
+    pub mean_selection_wait_ms: f64,
+    /// Selected to the prompt's last forward finishing on the device.
+    pub mean_forward_ms: f64,
+    /// Device completion to the scheduler observing the first token.
+    pub mean_result_wait_ms: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -514,6 +532,16 @@ impl Serialize for ReplayReport {
             map.serialize_entry("agentic_play_outcomes", outcomes)?;
         }
         serialize_distribution(&mut map, "e2e_latency", &self.latency.e2e)?;
+        if let Some(stages) = &self.latency.host_stages {
+            map.serialize_entry("mean_frontend_ms", &stages.mean_frontend_ms)?;
+            map.serialize_entry(
+                "mean_scheduler_receive_ms",
+                &stages.mean_scheduler_receive_ms,
+            )?;
+            map.serialize_entry("mean_selection_wait_ms", &stages.mean_selection_wait_ms)?;
+            map.serialize_entry("mean_forward_ms", &stages.mean_forward_ms)?;
+            map.serialize_entry("mean_result_wait_ms", &stages.mean_result_wait_ms)?;
+        }
         serialize_rate_distribution(
             &mut map,
             "output_token_throughput_per_user",
@@ -594,7 +622,18 @@ struct TraceRequestStats {
     play_id: Option<String>,
     dispatched_at_ms: Option<f64>,
     metadata: Value,
+    /// Scheduler-thread stages of a host-aware engine; all `None` otherwise.
+    host_stages: HostStageTimes,
     detail: Option<Box<PerRequestDetail>>,
+}
+
+/// First time a request reached each scheduler-thread stage.
+#[derive(Debug, Default, Clone, Copy)]
+struct HostStageTimes {
+    frontend_ready_ms: Option<f64>,
+    scheduler_received_ms: Option<f64>,
+    selected_ms: Option<f64>,
+    prefill_complete_ms: Option<f64>,
 }
 
 #[derive(Debug)]
@@ -700,10 +739,6 @@ struct PerRequestDetail {
     first_admission_cache_tier_attribution: Option<CacheTierAttribution>,
     prefill_reused_input_tokens: Option<usize>,
     prefill_admit_ms: Option<f64>,
-    frontend_ready_ms: Option<f64>,
-    scheduler_received_ms: Option<f64>,
-    selected_ms: Option<f64>,
-    prefill_complete_ms: Option<f64>,
     source_held_ms: Option<f64>,
     destination_reserved_ms: Option<f64>,
     destination_activated_ms: Option<f64>,
@@ -1234,6 +1269,7 @@ impl TraceCollector {
                 dispatched_at_ms: None,
                 metadata: Value::Null,
                 first_admission_reused_input_tokens: 0,
+                host_stages: HostStageTimes::default(),
                 detail: self
                     .capture_per_request
                     .then(|| Box::new(PerRequestDetail::default())),
@@ -1419,12 +1455,13 @@ impl TraceCollector {
 
     /// Record the first time `uuid` reached a scheduler-thread stage.
     pub(crate) fn on_host_stage(&mut self, uuid: Uuid, stage: HostStage, at_ms: f64) {
-        if let Some(detail) = self.detail_mut(uuid) {
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            let stages = &mut stats.host_stages;
             let slot = match stage {
-                HostStage::FrontendReady => &mut detail.frontend_ready_ms,
-                HostStage::Received => &mut detail.scheduler_received_ms,
-                HostStage::Selected => &mut detail.selected_ms,
-                HostStage::PrefillComplete => &mut detail.prefill_complete_ms,
+                HostStage::FrontendReady => &mut stages.frontend_ready_ms,
+                HostStage::Received => &mut stages.scheduler_received_ms,
+                HostStage::Selected => &mut stages.selected_ms,
+                HostStage::PrefillComplete => &mut stages.prefill_complete_ms,
             };
             slot.get_or_insert(at_ms);
         }
@@ -1760,6 +1797,8 @@ impl TraceCollector {
         let requests = self.requests;
         let request_count = requests.len();
         let mut ttfts = Vec::with_capacity(request_count);
+        let mut host_stage_sums = [0.0f64; 5];
+        let mut host_stage_samples = 0usize;
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
@@ -1811,6 +1850,24 @@ impl TraceCollector {
             let e2e_ms = (last_token_ms - stats.arrival_time_ms).max(0.0);
             ttfts.push(ttft_ms);
             e2e_latencies.push(e2e_ms);
+            let stages = stats.host_stages;
+            if let (Some(received), Some(selected), Some(prefill_complete)) = (
+                stages.scheduler_received_ms,
+                stages.selected_ms,
+                stages.prefill_complete_ms,
+            ) {
+                let frontend_exit = stages.frontend_ready_ms.unwrap_or(stats.arrival_time_ms);
+                for (sum, value) in host_stage_sums.iter_mut().zip([
+                    frontend_exit - stats.arrival_time_ms,
+                    received - frontend_exit,
+                    selected - received,
+                    prefill_complete - selected,
+                    first_token_ms - prefill_complete,
+                ]) {
+                    *sum += value.max(0.0);
+                }
+                host_stage_samples += 1;
+            }
 
             // Goodput classification (aiperf avg-ITL; see SlaThresholds::is_good).
             if sla.is_set() && sla.is_good(ttft_ms, e2e_ms, output_length) {
@@ -1899,6 +1956,16 @@ impl TraceCollector {
                 },
                 e2e: build_distribution_stats(e2e_latencies),
                 output_token_throughput_per_user,
+                host_stages: (host_stage_samples > 0).then(|| {
+                    let mean = |index: usize| host_stage_sums[index] / host_stage_samples as f64;
+                    TraceHostStageStats {
+                        mean_frontend_ms: mean(0),
+                        mean_scheduler_receive_ms: mean(1),
+                        mean_selection_wait_ms: mean(2),
+                        mean_forward_ms: mean(3),
+                        mean_result_wait_ms: mean(4),
+                    }
+                }),
             },
             trajectories,
             agentic_graph,
@@ -1964,10 +2031,10 @@ impl TraceCollector {
                 prefill_worker_idx: stats.prefill_worker_idx,
                 decode_worker_idx: stats.decode_worker_idx,
                 prefill_admit_ms: detail.prefill_admit_ms,
-                frontend_ready_ms: detail.frontend_ready_ms,
-                scheduler_received_ms: detail.scheduler_received_ms,
-                selected_ms: detail.selected_ms,
-                prefill_complete_ms: detail.prefill_complete_ms,
+                frontend_ready_ms: stats.host_stages.frontend_ready_ms,
+                scheduler_received_ms: stats.host_stages.scheduler_received_ms,
+                selected_ms: stats.host_stages.selected_ms,
+                prefill_complete_ms: stats.host_stages.prefill_complete_ms,
                 source_held_ms: detail.source_held_ms,
                 destination_reserved_ms: detail.destination_reserved_ms,
                 destination_activated_ms: detail.destination_activated_ms,

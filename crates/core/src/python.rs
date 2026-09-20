@@ -239,9 +239,6 @@ struct AicTimingConfig {
     enable_shared_layer: Option<bool>,
     #[serde(default)]
     strict_provenance: bool,
-    /// Load the model's vision-encoder op groups so image batches can be timed.
-    #[serde(default)]
-    vision: bool,
 }
 
 const fn one() -> u32 {
@@ -378,16 +375,6 @@ impl AicTimingConfig {
     }
 
     fn validate_parallel_shape(&self) -> Result<()> {
-        if self.vision {
-            ensure!(
-                self.backend == "sglang"
-                    && self.pp == 1
-                    && self.attention_dp == 1
-                    && self.nextn == 0
-                    && self.speculation.is_none(),
-                "AIC vision timing requires backend=sglang with pp=1, attention_dp=1, and no speculative decoding"
-            );
-        }
         ensure!(
             self.tp > 0
                 && self.pp > 0
@@ -491,9 +478,24 @@ struct AicTimingModel {
 }
 
 impl AicTimingModel {
-    fn build(config: &mut AicTimingConfig, worker_type: ForwardPassWorkerType) -> Result<Self> {
+    /// `vision` loads the model's encoder op groups so image batches can be timed.
+    fn build(
+        config: &mut AicTimingConfig,
+        worker_type: ForwardPassWorkerType,
+        vision: bool,
+    ) -> Result<Self> {
         config.validate_parallel_shape()?;
         config.resolved_memory_fraction()?;
+        if vision {
+            ensure!(
+                config.backend == "sglang"
+                    && config.pp == 1
+                    && config.attention_dp == 1
+                    && config.nextn == 0
+                    && config.speculation.is_none(),
+                "AIC vision timing requires backend=sglang with pp=1, attention_dp=1, and no speculative decoding"
+            );
+        }
         let model = ForwardPassPerfModel::best_available(config.estimator_request(worker_type)?)
             .context("AIC timing provider could not construct the requested estimator")?;
         let provenance = model
@@ -517,8 +519,7 @@ impl AicTimingModel {
         let native = model.native_engine().context(
             "AIC regression estimator is not ready: offline replay requires trained observations or a native estimator"
         )?;
-        let vision = config
-            .vision
+        let vision = vision
             .then(|| -> Result<VisionTiming> {
                 let ops = Python::with_gil(|py| -> PyResult<Option<String>> {
                     let kwargs = aic_model_identity_kwargs(py, config)?;
@@ -814,6 +815,17 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("max_batch_size", role.rank.max_num_seqs)?;
         kwargs.set_item("memory_fraction_kind", memory_fraction_kind)?;
         kwargs.set_item("memory_fraction_value", memory_fraction_value)?;
+        // A rank hosting the vision encoder keeps its weights and embedding
+        // cache outside the KV pool.
+        kwargs.set_item("colocated_encoder", role.rank.vision)?;
+        kwargs.set_item(
+            "reserved_bytes",
+            if role.rank.vision {
+                role.rank.sglang.vlm_cache_bytes
+            } else {
+                0
+            },
+        )?;
         kwargs.set_item(
             "cuda_graph_reserved_bytes",
             config.cuda_graph_reserved_bytes,
@@ -943,7 +955,7 @@ fn resolve_role_timing(
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
-    let mut timing = AicTimingModel::build(&mut config, worker_type)?;
+    let mut timing = AicTimingModel::build(&mut config, worker_type, role.rank.vision)?;
     if !capture_performance_diagnostics {
         timing.diagnostic_model = None;
     }

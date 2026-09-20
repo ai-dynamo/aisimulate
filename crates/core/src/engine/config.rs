@@ -621,6 +621,11 @@ pub struct EngineConfig {
     /// SGLang-only frontend worker pools; requires `sglang.host`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frontend: Option<FrontendConfig>,
+    /// The rank hosts the model's vision encoder: image batches are timed
+    /// through the timing provider and the encoder weights and embedding cache
+    /// are deducted from the KV budget.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vision: bool,
 }
 
 #[derive(Deserialize)]
@@ -684,6 +689,8 @@ struct EngineConfigWire {
     trtllm: TrtllmConfig,
     #[serde(default)]
     frontend: Option<FrontendConfig>,
+    #[serde(default)]
+    vision: bool,
 }
 
 impl<'de> Deserialize<'de> for EngineConfig {
@@ -724,6 +731,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             sglang: wire.sglang,
             trtllm: wire.trtllm,
             frontend: wire.frontend,
+            vision: wire.vision,
         })
     }
 }
@@ -760,6 +768,7 @@ impl Default for EngineConfig {
             sglang: SglangConfig::default(),
             trtllm: TrtllmConfig::default(),
             frontend: None,
+            vision: false,
         }
     }
 }
@@ -814,6 +823,10 @@ impl EngineConfig {
             );
             frontend.validate()?;
         }
+        ensure!(
+            !self.vision || self.backend == Backend::Sglang,
+            "vision is supported only for backend=sglang"
+        );
         ensure!(
             self.max_model_len.is_none_or(|limit| limit > 0),
             "max_model_len must be positive"

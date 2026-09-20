@@ -19,7 +19,7 @@ from .common import (
     StrictModel,
     load_yaml,
 )
-from .engine import EnginePredictionConfig, EngineRecommendationConfig
+from .engine import EnginePredictionConfig, EngineRecommendationConfig, native_vl_worker
 from .traffic import (
     SyntheticSource,
     TraceSource,
@@ -113,6 +113,20 @@ def _validate_epd(traffic, engine) -> None:
     encoder = engine.workers.encoder
     source = traffic.source if traffic is not None else None
     images = source.images if isinstance(source, SyntheticSource) else None
+    native_vl = native_vl_worker(engine)
+    if encoder is not None and native_vl is not None:
+        raise ValueError(
+            "engine.workers.encoder (analytical EPD) and workers.aggregated.host (native VL replay) are exclusive"
+        )
+    if encoder is None and images is not None:
+        if native_vl is None:
+            raise ValueError(
+                "image workloads require engine.workers.encoder (analytical EPD) or an aggregated SGLang worker "
+                "with host configured (native VL replay)"
+            )
+        if native_vl.timing.type != "default":
+            raise ValueError("native VL replay requires default timing")
+        return
     if (encoder is None) != (images is None):
         raise ValueError("EPD requires both traffic.source.images and engine.workers.encoder")
     if encoder is None:
