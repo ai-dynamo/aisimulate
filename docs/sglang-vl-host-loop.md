@@ -45,7 +45,7 @@ engine:
           - {resource: io_decode, unit: image, cost: {const_ms: 4.0, per_ktoken_ms: 0.2}}
           - {resource: processor, unit: request, cost: {const_ms: 12.0, per_image_ms: 9.0}}
           - {resource: tm_loop, unit: request, cost: {const_ms: 0.8, per_mib_ms: 0.03}}
-      vision: {cache_mb: 100}
+      vision: {cache_mib: 100}
 ```
 
 ```bash
@@ -90,7 +90,7 @@ exactly.
 
 The vision encoder runs once per prefill batch over the cache-miss images whose
 placeholders overlap the chunk being computed, deduplicated by image identity,
-and its outputs are kept in an LRU embedding cache of `vision.cache_mb`
+and its outputs are kept in an LRU embedding cache of `vision.cache_mib`
 (SGLang's `SGLANG_VLM_CACHE_SIZE_MB`, default 100 MiB). The cache and the
 encoder weights are deducted from the KV budget of a worker that hosts the
 tower. Repeated images (`identity: {pool: N}`) hit the cache; a cached prompt
@@ -105,8 +105,8 @@ Python frontend is modeled on its PIL/PNG CPU path; the Rust frontend uses the
 same mechanics over its `mm_worker` pool.
 
 Reports add the mean time to first token split by stage:
-`mean_frontend_ms`, `mean_scheduler_receive_ms`, `mean_selection_wait_ms`,
-`mean_forward_ms`, and `mean_result_wait_ms`.
+`mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`, `mean_receive_to_admit_ms`,
+`mean_prefill_elapsed_ms`, and `mean_result_observation_delay_ms`.
 
 ## Compatibility and scope
 

@@ -195,7 +195,7 @@ impl RankEngine for SchedulerRank {
                 .retain(|event| match *event {
                     LifecycleEvent::SourceHeld { request_id: id, .. }
                     | LifecycleEvent::DestinationReserved { request_id: id, .. }
-                    | LifecycleEvent::HostStage { request_id: id, .. } => id != request_id,
+                    | LifecycleEvent::TtftMilestone { request_id: id, .. } => id != request_id,
                 });
             before != pending.effects.outputs.len()
         } else {
@@ -568,11 +568,11 @@ fn map_lifecycle(event: CoreLifecycle) -> LifecycleEvent {
             request_id,
             transferable_prompt_tokens,
         },
-        CoreLifecycle::HostStage {
+        CoreLifecycle::TtftMilestone {
             request_id,
             stage,
             at_ms,
-        } => LifecycleEvent::HostStage {
+        } => LifecycleEvent::TtftMilestone {
             request_id,
             stage,
             at_ms,

@@ -41,7 +41,7 @@ _AGG_PINNED = (
     "agg_host",
     "agg_frontend",
     "agg_host_profile",
-    "agg_host_profile_id",
+    "agg_host_profile_digest",
     "agg_tp_sync_ms",
     "agg_vision",
 )

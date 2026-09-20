@@ -381,7 +381,7 @@ def _resolve_host_profile(
         worker.host_profile, model=engine.model, images=images, tensor_parallel=worker.parallelism.tensor
     )
     resolved = worker.model_copy(update={"host": host, "frontend": frontend, "host_profile": None})
-    return resolved, {"vl": {"host_profile_id": profile_id(profile), "frontend": worker.host_profile.frontend}}
+    return resolved, {"vl": {"host_profile_digest": profile_id(profile), "frontend": worker.host_profile.frontend}}
 
 
 def _worker_performance_model_metadata(
@@ -590,7 +590,7 @@ def _worker_engine_args(
         if worker.scheduler.max_prefill_tokens is not None:
             sglang["max_prefill_tokens"] = worker.scheduler.max_prefill_tokens
         if vision:
-            sglang["vlm_cache_bytes"] = (worker.vision.cache_mb if worker.vision is not None else 100) << 20
+            sglang["vlm_cache_bytes"] = (worker.vision.cache_mib if worker.vision is not None else 100) << 20
             payload["vision"] = True
         if worker.host is not None:
             sglang["host"] = worker.host.model_dump(mode="json")

@@ -120,9 +120,9 @@ pub enum LifecycleEvent {
         transferable_prompt_tokens: usize,
     },
     /// A host-aware scheduler reached a scheduler-thread stage for one request.
-    HostStage {
+    TtftMilestone {
         request_id: Uuid,
-        stage: HostStage,
+        stage: TtftMilestone,
         at_ms: f64,
     },
 }
@@ -130,7 +130,7 @@ pub enum LifecycleEvent {
 /// Scheduler-thread stages reported by a host-aware scheduler for one request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HostStage {
+pub enum TtftMilestone {
     /// Left the frontend worker pools; delivered to the scheduler process.
     FrontendReady,
     /// Drained from the scheduler inbox at an iteration start.

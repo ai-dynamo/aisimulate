@@ -8,7 +8,7 @@ use rustc_hash::FxHashMap;
 use uuid::Uuid;
 
 use crate::engine::common::protocols::DirectRequest;
-use crate::engine::{HandoffId, HandoffTransferTiming, HostStage};
+use crate::engine::{HandoffId, HandoffTransferTiming, TtftMilestone};
 
 pub enum SchedulerCommand {
     Submit(DirectRequest),
@@ -62,9 +62,9 @@ pub enum SchedulerLifecycleEvent {
         request_id: Uuid,
         transferable_prompt_tokens: usize,
     },
-    HostStage {
+    TtftMilestone {
         request_id: Uuid,
-        stage: HostStage,
+        stage: TtftMilestone,
         at_ms: f64,
     },
 }

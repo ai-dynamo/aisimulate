@@ -205,7 +205,7 @@ def _native_vl_engine_args(sample: dict[str, Any], *, tp: int) -> dict[str, Any]
     if max_prefill is not None:
         sglang["max_prefill_tokens"] = int(max_prefill)
     if vision is not None:
-        sglang["vlm_cache_bytes"] = int(vision.get("cache_mb", 100)) << 20
+        sglang["vlm_cache_bytes"] = int(vision.get("cache_mib", 100)) << 20
         result["vision"] = True
     if host is not None:
         host = deepcopy(host)
@@ -328,9 +328,9 @@ def build_backend_deployment(
             "config": deepcopy(estimator.config),
             "selection": deepcopy(estimator.diagnostics),
         }
-    if mode == "agg" and sample.get("agg_host_profile_id") is not None:
+    if mode == "agg" and sample.get("agg_host_profile_digest") is not None:
         common["performance_model_metadata"]["aggregated"]["vl"] = {
-            "host_profile_id": sample["agg_host_profile_id"],
+            "host_profile_digest": sample["agg_host_profile_digest"],
             "frontend": sample["agg_host_profile"]["frontend"],
         }
     if mode == "agg":

@@ -605,11 +605,11 @@ impl DisaggFlowState {
                         collector,
                     )?;
                 }
-                LifecycleEvent::HostStage {
+                LifecycleEvent::TtftMilestone {
                     request_id,
                     stage,
                     at_ms,
-                } => collector.on_host_stage(request_id, stage, at_ms),
+                } => collector.on_ttft_milestone(request_id, stage, at_ms),
             }
         }
         Ok(())

@@ -467,7 +467,7 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
     images = getattr(source, "images", None)
     if not isinstance(aggregated, dict) or images is None or config.engine.workers.encoder is not None:
         return {}
-    result: dict[str, Any] = {"agg_vision": deepcopy(aggregated.get("vision") or {"cache_mb": 100})}
+    result: dict[str, Any] = {"agg_vision": deepcopy(aggregated.get("vision") or {"cache_mib": 100})}
     profile_config = aggregated.get("host_profile")
     if profile_config is None:
         result["agg_host"] = deepcopy(aggregated.get("host"))
@@ -488,7 +488,7 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
         agg_frontend=frontend.model_dump(mode="json"),
         agg_tp_sync_ms=dict(profile.tp_sync_ms),
         agg_host_profile=deepcopy(profile_config),
-        agg_host_profile_id=profile_id(profile),
+        agg_host_profile_digest=profile_id(profile),
     )
     return result
 

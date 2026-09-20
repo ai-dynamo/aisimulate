@@ -267,7 +267,7 @@ class HostProfileConfig(StrictModel):
 class VisionPredictionConfig(StrictModel):
     """Vision encoder hosted on the language worker."""
 
-    cache_mb: PositiveInt = Field(
+    cache_mib: PositiveInt = Field(
         default=100, description="SGLang multimodal embedding cache (SGLANG_VLM_CACHE_SIZE_MB)."
     )
 

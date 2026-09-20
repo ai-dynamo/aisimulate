@@ -2972,7 +2972,7 @@ mod host_loop_passes {
     use std::sync::Arc;
 
     use super::*;
-    use crate::engine::{CostFn, HostLoopConfig, HostStage};
+    use crate::engine::{CostFn, HostLoopConfig, TtftMilestone};
 
     struct FixedTiming {
         prefill_ms: f64,
@@ -3023,11 +3023,11 @@ mod host_loop_passes {
         SglangCore::new(args)
     }
 
-    fn stage(pass: &EnginePassResult, wanted: HostStage) -> Vec<(Uuid, f64)> {
+    fn stage(pass: &EnginePassResult, wanted: TtftMilestone) -> Vec<(Uuid, f64)> {
         pass.lifecycle_events
             .iter()
             .filter_map(|event| match *event {
-                SchedulerLifecycleEvent::HostStage {
+                SchedulerLifecycleEvent::TtftMilestone {
                     request_id,
                     stage,
                     at_ms,
@@ -3067,10 +3067,10 @@ mod host_loop_passes {
         let first = core.execute_hidden_pass(0.0);
         assert_eq!(first.end_ms, 8.0);
         assert!(first.output_signals.is_empty());
-        assert_eq!(stage(&first, HostStage::Received), vec![(uuid, 0.0)]);
-        assert_eq!(stage(&first, HostStage::Selected), vec![(uuid, 3.0)]);
+        assert_eq!(stage(&first, TtftMilestone::Received), vec![(uuid, 0.0)]);
+        assert_eq!(stage(&first, TtftMilestone::Selected), vec![(uuid, 3.0)]);
         assert_eq!(
-            stage(&first, HostStage::PrefillComplete),
+            stage(&first, TtftMilestone::PrefillComplete),
             vec![(uuid, 23.0)]
         );
         assert!(!core.is_drained());
@@ -3103,8 +3103,8 @@ mod host_loop_passes {
         // Delivered at 5, i.e. while iteration 1 is still on the scheduler thread.
         let second = core.receive(direct_request((100..116).collect(), 1));
         let pass = core.execute_hidden_pass(pass.end_ms);
-        assert_eq!(stage(&pass, HostStage::Received), vec![(second, 8.0)]);
-        assert_eq!(stage(&pass, HostStage::Selected), vec![(second, 11.0)]);
+        assert_eq!(stage(&pass, TtftMilestone::Received), vec![(second, 8.0)]);
+        assert_eq!(stage(&pass, TtftMilestone::Selected), vec![(second, 11.0)]);
         // An EXTEND launch does not wait for the running forward: the loop reaches the
         // first request's result at max(launch end 16, forward end 23) + 1.
         assert_eq!(pass.end_ms, 24.0);
@@ -3117,7 +3117,7 @@ mod host_loop_passes {
         );
         // The second forward queues behind the first on the GPU: 23..43.
         assert_eq!(
-            stage(&pass, HostStage::PrefillComplete),
+            stage(&pass, TtftMilestone::PrefillComplete),
             vec![(second, 43.0)]
         );
     }
@@ -3256,7 +3256,7 @@ mod frontend_pools {
     use super::*;
     use crate::engine::{
         CostFn, FrontendConfig, FrontendResource, FrontendStage, FrontendUnit, HostLoopConfig,
-        HostStage,
+        TtftMilestone,
     };
 
     /// One processor worker charging 4 ms per request ahead of a free host loop.
@@ -3301,7 +3301,7 @@ mod frontend_pools {
             .lifecycle_events
             .iter()
             .filter_map(|event| match *event {
-                SchedulerLifecycleEvent::HostStage {
+                SchedulerLifecycleEvent::TtftMilestone {
                     request_id,
                     stage,
                     at_ms,
@@ -3309,17 +3309,17 @@ mod frontend_pools {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert!(stages.contains(&(first, HostStage::FrontendReady, 4.0)));
-        assert!(stages.contains(&(first, HostStage::Received, 4.0)));
+        assert!(stages.contains(&(first, TtftMilestone::FrontendReady, 4.0)));
+        assert!(stages.contains(&(first, TtftMilestone::Received, 4.0)));
         assert!(!stages.iter().any(|(uuid, ..)| *uuid == second));
 
         // A pass that starts after the second request is ready receives it directly.
         let pass = core.execute_hidden_pass(pass.end_ms.max(8.0));
         assert!(pass.lifecycle_events.iter().any(|event| matches!(
             event,
-            SchedulerLifecycleEvent::HostStage {
+            SchedulerLifecycleEvent::TtftMilestone {
                 request_id,
-                stage: HostStage::Received,
+                stage: TtftMilestone::Received,
                 ..
             } if *request_id == second
         )));

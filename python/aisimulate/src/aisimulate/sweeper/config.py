@@ -611,7 +611,7 @@ class SearchSpace(BaseModel):
     agg_host: dict[str, Any] | None = None
     agg_frontend: dict[str, Any] | None = None
     agg_host_profile: dict[str, Any] | None = None
-    agg_host_profile_id: str | None = None
+    agg_host_profile_digest: str | None = None
     agg_tp_sync_ms: dict[str, float] | None = None
     agg_vision: dict[str, Any] | None = None
     kv_transfer_bytes_per_token: int | str | None = None

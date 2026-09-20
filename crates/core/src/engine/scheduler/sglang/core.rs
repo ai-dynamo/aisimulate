@@ -29,7 +29,7 @@ use crate::engine::common::utils::prefill_handoff_transfer_timing;
 use crate::engine::kv_manager::SglangKvManager;
 use crate::engine::kv_manager::sglang_backend::SglangDestinationReservation;
 use crate::engine::trace::TraceCollector;
-use crate::engine::{HandoffId, HostStage, ImageSpec, modeled_duration_ms};
+use crate::engine::{HandoffId, ImageSpec, TtftMilestone, modeled_duration_ms};
 
 use super::config::SglangConfig;
 use super::decode::{
@@ -503,9 +503,9 @@ impl SglangCore {
             .expect("frontend pools require the host loop");
         for (request, ready_ms) in frontend.advance(now_ms) {
             self.lifecycle_events
-                .push(SchedulerLifecycleEvent::HostStage {
+                .push(SchedulerLifecycleEvent::TtftMilestone {
                     request_id: request.uuid,
-                    stage: HostStage::FrontendReady,
+                    stage: TtftMilestone::FrontendReady,
                     at_ms: ready_ms,
                 });
             host.submit(request);
@@ -886,9 +886,9 @@ impl SglangCore {
             for request in host.take_received() {
                 received_ms += host.receive_cost_ms(&request);
                 self.lifecycle_events
-                    .push(SchedulerLifecycleEvent::HostStage {
+                    .push(SchedulerLifecycleEvent::TtftMilestone {
                         request_id: request.uuid,
-                        stage: HostStage::Received,
+                        stage: TtftMilestone::Received,
                         at_ms: now_ms,
                     });
                 self.waiting.push_back(request);
@@ -1068,9 +1068,9 @@ impl SglangCore {
             }
             if self.host.is_some() {
                 self.lifecycle_events
-                    .push(SchedulerLifecycleEvent::HostStage {
+                    .push(SchedulerLifecycleEvent::TtftMilestone {
                         request_id: admission.uuid,
-                        stage: HostStage::Selected,
+                        stage: TtftMilestone::Selected,
                         at_ms: selected_ms,
                     });
             }
@@ -1169,9 +1169,9 @@ impl SglangCore {
                 if let Some(gpu_end_ms) = timing.gpu_end_ms {
                     for request_id in prefill_completed {
                         self.lifecycle_events
-                            .push(SchedulerLifecycleEvent::HostStage {
+                            .push(SchedulerLifecycleEvent::TtftMilestone {
                                 request_id,
-                                stage: HostStage::PrefillComplete,
+                                stage: TtftMilestone::PrefillComplete,
                                 at_ms: gpu_end_ms,
                             });
                     }

@@ -85,7 +85,7 @@ def test_native_vl_lowering_targets_the_host_aware_sglang_rank():
     )  # placeholders are laid out by the workload driver
 
 
-def test_native_vl_predict_reports_host_stages(tmp_path, capsys):
+def test_native_vl_predict_reports_ttft_milestones(tmp_path, capsys):
     path = tmp_path / "predict.yaml"
     path.write_text(yaml.safe_dump(_prediction()))
     output = tmp_path / "out"
@@ -107,15 +107,15 @@ def test_native_vl_predict_reports_host_stages(tmp_path, capsys):
     assert report["total_input_tokens"] == 4 * (128 + 196)
     for key in (
         "mean_frontend_ms",
-        "mean_scheduler_receive_ms",
-        "mean_selection_wait_ms",
-        "mean_forward_ms",
+        "mean_scheduler_inbox_wait_ms",
+        "mean_receive_to_admit_ms",
+        "mean_prefill_elapsed_ms",
     ):
         assert stdout[key] == report[key] > 0.0
     # Two arrivals share one processor worker: 3 ms and 6 ms in the frontend.
     assert report["mean_frontend_ms"] == pytest.approx(4.5)
     assert (
-        report["mean_ttft_ms"] >= report["mean_frontend_ms"] + report["mean_forward_ms"]
+        report["mean_ttft_ms"] >= report["mean_frontend_ms"] + report["mean_prefill_elapsed_ms"]
     )
     for line in (output / "requests.jsonl").read_text().splitlines():
         record = json.loads(line)
@@ -191,7 +191,7 @@ def test_host_profile_lowers_to_the_explicit_tables(tmp_path):
         == explicit.backend_deployment.agg_engine_args
     )
     vl = profiled.backend_deployment.performance_model_metadata["aggregated"]["vl"]
-    assert vl["frontend"] == "python" and len(vl["host_profile_id"]) == 16
+    assert vl["frontend"] == "python" and len(vl["host_profile_digest"]) == 16
 
     worker["parallelism"]["tensor"] = 2
     tp2 = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
@@ -323,7 +323,7 @@ def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
     saved = root / "recommendations" / "0001.yaml"
     concrete = CorePredictionConfig.from_yaml(saved)
     assert concrete.engine.workers.aggregated.host.launch_extend.const_ms == 5.0
-    assert concrete.engine.workers.aggregated.vision.cache_mb == 100
+    assert concrete.engine.workers.aggregated.vision.cache_mib == 100
     output = tmp_path / "predict"
     assert (
         main(
@@ -363,4 +363,4 @@ def test_profile_backed_recommendation_keeps_naming_its_profile(tmp_path):
     assert space.agg_host["launch_extend"]["const_ms"] == 5.0
     assert space.agg_tp_sync_ms == {"2": 0.4}
     assert space.agg_host_profile == {**worker["host_profile"], "on_missing": "error"}
-    assert len(space.agg_host_profile_id) == 16
+    assert len(space.agg_host_profile_digest) == 16

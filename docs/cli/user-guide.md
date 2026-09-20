@@ -1001,7 +1001,7 @@ engine:
 | `engine.workers.aggregated.host` | Unset | `x` | `-` | SGLang scheduler-thread cost tables (`receive`, `select`, `launch_extend`, `launch_vision`, `launch_decode`, `result`, `tp_sync_ms`, `decode_launch_syncs_previous_gpu`); aggregated SGLang only. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
 | `engine.workers.aggregated.frontend` | Unset | `x` | `-` | Frontend worker pools (`io_workers`, `processor_workers`, `mm_workers`) and ordered `stages`; requires `host`. |
 | `engine.workers.aggregated.host_profile` | Unset | `x` | `-` | `{path, frontend, on_missing}`: take `host` and `frontend` from a measured profile; exclusive with explicit tables. |
-| `engine.workers.aggregated.vision.cache_mb` | `100` | `x` | `-` | Positive; SGLang multimodal embedding cache for image workloads encoded on the language worker. |
+| `engine.workers.aggregated.vision.cache_mib` | `100` | `x` | `-` | Positive; SGLang multimodal embedding cache for image workloads encoded on the language worker. |
 | `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. Defaults are backend-specific, not version-specific. |
 | `engine.workers.<role>.kv_cache.prefix_caching` | `true` | `x` | `-` | Backend-supported. |
 | `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
@@ -1374,7 +1374,7 @@ engine:
       parallelism: {replicas: 1, tensor: 1}
       scheduler: {max_batched_tokens: 8192, max_sequences: 64}
       host_profile: {path: ./host-profile.json, frontend: python}
-      vision: {cache_mb: 100}
+      vision: {cache_mib: 100}
 ```
 
 ```bash
@@ -1385,8 +1385,8 @@ Cost tables are measured data: write them explicitly under `host` and `frontend`
 or point `host_profile` at a profile produced by `python -m aisimulate.vl.calibrate`
 on a serving host. A profile that was measured for another model, frontend, image
 encoding, or SGLang revision is rejected, as is one that lacks a cost the deployment
-needs. The summary adds `mean_frontend_ms`, `mean_scheduler_receive_ms`,
-`mean_selection_wait_ms`, `mean_forward_ms`, and `mean_result_wait_ms`;
+needs. The summary adds `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
+`mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, and `mean_result_observation_delay_ms`;
 `requests.jsonl` adds `frontend_ready_ms`, `scheduler_received_ms`, `selected_ms`,
 and `prefill_complete_ms`. `recommend` accepts the same worker fields as fixed
 data. Mechanics, scope, and validation are described in
@@ -1931,7 +1931,7 @@ one JSON value for shell automation. Durable artifact formats do not change with
 
 Prediction JSON without `--detail` on standard output is a summary object. Host-aware SGLang
 predictions add the mean time-to-first-token split by stage (`mean_frontend_ms` through
-`mean_result_wait_ms`). Recommendation JSON is an array of selected
+`mean_result_observation_delay_ms`). Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.

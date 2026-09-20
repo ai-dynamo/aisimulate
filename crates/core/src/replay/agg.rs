@@ -627,13 +627,13 @@ where
         }
         for event in payload.lifecycle_events {
             // Aggregated ranks emit no handoff events; host stages are per-request timestamps.
-            if let LifecycleEvent::HostStage {
+            if let LifecycleEvent::TtftMilestone {
                 request_id,
                 stage,
                 at_ms,
             } = event
             {
-                self.collector.on_host_stage(request_id, stage, at_ms);
+                self.collector.on_ttft_milestone(request_id, stage, at_ms);
             }
         }
         self.process_completed_pass(
