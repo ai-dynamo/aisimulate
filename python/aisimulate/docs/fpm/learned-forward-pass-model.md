@@ -192,22 +192,25 @@ concurrency tiers (2026-09-18, dlcluster).
 
 | Deployment | Train tiers → test tiers | decode | prefill |
 | --- | --- | --- | --- |
-| Qwen3-32B-FP8, 262k YaRN ctx | c16/32/64 → c24/48/96 | 2.41% (0.97%) over 122k steps | 1.64% (0.55%) over 13k steps |
-| DeepSeek-V4-Flash, 262k ctx | c16/32/64/128 → c24/48/96/64 | 3.14% (0.97%) over 457k steps | 4.46% (4.48%) over 32k steps |
+| Qwen3-32B-FP8, 262k YaRN ctx | c16/32/64 → c24/48/96 | 2.77% (1.02%) over 122k steps | 1.64% (0.55%) over 13k steps |
+| DeepSeek-V4-Flash, 262k ctx | c16/32/64/128 → c24/48/96/64 | 3.29% (1.01%) over 457k steps | 4.43% (4.32%) over 32k steps |
+
+All accuracy figures in this section are from the trainer defaults (400 trees,
+learning rate 0.05, 31 leaves, early stopping off).
 
 Leave-one-tier-out inside a single run lands at 1–4.5% for decode and
 1.2–3.7% for prefill on both deployments; the largest errors are the tiers
 outside the trained concurrency range (extrapolation).
 
 The DeepSeek-V4-Flash prefill number is a boot-to-boot offset, not scatter:
-predicted/observed sits at 1.044 median with a 1.002–1.058 p10–p90 band, i.e.
+predicted/observed sits at about 1.04 median with a narrow p10–p90 band, i.e.
 the test boot's prefill engine ran ~4% faster than the training boot. The
 online correction grid on top of the learned model (`tune_with_fpms`) is
 designed to absorb exactly this kind of constant factor.
 
-On aggregates-only features (`v1`) the same experiments give 3.04% / 2.04%
-(Qwen) and comparable Flash numbers; the per-request features matter most
-where batches are large and heterogeneous.
+On aggregates-only features (`v1`) the same experiments land within about
+half a percentage point of `sglang18` on both deployments; the per-request
+features matter most where batches are large and heterogeneous.
 
 ### DeepSeek-V4.1-Flash on the Dynamo SGLang runtime
 
@@ -218,9 +221,9 @@ c16/32/64/128 (seed 42) → test c24/48/96 (seed 7), 2026-09-20:
 
 | Engine | Test tier | steps | MAPE (median) | p95 |
 | --- | --- | --- | --- | --- |
-| decode | c24 | 108k | 1.84% (1.43%) | 4.4% |
-| decode | c48 | 89k | 1.99% (1.55%) | 4.9% |
-| decode | all | 197k | 1.91% (1.48%) | 4.7% |
+| decode | c24 | 108k | 1.85% (1.41%) | 4.4% |
+| decode | c48 | 89k | 1.99% (1.53%) | 5.0% |
+| decode | all | 197k | 1.92% (1.47%) | 4.7% |
 | prefill | c24 | 973 | 2.67% (1.41%) | 8.1% |
 | prefill | c48 | 1,935 | 2.56% (1.33%) | 7.8% |
 | prefill | c96 | 765 | 0.83% (0.58%) | 2.0% |

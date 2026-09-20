@@ -2242,7 +2242,12 @@ fn per_request_lists_must_match_request_counts() {
     let mut spec = decode_fpm(3, 3000, 0.0);
     spec.scheduled_requests.extend_lengths = vec![4, 4, 4];
     spec.scheduled_requests.past_kv_lengths = vec![1000, 1000, 1000];
-    assert!(model.estimate_forward_pass_time_ms(&[spec]).unwrap().is_some());
+    assert!(
+        model
+            .estimate_forward_pass_time_ms(&[spec])
+            .unwrap()
+            .is_some()
+    );
     // Only one of the two lists is present: rejected as well.
     let mut lopsided = decode_fpm(3, 3000, 0.0);
     lopsided.scheduled_requests.past_kv_lengths = vec![1000, 1000, 1000];
@@ -2372,7 +2377,11 @@ fn learned_model_refuses_request_features_without_lists() {
     let mut contradictory = decode_fpm(2, 200, 0.0);
     contradictory.scheduled_requests.extend_lengths = vec![1, 1];
     contradictory.scheduled_requests.past_kv_lengths = vec![5000, 5000];
-    assert!(model.estimate_forward_pass_time_ms(&[contradictory]).is_err());
+    assert!(
+        model
+            .estimate_forward_pass_time_ms(&[contradictory])
+            .is_err()
+    );
     // Idle iterations still estimate zero without consulting the trees.
     assert_eq!(
         model
