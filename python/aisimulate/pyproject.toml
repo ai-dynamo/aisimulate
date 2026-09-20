@@ -82,6 +82,8 @@ dev = [
     "pytest-xdist==3.8.0",
     "import-ipynb==0.2",
     "jsonschema>=4.23",
+    # fpm_hooks tests build msgspec structs like the engine producers do
+    "msgspec>=0.18",
 ]
 learned = [
     # Offline trainer for the learned forward-pass model (aisimulate_core.sdk.fpm_learned).

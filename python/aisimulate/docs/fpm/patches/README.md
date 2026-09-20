@@ -20,6 +20,11 @@ One entry per scheduled request, prefill requests first, sorted by
 read aggregates are unaffected. **Neither patch is merged upstream yet.**
 Streams from unpatched producers train with `--features v1`.
 
+You do not need these patches to collect the fields: `aisimulate_core.fpm_hooks`
+installs the same change at runtime (see the "Per-request fields" section of
+the learned-model docs). The patches are the proposal for making the fields
+native upstream.
+
 | Patch | Applies to | Files |
 | --- | --- | --- |
 | `dynamo-per-request-fpm-fields.patch` | ai-dynamo/dynamo `bcec7eae7117` (2026-09-20) | `components/src/dynamo/common/forward_pass_metrics.py`, `components/src/dynamo/vllm/instrumented_scheduler.py` |

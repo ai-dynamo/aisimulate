@@ -74,9 +74,29 @@ presets (`sglang18`, `hisim`) need two additive, aligned lists in
 "past_kv_lengths": [32768, 7100, 950]  // KV tokens already present before the step
 ```
 
-Producer patches (version stays 1, additive fields; **not merged upstream**,
-shipped here as [`patches/`](patches/README.md) with the upstream commits they
-apply to):
+Neither producer emits them natively yet. Two ways to add them without
+touching the engine code bases:
+
+**Runtime hooks (recommended, ships with this package).**
+`aisimulate_core.fpm_hooks` patches the producers in memory when their
+modules are imported inside the engine process, including SGLang's spawned
+scheduler subprocesses:
+
+```bash
+# in the engine container (both backends), before launching the worker
+export PYTHONPATH=$(python -c 'import aisimulate_core.fpm_hooks as h; print(h.hook_path())'):$PYTHONPATH
+python -m dynamo.sglang ...        # or: python -m dynamo.vllm ...
+# or, equivalently
+python -m aisimulate_core.fpm_hooks dynamo.sglang -- ...
+```
+
+The hook is a no-op when a producer already carries the fields, and logs and
+skips (aggregate-only FPM) when the engine internals it wraps are missing.
+
+**Source patches (upstream proposals).** The same change as unified diffs
+against ai-dynamo/dynamo and sgl-project/sglang, see
+[`patches/`](patches/README.md). What they add (version stays 1, additive
+fields):
 
 - vLLM: `dynamo/common/forward_pass_metrics.py` (two optional list fields on
   `ScheduledRequestMetrics`) and `dynamo/vllm/instrumented_scheduler.py`
