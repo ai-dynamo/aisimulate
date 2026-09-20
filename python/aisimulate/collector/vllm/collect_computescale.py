@@ -7,7 +7,7 @@
 # compute_scale: 8/8 representative cases. The native framework
 # builders/selectors remain authoritative; no kernel fallback is introduced.
 # The campaign manifest still selects one exact release per run.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+__compat__ = "vllm>=0.24.0,<=0.29.0"
 
 import torch
 from collector.case_generator import get_compute_scale_case_specs

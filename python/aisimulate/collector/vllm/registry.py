@@ -28,11 +28,6 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="attention_context",
-        # A 0.29.0 lane exists (collect_attn_029.py: 0.29 replaced the
-        # set/get kv-cache-layout API with get_supported_kv_cache_layouts +
-        # resolve_kv_cache_layout and merged the per-layer cache view to
-        # [B, H, N, 2*D]; SM90 smokes pass on vllm_flash_attn_fa3). Routed
-        # when the manifest pin moves to 0.29.
         module="collector.vllm.collect_attn",
         get_func="get_context_attention_test_cases",
         run_func="run_attention_torch",
@@ -75,27 +70,20 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="mla_context_module",
-        module="collector.vllm.collect_mla_module_027",
+        module="collector.vllm.collect_mla_module",
         get_func="get_mla_context_module_test_cases",
         run_func="run_mla_module_worker",
         perf_filename=PerfFile.MLA_CONTEXT_MODULE,
     ),
     OpEntry(
         op="mla_generation_module",
-        module="collector.vllm.collect_mla_module_027",
+        module="collector.vllm.collect_mla_module",
         get_func="get_mla_generation_module_test_cases",
         run_func="run_mla_module_worker",
         perf_filename=PerfFile.MLA_GENERATION_MODULE,
     ),
     OpEntry(
         op="dsa_context_module",
-        # A validated 0.29.0 lane exists (collect_mla_module_029.py: the 0.29
-        # release swapped the sparse-MLA impl; SM90 smokes pass and the
-        # selector matches the serving probe). Routing it is BLOCKED on an
-        # owner granularity decision: the sparse_attention family also owns
-        # the dsv4_*/glm5_* tables, and DSV4 is broken on 0.29 (mandatory
-        # cutedsl compress kernel misalignment) — the family must split
-        # before dsa can move pins independently.
         module="collector.vllm.collect_mla_module",
         get_func="get_dsa_context_module_test_cases",
         run_func="run_mla_module_worker",
@@ -110,11 +98,6 @@ REGISTRY: list[OpEntry] = [
     ),
     OpEntry(
         op="msa_context_module",
-        # A 0.29.0 lane exists (collect_msa_029.py: 0.29 removed
-        # AttentionBackend.get_kv_cache_shape — allocation goes through the
-        # generic byte-shape pipeline + per-layer bind_kv_cache; SM90 smokes
-        # pass, bf16+fp8, Triton impls). Routed when the manifest pin moves
-        # to 0.29 (vllm collectors pin exactly to the manifest version).
         module="collector.vllm.collect_msa_module",
         get_func="get_msa_context_module_test_cases",
         run_func="run_msa_module_worker",

@@ -23,7 +23,7 @@ vLLM MLA-BMM queries fell back to the trtllm tables (the SDK's
 # MLA bmm call site unchanged in-image on GB300).
 # B200 0.25.0 qualification: both pre/post torch.bmm callbacks passed in
 # job 1968047. The NVIDIA bf16 BMM contract and input geometry are unchanged.
-__compat__ = "vllm>=0.25.0,<=0.27.0,!=0.25.1,!=0.26.0"
+__compat__ = "vllm>=0.25.0,<=0.29.0,!=0.25.1,!=0.26.0"
 
 import pkg_resources
 import torch

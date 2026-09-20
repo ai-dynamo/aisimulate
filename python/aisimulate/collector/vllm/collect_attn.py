@@ -1,17 +1,27 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-
-"""vLLM 0.24.0 dense-attention collector for CUDA backends."""
-
-# B200 0.25.0 qualification (installed vLLM dd10e03f9), job 1967975:
-# attention_context and attention_generation: 8/8 representative cases each. The native framework
-# builders/selectors remain authoritative; no kernel fallback is introduced.
-# The campaign manifest still selects one exact release per run.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+#
+# Versions are upgraded IN PLACE (owner policy 2026-09-20): this file always
+# targets the manifest pin; prior-version code is `git log -- <this file>`
+# away and prior-version DATA stays permanent under its version key. The
+# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
+__compat__ = "vllm>=0.29.0,<=0.29.0"
 
 import os
 
 import torch
+from vllm.config import set_current_vllm_config
+from vllm.platforms import current_platform
+from vllm.utils.import_utils import resolve_obj_by_qualname
+from vllm.utils.torch_utils import set_random_seed
+from vllm.v1.attention.backends.registry import AttentionBackendEnum
+from vllm.v1.attention.backends.utils import (
+    get_supported_kv_cache_layouts,
+    resolve_kv_cache_layout,
+)
+from vllm.v1.attention.selector import AttentionSelectorConfig
+from vllm.version import __version__ as vllm_version
+
 from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
@@ -27,14 +37,6 @@ from collector.vllm.utils import (
     get_attention_backend,
     with_exit_stack,
 )
-from vllm.config import set_current_vllm_config
-from vllm.platforms import current_platform
-from vllm.utils.import_utils import resolve_obj_by_qualname
-from vllm.utils.torch_utils import set_random_seed
-from vllm.v1.attention.backends.registry import AttentionBackendEnum
-from vllm.v1.attention.backends.utils import set_kv_cache_layout
-from vllm.v1.attention.selector import AttentionSelectorConfig
-from vllm.version import __version__ as vllm_version
 
 
 class MockAttentionLayer:
@@ -195,15 +197,23 @@ def run_attention_torch(
         randomize_blocks=True,
     )
 
-    # The helper populates [2, num_blocks, ...]; vLLM 0.24 uses logical
-    # [num_blocks, 2, ...] and may impose a backend-specific physical stride.
-    kv_cache = kv_cache.transpose(0, 1).contiguous()
-    set_kv_cache_layout(backend_cls.get_required_kv_cache_layout())
-    exit_stack.callback(set_kv_cache_layout, None)
-    stride_order = backend_cls.get_kv_cache_stride_order()
-    if stride_order != tuple(range(kv_cache.ndim)):
-        inverse_order = [stride_order.index(i) for i in range(kv_cache.ndim)]
-        kv_cache = kv_cache.permute(*stride_order).contiguous().permute(*inverse_order)
+    # serving-same layout resolution for the single backend under test
+    # (utils.py:240-307@v0.29.0); reset cache_config after the case so the
+    # next backend re-resolves instead of inheriting ("existing wins outright")
+    _supported = get_supported_kv_cache_layouts([backend_cls])
+    resolve_kv_cache_layout(
+        vllm_config, [[m.name for m in _supported]], [kv_cache_spec])
+    exit_stack.callback(
+        lambda: setattr(vllm_config.cache_config, "kv_cache_layout", None))
+    # 0.29 impls consume ONE merged tensor [num_blocks, H, block, 2*D] with
+    # K/V split on the last dim (flash_attn.py:1013-1014 "(B,H,N,2*D) ->
+    # ((B,N,H,D),(B,N,H,D))"); the 0.24-era per-backend stride permutation
+    # (get_kv_cache_stride_order) no longer exists. Convert the populated
+    # helper layout [2, B, N, H, D] once, value-equivalent.
+    _k, _v = kv_cache[0], kv_cache[1]                    # [B, N, H, D]
+    kv_cache = torch.cat(
+        (_k.permute(0, 2, 1, 3), _v.permute(0, 2, 1, 3)), dim=-1
+    ).contiguous()                                        # [B, H, N, 2*D]
 
     builder_cls, impl_cls = get_attention_backend(backend_name)
     layer_names = ["placeholder"]

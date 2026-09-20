@@ -72,7 +72,7 @@ approximation must be retired.
 # 1968047). Existing framework construction/dispatch is unchanged. Invalid
 # model/quant shapes continue to raise and remain recorded failures; this is
 # API compatibility, not a claim that every Cartesian shape is supported.
-__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"
+__compat__ = "vllm>=0.24.0,<=0.29.0,!=0.25.1,!=0.26.0,!=0.27.0"
 
 import contextlib
 import json

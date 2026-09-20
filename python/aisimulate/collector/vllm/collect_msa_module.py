@@ -3,14 +3,11 @@
 # Portions adapted from vLLM dd10e03f95f94edbea1975c67ace3a35ec9a8a40.
 # Copyright contributors to the vLLM project. Modified for collector execution.
 
-# MiniMax-M3 support landed in vLLM 0.24.0 (vllm/models/minimax_m3/ +
-# MinimaxM3QKVParallelLinearWithIndexer + fused_minimax_m3_qknorm_rope_kv_insert);
-# this collector follows the 0.24.0 APIs and is pinned to the manifest
-# default runtime (vllm collectors pin exactly; see
-# test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version).
-# B200 0.25.0 validation: job 1968755 passed 8 context and 6 generation
-# cases after matching serving inference mode, positions, and THK top-k layout.
-__compat__ = "vllm>=0.24.0,<=0.25.0"
+# Versions are upgraded IN PLACE (owner policy 2026-09-20): this file always
+# targets the manifest pin; prior-version code is `git log -- <this file>`
+# away and prior-version DATA stays permanent under its version key. The
+# 0.24->0.29 adaptations each carry a serving citation @0.29.0.
+__compat__ = "vllm>=0.29.0,<=0.29.0"
 
 """
 MSA Module Collector for vLLM — MiniMax-M3 sparse-attention benchmarking.
@@ -588,38 +585,44 @@ def _create_kv_caches_and_metadata(
     )
     num_blocks = _rebase_block_table_and_slots(common_attn_metadata, block_size)
 
-    # Main paged K/V cache: shape from the layer's own backend
-    # ((num_blocks, 2, block_size, num_kv_heads, head_size) — MiniMaxM3
-    # SparseBackend.get_kv_cache_shape, common/sparse_attention.py:90-98
-    # @v0.24.0; NHD stride order is the natural layout, :100-114), dtype
-    # from the layer's KV-cache spec (nvidia/model.py:540-549@v0.24.0:
-    # spec.dtype = kv_cache_dtype_str_to_dtype(cache_dtype) — bf16 for
-    # "auto", uint8 storage for "fp8", utils/torch_utils.py:38,394-400).
-    # Serving allocates the same way: a raw per-layer buffer viewed with the
-    # spec dtype and backend shape (gpu_model_runner
-    # ._reshape_kv_cache_tensors:7081-7180@v0.24.0); the impl then
-    # reinterprets the uint8 storage as the platform fp8 (e4m3) at use
-    # (common/sparse_attention.py:298-306, view at :352).
+    # Main paged K/V cache. 0.29 removed AttentionBackend.get_kv_cache_shape;
+    # the shape contract moved into the generic spec pipeline: serving
+    # allocates a flat byte buffer and views each layer as the 4D logical
+    # [B, H, N, C] page, C in bytes (compute_layer_kv_cache_shape_bytes,
+    # v1/kv_cache_interface.py:253-269@v0.29.0; the per-layer element view is
+    # cache_logical.view(spec.dtype), create_kv_cache_views :371-376). For
+    # M3's main cache the spec is FullAttentionSpec (nvidia/model.py:556-565)
+    # so the element view is [num_blocks, num_kv_heads, block_size,
+    # 2*head_size] — merged K|V on the last dim: the impl splits it back with
+    # k_cache, v_cache = kv_cache.split(head_size, dim=-1)
+    # (nvidia/sparse_attention_msa.py:277) and the fused insert kernel reads
+    # the block size off dim 2 (kv_cache.size(2), nvidia/model.py:635).
+    # Dtype semantics are unchanged: spec.dtype is bf16 for "auto", uint8
+    # storage for "fp8"; the impl reinterprets uint8 as e4m3 at use
+    # (nvidia/sparse_attention_msa.py:221-222).
+    from vllm.v1.kv_cache_interface import compute_layer_kv_cache_shape_bytes
+
     backend_cls = attn_module.get_attn_backend()
     kv_cache_spec = attn_module.get_kv_cache_spec(vllm_config)
     kv_cache = torch.zeros(
-        backend_cls.get_kv_cache_shape(num_blocks, block_size, kv_cache_spec.num_kv_heads, kv_cache_spec.head_size),
-        dtype=kv_cache_spec.dtype,
+        compute_layer_kv_cache_shape_bytes(kv_cache_spec, num_blocks),
+        dtype=torch.uint8,
         device=torch_device,
-    )
+    ).view(kv_cache_spec.dtype)
 
-    # Indexer key side-cache: (num_blocks, block_size, head_size), dtype from
-    # the index cache module (bf16 for the default indexer_kv_dtype "bf16",
-    # config/attention.py:55; MiniMaxM3IndexerBackend.get_kv_cache_shape,
-    # common/indexer.py:91-99@v0.24.0).
+    # Indexer key side-cache: MLAAttentionSpec, key-only — one head slot, one
+    # vector per token (common/indexer.py:144-151@v0.29.0), logical
+    # [num_blocks, 1, block_size, head_size] after the dtype view. Serving
+    # hands this 4D view to the layer's bind_kv_cache, which squeezes the
+    # H=1 dim (common/indexer.py:140-142); binding below mirrors that.
     index_cache_layer = attn_module.indexer.index_cache
     index_backend_cls = index_cache_layer.get_attn_backend()
     index_spec = index_cache_layer.get_kv_cache_spec(vllm_config)
     index_kv_cache = torch.zeros(
-        index_backend_cls.get_kv_cache_shape(num_blocks, block_size, 1, index_spec.head_size),
-        dtype=index_cache_layer.dtype,
+        compute_layer_kv_cache_shape_bytes(index_spec, num_blocks),
+        dtype=torch.uint8,
         device=torch_device,
-    )
+    ).view(index_spec.dtype)
 
     main_builder = backend_cls.get_builder_cls()(kv_cache_spec, [_ATTN_LAYER_NAME], vllm_config, torch_device)
     attn_metadata = main_builder.build(
@@ -706,14 +709,16 @@ def run_msa_module(
             device=device,
         )
 
-    # 2b. Bind the caches to the registered layers — the benchmark analog of
-    # serving's bind_kv_cache, which assigns each allocated per-layer tensor
-    # to forward_context[layer_name].kv_cache (v1/worker/utils.py:462-530
-    # @v0.24.0; the model reads self.kv_cache / index_cache.kv_cache directly,
-    # nvidia/model.py:606-607).
+    # 2b. Bind the caches to the registered layers exactly as serving does:
+    # forward_context[layer_name].bind_kv_cache(kv_cache)
+    # (v1/worker/utils.py:622@v0.29.0). The main layer's bind is the
+    # AttentionLayerBase default (stores the view as-is,
+    # model_executor/layers/attention_layer_base.py:26-32); the indexer's
+    # override squeezes the H=1 head dim, [B,1,N,C] -> [B,N,C]
+    # (common/indexer.py:140-142).
     forward_ctx = vllm_config.compilation_config.static_forward_context
-    forward_ctx[_ATTN_LAYER_NAME].kv_cache = kv_cache
-    forward_ctx[_INDEX_CACHE_LAYER_NAME].kv_cache = index_kv_cache
+    forward_ctx[_ATTN_LAYER_NAME].bind_kv_cache(kv_cache)
+    forward_ctx[_INDEX_CACHE_LAYER_NAME].bind_kv_cache(index_kv_cache)
 
     # 2c. Prove the requested KV precision actually reached the framework
     # path — a benchmark that silently ran bf16 under an "fp8" label would be

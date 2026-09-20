@@ -38,9 +38,11 @@ def test_manifest_exposes_current_framework_versions_and_images():
     assert sglang.image("cu130").startswith("lmsysorg/sglang:v0.5.14-cu130@sha256:")
     assert trtllm.version == "1.3.0rc20"
     assert trtllm.image().startswith("nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc20@sha256:")
-    assert vllm.version == "0.24.0"
-    assert vllm.image().startswith("vllm/vllm-openai:v0.24.0@sha256:")
-    assert vllm.image("cu129").startswith("vllm/vllm-openai:v0.24.0-cu129@sha256:")
+    assert vllm.version == "0.29.0"
+    assert vllm.image().startswith("vllm/vllm-openai:v0.29.0@sha256:")
+    # cu129 variant intentionally dropped at the 0.29.0 bump (no cu129 build);
+    # unknown variants fall back to the pinned default image below.
+    assert vllm.image("cu129").startswith("vllm/vllm-openai:v0.29.0@sha256:")
     # Unknown variants intentionally fall back to the pinned default image.
     assert vllm.image("cu130") == vllm.image()
 
@@ -81,9 +83,7 @@ def test_active_cuda_vllm_collectors_are_exactly_pinned_to_manifest_version():
     ["collector.vllm.collect_moe", "collector.vllm.collect_gdn", "collector.vllm.collect_gemm"],
 )
 def test_vllm_target_lane_collectors_declare_the_exact_bumped_compat_range(module):
-    expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.0,!=0.25.1,!=0.26.0,!=0.27.0"'
-    if module in {"collector.vllm.collect_gemm", "collector.vllm.collect_moe", "collector.vllm.collect_gdn"}:
-        expected = '__compat__ = "vllm>=0.24.0,<=0.27.1,!=0.25.1,!=0.26.0,!=0.27.0"'
+    expected = '__compat__ = "vllm>=0.24.0,<=0.29.0,!=0.25.1,!=0.26.0,!=0.27.0"'
     source = (REPO_ROOT / f"{module.replace('.', '/')}.py").read_text(encoding="utf-8")
     declarations = [line.strip() for line in source.splitlines() if line.startswith("__compat__")]
     assert declarations == [expected], module
@@ -454,10 +454,10 @@ def test_vllm_model_pin_mismatch_error_names_the_model_scoped_image():
 
 
 def test_vllm_unknown_model_id_falls_back_to_default_resolution():
-    baseline = require_collector_runtime("vllm", "0.24.0", requested_ops={"gemm"}, wideep_ops=set())
+    baseline = require_collector_runtime("vllm", "0.29.0", requested_ops={"gemm"}, wideep_ops=set())
     unmatched = require_collector_runtime(
         "vllm",
-        "0.24.0",
+        "0.29.0",
         requested_ops={"gemm"},
         wideep_ops=set(),
         model_path="some-org/not-a-pinned-model",
@@ -883,4 +883,4 @@ def test_explicit_nondefault_manifest_path_is_not_overridden(tmp_path, monkeypat
     path.write_bytes((COLLECTOR_ROOT / "framework_manifest.yaml").read_bytes())
     monkeypatch.setenv(RUNTIME_MANIFEST_ENV, "/missing/ambient/manifest")
     monkeypatch.setenv(RUNTIME_MANIFEST_SHA256_ENV, "0" * 64)
-    assert get_collector_runtime("vllm", path=path).version == "0.24.0"
+    assert get_collector_runtime("vllm", path=path).version == "0.29.0"

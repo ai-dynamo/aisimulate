@@ -24,7 +24,7 @@ Two modes:
 
 Usage (capture, in-container):
   python3 path_diff.py --capture --out /out/cap.json -- \
-      python3 collector/vllm/collect_mla_module_029.py --mode context ...
+      python3 collector/vllm/collect_mla_module.py --mode context ...
 
 Usage (diff, host):
   AIS_PROBE_WORKSPACE=<ws> python3 path_diff.py --diff \
