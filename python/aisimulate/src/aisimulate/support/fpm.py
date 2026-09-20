@@ -69,8 +69,12 @@ def fpm_cli_args(
         "--fpm-database-root",
         str(root / "systems/data"),
     ]
+    if "prefill_cudagraph_policy" in request.collection.model_fields_set:
+        command.extend(("--fpm-prefill-cudagraph-policy", request.collection.prefill_cudagraph_policy))
     if request.collection.max_prefill_cudagraph_size is not None:
         command.extend(("--fpm-max-prefill-cudagraph-size", str(request.collection.max_prefill_cudagraph_size)))
+    if request.collection.gpu_memory_utilization is not None:
+        command.extend(("--fpm-gpu-memory-utilization", str(request.collection.gpu_memory_utilization)))
     if profile is not None:
         command.extend(
             (

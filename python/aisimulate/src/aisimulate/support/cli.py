@@ -66,8 +66,11 @@ def add_support_parser(subparsers: Any) -> None:
             "supply unresolved profile fields with --resource-overrides. Otherwise scripted setup requires "
             "--model, --model-revision, --model-kind, --framework-version, --gpu, and --interconnect. "
             "Collection GPUs are derived from the selected topology. Model-config setup suggests model/hardware-aware "
-            "topologies; other routes default to TP1. AISimulate sets runtime limits, prefill capture sizes and "
-            "some sample caps; Dynamo self-benchmark combines them with image sampling defaults and runtime "
+            "topologies; other routes default to TP1. AISimulate launches benchmark workers when collection is "
+            "executed; no separately launched HTTP server is required. An existing vLLM launch configuration is "
+            "optional evidence for reviewing settings, not a required input or automatically imported file. "
+            "AISimulate sets runtime limits and optional capture overrides; Dynamo self-benchmark combines them "
+            "with image sampling defaults and runtime "
             "feasibility checks to generate the exact grid. A complete grid does not establish query coverage. "
             "Synthetic workload and SLA options customize optional validation examples only. "
             "Set deployment replicas and GPU budgets in ordinary predict/recommend configs."
@@ -137,10 +140,20 @@ def add_support_parser(subparsers: Any) -> None:
         "Does not request every prefill batch.",
     )
     init.add_argument(
+        "--prefill-cudagraph-policy",
+        choices=("runtime", "explicit"),
+        help="Prefill CUDA graphs: runtime selection (new setup default), or explicit capture override.",
+    )
+    init.add_argument(
         "--max-prefill-cudagraph-size",
         type=int,
-        help="Prefill CUDA graph capture limit; default 2048. "
-        "Overrides the prefill engine configuration; match the serving target.",
+        help="Select explicit capture with this limit; explicit policy without a limit uses 2048. "
+        "Conflicts with runtime policy; match the serving target.",
+    )
+    init.add_argument(
+        "--gpu-memory-utilization",
+        type=float,
+        help="Fraction of total GPU memory for collection and simulation, in (0, 1] (initial policy: 0.90).",
     )
     init.add_argument("--ttft-ms", type=float, help="Synthetic validation TTFT target in ms (default: 1000).")
     init.add_argument("--tpot-ms", type=float, help="Synthetic validation TPOT target in ms (default: 100).")
@@ -205,12 +218,17 @@ def _values(args: argparse.Namespace, model: Any) -> dict[str, Any]:
 
 
 def _request_from_args(args: argparse.Namespace) -> SupportRequest:
+    collection = _values(args, CollectionSpec)
+    collection.setdefault(
+        "prefill_cudagraph_policy", "explicit" if "max_prefill_cudagraph_size" in collection else "runtime"
+    )
+    collection.setdefault("gpu_memory_utilization", 0.9)
     return SupportRequest.model_validate(
         {
             "identity": _values(args, SupportIdentity),
             "workload": {**_values(args, WorkloadSpec), "slo": _values(args, SloSpec)},
             "search": _values(args, SearchProfile),
-            "collection": _values(args, CollectionSpec),
+            "collection": collection,
             **({"fpm_profile": load_yaml(args.fpm_profile)} if getattr(args, "fpm_profile", None) else {}),
         }
     )
@@ -279,6 +297,8 @@ _CORRECTION_PROMPTS = {
     "max_num_tokens": ("Rank-local scheduled token budget", int),
     "max_batch_size": ("Rank-local scheduler sequence bound", int),
     "max_prefill_cudagraph_size": ("Prefill CUDA graph capture limit", int),
+    "prefill_cudagraph_policy": ("Prefill CUDA graph policy (runtime/explicit)", str),
+    "gpu_memory_utilization": ("Fraction of total GPU memory (0 < value <= 1)", float),
     "framework": ("Runtime (vllm)", str),
     "tokenizer_revision": ("Pinned tokenizer revision", str),
     "chat_template_revision": ("Pinned chat-template revision", str),
@@ -312,6 +332,10 @@ def _prompt(args: argparse.Namespace, name: str) -> None:
             print(f"Enter a valid {'integer' if convert is int else 'number'}.")
             continue
         setattr(args, name, value)
+        if name == "prefill_cudagraph_policy" and value == "runtime":
+            args.max_prefill_cudagraph_size = None
+        elif name == "max_prefill_cudagraph_size":
+            args.prefill_cudagraph_policy = "explicit"
         return
 
 
@@ -327,6 +351,8 @@ def _guided_request(args: argparse.Namespace, *, skip_topology: bool = False) ->
     print("Onboard a model for FPM simulation on a target hardware platform.")
     selection = "one or more" if getattr(args, "output_dir", None) is not None else "one"
     print(f"Select {selection} TP, DEP, or TEP worker configurations and review collection limits for vLLM.")
+    print("AISimulate launches benchmark workers during collection; you do not need to start an HTTP server.")
+    print("An existing vLLM launch configuration is optional evidence for reviewing these settings.")
     print("Enter accepts a displayed default. Ctrl-C cancels without saving. Supplied options skip their prompts.")
     for name in _PROMPTS:
         if skip_topology and name == "tensor_parallel":
@@ -485,11 +511,16 @@ def _review_config_profile(
         settings = request.collection_settings()
         print(f"  Runtime context limit: {request.search.context_length} tokens per request.")
         print(f"  Collection: {json.dumps(settings, sort_keys=True)}")
-        print("  AISimulate sets runtime limits, prefill capture sizes and prefill new-token/KV sample caps.")
+        print("  AISimulate launches and manages benchmark workers when collection is executed.")
+        print("  vLLM loads the model and allocates caches; Dynamo self-benchmark generates and measures the grid.")
+        print("  AISimulate supplies runtime limits and collection policies; no HTTP server is needed beforehand.")
         print(
             "  Dynamo combines them with image sampling defaults and runtime feasibility checks to generate the grid."
         )
-        print("  Prefill capture overrides configure the engine; match the serving target.")
+        if request.collection.prefill_cudagraph_policy == "runtime":
+            print("  CUDA graph sizes resolve in the initialized runtime; no explicit capture override is proposed.")
+        else:
+            print("  Prefill capture overrides configure the engine; match the serving target.")
         print("  The sequence bound does not request every prefill batch; total KV capacity resolves at runtime.")
         print("  A complete generated grid does not establish AgentX/direct-FPM query coverage.")
         print("  Synthetic validation traffic and SLAs do not determine these collection limits.")
@@ -504,6 +535,11 @@ def _review_config_profile(
         print("  max_num_tokens/max_batch_size are per-rank scheduler limits. Estimates require runtime verification.")
         for name, value in draft.resolved.items():
             print(f"  {name}: {value} (source: {draft.sources[name]})")
+        if draft.resolved.get("comm_quant_mode") != "half":
+            print(
+                "  Collection compatibility: this collector currently supports comm_quant_mode=half. "
+                "Your override is retained, but new collection will reject a mismatched identity."
+            )
         if "provenance" not in draft.resolved:
             print(
                 "  Provenance records the config SHA-256, deployment, values and sources; "
@@ -525,7 +561,12 @@ def _review_config_profile(
             return request
         if action == "cancel":
             raise KeyboardInterrupt
-        collection_fields = {"runtime_context_length", "max_prefill_cudagraph_size"}
+        collection_fields = {
+            "runtime_context_length",
+            "max_prefill_cudagraph_size",
+            "prefill_cudagraph_policy",
+            "gpu_memory_utilization",
+        }
         print("Editable fields: " + ", ".join(sorted(OVERRIDE_FIELDS | collection_fields)))
         while True:
             name = input("Field to edit: ").strip()
@@ -537,18 +578,35 @@ def _review_config_profile(
         staged = deepcopy(overrides)
         payload = request.model_dump(exclude={"fpm_profile"})
         if name in collection_fields:
-            while True:
-                try:
-                    value = int(input(f"{name} (positive integer): ").strip())
-                    if value <= 0:
-                        raise ValueError
-                    break
-                except ValueError:
-                    print("Enter a positive integer.")
+            if name == "prefill_cudagraph_policy":
+                while (value := input(f"{name} (runtime/explicit): ").strip()) not in {"runtime", "explicit"}:
+                    print("Enter runtime or explicit.")
+                if value == "runtime":
+                    payload["collection"]["max_prefill_cudagraph_size"] = None
+            elif name == "gpu_memory_utilization":
+                while True:
+                    try:
+                        value = float(input(f"{name} (0 < fraction <= 1): ").strip())
+                        if not 0 < value <= 1:
+                            raise ValueError
+                        break
+                    except ValueError:
+                        print("Enter a finite fraction greater than 0 and at most 1.")
+            else:
+                while True:
+                    try:
+                        value = int(input(f"{name} (positive integer): ").strip())
+                        if value <= 0:
+                            raise ValueError
+                        break
+                    except ValueError:
+                        print("Enter a positive integer.")
             if name == "runtime_context_length":
                 payload["search"]["context_length"] = value
             else:
                 payload["collection"][name] = value
+                if name == "max_prefill_cudagraph_size":
+                    payload["collection"]["prefill_cudagraph_policy"] = "explicit"
         else:
             staged.update(_read_profile_value(name))
             if name in {"max_num_tokens", "max_batch_size"}:
@@ -764,7 +822,9 @@ def _complete_config_request(
             raise ValueError(
                 "Unresolved profile fields for this deployment:\n"
                 + "\n".join(f"  {name}: {reason}" for name, reason in draft.missing.items())
-                + "\nSupply these flat fields in --resource-overrides PATH (JSON/YAML; integer bytes per rank), "
+                + "\nInspect the pinned runtime and checkpoint metadata for unresolved precision/layout facts. "
+                "An existing launch configuration is optional evidence; values not established locally remain "
+                "explicit inputs. Supply them in --resource-overrides PATH (JSON/YAML; bytes per rank), "
                 "or use --interactive."
             )
         try:

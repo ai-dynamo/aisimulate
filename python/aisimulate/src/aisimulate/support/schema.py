@@ -11,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Literal
 
 from packaging.version import Version
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SerializerFunctionWrapHandler, field_validator, model_serializer, model_validator
 
 from aisimulate.config.common import PositiveFiniteFloat, PositiveStrictInt, StrictModel, load_yaml
 from aisimulate.fpm_profile import FpmModelProfile
@@ -115,7 +115,31 @@ class CollectionSpec(StrictModel):
 
     max_num_tokens: PositiveStrictInt | None = None
     max_batch_size: PositiveStrictInt | None = None
+    # Missing policy preserves saved requests' explicit-2048 collector behavior.
+    # Fresh onboarding sets runtime explicitly at the CLI input boundary.
+    prefill_cudagraph_policy: Literal["runtime", "explicit"] = "explicit"
     max_prefill_cudagraph_size: PositiveStrictInt | None = None
+    gpu_memory_utilization: float | None = Field(default=None, strict=True, gt=0, le=1, allow_inf_nan=False)
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        values = handler(self)
+        # Preserve old request hashes and generated-plan verification. An
+        # explicitly reviewed policy is always serialized, including explicit.
+        if "prefill_cudagraph_policy" not in self.model_fields_set:
+            values.pop("prefill_cudagraph_policy", None)
+        return values
+
+    @model_validator(mode="after")
+    def _capture_policy(self) -> CollectionSpec:
+        if self.prefill_cudagraph_policy == "runtime" and self.max_prefill_cudagraph_size is not None:
+            raise ValueError("runtime prefill_cudagraph_policy rejects max_prefill_cudagraph_size; use explicit")
+        return self
+
+    @property
+    def memory_fraction(self) -> float:
+        """vLLM's fraction of total GPU memory, shared with simulation admission."""
+        return self.gpu_memory_utilization if self.gpu_memory_utilization is not None else 0.9
 
     @field_validator("max_num_tokens")
     @classmethod
@@ -271,7 +295,7 @@ class SupportRequest(StrictModel):
         """Resolved runtime inputs and the source of each proposed bound."""
         scheduler = self.scheduler_limits()
         profile = self.fpm_profile is not None
-        return {
+        settings: dict[str, Any] = {
             "context_length": self.search.context_length,
             **scheduler,
             "max_prefill_cudagraph_size": self.collection.max_prefill_cudagraph_size or 2048,
@@ -295,6 +319,25 @@ class SupportRequest(StrictModel):
                 else "collector default (2048); review against the target runtime CUDA graph configuration",
             },
         }
+        if "prefill_cudagraph_policy" in self.collection.model_fields_set:
+            policy = self.collection.prefill_cudagraph_policy
+            settings["prefill_cudagraph_policy"] = policy
+            settings["sources"]["prefill_cudagraph_policy"] = (
+                "reviewed runtime selection; CUDA graph sizes resolve in the initialized vLLM engine"
+                if policy == "runtime"
+                else "reviewed explicit capture override; match the intended serving configuration"
+            )
+            if policy == "runtime":
+                settings["max_prefill_cudagraph_size"] = None
+                settings["sources"]["max_prefill_cudagraph_size"] = (
+                    "deferred to the pinned runtime; onboarding does not prescribe CUDA graph sizes"
+                )
+        if self.collection.gpu_memory_utilization is not None:
+            settings["gpu_memory_utilization"] = self.collection.gpu_memory_utilization
+            settings["sources"]["gpu_memory_utilization"] = (
+                "reviewed fraction of total GPU memory; initial policy is 0.90; runtime fit remains unverified"
+            )
+        return settings
 
     @model_validator(mode="after")
     def _shape(self) -> SupportRequest:

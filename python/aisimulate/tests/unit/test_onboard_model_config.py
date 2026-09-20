@@ -156,6 +156,134 @@ def test_conflicting_resource_and_collection_bounds_fail_before_saving(tmp_path)
 
 
 @pytest.mark.parametrize(
+    "options,policy,limit",
+    [
+        ({}, "runtime", None),
+        ({"prefill_cudagraph_policy": "runtime"}, "runtime", None),
+        ({"max_prefill_cudagraph_size": 512}, "explicit", 512),
+        ({"prefill_cudagraph_policy": "explicit"}, "explicit", 2048),
+        ({"prefill_cudagraph_policy": "explicit", "max_prefill_cudagraph_size": 1024}, "explicit", 1024),
+    ],
+)
+def test_new_runtime_policy_is_saved_and_preserved_in_collection_preview(tmp_path, options, policy, limit):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    assert cli.main(_args(output, source, resources, **options)) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.collection.prefill_cudagraph_policy == policy
+    assert request.collection.gpu_memory_utilization == 0.9
+    assert request.collection_settings()["max_prefill_cudagraph_size"] == limit
+    root = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+    command = json.loads((root / "commands.json").read_text())["fpm_plan_local"]
+    assert command[command.index("--fpm-prefill-cudagraph-policy") + 1] == policy
+    assert command[command.index("--fpm-gpu-memory-utilization") + 1] == "0.9"
+    if policy == "runtime":
+        assert "--fpm-max-prefill-cudagraph-size" not in command
+        assert "deferred" in request.collection_settings()["sources"]["max_prefill_cudagraph_size"]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"prefill_cudagraph_policy": "runtime", "max_prefill_cudagraph_size": 512},
+        {"gpu_memory_utilization": "nan"},
+        {"gpu_memory_utilization": "inf"},
+        {"gpu_memory_utilization": 0},
+        {"gpu_memory_utilization": -0.1},
+        {"gpu_memory_utilization": 1.1},
+    ],
+)
+def test_invalid_runtime_settings_leave_request_unchanged(tmp_path, options):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    output.write_text("original request\n")
+    with pytest.raises(SystemExit):
+        cli.main(_args(output, source, resources, **options) + ["--overwrite"])
+    assert output.read_text() == "original request\n"
+
+
+def test_review_reset_to_runtime_clears_capture_override_and_saves_edited_memory(tmp_path, monkeypatch):
+    source, resources = _files(tmp_path)
+    output = tmp_path / "request.yaml"
+    _terminal(
+        monkeypatch,
+        [
+            "edit",
+            "prefill_cudagraph_policy",
+            "invalid",
+            "runtime",
+            "edit",
+            "gpu_memory_utilization",
+            "nan",
+            "1.1",
+            "0.75",
+            "accept",
+        ],
+    )
+    assert cli.main(_args(output, source, resources, max_prefill_cudagraph_size=1024) + ["--interactive"]) == 0
+    request = SupportRequest.from_yaml(output)
+    assert request.collection.prefill_cudagraph_policy == "runtime"
+    assert request.collection.max_prefill_cudagraph_size is None
+    assert request.collection.gpu_memory_utilization == 0.75
+    command = fpm_cli_args(request, output_dir=tmp_path / "collection", plan_only=True)
+    assert "--fpm-max-prefill-cudagraph-size" not in command
+    assert command[command.index("--fpm-gpu-memory-utilization") + 1] == "0.75"
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_memory_fraction_survives_plan_compilation_and_replay_validation(tmp_path, grouped):
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.support.validation import _prediction_config
+
+    overrides = dict(_OVERRIDES)
+    if grouped:
+        overrides.pop("kv_bytes_per_token")
+        overrides.pop("cache_layout")
+        overrides["cache_block_sizes"] = {"sliding_attention": 16}
+    source, resources = _files(
+        tmp_path, config={**_CONFIG, **({"sliding_window": 128} if grouped else {})}, overrides=overrides
+    )
+    output = tmp_path / "request.yaml"
+    fraction = 0.73
+    assert cli.main(_args(output, source, resources, gpu_memory_utilization=fraction)) == 0
+    request = SupportRequest.from_yaml(output)
+    root = tmp_path / "plan"
+    assert cli.main(["onboard", "plan", "--config", str(output), "--output-dir", str(root)]) == 0
+    plan = json.loads((root / "support-plan.json").read_text())
+    budget = plan["resources"]
+    assert budget["total_kv_size_bytes"] == int(budget["total_gpu_capacity_bytes"] * fraction) - sum(
+        budget["memory_breakdown"].values()
+    )
+    prediction = CorePredictionConfig.from_yaml(root / "predict/pilot.yaml")
+    recommendation = CoreRecommendationConfig.from_yaml(root / "recommend/pilot.yaml")
+    replay = CorePredictionConfig.model_validate(_prediction_config(request, root, tmp_path / "trace.jsonl"))
+    for config in (prediction, recommendation, replay):
+        assert config.engine.workers.aggregated.kv_cache.capacity.memory_fraction == fraction
+        if grouped:
+            assert not config.engine.workers.aggregated.kv_cache.prefix_caching
+        # Host RAM controls are independent of the simulated GPU budget.
+        assert config.execution.resources.available_memory_fraction == 0.9
+    for config in (prediction, replay):
+        spec = prediction_to_replay_spec(config)
+        args = spec.backend_deployment.agg_engine_args
+        assert args["gpu_memory_utilization"] == fraction
+
+
+def test_communication_override_is_retained_with_collection_compatibility_guidance(tmp_path, monkeypatch, capsys):
+    source, resources = _files(tmp_path, overrides={**_OVERRIDES, "comm_quant_mode": "int8"})
+    output = tmp_path / "request.yaml"
+    _terminal(monkeypatch, ["accept"])
+    assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
+    deployment = SupportRequest.from_yaml(output).profile_deployment()
+    assert deployment.comm_quant_mode == "int8"
+    source = json.loads(deployment.resources.provenance)["fields"]["comm_quant_mode"]["source"]
+    assert "user override" in source
+    assert "collector supports half" in source
+    assert "new collection will reject a mismatched identity" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
     "route,limits",
     [
         (route, limits)
@@ -739,7 +867,6 @@ def test_scripted_profile_failure_lists_every_unresolved_field_without_input(tmp
         "gemm_quant_mode",
         "moe_quant_mode",
         "fmha_quant_mode",
-        "comm_quant_mode",
         "kv_cache_dtype",
     ):
         assert field in errors
@@ -989,7 +1116,7 @@ def test_guided_precision_answers_resolve_supported_memory_without_redundant_pro
 
     assert cli.main(_args(output, source) + ["--interactive"]) == 0
 
-    assert len(prompts) == 4
+    assert len(prompts) == 3
     resources = SupportRequest.from_yaml(output).profile_deployment().resources
     assert resources.kv_bytes_per_token == 512
     assert resources.max_num_tokens == 8192

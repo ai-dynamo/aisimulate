@@ -142,7 +142,7 @@ def _bandwidth(value: Any, field: str) -> int | float:
     return value
 
 
-def _hardware_envelope(system: str, interconnect: str) -> HardwareEnvelope:
+def _hardware_envelope(system: str, interconnect: str, memory_fraction: float) -> HardwareEnvelope:
     path = packaged_hardware_path(system)
     if not path.is_file():
         raise ValueError(f"no packaged hardware metadata for {system}; select an explicit topology")
@@ -204,7 +204,7 @@ def _hardware_envelope(system: str, interconnect: str) -> HardwareEnvelope:
         source=f"packaged systems/{system}.yaml",
         sha256=hashlib.sha256(payload).hexdigest(),
         per_gpu_bytes=capacity,
-        memory_budget_bytes=capacity * 9 // 10,
+        memory_budget_bytes=int(capacity * memory_fraction),
         gpus_per_node=node_width,
         gpus_per_rack=rack_width,
         fast_domain=domain,
@@ -267,7 +267,7 @@ def _assess(
                 {
                     "total_gpu_capacity_bytes": hardware.per_gpu_bytes,
                     "memory_fraction_kind": "of_total",
-                    "memory_fraction_value": 0.9,
+                    "memory_fraction_value": request.collection.memory_fraction,
                     "max_num_tokens": resolved["max_num_tokens"],
                     "max_batch_size": resolved["max_batch_size"],
                     "context_length": request.search.context_length,
@@ -288,7 +288,8 @@ def _assess(
         reasons = (
             f"Non-KV resources {known} bytes leave no grouped cache budget ({hardware.memory_budget_bytes}-byte limit)."
             if no_grouped_cache_budget
-            else f"{bound} {known} bytes exceeds the 90% per-GPU budget of {hardware.memory_budget_bytes} bytes.",
+            else f"{bound} {known} bytes exceeds the {request.collection.memory_fraction * 100:g}% per-GPU budget "
+            f"of {hardware.memory_budget_bytes} bytes.",
         )
     elif draft.missing or not complete_resources:
         status = "needs_inputs"
@@ -300,7 +301,8 @@ def _assess(
         status = "estimated_fit"
         reasons = (
             f"Complete declared/estimated per-rank resources including one full-context cache need {known} bytes, "
-            f"within the 90% per-GPU budget of {hardware.memory_budget_bytes} bytes; "
+            f"within the {request.collection.memory_fraction * 100:g}% per-GPU budget "
+            f"of {hardware.memory_budget_bytes} bytes; "
             "this is a conservative admission precheck, not runtime qualification.",
         )
     return TopologyCandidate(
@@ -327,7 +329,9 @@ def suggest_topologies(
         )
     if request.fpm_profile is not None:
         raise ValueError("an attached FPM profile belongs to an exact topology; use explicit onboarding")
-    hardware = _hardware_envelope(request.identity.gpu, request.identity.interconnect)
+    hardware = _hardware_envelope(
+        request.identity.gpu, request.identity.interconnect, request.collection.memory_fraction
+    )
     candidates = []
     rejected = []
     families = _FAMILIES if request.identity.model_kind == "moe" else ("tp",)
@@ -381,7 +385,8 @@ def suggest_topologies(
                 "Total KV capacity is estimated from the remaining per-rank memory; this check does not guarantee "
                 "a particular concurrent workload fits or assume balanced attention-DP routing."
             ),
-            "The 90% byte budget reuses onboarding planning policy. CUDA graph reservations are excluded; "
+            f"The {request.collection.memory_fraction * 100:g}% byte budget uses the reviewed GPU memory fraction. "
+            "CUDA graph reservations are excluded; "
             "generated plan and serving-runtime admission remain authoritative.",
             "Only known config geometry constraints are checked. Unknown architecture constraints, "
             "runtime compatibility, timing coverage and measured performance remain unchecked.",

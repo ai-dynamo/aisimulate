@@ -296,7 +296,7 @@ def test_no_declared_interconnect_limits_automatic_choices_to_one_gpu(tmp_path):
 @pytest.mark.parametrize(
     "config_updates,overrides,missing",
     [
-        ({}, {}, {"fmha_quant_mode", "comm_quant_mode", "kv_cache_dtype", "activations_bytes", "kv_bytes_per_token"}),
+        ({}, {}, {"fmha_quant_mode", "kv_cache_dtype", "activations_bytes", "kv_bytes_per_token"}),
         ({"torch_dtype": None}, _runtime(), {"gemm_quant_mode", "moe_quant_mode", "weights_bytes"}),
         ({"quantization_config": {"quant_method": "fp8"}}, _runtime(), {"weights_bytes"}),
         ({"num_key_value_heads": None}, _runtime(), {"kv_bytes_per_token", "weights_bytes"}),
@@ -323,14 +323,16 @@ def test_unknown_layout_preserves_unchecked_status(tmp_path):
     assert any("Unknown architecture constraints" in reason for reason in report.assumptions)
 
 
-def test_missing_communication_precision_prevents_an_automatic_default_even_with_complete_bytes(tmp_path):
+def test_collector_communication_identity_is_proposed_with_source(tmp_path):
     report = suggest_topologies(
         _config(tmp_path), _request(), {"kv_cache_dtype": "bfloat16", "fmha_quant_mode": "bfloat16"}
     )
-    assert report.default is None
-    assert report.candidates[0].status == "needs_inputs"
+    assert report.default is not None
+    assert report.candidates[0].status == "estimated_fit"
     assert report.candidates[0].estimated_required_bytes is not None
-    assert set(report.candidates[0].missing) == {"comm_quant_mode"}
+    assert not report.candidates[0].missing
+    assert report.candidates[0].draft.resolved["comm_quant_mode"] == "half"
+    assert "collector FPM identity default" in report.candidates[0].draft.sources["comm_quant_mode"]
 
 
 def test_known_weight_lower_bound_can_reject_without_precision_cache_or_overheads(tmp_path, monkeypatch):
@@ -378,6 +380,23 @@ def test_validation_concurrency_does_not_change_topology_fit(tmp_path, monkeypat
     assert light.default.required_gpus == 1
     heavy = suggest_topologies(config, _request(concurrency=16), _runtime())
     assert heavy.to_dict() == light.to_dict()
+
+
+def test_gpu_memory_fraction_changes_topology_admission(tmp_path, monkeypatch):
+    _hardware(tmp_path, monkeypatch)
+    config = _config(tmp_path)
+    request = _request()
+    first = suggest_topologies(config, request, _runtime()).default
+    _hardware(tmp_path, monkeypatch, gpu={"mem_capacity": first.estimated_required_bytes * 2})
+    high = suggest_topologies(config, request, _runtime())
+    payload = request.model_dump()
+    payload["collection"]["gpu_memory_utilization"] = 0.4
+    low = suggest_topologies(config, SupportRequest.model_validate(payload), _runtime())
+    assert high.default.required_gpus == 1
+    assert low.hardware.memory_budget_bytes == int(low.hardware.per_gpu_bytes * 0.4)
+    assert any(candidate.required_gpus == 1 and candidate.status == "rejected" for candidate in low.rejected_candidates)
+    assert all(candidate.required_gpus > 1 for candidate in low.candidates)
+    assert "40%" in low.rejected_candidates[0].reasons[0]
 
 
 @pytest.mark.parametrize("extra_token", [0, 1])

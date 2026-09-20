@@ -16,13 +16,25 @@ an already supplied local config, profile or checkpoint path instead of requirin
 a Hub ID; do not ask for both an ID and a config upfront. For a Hub ID, retrieve
 the config using available Hub access as described in stage 1. Reuse supplied
 facts and inspect the config/profile before asking for derivable metadata; defer
-other questions to their stage and help the user choose the worker topology.
+other questions to their stage. Propose supported runtime settings and worker
+topologies with their sources, then let the user review and edit them. An existing
+vLLM launch command or configuration is optional evidence; do not require one or
+start with a topology/dtype questionnaire. Inspect available pinned runtime
+metadata, initialization logs and checkpoint quantization sidecars before asking
+for unresolved choices. This is agent investigation: the CLI does not import
+arbitrary launch arguments or automatically inspect a remote runtime.
 At stage 2, inspect `aisimulate onboard init --model-config PATH --suggest-parallel`
 with the actual checkpoint/revision, runtime, GPU, interconnect and collection
 options. This read-only JSON preview reports model/hardware-aware TP choices and
 MoE TP/DEP/TEP alternatives, exact flags, resource sources and missing inputs.
-Ask for unresolved shared precision/layout facts rather than guessing. Only a
-complete declared/estimated byte budget can establish an `estimated_fit` default;
+Show the current collector's `comm_quant_mode=half` identity default and its
+source; it does not assert a global NCCL tensor dtype. Preserve user overrides
+and explain that other communication identities are rejected by the current
+collector for new collection. Resolve weight, FMHA and KV precision separately;
+do not infer unknown FMHA or KV precision from a checkpoint name or weight
+quantization. Ask only for shared precision/layout facts that remain unresolved
+after inspection. Only a complete declared/estimated byte budget can establish
+an `estimated_fit` default;
 the shortlist is not a performance ranking or runtime qualification. Present the
 default and alternatives, help select one or more configurations, and preserve
 explicit topology choices. Each generated profile and collection plan still
@@ -61,19 +73,42 @@ optimization GPU budgets belong to ordinary predict/recommend configurations.
 
 Review context, scheduler and prefill capture limits independently of validation
 traffic. Fresh config/profile defaults use the smaller of the declared context
-and 256,000 tokens, profile scheduler bounds or 8,192 tokens/256 sequences, and a
-2,048-token prefill CUDA graph capture limit. Explain and allow edits to these
-initial policies; they establish neither capacity nor timing coverage. Do not
-require fixed input/output lengths, concurrency, TTFT or TPOT during intake.
+and 256,000 tokens, profile scheduler bounds or 8,192 tokens/256 sequences, and
+0.90 GPU memory utilization. New initialization uses
+`--prefill-cudagraph-policy runtime`, leaving graph mode/capture sizes and the
+exact sample grid unresolved until engine initialization. Show these as proposed
+settings, explain their sources, and allow edits; they establish neither capacity
+nor timing coverage. `--gpu-memory-utilization` selects a finite fraction in
+`(0, 1]`. A numeric `--max-prefill-cudagraph-size` selects `explicit` policy;
+`--prefill-cudagraph-policy explicit` without a size uses 2,048. Runtime policy
+and a numeric size conflict. In profile review, editing the policy to `runtime`
+clears the explicit size. Old requests missing the policy retain explicit capture
+with their saved size or the 2,048-token default. Do not require fixed input/output
+lengths, concurrency, TTFT or TPOT during intake.
 Those flags customize optional synthetic examples only. Maximum sequences does
 not reserve maximum context for every sequence or request every prefill batch.
 Follow the [shared collection policy](docs/fpm-self-service.md#how-the-collection-grid-is-determined):
-AISimulate sets runtime limits, prefill capture sizes and some sample caps;
-Dynamo combines them with the deployed image's sampling defaults and runtime
-feasibility checks to generate the exact grid. Prefill capture overrides change
-the engine configuration and must match the serving target. A complete generated
-grid does not establish AgentX/direct-FPM query coverage; do not invent a separate
+AISimulate sets runtime limits and the selected capture policy. Runtime policy
+emits no prefill compilation or new-token sample-cap override; the graph-independent
+KV-read sample cap remains bounded. Explicit policy sets the reviewed capture
+extension and associated sample caps. Dynamo combines these inputs with
+initialized engine state, image sampling defaults and feasibility
+checks to generate and measure the exact grid. Record actual graph dispatch and
+capture sizes with collection evidence; requested settings alone do not establish
+them. Capture overrides must match the serving target. A complete generated grid
+does not establish AgentX/direct-FPM query coverage; do not invent a separate
 AgentX collection grid.
+
+The collector deploys and launches benchmark workers through the existing
+Generator/Kubernetes path; it does not require an already-running HTTP server.
+Prepare the compatible pinned image, accessible checkpoint, GPUs, namespace and
+deployment permissions before execution. The engine initializes the model/cache
+and resolves runtime settings, then Dynamo self-benchmark generates and times the
+points. Inspect effective precision, graph policy, cache allocation/padding and
+supported seeding behavior during bring-up. Benchmark prefix seeding is separate
+from replay's cross-request prefix reuse; preserve the collector's phase-specific
+protocol and inspect skipped/fallback evidence instead of copying replay cache
+flags into benchmark launches.
 
 After verifying the formal data pair, use `aisimulate onboard validate-fpm`
 with a local Weka trace and a separate validation output directory. Follow the

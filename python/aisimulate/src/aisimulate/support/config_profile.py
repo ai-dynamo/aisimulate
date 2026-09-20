@@ -988,6 +988,11 @@ def derive_profile(
     sources = {key: config.notes[key] for key in values}
     for key, (value, source) in _precision_facts(config).items():
         values[key], sources[key] = value, source
+    values["comm_quant_mode"] = "half"
+    sources["comm_quant_mode"] = (
+        "collector FPM identity default: capabilities.py resolves comm_quant_mode=half; "
+        "not a claim about every runtime communication tensor"
+    )
     for key in ("moe_backend", "attention_backend"):
         values[key], sources[key] = "auto", "existing FPM deployment schema default: automatic backend selection"
     for key, default in (("max_num_tokens", 8192), ("max_batch_size", 256)):
@@ -1006,6 +1011,8 @@ def derive_profile(
         if key == "context_length" and key in values and value > values[key]:
             raise ValueError("context_length override exceeds the source config context limit")
         values[key], sources[key] = value, "user override; caller-declared value, not an inferred measurement"
+        if key == "comm_quant_mode" and value != "half":
+            sources[key] += "; current collector supports half and will reject this identity for new collection"
     architecture = config.decoder_architecture
     if "architecture" not in config.suggestions:
         architecture = values.get("architecture")
@@ -1034,9 +1041,14 @@ def derive_profile(
             "declare the deployed GEMM quantization mode; config does not identify a supported unambiguous mode"
         ),
         "moe_quant_mode": "declare the deployed MoE quantization identity, also required for dense profiles",
-        "fmha_quant_mode": "declare runtime attention precision; checkpoint weight dtype does not establish it",
-        "comm_quant_mode": "declare runtime communication precision; it is not checkpoint metadata",
-        "kv_cache_dtype": "declare runtime KV-cache dtype; weight precision does not establish it",
+        "fmha_quant_mode": (
+            "resolve attention precision from the pinned runtime or verified launch settings; "
+            "checkpoint weight dtype does not establish it"
+        ),
+        "kv_cache_dtype": (
+            "resolve KV-cache dtype from explicit checkpoint metadata, pinned runtime or verified launch settings; "
+            "weight precision does not establish it"
+        ),
         "cache_layout": (
             "confirm linear cache layout; unknown cache semantics cannot be inferred from ordinary head counts"
         ),

@@ -417,7 +417,9 @@ def test_weight_quantization_does_not_select_runtime_attention_or_kv_dtype(tmp_p
     draft = derive_profile(config, _request())
     assert draft.resolved["gemm_quant_mode"] == "fp8_block"
     assert draft.resolved["moe_quant_mode"] == "fp8_block"
-    assert {"fmha_quant_mode", "kv_cache_dtype", "weights_bytes", "comm_quant_mode"} <= draft.missing.keys()
+    assert {"fmha_quant_mode", "kv_cache_dtype", "weights_bytes"} <= draft.missing.keys()
+    assert draft.resolved["comm_quant_mode"] == "half"
+    assert "collector FPM identity default" in draft.sources["comm_quant_mode"]
     assert draft.profile is None
     assert "quantized" in draft.missing["weights_bytes"]
 

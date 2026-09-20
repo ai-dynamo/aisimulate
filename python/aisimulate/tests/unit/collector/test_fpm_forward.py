@@ -189,6 +189,88 @@ def test_prefill_limits_expose_no_cli_aliases():
     assert "--fpm-max-prefill-bs" not in help_text
 
 
+def test_runtime_graph_policy_leaves_graph_dependent_axes_unresolved():
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    options = FPMCollectionOptions.from_args(
+        parser.parse_args(["--fpm-max-gpus", "4", "--fpm-prefill-cudagraph-policy", "runtime"])
+    )
+
+    assert options.max_prefill_cudagraph_size is None
+    sampling = options.prefill_sampling.to_dict()
+    assert sampling["cudagraph_policy"] == "runtime"
+    for field in (
+        "cudagraph_capture_sizes",
+        "cudagraph_capture_size_count",
+        "max_cudagraph_capture_size",
+        "new_token_axis_points",
+        "new_token_axis_point_count",
+        "prefill_max_new_token_samples",
+    ):
+        assert sampling[field] is None
+    assert sampling["prefill_max_kv_read_token_samples"] > 0
+
+
+def test_explicit_graph_policy_preserves_legacy_capture_settings_and_identity():
+    legacy = FPMCollectionOptions.from_args(_args())
+    explicit = FPMCollectionOptions.from_args(_args(fpm_prefill_cudagraph_policy="explicit"))
+    assert explicit.max_prefill_cudagraph_size == 2048
+    assert explicit.to_dict() == legacy.to_dict()
+    assert "gpu_memory_utilization" not in legacy.to_dict()
+
+    custom = FPMCollectionOptions.from_args(_args(fpm_max_prefill_cudagraph_size=1000))
+    assert custom.prefill_cudagraph_policy == "explicit"
+    assert custom.prefill_sampling.cudagraph_capture_sizes[-1] == 1000
+
+
+def test_runtime_graph_policy_rejects_explicit_capture_size():
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    args = parser.parse_args(
+        [
+            "--fpm-max-gpus",
+            "4",
+            "--fpm-prefill-cudagraph-policy",
+            "runtime",
+            "--fpm-max-prefill-cudagraph-size",
+            "512",
+        ]
+    )
+    with pytest.raises(ValueError, match="runtime cannot use --fpm-max-prefill-cudagraph-size"):
+        FPMCollectionOptions.from_args(args)
+
+
+@pytest.mark.parametrize("value", ["0", "-0.1", "1.01", "nan", "inf", "-inf", "true"])
+def test_gpu_memory_fraction_cli_rejects_invalid_values(value):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    with pytest.raises(SystemExit) as error:
+        parser.parse_args([f"--fpm-gpu-memory-utilization={value}"])
+    assert error.value.code == 2
+
+
+@pytest.mark.parametrize("value", [True, 0, -0.1, 1.01, float("nan"), float("inf")])
+def test_gpu_memory_fraction_options_reject_invalid_values(value):
+    with pytest.raises(ValueError, match="gpu-memory-utilization must be finite"):
+        FPMCollectionOptions.from_args(_args(fpm_gpu_memory_utilization=value))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--fpm-prefill-cudagraph-policy", "runtime"],
+        ["--fpm-gpu-memory-utilization", "0.9"],
+    ],
+)
+def test_graph_policy_and_memory_fraction_require_fpm_collection(arguments):
+    parser = argparse.ArgumentParser()
+    add_fpm_arguments(parser)
+    args = parser.parse_args(arguments)
+    args.ops = ["gemm"]
+    with pytest.raises(ValueError, match="FPM-only arguments require --ops fpm_forward"):
+        reject_fpm_arguments_without_fpm(args)
+
+
 @pytest.mark.parametrize("option", ["max-model-len", "max-num-batched-tokens", "max-num-seqs"])
 @pytest.mark.parametrize("value", ["0", "-1", "1.5"])
 def test_runtime_limit_cli_requires_positive_integers(option, value):
@@ -467,6 +549,27 @@ def test_memory_admission_drops_only_the_rejected_dtype_cells(monkeypatch, caplo
     # memory filter's drops are logged; whole-topology logging alone would
     # hide these).
     assert "fpm_forward: dropped 3/6 (topology, kv_dtype) cell groups (memory budget" in caplog.text
+
+
+def test_model_memory_admission_uses_declared_gpu_fraction(monkeypatch):
+    monkeypatch.setattr(
+        "collector.fpm_forward.memory_admission.KVCacheEstimator.from_request",
+        lambda *_args, **_kwargs: SimpleNamespace(breakdown={"non_kv_bytes": 60, "gpu_memory_capacity_bytes": 100}),
+    )
+    kwargs = {
+        "backend": "vllm",
+        "model_path": "nvidia/GLM-5.2-NVFP4",
+        "system": "b200_sxm",
+        "selected_ops": {"dsa_context_module", "dsa_generation_module"},
+    }
+    admitted = build_collection_plan(
+        **kwargs, options=FPMCollectionOptions.from_args(_args(fpm_gpu_memory_utilization=0.9))
+    )
+    for decision in admitted.topology_memory_admission:
+        assert decision.estimates[0].to_dict()["gpu_memory_budget_bytes"] == 90
+        assert decision.estimates[0].to_dict()["headroom_bytes"] == 30
+    with pytest.raises(ValueError, match="memory admission rejected every FPM topology"):
+        build_collection_plan(**kwargs, options=FPMCollectionOptions.from_args(_args(fpm_gpu_memory_utilization=0.6)))
 
 
 def test_plan_identity_ignores_memory_estimator_error_text(monkeypatch):

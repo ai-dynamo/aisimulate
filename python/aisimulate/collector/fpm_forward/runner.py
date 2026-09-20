@@ -950,16 +950,23 @@ def _cell_generator_overrides(
         if profile.max_batch_size is not None:
             max_num_seqs = profile.max_batch_size
     if cell.workload_kind == "prefill" and not smoke:
-        compilation_config = {
-            "cudagraph_capture_sizes": list(profile.cudagraph_capture_sizes),
-            "max_cudagraph_capture_size": profile.max_cudagraph_capture_size,
-        }
+        if profile.cudagraph_capture_sizes is not None:
+            compilation_config = {
+                "cudagraph_capture_sizes": list(profile.cudagraph_capture_sizes),
+                "max_cudagraph_capture_size": profile.max_cudagraph_capture_size,
+            }
+            scheduler_args.extend(
+                [
+                    "--compilation-config",
+                    json.dumps(compilation_config, sort_keys=True, separators=(",", ":")),
+                    "--prefill-max-new-token-samples",
+                    str(profile.max_new_token_samples),
+                ]
+            )
+        # This cap depends only on scheduler bounds, not the runtime's graph
+        # choices. The new-token axis remains Dynamo-owned in runtime mode.
         scheduler_args.extend(
             [
-                "--compilation-config",
-                json.dumps(compilation_config, sort_keys=True, separators=(",", ":")),
-                "--prefill-max-new-token-samples",
-                str(profile.max_new_token_samples),
                 "--prefill-max-kv-read-token-samples",
                 str(profile.max_kv_read_token_samples),
             ]
@@ -1029,6 +1036,11 @@ def _cell_generator_overrides(
             }
         },
     }
+    gpu_memory_utilization = getattr(plan.options, "gpu_memory_utilization", None)
+    if gpu_memory_utilization is not None:
+        # Use the existing backend mapping to --gpu-memory-utilization. The
+        # Generator preserves explicitly supplied values of this common key.
+        generated["params"]["agg"]["kv_cache_free_gpu_memory_fraction"] = gpu_memory_utilization
     policy = cell.backend_policy.generator_overrides
     merged = _deep_merge(_deep_merge(base, generated), policy)
 
@@ -1057,6 +1069,14 @@ def _cell_generator_overrides(
     merged.setdefault("K8sConfig", {})["extra_env"] = list(resolved_env.values())
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
+    if gpu_memory_utilization is not None and any(
+        str(argument).split("=", 1)[0].split(" ", 1)[0] == "--gpu-memory-utilization" for argument in policy_args
+    ):
+        raise ValueError("backend policy cannot override --fpm-gpu-memory-utilization with extra CLI arguments")
+    if cell.workload_kind == "prefill" and profile.cudagraph_policy == "runtime":
+        graph_options = ("--compilation-config", "--cudagraph-capture-sizes", "--max-cudagraph-capture-size")
+        if any(str(argument).split("=", 1)[0] in graph_options for argument in policy_args):
+            raise ValueError("runtime prefill CUDA-graph policy cannot use backend capture overrides")
     if cell.workload_kind == "decode":
         prefix_caching = _decode_prefix_caching_mode(cell)
         policy_disables = any(
@@ -1088,6 +1108,11 @@ def _cell_generator_overrides(
         resolved_args.extend(["--benchmark-timeout", str(DEFAULT_BENCHMARK_TIMEOUT_SECONDS)])
     resolved_args.extend(scheduler_args)
     merged_agg = merged.setdefault("params", {}).setdefault("agg", {})
+    if (
+        gpu_memory_utilization is not None
+        and merged_agg.get("kv_cache_free_gpu_memory_fraction") != gpu_memory_utilization
+    ):
+        raise ValueError("backend policy cannot change --fpm-gpu-memory-utilization")
     merged_agg.update({"extra_cli_args": resolved_args})
     return merged
 
@@ -1103,20 +1128,30 @@ def _configured_sampling_metadata(
     cell: FPMCell,
     *,
     smoke: bool,
-) -> dict[str, int | str]:
+) -> dict[str, int | str | None]:
     if cell.workload_kind != "prefill":
         # Derive checkpoint evidence from the same strategy predicate used to
         # render the engine flags. _cell_generator_overrides rejects policy
         # arguments that conflict with this resolved protocol.
         return {"decode_prefix_caching": _decode_prefix_caching_mode(cell)}
     if smoke:
-        return {"prefill_max_new_token_samples": 2}
+        payload: dict[str, int | str | None] = {"prefill_max_new_token_samples": 2}
+        if plan.options.prefill_sampling.cudagraph_policy == "runtime":
+            payload["prefill_cudagraph_policy"] = "runtime"
+        return payload
     profile = plan.options.prefill_sampling
-    return {
-        "prefill_cudagraph_capture_size_count": len(profile.cudagraph_capture_sizes),
-        "prefill_requested_new_token_axis_count": len(profile.new_token_axis_points),
+    payload = {
+        "prefill_cudagraph_capture_size_count": len(profile.cudagraph_capture_sizes)
+        if profile.cudagraph_capture_sizes is not None
+        else None,
+        "prefill_requested_new_token_axis_count": len(profile.new_token_axis_points)
+        if profile.new_token_axis_points is not None
+        else None,
         "prefill_max_new_token_samples": profile.max_new_token_samples,
     }
+    if profile.cudagraph_policy == "runtime":
+        payload["prefill_cudagraph_policy"] = "runtime"
+    return payload
 
 
 def _render_cell(

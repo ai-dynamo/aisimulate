@@ -35,6 +35,14 @@ group layer plus runtime padding on one rank. Use the
 for grouped resources; a scalar token capacity cannot represent window eviction
 or transient prefill pages.
 
+An existing launch configuration is optional evidence. The onboarding agent
+proposes supported runtime settings from pinned checkpoint/runtime metadata and
+available sidecars, asks only for unresolved facts, and presents the result for
+review. The CLI does not import arbitrary launch arguments or inspect a remote
+runtime automatically. Config intake proposes the current collector communication
+identity `half`; unknown FMHA and KV precision remain explicit inputs. Packed
+cache-page estimates remain distinct from runtime allocations including padding.
+
 The saved request embeds the profile, and generated ordinary configurations use
 `engine.fpm_profile`, `estimation_mode: fpm_interpolation`,
 `estimator_config.fpm_interpolation.method: direct`, and `fallback_policy: deny`.
@@ -51,9 +59,13 @@ for each tuple; rank-local byte bounds and cache groups are never transferred
 between configurations. Follow each emitted plan command and collect or resume
 each configuration independently. Follow the
 [shared collection policy](../../../../docs/fpm-self-service.md#how-the-collection-grid-is-determined):
-AISimulate sets runtime limits, prefill capture sizes and some sample caps;
-Dynamo combines them with the deployed image's sampling defaults and runtime
-feasibility checks to generate the exact grid. A complete generated grid does
+AISimulate sets runtime limits and the reviewed capture policy. New onboarding
+uses `--prefill-cudagraph-policy runtime`, which leaves prefill compilation to
+the pinned engine; explicit capture extension remains available. The collector
+launches benchmark workers, and Dynamo uses initialized engine state, image
+sampling defaults and feasibility checks to generate and time the exact grid.
+Capture sizes and exact counts remain unresolved before engine initialization
+in runtime mode. A complete generated grid does
 not establish direct-FPM query coverage. Validation traffic is supplied
 separately after a formal timing pair is verified. The
 current [AgentX coverage check](../../../../docs/fpm-self-service.md#validate-fpm-query-coverage-with-agentx-replay)
@@ -73,7 +85,7 @@ Keep these inputs with the integration issue and eventual collection artifacts:
 | Memory | Weight storage precision and replication/sharding; cache layout, quantization, sliding windows/compression, and fixed recurrent or decode state. |
 | Runtime | GPU/system specification, backend and exact version, image digest, attention/MoE kernel choices, and effective GEMM/MoE/FMHA/KV/communication precision. Checkpoint weight precision alone does not specify all these values. |
 | Worker topology | Exact `(TP, PP, attention DP, MoE TP, MoE EP, CP)` tuple. Minimum collection GPUs are attention TP times attention DP. Total GPU allocation, node reservations and replica budgets are not onboarding intake requirements. |
-| Runtime and collection bounds | Per-request context, per-attention-DP-rank scheduled-token and sequence limits, and prefill CUDA graph capture limit. Review these independently of replay traffic; they do not prove memory fit or timing coverage. |
+| Runtime and collection bounds | Per-request context, per-attention-DP-rank scheduled-token and sequence limits, GPU memory fraction (new onboarding starts at 0.90), and runtime or explicit prefill CUDA graph policy. Review these independently of replay traffic; record actual captures after initialization. These settings do not prove memory fit or timing coverage. |
 | Validation traffic | Select a local trace when validating the collected pair. Fixed input/output lengths, concurrency, TTFT and TPOT are optional synthetic-example inputs, not collection requirements. |
 
 For example, MoE TP4 is `(4, 1, 1, 4, 1, 1)`, DEP8 is

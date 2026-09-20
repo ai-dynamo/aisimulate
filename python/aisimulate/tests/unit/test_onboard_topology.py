@@ -336,16 +336,15 @@ def test_invalid_inputs_preserve_output_before_any_write(tmp_path, updates, extr
 def test_guided_shared_precision_then_default_skips_blind_tp_prompt_and_retains_review(monkeypatch, tmp_path, capsys):
     source, _ = _inputs(tmp_path)
     output = tmp_path / "new" / "request.yaml"
-    prompts = _terminal(monkeypatch, output, ["invalid", "bfloat16", "half", "bfloat16", "", "accept"])
+    prompts = _terminal(monkeypatch, output, ["invalid", "bfloat16", "bfloat16", "", "accept"])
     assert cli.main(_args(source, None, output) + ["--interactive"]) == 0
     assert prompts[0].startswith("fmha_quant_mode")
-    assert prompts[2].startswith("comm_quant_mode")
-    assert prompts[3].startswith("kv_cache_dtype")
-    assert prompts[4] == "Choose topology 1-2 [1] (or cancel): "
+    assert prompts[2].startswith("kv_cache_dtype")
+    assert prompts[3] == "Choose topology 1-2 [1] (or cancel): "
     assert prompts[-1] == "Review action (accept/edit/cancel): "
     assert not any("Attention tensor-parallel" in prompt or "available" in prompt for prompt in prompts)
     assert SupportRequest.from_yaml(output).worker_gpus == 1
-    assert "not checkpoint metadata" in capsys.readouterr().out
+    assert "collector FPM identity default" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -552,6 +551,7 @@ def _consume_configurations(root):
             assert worker.timing.estimation_mode == "fpm_interpolation"
             assert worker.timing.fallback_policy == "deny"
             assert worker.timing.estimator_config["fpm_interpolation"]["method"] == "direct"
+            assert worker.kv_cache.capacity.memory_fraction == request.collection.memory_fraction
             if request.profile_deployment().resources.cache_layout == "grouped":
                 assert not worker.kv_cache.prefix_caching
         assert prediction.engine.workers.aggregated.parallelism.model_dump() == request.parallelism()
@@ -816,10 +816,10 @@ def test_interactive_file_resolves_shared_fields_once_and_retains_entry_precisio
         )
     )
     root = tmp_path / "profiles"
-    prompts = _directory_terminal(monkeypatch, root, ["bfloat16", "half", "bfloat16", "accept", "accept"])
+    prompts = _directory_terminal(monkeypatch, root, ["bfloat16", "bfloat16", "accept", "accept"])
     assert cli.main(_directory_args(source, None, root) + ["--parallel-configs", str(choices), "--interactive"]) == 0
-    assert [prompt.split(" (")[0] for prompt in prompts[:3]] == ["fmha_quant_mode", "comm_quant_mode", "kv_cache_dtype"]
-    assert len(prompts) == 5
+    assert [prompt.split(" (")[0] for prompt in prompts[:2]] == ["fmha_quant_mode", "kv_cache_dtype"]
+    assert len(prompts) == 4
     _, requests = _saved_configurations(root)
     assert [request.profile_deployment().kv_cache_dtype for request in requests] == ["fp8", "bfloat16"]
 
@@ -891,6 +891,9 @@ def test_grouped_profile_edits_and_collection_limits_stay_with_their_candidate(m
             "edit",
             "max_prefill_cudagraph_size",
             "512",
+            "edit",
+            "gpu_memory_utilization",
+            "0.75",
             "accept",
             "accept",
         ],
@@ -904,7 +907,9 @@ def test_grouped_profile_edits_and_collection_limits_stay_with_their_candidate(m
     first, second = _consume_configurations(root)
     assert [request.search.context_length for request in (first, second)] == [2048, 4096]
     assert [request.scheduler_limits()["max_batched_tokens"] for request in (first, second)] == [2048, 8192]
-    assert [request.collection_settings()["max_prefill_cudagraph_size"] for request in (first, second)] == [512, 2048]
+    assert [request.collection_settings()["max_prefill_cudagraph_size"] for request in (first, second)] == [512, None]
+    assert [request.collection.prefill_cudagraph_policy for request in (first, second)] == ["explicit", "runtime"]
+    assert [request.collection.gpu_memory_utilization for request in (first, second)] == [0.75, 0.9]
     first_cache, second_cache = (request.profile_deployment().resources for request in (first, second))
     assert [group.block_size_tokens for group in first_cache.cache_groups] == [32, 16]
     assert [group.block_size_tokens for group in second_cache.cache_groups] == [16, 8]

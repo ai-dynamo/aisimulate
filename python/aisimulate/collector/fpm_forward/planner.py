@@ -508,6 +508,7 @@ class FPMCollectionPlan:
         )
 
     def to_dict(self) -> dict[str, object]:
+        prefill_sampling = self.options.prefill_sampling.to_dict()
         payload = {
             "schema_name": "aic_fpm_collection_plan",
             "schema_version": 10,
@@ -530,7 +531,7 @@ class FPMCollectionPlan:
                 "partition_policy": "balanced_v1",
                 "point_admission": "dynamo_live_scheduler",
                 "precondition": "vllm_engine_initialized",
-                "prefill_sampling": self.options.prefill_sampling.to_dict(),
+                "prefill_sampling": prefill_sampling,
                 "planned_point_count": None,
             },
             "topologies": [
@@ -554,8 +555,8 @@ class FPMCollectionPlan:
                 ),
                 "backend_policies": len(self.backend_policies),
                 "cells": len(self.cells),
-                "prefill_cudagraph_capture_sizes": len(self.options.prefill_sampling.cudagraph_capture_sizes),
-                "prefill_new_token_axis_points": len(self.options.prefill_sampling.new_token_axis_points),
+                "prefill_cudagraph_capture_sizes": prefill_sampling["cudagraph_capture_size_count"],
+                "prefill_new_token_axis_points": prefill_sampling["new_token_axis_point_count"],
                 "points": "runtime-determined",
             },
             "sha256": self.sha256,
@@ -693,6 +694,7 @@ def build_collection_plan(
         max_new_tokens=options.prefill_sampling.max_total_prefill_tokens,
         fpm_profile=profile,
         max_batch_size=options.prefill_sampling.max_batch_size,
+        gpu_memory_utilization=options.gpu_memory_utilization,
     )
     weight_quantization = capability.dtype.gemm_quant_mode
     runnable_dtype_pairs = {

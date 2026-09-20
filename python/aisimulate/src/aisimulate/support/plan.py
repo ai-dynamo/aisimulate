@@ -74,11 +74,13 @@ def _configs(
         "scheduler": request.scheduler_limits(),
         "timing": {"type": "default", "estimation_mode": "fpm_interpolation", "fallback_policy": "deny"},
     }
+    if request.collection.gpu_memory_utilization is not None:
+        worker["kv_cache"] = {"capacity": {"memory_fraction": request.collection.gpu_memory_utilization}}
     if request.fpm_profile is not None:
         engine["fpm_profile"] = request.fpm_profile.model_dump(mode="json")
         worker["timing"]["estimator_config"] = {"fpm_interpolation": {"method": "direct"}}
         if request.profile_deployment().resources.cache_layout == "grouped":
-            worker["kv_cache"] = {"prefix_caching": False}
+            worker.setdefault("kv_cache", {})["prefix_caching"] = False
     prediction = {
         **common,
         "engine": {**engine, "workers": {"aggregated": {**worker, "parallelism": preset}}},
@@ -220,6 +222,12 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             "systems_root": str(root / "systems"),
         },
     }
+    if "prefill_cudagraph_policy" in request.collection.model_fields_set:
+        plan["fpm"]["launch"] = (
+            "AISimulate launches and manages benchmark workers when collection is executed; no separately "
+            "launched HTTP server is required. vLLM initializes the model, caches and CUDA graphs; Dynamo "
+            "self-benchmark generates and measures the feasible grid. Initialization and planning do not launch GPUs."
+        )
     if request.fpm_profile is not None:
         from aisimulate_core.sdk.memory import estimate_kv_cache
 
@@ -233,7 +241,7 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             max_num_tokens=scheduler["max_batched_tokens"],
             max_batch_size=scheduler["max_sequences"],
             memory_fraction_kind="of_total",
-            memory_fraction_value=0.9,
+            memory_fraction_value=request.collection.memory_fraction,
             tp_size=deployment.tp,
             pp_size=deployment.pp,
             attention_dp_size=deployment.dp,

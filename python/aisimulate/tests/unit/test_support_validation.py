@@ -91,7 +91,7 @@ def validation_case(tmp_path, monkeypatch, request):
                 "interconnect": "nvswitch",
             },
             "search": parallel,
-            "collection": {"max_num_tokens": 128, "max_batch_size": 2},
+            "collection": {"max_num_tokens": 128, "max_batch_size": 2, "gpu_memory_utilization": 0.73},
             "workload": {"input_tokens": 64, "output_tokens": 3, "request_count": 1},
             "fpm_profile": profile,
         }
@@ -194,6 +194,7 @@ def test_onboard_validation_replays_profile_without_graph_and_preserves_timing(v
     engine = prediction["engine"]
     assert engine["fpm_profile"] == request.fpm_profile.model_dump(mode="json")
     assert engine["workers"]["aggregated"]["scheduler"] == request.scheduler_limits()
+    assert engine["workers"]["aggregated"]["kv_cache"]["capacity"]["memory_fraction"] == 0.73
     assert saved_inputs == {path: path.read_bytes() for path in saved_inputs}
 
     # Coverage is diagnostic only: cold/warm prefix behavior and every native

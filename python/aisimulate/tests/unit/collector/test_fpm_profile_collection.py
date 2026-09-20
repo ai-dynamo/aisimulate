@@ -418,6 +418,63 @@ def test_frozen_profile_content_invalidates_resume_without_changing_cell_ids(tmp
         runner._load_checkpoint(checkpoint, second, resume=True)
 
 
+@pytest.mark.parametrize(
+    "controls",
+    [
+        ["--fpm-prefill-cudagraph-policy", "runtime"],
+        ["--fpm-gpu-memory-utilization", "0.9"],
+    ],
+)
+def test_launch_policy_change_invalidates_frozen_campaign(tmp_path, no_models_or_timing_data, controls):
+    profile = _profile()
+    first = _plan(profile)
+    options = FPMCollectionOptions.from_args(cli._parser().parse_args([*_argv(profile), *controls]))
+    second = _plan(profile, options=options)
+    assert first.sha256 != second.sha256
+    assert [cell.cell_id for cell in first.cells] == [cell.cell_id for cell in second.cells]
+    checkpoint = tmp_path / "checkpoint.json"
+    checkpoint.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": first.sha256, "cells": {}}))
+    with pytest.raises(ValueError, match="checkpoint does not match the current frozen plan"):
+        runner._load_checkpoint(checkpoint, second, resume=True)
+
+
+def test_runtime_graph_plan_defers_capture_axis_and_grid_counts(no_models_or_timing_data):
+    profile = _profile()
+    options = FPMCollectionOptions.from_args(
+        cli._parser().parse_args([*_argv(profile), "--fpm-prefill-cudagraph-policy", "runtime"])
+    )
+    payload = _plan(profile, options=options).to_dict()
+    assert payload["point_generation"]["prefill_sampling"]["cudagraph_policy"] == "runtime"
+    assert payload["point_generation"]["planned_point_count"] is None
+    assert payload["counts"]["prefill_cudagraph_capture_sizes"] is None
+    assert payload["counts"]["prefill_new_token_axis_points"] is None
+    assert payload["counts"]["points"] == "runtime-determined"
+
+
+def test_profile_admission_honors_explicit_total_memory_fraction(monkeypatch, no_models_or_timing_data):
+    profile = _profile()
+    profile["deployments"][1]["resources"]["weights_bytes"] = 80_000_000_000
+    monkeypatch.setattr(memory_admission, "load_system_spec", lambda _system: {"gpu": {"mem_capacity": 200e9}})
+    options = FPMCollectionOptions.from_args(
+        cli._parser().parse_args([*_argv(profile), "--fpm-gpu-memory-utilization", "0.5"])
+    )
+    plan = _plan(profile, options=options)
+    assert {cell.parallel_strategy for cell in plan.cells} == {"tep"}
+    assert [decision.disposition for decision in plan.topology_memory_admission] == ["rejected", "admitted"]
+    estimates = [decision.estimates[0].to_dict() for decision in plan.topology_memory_admission]
+    assert [estimate["gpu_capacity_bytes"] for estimate in estimates] == [200_000_000_000] * 2
+    assert [estimate["gpu_memory_budget_bytes"] for estimate in estimates] == [100_000_000_000] * 2
+    assert [estimate["headroom_bytes"] for estimate in estimates] == [-3_000_000_000, 17_000_000_000]
+
+    legacy = _plan(profile)
+    assert {cell.parallel_strategy for cell in legacy.cells} == {"dep", "tep"}
+    assert all(
+        "gpu_memory_budget_bytes" not in estimate.to_dict()
+        for decision in legacy.topology_memory_admission
+        for estimate in decision.estimates
+    )
+
+
 @pytest.mark.parametrize("field,value", [("fmha_quant_mode", "bfloat16"), ("moe_backend", "flashinfer_cutlass")])
 def test_profile_cannot_override_resolved_precision_or_backend(field, value, no_models_or_timing_data):
     profile = _profile()
@@ -593,6 +650,59 @@ def test_cli_runtime_limits_reach_both_rendered_workers(
         ):
             assert script.count(option) == 1
             assert f"{option} {value}" in script
+
+
+@pytest.mark.parametrize("smoke", [False, True])
+@pytest.mark.parametrize("memory_fraction", [0.9, 1.0])
+def test_cli_runtime_graph_policy_and_memory_fraction_reach_native_launch(
+    tmp_path, monkeypatch, smoke, memory_fraction
+):
+    profile = _profile()
+    path = tmp_path / "profile.json"
+    path.write_text(json.dumps(profile))
+    argv = [
+        *_argv(profile),
+        "--fpm-model-profile",
+        str(path),
+        "--fpm-prefill-cudagraph-policy",
+        "runtime",
+        "--fpm-gpu-memory-utilization",
+        str(memory_fraction),
+    ]
+    if smoke:
+        argv.append("--smoke")
+
+    def render_without_launch(_args, resolved):
+        plan, overrides = resolved
+        for phase in ("prefill", "decode"):
+            cell = next(cell for cell in plan.cells if cell.workload_kind == phase)
+            target = tmp_path / phase
+            target.mkdir()
+            runner._render_cell(plan, cell, target, overrides, smoke=_args.smoke)
+        return []
+
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
+    monkeypatch.setattr(cli, "run_resolved", render_without_launch)
+    assert cli.main(argv) == 0
+    for phase in ("prefill", "decode"):
+        script = (tmp_path / phase / "run.sh").read_text()
+        saved = json.loads((tmp_path / phase / "generator-request.json").read_text())
+        assert saved["params"]["agg"]["kv_cache_free_gpu_memory_fraction"] == memory_fraction
+        assert script.count("--gpu-memory-utilization") == 1
+        assert f"--gpu-memory-utilization {memory_fraction}" in script
+        assert "--compilation-config" not in script
+        assert "--cudagraph-capture-sizes" not in script
+        assert "--max-cudagraph-capture-size" not in script
+        assert "--no-enable-prefix-caching" not in script  # DEP keeps real KV warm-up.
+        if phase == "prefill":
+            assert "--no-async-scheduling" in script
+            assert "--prefill-max-kv-read-token-samples" in script
+            if smoke:
+                assert "--prefill-max-new-token-samples 2" in script
+            else:
+                assert "--prefill-max-new-token-samples" not in script
+        else:
+            assert "--no-async-scheduling" not in script
 
 
 @pytest.mark.parametrize("smoke", [False, True])

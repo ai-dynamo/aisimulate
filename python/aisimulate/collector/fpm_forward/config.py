@@ -6,15 +6,15 @@
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import dataclass
 
 FPM_FORWARD_OP = "fpm_forward"
 FPM_WARMUP_ITERATIONS = 5
 FPM_MEASUREMENT_REPEATS = 1
 FPM_MAX_PREFILL_ISL = 8192
-# Default preserves the extended-capture collection policy. Use
-# --fpm-max-prefill-cudagraph-size (e.g. 512) to align the collected machine
-# with a deployment that runs vLLM's stock capture defaults.
+# Legacy standalone campaigns retain their extended-capture policy. Use
+# --fpm-prefill-cudagraph-policy runtime to leave graph selection to vLLM.
 FPM_MAX_PREFILL_CUDAGRAPH_SIZE = 2048
 VLLM_AUTO_FIT_MAX_MODEL_LEN = -1
 
@@ -40,6 +40,13 @@ def _nonnegative_int(value: str) -> int:
     parsed = int(value)
     if parsed < 0:
         raise argparse.ArgumentTypeError("value must be a non-negative integer")
+    return parsed
+
+
+def _memory_fraction(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or not 0 < parsed <= 1:
+        raise argparse.ArgumentTypeError("value must be finite and in (0, 1]")
     return parsed
 
 
@@ -111,11 +118,12 @@ class PrefillSamplingProfile:
     max_isl: int
     max_batch_size: int | None
     max_total_prefill_tokens: int
-    cudagraph_capture_sizes: tuple[int, ...]
-    max_cudagraph_capture_size: int
-    new_token_axis_points: tuple[int, ...]
-    max_new_token_samples: int
+    cudagraph_capture_sizes: tuple[int, ...] | None
+    max_cudagraph_capture_size: int | None
+    new_token_axis_points: tuple[int, ...] | None
+    max_new_token_samples: int | None
     max_kv_read_token_samples: int
+    cudagraph_policy: str = "explicit"
 
     @classmethod
     def build(
@@ -123,17 +131,26 @@ class PrefillSamplingProfile:
         *,
         max_isl: int,
         max_batch_size: int | None,
-        max_cudagraph_capture_size: int = FPM_MAX_PREFILL_CUDAGRAPH_SIZE,
+        max_cudagraph_capture_size: int | None = None,
+        cudagraph_policy: str = "explicit",
     ) -> PrefillSamplingProfile:
         if max_isl < 2:
             raise ValueError("FPM max prefill ISL must be at least 2")
         if max_batch_size is not None and max_batch_size < 1:
             raise ValueError("FPM max prefill batch size must be positive")
-        if max_cudagraph_capture_size < 1:
-            raise ValueError("FPM max prefill CUDA-graph capture size must be positive")
-
-        capture_sizes = _prefill_cudagraph_capture_sizes(max_isl, max_cudagraph_capture_size)
-        new_token_points = _dynamo_cudagraph_axis_points(capture_sizes, max_isl)
+        if cudagraph_policy not in {"explicit", "runtime"}:
+            raise ValueError("FPM prefill CUDA-graph policy must be runtime or explicit")
+        if cudagraph_policy == "runtime" and max_cudagraph_capture_size is not None:
+            raise ValueError("runtime prefill CUDA-graph policy cannot specify a capture size")
+        capture_sizes = None
+        new_token_points = None
+        if cudagraph_policy == "explicit":
+            if max_cudagraph_capture_size is None:
+                max_cudagraph_capture_size = FPM_MAX_PREFILL_CUDAGRAPH_SIZE
+            if type(max_cudagraph_capture_size) is not int or max_cudagraph_capture_size < 1:
+                raise ValueError("FPM max prefill CUDA-graph capture size must be positive")
+            capture_sizes = _prefill_cudagraph_capture_sizes(max_isl, max_cudagraph_capture_size)
+            new_token_points = _dynamo_cudagraph_axis_points(capture_sizes, max_isl)
         batch_upper_bound = min(max_isl, max_batch_size or max_isl)
         # PR11509's KV axis contains zero, a batch-aligned minimum, powers of
         # two in block units, and an exact maximum. This upper bound prevents
@@ -145,25 +162,39 @@ class PrefillSamplingProfile:
             max_batch_size=max_batch_size,
             max_total_prefill_tokens=max_isl,
             cudagraph_capture_sizes=capture_sizes,
-            max_cudagraph_capture_size=capture_sizes[-1],
+            max_cudagraph_capture_size=capture_sizes[-1] if capture_sizes is not None else None,
             new_token_axis_points=new_token_points,
-            max_new_token_samples=max(2, len(new_token_points)),
+            max_new_token_samples=max(2, len(new_token_points)) if new_token_points is not None else None,
             max_kv_read_token_samples=max_kv_read_samples,
+            cudagraph_policy=cudagraph_policy,
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
             "max_isl": self.max_isl,
             "max_batch_size": self.max_batch_size,
             "max_total_prefill_tokens": self.max_total_prefill_tokens,
-            "cudagraph_capture_sizes": list(self.cudagraph_capture_sizes),
-            "cudagraph_capture_size_count": len(self.cudagraph_capture_sizes),
+            "cudagraph_capture_sizes": list(self.cudagraph_capture_sizes)
+            if self.cudagraph_capture_sizes is not None
+            else None,
+            "cudagraph_capture_size_count": len(self.cudagraph_capture_sizes)
+            if self.cudagraph_capture_sizes is not None
+            else None,
             "max_cudagraph_capture_size": self.max_cudagraph_capture_size,
-            "new_token_axis_points": list(self.new_token_axis_points),
-            "new_token_axis_point_count": len(self.new_token_axis_points),
+            "new_token_axis_points": list(self.new_token_axis_points)
+            if self.new_token_axis_points is not None
+            else None,
+            "new_token_axis_point_count": len(self.new_token_axis_points)
+            if self.new_token_axis_points is not None
+            else None,
             "prefill_max_new_token_samples": self.max_new_token_samples,
             "prefill_max_kv_read_token_samples": self.max_kv_read_token_samples,
         }
+        # Keep legacy explicit-capture plan identity unchanged. Runtime-selected
+        # graphs and their candidate axes cannot be known before initialization.
+        if self.cudagraph_policy == "runtime":
+            payload["cudagraph_policy"] = "runtime"
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,9 +234,23 @@ class FPMCollectionOptions:
     max_num_seqs: int | None = None
     max_prefill_isl: int | None = None
     max_prefill_batch_size: int | None = None
-    max_prefill_cudagraph_size: int = FPM_MAX_PREFILL_CUDAGRAPH_SIZE
+    max_prefill_cudagraph_size: int | None = None
+    prefill_cudagraph_policy: str = "explicit"
+    gpu_memory_utilization: float | None = None
 
     def __post_init__(self) -> None:
+        if self.prefill_cudagraph_policy not in {"runtime", "explicit"}:
+            raise ValueError("--fpm-prefill-cudagraph-policy must be runtime or explicit")
+        if self.prefill_cudagraph_policy == "runtime" and self.max_prefill_cudagraph_size is not None:
+            raise ValueError("--fpm-prefill-cudagraph-policy runtime cannot use --fpm-max-prefill-cudagraph-size")
+        if self.prefill_cudagraph_policy == "explicit" and self.max_prefill_cudagraph_size is None:
+            object.__setattr__(self, "max_prefill_cudagraph_size", FPM_MAX_PREFILL_CUDAGRAPH_SIZE)
+        if self.gpu_memory_utilization is not None and (
+            type(self.gpu_memory_utilization) not in {int, float}
+            or not math.isfinite(self.gpu_memory_utilization)
+            or not 0 < self.gpu_memory_utilization <= 1
+        ):
+            raise ValueError("--fpm-gpu-memory-utilization must be finite and in (0, 1]")
         for name, value in (
             (
                 "max-model-len",
@@ -213,6 +258,7 @@ class FPMCollectionOptions:
             ),
             ("max-num-batched-tokens", self.max_num_batched_tokens),
             ("max-num-seqs", self.max_num_seqs),
+            ("max-prefill-cudagraph-size", self.max_prefill_cudagraph_size),
         ):
             if value is not None and (type(value) is not int or value < 1):
                 raise ValueError(f"--fpm-{name} must be a positive integer")
@@ -262,6 +308,7 @@ class FPMCollectionOptions:
             if self.max_prefill_batch_size is not None
             else self.max_num_seqs,
             max_cudagraph_capture_size=self.max_prefill_cudagraph_size,
+            cudagraph_policy=self.prefill_cudagraph_policy,
         )
 
     @classmethod
@@ -333,9 +380,9 @@ class FPMCollectionOptions:
             max_num_seqs=getattr(args, "fpm_max_num_seqs", None),
             max_prefill_isl=getattr(args, "fpm_max_prefill_isl", None),
             max_prefill_batch_size=getattr(args, "fpm_max_prefill_batch_size", None),
-            max_prefill_cudagraph_size=(
-                getattr(args, "fpm_max_prefill_cudagraph_size", None) or FPM_MAX_PREFILL_CUDAGRAPH_SIZE
-            ),
+            max_prefill_cudagraph_size=getattr(args, "fpm_max_prefill_cudagraph_size", None),
+            prefill_cudagraph_policy=getattr(args, "fpm_prefill_cudagraph_policy", None) or "explicit",
+            gpu_memory_utilization=getattr(args, "fpm_gpu_memory_utilization", None),
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -369,6 +416,8 @@ class FPMCollectionOptions:
             result["max_num_batched_tokens"] = self.max_num_batched_tokens
         if self.max_num_seqs is not None:
             result["max_num_seqs"] = self.max_num_seqs
+        if self.gpu_memory_utilization is not None:
+            result["gpu_memory_utilization"] = self.gpu_memory_utilization
         return result
 
 
@@ -503,14 +552,28 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         help="Optional narrower prefill max_num_seqs; defaults to shared/profile bounds or the Dynamo/vLLM value.",
     )
     group.add_argument(
+        "--fpm-gpu-memory-utilization",
+        type=_memory_fraction,
+        default=None,
+        help="vLLM fraction of total GPU memory for weights, runtime and KV cache; omitted uses the runtime default.",
+    )
+    group.add_argument(
+        "--fpm-prefill-cudagraph-policy",
+        choices=("runtime", "explicit"),
+        default=None,
+        help=(
+            "Prefill graph policy: runtime leaves graph selection to vLLM; "
+            "explicit retains the bounded capture axis (default)."
+        ),
+    )
+    group.add_argument(
         "--fpm-max-prefill-cudagraph-size",
         dest="fpm_max_prefill_cudagraph_size",
         type=_positive_int,
         default=None,
         help=(
-            "Largest prefill CUDA-graph capture size in the collected axis; set 512 to "
-            "mirror vLLM's stock capture defaults "
-            f"(default: {FPM_MAX_PREFILL_CUDAGRAPH_SIZE})."
+            "Largest prefill CUDA-graph capture size with the explicit policy; "
+            f"defaults to {FPM_MAX_PREFILL_CUDAGRAPH_SIZE}. Cannot be combined with the runtime policy."
         ),
     )
     group.add_argument(
@@ -624,6 +687,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_max_model_len",
         "fpm_max_num_batched_tokens",
         "fpm_max_num_seqs",
+        "fpm_gpu_memory_utilization",
+        "fpm_prefill_cudagraph_policy",
         "fpm_max_prefill_isl",
         "fpm_max_prefill_batch_size",
         "fpm_max_prefill_cudagraph_size",

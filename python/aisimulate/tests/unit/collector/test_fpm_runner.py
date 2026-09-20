@@ -1053,6 +1053,54 @@ def test_formal_prefill_metadata_records_candidate_axis_counts():
     }
 
 
+def test_runtime_graph_policy_metadata_does_not_invent_axis_counts():
+    cell = _cell()
+    plan = _plan(cell)
+    plan.options.prefill_sampling = PrefillSamplingProfile.build(
+        max_isl=8192, max_batch_size=256, cudagraph_policy="runtime"
+    )
+    assert _configured_sampling_metadata(plan, cell, smoke=False) == {
+        "prefill_cudagraph_policy": "runtime",
+        "prefill_cudagraph_capture_size_count": None,
+        "prefill_requested_new_token_axis_count": None,
+        "prefill_max_new_token_samples": None,
+    }
+    assert _configured_sampling_metadata(plan, cell, smoke=True) == {
+        "prefill_cudagraph_policy": "runtime",
+        "prefill_max_new_token_samples": 2,
+    }
+
+
+@pytest.mark.parametrize("argument", ["--compilation-config", "--cudagraph-capture-sizes=[1,2]"])
+def test_runtime_graph_policy_rejects_backend_capture_overrides(argument):
+    cell = dataclasses.replace(
+        _cell(), backend_policy=BackendPolicy("conflict", {"params": {"agg": {"extra_cli_args": [argument]}}}, {})
+    )
+    plan = _plan(cell)
+    plan.options.prefill_sampling = PrefillSamplingProfile.build(
+        max_isl=8192, max_batch_size=256, cudagraph_policy="runtime"
+    )
+    with pytest.raises(ValueError, match="runtime prefill CUDA-graph policy cannot use backend capture overrides"):
+        _cell_generator_overrides(plan, cell, {})
+
+
+@pytest.mark.parametrize(
+    "override",
+    [
+        {"kv_cache_free_gpu_memory_fraction": 0.8},
+        {"extra_cli_args": ["--gpu-memory-utilization", "0.8"]},
+        {"extra_cli_args": ["--gpu-memory-utilization=0.8"]},
+        {"extra_cli_args": ["--gpu-memory-utilization 0.8"]},
+    ],
+)
+def test_backend_policy_cannot_change_collector_memory_fraction(override):
+    cell = dataclasses.replace(_cell(), backend_policy=BackendPolicy("conflict", {"params": {"agg": override}}, {}))
+    plan = _plan(cell)
+    plan.options.gpu_memory_utilization = 0.9
+    with pytest.raises(ValueError, match="backend policy cannot .*--fpm-gpu-memory-utilization"):
+        _cell_generator_overrides(plan, cell, {})
+
+
 def test_cell_render_adds_one_collector_owned_benchmark_timeout():
     cell = _cell()
     plan = _plan(cell)

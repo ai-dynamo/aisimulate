@@ -135,6 +135,12 @@ def _request(**updates) -> SupportRequest:
         {"workload": {"concurrency": 5}},
         {"workload": {"slo": {"ttft_ms": float("inf"), "tpot_ms": 1.0}}},
         {"workload": {"slo": {"ttft_ms": 1.0, "tpot_ms": True}}},
+        {"collection": {"gpu_memory_utilization": True}},
+        {"collection": {"gpu_memory_utilization": "0.8"}},
+        {"collection": {"gpu_memory_utilization": float("nan")}},
+        {"collection": {"gpu_memory_utilization": 0.0}},
+        {"collection": {"gpu_memory_utilization": 1.1}},
+        {"collection": {"prefill_cudagraph_policy": "runtime", "max_prefill_cudagraph_size": 512}},
     ],
 )
 def test_request_rejects_invalid_topology_workload_and_identity(updates):
@@ -204,6 +210,28 @@ def test_plan_does_not_resolve_unknown_model_and_reloads_public_configs(tmp_path
     assert (root / "systems/h200_sxm.yaml").is_file()
     assert not list((root / "systems/data").iterdir())
     assert not (root / "evidence.yaml").exists()
+
+
+@pytest.mark.parametrize("limit", [None, 512])
+def test_legacy_collection_policy_round_trip_retains_identity_and_launch_arguments(tmp_path, limit):
+    request = _request(collection={} if limit is None else {"max_prefill_cudagraph_size": limit})
+    serialized = request.model_dump(mode="json", exclude_none=True)
+    assert "prefill_cudagraph_policy" not in serialized["collection"]
+    assert "gpu_memory_utilization" not in serialized["collection"]
+    assert request.collection.prefill_cudagraph_policy == "explicit"
+    assert request.collection_settings()["max_prefill_cudagraph_size"] == (limit or 2048)
+    plan = create_plan(request, tmp_path / "plan")
+    saved = SupportRequest.from_yaml(tmp_path / "plan/request.yaml")
+    assert request_id(saved) == request_id(request)
+    assert saved.model_dump(mode="json", exclude_none=True) == serialized
+    check_plan(saved, tmp_path / "plan")
+    command = plan["fpm"]["plan_command"]
+    assert "--fpm-prefill-cudagraph-policy" not in command
+    assert "--fpm-gpu-memory-utilization" not in command
+    if limit is None:
+        assert "--fpm-max-prefill-cudagraph-size" not in command
+    else:
+        assert command[command.index("--fpm-max-prefill-cudagraph-size") + 1] == str(limit)
 
 
 def test_onboarding_plan_and_preview_do_not_import_estimator_runtime(tmp_path):
@@ -498,6 +526,8 @@ def test_collection_bounds_are_independent_of_synthetic_validation(tmp_path):
         {"search": {"context_length": 65536}},
         {"collection": {"max_num_tokens": 16384}},
         {"collection": {"max_prefill_cudagraph_size": 512}},
+        {"collection": {"prefill_cudagraph_policy": "runtime"}},
+        {"collection": {"gpu_memory_utilization": 0.7}},
         {"identity": {"model_revision": "other-checkpoint"}},
         {"identity": {"framework_version": "0.26.0"}},
         {"identity": {"tokenizer_revision": "tokenizer-v2"}},

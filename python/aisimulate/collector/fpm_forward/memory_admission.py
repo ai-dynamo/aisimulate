@@ -9,7 +9,7 @@ import logging
 import math
 from dataclasses import dataclass
 
-from aisimulate.sdk.memory import KVCacheEstimator
+from aisimulate.sdk.memory import KVCacheEstimator, kv_cache_budget_bytes
 from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 from aisimulate_core.sdk.fpm_profile import FpmModelProfile
 from aisimulate_core.sdk.perf_database import load_system_spec
@@ -28,15 +28,17 @@ class DTypeMemoryEstimate:
     gpu_capacity_bytes: int | None
     reason: str
     provenance: str | None = None
+    gpu_memory_budget_bytes: int | None = None
 
     def to_dict(self) -> dict[str, object]:
+        budget = self.gpu_capacity_bytes if self.gpu_memory_budget_bytes is None else self.gpu_memory_budget_bytes
         payload = {
             "kv_cache_dtype": self.kv_cache_dtype,
             "disposition": self.disposition,
             "estimated_non_kv_bytes": self.estimated_non_kv_bytes,
             "gpu_capacity_bytes": self.gpu_capacity_bytes,
             "headroom_bytes": (
-                self.gpu_capacity_bytes - self.estimated_non_kv_bytes
+                budget - self.estimated_non_kv_bytes
                 if self.estimated_non_kv_bytes is not None and self.gpu_capacity_bytes is not None
                 else None
             ),
@@ -44,6 +46,8 @@ class DTypeMemoryEstimate:
         }
         if self.provenance is not None:
             payload["provenance"] = self.provenance
+        if self.gpu_memory_budget_bytes is not None:
+            payload["gpu_memory_budget_bytes"] = self.gpu_memory_budget_bytes
         return payload
 
 
@@ -93,6 +97,7 @@ def _estimate_dtype(
     max_new_tokens: int,
     fpm_profile: FpmModelProfile | None = None,
     max_batch_size: int | None = None,
+    gpu_memory_utilization: float | None = None,
 ) -> DTypeMemoryEstimate:
     # Planner-owned capability data fails closed: resolve_model_capability
     # guarantees an fmha mapping for every resolved KV dtype, so a missing
@@ -125,19 +130,29 @@ def _estimate_dtype(
         capacity = math.floor(float(load_system_spec(system)["gpu"]["mem_capacity"]))
         if capacity <= 0:
             raise ValueError(f"invalid GPU memory capacity for {system!r}: {capacity}")
-        rejected = resources.non_kv_bytes >= capacity
+        budget = math.floor(
+            kv_cache_budget_bytes(
+                capacity=capacity,
+                non_kv=0,
+                fraction=gpu_memory_utilization if gpu_memory_utilization is not None else 1.0,
+                of_free=False,
+            )
+        )
+        rejected = resources.non_kv_bytes >= budget
+        capacity_label = "configured GPU memory budget" if gpu_memory_utilization is not None else "GPU capacity"
         return DTypeMemoryEstimate(
             kv_cache_dtype=kv_cache_dtype,
             disposition="rejected" if rejected else "admitted",
             estimated_non_kv_bytes=resources.non_kv_bytes,
             gpu_capacity_bytes=capacity,
             reason=(
-                "declared rank-local non-KV resource bound is not below GPU capacity"
+                f"declared rank-local non-KV resource bound is not below {capacity_label}"
                 if rejected
-                else "declared rank-local non-KV resource bound is below GPU capacity; "
+                else f"declared rank-local non-KV resource bound is below {capacity_label}; "
                 "runtime profiling still determines KV capacity and CUDA-graph memory"
             ),
             provenance=resources.provenance,
+            gpu_memory_budget_bytes=budget if gpu_memory_utilization is not None else None,
         )
     try:
         breakdown = KVCacheEstimator.from_request(
@@ -201,17 +216,27 @@ def _estimate_dtype(
             reason=f"AIC memory estimate unavailable: {type(error).__name__}: {error}",
         )
 
-    rejected = non_kv >= capacity
+    budget = math.floor(
+        kv_cache_budget_bytes(
+            capacity=capacity,
+            non_kv=0,
+            fraction=gpu_memory_utilization if gpu_memory_utilization is not None else 1.0,
+            of_free=False,
+        )
+    )
+    rejected = non_kv >= budget
+    capacity_label = "configured GPU memory budget" if gpu_memory_utilization is not None else "GPU capacity"
     return DTypeMemoryEstimate(
         kv_cache_dtype=kv_cache_dtype,
         disposition="rejected" if rejected else "admitted",
         estimated_non_kv_bytes=non_kv,
         gpu_capacity_bytes=capacity,
         reason=(
-            "AIC configured max-new-token non-KV memory is not below GPU capacity"
+            f"AIC configured max-new-token non-KV memory is not below {capacity_label}"
             if rejected
-            else "AIC configured max-new-token non-KV memory is below GPU capacity"
+            else f"AIC configured max-new-token non-KV memory is below {capacity_label}"
         ),
+        gpu_memory_budget_bytes=budget if gpu_memory_utilization is not None else None,
     )
 
 
@@ -225,12 +250,14 @@ def filter_memory_infeasible_topologies(
     max_new_tokens: int,
     fpm_profile: FpmModelProfile | None = None,
     max_batch_size: int | None = None,
+    gpu_memory_utilization: float | None = None,
 ) -> tuple[tuple[ParallelTopology, ...], tuple[TopologyMemoryDecision, ...]]:
     """Drop topologies that cannot fit the configured max-new-token envelope.
 
     This is intentionally a one-sided generation-time filter. A topology is
     rejected only when every requested KV dtype has a successful estimate
-    and all estimates exceed rank-local physical capacity. Without a profile,
+    and all estimates exceed the declared share of rank-local capacity (physical
+    capacity when no GPU memory fraction is declared). Without a profile,
     unknown AIC estimates remain runnable. Supplied profiles must explicitly
     cover the requested deployment and envelope; validation errors propagate.
     """
@@ -269,6 +296,7 @@ def filter_memory_infeasible_topologies(
                 max_new_tokens=max_new_tokens,
                 fpm_profile=fpm_profile,
                 max_batch_size=max_batch_size,
+                gpu_memory_utilization=gpu_memory_utilization,
             )
             for kv_cache_dtype in capability.dtype.kv_cache_dtypes
         )
@@ -283,7 +311,7 @@ def filter_memory_infeasible_topologies(
             admitted.append(topology)
         else:
             disposition = "rejected"
-            reason = "all requested KV dtypes exceed rank-local GPU capacity at configured max new tokens"
+            reason = "all requested KV dtypes exceed rank-local GPU memory budget at configured max new tokens"
             rejected_capacity.append((topology, estimates))
         decisions.append(
             TopologyMemoryDecision(
@@ -310,14 +338,15 @@ def filter_memory_infeasible_topologies(
             if best.estimated_non_kv_bytes is None:
                 details.append(f"{topology.to_dict()}={best.reason}")
             else:
+                budget = (
+                    best.gpu_capacity_bytes if best.gpu_memory_budget_bytes is None else best.gpu_memory_budget_bytes
+                )
                 details.append(
-                    f"{topology.to_dict()}="
-                    f"{best.estimated_non_kv_bytes / 2**30:.2f}/"
-                    f"{best.gpu_capacity_bytes / 2**30:.2f} GiB"
+                    f"{topology.to_dict()}={best.estimated_non_kv_bytes / 2**30:.2f}/{budget / 2**30:.2f} GiB"
                 )
         logger.warning(
             "fpm_forward: dropped %d/%d topologies (%s configured max-new-token non-KV memory "
-            "exceeds GPU capacity, system=%s, max_new_tokens=%d): %s",
+            "exceeds GPU memory budget, system=%s, max_new_tokens=%d): %s",
             len(rejected_capacity),
             len(topologies),
             "FPM profile" if fpm_profile is not None else "AIC",
