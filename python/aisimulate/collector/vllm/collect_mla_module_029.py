@@ -105,11 +105,15 @@ if "glm_moe_dsa" not in _CONFIG_REGISTRY:
 # Local model config resolution — avoid HuggingFace Hub downloads
 # ═══════════════════════════════════════════════════════════════════════
 
-# Pre-cached HF configs live in src/aiconfigurator/model_configs/ as
-# "<org>--<model>_config.json".  vLLM's ModelConfig accepts a local
-# directory containing config.json, so we create a temp dir with a
-# symlink when the cached file exists.
-_MODEL_CONFIGS_DIR = Path(__file__).resolve().parents[2] / "src" / "aiconfigurator" / "model_configs"
+# Pre-cached HF configs ship with AISim as "<org>--<model>_config.json".
+# The directory is helper.py's constant — never recomputed here, so a
+# package rename cannot silently strand this lane (the aiconfigurator ->
+# aisimulate consolidation did exactly that to a hand-built copy of it).
+# vLLM's ModelConfig accepts a local directory containing config.json, so
+# we create a temp dir with a symlink when the cached file exists.
+from collector.helper import _AIC_MODEL_CONFIG_DIR as _AIS_MODEL_CONFIG_DIR
+
+_MODEL_CONFIGS_DIR = Path(_AIS_MODEL_CONFIG_DIR)
 
 # Cache of model_name -> temp dir path (created once per process).
 _local_config_cache: dict[str, str] = {}
@@ -512,7 +516,7 @@ def _create_attention_module(
     # (MLA backends only support bfloat16, not float32).
     from vllm.utils.torch_utils import set_default_torch_dtype
 
-    use_legacy = bool(os.environ.get("AIC_DSA_LEGACY_MODULE"))
+    use_legacy = bool(os.environ.get("AIS_DSA_LEGACY_MODULE") or os.environ.get("AIC_DSA_LEGACY_MODULE"))
     with set_current_vllm_config(vllm_config), set_default_torch_dtype(vllm_config.model_config.dtype):
         if attn_type == "dsa" and not use_legacy:
             # GENERIC serving-parity construction (owner rule 2026-09-19:
@@ -547,7 +551,7 @@ def _create_attention_module(
                 attn_module.topk_indices_buffer = topk_indices_buffer
         else:
             if attn_type == "dsa" and use_legacy:
-                print("  [AB-ONLY] AIC_DSA_LEGACY_MODULE=1: building the LEGACY generic "
+                print("  [AB-ONLY] AIS_DSA_LEGACY_MODULE=1: building the LEGACY generic "
                       "DeepseekV2MLAAttention — NOT serving-parity on 0.29; rows are for "
                       "comparison only, never for the database")
             attn_module = DeepseekV2MLAAttention(
@@ -827,7 +831,7 @@ def _create_kv_cache_and_metadata(
             common_prefix_len=prefix_len,
             common_attn_metadata=common_attn_metadata,
         )
-        if os.environ.get("AIC_DEBUG_IDXMETA"):  # diagnostic dump, no behavior change
+        if os.environ.get("AIS_DEBUG_IDXMETA") or os.environ.get("AIC_DEBUG_IDXMETA"):  # diagnostic dump, no behavior change
             _pre = getattr(indexer_metadata, "prefill", None)
             print(f"[idxmeta] type={type(indexer_metadata).__name__} "
                   f"prefill={type(_pre).__name__ if _pre is not None else None} "

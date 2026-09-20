@@ -3,7 +3,9 @@
 actually deploy? targets.yaml (input) -> golden `cli generate` renders ->
 per-GPU probe queues -> evidence (archive/raw, records.jsonl) -> results.
 
-Runs on the host (needs the aiconfigurator repo importable for rendering).
+Runs on the host. Golden configs are rendered by the generator CLI; the
+workspace currently drives the predecessor aiconfigurator toolchain's venv
+for that (a factual pin, see render_cmd), overridable via AIS_GENERATOR_SRC.
 
   --plan            enumerate runs (use --backends / --only to scope)
   --emit-queues     render goldens + write per-GPU queue scripts
@@ -26,12 +28,14 @@ from pathlib import Path
 import yaml
 
 # workspace: where dummy_models/, archive/ and probe outputs live
-ROOT = Path(os.environ.get("AIC_PROBE_WORKSPACE", Path.cwd()))
+ROOT = Path(os.environ.get("AIS_PROBE_WORKSPACE")
+            or os.environ.get("AIC_PROBE_WORKSPACE")  # legacy name
+            or Path.cwd())
 # generator source: this repo by default; override to pin a specific checkout
-AIC_SRC = os.environ.get("AIC_GENERATOR_SRC",
+AIS_SRC = os.environ.get("AIS_GENERATOR_SRC") or os.environ.get("AIC_GENERATOR_SRC",
                          str(Path(__file__).resolve().parents[3] / "src"))
-if AIC_SRC not in sys.path:
-    sys.path.insert(0, AIC_SRC)
+if AIS_SRC not in sys.path:
+    sys.path.insert(0, AIS_SRC)
 WORK = "/work"  # container mount of ROOT
 SCRATCH_QUEUES = ROOT / "archive" / "queues"
 
@@ -42,7 +46,7 @@ VENV_PY = ROOT / "venv_aic" / "bin" / "python"
 def render_golden(run: dict) -> Path | None:
     """Invoke the REAL user-facing generator command and archive it verbatim.
 
-    golden/<id>/command.txt is the exact `aiconfigurator cli generate` argv —
+    golden/<id>/command.txt is the exact generator `cli generate` argv —
     the thing we converge on and guarantee. Artifacts are stored untouched;
     every probe-side adaptation happens later as a RECORDED post-process.
     Owner decisions: --system comes from targets.platform (h200_sxm proxies
@@ -131,7 +135,7 @@ def collector_mentioned_repos() -> set[str]:
     Brace-expansion prose like org/Name-{A,B}-X truncates at '{' and .py
     paths false-match — both filtered."""
     mentioned: set[str] = set()
-    cases = Path(AIC_SRC).parent / "collector" / "cases" / "models"
+    cases = Path(AIS_SRC).parent / "collector" / "cases" / "models"
     for f in cases.glob("*_cases.yaml"):
         for m in re.findall(rf"\b({_MENTION_ORGS}/[\w.\-]+)", f.read_text()):
             if not m.endswith("-") and not m.endswith(".py"):
@@ -239,11 +243,11 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
 
 
 def _generator_src_commit() -> dict:
-    """Record WHICH aiconfigurator code rendered the engine args, so archive
+    """Record WHICH generator code rendered the engine args, so archive
     provenance survives checkout/branch changes."""
     import subprocess
 
-    repo = str(Path(AIC_SRC).parent)
+    repo = str(Path(AIS_SRC).parent)
     try:
         rev = subprocess.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
                              capture_output=True, text=True, timeout=10).stdout.strip()
@@ -571,6 +575,11 @@ def build_records() -> None:
                             "sm_measured": f.get("device_capability"),
                             "evidence": "real"},
                 "resolved": {k: v for k, v in sa.items() if v is not None},
+                # generator-rendered flags that differ from the framework's own
+                # parser defaults (probe-computed; owner decision 2026-09-20:
+                # every delta is an auditable liability — the DSV4 0.29 crash
+                # was triggered by one)
+                "config_delta": f.get("config_delta") or None,
                 "identity": {
                     "model_class": f.get("model_class"),
                     # sglang exposes the backend object; vllm/trtllm only reveal

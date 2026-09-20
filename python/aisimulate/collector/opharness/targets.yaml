@@ -322,5 +322,5 @@ platform:
   - h100_sxm
   - h200_sxm
 tooling:
-  note: 'aiconfigurator-core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
+  note: 'predecessor-toolchain core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
     pins live here. vllm-probe:0.24.0-fix retired with the 0.29.0 pin (stubs gone since 0.27.1) — history in findings vllm_024_image_tilelang_stub.'

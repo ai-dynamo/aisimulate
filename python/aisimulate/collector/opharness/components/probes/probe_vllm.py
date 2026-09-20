@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """FPM run.sh -> framework parser -> identity probe (vLLM path).
 
-Bridges aiconfigurator's FPM artifacts to the probe: the engine command the
+Bridges AISim's FPM artifacts to the probe: the engine command the
 generator rendered IS the probe input — parsed by vLLM's own CLI parser so
 there is zero translation drift between "what a deployment runs" and "what
 the probe runs". The only mutations: model_path may be swapped to a dummy
@@ -118,7 +118,7 @@ def main() -> None:
     # default and hid those paths; records carry probe_isl so evidence from
     # both eras stays distinguishable. Coverage is a parameter, never a
     # per-model special case.
-    ap.add_argument("--isl", type=int, default=int(os.environ.get("AIC_PROBE_ISL", "4096")))
+    ap.add_argument("--isl", type=int, default=int(os.environ.get("AIS_PROBE_ISL") or os.environ.get("AIC_PROBE_ISL") or "4096"))
     args = ap.parse_args()
 
     rec: dict = {"run_sh": args.run_sh, "errors": {}, "probe_isl": None}
@@ -151,6 +151,26 @@ def main() -> None:
         parser = FlexibleArgumentParser()
         EngineArgs.add_cli_args(parser)
         ns = parser.parse_args(argv)
+        # config delta: every rendered flag that differs from the framework's
+        # OWN default (same parser, argv = --model only) is recorded. The
+        # generator's deltas are liabilities to audit — the DSV4 crash on
+        # 0.29 was triggered by one (--max-num-batched-tokens 6012, a value
+        # the framework itself would never produce; owner decision
+        # 2026-09-20: record the delta on every probe). Identity args are
+        # not deltas. Computed at the parser layer, so the probe's own
+        # injections below (load_format/enforce_eager) never appear.
+        try:
+            _defaults = parser.parse_args(["--model", ns.model])
+            _skip = {"model", "served_model_name"}
+            def _enc(v):
+                return v if isinstance(v, (str, int, float, bool, type(None))) else repr(v)
+            rec["config_delta"] = {
+                k: {"rendered": _enc(v), "default": _enc(getattr(_defaults, k, None))}
+                for k, v in vars(ns).items()
+                if k not in _skip and v != getattr(_defaults, k, None)
+            }
+        except Exception as e:
+            rec["errors"]["config_delta"] = f"{type(e).__name__}: {e}"[:200]
         ea = EngineArgs.from_cli_args(ns)
         ea.load_format = "dummy"
         ea.enforce_eager = True  # identity probe: no graph capture

@@ -1,6 +1,6 @@
 """Rank-side probe injection (minimal, for multi-rank runs).
 
-Activated by AIC_PROBE_OUT=<path-prefix>. Loaded automatically in EVERY python
+Activated by AIS_PROBE_OUT=<path-prefix> (legacy AIC_PROBE_OUT honored). Loaded automatically in EVERY python
 process (including mp-spawned ranks) via PYTHONPATH. Hooks sglang after model
 load, dumps per-rank identity facts + per-call MoE/attention kernel captures
 to <prefix>.rank<N>.json.
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 
-_OUT = os.environ.get("AIC_PROBE_OUT")
+_OUT = os.environ.get("AIS_PROBE_OUT") or os.environ.get("AIC_PROBE_OUT")
 
 if _OUT:
     import sys as _sys

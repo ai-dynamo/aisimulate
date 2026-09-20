@@ -31,7 +31,8 @@ done
 #  vllm_024_image_tilelang_stub records the full history.)
 
 # --- generator CLI venv (golden pipeline) ------------------------------------
-# The golden loop invokes the REAL `aiconfigurator cli generate` command.
+# The golden loop invokes the REAL generator `cli generate` command
+# (currently the predecessor aiconfigurator toolchain's venv checkout).
 # The compiled core is built FROM THE CHECKOUT (the PyPI wheel lags upstream
 # ABI; the crate's abi3 floor is py3.11 -> use python3.12).
 PY312=${PY312:-/root/.local/bin/python3.12}

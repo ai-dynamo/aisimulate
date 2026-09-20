@@ -27,7 +27,7 @@ Usage (capture, in-container):
       python3 collector/vllm/collect_mla_module_029.py --mode context ...
 
 Usage (diff, host):
-  AIC_PROBE_WORKSPACE=<ws> python3 path_diff.py --diff \
+  AIS_PROBE_WORKSPACE=<ws> python3 path_diff.py --diff \
       --capture-file facts/pathdiff/cap.json --repo deepseek-ai/DeepSeek-V3.2 \
       --framework vllm --version 0.29.0 [--op-hint 'attn|mla|sparse']
 """
@@ -41,7 +41,9 @@ import sys
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = Path(os.environ.get("AIC_PROBE_WORKSPACE", Path.cwd()))
+ROOT = Path(os.environ.get("AIS_PROBE_WORKSPACE")
+            or os.environ.get("AIC_PROBE_WORKSPACE")  # legacy name
+            or Path.cwd())
 
 
 # --------------------------------------------------------------------------

@@ -27,7 +27,7 @@ check form and completeness — content quality remains review/owner territory
 and this tool does not pretend otherwise.
 
 Usage:
-  AIC_PROBE_WORKSPACE=<ws> python3 workflow_check.py upgrade_op \
+  AIS_PROBE_WORKSPACE=<ws> python3 workflow_check.py upgrade_op \
       --param fw=sglang --param version=0.5.17 [--json] [--no-ledger]
 """
 from __future__ import annotations
@@ -44,7 +44,9 @@ import yaml
 
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE.parent
-ROOT = Path(os.environ.get("AIC_PROBE_WORKSPACE", Path.cwd()))
+ROOT = Path(os.environ.get("AIS_PROBE_WORKSPACE")
+            or os.environ.get("AIC_PROBE_WORKSPACE")  # legacy name
+            or Path.cwd())
 
 IMPLEMENTED_COMPONENTS = {"probe_driver", "dummies", "probes", "build_images", "workflow_check", "path_diff"}
 
