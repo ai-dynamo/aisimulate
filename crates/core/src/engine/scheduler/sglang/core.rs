@@ -36,6 +36,7 @@ use super::decode::{
     cache_materialized_prefix, cleanup_completed_request, simulate_decode_step_with_sampler,
     simulate_prefill_first_tokens,
 };
+use super::frontend::FrontendRuntime;
 use super::host_loop::{HostLoop, LaunchKind, VisionWork};
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
@@ -71,6 +72,8 @@ pub(crate) struct SglangCore {
     /// Scheduler-thread timeline; `Some` makes a pass one loop iteration whose
     /// outputs are observed by the next pass.
     host: Option<HostLoop>,
+    /// Worker pools a request crosses before it reaches the scheduler inbox.
+    frontend: Option<FrontendRuntime>,
     /// Encoder outputs retained across prefill batches.
     vision_cache: VisionCache,
     prefill_rounds_remaining: usize,
@@ -146,6 +149,7 @@ impl SglangCore {
     ) -> Self {
         let config = SglangConfig::from_args(&args);
         let host = config.host.map(HostLoop::new);
+        let frontend = config.frontend.clone().map(FrontendRuntime::new);
         let vision_cache = VisionCache::new(config.vlm_cache_bytes);
         let total_tokens = args.num_gpu_blocks * args.block_size;
         let speculative_sampler = args.aic_nextn.map(|nextn| {
@@ -187,6 +191,7 @@ impl SglangCore {
             destination_reservation_attempts: 0,
             lifecycle_events: Vec::new(),
             host,
+            frontend,
             vision_cache,
         }
     }
@@ -215,10 +220,21 @@ impl SglangCore {
         Ok(self.apply_command_effects(command, true)?.result)
     }
 
+    #[cfg(test)]
     pub(crate) fn apply_command_effects(
         &mut self,
         command: SchedulerCommand,
         allow_destination_admission: bool,
+    ) -> anyhow::Result<SchedulerCommandEffects> {
+        self.apply_command_effects_at(command, allow_destination_admission, None)
+    }
+
+    /// Apply a command at `now_ms`; `None` keeps the frontend clock where it is.
+    pub(crate) fn apply_command_effects_at(
+        &mut self,
+        command: SchedulerCommand,
+        allow_destination_admission: bool,
+        now_ms: Option<f64>,
     ) -> anyhow::Result<SchedulerCommandEffects> {
         if self.host.is_some()
             && matches!(
@@ -235,11 +251,11 @@ impl SglangCore {
                 request.uuid = Some(uuid);
                 self.validate_request_id(uuid)?;
                 Ok(SchedulerCommandEffects::new(
-                    SchedulerCommandResult::Submitted(self.submit(request)?),
+                    SchedulerCommandResult::Submitted(self.submit(request, now_ms)?),
                 ))
             }
             SchedulerCommand::CancelRequest { request_id } => {
-                let retired = self.cancel_active_request(request_id);
+                let retired = self.cancel_active_request(request_id, now_ms);
                 let result = if retired {
                     SchedulerCommandResult::Applied
                 } else {
@@ -265,7 +281,7 @@ impl SglangCore {
                 self.validate_request_id(uuid)?;
                 self.source_holds.register(uuid, handoff_id)?;
                 let submitted = self
-                    .submit(request)
+                    .submit(request, now_ms)
                     .expect("prevalidated handoff request must submit");
                 Ok(SchedulerCommandEffects::new(
                     SchedulerCommandResult::Submitted(submitted),
@@ -373,7 +389,7 @@ impl SglangCore {
                 else {
                     return Ok(SchedulerCommandEffects::new(SchedulerCommandResult::Noop));
                 };
-                self.cancel_active_request(request_id);
+                self.cancel_active_request(request_id, None);
                 Ok(self
                     .effects_after_capacity_change(SchedulerCommandResult::Applied)
                     .retire(request_id))
@@ -451,21 +467,60 @@ impl SglangCore {
                 .host
                 .as_ref()
                 .is_some_and(|host| host.holds_request(uuid))
+            || self
+                .frontend
+                .as_ref()
+                .is_some_and(|frontend| frontend.holds_request(uuid))
     }
 
-    fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+    fn submit(&mut self, request: DirectRequest, now_ms: Option<f64>) -> anyhow::Result<Uuid> {
         let request = self.build_request(request);
         if self.request_is_active(request.uuid) {
             anyhow::bail!("request {} is already active", request.uuid);
         }
         request.debug_assert_invariants(self.config.block_size);
         let uuid = request.uuid;
-        match &mut self.host {
+        match (&mut self.frontend, &mut self.host) {
+            (Some(frontend), _) => {
+                let now_ms = now_ms.unwrap_or_else(|| frontend.now_ms());
+                frontend.submit(request, now_ms);
+            }
             // The scheduler thread receives it at the top of its next iteration.
-            Some(host) => host.submit(request),
-            None => self.waiting.push_back(request),
+            (None, Some(host)) => host.submit(request),
+            (None, None) => self.waiting.push_back(request),
         }
         Ok(uuid)
+    }
+
+    /// Move requests that left the frontend by `now_ms` into the scheduler inbox.
+    fn deliver_frontend(&mut self, now_ms: f64) {
+        let Some(frontend) = &mut self.frontend else {
+            return;
+        };
+        let host = self
+            .host
+            .as_mut()
+            .expect("frontend pools require the host loop");
+        for (request, ready_ms) in frontend.advance(now_ms) {
+            self.lifecycle_events
+                .push(SchedulerLifecycleEvent::HostStage {
+                    request_id: request.uuid,
+                    stage: HostStage::FrontendReady,
+                    at_ms: ready_ms,
+                });
+            host.submit(request);
+        }
+    }
+
+    /// Earliest frontend completion that would deliver a request.
+    pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
+        self.frontend
+            .as_ref()
+            .and_then(FrontendRuntime::next_deadline_ms)
+    }
+
+    pub(crate) fn process_internal_work(&mut self, now_ms: f64) {
+        self.deliver_frontend(now_ms);
     }
 
     fn build_request(&self, request: DirectRequest) -> SglangRequest {
@@ -544,14 +599,16 @@ impl SglangCore {
                 (true, Some(request_id))
             }
             RemovedSource::Pending { request_id } => {
-                self.cancel_active_request(request_id);
+                self.cancel_active_request(request_id, None);
                 (true, Some(request_id))
             }
             RemovedSource::Missing => (false, None),
         }
     }
 
-    fn cancel_active_request(&mut self, request_id: Uuid) -> bool {
+    fn cancel_active_request(&mut self, request_id: Uuid, now_ms: Option<f64>) -> bool {
+        let frontend_now_ms =
+            now_ms.or_else(|| self.frontend.as_ref().map(FrontendRuntime::now_ms));
         let request = if let Some(index) = self
             .waiting
             .iter()
@@ -570,10 +627,17 @@ impl SglangCore {
             .position(|request| request.uuid == request_id)
         {
             Some(self.running.remove(index))
+        } else if let Some(request) = self
+            .host
+            .as_mut()
+            .and_then(|host| host.take_request(request_id))
+        {
+            Some(request)
         } else {
-            self.host
+            self.frontend
                 .as_mut()
-                .and_then(|host| host.take_request(request_id))
+                .zip(frontend_now_ms)
+                .and_then(|(frontend, now_ms)| frontend.cancel(request_id, now_ms))
         };
         let Some(mut request) = request else {
             return false;
@@ -617,8 +681,10 @@ impl SglangCore {
             && self.host.as_ref().is_none_or(HostLoop::is_idle)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn is_drained(&self) -> bool {
+    /// Whether the scheduler owns nothing to run, observe, or hand off. Requests
+    /// still inside the frontend pools do not count: they wake the core through
+    /// its internal deadline rather than through a pass.
+    fn scheduler_is_drained(&self) -> bool {
         self.is_empty()
             && self.prefill_rounds_remaining == 0
             && self.source_holds.is_empty()
@@ -627,8 +693,16 @@ impl SglangCore {
             && self.active_destination_handoffs.is_empty()
     }
 
+    pub(crate) fn is_ready(&self) -> bool {
+        !self.scheduler_is_drained()
+    }
+
+    pub(crate) fn is_drained(&self) -> bool {
+        self.scheduler_is_drained() && self.frontend.as_ref().is_none_or(FrontendRuntime::is_empty)
+    }
+
     pub(crate) fn waiting_for_external_command(&self) -> bool {
-        self.is_empty() && self.prefill_rounds_remaining == 0 && !self.is_drained()
+        self.is_empty() && self.prefill_rounds_remaining == 0 && !self.scheduler_is_drained()
     }
 
     pub(crate) fn prepare_group_pass(&mut self) {
@@ -806,6 +880,7 @@ impl SglangCore {
             .filter(|request| request.pending_terminal)
             .map(|request| request.uuid)
             .collect::<Vec<_>>();
+        self.deliver_frontend(now_ms);
         let mut received_ms = 0.0;
         if let Some(host) = &mut self.host {
             for request in host.take_received() {

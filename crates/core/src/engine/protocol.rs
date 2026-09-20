@@ -131,6 +131,8 @@ pub enum LifecycleEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HostStage {
+    /// Left the frontend worker pools; delivered to the scheduler process.
+    FrontendReady,
     /// Drained from the scheduler inbox at an iteration start.
     Received,
     /// Selected into its first batch.

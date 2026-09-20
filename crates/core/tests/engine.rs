@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
-    Backend, Command, CostFn, Engine, EngineConfig, EngineFactory, HostLoopConfig,
-    NativeHostOffloadConfig, PassCompletionEffects, Request, SglangConfig, TimingModel,
-    TimingModelConfig,
+    Backend, Command, CostFn, Engine, EngineConfig, EngineFactory, FrontendConfig,
+    FrontendResource, FrontendStage, FrontendUnit, HostLoopConfig, NativeHostOffloadConfig,
+    PassCompletionEffects, Request, SglangConfig, TimingModel, TimingModelConfig,
 };
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
@@ -1720,4 +1720,54 @@ fn sglang_host_loop_reports_scheduler_stage_timestamps_per_request() {
     // Observed after the next iteration's decode launch synchronized with the forward.
     assert_eq!(record.first_token_ms, Some(27.0));
     assert_eq!(record.terminal_time_ms, 27.0);
+}
+
+#[test]
+fn sglang_frontend_pools_delay_scheduler_receipt() {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 20.0,
+        decode_ms: 4.0,
+    });
+    config.rank.backend = Backend::Sglang;
+    config.rank.sglang = SglangConfig {
+        host: Some(HostLoopConfig::default()),
+        ..SglangConfig::default()
+    };
+    config.rank.frontend = Some(FrontendConfig {
+        stages: vec![FrontendStage {
+            resource: FrontendResource::Processor,
+            unit: FrontendUnit::Request,
+            cost: CostFn {
+                const_ms: 4.0,
+                ..CostFn::default()
+            },
+            concurrency_scale: Vec::new(),
+        }],
+        io_workers: 1,
+        processor_workers: 1,
+        mm_workers: 1,
+    });
+    let mut replay = spec(config);
+    replay.requests = vec![request("first", 0.0, 4, 1), request("second", 0.0, 4, 1)];
+    let report = run_engine_replay(replay).unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 2);
+    let mut ready = report
+        .per_request
+        .iter()
+        .map(|record| (record.request_id.clone().unwrap(), record.frontend_ready_ms))
+        .collect::<Vec<_>>();
+    ready.sort_by(|a, b| a.0.cmp(&b.0));
+    // One processor worker serializes the two arrivals; the scheduler receives
+    // each request at the first iteration after it leaves the pool.
+    assert_eq!(
+        ready,
+        vec![
+            ("first".to_string(), Some(4.0)),
+            ("second".to_string(), Some(8.0))
+        ]
+    );
+    for record in &report.per_request {
+        assert!(record.scheduler_received_ms >= record.frontend_ready_ms);
+    }
 }

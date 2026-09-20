@@ -164,7 +164,7 @@ impl CostFn {
         ] {
             ensure!(
                 value.is_finite() && value >= 0.0,
-                "sglang.host.{name}.{field} must be finite and non-negative"
+                "{name}.{field} must be finite and non-negative"
             );
         }
         Ok(())
@@ -220,16 +220,112 @@ impl Default for HostLoopConfig {
 
 impl HostLoopConfig {
     fn validate(&self) -> Result<()> {
-        self.receive.validate("receive")?;
-        self.select.validate("select")?;
-        self.launch_extend.validate("launch_extend")?;
-        self.launch_vision.validate("launch_vision")?;
-        self.launch_decode.validate("launch_decode")?;
-        self.result.validate("result")?;
+        self.receive.validate("sglang.host.receive")?;
+        self.select.validate("sglang.host.select")?;
+        self.launch_extend.validate("sglang.host.launch_extend")?;
+        self.launch_vision.validate("sglang.host.launch_vision")?;
+        self.launch_decode.validate("sglang.host.launch_decode")?;
+        self.result.validate("sglang.host.result")?;
         ensure!(
             self.tp_sync_ms.is_finite() && self.tp_sync_ms >= 0.0,
             "sglang.host.tp_sync_ms must be finite and non-negative"
         );
+        Ok(())
+    }
+}
+
+/// Host resource a frontend stage occupies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrontendResource {
+    /// The single-threaded tokenizer-manager event loop; synchronous jobs on it
+    /// also stall the dispatch of arrivals and stage continuations.
+    TmLoop,
+    /// Image decode thread pool.
+    IoDecode,
+    /// Processor worker pool.
+    Processor,
+    /// Rust frontend multimodal worker pool.
+    MmWorker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrontendUnit {
+    /// One job per image, joined before the next stage.
+    Image,
+    /// One job per request.
+    Request,
+}
+
+/// One frontend processing stage.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendStage {
+    pub resource: FrontendResource,
+    pub unit: FrontendUnit,
+    /// Service cost of one job at a concurrency scale of one. An image job is
+    /// charged one image, its patches as tokens, and its feature bytes; a
+    /// request job its image count, prompt tokens, and total feature bytes.
+    pub cost: CostFn,
+    /// Entry `c - 1` scales the service time while `c` jobs share the resource;
+    /// empty keeps the service time independent of sharing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concurrency_scale: Vec<f64>,
+}
+
+/// Frontend worker pools that requests traverse before reaching the scheduler.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendConfig {
+    pub stages: Vec<FrontendStage>,
+    #[serde(default = "one_worker")]
+    pub io_workers: usize,
+    #[serde(default = "one_worker")]
+    pub processor_workers: usize,
+    #[serde(default = "one_worker")]
+    pub mm_workers: usize,
+}
+
+const fn one_worker() -> usize {
+    1
+}
+
+impl FrontendConfig {
+    /// Workers serving `resource`; the tokenizer-manager loop is one thread.
+    pub fn capacity(&self, resource: FrontendResource) -> usize {
+        match resource {
+            FrontendResource::TmLoop => 1,
+            FrontendResource::IoDecode => self.io_workers,
+            FrontendResource::Processor => self.processor_workers,
+            FrontendResource::MmWorker => self.mm_workers,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.stages.is_empty(),
+            "frontend requires at least one stage"
+        );
+        for (index, stage) in self.stages.iter().enumerate() {
+            stage.cost.validate(&format!("frontend.stages[{index}]"))?;
+            let capacity = self.capacity(stage.resource);
+            ensure!(
+                capacity > 0,
+                "frontend.stages[{index}] runs on a resource with zero workers"
+            );
+            ensure!(
+                stage.concurrency_scale.is_empty() || stage.concurrency_scale.len() == capacity,
+                "frontend.stages[{index}].concurrency_scale needs one entry per worker ({capacity})"
+            );
+            ensure!(
+                stage
+                    .concurrency_scale
+                    .iter()
+                    .all(|scale| scale.is_finite() && *scale > 0.0),
+                "frontend.stages[{index}].concurrency_scale entries must be finite and positive"
+            );
+        }
         Ok(())
     }
 }
@@ -522,6 +618,9 @@ pub struct EngineConfig {
     pub sglang: SglangConfig,
     /// TensorRT-LLM-only scheduler controls.
     pub trtllm: TrtllmConfig,
+    /// SGLang-only frontend worker pools; requires `sglang.host`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend: Option<FrontendConfig>,
 }
 
 #[derive(Deserialize)]
@@ -583,6 +682,8 @@ struct EngineConfigWire {
     sglang: SglangConfig,
     #[serde(default)]
     trtllm: TrtllmConfig,
+    #[serde(default)]
+    frontend: Option<FrontendConfig>,
 }
 
 impl<'de> Deserialize<'de> for EngineConfig {
@@ -622,6 +723,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             timing_model: wire.timing_model,
             sglang: wire.sglang,
             trtllm: wire.trtllm,
+            frontend: wire.frontend,
         })
     }
 }
@@ -657,6 +759,7 @@ impl Default for EngineConfig {
             timing_model: TimingModelConfig::Polynomial,
             sglang: SglangConfig::default(),
             trtllm: TrtllmConfig::default(),
+            frontend: None,
         }
     }
 }
@@ -704,6 +807,13 @@ impl EngineConfig {
             self.backend == Backend::Sglang || self.sglang.host.is_none(),
             "sglang.host is supported only for backend=sglang"
         );
+        if let Some(frontend) = &self.frontend {
+            ensure!(
+                self.backend == Backend::Sglang && self.sglang.host.is_some(),
+                "frontend requires backend=sglang with sglang.host configured"
+            );
+            frontend.validate()?;
+        }
         ensure!(
             self.max_model_len.is_none_or(|limit| limit > 0),
             "max_model_len must be positive"

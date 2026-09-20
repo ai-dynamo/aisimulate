@@ -700,6 +700,7 @@ struct PerRequestDetail {
     first_admission_cache_tier_attribution: Option<CacheTierAttribution>,
     prefill_reused_input_tokens: Option<usize>,
     prefill_admit_ms: Option<f64>,
+    frontend_ready_ms: Option<f64>,
     scheduler_received_ms: Option<f64>,
     selected_ms: Option<f64>,
     prefill_complete_ms: Option<f64>,
@@ -832,6 +833,8 @@ pub struct PerRequestRecord {
     pub decode_worker_idx: Option<usize>,
     pub prefill_admit_ms: Option<f64>,
     /// Host-aware scheduler stages; absent unless the engine models its scheduler thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend_ready_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scheduler_received_ms: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1418,6 +1421,7 @@ impl TraceCollector {
     pub(crate) fn on_host_stage(&mut self, uuid: Uuid, stage: HostStage, at_ms: f64) {
         if let Some(detail) = self.detail_mut(uuid) {
             let slot = match stage {
+                HostStage::FrontendReady => &mut detail.frontend_ready_ms,
                 HostStage::Received => &mut detail.scheduler_received_ms,
                 HostStage::Selected => &mut detail.selected_ms,
                 HostStage::PrefillComplete => &mut detail.prefill_complete_ms,
@@ -1960,6 +1964,7 @@ impl TraceCollector {
                 prefill_worker_idx: stats.prefill_worker_idx,
                 decode_worker_idx: stats.decode_worker_idx,
                 prefill_admit_ms: detail.prefill_admit_ms,
+                frontend_ready_ms: detail.frontend_ready_ms,
                 scheduler_received_ms: detail.scheduler_received_ms,
                 selected_ms: detail.selected_ms,
                 prefill_complete_ms: detail.prefill_complete_ms,

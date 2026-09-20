@@ -453,6 +453,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             schedule_conservativeness: Some(config.sglang.schedule_conservativeness),
             vlm_cache_bytes: Some(config.sglang.vlm_cache_bytes),
             host: config.sglang.host,
+            frontend: config.frontend.clone(),
         }),
         emit_kv_events: config.emit_kv_events,
         emit_kv_token_ids: config.emit_kv_token_ids,

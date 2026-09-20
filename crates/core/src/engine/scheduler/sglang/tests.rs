@@ -3251,3 +3251,77 @@ mod vision_batches {
         );
     }
 }
+
+mod frontend_pools {
+    use super::*;
+    use crate::engine::{
+        CostFn, FrontendConfig, FrontendResource, FrontendStage, FrontendUnit, HostLoopConfig,
+        HostStage,
+    };
+
+    /// One processor worker charging 4 ms per request ahead of a free host loop.
+    fn core() -> SglangCore {
+        let mut args = test_args(128, 1, 8192);
+        let sglang = args.sglang.as_mut().unwrap();
+        sglang.host = Some(HostLoopConfig::default());
+        sglang.frontend = Some(FrontendConfig {
+            stages: vec![FrontendStage {
+                resource: FrontendResource::Processor,
+                unit: FrontendUnit::Request,
+                cost: CostFn {
+                    const_ms: 4.0,
+                    ..CostFn::default()
+                },
+                concurrency_scale: Vec::new(),
+            }],
+            io_workers: 1,
+            processor_workers: 1,
+            mm_workers: 1,
+        });
+        SglangCore::new(args)
+    }
+
+    #[test]
+    fn requests_reach_the_scheduler_when_they_leave_the_pools() {
+        let mut core = core();
+        let first = core.receive(direct_request((0..16).collect(), 1));
+        let second = core.receive(direct_request((100..116).collect(), 1));
+
+        // Both wait on the single worker: the core has nothing to run yet and
+        // wakes through its internal deadline instead of an effect-free pass.
+        assert!(!core.is_ready());
+        assert!(!core.is_drained());
+        assert_eq!(core.next_internal_deadline_ms(), Some(4.0));
+
+        core.process_internal_work(4.0);
+        assert!(core.is_ready());
+        assert_eq!(core.next_internal_deadline_ms(), Some(8.0));
+        let pass = core.execute_hidden_pass(4.0);
+        let stages = pass
+            .lifecycle_events
+            .iter()
+            .filter_map(|event| match *event {
+                SchedulerLifecycleEvent::HostStage {
+                    request_id,
+                    stage,
+                    at_ms,
+                } => Some((request_id, stage, at_ms)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(stages.contains(&(first, HostStage::FrontendReady, 4.0)));
+        assert!(stages.contains(&(first, HostStage::Received, 4.0)));
+        assert!(!stages.iter().any(|(uuid, ..)| *uuid == second));
+
+        // A pass that starts after the second request is ready receives it directly.
+        let pass = core.execute_hidden_pass(pass.end_ms.max(8.0));
+        assert!(pass.lifecycle_events.iter().any(|event| matches!(
+            event,
+            SchedulerLifecycleEvent::HostStage {
+                request_id,
+                stage: HostStage::Received,
+                ..
+            } if *request_id == second
+        )));
+    }
+}

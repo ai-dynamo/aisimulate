@@ -3,9 +3,9 @@
 
 use std::sync::Arc;
 
-use crate::engine::HostLoopConfig;
 use crate::engine::common::perf_model::PerfModel;
 use crate::engine::common::protocols::{KvTransferTimingMode, MockEngineArgs, WorkerType};
+use crate::engine::{FrontendConfig, HostLoopConfig};
 
 const DEFAULT_MAX_PREFILL_TOKENS: usize = 16384;
 const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8192;
@@ -51,6 +51,8 @@ pub(super) struct SglangConfig {
     pub(super) vlm_cache_bytes: u64,
     /// Scheduler-thread costs; `Some` switches the core to the iteration pass model.
     pub(super) host: Option<HostLoopConfig>,
+    /// Frontend worker pools ahead of the scheduler inbox.
+    pub(super) frontend: Option<FrontendConfig>,
 }
 
 impl SglangConfig {
@@ -115,6 +117,7 @@ impl SglangConfig {
                 .and_then(|s| s.vlm_cache_bytes)
                 .unwrap_or(DEFAULT_VLM_CACHE_BYTES),
             host: sglang.and_then(|s| s.host),
+            frontend: sglang.and_then(|s| s.frontend.clone()),
         }
     }
 
