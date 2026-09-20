@@ -41,3 +41,23 @@ def test_absent_budget_stays_omitted():
 def test_trtllm_budget_passes_through_unrounded():
     out = render_backend_parameters({"max_num_tokens": 6012}, "trtllm")
     assert out["max_num_tokens"]["max_num_tokens"] == 6012
+
+
+def test_rule_engine_agg_budget_is_64_aligned():
+    """The vllm rule plugin itself emits an aligned budget (the historical
+    formula produced 512+4000+1500=6012, the DSV4 crash trigger)."""
+    from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
+
+    pv = {
+        "SlaConfig": {"isl": 4000, "osl": 500},
+        "DynConfig": {},
+        "params": {"agg": {"max_batch_size": 512}},
+    }
+    apply_rule_plugins(pv, backend="vllm")
+    agg = pv["params"]["agg"]
+    # The exact value depends on sibling rules (batch doubling), so assert
+    # the invariant: whatever budget the rules emit is 64-aligned and never
+    # below the unrounded formula.
+    unrounded = agg["max_batch_size"] + 4000 + 1500
+    assert agg["max_num_tokens"] % 64 == 0
+    assert unrounded <= agg["max_num_tokens"] < unrounded + 64
