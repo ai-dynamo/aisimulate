@@ -2,8 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """The FPM per-request hooks against stand-ins for the SGLang and Dynamo vLLM producers."""
 
-from __future__ import annotations
-
 import importlib
 import sys
 import types
@@ -50,10 +48,12 @@ def fake_sglang(monkeypatch):
             cls = sys.modules["sglang.srt.observability.forward_pass_metrics"].ScheduledRequestMetrics
             if batch.forward_mode.is_decode():
                 return cls(num_decode_requests=len(batch.reqs), sum_decode_kv_tokens=sum(r.seqlen for r in batch.reqs))
+            ext = getattr(batch, "extend_lens", None) or [r.extend_input_len for r in batch.reqs]
+            pre = getattr(batch, "prefix_lens", None) or [len(r.prefix_indices) for r in batch.reqs]
             return cls(
                 num_prefill_requests=len(batch.reqs),
-                sum_prefill_tokens=sum(batch.extend_lens),
-                sum_prefill_kv_tokens=sum(batch.prefix_lens),
+                sum_prefill_tokens=sum(ext),
+                sum_prefill_kv_tokens=sum(pre),
             )
 
     reporter.SchedulerMetricsMixin = SchedulerMetricsMixin
