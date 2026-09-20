@@ -10,6 +10,7 @@
 import copy
 import dataclasses
 import inspect
+import json
 import logging
 import math
 from collections import defaultdict
@@ -21,7 +22,7 @@ import pandas as pd
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.config import RuntimeConfig, has_video_input
 from aisimulate_core.sdk.inference_summary import InferenceSummary
-from aisimulate_core.sdk.models import BaseModel
+from aisimulate_core.sdk.models import BaseModel, get_model
 from aisimulate_core.sdk.perf_database import PerfDatabase
 from aisimulate_core.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
 from aisimulate_core.sdk.rust_engine_step import (
@@ -65,6 +66,71 @@ def _kimi_resized_spatial_tokens(
             f"got {padded_height // patch}x{padded_width // patch}"
         )
     return (padded_height // stride) * (padded_width // stride), (padded_height // patch) * (padded_width // patch)
+
+
+def _encoder_shape_class(name: str) -> str:
+    """Token count an encoder op runs on: ``patch`` before spatial merging,
+    ``output`` after it (projector, DP exit), ``transformer`` on the ViT sequence."""
+    if "encoder_patch_embedding" in name:
+        return "patch"
+    if "encoder_projector" in name or "encoder_gemma4_pool_postprocess" in name or name == "encoder_dp_all_gather":
+        return "output"
+    return "transformer"
+
+
+def encoder_op_groups_json(
+    model_path: str,
+    backend: str,
+    *,
+    tp_size: int = 1,
+    pp_size: int = 1,
+    attention_dp_size: int = 1,
+    moe_tp_size: int | None = None,
+    moe_ep_size: int | None = None,
+    gemm_quant_mode: str | None = None,
+    moe_quant_mode: str | None = None,
+    kvcache_quant_mode: str | None = None,
+    fmha_quant_mode: str | None = None,
+    comm_quant_mode: str | None = None,
+    moe_backend: str | None = None,
+    attention_backend: str | None = None,
+    enable_eplb: bool = False,
+    wideep_num_slots: int | None = None,
+) -> str | None:
+    """Serialize a model's vision-encoder ops by shape class for the replay timing
+    provider, which times cache-miss image batches per image shape through the
+    ad-hoc op-list FFI. ``None`` when the model has no vision encoder."""
+    from aisimulate_core.sdk.config_builders import build_model_config
+    from aisimulate_core.sdk.engine import build_ops_json
+
+    model_config = build_model_config(
+        tp_size=tp_size,
+        pp_size=pp_size,
+        attention_dp_size=attention_dp_size,
+        moe_tp_size=moe_tp_size if moe_tp_size is not None else 1,
+        moe_ep_size=moe_ep_size if moe_ep_size is not None else 1,
+        gemm_quant_mode=gemm_quant_mode,
+        kvcache_quant_mode=kvcache_quant_mode,
+        fmha_quant_mode=fmha_quant_mode,
+        moe_quant_mode=moe_quant_mode,
+        comm_quant_mode=comm_quant_mode,
+        moe_backend=moe_backend,
+        attention_backend=attention_backend,
+        enable_eplb=enable_eplb,
+        wideep_num_slots=wideep_num_slots,
+    )
+    model = get_model(model_path, model_config, backend)
+    if not model.encoder_ops or not isinstance(getattr(model, "encoder_config", None), common.VisionEncoderConfig):
+        return None
+    groups: dict[str, list] = {"patch": [], "transformer": [], "output": []}
+    for op in model.encoder_ops:
+        groups[_encoder_shape_class(op._name)].append(op)
+    return json.dumps(
+        {
+            "encoder_dp_size": model.config.tp_size if model.config.enable_encoder_dp else 1,
+            **{name: build_ops_json(ops) if ops else None for name, ops in groups.items()},
+        }
+    )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -674,19 +740,14 @@ class BaseBackend:
         # or non-pooled temporal patch is an independent transformer sequence;
         # pooled Kimi video uses one spatial-temporal sequence per video.
 
+        tokens_per_sequence = {
+            "patch": workload.patch_tokens_per_sequence,
+            "transformer": workload.transformer_tokens_per_sequence,
+            "output": workload.output_tokens_per_sequence,
+        }
+
         def _encoder_shape(op) -> tuple[int, int]:
-            name = op._name
-            if "encoder_patch_embedding" in name:
-                return sequences_local, workload.patch_tokens_per_sequence
-            if "encoder_attention" in name:
-                return sequences_local, workload.transformer_tokens_per_sequence
-            if (
-                "encoder_projector" in name
-                or "encoder_gemma4_pool_postprocess" in name
-                or name == "encoder_dp_all_gather"
-            ):
-                return sequences_local, workload.output_tokens_per_sequence
-            return sequences_local, workload.transformer_tokens_per_sequence
+            return sequences_local, tokens_per_sequence[_encoder_shape_class(op._name)]
 
         self._require_rust_engine_step(runtime_config, database, surface="encoder")
         encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict = self._run_encoder_phase_with_rust(

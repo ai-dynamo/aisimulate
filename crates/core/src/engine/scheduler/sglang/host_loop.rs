@@ -30,11 +30,23 @@ use crate::engine::common::protocols::OutputSignal;
 
 use super::request::SglangRequest;
 
+/// Cache-miss images an EXTEND batch encodes before its language-model forward.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct VisionWork {
+    pub(super) images: usize,
+    pub(super) visual_tokens: usize,
+    pub(super) feature_bytes: u64,
+}
+
 /// Batch launched by one iteration, as the scheduler thread charges it.
 #[derive(Debug, Clone, Copy)]
 pub(super) enum LaunchKind {
     /// An EXTEND forward over `tokens` newly computed prompt tokens.
-    Extend { requests: usize, tokens: usize },
+    Extend {
+        requests: usize,
+        tokens: usize,
+        vision: VisionWork,
+    },
     /// A DECODE step over `requests` running sequences, ghosts included.
     Decode { requests: usize },
 }
@@ -169,8 +181,22 @@ impl HostLoop {
                     _ => selected_ms,
                 };
                 let launch_cost = match kind {
-                    LaunchKind::Extend { requests, tokens } => {
-                        self.config.launch_extend.eval(requests, 0, tokens, 0)
+                    LaunchKind::Extend {
+                        requests,
+                        tokens,
+                        vision,
+                    } => {
+                        let vision_cost = if vision.images > 0 {
+                            self.config.launch_vision.eval(
+                                1,
+                                vision.images,
+                                vision.visual_tokens,
+                                vision.feature_bytes,
+                            )
+                        } else {
+                            0.0
+                        };
+                        self.config.launch_extend.eval(requests, 0, tokens, 0) + vision_cost
                     }
                     LaunchKind::Decode { requests } => {
                         self.config.launch_decode.eval(requests, 0, requests, 0)
@@ -258,6 +284,7 @@ mod tests {
         let extend = Some(LaunchKind::Extend {
             requests: 1,
             tokens: 8,
+            vision: VisionWork::default(),
         });
         let selected = host.selected_ms(0.0, 2.0, extend);
         assert_eq!(selected, 3.0);
@@ -301,6 +328,7 @@ mod tests {
         let extend = Some(LaunchKind::Extend {
             requests: 1,
             tokens: 4,
+            vision: VisionWork::default(),
         });
         let (timing, _) = host.plan(0.0, extend, 1.0, Vec::new());
         assert_eq!(timing.gpu_end_ms, Some(10.0));
@@ -313,6 +341,7 @@ mod tests {
         let extend = Some(LaunchKind::Extend {
             requests: 1,
             tokens: 4,
+            vision: VisionWork::default(),
         });
         host.plan(0.0, extend, 30.0, Vec::new());
         let (timing, observed) = host.plan(12.0, None, 0.0, Vec::new());

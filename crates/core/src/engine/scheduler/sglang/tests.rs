@@ -3134,3 +3134,120 @@ mod host_loop_passes {
         assert_eq!(token_times(&mut host), expected);
     }
 }
+
+mod vision_batches {
+    use std::sync::{Arc, Mutex};
+
+    use super::*;
+    use crate::engine::VisionShape;
+
+    /// 5 ms per image plus fixed 10 ms prefill / 1 ms decode; records every batch.
+    struct RecordingTiming(Arc<Mutex<Vec<Vec<VisionShape>>>>);
+
+    impl crate::engine::TimingModel for RecordingTiming {
+        fn prefill_batch_validation_can_fail(&self) -> bool {
+            false
+        }
+        fn predict_vision_ms(&self, shapes: &[VisionShape]) -> anyhow::Result<Option<f64>> {
+            self.0.lock().unwrap().push(shapes.to_vec());
+            Ok(Some(
+                shapes.iter().map(|shape| 5.0 * shape.count as f64).sum(),
+            ))
+        }
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(10.0)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(1.0)
+        }
+    }
+
+    fn image(identity: u64, token_start: usize) -> ImageSpec {
+        ImageSpec {
+            identity,
+            token_start,
+            token_end: token_start + 4,
+            patches: 16,
+            feature_bytes: 1_000,
+            embedding_bytes: 4_000,
+        }
+    }
+
+    /// A 16-token prompt with distinct token IDs so radix reuse does not hide encoder work.
+    fn request(first_token: u32, images: Vec<ImageSpec>) -> DirectRequest {
+        DirectRequest {
+            images,
+            ..direct_request((first_token..first_token + 16).collect(), 1)
+        }
+    }
+
+    #[test]
+    fn prefill_chunks_encode_only_their_cache_misses() {
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        // Chunks of 8 tokens; the cache holds exactly two embeddings.
+        let mut args = test_args(128, 1, 8);
+        args.sglang.as_mut().unwrap().vlm_cache_bytes = Some(8_000);
+        args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(RecordingTiming(Arc::clone(&observed))),
+        }
+        .into();
+        let mut core = SglangCore::new(args);
+
+        // Images at tokens 0..4 and 8..12: one per chunk.
+        core.receive(request(0, vec![image(1, 0), image(2, 8)]));
+        let first_chunk = core.execute_hidden_pass(0.0);
+        assert_eq!(first_chunk.end_ms, 15.0, "10 ms prefill + one 5 ms image");
+        let second_chunk = core.execute_hidden_pass(first_chunk.end_ms);
+        assert_eq!(second_chunk.end_ms, 30.0);
+        assert_eq!(second_chunk.completed_requests, 1);
+
+        // The same images again hit the cache; a new one misses.
+        core.receive(request(100, vec![image(1, 0), image(3, 8)]));
+        let hit = core.execute_hidden_pass(second_chunk.end_ms);
+        assert_eq!(hit.end_ms, 40.0, "cached image adds no encoder time");
+        let miss = core.execute_hidden_pass(hit.end_ms);
+        assert_eq!(miss.end_ms, 55.0);
+
+        let shape = |count| VisionShape {
+            patches: 16,
+            visual_tokens: 4,
+            count,
+        };
+        assert_eq!(
+            *observed.lock().unwrap(),
+            vec![vec![shape(1)], vec![shape(1)], vec![shape(1)]],
+            "the provider is only asked for cache misses"
+        );
+    }
+
+    #[test]
+    fn latency_only_providers_reject_image_requests() {
+        struct TextOnly;
+        impl crate::engine::TimingModel for TextOnly {
+            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+                Ok(1.0)
+            }
+            fn predict_decode_ms(
+                &self,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<f64> {
+                Ok(1.0)
+            }
+        }
+        let mut args = test_args(128, 1, 8192);
+        args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(TextOnly),
+        }
+        .into();
+        let mut core = SglangCore::new(args);
+        core.receive(request(0, vec![image(1, 0)]));
+        let error = core.try_execute_pass_internal(None, 0.0).unwrap_err();
+        assert!(
+            error.to_string().contains("vision"),
+            "unexpected error: {error:#}"
+        );
+    }
+}

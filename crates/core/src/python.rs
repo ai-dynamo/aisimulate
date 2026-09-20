@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::engine::{
     Backend, EngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
-    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
+use crate::perfmodel::engine::Engine;
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
     ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
@@ -238,6 +239,9 @@ struct AicTimingConfig {
     enable_shared_layer: Option<bool>,
     #[serde(default)]
     strict_provenance: bool,
+    /// Load the model's vision-encoder op groups so image batches can be timed.
+    #[serde(default)]
+    vision: bool,
 }
 
 const fn one() -> u32 {
@@ -374,6 +378,16 @@ impl AicTimingConfig {
     }
 
     fn validate_parallel_shape(&self) -> Result<()> {
+        if self.vision {
+            ensure!(
+                self.backend == "sglang"
+                    && self.pp == 1
+                    && self.attention_dp == 1
+                    && self.nextn == 0
+                    && self.speculation.is_none(),
+                "AIC vision timing requires backend=sglang with pp=1, attention_dp=1, and no speculative decoding"
+            );
+        }
         ensure!(
             self.tp > 0
                 && self.pp > 0
@@ -402,6 +416,69 @@ impl AicTimingConfig {
 
 type PhaseEvidenceKey = (u32, u32, u32, u32, bool);
 
+/// Vision-encoder op lists serialized by the Python model layer, split by the
+/// token count each op runs on: `patch` before merging, `output` after, and
+/// `transformer` on the ViT sequence. The shape math stays here; the per-op
+/// values come from the native engine's ad-hoc op-list evaluation.
+#[derive(Debug, Deserialize)]
+struct EncoderOpGroups {
+    encoder_dp_size: u32,
+    patch: Option<String>,
+    transformer: Option<String>,
+    output: Option<String>,
+}
+
+struct VisionTiming {
+    engine: Arc<Engine>,
+    ops: EncoderOpGroups,
+    cache: quick_cache::sync::Cache<VisionShape, TimingPhaseEvidence>,
+}
+
+impl VisionTiming {
+    /// Operation evidence of one encoder call over `shape.count` equal images.
+    /// Under encoder DP each rank encodes its ceil share; every image is one
+    /// encoder sequence, so `patches` is also the patch-embedding length.
+    fn phase(&self, shape: VisionShape) -> Result<TimingPhaseEvidence> {
+        if let Some(phase) = self.cache.get(&shape) {
+            return Ok(phase);
+        }
+        let batch = shape.count.div_ceil(self.ops.encoder_dp_size.max(1));
+        let groups = [
+            (&self.ops.patch, shape.patches),
+            (&self.ops.transformer, shape.patches),
+            (&self.ops.output, shape.visual_tokens),
+        ];
+        let mut entries = Vec::new();
+        for (ops_json, tokens) in groups {
+            let Some(ops_json) = ops_json else {
+                continue;
+            };
+            let x = batch
+                .checked_mul(tokens)
+                .context("vision batch tokens exceed AIC's u32 limit")?;
+            let values = self
+                .engine
+                .evaluate_ops_json(ops_json, true, batch, tokens, 0, 1.0, Some(x))
+                .map_err(|error| anyhow!("AIC vision evaluation failed: {error}"))?;
+            entries.extend(
+                values
+                    .into_iter()
+                    .map(|(name, latency_ms, energy_wms, source)| {
+                        (name, latency_ms, energy_wms, source.to_string())
+                    }),
+            );
+        }
+        ensure!(
+            !entries.is_empty(),
+            "AIC vision encoder returned no operation evidence for {} image(s)",
+            shape.count
+        );
+        let phase = phase_evidence_from_python(entries)?;
+        self.cache.insert(shape, phase.clone());
+        Ok(phase)
+    }
+}
+
 struct AicTimingModel {
     engine: Py<PyAny>,
     diagnostic_model: Option<ForwardPassPerfModel>,
@@ -410,6 +487,7 @@ struct AicTimingModel {
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceSummary>,
     phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, TimingPhaseEvidence>,
+    vision: Option<VisionTiming>,
 }
 
 impl AicTimingModel {
@@ -439,6 +517,29 @@ impl AicTimingModel {
         let native = model.native_engine().context(
             "AIC regression estimator is not ready: offline replay requires trained observations or a native estimator"
         )?;
+        let vision = config
+            .vision
+            .then(|| -> Result<VisionTiming> {
+                let ops = Python::with_gil(|py| -> PyResult<Option<String>> {
+                    let kwargs = aic_model_identity_kwargs(py, config)?;
+                    PyModule::import(py, "aisimulate_core.sdk.backends.base_backend")?
+                        .getattr("encoder_op_groups_json")?
+                        .call(
+                            (config.model.as_str(), config.backend.as_str()),
+                            Some(&kwargs),
+                        )?
+                        .extract()
+                })
+                .map_err(|error| anyhow!("AIC vision encoder ops could not be built: {error}"))?
+                .with_context(|| format!("AIC model {:?} has no vision encoder", config.model))?;
+                Ok(VisionTiming {
+                    engine: Arc::clone(&native),
+                    ops: serde_json::from_str(&ops)
+                        .context("AIC vision encoder op groups are malformed")?,
+                    cache: quick_cache::sync::Cache::new(64),
+                })
+            })
+            .transpose()?;
         let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
             let engine = Py::new(py, crate::AicEngine::from_shared_engine(native))?.into_any();
             let ceiling = if use_fpm_decode_totals {
@@ -459,6 +560,7 @@ impl AicTimingModel {
             fpm_decode_kv_ceiling,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
             phase_cache: quick_cache::sync::Cache::new(128),
+            vision,
         })
     }
 
@@ -571,6 +673,21 @@ impl TimingModel for AicTimingModel {
         self.decoder_replay
     }
 
+    fn predict_vision_ms(&self, shapes: &[VisionShape]) -> Result<Option<f64>> {
+        let Some(vision) = &self.vision else {
+            return Ok(None);
+        };
+        let mut latency_ms = 0.0;
+        for shape in shapes {
+            let phase = vision.phase(*shape)?;
+            latency_ms += phase.latency_ms;
+            // The encoder runs inside the prefill forward; its operations join
+            // that phase's evidence under their own `encoder_*` names.
+            self.record_evidence(phase, true)?;
+        }
+        Ok(Some(latency_ms))
+    }
+
     fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
         if self.decoder_replay {
             ensure!(
@@ -662,31 +779,41 @@ fn checked_u32(value: usize, name: &str) -> Result<u32> {
     u32::try_from(value).with_context(|| format!("{name} {value} exceeds AIC's u32 limit"))
 }
 
+/// Keyword arguments that identify the model build (parallel shape, quantization,
+/// and MoE/attention controls) for the Python SDK entry points.
+fn aic_model_identity_kwargs<'py>(
+    py: Python<'py>,
+    config: &AicTimingConfig,
+) -> PyResult<Bound<'py, PyDict>> {
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("tp_size", config.tp)?;
+    kwargs.set_item("pp_size", config.pp)?;
+    kwargs.set_item("attention_dp_size", config.attention_dp)?;
+    kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
+    kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
+    kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
+    kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
+    kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
+    kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
+    kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
+    kwargs.set_item("moe_backend", config.moe_backend.as_deref())?;
+    kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
+    kwargs.set_item("enable_eplb", config.enable_eplb)?;
+    kwargs.set_item("wideep_num_slots", config.wideep_num_slots)?;
+    Ok(kwargs)
+}
+
 fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig) -> Result<usize> {
     let (memory_fraction_kind, memory_fraction_value) = config.resolved_memory_fraction()?;
     Python::with_gil(|py| -> PyResult<usize> {
         let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
-        let kwargs = PyDict::new(py);
+        let kwargs = aic_model_identity_kwargs(py, config)?;
         kwargs.set_item("backend_version", config.resolved_backend_version())?;
         kwargs.set_item("scheduler_block_size", role.rank.block_size)?;
         kwargs.set_item("max_num_tokens", role.rank.max_num_batched_tokens)?;
         kwargs.set_item("max_batch_size", role.rank.max_num_seqs)?;
         kwargs.set_item("memory_fraction_kind", memory_fraction_kind)?;
         kwargs.set_item("memory_fraction_value", memory_fraction_value)?;
-        kwargs.set_item("tp_size", config.tp)?;
-        kwargs.set_item("pp_size", config.pp)?;
-        kwargs.set_item("attention_dp_size", config.attention_dp)?;
-        kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
-        kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
-        kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
-        kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
-        kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
-        kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
-        kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
-        kwargs.set_item("moe_backend", config.moe_backend.as_deref())?;
-        kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
-        kwargs.set_item("enable_eplb", config.enable_eplb)?;
-        kwargs.set_item("wideep_num_slots", config.wideep_num_slots)?;
         kwargs.set_item(
             "cuda_graph_reserved_bytes",
             config.cuda_graph_reserved_bytes,

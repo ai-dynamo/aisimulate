@@ -12,6 +12,7 @@ mod host_loop;
 mod policy;
 mod prefill;
 mod request;
+mod vision;
 
 pub(crate) use core::SglangCore;
 

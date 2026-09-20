@@ -960,3 +960,34 @@ class TestSmartResizeTokenResolution:
         rc = RuntimeConfig(image_height=448, num_images_per_request=0)
 
         assert BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg) == (0, 0, 0)
+
+
+class TestEncoderOpGroupsJson:
+    """The replay timing provider consumes encoder ops grouped by shape class."""
+
+    def test_groups_partition_the_encoder_ops_by_shape_class(self):
+        import json
+
+        from aisimulate_core.sdk.backends.base_backend import _encoder_shape_class, encoder_op_groups_json
+        from aisimulate_core.sdk.config import ModelConfig
+
+        model = get_model("Qwen/Qwen3-VL-8B-Instruct", ModelConfig(tp_size=2, enable_encoder_dp=True), "sglang")
+        groups = json.loads(encoder_op_groups_json("Qwen/Qwen3-VL-8B-Instruct", "sglang", tp_size=2))
+
+        assert groups["encoder_dp_size"] == 2
+        # OpSpec JSON is externally tagged: ``{"Gemm": {"name": ..., ...}}``.
+        grouped_names = {
+            name: sorted(next(iter(op.values()))["name"] for op in json.loads(ops_json))
+            for name, ops_json in groups.items()
+            if name != "encoder_dp_size" and ops_json is not None
+        }
+        expected: dict[str, list[str]] = {}
+        for op in model.encoder_ops:
+            expected.setdefault(_encoder_shape_class(op._name), []).append(op._name)
+        assert grouped_names == {name: sorted(names) for name, names in expected.items()}
+        assert "encoder_dp_all_gather" in grouped_names["output"]
+
+    def test_text_only_models_have_no_encoder_groups(self):
+        from aisimulate_core.sdk.backends.base_backend import encoder_op_groups_json
+
+        assert encoder_op_groups_json("Qwen/Qwen3-8B", "sglang") is None

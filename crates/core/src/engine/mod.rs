@@ -42,7 +42,7 @@ pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
 pub use timing::{
     TimingEvidenceSource, TimingEvidenceSummary, TimingModel, TimingModelConfig,
-    TimingOperationEvidence, TimingPhaseEvidence,
+    TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
 
 #[doc(hidden)]

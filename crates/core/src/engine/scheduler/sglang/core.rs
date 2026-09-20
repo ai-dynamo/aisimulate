@@ -29,17 +29,18 @@ use crate::engine::common::utils::prefill_handoff_transfer_timing;
 use crate::engine::kv_manager::SglangKvManager;
 use crate::engine::kv_manager::sglang_backend::SglangDestinationReservation;
 use crate::engine::trace::TraceCollector;
-use crate::engine::{HandoffId, HostStage, modeled_duration_ms};
+use crate::engine::{HandoffId, HostStage, ImageSpec, modeled_duration_ms};
 
 use super::config::SglangConfig;
 use super::decode::{
     cache_materialized_prefix, cleanup_completed_request, simulate_decode_step_with_sampler,
     simulate_prefill_first_tokens,
 };
-use super::host_loop::{HostLoop, LaunchKind};
+use super::host_loop::{HostLoop, LaunchKind, VisionWork};
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
+use super::vision::VisionCache;
 use crate::engine::scheduler::{
     ActiveHandoffRequests, AdmissionInvariant, AdmissionStage, CapturedKvEventBuffer,
     DestinationHolds, EnginePassResult, KvEventVisibility, MockerMetrics, PendingDestinations,
@@ -70,6 +71,8 @@ pub(crate) struct SglangCore {
     /// Scheduler-thread timeline; `Some` makes a pass one loop iteration whose
     /// outputs are observed by the next pass.
     host: Option<HostLoop>,
+    /// Encoder outputs retained across prefill batches.
+    vision_cache: VisionCache,
     prefill_rounds_remaining: usize,
     group_pass_prepared: bool,
     prefill_in_pass: bool,
@@ -143,6 +146,7 @@ impl SglangCore {
     ) -> Self {
         let config = SglangConfig::from_args(&args);
         let host = config.host.map(HostLoop::new);
+        let vision_cache = VisionCache::new(config.vlm_cache_bytes);
         let total_tokens = args.num_gpu_blocks * args.block_size;
         let speculative_sampler = args.aic_nextn.map(|nextn| {
             let rates =
@@ -183,6 +187,7 @@ impl SglangCore {
             destination_reservation_attempts: 0,
             lifecycle_events: Vec::new(),
             host,
+            vision_cache,
         }
     }
 
@@ -881,6 +886,23 @@ impl SglangCore {
         let batch_size = admit.can_run.len();
         let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
         let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
+        // The forward encodes the cache-miss images whose placeholders overlap this
+        // pass's chunks before the language-model prefill runs over the batch.
+        let vision_misses =
+            self.vision_cache
+                .misses(
+                    admit
+                        .can_run
+                        .iter()
+                        .zip(&admit.prefill_fpm)
+                        .map(|(request, item)| {
+                            (
+                                request.images.as_slice(),
+                                item.prefix_tokens,
+                                item.prefix_tokens + item.tokens_computed,
+                            )
+                        }),
+                );
         let prefill_time = (|| {
             self.config.perf_model.validate_prefill_batch(
                 &admit
@@ -889,14 +911,21 @@ impl SglangCore {
                     .map(|item| (item.tokens_computed, item.prefix_tokens))
                     .collect::<Vec<_>>(),
             )?;
-            simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)
+            let vision_ms = modeled_duration_ms(
+                self.config.perf_model.predict_vision_time(&vision_misses)?,
+                self.config.speedup_ratio,
+            )?;
+            let prefill =
+                simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
+            Ok((prefill, vision_ms))
         })();
-        let prefill_time = match prefill_time {
-            Ok(duration) => {
+        let (prefill_time, vision_ms) = match prefill_time {
+            Ok(durations) => {
                 if let Some((checkpoint, _)) = admission_checkpoint {
                     self.kv_manager.commit_admission(checkpoint);
                 }
-                duration
+                self.vision_cache.store(&vision_misses);
+                durations
             }
             Err(error) => {
                 // A retry is still part of the caller's prepared group round;
@@ -937,6 +966,11 @@ impl SglangCore {
                         .iter()
                         .map(|item| item.tokens_computed)
                         .sum(),
+                    vision: VisionWork {
+                        images: vision_misses.len(),
+                        visual_tokens: vision_misses.iter().map(ImageSpec::visual_tokens).sum(),
+                        feature_bytes: vision_misses.iter().map(|image| image.feature_bytes).sum(),
+                    },
                 })
             } else if self.running.is_empty() {
                 None
@@ -1016,7 +1050,7 @@ impl SglangCore {
         };
         self.interval_idle_in_pass = defer_prefill && scheduled_decode_lens.is_empty();
 
-        let decode_start_ms = selected_ms + prefill_time.as_secs_f64() * 1000.0;
+        let decode_start_ms = selected_ms + vision_ms + prefill_time.as_secs_f64() * 1000.0;
         let mut decode = if prefill_pass {
             simulate_prefill_first_tokens(
                 &mut self.running,

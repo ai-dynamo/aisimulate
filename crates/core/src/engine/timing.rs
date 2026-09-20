@@ -442,6 +442,16 @@ pub enum TimingModelConfig {
     },
 }
 
+/// One homogeneous group of images in a vision-encoder batch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct VisionShape {
+    /// Encoder sequence length per image, before spatial merging.
+    pub patches: u32,
+    /// Language-model tokens per image, after spatial merging.
+    pub visual_tokens: u32,
+    pub count: u32,
+}
+
 /// Runtime latency model injected at the engine boundary.
 ///
 /// Implementations may call AIC, interpolate profiler data, or use another
@@ -459,6 +469,12 @@ pub trait TimingModel: Send + Sync {
     /// policies may reject batches that their aggregate API cannot represent.
     fn validate_prefill_batch(&self, _requests: &[(usize, usize)]) -> Result<()> {
         Ok(())
+    }
+
+    /// Predict one vision-encoder batch's latency in milliseconds. Latency-only
+    /// providers keep the default `None`; the scheduler rejects image work then.
+    fn predict_vision_ms(&self, _shapes: &[VisionShape]) -> Result<Option<f64>> {
+        Ok(None)
     }
 
     /// Predict one prefill batch's latency in milliseconds.

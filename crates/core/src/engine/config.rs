@@ -187,6 +187,10 @@ pub struct HostLoopConfig {
     pub select: CostFn,
     /// Per EXTEND batch: eager language-model kernel launches.
     pub launch_extend: CostFn,
+    /// Per EXTEND batch that encodes cache-miss images: encoder launches, feature
+    /// host-to-device copies, and embedding placement, applied to one encoder
+    /// call over the miss images, their visual tokens, and their feature bytes.
+    pub launch_vision: CostFn,
     /// Per DECODE batch: CUDA-graph replay launch.
     pub launch_decode: CostFn,
     /// Per observed batch: result processing once the previous forward completed.
@@ -205,6 +209,7 @@ impl Default for HostLoopConfig {
             receive: CostFn::default(),
             select: CostFn::default(),
             launch_extend: CostFn::default(),
+            launch_vision: CostFn::default(),
             launch_decode: CostFn::default(),
             result: CostFn::default(),
             tp_sync_ms: 0.0,
@@ -218,6 +223,7 @@ impl HostLoopConfig {
         self.receive.validate("receive")?;
         self.select.validate("select")?;
         self.launch_extend.validate("launch_extend")?;
+        self.launch_vision.validate("launch_vision")?;
         self.launch_decode.validate("launch_decode")?;
         self.result.validate("result")?;
         ensure!(
@@ -246,9 +252,16 @@ pub struct SglangConfig {
     /// Multiplier applied to SGLang's adaptive output-reservation ratio.
     #[serde(default = "default_schedule_conservativeness")]
     pub schedule_conservativeness: f64,
+    /// Vision embedding cache capacity in bytes (`SGLANG_VLM_CACHE_SIZE_MB`).
+    #[serde(default = "default_vlm_cache_bytes")]
+    pub vlm_cache_bytes: u64,
     /// Scheduler-thread costs; absent keeps the zero-host pass model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub host: Option<HostLoopConfig>,
+}
+
+const fn default_vlm_cache_bytes() -> u64 {
+    100 * 1024 * 1024
 }
 
 impl Default for SglangConfig {
@@ -259,6 +272,7 @@ impl Default for SglangConfig {
             chunked_prefill_size: default_chunked_prefill_size(),
             clip_max_new_tokens: default_clip_max_new_tokens(),
             schedule_conservativeness: default_schedule_conservativeness(),
+            vlm_cache_bytes: default_vlm_cache_bytes(),
             host: None,
         }
     }

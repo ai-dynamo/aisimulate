@@ -58,6 +58,43 @@ impl PerfModel {
         Ok(())
     }
 
+    /// Predict the vision-encoder time in milliseconds for one batch of
+    /// distinct cache-miss images, grouped by shape for the provider.
+    pub fn predict_vision_time(&self, images: &[crate::engine::ImageSpec]) -> Result<f64> {
+        if images.is_empty() {
+            return Ok(0.0);
+        }
+        let PerfModel::External { timing } = self else {
+            anyhow::bail!("polynomial timing does not support vision batches");
+        };
+        let mut shapes: Vec<crate::engine::VisionShape> = Vec::new();
+        for image in images {
+            let patches = u32::try_from(image.patches).context("image patches exceed u32")?;
+            let visual_tokens =
+                u32::try_from(image.visual_tokens()).context("visual tokens exceed u32")?;
+            match shapes
+                .iter_mut()
+                .find(|shape| shape.patches == patches && shape.visual_tokens == visual_tokens)
+            {
+                Some(shape) => shape.count += 1,
+                None => shapes.push(crate::engine::VisionShape {
+                    patches,
+                    visual_tokens,
+                    count: 1,
+                }),
+            }
+        }
+        let time = timing
+            .predict_vision_ms(&shapes)
+            .context("external vision prediction failed")?
+            .context("timing provider does not support vision batches")?;
+        ensure!(
+            time.is_finite() && time >= 0.0,
+            "vision timing provider returned invalid duration {time}ms"
+        );
+        Ok(time)
+    }
+
     /// Predict prefill time in milliseconds.
     ///
     /// Callers always pass all parameters; each variant uses what it needs:

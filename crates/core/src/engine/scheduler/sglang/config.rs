@@ -10,6 +10,7 @@ use crate::engine::common::protocols::{KvTransferTimingMode, MockEngineArgs, Wor
 const DEFAULT_MAX_PREFILL_TOKENS: usize = 16384;
 const DEFAULT_CHUNKED_PREFILL_SIZE: usize = 8192;
 const DEFAULT_CLIP_MAX_NEW_TOKENS: usize = 4096;
+const DEFAULT_VLM_CACHE_BYTES: u64 = 100 * 1024 * 1024;
 const DEFAULT_INIT_NEW_TOKEN_RATIO: f64 = 0.7;
 const DEFAULT_MIN_NEW_TOKEN_RATIO_FACTOR: f64 = 0.14;
 const DEFAULT_NEW_TOKEN_RATIO_DECAY_STEPS: f64 = 600.0;
@@ -46,6 +47,8 @@ pub(super) struct SglangConfig {
     pub(super) kv_transfer_bandwidth: Option<f64>,
     pub(super) kv_transfer_timing_mode: KvTransferTimingMode,
     pub(super) speculative_max_tokens: Option<usize>,
+    /// Vision embedding cache capacity in bytes.
+    pub(super) vlm_cache_bytes: u64,
     /// Scheduler-thread costs; `Some` switches the core to the iteration pass model.
     pub(super) host: Option<HostLoopConfig>,
 }
@@ -108,6 +111,9 @@ impl SglangConfig {
             kv_transfer_bandwidth: args.kv_transfer_bandwidth,
             kv_transfer_timing_mode: args.kv_transfer_timing_mode,
             speculative_max_tokens: args.aic_nextn.map(|nextn| nextn + 1),
+            vlm_cache_bytes: sglang
+                .and_then(|s| s.vlm_cache_bytes)
+                .unwrap_or(DEFAULT_VLM_CACHE_BYTES),
             host: sglang.and_then(|s| s.host),
         }
     }
