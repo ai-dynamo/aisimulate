@@ -1,0 +1,745 @@
+diff --git a/rust/sglang-mm/src/driver.rs b/rust/sglang-mm/src/driver.rs
+index 9b70a52..2be2bec 100644
+--- a/rust/sglang-mm/src/driver.rs
++++ b/rust/sglang-mm/src/driver.rs
+@@ -8,6 +8,64 @@
+ use crate::common::{self, fetch, par, token_layout};
+ use crate::pipeline::{DecodedMedia, MmFamilyProcessor, PositionOutput, ProcessedItem};
+
++// AIS optional timing for the pinned upstream. The server supplies Linux
++// CLOCK_MONOTONIC; no Rust Instant epoch is compared with a Python timestamp.
++#[derive(Default)]
++struct AisTiming {
++    clock: Option<fn() -> u64>,
++    images: Vec<(u64, u64)>,
++    spans: Vec<serde_json::Value>,
++}
++
++thread_local! {
++    static AIS_TIMING: std::cell::RefCell<Option<AisTiming>> = const { std::cell::RefCell::new(None) };
++}
++
++pub fn ais_begin_timing(clock: Option<fn() -> u64>) {
++    AIS_TIMING.with(|state| {
++        *state.borrow_mut() = Some(AisTiming {
++            clock,
++            ..Default::default()
++        })
++    });
++}
++
++pub fn ais_take_timing() -> (Vec<(u64, u64)>, Vec<serde_json::Value>) {
++    AIS_TIMING.with(|state| {
++        let timing = state.borrow_mut().take().unwrap_or_default();
++        (timing.images, timing.spans)
++    })
++}
++
++fn ais_start() -> Option<u64> {
++    AIS_TIMING.with(|state| {
++        state
++            .borrow()
++            .as_ref()
++            .and_then(|v| v.clock)
++            .map(|clock| clock())
++    })
++}
++
++fn ais_span(
++    op: &str,
++    category: &str,
++    started_ns: Option<u64>,
++    ended_ns: Option<u64>,
++    metadata: impl FnOnce() -> serde_json::Value,
++) {
++    if let (Some(started_ns), Some(ended_ns)) = (started_ns, ended_ns) {
++        AIS_TIMING.with(|state| {
++            if let Some(timing) = state.borrow_mut().as_mut() {
++                timing.spans.push(serde_json::json!({
++                    "event": "boundary_span", "op": op, "category": category,
++                    "started_ns": started_ns, "ended_ns": ended_ns, "metadata": metadata(),
++                }));
++            }
++        });
++    }
++}
++
+ /// Per-request bounds: together with [`fetch::MAX_FETCH_BYTES`] they cap what
+ /// one request can make the pipeline buffer.
+ pub const MAX_ITEMS_PER_REQUEST: usize = 64;
+@@ -81,27 +139,86 @@ pub fn process(
+     // for other requests. Contract: callers on a fixed worker pool (the
+     // server) must resolve I/O-backed string sources — URLs and file paths —
+     // on their own I/O layer and pass `Bytes`.
+-    let mut fetched: Vec<std::borrow::Cow<'_, [u8]>> = Vec::with_capacity(input.images.len());
++    let mut fetched = Vec::with_capacity(input.images.len());
+     let mut total: u64 = 0;
+-    for source in &input.images {
++    for (image_index, source) in input.images.iter().enumerate() {
++        let resolve_start = ais_start();
+         let bytes = resolve(source)?;
++        ais_span(
++            "rust_resolve",
++            "cpu_input",
++            resolve_start,
++            ais_start(),
++            || {
++                serde_json::json!({"image_index": image_index, "encoded_bytes": bytes.len(),
++                "source": if matches!(source, ImageSource::Bytes(_)) { "bytes" } else { "string" }})
++            },
++        );
+         total += bytes.len() as u64;
+         if total > MAX_REQUEST_BYTES {
+             return Err(format!(
+                 "multimodal request exceeds {MAX_REQUEST_BYTES} total media bytes"
+             ));
+         }
+-        fetched.push(bytes);
++        fetched.push((image_index, bytes));
+     }
+-    let processed: Vec<(ProcessedItem, u64)> =
+-        par::try_map(&fetched, |bytes| -> Result<(ProcessedItem, u64), String> {
++    let processed: Vec<(ProcessedItem, u64)> = par::try_map(
++        &fetched,
++        |(image_index, bytes)| -> Result<(ProcessedItem, u64), String> {
++            let hash_start = ais_start();
+             let hash = common::content_hash_u64(bytes);
++            ais_span("rust_hash", "cpu_input", hash_start, ais_start(), || {
++                serde_json::json!({"image_index": image_index, "algorithm": "blake3",
++                    "hash_input_kind": "encoded_image", "hashed_bytes": bytes.len(),
++                    "encoded_bytes": bytes.len()})
++            });
+             // Inputs PIL accepts but decode_rgb refuses (e.g. 16-bit PNG)
+             // error here and reject the request.
++            let sampling = AIS_TIMING.with(|state| state.borrow().is_some());
++            let decode_start = ais_start();
++            let start = sampling.then(std::time::Instant::now);
+             let (rgb, height, width) = common::decode_rgb(bytes)?;
++            let decoded = sampling.then(std::time::Instant::now);
++            let decode_end = ais_start();
++            let process_start = ais_start();
++            let processing = sampling.then(std::time::Instant::now);
+             let item = family.process_item(&DecodedMedia::Image { rgb, height, width })?;
++            let processed = sampling.then(std::time::Instant::now);
++            let process_end = ais_start();
++            if let (Some(start), Some(decoded), Some(processing), Some(processed)) =
++                (start, decoded, processing, processed)
++            {
++                AIS_TIMING.with(|state| {
++                    if let Some(timing) = state.borrow_mut().as_mut() {
++                        timing.images.push((
++                            decoded.duration_since(start).as_nanos() as u64,
++                            processed.duration_since(processing).as_nanos() as u64,
++                        ));
++                    }
++                });
++            }
++            ais_span("rust_decode", "frontend", decode_start, decode_end, || {
++                serde_json::json!({"image_index": image_index, "encoded_bytes": bytes.len(),
++                    "height": height, "width": width, "decoded_bytes": height * width * 3})
++            });
++            ais_span(
++                "rust_processor",
++                "frontend",
++                process_start,
++                process_end,
++                || {
++                    let (dtype, feature_bytes) = match &item.feature.data {
++                        crate::pipeline::TensorData::F32(v) => ("float32", v.len() * 4),
++                        crate::pipeline::TensorData::I64(v) => ("int64", v.len() * 8),
++                    };
++                    serde_json::json!({"image_index": image_index, "feature_shape": item.feature.shape,
++                    "dtype": dtype, "feature_bytes": feature_bytes, "device": "cpu",
++                    "contiguous": true})
++                },
++            );
+             Ok((item, hash))
+-        })?;
++        },
++    )?;
+
+     let input_ids = match input.input_ids {
+         Some(input_ids) if !input_ids.is_empty() => input_ids,
+@@ -110,16 +227,63 @@ pub fn process(
+                 .text
+                 .as_deref()
+                 .ok_or("multimodal request without text or input_ids")?;
+-            tokenize(text)?
++            let token_start = ais_start();
++            let ids = tokenize(text)?;
++            ais_span(
++                "rust_tokenize",
++                "cpu_input",
++                token_start,
++                ais_start(),
++                || serde_json::json!({"text_bytes": text.len(), "input_tokens": ids.len()}),
++            );
++            ids
+         }
+     };
++    let geometry_start = ais_start();
+     let geometries = processed
+         .iter()
+         .map(|(item, _)| item.geometry.clone())
+         .collect::<Vec<_>>();
++    ais_span(
++        "rust_geometry",
++        "cpu_input",
++        geometry_start,
++        ais_start(),
++        || serde_json::json!({"image_count": geometries.len()}),
++    );
++    let layout_start = ais_start();
+     let layout = family.layout(&input_ids, &geometries)?;
++    ais_span(
++        "rust_layout",
++        "cpu_input",
++        layout_start,
++        ais_start(),
++        || serde_json::json!({"image_count": geometries.len(), "input_tokens": input_ids.len()}),
++    );
++    let expand_start = ais_start();
+     let expanded = token_layout::apply_layout(&input_ids, &layout, processed.len())?;
++    ais_span(
++        "rust_token_expand",
++        "cpu_input",
++        expand_start,
++        ais_start(),
++        || {
++            serde_json::json!({"image_count": geometries.len(), "input_tokens": input_ids.len(),
++            "expanded_tokens": expanded.input_ids.len()})
++        },
++    );
++    let position_start = ais_start();
+     let positions = family.positions(expanded.input_ids.len(), &expanded.offsets, &geometries)?;
++    ais_span(
++        "rust_mrope",
++        "cpu_input",
++        position_start,
++        ais_start(),
++        || {
++            serde_json::json!({"image_count": geometries.len(), "expanded_tokens": expanded.input_ids.len(),
++            "position_elements": expanded.input_ids.len() * 3})
++        },
++    );
+
+     Ok(Output {
+         input_ids: expanded.input_ids,
+@@ -152,6 +316,56 @@ mod tests {
+         buf.into_inner()
+     }
+
++    #[test]
++    fn timing_preserves_output_and_records_actual_work() {
++        fn clock() -> u64 {
++            static NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
++            NS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
++        }
++        let family = pipeline_from_spec(SPEC).unwrap();
++        let bytes = png(8, 8);
++        let encoded_bytes = bytes.len();
++        ais_begin_timing(Some(clock));
++        let output = process(
++            family.as_ref(),
++            MmInput {
++                text: Some("prompt".into()),
++                input_ids: None,
++                images: vec![
++                    ImageSource::Bytes(bytes.clone()),
++                    ImageSource::Bytes(bytes.clone()),
++                ],
++            },
++            |_| Ok(vec![7, 1, 1, 8]),
++        )
++        .unwrap();
++        assert_eq!(output.input_ids, vec![7, 1, 1, 1, 1, 1, 1, 1, 1, 8]);
++        assert_eq!(output.items[0].hash, common::content_hash_u64(&bytes));
++        let (images, spans) = ais_take_timing();
++        assert_eq!(images.len(), 2);
++        let hashes: Vec<_> = spans.iter().filter(|r| r["op"] == "rust_hash").collect();
++        assert_eq!(hashes.len(), 2);
++        assert_eq!(hashes[1]["metadata"]["image_index"], 1);
++        assert_eq!(hashes[0]["metadata"]["hashed_bytes"], encoded_bytes);
++        assert_eq!(hashes[0]["metadata"]["algorithm"], "blake3");
++        assert_eq!(
++            spans.iter().filter(|r| r["category"] == "frontend").count(),
++            4
++        );
++        let processor = spans.iter().find(|r| r["op"] == "rust_processor").unwrap();
++        assert_eq!(
++            processor["metadata"]["feature_shape"],
++            serde_json::json!([16, 24])
++        );
++        assert_eq!(processor["metadata"]["feature_bytes"], 16 * 24 * 4);
++        for row in &spans {
++            assert!(row["started_ns"].as_u64().unwrap() >= 1_000_000);
++            assert!(row["ended_ns"].as_u64().unwrap() >= row["started_ns"].as_u64().unwrap());
++        }
++        assert!(ais_start().is_none());
++        assert!(ais_take_timing().0.is_empty());
++    }
++
+     #[test]
+     fn processes_typed_image_request() {
+         let family = pipeline_from_spec(SPEC).unwrap();
+diff --git a/rust/sglang-server/src/ais_timing.rs b/rust/sglang-server/src/ais_timing.rs
+new file mode 100644
+index 0000000..5cb2dd2
+--- /dev/null
++++ b/rust/sglang-server/src/ais_timing.rs
+@@ -0,0 +1,166 @@
++//! AIS diagnostic instrumentation; original addition for the pinned SGLang
++//! timing patch. Disabled unless explicitly requested; no scheduling changes.
++
++use std::cell::RefCell;
++use std::collections::HashMap;
++use std::io::{BufWriter, Write};
++use std::sync::{Mutex, OnceLock};
++
++thread_local! {
++    static ROWS: RefCell<Vec<serde_json::Value>> = const { RefCell::new(Vec::new()) };
++}
++
++pub fn enabled() -> bool {
++    static ENABLED: OnceLock<bool> = OnceLock::new();
++    *ENABLED.get_or_init(|| {
++        std::env::var("AIS_VL_BOUNDARY_TRACE").is_ok_and(|v| v == "1")
++            && std::env::var_os("AIS_MM_TIMING_PATH").is_some()
++    })
++}
++
++pub fn legacy_enabled() -> bool {
++    static ENABLED: OnceLock<bool> = OnceLock::new();
++    *ENABLED.get_or_init(|| std::env::var_os("AIS_MM_TIMING_PATH").is_some())
++}
++
++pub fn clock_ns() -> u64 {
++    let mut ts = libc::timespec {
++        tv_sec: 0,
++        tv_nsec: 0,
++    };
++    // CLOCK_MONOTONIC is system-wide on this Linux serving host, matching
++    // time.monotonic_ns() in Python. Never substitute an Instant origin.
++    let rc = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
++    assert_eq!(rc, 0, "CLOCK_MONOTONIC unavailable");
++    ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64
++}
++
++pub fn start() -> Option<u64> {
++    enabled().then(clock_ns)
++}
++
++pub fn row(mut row: serde_json::Value, rid: &str) {
++    row["pid"] = std::process::id().into();
++    row["tid"] = (unsafe { libc::syscall(libc::SYS_gettid) } as u64).into();
++    row["clock"] = "CLOCK_MONOTONIC".into();
++    row["rid"] = rid.into();
++    row["rids"] = serde_json::json!([rid]);
++    ROWS.with(|rows| rows.borrow_mut().push(row));
++}
++
++pub fn point(op: &str, rid: &str) {
++    if let Some(ns) = start() {
++        row(
++            serde_json::json!({"event": "boundary_point", "op": op, "category": "scheduler",
++            "time_ns": ns, "started_ns": ns, "ended_ns": ns}),
++            rid,
++        );
++    }
++}
++
++pub fn span(
++    op: &str,
++    category: &str,
++    rid: &str,
++    start: Option<u64>,
++    metadata: impl FnOnce() -> serde_json::Value,
++) {
++    if let Some(started_ns) = start {
++        let ended_ns = clock_ns();
++        row(
++            serde_json::json!({"event": "boundary_span", "op": op, "category": category,
++            "started_ns": started_ns, "ended_ns": ended_ns, "metadata": metadata()}),
++            rid,
++        );
++    }
++}
++
++// One buffered file write per completed worker/intake/drain scope, rather than
++// opening and flushing the file around every image operation. The collector
++// still observes each legacy sample before the result is handed to the TM.
++pub fn flush() {
++    let rows = ROWS.with(|rows| std::mem::take(&mut *rows.borrow_mut()));
++    if rows.is_empty() {
++        return;
++    }
++    static WRITER: OnceLock<Mutex<BufWriter<std::fs::File>>> = OnceLock::new();
++    let writer = WRITER.get_or_init(|| {
++        let path = std::env::var_os("AIS_MM_TIMING_PATH").expect("timing path");
++        let file = std::fs::OpenOptions::new()
++            .create(true)
++            .append(true)
++            .open(path)
++            .expect("open AIS timing output");
++        Mutex::new(BufWriter::with_capacity(64 * 1024, file))
++    });
++    let mut writer = writer.lock().unwrap();
++    for row in rows {
++        serde_json::to_writer(&mut *writer, &row).expect("serialize AIS timing");
++        writer.write_all(b"\n").expect("write AIS timing");
++    }
++    writer.flush().expect("flush AIS timing");
++}
++
++pub struct Flush;
++impl Drop for Flush {
++    fn drop(&mut self) {
++        flush();
++    }
++}
++
++// Bytes keep their allocation as the request moves through the in-process
++// channel. Correlate that identity instead of re-parsing/hash-scanning headers.
++fn pending() -> &'static Mutex<HashMap<usize, String>> {
++    static PENDING: OnceLock<Mutex<HashMap<usize, String>>> = OnceLock::new();
++    PENDING.get_or_init(|| Mutex::new(HashMap::new()))
++}
++
++pub fn channel_push(header: &[u8], rid: &str) {
++    if enabled() {
++        pending()
++            .lock()
++            .unwrap()
++            .insert(header.as_ptr() as usize, rid.to_owned());
++        point("rust_channel_push", rid);
++    }
++}
++
++pub fn channel_pop(header: &[u8]) {
++    if enabled() {
++        if let Some(rid) = pending()
++            .lock()
++            .unwrap()
++            .remove(&(header.as_ptr() as usize))
++        {
++            point("rust_channel_pop", &rid);
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn monotonic_clock_agrees_across_worker_threads() {
++        let before = clock_ns();
++        let worker = std::thread::spawn(clock_ns).join().unwrap();
++        let after = clock_ns();
++        assert!(before <= worker && worker <= after);
++        assert!(after - before < 5_000_000_000);
++    }
++
++    #[test]
++    fn buffered_rows_preserve_rid_clock_and_native_thread_identity() {
++        row(
++            serde_json::json!({"event": "boundary_point"}),
++            "request-full-nonce",
++        );
++        let rows = ROWS.with(|rows| std::mem::take(&mut *rows.borrow_mut()));
++        assert_eq!(rows.len(), 1);
++        assert_eq!(rows[0]["clock"], "CLOCK_MONOTONIC");
++        assert_eq!(rows[0]["rids"], serde_json::json!(["request-full-nonce"]));
++        assert_eq!(rows[0]["pid"], std::process::id());
++        assert!(rows[0]["tid"].as_u64().unwrap() > 0);
++    }
++}
+diff --git a/rust/sglang-server/src/lib.rs b/rust/sglang-server/src/lib.rs
+index 000ebdd..fdcb7b8 100644
+--- a/rust/sglang-server/src/lib.rs
++++ b/rust/sglang-server/src/lib.rs
+@@ -11,6 +11,7 @@
+ //! SSE streaming, and so on — is implemented purely in Rust and never touches
+ //! a `PyObject`.
+
++mod ais_timing;
+ mod api_server;
+ mod message;
+ mod multi_modality;
+@@ -220,6 +221,9 @@ impl Server {
+     fn take_mm_result(&self, py: Python<'_>, rid: &str) -> Option<MmEncodeResult> {
+         use numpy::IntoPyArray;
+
++        let _flush = ais_timing::Flush;
++        let started = ais_timing::start();
++        ais_timing::point("rust_take_mm_result", rid);
+         let res = self.rt.mm_sidecar.take(rid)?;
+         let (features, shm_names) = match res.features {
+             multi_modality::sidecar::FeatureStore::Inline(v) => {
+@@ -232,7 +236,7 @@ impl Server {
+                 Some(segments.into_iter().map(|s| s.into_name()).collect()),
+             ),
+         };
+-        Some(MmEncodeResult {
++        let output = MmEncodeResult {
+             features,
+             shm_names,
+             grids: res.grids.iter().map(|g| (g[0], g[1], g[2])).collect(),
+@@ -240,7 +244,15 @@ impl Server {
+             offsets: res.offsets,
+             mrope: res.mrope.into_pyarray(py).unbind(),
+             mrope_delta: res.mrope_delta,
+-        })
++        };
++        ais_timing::span(
++            "rust_numpy_handoff",
++            "cpu_input",
++            rid,
++            started,
++            || serde_json::json!({"image_count": output.grids.len(), "zero_copy": true}),
++        );
++        Some(output)
+     }
+
+     /// Signal all threads to stop (best effort).
+diff --git a/rust/sglang-server/src/multi_modality/worker.rs b/rust/sglang-server/src/multi_modality/worker.rs
+index 280d24c..f5c8350 100644
+--- a/rust/sglang-server/src/multi_modality/worker.rs
++++ b/rust/sglang-server/src/multi_modality/worker.rs
+@@ -3,6 +3,8 @@
+
+ use std::sync::Arc;
+
++use crate::ais_timing as ais;
++
+ use super::sidecar::{FeatureStore, MmSidecarEntry, Sidecar, park_features_in_shm};
+ use crate::message::config::MmSpec;
+ use crate::message::ids::Rid;
+@@ -79,21 +81,81 @@ fn process(
+     rid: &Rid,
+     mut work: crate::message::request::MmWorkItem,
+ ) -> Result<Vec<i32>, String> {
++    let payload_start = ais::start();
+     let caller_hashes = std::mem::take(&mut work.mm_hashes);
+     let input = super::payload::to_mm_input(work)?;
++    ais::span(
++        "rust_payload",
++        "cpu_input",
++        rid.as_str(),
++        payload_start,
++        || serde_json::json!({"image_count": input.images.len(), "caller_hash_count": caller_hashes.len()}),
++    );
++    let sampling = ais::legacy_enabled();
++    let started_ns = sampling.then(ais::clock_ns);
++    if sampling {
++        sglang_mm::driver::ais_begin_timing(ais::enabled().then_some(ais::clock_ns));
++    }
+     let output = sglang_mm::driver::process(ctx.family.as_ref(), input, |text| {
+         let tokenizer = ctx.tokenizer.as_ref().ok_or_else(|| {
+             "skip_tokenizer_init is set: multimodal text prompts require input_ids".to_string()
+         })?;
+         tokenizer.encode(text).map_err(|error| error.to_string())
+     })?;
++    if let Some(started_ns) = started_ns {
++        let ended_ns = ais::clock_ns();
++        let (image_timings_ns, spans) = sglang_mm::driver::ais_take_timing();
++        ais::row(
++            serde_json::json!({"started_ns": started_ns, "ended_ns": ended_ns,
++            "image_timings_ns": image_timings_ns}),
++            rid.as_str(),
++        );
++        for row in spans {
++            ais::row(row, rid.as_str());
++        }
++        if ais::enabled() {
++            ais::row(
++                serde_json::json!({"event": "boundary_span", "op": "rust_driver",
++                "category": "cpu_input", "started_ns": started_ns, "ended_ns": ended_ns,
++                "metadata": {"container": true}}),
++                rid.as_str(),
++            );
++        }
++    }
++    let pack_start = ais::start();
+     let mut drain = sglang_mm::qwen_vl::pack_drain(output)?;
++    ais::span("rust_pack", "transfer", rid.as_str(), pack_start, || {
++        serde_json::json!({"feature_bytes": drain.features.len() * 4, "dtype": "float32",
++            "image_count": drain.grids.len(), "expanded_tokens": drain.input_ids.len(),
++            "position_elements": drain.mrope.len(), "grids": drain.grids})
++    });
++    let override_start = ais::start();
+     apply_caller_hashes(&mut drain.hashes, &caller_hashes);
++    ais::span(
++        "rust_hash_override",
++        "cpu_input",
++        rid.as_str(),
++        override_start,
++        || serde_json::json!({"image_count": drain.hashes.len(), "caller_hash_count": caller_hashes.len()}),
++    );
++    let feature_bytes = drain.features.len() * 4;
++    let feature_start = ais::start();
+     let features = if ctx.feature_shm {
+         park_features_in_shm(&drain.features, &drain.grids)
+     } else {
+         FeatureStore::Inline(drain.features)
+     };
++    ais::span(
++        "rust_feature_store",
++        "transfer",
++        rid.as_str(),
++        feature_start,
++        || {
++            serde_json::json!({"feature_bytes": feature_bytes, "shm": ctx.feature_shm,
++            "copied_bytes": if ctx.feature_shm { feature_bytes } else { 0 }})
++        },
++    );
++    let sidecar_start = ais::start();
+     ctx.sidecar.park(
+         rid.as_str().to_owned(),
+         MmSidecarEntry {
+@@ -105,6 +167,13 @@ fn process(
+             mrope_delta: drain.mrope_delta,
+         },
+     );
++    ais::span(
++        "rust_sidecar_park",
++        "cpu_input",
++        rid.as_str(),
++        sidecar_start,
++        || serde_json::json!({"expanded_tokens": drain.input_ids.len()}),
++    );
+     Ok(drain.input_ids)
+ }
+
+@@ -132,8 +201,20 @@ impl Runnable for MmWorker {
+     /// concurrency; an error rejects the request back to the client.
+     fn run(self) {
+         while let Ok(req) = self.rx.recv() {
++            let _flush = ais::Flush;
+             let rid = req.rid;
+-            let event = match process(&self.ctx, &rid, req.work) {
++            ais::point("rust_worker_start", rid.as_str());
++            let worker_start = ais::start();
++            let result = process(&self.ctx, &rid, req.work);
++            ais::span(
++                "rust_worker",
++                "cpu_input",
++                rid.as_str(),
++                worker_start,
++                || serde_json::json!({"container": true, "ok": result.is_ok()}),
++            );
++            ais::point("rust_worker_ready", rid.as_str());
++            let event = match result {
+                 Ok(input_ids) => {
+                     tracing::debug!(%rid, tokens = input_ids.len(), "mm: processed");
+                     TmEvent::MmEncoded { rid, input_ids }
+@@ -143,6 +224,16 @@ impl Runnable for MmWorker {
+                     TmEvent::MmFailed { rid, message }
+                 }
+             };
++            let send_rid = ais::enabled().then(|| match &event {
++                TmEvent::MmEncoded { rid, .. } | TmEvent::MmFailed { rid, .. } => {
++                    rid.as_str().to_owned()
++                }
++                _ => unreachable!(),
++            });
++            ais::flush();
++            if let Some(rid) = &send_rid {
++                ais::point("rust_worker_send", rid);
++            }
+             if self.tm.send(event).is_err() {
+                 return; // to-scheduler gone: shutdown
+             }
+diff --git a/rust/sglang-server/src/tokenizer_manager/channel.rs b/rust/sglang-server/src/tokenizer_manager/channel.rs
+index 67e6e75..a822383 100644
+--- a/rust/sglang-server/src/tokenizer_manager/channel.rs
++++ b/rust/sglang-server/src/tokenizer_manager/channel.rs
+@@ -10,6 +10,8 @@ use std::time::Duration;
+
+ use bytes::Bytes;
+
++use crate::ais_timing as ais;
++
+ use crate::message::request::SchedulerRequest;
+
+ /// ToSchedulerTx: TokenizerManager → scheduler `recv_requests`.
+@@ -82,6 +84,7 @@ impl ToSchedulerRx {
+     /// instantly when the ring is empty, and `Err(_) => break` exits the loop
+     /// right away.
+     pub fn drain(&self, max: usize) -> RequestColumns {
++        let _flush = ais::Flush;
+         let mut batch = RequestColumns::default();
+         // A message parked by a prior blocking `wait` is delivered first.
+         if let Some(m) = self.stash.lock().unwrap().take() {
+@@ -119,6 +122,7 @@ impl ToSchedulerRx {
+ /// Append one drained message's columnar cells to the batch.
+ #[inline]
+ fn push_msg(batch: &mut RequestColumns, m: SchedulerRequest) {
++    ais::channel_pop(&m.header);
+     batch.ids_total += m.ids.len();
+     batch.lengths.push((m.ids.len() / 8) as u32); // int64 cell → tokens
+     batch.headers.push(m.header);
+diff --git a/rust/sglang-server/src/tokenizer_manager/to_scheduler.rs b/rust/sglang-server/src/tokenizer_manager/to_scheduler.rs
+index ea8597c..091e179 100644
+--- a/rust/sglang-server/src/tokenizer_manager/to_scheduler.rs
++++ b/rust/sglang-server/src/tokenizer_manager/to_scheduler.rs
+@@ -4,6 +4,8 @@ use std::collections::HashMap;
+
+ use bytes::Bytes;
+
++use crate::ais_timing as ais;
++
+ use crate::message::detok::DetokMsg;
+ use crate::message::ids::Rid;
+ use crate::message::io_struct::{AbortReq, ControlRequest};
+@@ -141,6 +143,7 @@ impl Intake {
+     /// the FSM; the loop re-dispatches. The arms are the design table's states,
+     /// `Failed` the single reject path.
+     fn drive(&mut self, mut req: Request) {
++        let _flush = ais::Flush;
+         // Flipped once `register_detok` succeeds; `fail` must not deregister before
+         // that (see `fail`). A pool return re-enters `drive` already registered.
+         let mut registered = !matches!(req.state, RequestState::Received);
+@@ -238,6 +241,7 @@ impl Intake {
+                     };
+                     // Full = the pool can't keep up, so back-pressure like a full
+                     // to_scheduler channel. Disconnected = pool gone.
++                    ais::point("rust_worker_queue", req.rid.as_str());
+                     if let Err(e) = self.mm.tx.try_send(msg) {
+                         let err = match e {
+                             flume::TrySendError::Full(_) => Error::QueueFull,
+@@ -396,6 +400,8 @@ impl Intake {
+     /// (pre-send checks → ring). No pending entry means the request was already
+     /// rejected or aborted, so the result is dropped.
+     fn on_mm_encoded(&mut self, rid: Rid, input_ids: Vec<i32>) {
++        let _flush = ais::Flush;
++        ais::point("rust_tm_receive", rid.as_str());
+         let Some(mut req) = self.pending_mm.remove(&rid) else {
+             tracing::debug!(rid = %rid, "mm result for unknown/finished request; dropped");
+             // It will never reach the scheduler drain, so purge or leak.
+@@ -463,6 +469,7 @@ impl Intake {
+     /// Serialize the tokenized request to its `TokenizedGenerateReqInput` wire and
+     /// push it onto the to_scheduler channel for the scheduler. On backpressure, fail it.
+     fn push_to_ring(&self, mut req: Request) {
++        let encode_start = ais::start();
+         // Only generate requests reach here (control uses `push_control_to_ring`).
+         // Validate + serialize while borrowing `g` immutably; the resulting `Bytes`
+         // own their data, so the borrow ends before any `fail(&mut req)`.
+@@ -483,6 +490,17 @@ impl Intake {
+             }
+         };
+
++        ais::span(
++            "rust_request_encode",
++            "cpu_input",
++            req.rid.as_str(),
++            encode_start,
++            || {
++                serde_json::json!({"header_bytes": header.len(), "input_id_bytes": ids.len(),
++                "expanded_tokens": ids.len() / 8})
++            },
++        );
++        ais::channel_push(&header, req.rid.as_str());
+         if !self
+             .to_scheduler_tx
+             .try_push(SchedulerRequest { header, ids })

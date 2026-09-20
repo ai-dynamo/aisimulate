@@ -259,6 +259,9 @@ class HostProfileConfig(StrictModel):
 
     path: str = Field(min_length=1)
     frontend: Literal["python", "rust"]
+    on_missing: Literal["error", "calibrate"] = Field(
+        default="error", description="calibrate: sample the workload on this host into `path` when it does not exist."
+    )
 
 
 class VisionPredictionConfig(StrictModel):

@@ -372,10 +372,24 @@ def _resolve_host_profile(
     """Fill the worker's host and frontend tables from its measured profile, if it names one."""
     if worker.host_profile is None:
         return worker, {}
+    from pathlib import Path
+
     from .vl.profile import load_host_profile, lower_host_profile, match_host_profile, profile_id
 
-    profile = load_host_profile(worker.host_profile.path)
     images = workload.get("images")
+    if not Path(worker.host_profile.path).exists() and worker.host_profile.on_missing == "calibrate":
+        from .vl.calibrate import calibrate_in_subprocess
+
+        if not isinstance(images, dict):
+            raise ValueError("host_profile.on_missing='calibrate' requires an image workload to sample")
+        profile = calibrate_in_subprocess(
+            output=worker.host_profile.path,
+            model=engine.model,
+            frontend=worker.host_profile.frontend,
+            images=images,
+        )
+    else:
+        profile = load_host_profile(worker.host_profile.path)
     match_host_profile(
         profile,
         model=engine.model,

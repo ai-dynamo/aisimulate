@@ -4,6 +4,7 @@
 """Native VL replay: image workloads encoded on a host-aware SGLang worker."""
 
 import json
+import subprocess
 from copy import deepcopy
 
 import pytest
@@ -220,3 +221,46 @@ def test_host_profile_mismatches_fail_closed(tmp_path, kind):
     }
     with pytest.raises(ValueError, match=expected):
         prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+
+
+def test_missing_profile_is_calibrated_in_an_unsupervised_subprocess(
+    tmp_path, monkeypatch
+):
+    profile_path = tmp_path / "fresh-profile.json"
+    raw = _prediction()
+    worker = raw["engine"]["workers"]["aggregated"]
+    del worker["host"], worker["frontend"]
+    worker["host_profile"] = {
+        "path": str(profile_path),
+        "frontend": "python",
+        "on_missing": "calibrate",
+    }
+    monkeypatch.setenv("OMP_NUM_THREADS", "1")
+    monkeypatch.setenv("_AISIMULATE_SUPERVISED_BUDGET", "{}")
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["env"] = kwargs["env"]
+        profile_path.write_text(json.dumps(_host_profile()))
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    assert seen["command"][1:5] == [
+        "-m",
+        "aisimulate.vl.calibrate",
+        "--frontend",
+        "python",
+    ]
+    assert "--images" in seen["command"] and "448x448x1" in seen["command"]
+    assert (
+        "OMP_NUM_THREADS" not in seen["env"]
+        and "_AISIMULATE_SUPERVISED_BUDGET" not in seen["env"]
+    )
+    assert (
+        spec.backend_deployment.agg_engine_args["sglang"]["host"]["launch_extend"][
+            "const_ms"
+        ]
+        == 5.0
+    )
