@@ -340,9 +340,13 @@ findings:
       regression; see vllm_0290_dsv4_cutedsl CORRECTED). With the token-budget fix (round to 64) DSV4 serves on
       0.29, so dsa_* and dsv4_* can move pins TOGETHER and no family split is required for the 0.29 upgrade.
       Remaining owner decisions on this thread: (1) approve the generic generator rounding rule (or accept
-      per-checkpoint cli_extra_args as the interim); (2) dsv4 op-collector 0.29 validation is still pending (the
-      sweep skipped it under the retracted verdict) — run it through the 029 lane flow before moving the family
-      pin. Historical context kept: DSA lane collect_mla_module_029.py validated (FLASH_ATTN_MLA_SPARSE bf16-kv /
+      per-checkpoint cli_extra_args as the interim); (2) dsv4 op-collector 0.29 lane SHIPPED 2026-09-20
+      (collect_dsv4_029.py: storage_block_size/get_kv_cache_shape removal -> generic byte-shape pipeline; builder
+      block_table_width + zero-padded table, the B300 family-100 contract applied preventively; binding via
+      bind_kv_cache). SM90 smokes green csa/hca x ctx/gen, backend FLASHMLA_SPARSE_DSV4, fp8_ds_mla layout +
+      FP8 Lightning-Indexer cache engaged. path_diff verdict still pending: it needs an ok DSV4 serving record at
+      0.29, which needs the 64-aligned budget in the workspace render chain (the aic rule is unfixed; fix lives in
+      aisimulate branch fix/generator-round-vllm-batched-tokens). Historical context kept: DSA lane collect_mla_module_029.py validated (FLASH_ATTN_MLA_SPARSE bf16-kv /
       FLASHMLA_SPARSE fp8-kv, both keys need collection), first live copy-on-upgrade instance.'
     applies_to:
     - family:sparse_attention
