@@ -824,6 +824,25 @@ def _create_kv_cache_and_metadata(
             builder_kwargs["block_table_width"] = get_block_table_width(
                 max_num_blocks, indexer_spec.block_size
             )
+            # Serving allocates the block table AT block_table_width columns
+            # (v1/worker/block_table.py), so builders may assume
+            # table.shape[1] == width. The family-100 decode path acts on
+            # that assumption: it copies the metadata's table into
+            # expanded_block_table_buffer sized by the width
+            # (v1/attention/backends/mla/indexer.py:609,745@0.29.0) and
+            # crashes on our ceil(seq/block)-column table ("expanded size
+            # (64) must match existing size (32)"). Zero-pad to the width —
+            # padding blocks are never dereferenced for absent tokens. SM90
+            # paths never read the expanded buffer, which is why this stayed
+            # latent on H20 (found on B300, 2026-09-20).
+            _width = builder_kwargs["block_table_width"]
+            _bt = common_attn_metadata.block_table_tensor
+            if _bt.shape[1] < _width:
+                _pad = torch.zeros(
+                    (_bt.shape[0], _width - _bt.shape[1]),
+                    dtype=_bt.dtype, device=_bt.device,
+                )
+                common_attn_metadata.block_table_tensor = torch.cat([_bt, _pad], dim=1)
         indexer_builder = indexer_builder_cls(
             indexer_spec, [indexer_layer_name], vllm_config, torch.device(device), **builder_kwargs
         )

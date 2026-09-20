@@ -6,7 +6,11 @@ findings:
   dummy_notes:
     statement: layer-kind period is FRAMEWORK-HARDCODED (sglang llama4.py:217 use_rope=(layer_id+1)%4!=0) with no
       config field -> _ARCH_IMPLICIT_PERIODS; aic-core config lacks vision_config -> merged from unsloth mirror
-      (vllm builds the vision tower and profiles it even for text-only probes).
+      (vllm builds the vision tower and profiles it even for text-only probes). The manual mirror-merge step BIT
+      on B300 (2026-09-20) — the gated-config fallback used the core copy WITHOUT vision_config, vllm assumed
+      default vision sizes (1025 pos) vs the mirror preprocessor's 336px (577) and both Llama-4 probes 'failed';
+      codified since as fetch_assets' mirror-config fallback (B300 patch, pending merge) — after rebuilding the
+      dummies both pass.
     applies_to:
     - meta-llama/Llama-4-Scout-17B-16E-Instruct
   k3_deepep:
@@ -229,18 +233,22 @@ findings:
     - zai-org/GLM-5.2-FP8
     - moonshotai/Kimi-K2.5
   vllm_0290_dsa_blackwell_paths_unvalidated:
-    statement: 'SOURCE-DERIVED, HARDWARE-UNVALIDATED (no Blackwell box; every claim needs an on-silicon path_diff
-      verdict before any data ships). vllm 0.29 DSV32 sparse attention on Blackwell: module class is SM-independent
-      (registry.py:94 -> DeepseekV32Attention; fused_norm_rope prelude has no SM gate) so the 029 lane''s construction
-      carries over. Backend candidates differ wholesale (platforms/cuda.py:95-143, major==10, ordering per vllm#35807):
-      bf16-kv heads>16 -> FLASHMLA_SPARSE first; fp8-kv or heads<=16 -> FLASHINFER_MLA_SPARSE first. SM90''s first
-      choice FLASH_ATTN_MLA_SPARSE does not exist above SM9x (flashattn_mla_sparse.py:71-72 major==9 only). FLASHMLA_SPARSE
-      itself forks internals by family (flashmla_sparse.py:239,287: decode thresholds head128 1024-vs-256, SM-partitioning).
-      Indexer forks too (indexer.py:475-503): family-100 uses varlen_paged_mqa_logits + native decode for all next_n;
-      SM90 uses flattened query lens. B200 vs B300: NO distinction anywhere on this vllm chain (major==10 family
-      semantics, no 103 special-case) — but sglang DOES gate on SM103 (K3 SP collective), so SM100/SM103 must be
-      validated separately. SM120: TRITON_MLA + FLASHINFER_MLA_SPARSE_SM120 (cuda.py:130-134). Consequence: DSA
-      attention perf rows are strictly per-SM; nothing collected on H20 represents Blackwell.'
+    statement: 'HARDWARE-VALIDATED on B300/SM103 2026-09-20 (upgrades the source-derived pre-read; evidence
+      results/pathdiff/sm103/vllm-0.29.0/*.json in the B300 workspace, pending its patch landing): backend selection
+      matched the pre-read — DSA ctx bf16 -> FLASHMLA_SPARSE (2.42ms b1 s512), fp8 -> FLASHINFER_MLA_SPARSE (1.58ms);
+      MSA -> MiniMaxM3SparseMSAImpl; dense attn -> flashinfer trtllm prefill/decode. The 029 lane construction
+      carried over with ZERO arch edits — the one bug found was arch-NEUTRAL: the lane handed the indexer builder
+      block_table_width=get_block_table_width(max_model_len)=64 while its own block_table_tensor had ceil(seq/block)=32
+      columns; serving allocates the table AT the width (v1/worker/block_table.py) so builders assume equality, and
+      only the family-100 decode path reads the expanded buffer (indexer.py:609,745) — latent on SM90. Fixed by
+      zero-padding the table to the width; SM90 re-smoke green (gen bf16 0.190ms FLASH_ATTN_MLA_SPARSE, fp8 0.187ms
+      FLASHMLA_SPARSE, ctx 1.97ms) and all 3 sm90 dsa verdicts re-emitted aligned. CORRECTION to the pre-read:
+      "B200 = B300 on the vllm chain" holds only at DISPATCH level (family-100, no 103 special-case) — at kernel
+      identity level B300 prefill runs fmhaSm103a* cubins while decode runs fmhaSm100f* (B300 probe evidence), so
+      SM100 and SM103 need separate perf rows. Prior pre-read kept for the record: FLASH_ATTN_MLA_SPARSE is
+      major==9-only (flashattn_mla_sparse.py:71-72); indexer family-100 uses varlen_paged_mqa_logits
+      (indexer.py:475-503); SM120: TRITON_MLA + FLASHINFER_MLA_SPARSE_SM120 (cuda.py:130-134). DSA attention perf
+      rows remain strictly per-SM.'
     applies_to:
     - family:sparse_attention
     - platform:sm100
@@ -276,9 +284,13 @@ findings:
       + 6016 (=64*94) PASSES (ab_dsv4_tok6016_0290.json). Routing is SM-agnostic (compressor.py:402 is_cuda &
       head=512 -> cutedsl on every SM; triton only for AMD/XPU/head-128), so B200 would crash identically under
       6012 — not a Hopper-specific kernel bug. Dual attribution: vllm robustness bug (pad slot-mapping rows or
-      relax the assert; worth reporting upstream) + generator trigger (odd token budget). Expressible rescue today:
-      cli_extra_args --max-num-batched-tokens rounded to a multiple of 64; proper fix is a GENERIC generator rule
-      (round max_num_batched_tokens up to 64) — owner approval needed, cross-module. Consequence: the
+      relax the assert; worth reporting upstream) + generator trigger (odd token budget). REPRODUCED ON B300/SM103 2026-09-20
+      (same Misaligned crash on all 8 DSV4 checkpoints, same single-variable flip: 6012->6016 makes
+      DSV4-Pro-0813 serve with native fp4 kernels). Birthplace located: the vllm rule plugin''s agg formula
+      max_batch_size + isl + 1500 (generator/rule_plugin/vllm.rule) — and the rule runs AFTER --generator-set,
+      silently overriding a user-supplied params.agg.max_num_tokens (separate defect, still open). FIX SHIPPED on
+      branch fix/generator-round-vllm-batched-tokens: rule budgets rounded up to 64 at the source + the render-layer
+      mapping rounds as last-line guard; 6 unit tests. Consequence: the
       sparse_attention family split is NO LONGER FORCED by dsv4 (see vllm_0290_sparse_family_split_needed).'
     applies_to:
     - deepseek-ai/DeepSeek-V4-Flash
@@ -397,3 +409,23 @@ findings:
     - instrument:kernel_taxonomy
     - MiniMaxAI/MiniMax-M3
     - deepseek-ai/DeepSeek-V3.2
+  cross_sm_evidence_contamination:
+    statement: 'HARNESS STRUCTURAL LESSON (B300 first run outside H20, 2026-09-20): gate evidence keyed by
+      (fw, version) alone let a fresh arch INHERIT another arch''s green checks — with zero B300 jobs run,
+      workflow_check --param sm=sm103 reported path_aligned (7 sm90 verdicts) and customizations_retested (9 sm90
+      records), and saving B300 verdicts would have OVERWRITTEN the sm90 files. Same class: kernel_taxonomy was a
+      de-facto SM90 vocabulary (Blackwell fmhaSm103a*/fmhaSm100f*/sm100 cutlass/deepgemm-sm100/fp4 kernels all
+      unmatched -> attn path_diff went "empty vs empty" ALIGNED, a false green; missing serving kernels made dsa
+      falsely diverged); per-checkpoint customizations keyed (repo, fw) carried a 143GB-H20 memory workaround to a
+      275GB B300. Fixes landed on H20: results/pathdiff/<sm>/<fw>-<ver>/ + results/retests/<sm>/<fw>-<ver>.yaml
+      (sm90 evidence git-mv''d; sm103 view now shows honest todos), and path_diff emits "inconclusive" when the
+      collector signal set is empty (B300 patch, pending). Rule going forward: SM is a first-class dimension of
+      gate evidence, taxonomy rules (arch-anchored + audited against other arches'' records before merge),
+      customization facts, and case plans; editing a shared file re-opens verdicts for every SM with shipped data
+      (unverified_sms when no box is available). Collectors do NOT fork per arch — dispatch stays the framework''s.'
+    applies_to:
+    - instrument:workflow_check
+    - instrument:kernel_taxonomy
+    - instrument:path_diff
+    - platform:sm90
+    - platform:sm103

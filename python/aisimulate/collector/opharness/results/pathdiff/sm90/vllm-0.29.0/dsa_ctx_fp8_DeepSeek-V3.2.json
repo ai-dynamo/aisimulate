@@ -10,11 +10,8 @@
  ],
  "serving_backends": [
   "cublas",
-  "cutlass",
-  "deepgemm",
   "dsa_nsa",
   "fa3",
-  "sgl_kernel",
   "triton",
   "triton_fused_moe",
   "vllm_kernel"
@@ -24,14 +21,12 @@
  "serving_kernels_matched_in_collector": [
   "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
-  "cublasLt::splitKreduce_kernel",
-  "deep_gemm::fp8_gemm_kernel_swapAB",
   "flash::FlashAttnFwdSm90",
   "flash::prepare_varlen_num_blocks_kernel",
   "fused_moe_kernel",
   "namespace",
-  "per_token_group_quant_8bit_kernel",
-  "tensorrt_llm::kernels::fp8_blockscale_gemm::scale_1x128_kernel"
+  "vllm::cp_gather_indexer_k_quant_cache_kernel",
+  "vllm::moe::grouped_topk_fused_small_expert_count_kernel"
  ],
  "collector_unmatched_kernels": [
   "_fused_norm_rope_kernel",

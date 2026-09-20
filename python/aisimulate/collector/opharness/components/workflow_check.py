@@ -137,7 +137,7 @@ def pred_fails_root_caused(p):
 
 def pred_customizations_retested(p):
     """Every per-checkpoint cli_extra_args for this fw needs a retest record
-    at the new version: results/retests/<fw>-<version>.yaml maps each repo to
+    at the new version: results/retests/<sm>/<fw>-<version>.yaml maps each repo to
     still_needed|dropped. Produced by the AI step; this checks completeness."""
     t = _load_targets()
     custom = set()
@@ -150,7 +150,10 @@ def pred_customizations_retested(p):
                 custom.add(repo)
     if not custom:
         return True, "no per-checkpoint customizations for this framework"
-    rp = HARNESS / "results" / "retests" / f"{p['fw']}-{p['version']}.yaml"
+    # SM is a gate dimension (B300 finding 2026-09-20: (fw, version)-keyed
+    # evidence let a fresh arch inherit another arch's green checks and let
+    # new verdicts overwrite the old arch's files).
+    rp = HARNESS / "results" / "retests" / p.get("sm", "sm90") / f"{p['fw']}-{p['version']}.yaml"
     if not rp.exists():
         return False, f"{len(custom)} customizations, no retest record ({rp.name})"
     rec = yaml.safe_load(rp.read_text()) or {}
@@ -166,10 +169,11 @@ def pred_customizations_retested(p):
 def pred_path_verdicts_aligned(p):
     """path_diff verdict files exist for this (fw, version) and every one is
     'aligned' — profiler-measured on both sides; class names never count."""
-    vd = HARNESS / "results" / "pathdiff" / f"{p['fw']}-{p['version']}"
+    sm = p.get("sm", "sm90")
+    vd = HARNESS / "results" / "pathdiff" / sm / f"{p['fw']}-{p['version']}"
     files = sorted(vd.glob("*.json")) if vd.exists() else []
     if not files:
-        return False, f"no path_diff verdicts under results/pathdiff/{p['fw']}-{p['version']}/"
+        return False, f"no path_diff verdicts under results/pathdiff/{sm}/{p['fw']}-{p['version']}/"
     bad = [f.name for f in files if json.loads(f.read_text()).get("verdict") != "aligned"]
     if bad:
         return False, f"diverged verdicts: {bad[:3]}"
