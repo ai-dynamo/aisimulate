@@ -612,7 +612,7 @@ class SearchSpace(BaseModel):
     agg_max_prefill_tokens: int | None = None
     agg_host: dict[str, Any] | None = None
     agg_frontend: dict[str, Any] | None = None
-    agg_host_profile: dict[str, Any] | None = None
+    # Content digest of the measured profile the pinned tables were resolved from.
     agg_host_profile_digest: str | None = None
     agg_tp_sync_ms: dict[str, float] | None = None
     agg_vision: dict[str, Any] | None = None

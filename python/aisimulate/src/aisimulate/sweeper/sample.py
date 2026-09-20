@@ -40,7 +40,6 @@ _AGG_PINNED = (
     "agg_max_prefill_tokens",
     "agg_host",
     "agg_frontend",
-    "agg_host_profile",
     "agg_host_profile_digest",
     "agg_tp_sync_ms",
     "agg_vision",

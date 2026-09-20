@@ -331,7 +331,6 @@ def build_backend_deployment(
     if mode == "agg" and sample.get("agg_host_profile_digest") is not None:
         common["performance_model_metadata"]["aggregated"]["vl"] = {
             "host_profile_digest": sample["agg_host_profile_digest"],
-            "frontend": sample["agg_host_profile"]["frontend"],
         }
     if mode == "agg":
         return BackendDeploymentSpec(

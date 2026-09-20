@@ -29,6 +29,26 @@ class Span:
         return (self.ended_ns - self.started_ns) / 1e6
 
 
+def union_ms(spans: Iterable[Span]) -> float:
+    """Length of the interval union: time during which at least one span was running.
+
+    Pool work of one request runs in parallel, so its spans overlap; summing
+    them would subtract the same wall-clock interval more than once.
+    """
+    total = 0
+    current: tuple[int, int] | None = None
+    for started, ended in sorted((span.started_ns, span.ended_ns) for span in spans):
+        if current is not None and started <= current[1]:
+            current = (current[0], max(current[1], ended))
+            continue
+        if current is not None:
+            total += current[1] - current[0]
+        current = (started, ended)
+    if current is not None:
+        total += current[1] - current[0]
+    return total / 1e6
+
+
 def mean_active_concurrency(spans: Sequence[Span]) -> list[float]:
     """Time-averaged number of spans overlapping each span, itself included.
 
@@ -53,28 +73,42 @@ def steady_samples(spans: Sequence[Span], target: int) -> list[Span]:
     ]
 
 
+def curves_by_active_concurrency(spans: Sequence[Span], capacity: int) -> dict[int, list[Span]]:
+    """Group observed spans by the (rounded) concurrency they ran under, clamped to `capacity`."""
+    curves: dict[int, list[Span]] = {}
+    for span, active in zip(spans, mean_active_concurrency(spans), strict=True):
+        curves.setdefault(min(max(round(active), 1), capacity), []).append(span)
+    return curves
+
+
 def mean_service_ms(spans: Iterable[Span]) -> float:
     return statistics.fmean(span.service_ms for span in spans)
 
 
-def stage_costs(curves: dict[int, Sequence[Span]]) -> tuple[CostFnConfig, list[float]]:
+def stage_costs(curves: dict[int, Sequence[Span]], *, capacity: int | None = None) -> tuple[CostFnConfig, list[float]]:
     """Lower per-concurrency service curves of one fixed workload shape.
 
     Every sample processes the same shape, so the cost is a constant per job and
-    sharing shows up as a per-concurrency scale relative to running alone.
+    sharing shows up as a per-concurrency scale relative to running alone. The
+    scale must cover every level from one to `capacity` (the resource's worker
+    count; the highest measured level when omitted) with steady samples, or the
+    engine would reject the table or silently run unmeasured levels.
     """
     if 1 not in curves:
         raise ValueError("stage curves must include the single-job concurrency")
+    capacity = max(curves) if capacity is None else capacity
+    problems = []
     means = {}
-    for concurrency, spans in sorted(curves.items()):
-        steady = steady_samples(spans, concurrency)
+    for concurrency in range(1, capacity + 1):
+        steady = steady_samples(curves.get(concurrency, ()), concurrency)
         if len(steady) < MIN_STEADY_SAMPLES:
-            raise ValueError(
-                f"concurrency {concurrency} has {len(steady)} steady samples; at least {MIN_STEADY_SAMPLES} are needed"
-            )
+            problems.append(f"concurrency {concurrency} has {len(steady)} steady samples")
+            continue
         means[concurrency] = mean_service_ms(steady)
-    capacity = max(means)
-    if set(means) != set(range(1, capacity + 1)):
-        raise ValueError("stage curves must cover every concurrency from 1 to the worker count")
+    if problems:
+        raise ValueError(
+            f"stage curves must have at least {MIN_STEADY_SAMPLES} steady samples at every concurrency "
+            f"from 1 to {capacity}: " + "; ".join(problems)
+        )
     alone = means[1]
     return CostFnConfig(const_ms=alone), [means[c] / alone for c in range(1, capacity + 1)]

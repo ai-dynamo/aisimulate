@@ -3,6 +3,7 @@
 
 """Native VL replay: image workloads encoded on a host-aware SGLang worker."""
 
+import dataclasses
 import json
 import subprocess
 from copy import deepcopy
@@ -16,6 +17,7 @@ from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.vl import validate_vl_prediction_mapping
 from aisimulate.main import main
 from aisimulate.recommend import recommendation_to_sweeper
+from aisimulate.runner import EngineReplayRunnerFactory, InvalidRunnerError
 from aisimulate.sweeper import SweepResult
 
 
@@ -115,7 +117,8 @@ def test_native_vl_predict_reports_ttft_milestones(tmp_path, capsys):
     # Two arrivals share one processor worker: 3 ms and 6 ms in the frontend.
     assert report["mean_frontend_ms"] == pytest.approx(4.5)
     assert (
-        report["mean_ttft_ms"] >= report["mean_frontend_ms"] + report["mean_prefill_elapsed_ms"]
+        report["mean_ttft_ms"]
+        >= report["mean_frontend_ms"] + report["mean_prefill_elapsed_ms"]
     )
     for line in (output / "requests.jsonl").read_text().splitlines():
         record = json.loads(line)
@@ -159,12 +162,16 @@ def test_native_vl_schema_rejects_unsupported(kind):
 def _host_profile(**overrides):
     worker = _prediction()["engine"]["workers"]["aggregated"]
     profile = {
-        "schema_version": 1,
+        "schema_version": 2,
         "identity": {
             "sglang_revision": "0bcd822377da7b5718e674eaf9c870d349424dd1",
             "model": "Qwen/Qwen3-VL-8B-Instruct",
             "frontend": "python",
-            "image_encoding": "png",
+            "images": {"height": 448, "width": 448, "count": 1, "encoding": "png"},
+            "text_tokens": 128,
+            "processor": "transformers.Qwen3VLProcessor",
+            "cpu": "example-cpu",
+            "threads": 16,
         },
         "host": worker["host"],
         "frontend": worker["frontend"],
@@ -209,7 +216,7 @@ def test_host_profile_mismatches_fail_closed(tmp_path, kind):
         expected = "frontend: profile='python', prediction='rust'"
     elif kind == "encoding":
         raw["traffic"]["source"]["images"]["encoding"] = "jpeg"
-        expected = "image_encoding: profile='png', prediction='jpeg'"
+        expected = "images.encoding: profile='png', prediction='jpeg'"
     elif kind == "tp_sync":
         worker["parallelism"]["tensor"] = 4
         expected = "no tp_sync_ms entry for tensor parallel 4"
@@ -240,11 +247,13 @@ def test_missing_profile_is_calibrated_in_an_unsupervised_subprocess(
     }
     monkeypatch.setenv("OMP_NUM_THREADS", "1")
     monkeypatch.setenv("_AISIMULATE_SUPERVISED_BUDGET", "{}")
+    monkeypatch.setenv("_AISIMULATE_HOST_CPUS", "[0]")
     seen = {}
 
     def fake_run(command, **kwargs):
         seen["command"] = command
         seen["env"] = kwargs["env"]
+        seen["preexec_fn"] = kwargs["preexec_fn"]
         profile_path.write_text(json.dumps(_host_profile()))
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -257,10 +266,14 @@ def test_missing_profile_is_calibrated_in_an_unsupervised_subprocess(
         "python",
     ]
     assert "--images" in seen["command"] and "448x448x1" in seen["command"]
+    assert seen["command"][seen["command"].index("--text-tokens") + 1] == "128"
     assert (
         "OMP_NUM_THREADS" not in seen["env"]
         and "_AISIMULATE_SUPERVISED_BUDGET" not in seen["env"]
+        and "_AISIMULATE_HOST_CPUS" not in seen["env"]
     )
+    # The sampler runs on the host's CPU mask, not the supervised worker's slice.
+    assert seen["preexec_fn"] is not None
     assert (
         spec.backend_deployment.agg_engine_args["sglang"]["host"]["launch_extend"][
             "const_ms"
@@ -351,16 +364,115 @@ def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
         validate_vl_prediction_mapping(raw, spec)
 
 
-def test_profile_backed_recommendation_keeps_naming_its_profile(tmp_path):
+def test_profile_backed_recommendation_pins_the_resolved_tables(tmp_path, capsys):
     path = tmp_path / "profile.json"
     path.write_text(json.dumps(_host_profile()))
     raw = _recommendation()
     worker = raw["engine"]["workers"]["aggregated"]
-    del worker["host"], worker["frontend"]
+    explicit_host, explicit_frontend = worker.pop("host"), worker.pop("frontend")
     worker["host_profile"] = {"path": str(path), "frontend": "python"}
+    worker["parallelism"]["tensor"] = 2
     lowered = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw))
     space = lowered.search_space
-    assert space.agg_host["launch_extend"]["const_ms"] == 5.0
+    # Candidates score the tables resolved from the profile, identified by content;
+    # the mutable file path is not part of what a candidate carries or exports.
+    assert (
+        space.agg_host["launch_extend"]["const_ms"]
+        == explicit_host["launch_extend"]["const_ms"]
+    )
+    assert (
+        space.agg_frontend["processor_workers"]
+        == explicit_frontend["processor_workers"]
+    )
     assert space.agg_tp_sync_ms == {"2": 0.4}
-    assert space.agg_host_profile == {**worker["host_profile"], "on_missing": "error"}
     assert len(space.agg_host_profile_digest) == 16
+    assert not hasattr(space, "agg_host_profile")
+
+    search = tmp_path / "search.yaml"
+    search.write_text(yaml.safe_dump(raw))
+    root = tmp_path / "recommend"
+    assert (
+        main(
+            [
+                "recommend",
+                "-c",
+                str(search),
+                "--output-dir",
+                str(root),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    result = SweepResult.from_json((root / "recommendation.json").read_text())
+    assert result.selected_candidates
+    # A tensor-parallel candidate saves the table it was scored with, sync entry applied.
+    for candidate in result.selected_candidates:
+        assert candidate.config["prediction_config_supported"] is True
+        assert candidate.config["tp"] == 2
+    saved = CorePredictionConfig.from_yaml(root / "recommendations" / "0001.yaml")
+    assert saved.engine.workers.aggregated.host.tp_sync_ms == 0.4
+    assert saved.engine.workers.aggregated.host_profile is None
+
+
+def test_text_only_host_tables_reach_predict_and_recommend_alike(tmp_path, capsys):
+    raw = _prediction()
+    del raw["traffic"]["source"]["images"]
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    args = spec.backend_deployment.agg_engine_args
+    assert args["sglang"]["host"]["launch_extend"]["const_ms"] == 5.0
+    assert "vision" not in args and "images" not in spec.workload
+
+    search = _recommendation()
+    del search["traffic"]["source"]["images"]
+    space = recommendation_to_sweeper(
+        CoreRecommendationConfig.model_validate(search)
+    ).search_space
+    assert space.agg_host == args["sglang"]["host"]
+    assert space.agg_frontend == args["frontend"]
+    assert space.agg_vision is None
+
+    # The scored candidates validate and save without an image workload.
+    path = tmp_path / "search.yaml"
+    path.write_text(yaml.safe_dump(search))
+    root = tmp_path / "recommend"
+    assert (
+        main(
+            [
+                "recommend",
+                "-c",
+                str(path),
+                "--output-dir",
+                str(root),
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    result = SweepResult.from_json((root / "recommendation.json").read_text())
+    assert result.selected_candidates
+    assert all(
+        c.config["prediction_config_supported"] is True
+        for c in result.selected_candidates
+    )
+    saved = CorePredictionConfig.from_yaml(root / "recommendations" / "0001.yaml")
+    assert saved.engine.workers.aggregated.host.launch_extend.const_ms == 5.0
+    assert saved.traffic.source.images is None
+
+
+def test_materialized_request_lists_reject_image_workloads():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction()))
+    legacy = dataclasses.replace(
+        spec,
+        workload={
+            key: value
+            for key, value in spec.workload.items()
+            if key not in ("source_type", "load_type")
+        },
+    )
+    with pytest.raises(InvalidRunnerError, match="workload-driver"):
+        EngineReplayRunnerFactory().create(0).run(legacy)

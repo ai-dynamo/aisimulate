@@ -461,20 +461,31 @@ def _role_search_space(
 
 
 def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str, Any]) -> dict[str, Any]:
-    """Pinned host, frontend and vision tables shared by every native VL candidate."""
+    """Pinned host, frontend and vision tables shared by every host-aware candidate.
+
+    Host and frontend tables follow the worker whether or not the workload has
+    images, as predict does; only the vision tower needs an image workload. A
+    measured profile is resolved once here so candidates score the tables that
+    were checked against the workload shape, never a path that may change later.
+    """
     aggregated = workers.get("aggregated") if isinstance(workers, dict) else None
+    if not isinstance(aggregated, dict) or config.engine.workers.encoder is not None:
+        return {}
     source = config.traffic.source if config.traffic is not None else None
     images = getattr(source, "images", None)
-    if not isinstance(aggregated, dict) or images is None or config.engine.workers.encoder is not None:
-        return {}
-    result: dict[str, Any] = {"agg_vision": deepcopy(aggregated.get("vision") or {"cache_mib": 100})}
+    result: dict[str, Any] = {}
+    if images is not None:
+        result["agg_vision"] = deepcopy(aggregated.get("vision") or {"cache_mib": 100, "encoder_parallel": "tp"})
     profile_config = aggregated.get("host_profile")
     if profile_config is None:
-        result["agg_host"] = deepcopy(aggregated.get("host"))
-        result["agg_frontend"] = deepcopy(aggregated.get("frontend"))
+        for name in ("host", "frontend"):
+            if aggregated.get(name) is not None:
+                result[f"agg_{name}"] = deepcopy(aggregated[name])
         return result
+    if images is None:
+        raise ValueError("host_profile requires an image workload")
     from .config.engine import HostProfileConfig
-    from .vl.profile import profile_id, resolve_host_profile
+    from .vl.profile import profile_digest, resolve_host_profile
 
     # Lower once for a single rank; candidates apply their tensor-parallel sync entry.
     profile, host, frontend = resolve_host_profile(
@@ -482,13 +493,13 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
         model=config.engine.model,
         images=images.model_dump(mode="json"),
         tensor_parallel=1,
+        text_tokens=getattr(source, "input_tokens", None),
     )
     result.update(
         agg_host=host.model_dump(mode="json"),
         agg_frontend=frontend.model_dump(mode="json"),
         agg_tp_sync_ms=dict(profile.tp_sync_ms),
-        agg_host_profile=deepcopy(profile_config),
-        agg_host_profile_digest=profile_id(profile),
+        agg_host_profile_digest=profile_digest(profile),
     )
     return result
 
@@ -952,13 +963,14 @@ def _candidate_prediction(
             rendered = engine["workers"][public_role]
             if sample.get("agg_max_prefill_tokens") is not None:
                 rendered["scheduler"]["max_prefill_tokens"] = sample["agg_max_prefill_tokens"]
-            # A profile-backed candidate keeps naming its profile so predict re-resolves it.
-            if sample.get("agg_host_profile") is not None:
-                rendered["host_profile"] = deepcopy(sample["agg_host_profile"])
-            else:
-                for name in ("host", "frontend"):
-                    if sample.get(f"agg_{name}") is not None:
-                        rendered[name] = deepcopy(sample[f"agg_{name}"])
+            # The tables are written out as the runner executed them (tensor-parallel
+            # sync applied): a saved candidate must not depend on a profile file that
+            # can change or disappear after scoring.
+            executed = deployment.agg_engine_args or {}
+            if (executed.get("sglang") or {}).get("host") is not None:
+                rendered["host"] = deepcopy(executed["sglang"]["host"])
+            if executed.get("frontend") is not None:
+                rendered["frontend"] = deepcopy(executed["frontend"])
             if sample.get("agg_vision") is not None:
                 rendered["vision"] = deepcopy(sample["agg_vision"])
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:

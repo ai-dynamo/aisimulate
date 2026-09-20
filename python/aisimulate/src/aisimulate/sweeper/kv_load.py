@@ -92,6 +92,21 @@ def _role_capacity_tokens(
         roots = resolved.get("systems_paths")
         if not roots and resolved.get("systems_path"):
             roots = [resolved["systems_path"]]
+        model_controls = {
+            name: resolved.get(name, sample.get(name))
+            for name in ENGINE_MODEL_CONTROL_FIELDS
+            if resolved.get(name, sample.get(name)) is not None
+            and not (name == "enable_eplb" and resolved.get(name, sample.get(name)) is False)
+        }
+        vision = sample.get("agg_vision") if role == "agg" else None
+        if vision is not None:
+            # The runtime deducts the tower weights and the embedding cache from the
+            # KV pool; load resolution must size against the same capacity.
+            model_controls.update(
+                colocated_encoder=True,
+                reserved_bytes=int(vision.get("cache_mib", 100)) << 20,
+                encoder_parallel=str(vision.get("encoder_parallel", "tp")),
+            )
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,
             model_name=str(resolved.get("model", resolved.get("model_path", sample["model_name"]))),
@@ -103,12 +118,7 @@ def _role_capacity_tokens(
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),
             nextn=int(resolved.get("nextn", sample.get("aic_nextn")) or 0),
-            model_controls=tuple(
-                (name, resolved.get(name, sample.get(name)))
-                for name in ENGINE_MODEL_CONTROL_FIELDS
-                if resolved.get(name, sample.get(name)) is not None
-                and not (name == "enable_eplb" and resolved.get(name, sample.get(name)) is False)
-            ),
+            model_controls=tuple(model_controls.items()),
         )
     # Dynamo's AIC estimator returns per-rank blocks. Offline replay models one
     # engine-wide KV pool, so attention-DP ranks contribute independent capacity;
@@ -152,8 +162,21 @@ def resolve_kv_load(
     }
     isl = int(workload.isl)
     images = getattr(workload, "images", None)
-    if images is not None:
-        # Visual placeholders occupy KV like text; size the load on the effective prompt.
+    if images is not None and sample.get("agg_vision") is not None:
+        # Visual placeholders occupy KV like text; size the load on the geometry the
+        # workload driver lays out, processor pixel budget included.
+        from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+        geometry = image_geometry(
+            str(sample["model_name"]),
+            images.height,
+            images.width,
+            min_pixels=images.min_pixels,
+            max_pixels=images.max_pixels,
+        )
+        isl += images.count * geometry.visual_tokens
+    elif images is not None:
+        # Analytical EPD sizes its language replay on the encoder phase's effective prompt.
         from aisimulate_core.sdk.backends.base_backend import BaseBackend
         from aisimulate_core.sdk.config import RuntimeConfig
 

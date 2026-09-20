@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 def validate_vl_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
-    """A callback must preserve the scored image workload, host tables and language replay."""
+    """A callback must preserve the scored workload, host tables and language replay."""
     from ..compiler import _parallel_mapping, prediction_to_replay_spec
     from ..runner import _materialize_sla
     from .cli import CorePredictionConfig
@@ -27,9 +27,10 @@ def validate_vl_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
         if engine.workers.encoder is not None or worker is None:
             raise ValueError("host-aware aggregated worker was dropped")
         source = prediction.traffic.source
-        if not isinstance(source, SyntheticSource) or source.images is None:
-            raise ValueError("fixed image workload was dropped")
-        if source.images.model_dump(mode="json") != spec.workload["images"]:
+        if not isinstance(source, SyntheticSource):
+            raise ValueError("synthetic workload was dropped")
+        images = source.images.model_dump(mode="json") if source.images is not None else None
+        if images != spec.workload.get("images"):
             raise ValueError("image profile changed")
         if (source.input_tokens, source.output_tokens) != (spec.workload["isl"], spec.workload["osl"]):
             raise ValueError("text lengths changed")
@@ -50,9 +51,6 @@ def validate_vl_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
         # what the runner executes rather than a second list of fields.
         if _language_execution(compiled) != _language_execution(spec):
             raise ValueError("language replay settings changed")
-        metadata = (compiled.backend_deployment.performance_model_metadata.get("aggregated") or {}).get("vl")
-        if metadata != (deployment.performance_model_metadata.get("aggregated") or {}).get("vl"):
-            raise ValueError("host profile identity changed")
         if _materialize_sla(compiled) != _materialize_sla(spec):
             raise ValueError("evaluation SLA changed")
     except (ValueError, TypeError, KeyError, AssertionError) as exc:

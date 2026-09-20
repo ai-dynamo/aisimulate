@@ -37,14 +37,20 @@ writable JSONL file, drive it with the calibration workload (same image size,
 count and encoding the prediction will use), then lower the recording:
 
 ```bash
-AIS_MM_TIMING_PATH=/tmp/rust-timing.jsonl python -m sglang.launch_server ...
+AIS_VL_BOUNDARY_TRACE=1 AIS_MM_TIMING_PATH=/tmp/rust-timing.jsonl python -m sglang.launch_server ...
 python -m aisimulate.vl.calibrate --frontend rust --model Qwen/Qwen3-VL-8B-Instruct \
   --images 1024x1024 --encoding jpeg --rust-timing /tmp/rust-timing.jsonl --output profile.json
 ```
 
-Each JSONL row carries `image_timings_ns` (decode and processor nanoseconds per
-image) with `started_ns`/`ended_ns` on `CLOCK_MONOTONIC`. A request's service
-time is the sum over its images; HTTP handling, hashing, tokenization, layout
-and the scheduler handoff are not part of it. Setting `AIS_VL_BOUNDARY_TRACE=1`
-additionally records atomic `boundary_span` events for those steps; the
-calibrator ignores rows without `image_timings_ns`.
+The calibrator takes a request's service time from its `rust_worker`
+`boundary_span` row (`started_ns`/`ended_ns` on `CLOCK_MONOTONIC`), which
+covers everything the multimodal worker does for the request: payload
+conversion, fetch, content hash, decode, patchify, tokenization and token
+layout, M-RoPE, feature packing, the optional shared-memory copy and the
+sidecar park. Those rows exist only with `AIS_VL_BOUNDARY_TRACE=1`; without
+them the calibrator refuses the recording. The rows carrying
+`image_timings_ns` (decode and patchify nanoseconds per image) describe the
+inner steps and are kept as provenance only. HTTP handling and the scheduler
+handoff are not worker time. The recording must cover concurrency levels
+`1..mm_workers`, each with enough steady samples, or the lowering fails
+naming the missing levels.

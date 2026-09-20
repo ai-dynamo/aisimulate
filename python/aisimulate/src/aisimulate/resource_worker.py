@@ -21,8 +21,10 @@ def main() -> int:
     if budget is None:
         raise RuntimeError("resource worker requires a supervisor budget")
     if hasattr(os, "sched_getaffinity"):
-        allowed = sorted(os.sched_getaffinity(0))[: budget["cpu_limit"]]
-        os.sched_setaffinity(0, allowed)
+        host_cpus = sorted(os.sched_getaffinity(0))
+        # The host calibrator must see the serving host's CPUs, not this worker's slice.
+        os.environ.setdefault("_AISIMULATE_HOST_CPUS", json.dumps(host_cpus))
+        os.sched_setaffinity(0, host_cpus[: budget["cpu_limit"]])
     if hasattr(os, "nice"):
         os.nice(5)
     command = sys.argv[1]

@@ -362,6 +362,10 @@ class EngineReplayRunner:
             raise InvalidRunnerError(
                 "image workloads require an encoder pool or an aggregated SGLang worker hosting the vision encoder"
             )
+        if encoder is None and spec.workload.get("images") is not None and spec.workload.get("source_type") is None:
+            # Only the workload driver lays image placeholders into prompts; a
+            # materialized request list would silently run the workload text-only.
+            raise InvalidRunnerError("native image workloads require workload-driver traffic (workload.source_type)")
         if spec.backend_deployment.deployment_mode in {"afd", "afd+pd"}:
             return _run_afd_replay(
                 spec,
