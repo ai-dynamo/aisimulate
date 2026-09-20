@@ -19,10 +19,21 @@ facts and inspect the config/profile before asking for derivable metadata; defer
 other questions to their stage. Propose supported runtime settings and worker
 topologies with their sources, then let the user review and edit them. An existing
 vLLM launch command or configuration is optional evidence; do not require one or
-start with a topology/dtype questionnaire. Inspect available pinned runtime
-metadata, initialization logs and checkpoint quantization sidecars before asking
-for unresolved choices. This is agent investigation: the CLI does not import
-arbitrary launch arguments or automatically inspect a remote runtime.
+start with a topology/dtype questionnaire. At stage 2 entry, resolve the literal
+framework version from supplied evidence, asking only if the pin is missing.
+Before asking for derivable inputs, proactively follow
+[runtime investigation and precision options](docs/fpm-self-service.md#investigate-runtime-constraints-and-precision-options)
+using stage 1's checkpoint revision and hardware, pinned official implementation
+and lightweight checkpoint metadata. Use authorized official remote sources when
+local evidence is insufficient; a source checkout, launch command, initialization
+logs or running server are not prerequisites. Present the required sourced table
+of joint precision combinations, distinguishing fixed checkpoint constraints,
+runtime defaults, configurable alternatives and unknowns. Runtime support and
+current collector compatibility are separate; keep collector-blocked alternatives
+explicitly blocked. Defaults are one proposal. Let the user select the combination(s)
+to cover and preserve prior explicit choices before profile acceptance. This is
+agent investigation using lightweight source and metadata; the existing CLI
+consumes prepared inputs without resolving remote runtime capabilities.
 At stage 2, inspect `aisimulate onboard init --model-config PATH --suggest-parallel`
 with the actual checkpoint/revision, runtime, GPU, interconnect and collection
 options. This read-only JSON preview reports model/hardware-aware TP choices and
@@ -47,15 +58,22 @@ collecting their rank-local bounds. Read shared metadata once, then derive and
 review each profile independently. Per-rank byte bounds and `cache_groups`
 belong to the exact tuple; never transfer them between configurations or place
 them in shared overrides for multiple choices. Shared precision/layout and
-`cache_block_sizes` may be reused, but page bytes must be derived per tuple.
+`cache_block_sizes` may be reused only when valid for the same runtime, backend
+and precision; page bytes must be derived per precision and tuple. The CLI rejects
+duplicate resolved topologies even with different precision overrides. Use a
+separate fresh output root for each selected precision combination and the existing
+topology list within it; output separation does not make a blocked variant collectible.
 Interactive edits apply only to the profile being reviewed; explicitly accept
 each profile before directory output is saved. A later cancellation or invalid
 profile leaves no new artifacts. Use a fresh or empty root; directory output
 rejects `--overwrite` and never replaces collection results.
 Inspect full-attention, sliding-window and supported convolution retention
 before choosing linear or grouped cache resources. For grouped resources,
-derive available geometry, then request unresolved runtime `cache_block_sizes`
-after choosing the topology; model config cannot determine these block sizes.
+derive available geometry, then investigate the pinned cache implementation and
+available allocation metadata for runtime `cache_block_sizes` after choosing the
+topology. Ask only for facts still unresolved; their absence from model config is
+not a reason to delegate investigation to the user. Missing-field diagnostics in
+stage 3 or headless setup follow the same investigate-before-asking rule.
 Review/edit the complete `cache_groups` JSON and provenance. Each
 `page_size_bytes` is the rank-local aggregate over every layer in that group,
 including runtime padding; config-derived packed pages are minimum estimates.
