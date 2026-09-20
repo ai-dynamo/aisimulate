@@ -29,13 +29,14 @@ use crate::engine::common::utils::prefill_handoff_transfer_timing;
 use crate::engine::kv_manager::SglangKvManager;
 use crate::engine::kv_manager::sglang_backend::SglangDestinationReservation;
 use crate::engine::trace::TraceCollector;
-use crate::engine::{HandoffId, modeled_duration_ms};
+use crate::engine::{HandoffId, HostStage, modeled_duration_ms};
 
 use super::config::SglangConfig;
 use super::decode::{
     cache_materialized_prefix, cleanup_completed_request, simulate_decode_step_with_sampler,
     simulate_prefill_first_tokens,
 };
+use super::host_loop::{HostLoop, LaunchKind};
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
@@ -66,6 +67,9 @@ pub(crate) struct SglangCore {
     #[cfg(test)]
     destination_reservation_attempts: usize,
     lifecycle_events: Vec<SchedulerLifecycleEvent>,
+    /// Scheduler-thread timeline; `Some` makes a pass one loop iteration whose
+    /// outputs are observed by the next pass.
+    host: Option<HostLoop>,
     prefill_rounds_remaining: usize,
     group_pass_prepared: bool,
     prefill_in_pass: bool,
@@ -138,6 +142,7 @@ impl SglangCore {
         kv_event_publishers: KvEventPublishers,
     ) -> Self {
         let config = SglangConfig::from_args(&args);
+        let host = config.host.map(HostLoop::new);
         let total_tokens = args.num_gpu_blocks * args.block_size;
         let speculative_sampler = args.aic_nextn.map(|nextn| {
             let rates =
@@ -177,6 +182,7 @@ impl SglangCore {
             #[cfg(test)]
             destination_reservation_attempts: 0,
             lifecycle_events: Vec::new(),
+            host,
         }
     }
 
@@ -209,6 +215,15 @@ impl SglangCore {
         command: SchedulerCommand,
         allow_destination_admission: bool,
     ) -> anyhow::Result<SchedulerCommandEffects> {
+        if self.host.is_some()
+            && matches!(
+                command,
+                SchedulerCommand::SubmitHandoffPrefill { .. }
+                    | SchedulerCommand::ReserveDestination { .. }
+            )
+        {
+            anyhow::bail!("sglang.host is supported only for aggregated ranks");
+        }
         match command {
             SchedulerCommand::Submit(mut request) => {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
@@ -427,6 +442,10 @@ impl SglangCore {
                 .iter()
                 .any(|request| request.uuid == uuid)
             || self.running.iter().any(|request| request.uuid == uuid)
+            || self
+                .host
+                .as_ref()
+                .is_some_and(|host| host.holds_request(uuid))
     }
 
     fn submit(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
@@ -436,7 +455,11 @@ impl SglangCore {
         }
         request.debug_assert_invariants(self.config.block_size);
         let uuid = request.uuid;
-        self.waiting.push_back(request);
+        match &mut self.host {
+            // The scheduler thread receives it at the top of its next iteration.
+            Some(host) => host.submit(request),
+            None => self.waiting.push_back(request),
+        }
         Ok(uuid)
     }
 
@@ -543,7 +566,9 @@ impl SglangCore {
         {
             Some(self.running.remove(index))
         } else {
-            None
+            self.host
+                .as_mut()
+                .and_then(|host| host.take_request(request_id))
         };
         let Some(mut request) = request else {
             return false;
@@ -581,7 +606,10 @@ impl SglangCore {
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.waiting.is_empty() && self.prebuilt_ready.is_empty() && self.running.is_empty()
+        self.waiting.is_empty()
+            && self.prebuilt_ready.is_empty()
+            && self.running.is_empty()
+            && self.host.as_ref().is_none_or(HostLoop::is_idle)
     }
 
     #[allow(dead_code)]
@@ -765,6 +793,27 @@ impl SglangCore {
         let defer_prefill = self.prefill_rounds_remaining > 0;
         let remaining_after_round = self.prefill_rounds_remaining.saturating_sub(1);
         let new_token_ratio_before = self.new_token_ratio;
+        // Requests that finished in the previous forward stay in this pass's batch;
+        // they leave once that forward's result is observed at the end of this pass.
+        let observed_terminals = self
+            .running
+            .iter()
+            .filter(|request| request.pending_terminal)
+            .map(|request| request.uuid)
+            .collect::<Vec<_>>();
+        let mut received_ms = 0.0;
+        if let Some(host) = &mut self.host {
+            for request in host.take_received() {
+                received_ms += host.receive_cost_ms(&request);
+                self.lifecycle_events
+                    .push(SchedulerLifecycleEvent::HostStage {
+                        request_id: request.uuid,
+                        stage: HostStage::Received,
+                        at_ms: now_ms,
+                    });
+                self.waiting.push_back(request);
+            }
+        }
         let mut rejected = Vec::new();
         if let Some(limit) = self.config.max_model_len {
             self.waiting.retain(|request| {
@@ -879,10 +928,42 @@ impl SglangCore {
             }
         };
 
+        let launch = self.host.as_ref().and_then(|_| {
+            if batch_size > 0 {
+                Some(LaunchKind::Extend {
+                    requests: batch_size,
+                    tokens: admit
+                        .prefill_fpm
+                        .iter()
+                        .map(|item| item.tokens_computed)
+                        .sum(),
+                })
+            } else if self.running.is_empty() {
+                None
+            } else {
+                // Ghost members are still charged: `filter_batch` has not seen them finish.
+                Some(LaunchKind::Decode {
+                    requests: self.running.len(),
+                })
+            }
+        });
+        let selected_ms = match &self.host {
+            Some(host) => host.selected_ms(now_ms, received_ms, launch),
+            None => now_ms,
+        };
+
         admissions.append(&mut admit.admissions);
         for admission in &admissions {
             if let Some(collector) = collector.as_deref_mut() {
-                collector.on_admit(admission.uuid, now_ms, admission.reused_input_tokens);
+                collector.on_admit(admission.uuid, selected_ms, admission.reused_input_tokens);
+            }
+            if self.host.is_some() {
+                self.lifecycle_events
+                    .push(SchedulerLifecycleEvent::HostStage {
+                        request_id: admission.uuid,
+                        stage: HostStage::Selected,
+                        at_ms: selected_ms,
+                    });
             }
         }
 
@@ -897,11 +978,13 @@ impl SglangCore {
         }
 
         let previously_running = self.running.len();
+        let mut prefill_completed = Vec::new();
         for mut req in admit.can_run {
             if req.materialized_tokens < req.current_sequence_len() {
                 cache_materialized_prefix(&mut req, &mut self.kv_manager, &self.config);
                 self.waiting.push_front(req);
             } else {
+                prefill_completed.push(req.uuid);
                 self.running.push(req);
             }
         }
@@ -933,7 +1016,7 @@ impl SglangCore {
         };
         self.interval_idle_in_pass = defer_prefill && scheduled_decode_lens.is_empty();
 
-        let decode_start_ms = now_ms + prefill_time.as_secs_f64() * 1000.0;
+        let decode_start_ms = selected_ms + prefill_time.as_secs_f64() * 1000.0;
         let mut decode = if prefill_pass {
             simulate_prefill_first_tokens(
                 &mut self.running,
@@ -962,12 +1045,45 @@ impl SglangCore {
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);
         }
-        decode.output_signals.extend(rejected);
+        let (end_ms, mut output_signals) = match &mut self.host {
+            Some(host) => {
+                let (timing, observed) = host.plan(
+                    selected_ms,
+                    launch,
+                    decode.end_ms - selected_ms,
+                    std::mem::take(&mut decode.output_signals),
+                );
+                debug_assert!(
+                    observed.is_some() || observed_terminals.is_empty(),
+                    "ghost members imply a batch in flight"
+                );
+                if let Some(gpu_end_ms) = timing.gpu_end_ms {
+                    for request_id in prefill_completed {
+                        self.lifecycle_events
+                            .push(SchedulerLifecycleEvent::HostStage {
+                                request_id,
+                                stage: HostStage::PrefillComplete,
+                                at_ms: gpu_end_ms,
+                            });
+                    }
+                }
+                let terminals = self
+                    .running
+                    .extract_if(.., |request| observed_terminals.contains(&request.uuid))
+                    .collect::<Vec<_>>();
+                for request in terminals {
+                    self.complete_source(request);
+                }
+                (timing.end_ms, observed.unwrap_or_default())
+            }
+            None => (decode.end_ms, std::mem::take(&mut decode.output_signals)),
+        };
+        output_signals.extend(rejected);
 
         if let Some(collector) = collector {
-            for signal in &decode.output_signals {
+            for signal in &output_signals {
                 if signal.token_id.is_some() {
-                    collector.on_token(signal.uuid, decode.end_ms);
+                    collector.on_token(signal.uuid, end_ms);
                 }
             }
         }
@@ -1048,7 +1164,7 @@ impl SglangCore {
             scheduled_decode_lens.into_iter(),
             queued_prefills,
             ordinary_queued_decodes.chain(preactivation_decodes),
-            (decode.end_ms - now_ms) / 1000.0,
+            (decode.end_ms - selected_ms) / 1000.0,
         );
 
         debug_assert_sglang_scheduler_state(&self.waiting, &self.running, self.config.block_size);
@@ -1057,7 +1173,7 @@ impl SglangCore {
             self.finish_group_pass(self.prefill_in_pass, self.model_work_in_pass);
         }
         Ok(EnginePassResult {
-            end_ms: decode.end_ms,
+            end_ms,
             same_timestamp_retry: if defer_prefill {
                 crate::engine::generalized::SameTimestampRetry::Countdown {
                     remaining: remaining_after_round,
@@ -1068,12 +1184,11 @@ impl SglangCore {
                 crate::engine::generalized::SameTimestampRetry::Exhausted
             },
             #[cfg(test)]
-            completed_requests: decode
-                .output_signals
+            completed_requests: output_signals
                 .iter()
                 .filter(|signal| signal.completed)
                 .count(),
-            output_signals: decode.output_signals,
+            output_signals,
             admissions,
             pressure_events: decode.pressure_events,
             lifecycle_events: std::mem::take(&mut self.lifecycle_events),

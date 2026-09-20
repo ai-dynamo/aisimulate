@@ -129,6 +129,105 @@ pub enum SglangSchedulePolicy {
     Lpm,
 }
 
+/// Affine host-side service cost in milliseconds.
+///
+/// [`Self::eval`] charges `const_ms` once plus one term per unit of the work it
+/// is applied to. The all-zero function models a free operation. Coefficients
+/// come from a measured host profile lowered by the Python configuration layer.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CostFn {
+    pub const_ms: f64,
+    pub per_request_ms: f64,
+    pub per_image_ms: f64,
+    pub per_ktoken_ms: f64,
+    pub per_mib_ms: f64,
+}
+
+impl CostFn {
+    /// Cost of one application to `requests`, `images`, `tokens`, and `bytes` of work.
+    pub fn eval(&self, requests: usize, images: usize, tokens: usize, bytes: u64) -> f64 {
+        self.const_ms
+            + self.per_request_ms * requests as f64
+            + self.per_image_ms * images as f64
+            + self.per_ktoken_ms * tokens as f64 / 1_000.0
+            + self.per_mib_ms * bytes as f64 / (1024.0 * 1024.0)
+    }
+
+    fn validate(&self, name: &str) -> Result<()> {
+        for (field, value) in [
+            ("const_ms", self.const_ms),
+            ("per_request_ms", self.per_request_ms),
+            ("per_image_ms", self.per_image_ms),
+            ("per_ktoken_ms", self.per_ktoken_ms),
+            ("per_mib_ms", self.per_mib_ms),
+        ] {
+            ensure!(
+                value.is_finite() && value >= 0.0,
+                "sglang.host.{name}.{field} must be finite and non-negative"
+            );
+        }
+        Ok(())
+    }
+}
+
+/// Scheduler-thread costs that turn one SGLang pass into one scheduler loop
+/// iteration with deferred result observation.
+///
+/// Absent, the SGLang rank keeps its zero-host model: a pass is one forward and
+/// its outputs are visible when the forward ends. See
+/// `crates/core/src/engine/scheduler/sglang/host_loop.rs` for the iteration
+/// timeline these costs feed.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HostLoopConfig {
+    /// Per received request: feature materialization, hashing, and placeholder padding.
+    pub receive: CostFn,
+    /// Per iteration that forms a batch: batch selection and forward-batch preparation.
+    pub select: CostFn,
+    /// Per EXTEND batch: eager language-model kernel launches.
+    pub launch_extend: CostFn,
+    /// Per DECODE batch: CUDA-graph replay launch.
+    pub launch_decode: CostFn,
+    /// Per observed batch: result processing once the previous forward completed.
+    pub result: CostFn,
+    /// Fixed per-iteration cost of TP-group collectives on the scheduler thread; zero for TP=1.
+    pub tp_sync_ms: f64,
+    /// Whether a DECODE launch blocks on the previous forward. SGLang's decode
+    /// position update copies a device tensor to the host before the decode
+    /// kernels launch, which synchronizes the stream.
+    pub decode_launch_syncs_previous_gpu: bool,
+}
+
+impl Default for HostLoopConfig {
+    fn default() -> Self {
+        Self {
+            receive: CostFn::default(),
+            select: CostFn::default(),
+            launch_extend: CostFn::default(),
+            launch_decode: CostFn::default(),
+            result: CostFn::default(),
+            tp_sync_ms: 0.0,
+            decode_launch_syncs_previous_gpu: true,
+        }
+    }
+}
+
+impl HostLoopConfig {
+    fn validate(&self) -> Result<()> {
+        self.receive.validate("receive")?;
+        self.select.validate("select")?;
+        self.launch_extend.validate("launch_extend")?;
+        self.launch_decode.validate("launch_decode")?;
+        self.result.validate("result")?;
+        ensure!(
+            self.tp_sync_ms.is_finite() && self.tp_sync_ms >= 0.0,
+            "sglang.host.tp_sync_ms must be finite and non-negative"
+        );
+        Ok(())
+    }
+}
+
 /// Serializable SGLang scheduler controls.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -147,6 +246,9 @@ pub struct SglangConfig {
     /// Multiplier applied to SGLang's adaptive output-reservation ratio.
     #[serde(default = "default_schedule_conservativeness")]
     pub schedule_conservativeness: f64,
+    /// Scheduler-thread costs; absent keeps the zero-host pass model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostLoopConfig>,
 }
 
 impl Default for SglangConfig {
@@ -157,6 +259,7 @@ impl Default for SglangConfig {
             chunked_prefill_size: default_chunked_prefill_size(),
             clip_max_new_tokens: default_clip_max_new_tokens(),
             schedule_conservativeness: default_schedule_conservativeness(),
+            host: None,
         }
     }
 }
@@ -175,6 +278,9 @@ impl SglangConfig {
             self.schedule_conservativeness.is_finite() && self.schedule_conservativeness >= 0.0,
             "sglang.schedule_conservativeness must be finite and non-negative"
         );
+        if let Some(host) = &self.host {
+            host.validate()?;
+        }
         Ok(())
     }
 }
@@ -579,6 +685,10 @@ impl EngineConfig {
         ensure!(
             self.backend == Backend::Sglang || self.prefill_decode_interval == 0,
             "prefill_decode_interval is supported only for backend=sglang"
+        );
+        ensure!(
+            self.backend == Backend::Sglang || self.sglang.host.is_none(),
+            "sglang.host is supported only for backend=sglang"
         );
         ensure!(
             self.max_model_len.is_none_or(|limit| limit > 0),

@@ -8,6 +8,7 @@
 mod config;
 mod core;
 mod decode;
+mod host_loop;
 mod policy;
 mod prefill;
 mod request;

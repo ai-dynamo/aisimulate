@@ -21,7 +21,8 @@ use crate::engine::common::protocols::{
 use crate::engine::kv_manager::SglangKvManager;
 use crate::engine::kv_manager::sglang_backend::RadixRequestLease;
 use crate::engine::scheduler::{
-    SchedulerCommand, SchedulerCommandResult, SchedulerLifecycleEvent, capture_kv_event_sink,
+    EnginePassResult, SchedulerCommand, SchedulerCommandResult, SchedulerLifecycleEvent,
+    capture_kv_event_sink,
 };
 use crate::engine::{ImageSpec, KvEvent, KvEventData, PressureKind};
 
@@ -421,6 +422,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             materialized_tokens: 4,
             allocated_tokens: 4,
             images: Vec::new(),
+            pending_terminal: false,
         },
         SglangRequest {
             uuid: normal_uuid,
@@ -432,6 +434,7 @@ fn zero_output_completion_survives_decode_reservation_failure() {
             materialized_tokens: 4,
             allocated_tokens: 4,
             images: Vec::new(),
+            pending_terminal: false,
         },
     ];
 
@@ -484,6 +487,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             materialized_tokens: 4,
             allocated_tokens: 4,
             images: Vec::new(),
+            pending_terminal: false,
         },
         SglangRequest {
             uuid: Uuid::from_u128(90_011),
@@ -495,6 +499,7 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
             materialized_tokens: 4,
             allocated_tokens: 4,
             images: Vec::new(),
+            pending_terminal: false,
         },
     ];
     let result = simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
@@ -527,6 +532,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         kv_lease: RadixRequestLease::default(),
         allocated_tokens: 0,
         images: Vec::new(),
+        pending_terminal: false,
     }]);
     let req = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[])
         .can_run
@@ -552,6 +558,7 @@ fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
         materialized_tokens: 3,
         allocated_tokens: 4,
         images: Vec::new(),
+        pending_terminal: false,
     };
     buffer.drain();
 
@@ -1219,6 +1226,7 @@ mod scheduling {
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
                 images: Vec::new(),
+                pending_terminal: false,
             },
             SglangRequest {
                 uuid: match_uuid,
@@ -1230,6 +1238,7 @@ mod scheduling {
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
                 images: Vec::new(),
+                pending_terminal: false,
             },
         ]);
 
@@ -1264,6 +1273,7 @@ mod scheduling {
                 kv_lease: RadixRequestLease::default(),
                 allocated_tokens: 0,
                 images: Vec::new(),
+                pending_terminal: false,
             });
         }
         let unique_uuid = Uuid::new_v4();
@@ -1277,6 +1287,7 @@ mod scheduling {
             kv_lease: RadixRequestLease::default(),
             allocated_tokens: 0,
             images: Vec::new(),
+            pending_terminal: false,
         });
 
         apply_schedule_policy(&mut waiting, &kv_manager, &config);
@@ -1371,6 +1382,7 @@ mod core_behavior {
             kv_lease: RadixRequestLease::default(),
             allocated_tokens: 0,
             images: Vec::new(),
+            pending_terminal: false,
         }]);
 
         let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
@@ -1403,6 +1415,7 @@ mod core_behavior {
             materialized_tokens: 6,
             allocated_tokens: 8,
             images: Vec::new(),
+            pending_terminal: false,
         }];
 
         let first = simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
@@ -1448,6 +1461,7 @@ mod core_behavior {
             materialized_tokens: 4,
             allocated_tokens: 4,
             images: Vec::new(),
+            pending_terminal: false,
         }];
 
         let mut fast_kv_manager = SglangKvManager::new(64, 4, KvEventPublishers::default(), 0);
@@ -1462,6 +1476,7 @@ mod core_behavior {
             materialized_tokens: 4,
             allocated_tokens: 4,
             images: Vec::new(),
+            pending_terminal: false,
         }];
 
         let base = simulate_decode_step(
@@ -1512,6 +1527,7 @@ mod core_behavior {
                 materialized_tokens: 8,
                 allocated_tokens: 8,
                 images: Vec::new(),
+                pending_terminal: false,
             },
             SglangRequest {
                 uuid: Uuid::new_v4(),
@@ -1523,6 +1539,7 @@ mod core_behavior {
                 materialized_tokens: 5,
                 allocated_tokens: 8,
                 images: Vec::new(),
+                pending_terminal: false,
             },
         ];
 
@@ -1555,6 +1572,7 @@ mod core_behavior {
             materialized_tokens: 4,
             allocated_tokens: 4,
             images: Vec::new(),
+            pending_terminal: false,
         }];
 
         simulate_decode_step(&mut running, &mut kv_manager, &config, 0.0, false);
@@ -2947,5 +2965,172 @@ mod admission_validation_rollback {
         let admitted = core.try_execute_hidden_pass(3.0).unwrap();
         assert_eq!(admitted.admissions.len(), 1);
         assert_eq!(admitted.completed_requests, 1);
+    }
+}
+
+mod host_loop_passes {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::engine::{CostFn, HostLoopConfig, HostStage};
+
+    struct FixedTiming {
+        prefill_ms: f64,
+        decode_ms: f64,
+    }
+
+    impl crate::engine::TimingModel for FixedTiming {
+        fn prefill_batch_validation_can_fail(&self) -> bool {
+            false
+        }
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(self.prefill_ms)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(self.decode_ms)
+        }
+    }
+
+    fn cost(const_ms: f64) -> CostFn {
+        CostFn {
+            const_ms,
+            ..CostFn::default()
+        }
+    }
+
+    /// receive 2 / select 1 / launch_extend 5 / launch_decode 3 / result 1.
+    fn costs() -> HostLoopConfig {
+        HostLoopConfig {
+            receive: cost(2.0),
+            select: cost(1.0),
+            launch_extend: cost(5.0),
+            launch_decode: cost(3.0),
+            result: cost(1.0),
+            ..HostLoopConfig::default()
+        }
+    }
+
+    fn core(host: Option<HostLoopConfig>) -> SglangCore {
+        let mut args = test_args(128, 1, 8192);
+        args.sglang.as_mut().unwrap().host = host;
+        args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(FixedTiming {
+                prefill_ms: 20.0,
+                decode_ms: 4.0,
+            }),
+        }
+        .into();
+        SglangCore::new(args)
+    }
+
+    fn stage(pass: &EnginePassResult, wanted: HostStage) -> Vec<(Uuid, f64)> {
+        pass.lifecycle_events
+            .iter()
+            .filter_map(|event| match *event {
+                SchedulerLifecycleEvent::HostStage {
+                    request_id,
+                    stage,
+                    at_ms,
+                } if stage == wanted => Some((request_id, at_ms)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Token observation times, driving passes back to back until the core drains.
+    fn token_times(core: &mut SglangCore) -> Vec<f64> {
+        let mut now_ms = 0.0;
+        let mut times = Vec::new();
+        for _ in 0..32 {
+            if core.is_drained() {
+                return times;
+            }
+            let pass = core.execute_hidden_pass(now_ms);
+            times.extend(
+                pass.output_signals
+                    .iter()
+                    .filter(|signal| signal.token_id.is_some())
+                    .map(|_| pass.end_ms),
+            );
+            now_ms = pass.end_ms;
+        }
+        panic!("core did not drain");
+    }
+
+    #[test]
+    fn one_request_is_observed_one_iteration_after_its_forward() {
+        let mut core = core(Some(costs()));
+        let uuid = core.receive(direct_request((0..16).collect(), 1));
+
+        // Iteration 1: receive (2) + select (1) = 3; the forward runs 3..23 while the
+        // launch (5) returns the loop at 8 with nothing to observe yet.
+        let first = core.execute_hidden_pass(0.0);
+        assert_eq!(first.end_ms, 8.0);
+        assert!(first.output_signals.is_empty());
+        assert_eq!(stage(&first, HostStage::Received), vec![(uuid, 0.0)]);
+        assert_eq!(stage(&first, HostStage::Selected), vec![(uuid, 3.0)]);
+        assert_eq!(
+            stage(&first, HostStage::PrefillComplete),
+            vec![(uuid, 23.0)]
+        );
+        assert!(!core.is_drained());
+
+        // Iteration 2: the finished request is still a batch member, so a decode launches
+        // at 9; it synchronizes with the forward (23), enqueues until 26 and the GPU runs
+        // 23..27. The first forward's result is processed at max(26, 23) + 1 = 27.
+        let second = core.execute_hidden_pass(first.end_ms);
+        assert_eq!(second.end_ms, 27.0);
+        assert_eq!(second.output_signals.len(), 1);
+        assert!(second.output_signals[0].completed);
+        assert_eq!(second.output_signals[0].uuid, uuid);
+        assert!(!core.is_drained());
+
+        // Iteration 3: nothing to launch; the ghost decode's empty result is processed
+        // when the GPU finishes it (27) plus result (1).
+        let third = core.execute_hidden_pass(second.end_ms);
+        assert_eq!(third.end_ms, 28.0);
+        assert!(third.output_signals.is_empty());
+        assert!(core.is_drained());
+    }
+
+    #[test]
+    fn requests_arriving_during_an_iteration_are_received_at_the_next_one() {
+        let mut core = core(Some(costs()));
+        let first = core.receive(direct_request((0..16).collect(), 1));
+        let pass = core.execute_hidden_pass(0.0);
+        assert_eq!(pass.end_ms, 8.0);
+
+        // Delivered at 5, i.e. while iteration 1 is still on the scheduler thread.
+        let second = core.receive(direct_request((100..116).collect(), 1));
+        let pass = core.execute_hidden_pass(pass.end_ms);
+        assert_eq!(stage(&pass, HostStage::Received), vec![(second, 8.0)]);
+        assert_eq!(stage(&pass, HostStage::Selected), vec![(second, 11.0)]);
+        // An EXTEND launch does not wait for the running forward: the loop reaches the
+        // first request's result at max(launch end 16, forward end 23) + 1.
+        assert_eq!(pass.end_ms, 24.0);
+        assert_eq!(
+            pass.output_signals
+                .iter()
+                .map(|signal| signal.uuid)
+                .collect::<Vec<_>>(),
+            vec![first]
+        );
+        // The second forward queues behind the first on the GPU: 23..43.
+        assert_eq!(
+            stage(&pass, HostStage::PrefillComplete),
+            vec![(second, 43.0)]
+        );
+    }
+
+    #[test]
+    fn a_free_host_loop_reproduces_the_legacy_token_times() {
+        let mut legacy = core(None);
+        legacy.receive(direct_request((0..16).collect(), 4));
+        let mut host = core(Some(HostLoopConfig::default()));
+        host.receive(direct_request((0..16).collect(), 4));
+
+        let expected = vec![20.0, 24.0, 28.0, 32.0];
+        assert_eq!(token_times(&mut legacy), expected);
+        assert_eq!(token_times(&mut host), expected);
     }
 }

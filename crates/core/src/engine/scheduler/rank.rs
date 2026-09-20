@@ -194,9 +194,8 @@ impl RankEngine for SchedulerRank {
                 .lifecycle_events
                 .retain(|event| match *event {
                     LifecycleEvent::SourceHeld { request_id: id, .. }
-                    | LifecycleEvent::DestinationReserved { request_id: id, .. } => {
-                        id != request_id
-                    }
+                    | LifecycleEvent::DestinationReserved { request_id: id, .. }
+                    | LifecycleEvent::HostStage { request_id: id, .. } => id != request_id,
                 });
             before != pending.effects.outputs.len()
         } else {
@@ -452,6 +451,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
             chunked_prefill_size: Some(config.sglang.chunked_prefill_size),
             clip_max_new_tokens: Some(config.sglang.clip_max_new_tokens),
             schedule_conservativeness: Some(config.sglang.schedule_conservativeness),
+            host: config.sglang.host,
         }),
         emit_kv_events: config.emit_kv_events,
         emit_kv_token_ids: config.emit_kv_token_ids,
@@ -565,6 +565,15 @@ fn map_lifecycle(event: CoreLifecycle) -> LifecycleEvent {
             handoff_id,
             request_id,
             transferable_prompt_tokens,
+        },
+        CoreLifecycle::HostStage {
+            request_id,
+            stage,
+            at_ms,
+        } => LifecycleEvent::HostStage {
+            request_id,
+            stage,
+            at_ms,
         },
     }
 }

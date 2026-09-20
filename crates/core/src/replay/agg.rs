@@ -31,7 +31,7 @@ use super::{
     },
     state::AggRequestState,
 };
-use crate::engine::{Command, CommandResult};
+use crate::engine::{Command, CommandResult, LifecycleEvent};
 use crate::replay::engine::ReplayRoleFactory;
 use crate::replay::loadgen::ReplayRequestPayload;
 use crate::replay::protocol::{DirectRequest, ForwardPassSnapshot, OutputSignal};
@@ -624,6 +624,17 @@ where
             && let Some(fpm) = payload.fpm
         {
             self.record_fpm(payload.worker_idx, fpm)?;
+        }
+        for event in payload.lifecycle_events {
+            // Aggregated ranks emit no handoff events; host stages are per-request timestamps.
+            if let LifecycleEvent::HostStage {
+                request_id,
+                stage,
+                at_ms,
+            } = event
+            {
+                self.collector.on_host_stage(request_id, stage, at_ms);
+            }
         }
         self.process_completed_pass(
             payload.worker_idx,

@@ -8,8 +8,9 @@ use std::sync::Arc;
 
 use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
-    Backend, Command, Engine, EngineConfig, EngineFactory, NativeHostOffloadConfig,
-    PassCompletionEffects, Request, SglangConfig, TimingModel, TimingModelConfig,
+    Backend, Command, CostFn, Engine, EngineConfig, EngineFactory, HostLoopConfig,
+    NativeHostOffloadConfig, PassCompletionEffects, Request, SglangConfig, TimingModel,
+    TimingModelConfig,
 };
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
@@ -1680,4 +1681,43 @@ fn native_trtllm_disaggregated_replay_completes() {
     assert_eq!(report.request_counts.completed_requests, 1);
     assert_eq!(report.request_counts.total_input_tokens, 4);
     assert_eq!(report.request_counts.total_output_tokens, 2);
+}
+
+#[test]
+fn sglang_host_loop_reports_scheduler_stage_timestamps_per_request() {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 20.0,
+        decode_ms: 4.0,
+    });
+    config.rank.backend = Backend::Sglang;
+    let cost = |const_ms: f64| CostFn {
+        const_ms,
+        ..CostFn::default()
+    };
+    config.rank.sglang = SglangConfig {
+        host: Some(HostLoopConfig {
+            receive: cost(2.0),
+            select: cost(1.0),
+            launch_extend: cost(5.0),
+            launch_decode: cost(3.0),
+            result: cost(1.0),
+            ..HostLoopConfig::default()
+        }),
+        ..SglangConfig::default()
+    };
+    let mut replay = spec(config);
+    replay.requests = vec![request("vision-less", 0.0, 4, 1)];
+    // The engine config crosses the ReplaySpec JSON boundary.
+    let report = run_engine_replay(replay).unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 1);
+    let record = &report.per_request[0];
+    assert_eq!(record.scheduler_received_ms, Some(0.0));
+    assert_eq!(record.selected_ms, Some(3.0));
+    // Replay dates admissions at the pass start; `selected_ms` carries the scheduler-thread time.
+    assert_eq!(record.first_admit_ms, Some(0.0));
+    assert_eq!(record.prefill_complete_ms, Some(23.0));
+    // Observed after the next iteration's decode launch synchronized with the forward.
+    assert_eq!(record.first_token_ms, Some(27.0));
+    assert_eq!(record.terminal_time_ms, 27.0);
 }

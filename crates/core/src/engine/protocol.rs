@@ -119,6 +119,24 @@ pub enum LifecycleEvent {
         request_id: Uuid,
         transferable_prompt_tokens: usize,
     },
+    /// A host-aware scheduler reached a scheduler-thread stage for one request.
+    HostStage {
+        request_id: Uuid,
+        stage: HostStage,
+        at_ms: f64,
+    },
+}
+
+/// Scheduler-thread stages reported by a host-aware scheduler for one request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostStage {
+    /// Drained from the scheduler inbox at an iteration start.
+    Received,
+    /// Selected into its first batch.
+    Selected,
+    /// The forward that finished its prompt completed on the device.
+    PrefillComplete,
 }
 
 /// One runtime-neutral KV block identity.

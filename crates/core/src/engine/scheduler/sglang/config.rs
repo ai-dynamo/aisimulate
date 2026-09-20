@@ -3,6 +3,7 @@
 
 use std::sync::Arc;
 
+use crate::engine::HostLoopConfig;
 use crate::engine::common::perf_model::PerfModel;
 use crate::engine::common::protocols::{KvTransferTimingMode, MockEngineArgs, WorkerType};
 
@@ -45,6 +46,8 @@ pub(super) struct SglangConfig {
     pub(super) kv_transfer_bandwidth: Option<f64>,
     pub(super) kv_transfer_timing_mode: KvTransferTimingMode,
     pub(super) speculative_max_tokens: Option<usize>,
+    /// Scheduler-thread costs; `Some` switches the core to the iteration pass model.
+    pub(super) host: Option<HostLoopConfig>,
 }
 
 impl SglangConfig {
@@ -105,6 +108,7 @@ impl SglangConfig {
             kv_transfer_bandwidth: args.kv_transfer_bandwidth,
             kv_transfer_timing_mode: args.kv_transfer_timing_mode,
             speculative_max_tokens: args.aic_nextn.map(|nextn| nextn + 1),
+            host: sglang.and_then(|s| s.host),
         }
     }
 

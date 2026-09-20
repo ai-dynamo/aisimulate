@@ -22,10 +22,11 @@ pub(super) struct SglangRequest {
     pub(super) kv_lease: RadixRequestLease,
     pub(super) materialized_tokens: usize,
     pub(super) allocated_tokens: usize,
-    /// Prompt-order image placeholders; empty for text-only requests. Read by
-    /// the host loop and vision cache once those land on top of this contract.
-    #[allow(dead_code)]
+    /// Prompt-order image placeholders; empty for text-only requests.
     pub(super) images: Vec<ImageSpec>,
+    /// Finished in a batch whose result the host loop has not observed yet. The
+    /// request keeps its `running` slot until the next iteration starts.
+    pub(super) pending_terminal: bool,
 }
 
 impl SglangRequest {
@@ -60,6 +61,7 @@ impl SglangRequest {
             materialized_tokens: 0,
             allocated_tokens: 0,
             images: req.images,
+            pending_terminal: false,
         }
     }
 

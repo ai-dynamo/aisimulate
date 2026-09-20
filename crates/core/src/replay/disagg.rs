@@ -605,6 +605,11 @@ impl DisaggFlowState {
                         collector,
                     )?;
                 }
+                LifecycleEvent::HostStage {
+                    request_id,
+                    stage,
+                    at_ms,
+                } => collector.on_host_stage(request_id, stage, at_ms),
             }
         }
         Ok(())

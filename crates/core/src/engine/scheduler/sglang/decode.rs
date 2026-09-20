@@ -59,6 +59,7 @@ fn decode_page_growth_needed(
 ) -> usize {
     running
         .iter()
+        .filter(|req| !req.pending_terminal)
         .map(|req| {
             let burst = max_burst.min(req.remaining_output_tokens());
             let target =
@@ -158,6 +159,7 @@ fn check_decode_mem_for_burst(
         let Some((idx, _)) = running
             .iter()
             .enumerate()
+            .filter(|(_, req)| !req.pending_terminal)
             .min_by_key(|(_, req)| req.output_len())
         else {
             break;
@@ -279,7 +281,13 @@ fn prefill_first_tokens(
                 config.kv_transfer_bytes_per_token,
             ),
         });
-        completed_indices.push(idx);
+        if config.host.is_some() {
+            // The scheduler observes this completion one iteration later; until then
+            // the request stays a member of the next batch.
+            req.pending_terminal = true;
+        } else {
+            completed_indices.push(idx);
+        }
     }
     let mut newly_completed = Vec::with_capacity(completed_indices.len());
     for &idx in completed_indices.iter().rev() {
@@ -304,6 +312,9 @@ fn prefill_first_tokens(
         };
     };
     for req in running.iter_mut() {
+        if req.pending_terminal {
+            continue;
+        }
         let crossing_page_boundary = req.current_sequence_len() + 1 > req.allocated_tokens;
         kv_manager.extend_decode(&mut req.kv_lease, &mut reservation);
         if crossing_page_boundary {
@@ -407,10 +418,14 @@ fn simulate_step(
     }
 
     // Terminal requests have no decode work and otherwise remain in `running` forever.
+    // Under the host loop a finished request is a ghost batch member until the next
+    // iteration observes its result; it was already signaled when it finished.
     let already_completed_indices = running
         .iter()
         .enumerate()
-        .filter_map(|(idx, req)| (req.remaining_output_tokens() == 0).then_some(idx))
+        .filter_map(|(idx, req)| {
+            (req.remaining_output_tokens() == 0 && !req.pending_terminal).then_some(idx)
+        })
         .collect::<Vec<_>>();
     let mut output_signals = already_completed_indices
         .iter()
@@ -574,7 +589,11 @@ fn simulate_step(
             });
 
             if is_complete {
-                completed_indices.push(idx);
+                if config.host.is_some() {
+                    req.pending_terminal = true;
+                } else {
+                    completed_indices.push(idx);
+                }
                 break;
             }
 

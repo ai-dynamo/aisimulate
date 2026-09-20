@@ -16,7 +16,7 @@ use uuid::Uuid;
 use crate::engine::common::hashing::Token;
 use crate::engine::common::perf_model::PerfModel;
 use crate::engine::config::NativeHostOffloadConfig;
-use crate::engine::{ImageSpec, KvEvent};
+use crate::engine::{HostLoopConfig, ImageSpec, KvEvent};
 
 /// Sink for neutral KV-cache events emitted by a rank.
 pub(crate) trait KvCacheEventSink: Send + Sync {
@@ -164,6 +164,7 @@ pub(crate) struct SglangArgs {
     pub chunked_prefill_size: Option<usize>,
     pub clip_max_new_tokens: Option<usize>,
     pub schedule_conservativeness: Option<f64>,
+    pub host: Option<HostLoopConfig>,
 }
 
 /// Rank-local view of `EngineConfig`.

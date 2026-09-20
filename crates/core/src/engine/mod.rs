@@ -26,16 +26,17 @@ pub use belady::KvEvictionPolicy;
 pub use common::running_mean::RunningMean;
 pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
-    Backend, EngineConfig, G3OffloadConfig, G3Scope, NativeHostOffloadConfig, PreemptionMode,
-    SglangConfig, SglangSchedulePolicy, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
+    Backend, CostFn, EngineConfig, G3OffloadConfig, G3Scope, HostLoopConfig,
+    NativeHostOffloadConfig, PreemptionMode, SglangConfig, SglangSchedulePolicy,
+    TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms};
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
-    ForwardPassMetrics, ImageSpec, KvBlock, KvEvent, KvEventData, LifecycleEvent, Metrics, Output,
-    PassCompletionEffects, PassStartEffects, PressureEvent, PressureKind, PressureState, Request,
-    StoredBlocks,
+    ForwardPassMetrics, HostStage, ImageSpec, KvBlock, KvEvent, KvEventData, LifecycleEvent,
+    Metrics, Output, PassCompletionEffects, PassStartEffects, PressureEvent, PressureKind,
+    PressureState, Request, StoredBlocks,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;
