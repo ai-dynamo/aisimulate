@@ -898,7 +898,12 @@ fn synthetic_image_spec(identity_pool: Option<u64>, block_size: usize) -> Synthe
         images: Some(SyntheticImages {
             count: 2,
             visual_tokens: 3,
-            patches: 12,
+            encoder: crate::engine::EncoderShape {
+                sequences: 1,
+                patch_tokens: 12,
+                transformer_tokens: 12,
+                output_tokens: 3,
+            },
             feature_bytes: 96,
             embedding_bytes: 128,
             identity_pool,

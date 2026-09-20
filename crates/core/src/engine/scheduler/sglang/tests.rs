@@ -24,7 +24,7 @@ use crate::engine::scheduler::{
     EnginePassResult, SchedulerCommand, SchedulerCommandResult, SchedulerLifecycleEvent,
     capture_kv_event_sink,
 };
-use crate::engine::{ImageSpec, KvEvent, KvEventData, PressureKind};
+use crate::engine::{EncoderShape, ImageSpec, KvEvent, KvEventData, PressureKind};
 
 fn stored_hashes(events: &[KvEvent]) -> Vec<u64> {
     events
@@ -84,7 +84,12 @@ fn submitted_requests_keep_their_image_placeholders() {
             identity: 7,
             token_start: 0,
             token_end: 3,
-            patches: 12,
+            encoder: EncoderShape {
+                sequences: 1,
+                patch_tokens: 12,
+                transformer_tokens: 12,
+                output_tokens: 3,
+            },
             feature_bytes: 96,
             embedding_bytes: 128,
         },
@@ -92,7 +97,12 @@ fn submitted_requests_keep_their_image_placeholders() {
             identity: 8,
             token_start: 3,
             token_end: 6,
-            patches: 12,
+            encoder: EncoderShape {
+                sequences: 1,
+                patch_tokens: 12,
+                transformer_tokens: 12,
+                output_tokens: 3,
+            },
             feature_bytes: 96,
             embedding_bytes: 128,
         },
@@ -3133,13 +3143,114 @@ mod host_loop_passes {
         assert_eq!(token_times(&mut legacy), expected);
         assert_eq!(token_times(&mut host), expected);
     }
+
+    #[test]
+    fn prefix_cache_commits_become_visible_when_the_forward_is_observed() {
+        let mut core = core(Some(costs()));
+        let prompt: Vec<u32> = vec![1, 2, 3, 4];
+        core.receive(direct_request(prompt.clone(), 2));
+        let first = core.execute_hidden_pass(0.0);
+
+        // Same prompt, selected while the first forward is still unobserved: SGLang
+        // caches a full prefill in `maybe_cache_unfinished_req`, one iteration later.
+        let second_id = core.receive(direct_request(prompt.clone(), 2));
+        let second = core.execute_hidden_pass(first.end_ms);
+        assert_eq!(second.admissions[0].uuid, second_id);
+        assert_eq!(second.admissions[0].reused_input_tokens, 0);
+
+        // After that observation the prefix is in the radix cache.
+        let third_id = core.receive(direct_request(prompt, 2));
+        let third = core.execute_hidden_pass(second.end_ms);
+        assert_eq!(third.admissions[0].uuid, third_id);
+        assert!(third.admissions[0].reused_input_tokens > 0);
+    }
+
+    #[test]
+    fn a_cancelled_request_emits_no_output_from_the_forward_in_flight() {
+        let mut core = core(Some(costs()));
+        let uuid = core.receive(direct_request((0..16).collect(), 1));
+        let first = core.execute_hidden_pass(0.0);
+        assert!(first.output_signals.is_empty());
+
+        // Cancelled while its prefill result is in flight.
+        assert_eq!(
+            core.apply_command(SchedulerCommand::CancelRequest { request_id: uuid })
+                .unwrap(),
+            SchedulerCommandResult::Applied
+        );
+        let second = core.execute_hidden_pass(first.end_ms);
+        assert!(second.output_signals.is_empty());
+        assert!(core.is_drained());
+    }
+
+    #[test]
+    fn a_ghost_decode_row_takes_a_kv_slot_that_is_cached_with_the_request() {
+        // Three pages of four tokens. The request finished with its first token in the
+        // previous forward; `filter_batch` has not seen that yet, so `prepare_for_decode`
+        // still allocates and commits its row's slot, and `release_kv_cache` caches the
+        // committed KV page aligned when the finish is observed.
+        let mut args = test_args(3, 4, 8192);
+        args.sglang.as_mut().unwrap().host = Some(HostLoopConfig::default());
+        let config = SglangConfig::from_args(&args);
+        let mut kv_manager = SglangKvManager::new(12, 4, KvEventPublishers::default(), 0);
+        let prompt: Vec<u32> = (1..=8).collect();
+        let alloc = kv_manager.allocate_for_request(&prompt).unwrap();
+        let mut running = vec![SglangRequest {
+            uuid: Uuid::from_u128(1),
+            sequence_tokens: prompt.iter().copied().chain([99]).collect(),
+            prompt_len: 8,
+            max_output_tokens: 1,
+            planned_output_ids: None,
+            kv_lease: alloc.lease,
+            materialized_tokens: 8,
+            allocated_tokens: 8,
+            images: Vec::new(),
+            pending_terminal: true,
+        }];
+        assert_eq!(kv_manager.cache().available_tokens(), 4);
+
+        let step = decode::simulate_decode_step_with_sampler(
+            &mut running,
+            &mut kv_manager,
+            &config,
+            None,
+            0.0,
+            false,
+        )
+        .unwrap();
+        assert!(
+            step.output_signals.is_empty(),
+            "a ghost row produces nothing"
+        );
+        assert_eq!(running[0].allocated_tokens, 12);
+        assert_eq!(kv_manager.cache().available_tokens(), 0);
+
+        // 9 committed tokens: the two full pages are cached, the tail page is freed.
+        decode::cleanup_completed_request(&mut running[0], &mut kv_manager, 4);
+        assert_eq!(kv_manager.cache().available_tokens(), 4);
+        assert_eq!(kv_manager.cache().evictable_size, 8);
+    }
+
+    #[test]
+    fn a_zero_output_request_completes_when_its_forward_is_observed() {
+        let mut core = core(Some(costs()));
+        let uuid = core.receive(direct_request((0..16).collect(), 0));
+        let first = core.execute_hidden_pass(0.0);
+        assert!(first.output_signals.is_empty());
+        assert!(!core.is_drained());
+
+        let second = core.execute_hidden_pass(first.end_ms);
+        assert_eq!(second.output_signals.len(), 1);
+        assert!(second.output_signals[0].completed);
+        assert_eq!(second.output_signals[0].uuid, uuid);
+    }
 }
 
 mod vision_batches {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::engine::VisionShape;
+    use crate::engine::{EncoderShape, VisionShape};
 
     /// 5 ms per image plus fixed 10 ms prefill / 1 ms decode; records every batch.
     struct RecordingTiming(Arc<Mutex<Vec<Vec<VisionShape>>>>);
@@ -3167,7 +3278,12 @@ mod vision_batches {
             identity,
             token_start,
             token_end: token_start + 4,
-            patches: 16,
+            encoder: EncoderShape {
+                sequences: 1,
+                patch_tokens: 16,
+                transformer_tokens: 16,
+                output_tokens: 4,
+            },
             feature_bytes: 1_000,
             embedding_bytes: 4_000,
         }
@@ -3209,8 +3325,12 @@ mod vision_batches {
         assert_eq!(miss.end_ms, 55.0);
 
         let shape = |count| VisionShape {
-            patches: 16,
-            visual_tokens: 4,
+            encoder: EncoderShape {
+                sequences: 1,
+                patch_tokens: 16,
+                transformer_tokens: 16,
+                output_tokens: 4,
+            },
             count,
         };
         assert_eq!(

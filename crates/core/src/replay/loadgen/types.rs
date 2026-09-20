@@ -436,8 +436,8 @@ pub struct SyntheticImages {
     pub count: usize,
     /// Placeholder tokens each image occupies in the prompt.
     pub visual_tokens: usize,
-    /// Encoder sequence length per image before spatial merging.
-    pub patches: usize,
+    /// Encoder sequences and per-sequence token counts behind each image.
+    pub encoder: crate::engine::EncoderShape,
     pub feature_bytes: u64,
     pub embedding_bytes: u64,
     /// Reuse identities round-robin over this many distinct images; `None`

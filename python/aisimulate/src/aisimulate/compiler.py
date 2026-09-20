@@ -541,6 +541,10 @@ def _worker_engine_args(
             database_mode=timing.database_mode or engine.database_mode,
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
             systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
+            # A rank hosting the vision tower prices encoder calls through the same estimator.
+            encoder_parallel=(worker.vision.encoder_parallel if worker.vision is not None else "tp")
+            if vision
+            else None,
         )
         timing_config = omit_inactive_moe_controls(canonical.to_dict())
         for key in (

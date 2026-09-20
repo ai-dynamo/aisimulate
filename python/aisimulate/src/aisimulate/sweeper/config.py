@@ -183,6 +183,8 @@ class ImageWorkload(BaseModel):
     count: int = Field(default=1, strict=True, gt=0)
     encoding: Literal["png", "jpeg"] = "png"
     identity: Literal["unique"] | ImagePool = "unique"
+    min_pixels: int | None = Field(default=None, strict=True, gt=0)
+    max_pixels: int | None = Field(default=None, strict=True, gt=0)
 
 
 class EncoderSearch(BaseModel):

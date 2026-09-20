@@ -260,6 +260,10 @@ class VisionEncoderConfig:
     projector_post_norm: bool = field(default=False, kw_only=True)
     encoder_type: str = field(default="", kw_only=True)
     projector_pre_norm: bool = field(default=True, kw_only=True)
+    # Qwen `smart_resize` pixel budget (processor `size.shortest_edge` /
+    # `size.longest_edge`); zero leaves the corresponding bound unset.
+    min_pixels: int = field(default=0, kw_only=True)
+    max_pixels: int = field(default=0, kw_only=True)
 
 
 @dataclass(frozen=True)

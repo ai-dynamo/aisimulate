@@ -10,7 +10,6 @@
 import copy
 import dataclasses
 import inspect
-import json
 import logging
 import math
 from collections import defaultdict
@@ -22,7 +21,7 @@ import pandas as pd
 from aisimulate_core.sdk import common
 from aisimulate_core.sdk.config import RuntimeConfig, has_video_input
 from aisimulate_core.sdk.inference_summary import InferenceSummary
-from aisimulate_core.sdk.models import BaseModel, get_model
+from aisimulate_core.sdk.models import BaseModel
 from aisimulate_core.sdk.perf_database import PerfDatabase
 from aisimulate_core.sdk.performance_result import MoECommFallback, merge_moe_comm_fallbacks
 from aisimulate_core.sdk.rust_engine_step import (
@@ -35,6 +34,37 @@ from aisimulate_core.sdk.rust_engine_step import (
 from aisimulate_core.sdk.step_estimate import MixedStepInput, StepEstimate
 
 logger = logging.getLogger(__name__)
+
+
+QWEN_SMART_RESIZE_MAX_RATIO = 200
+
+
+def _qwen_smart_resize(height: int, width: int, enc_cfg: common.VisionEncoderConfig) -> tuple[int, int]:
+    """Resized height and width of the Qwen VL image processors' ``smart_resize``.
+
+    Modified adaptation, Apache-2.0, copyright 2024 the HuggingFace Inc. team:
+    https://github.com/huggingface/transformers/blob/v4.57.0/src/transformers/models/qwen2_vl/image_processing_qwen2_vl.py
+    Each side is rounded to the patch-and-merge stride; an image above
+    ``max_pixels`` is scaled down (floor) and one below ``min_pixels`` scaled up
+    (ceil) to the budget first. A bound of zero is left unset.
+    """
+    factor = enc_cfg.patch_size * enc_cfg.spatial_merge_size
+    if max(height, width) / max(min(height, width), 1) > QWEN_SMART_RESIZE_MAX_RATIO:
+        raise ValueError(
+            f"absolute aspect ratio must be smaller than {QWEN_SMART_RESIZE_MAX_RATIO}, "
+            f"got {max(height, width) / max(min(height, width), 1):.1f}"
+        )
+    h_bar = max(factor, round(height / factor) * factor)
+    w_bar = max(factor, round(width / factor) * factor)
+    if enc_cfg.max_pixels > 0 and h_bar * w_bar > enc_cfg.max_pixels:
+        beta = math.sqrt((height * width) / enc_cfg.max_pixels)
+        h_bar = max(factor, math.floor(height / beta / factor) * factor)
+        w_bar = max(factor, math.floor(width / beta / factor) * factor)
+    elif enc_cfg.min_pixels > 0 and h_bar * w_bar < enc_cfg.min_pixels:
+        beta = math.sqrt(enc_cfg.min_pixels / (height * width))
+        h_bar = math.ceil(height * beta / factor) * factor
+        w_bar = math.ceil(width * beta / factor) * factor
+    return h_bar, w_bar
 
 
 def _kimi_resized_spatial_tokens(
@@ -68,88 +98,42 @@ def _kimi_resized_spatial_tokens(
     return (padded_height // stride) * (padded_width // stride), (padded_height // patch) * (padded_width // patch)
 
 
-def _encoder_shape_class(name: str) -> str:
-    """Token count an encoder op runs on: ``patch`` before spatial merging,
-    ``output`` after it (projector, DP exit), ``transformer`` on the ViT sequence."""
-    if "encoder_patch_embedding" in name:
-        return "patch"
-    if "encoder_projector" in name or "encoder_gemma4_pool_postprocess" in name or name == "encoder_dp_all_gather":
-        return "output"
-    return "transformer"
-
-
-def encoder_op_groups_json(
-    model_path: str,
-    backend: str,
-    *,
-    tp_size: int = 1,
-    pp_size: int = 1,
-    attention_dp_size: int = 1,
-    moe_tp_size: int | None = None,
-    moe_ep_size: int | None = None,
-    gemm_quant_mode: str | None = None,
-    moe_quant_mode: str | None = None,
-    kvcache_quant_mode: str | None = None,
-    fmha_quant_mode: str | None = None,
-    comm_quant_mode: str | None = None,
-    moe_backend: str | None = None,
-    attention_backend: str | None = None,
-    enable_eplb: bool = False,
-    wideep_num_slots: int | None = None,
-) -> str | None:
-    """Serialize a model's vision-encoder ops by shape class for the replay timing
-    provider, which times cache-miss image batches per image shape through the
-    ad-hoc op-list FFI. ``None`` when the model has no vision encoder."""
-    from aisimulate_core.sdk.config_builders import build_model_config
-    from aisimulate_core.sdk.engine import build_ops_json
-
-    model_config = build_model_config(
-        tp_size=tp_size,
-        pp_size=pp_size,
-        attention_dp_size=attention_dp_size,
-        moe_tp_size=moe_tp_size if moe_tp_size is not None else 1,
-        moe_ep_size=moe_ep_size if moe_ep_size is not None else 1,
-        gemm_quant_mode=gemm_quant_mode,
-        kvcache_quant_mode=kvcache_quant_mode,
-        fmha_quant_mode=fmha_quant_mode,
-        moe_quant_mode=moe_quant_mode,
-        comm_quant_mode=comm_quant_mode,
-        moe_backend=moe_backend,
-        attention_backend=attention_backend,
-        enable_eplb=enable_eplb,
-        wideep_num_slots=wideep_num_slots,
-    )
-    model = get_model(model_path, model_config, backend)
-    if not model.encoder_ops or not isinstance(getattr(model, "encoder_config", None), common.VisionEncoderConfig):
-        return None
-    groups: dict[str, list] = {"patch": [], "transformer": [], "output": []}
-    for op in model.encoder_ops:
-        groups[_encoder_shape_class(op._name)].append(op)
-    return json.dumps(
-        {
-            "encoder_dp_size": model.config.tp_size if model.config.enable_encoder_dp else 1,
-            **{name: build_ops_json(ops) if ops else None for name, ops in groups.items()},
-        }
-    )
-
-
 @dataclasses.dataclass(frozen=True)
 class ImageGeometry:
-    """Placeholder span and host byte volumes of one preprocessed image."""
+    """Encoder work and byte volumes of one preprocessed image.
 
-    patches: int
+    ``sequences`` independent encoder sequences (tiles, or one for a
+    dynamic-resolution tower) of ``patch_tokens`` patch embeddings,
+    ``transformer_tokens`` ViT tokens and ``output_tokens`` merged tokens each;
+    ``visual_tokens`` is the prompt placeholder span including structural
+    tokens; ``feature_bytes`` the processor output (fp32 patch pixels) and
+    ``embedding_bytes`` the encoder output kept by the embedding cache (bf16,
+    one copy per projector instance)."""
+
+    sequences: int
+    patch_tokens: int
+    transformer_tokens: int
+    output_tokens: int
     visual_tokens: int
     feature_bytes: int
     embedding_bytes: int
 
 
-def image_geometry(model_path: str, height: int, width: int) -> ImageGeometry:
+def image_geometry(
+    model_path: str,
+    height: int,
+    width: int,
+    *,
+    min_pixels: int | None = None,
+    max_pixels: int | None = None,
+) -> ImageGeometry:
     """Geometry of one ``height`` x ``width`` image under the checkpoint's preprocessing.
 
-    ``patches`` is the encoder sequence length, ``visual_tokens`` the prompt
-    placeholder span, ``feature_bytes`` the processor output (fp32 patch pixels)
-    and ``embedding_bytes`` the encoder output kept by the embedding cache (bf16,
-    one copy per projector instance). Shares the token math of the encoder phase."""
+    Shares the token math of the encoder phase. A dynamic-resolution processor
+    rescales images outside its pixel budget before patchify; the checkpoint's
+    bounds apply unless ``min_pixels``/``max_pixels`` override them, and a
+    checkpoint whose bounds are unknown is rejected rather than assumed to
+    keep the raw resolution."""
     from aisimulate_core.sdk.utils import (
         get_model_config_from_model_path,
         get_vision_encoder_config_from_model_info,
@@ -158,6 +142,19 @@ def image_geometry(model_path: str, height: int, width: int) -> ImageGeometry:
     enc_cfg = get_vision_encoder_config_from_model_info(get_model_config_from_model_path(model_path))
     if not isinstance(enc_cfg, common.VisionEncoderConfig):
         raise ValueError(f"{model_path} has no vision encoder configuration")
+    overrides = {
+        name: int(value)
+        for name, value in (("min_pixels", min_pixels), ("max_pixels", max_pixels))
+        if value is not None
+    }
+    if overrides:
+        enc_cfg = dataclasses.replace(enc_cfg, **overrides)
+    dynamic_qwen = enc_cfg.image_size == 0 and enc_cfg.resize_mode == "qwen"
+    if dynamic_qwen and (enc_cfg.min_pixels <= 0 or enc_cfg.max_pixels <= 0):
+        raise ValueError(
+            f"{model_path}: the processor's min_pixels/max_pixels budget is unknown; "
+            "set images.min_pixels and images.max_pixels to the served processor's values"
+        )
     workload = BaseBackend._encoder_workload_per_visual(
         RuntimeConfig(image_height=int(height), image_width=int(width), num_images_per_request=1), enc_cfg
     )
@@ -165,7 +162,10 @@ def image_geometry(model_path: str, height: int, width: int) -> ImageGeometry:
         raise ValueError(f"{height}x{width} resolves to no visual tokens for {model_path}")
     patch_pixels = enc_cfg.in_channels * enc_cfg.temporal_patch_size * enc_cfg.patch_size**2
     return ImageGeometry(
-        patches=workload.transformer_tokens_per_sequence * workload.sequences_per_image,
+        sequences=workload.sequences_per_image,
+        patch_tokens=workload.patch_tokens_per_sequence,
+        transformer_tokens=workload.transformer_tokens_per_sequence,
+        output_tokens=workload.output_tokens_per_sequence,
         visual_tokens=workload.context_tokens_per_image,
         feature_bytes=workload.patch_tokens_per_sequence * workload.sequences_per_image * patch_pixels * 4,
         embedding_bytes=workload.output_tokens_per_image * enc_cfg.out_hidden_size * enc_cfg.projector_n_instances * 2,
@@ -671,13 +671,11 @@ class BaseBackend:
         def _smart_resized_spatial_tokens(height: int, width: int, *, is_video: bool = False) -> tuple[int, int]:
             if enc_cfg.resize_mode == "kimi":
                 return _kimi_resized_spatial_tokens(height, width, enc_cfg, is_video=is_video)
-            # Upstream VL processors (Qwen smart_resize) round each raw
-            # dimension to the nearest patch-and-merge stride before
-            # patchify. The processor's min/max_pixels rescaling is a
-            # preprocessor knob AIC does not model.
+            # The video processor budgets pixels per clip, not per frame; that rule is
+            # not modeled, so frames keep the stride rounding alone.
+            budget = dataclasses.replace(enc_cfg, min_pixels=0, max_pixels=0) if is_video else enc_cfg
+            h_bar, w_bar = _qwen_smart_resize(height, width, budget)
             spatial_stride = enc_cfg.patch_size * enc_cfg.spatial_merge_size
-            h_bar = max(spatial_stride, round(height / spatial_stride) * spatial_stride)
-            w_bar = max(spatial_stride, round(width / spatial_stride) * spatial_stride)
             post_merge = (h_bar // spatial_stride) * (w_bar // spatial_stride)
             pre_merge = (h_bar // enc_cfg.patch_size) * (w_bar // enc_cfg.patch_size)
             return post_merge, pre_merge
@@ -785,8 +783,10 @@ class BaseBackend:
             "output": workload.output_tokens_per_sequence,
         }
 
+        from aisimulate_core.sdk.models.blocks.vit import encoder_shape_class
+
         def _encoder_shape(op) -> tuple[int, int]:
-            return sequences_local, tokens_per_sequence[_encoder_shape_class(op._name)]
+            return sequences_local, tokens_per_sequence[encoder_shape_class(op._name)]
 
         self._require_rust_engine_step(runtime_config, database, surface="encoder")
         encoder_latency_dict, encoder_energy_wms_dict, encoder_source_dict = self._run_encoder_phase_with_rust(

@@ -34,9 +34,9 @@ pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms};
 pub use protocol::{
     Admission, CacheTierAttribution, Command, CommandEffects, CommandResult, DecodeAcceptance,
-    ForwardPassMetrics, ImageSpec, KvBlock, KvEvent, KvEventData, LifecycleEvent, Metrics, Output,
-    PassCompletionEffects, PassStartEffects, PressureEvent, PressureKind, PressureState, Request,
-    StoredBlocks, TtftMilestone,
+    EncoderShape, ForwardPassMetrics, ImageSpec, KvBlock, KvEvent, KvEventData, LifecycleEvent,
+    Metrics, Output, PassCompletionEffects, PassStartEffects, PressureEvent, PressureKind,
+    PressureState, Request, StoredBlocks, TtftMilestone,
 };
 pub use runtime::{Engine, EngineFactory};
 pub use scheduler::SchedulerRank;

@@ -32,6 +32,12 @@ class ImageInput(StrictModel):
     count: PositiveInt = 1
     encoding: Literal["png", "jpeg"] = "png"
     identity: Literal["unique"] | ImagePool = "unique"
+    min_pixels: PositiveInt | None = Field(
+        default=None, description="Processor rescale lower bound; defaults to the checkpoint's preprocessor value."
+    )
+    max_pixels: PositiveInt | None = Field(
+        default=None, description="Processor rescale upper bound; defaults to the checkpoint's preprocessor value."
+    )
 
 
 class SyntheticSource(StrictModel):

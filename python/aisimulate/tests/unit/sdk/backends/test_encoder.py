@@ -962,44 +962,114 @@ class TestSmartResizeTokenResolution:
         assert BaseBackend._encoder_pre_merge_per_visual(rc, enc_cfg) == (0, 0, 0)
 
 
-class TestEncoderOpGroupsJson:
-    """The replay timing provider consumes encoder ops grouped by shape class."""
+class TestCanonicalVisionTiming:
+    """The canonical estimator compiles the tower under the requested layout and prices it."""
 
-    def test_groups_partition_the_encoder_ops_by_shape_class(self):
-        import json
+    @staticmethod
+    def _estimator(tp: int, encoder_parallel: str):
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-        from aisimulate_core.sdk.backends.base_backend import _encoder_shape_class, encoder_op_groups_json
-        from aisimulate_core.sdk.config import ModelConfig
+        return RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig(
+                model="Qwen/Qwen3-VL-8B-Instruct",
+                system="h200_sxm",
+                backend="sglang",
+                backend_version="0.5.14",
+                worker_type="aggregated",
+                tp=tp,
+                encoder_parallel=encoder_parallel,
+            )
+        )
 
-        model = get_model("Qwen/Qwen3-VL-8B-Instruct", ModelConfig(tp_size=2, enable_encoder_dp=True), "sglang")
-        groups = json.loads(encoder_op_groups_json("Qwen/Qwen3-VL-8B-Instruct", "sglang", tp_size=2))
+    def test_tp_shards_the_tower_while_dp_gathers_its_output(self):
+        shape = [{"sequences": 1, "patch_tokens": 784, "transformer_tokens": 784, "output_tokens": 196, "images": 4}]
+        tp_ops = self._estimator(2, "tp").vision_operations(shape)
+        dp_ops = self._estimator(2, "dp").vision_operations(shape)
+        tp_names = {name for name, *_ in tp_ops}
+        dp_names = {name for name, *_ in dp_ops}
+        # SGLang's default splits the ViT over the attention TP group: every rank
+        # encodes every image and no exit all-gather exists. Encoder DP replicates
+        # the tower, shares the images, and gathers the embeddings.
+        assert "encoder_dp_all_gather" not in tp_names
+        assert "encoder_dp_all_gather" in dp_names
+        assert sum(latency for _, latency, *_ in tp_ops) > 0.0
+        assert self._estimator(2, "tp").diagnostics()["provenance"]["config"]["encoder_parallel"] == "tp"
 
-        assert groups["encoder_dp_size"] == 2
-        # OpSpec JSON is externally tagged: ``{"Gemm": {"name": ..., ...}}``.
-        grouped_names = {
-            name: sorted(next(iter(op.values()))["name"] for op in json.loads(ops_json))
-            for name, ops_json in groups.items()
-            if name != "encoder_dp_size" and ops_json is not None
-        }
-        expected: dict[str, list[str]] = {}
-        for op in model.encoder_ops:
-            expected.setdefault(_encoder_shape_class(op._name), []).append(op._name)
-        assert grouped_names == {name: sorted(names) for name, names in expected.items()}
-        assert "encoder_dp_all_gather" in grouped_names["output"]
+    def test_language_only_models_compile_no_tower(self):
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
-    def test_text_only_models_have_no_encoder_groups(self):
-        from aisimulate_core.sdk.backends.base_backend import encoder_op_groups_json
-
-        assert encoder_op_groups_json("Qwen/Qwen3-8B", "sglang") is None
+        with pytest.raises(Exception, match="no vision encoder"):
+            RustForwardPassPerfModel.best_available(
+                ForwardPassPerfModelConfig(
+                    model="Qwen/Qwen3-8B",
+                    system="h200_sxm",
+                    backend="sglang",
+                    backend_version="0.5.14",
+                    worker_type="aggregated",
+                    encoder_parallel="tp",
+                )
+            )
 
 
-def test_image_geometry_matches_the_qwen3_vl_processor():
+def test_encoder_tp_shards_the_resident_tower_weights():
+    from aisimulate_core.sdk.config import ModelConfig
+
+    def weights(enable_encoder_dp: bool) -> float:
+        model = get_model(
+            "Qwen/Qwen3-VL-8B-Instruct", ModelConfig(tp_size=2, enable_encoder_dp=enable_encoder_dp), "sglang"
+        )
+        return sum(op.get_weights() for op in model.encoder_ops)
+
+    assert weights(enable_encoder_dp=False) < weights(enable_encoder_dp=True)
+
+
+def test_image_geometry_follows_the_processor_pixel_budget():
     from aisimulate_core.sdk.backends.base_backend import ImageGeometry, image_geometry
 
     # 1024x1024 -> 64x64 patches of 16px, merged 2x2 into 1024 visual tokens; each patch
     # carries 3 x 2 x 16 x 16 fp32 values and each token 4 bf16 embeddings of 4096.
     assert image_geometry("Qwen/Qwen3-VL-8B-Instruct", 1024, 1024) == ImageGeometry(
-        patches=4096, visual_tokens=1024, feature_bytes=4096 * 6144, embedding_bytes=1024 * 4 * 4096 * 2
+        sequences=1,
+        patch_tokens=4096,
+        transformer_tokens=4096,
+        output_tokens=1024,
+        visual_tokens=1024,
+        feature_bytes=4096 * 6144,
+        embedding_bytes=1024 * 4 * 4096 * 2,
     )
+    # smart_resize scales a 32x32 image up to the 65536-pixel floor (256x256 -> 64
+    # tokens) and an 8192x8192 image down to the 16777216-pixel ceiling (4096x4096).
+    assert image_geometry("Qwen/Qwen3-VL-8B-Instruct", 32, 32).output_tokens == 64
+    assert image_geometry("Qwen/Qwen3-VL-8B-Instruct", 8192, 8192).output_tokens == 16384
+    # A served processor with another budget (`--mm-process-config`) is followed instead.
+    assert image_geometry("Qwen/Qwen3-VL-8B-Instruct", 8192, 8192, max_pixels=1003520).output_tokens == 961
     with pytest.raises(ValueError, match="no vision encoder"):
         image_geometry("Qwen/Qwen3-8B", 1024, 1024)
+
+
+def test_image_geometry_keeps_llama4_tiles_as_separate_sequences():
+    from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+    # 16 local 336px tiles plus the global tile; each tile is its own attention
+    # sequence of 576 patches (+CLS), and the prompt adds tile-structure tokens.
+    geometry = image_geometry("meta-llama/Llama-4-Scout-17B-16E-Instruct", 1024, 1024)
+    assert (geometry.sequences, geometry.patch_tokens, geometry.transformer_tokens) == (17, 576, 577)
+    assert geometry.output_tokens == 144
+    assert geometry.visual_tokens == 2467
+
+
+def test_video_frames_keep_the_stride_geometry_while_images_follow_the_pixel_budget():
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path, get_vision_encoder_config_from_model_info
+
+    enc_cfg = get_vision_encoder_config_from_model_info(get_model_config_from_model_path("Qwen/Qwen3-VL-8B-Instruct"))
+    # A 224x224 image is scaled up to the 65536-pixel floor (256x256 -> 64 tokens); a
+    # 224x224 video frame keeps its 7x7 merged grid, as the clip budget is not modeled.
+    image = BaseBackend._encoder_workload_per_visual(RuntimeConfig(image_height=224, image_width=224), enc_cfg)
+    video = BaseBackend._encoder_workload_per_visual(
+        RuntimeConfig(
+            num_images_per_request=0, num_videos_per_request=1, video_frames=8, video_height=224, video_width=224
+        ),
+        enc_cfg,
+    )
+    assert image.output_tokens_per_image == 64
+    assert video.output_tokens_per_sequence == 49

@@ -812,7 +812,10 @@ impl Trace {
                 spec.block_size
             );
             ensure!(
-                images.count > 0 && images.visual_tokens > 0 && images.patches > 0,
+                images.count > 0
+                    && images.visual_tokens > 0
+                    && images.encoder.sequences > 0
+                    && images.encoder.patch_tokens > 0,
                 "image workloads require positive image count, visual tokens and patches"
             );
             ensure!(
@@ -1899,7 +1902,7 @@ fn synthetic_turn_images(
             identity,
             token_start,
             token_end: token_start + images.visual_tokens,
-            patches: images.patches,
+            encoder: images.encoder,
             feature_bytes: images.feature_bytes,
             embedding_bytes: images.embedding_bytes,
         });

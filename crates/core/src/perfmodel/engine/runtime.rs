@@ -20,12 +20,13 @@
 
 use std::sync::Arc;
 
+use crate::common::enums::EncoderParallel;
 use crate::common::enums::{DatabaseMode, TransferPolicy};
 use crate::common::error::AicError;
 use crate::operators::base::PerformanceResult;
 use crate::operators::{FpmForwardOp, FpmPhase, Op};
 use crate::perf_database::PerfDatabase;
-use crate::perfmodel::engine::spec::EngineSpec;
+use crate::perfmodel::engine::spec::{EncoderImageShape, EngineSpec, VisionSpec};
 use crate::session::{
     ContextOpFilter, get_mix_step_ops, query_context_op, query_generation_op, run_context_ops,
     run_context_ops_with, run_generation_ops_step, run_generation_ops_step_beamed_with,
@@ -308,6 +309,9 @@ pub struct Engine {
     /// `(nextn + 1)` exactly as Python `_run_generation_phase:200`
     /// (`batch_size = batch_size * (model._nextn + 1)`). 0 disables scaling.
     nextn: u32,
+    /// Vision tower ops and their layout over the `tp_size` ranks, when compiled.
+    vision: Option<VisionSpec>,
+    tp_size: u32,
 }
 
 impl std::fmt::Debug for Engine {
@@ -415,7 +419,62 @@ impl Engine {
             generation_ops: spec.generation_ops,
             db,
             nextn,
+            vision: spec.vision,
+            tp_size: spec.engine.parallel.tp_size,
         })
+    }
+
+    /// Whether this engine compiled a vision tower.
+    pub fn has_vision(&self) -> bool {
+        self.vision.is_some()
+    }
+
+    /// Evaluate one vision-encoder call over `shapes`, name-folded like the
+    /// other per-op walks. Mirrors `BaseBackend._run_encoder_phase`: under
+    /// encoder DP the busiest rank encodes its ceil share of the images, every
+    /// sequence of an image is an independent attention sequence, and each op
+    /// group runs at `x = sequences * tokens` of its token class.
+    pub fn evaluate_vision(
+        &self,
+        shapes: &[EncoderImageShape],
+    ) -> Result<Vec<PerOpValue>, AicError> {
+        let vision = self.vision.as_ref().ok_or_else(|| {
+            AicError::InvalidEngineConfig(
+                "this engine compiled no vision tower; set encoder_parallel on a VL model".into(),
+            )
+        })?;
+        let encoder_dp = match vision.encoder_parallel {
+            EncoderParallel::Tp => 1,
+            EncoderParallel::Dp => self.tp_size.max(1),
+        };
+        let mut out = PerOpFold::new("context");
+        for shape in shapes {
+            if shape.images == 0 || shape.sequences == 0 {
+                continue;
+            }
+            let batch = shape
+                .images
+                .div_ceil(encoder_dp)
+                .checked_mul(shape.sequences)
+                .ok_or_else(|| AicError::InvalidEngineConfig("vision batch exceeds u32".into()))?;
+            for (ops, tokens) in [
+                (&vision.patch_ops, shape.patch_tokens),
+                (&vision.transformer_ops, shape.transformer_tokens),
+                (&vision.output_ops, shape.output_tokens),
+            ] {
+                if tokens == 0 {
+                    continue;
+                }
+                let x = batch.checked_mul(tokens).ok_or_else(|| {
+                    AicError::InvalidEngineConfig("vision tokens exceed u32".into())
+                })?;
+                for op in ops {
+                    let r = query_context_op(op, &self.db, batch, tokens, 0, 1.0, Some(x))?;
+                    out.add(op, r);
+                }
+            }
+        }
+        Ok(strip_per_op_metadata(out.into_values()))
     }
 
     /// FPM whole-model engine: each phase list LEADS with one `FpmForward`

@@ -220,6 +220,9 @@ def materialize_aic_num_gpu_blocks(
             if lowered.get("vision")
             else 0
         ),
+        encoder_parallel=((lowered.get("timing_model") or {}).get("config") or {}).get("encoder_parallel")
+        if lowered.get("vision")
+        else None,
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)
@@ -256,6 +259,7 @@ def estimate_num_gpu_blocks(
     diagnostics: dict[str, Any] | None = None,
     colocated_encoder: bool = False,
     reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -334,6 +338,7 @@ def estimate_num_gpu_blocks(
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
             colocated_encoder=colocated_encoder,
             reserved_bytes=reserved_bytes,
+            encoder_parallel=encoder_parallel,
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
     )

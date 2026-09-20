@@ -286,12 +286,15 @@ class KVCacheEstimator:
         systems_path: str | None = None,
         colocated_encoder: bool = False,
         reserved_bytes: int = 0,
+        encoder_parallel: str | None = None,
     ) -> KVCacheEstimator:
         """Build the model/backend/perf-DB and the non-KV memory breakdown.
 
         ``colocated_encoder`` keeps the model's vision-encoder weights resident on
-        this rank; ``reserved_bytes`` is a fixed rank-local reservation outside the
-        KV pool (SGLang's multimodal embedding cache).
+        this rank, laid out per ``encoder_parallel`` (``"tp"`` shards the tower
+        over the tensor-parallel group, ``"dp"`` replicates it; the model
+        layer's default otherwise); ``reserved_bytes`` is a fixed rank-local
+        reservation outside the KV pool (SGLang's multimodal embedding cache).
 
         Reuses the exact AIC machinery the latency path uses: ``build_model_config``
         + ``apply_nextn`` (so the built model is spec-decode aware) + ``get_model``
@@ -332,6 +335,7 @@ class KVCacheEstimator:
             attention_backend=attention_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
+            **({"enable_encoder_dp": encoder_parallel == "dp"} if encoder_parallel is not None else {}),
         )
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale
@@ -1038,6 +1042,7 @@ def estimate_kv_cache(
     allow_hf_config_download: bool = False,
     colocated_encoder: bool = False,
     reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> dict[str, Any]:
     """Compute the KV-cache memory estimate (raw + optional tolerance margin).
 
@@ -1128,6 +1133,7 @@ def estimate_kv_cache(
             systems_path=systems_path,
             colocated_encoder=colocated_encoder,
             reserved_bytes=reserved_bytes,
+            encoder_parallel=encoder_parallel,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
         if (
@@ -1208,6 +1214,7 @@ def estimate_num_gpu_blocks(
     diagnostics: dict[str, Any] | None = None,
     colocated_encoder: bool = False,
     reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> int:
     """Convert the KV-cache token capacity to a scheduler block count.
 
@@ -1271,6 +1278,7 @@ def estimate_num_gpu_blocks(
         allow_hf_config_download=allow_hf_config_download,
         colocated_encoder=colocated_encoder,
         reserved_bytes=reserved_bytes,
+        encoder_parallel=encoder_parallel,
     )
 
     adjusted = estimate.get("tolerance_adjusted")

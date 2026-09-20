@@ -276,7 +276,12 @@ class VisionPredictionConfig(StrictModel):
     """Vision encoder hosted on the language worker."""
 
     cache_mib: PositiveInt = Field(
-        default=100, description="SGLang multimodal embedding cache (SGLANG_VLM_CACHE_SIZE_MB)."
+        default=100, description="SGLang multimodal embedding cache in MiB (SGLANG_VLM_CACHE_SIZE_MB)."
+    )
+    encoder_parallel: Literal["tp", "dp"] = Field(
+        default="tp",
+        description="Vision tower layout over the tensor-parallel group: tp shards it (SGLang default), "
+        "dp replicates it and splits the images (--mm-enable-dp-encoder).",
     )
 
 

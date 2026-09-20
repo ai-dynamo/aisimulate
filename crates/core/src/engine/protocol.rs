@@ -8,12 +8,35 @@ use uuid::Uuid;
 
 use super::{HandoffId, HandoffTransferTiming};
 
+/// Encoder work behind one image, as the checkpoint's processor lays it out.
+///
+/// An image becomes `sequences` independent encoder sequences (tiles, or one
+/// for a dynamic-resolution tower) that attention never crosses; the token
+/// counts are per sequence. The placeholder span an image occupies in the
+/// prompt can exceed `sequences * output_tokens` by structural tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EncoderShape {
+    pub sequences: u32,
+    /// Patch-embedding tokens per sequence.
+    pub patch_tokens: u32,
+    /// Transformer tokens per sequence (patches plus any CLS token).
+    pub transformer_tokens: u32,
+    /// Merged output tokens per sequence.
+    pub output_tokens: u32,
+}
+
+impl EncoderShape {
+    /// Patch-embedding tokens over all sequences of the image.
+    pub fn total_patch_tokens(&self) -> usize {
+        self.sequences as usize * self.patch_tokens as usize
+    }
+}
+
 /// One image placeholder span and the encoder shape behind it.
 ///
 /// `token_start..token_end` is the half-open placeholder interval inside the
 /// prompt; its length is the image's visual token count. `identity` keys the
 /// vision embedding cache and repeats only when the workload reuses an image.
-/// `patches` is the encoder sequence length before spatial merging;
 /// `feature_bytes` is the processor output moved through host memory and
 /// `embedding_bytes` the encoder output retained by the embedding cache.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,7 +44,7 @@ pub struct ImageSpec {
     pub identity: u64,
     pub token_start: usize,
     pub token_end: usize,
-    pub patches: usize,
+    pub encoder: EncoderShape,
     pub feature_bytes: u64,
     pub embedding_bytes: u64,
 }

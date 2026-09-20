@@ -69,17 +69,13 @@ impl PerfModel {
         };
         let mut shapes: Vec<crate::engine::VisionShape> = Vec::new();
         for image in images {
-            let patches = u32::try_from(image.patches).context("image patches exceed u32")?;
-            let visual_tokens =
-                u32::try_from(image.visual_tokens()).context("visual tokens exceed u32")?;
             match shapes
                 .iter_mut()
-                .find(|shape| shape.patches == patches && shape.visual_tokens == visual_tokens)
+                .find(|shape| shape.encoder == image.encoder)
             {
                 Some(shape) => shape.count += 1,
                 None => shapes.push(crate::engine::VisionShape {
-                    patches,
-                    visual_tokens,
+                    encoder: image.encoder,
                     count: 1,
                 }),
             }

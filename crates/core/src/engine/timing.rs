@@ -445,10 +445,7 @@ pub enum TimingModelConfig {
 /// One homogeneous group of images in a vision-encoder batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VisionShape {
-    /// Encoder sequence length per image, before spatial merging.
-    pub patches: u32,
-    /// Language-model tokens per image, after spatial merging.
-    pub visual_tokens: u32,
+    pub encoder: crate::engine::EncoderShape,
     pub count: u32,
 }
 

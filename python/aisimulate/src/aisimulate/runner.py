@@ -1015,11 +1015,20 @@ def _image_traffic_fields(deployment: BackendDeploymentSpec, images: Mapping[str
     model = args.get("aic_model_path") or (timing.get("config") or {}).get("model")
     if not isinstance(model, str) or not model:
         raise ValueError("image workloads require the language model identity in the aggregated engine args")
-    geometry = image_geometry(model, int(images["height"]), int(images["width"]))
+    geometry = image_geometry(
+        model,
+        int(images["height"]),
+        int(images["width"]),
+        min_pixels=images.get("min_pixels"),
+        max_pixels=images.get("max_pixels"),
+    )
     fields: dict[str, JSONValue] = {
         "image_count": int(images.get("count", 1)),
         "image_visual_tokens": geometry.visual_tokens,
-        "image_patches": geometry.patches,
+        "image_sequences": geometry.sequences,
+        "image_patch_tokens": geometry.patch_tokens,
+        "image_transformer_tokens": geometry.transformer_tokens,
+        "image_output_tokens": geometry.output_tokens,
         "image_feature_bytes": geometry.feature_bytes,
         "image_embedding_bytes": geometry.embedding_bytes,
     }

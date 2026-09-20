@@ -185,7 +185,12 @@ impl FrontendRuntime {
                 .iter()
                 .map(|image| Job {
                     request_id: uuid,
-                    service_ms: cost.eval(1, 1, image.patches, image.feature_bytes),
+                    service_ms: cost.eval(
+                        1,
+                        1,
+                        image.encoder.total_patch_tokens(),
+                        image.feature_bytes,
+                    ),
                     remaining: 1.0,
                 })
                 .collect(),
@@ -412,7 +417,12 @@ mod tests {
                 identity: index as u64,
                 token_start: index * 4,
                 token_end: index * 4 + 4,
-                patches: 16,
+                encoder: crate::engine::EncoderShape {
+                    sequences: 1,
+                    patch_tokens: 16,
+                    transformer_tokens: 16,
+                    output_tokens: 4,
+                },
                 feature_bytes: 0,
                 embedding_bytes: 0,
             })

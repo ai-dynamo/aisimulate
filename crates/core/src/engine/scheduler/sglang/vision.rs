@@ -119,7 +119,12 @@ mod tests {
             identity,
             token_start: 2,
             token_end: 6,
-            patches: 16,
+            encoder: crate::engine::EncoderShape {
+                sequences: 1,
+                patch_tokens: 16,
+                transformer_tokens: 16,
+                output_tokens: 4,
+            },
             feature_bytes: 0,
             embedding_bytes: bytes,
         }

@@ -1060,6 +1060,7 @@ struct EngineBuildRequest {
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
     strict_provenance: Option<bool>,
+    encoder_parallel: Option<String>,
 }
 
 /// Ergonomic builder for the Rust -> Python -> Rust compiled-engine entry point.
@@ -1109,6 +1110,7 @@ impl AicEngineBuilder {
                 shared_layer: None,
                 transfer_policy: None,
                 strict_provenance: None,
+                encoder_parallel: None,
             },
         }
     }
@@ -1403,6 +1405,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
         kwargs.set_item("strict_provenance", request.strict_provenance)?;
+        kwargs.set_item("encoder_parallel", request.encoder_parallel.as_deref())?;
         kwargs.set_item("nextn", request.nextn)?;
         if let Some(speculation) = &request.speculation {
             let json = serde_json::to_string(speculation)
@@ -1497,6 +1500,9 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
         strict_provenance: Some(config.strict_provenance),
+        encoder_parallel: config
+            .encoder_parallel
+            .map(|parallel| parallel.as_str().to_owned()),
     })
 }
 
@@ -1558,6 +1564,7 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
         strict_provenance: Some(config.strict_provenance),
+        encoder_parallel: None,
     }
 }
 
@@ -1753,6 +1760,7 @@ impl PyForwardPassPerfModel {
             wideep_num_slots: request.wideep_num_slots,
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
+            encoder_parallel: None,
         };
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
@@ -1796,6 +1804,27 @@ impl PyForwardPassPerfModel {
             })
             .map_err(aic_to_py)?;
         serde_json::to_string(&result).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    /// Per-op values of one vision-encoder call. `shapes_json` is a JSON array
+    /// of `EncoderImageShape` objects; requires an estimator compiled with
+    /// `encoder_parallel`. Pure-Rust compute (GIL freed).
+    fn vision_operations(
+        &self,
+        py: Python<'_>,
+        shapes_json: &str,
+    ) -> PyResult<Vec<(String, f64, f64, String)>> {
+        let shapes: Vec<crate::EncoderImageShape> = serde_json::from_str(shapes_json)
+            .map_err(|e| PyValueError::new_err(format!("invalid encoder shapes JSON: {e}")))?;
+        let values = py
+            .allow_threads(|| self.inner.vision_operations(&shapes))
+            .map_err(aic_to_py)?;
+        Ok(values
+            .into_iter()
+            .map(|(name, latency_ms, energy_wms, source)| {
+                (name, latency_ms, energy_wms, source.to_owned())
+            })
+            .collect())
     }
 
     /// Diagnostics (source / readiness / retained count / warning) as JSON.

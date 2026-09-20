@@ -10,7 +10,6 @@ use crate::engine::{
     Backend, EngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
     TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
-use crate::perfmodel::engine::Engine;
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
     ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
@@ -84,7 +83,13 @@ struct RuntimeTraffic {
     #[serde(default)]
     image_visual_tokens: Option<usize>,
     #[serde(default)]
-    image_patches: Option<usize>,
+    image_sequences: Option<u32>,
+    #[serde(default)]
+    image_patch_tokens: Option<u32>,
+    #[serde(default)]
+    image_transformer_tokens: Option<u32>,
+    #[serde(default)]
+    image_output_tokens: Option<u32>,
     #[serde(default)]
     image_feature_bytes: Option<u64>,
     #[serde(default)]
@@ -213,6 +218,9 @@ struct AicTimingConfig {
     forward_model: Option<String>,
     #[serde(default)]
     decoder_replay: bool,
+    /// Layout of the model's vision tower; required when the rank hosts it.
+    #[serde(default)]
+    encoder_parallel: Option<crate::EncoderParallel>,
     #[serde(default)]
     worker_type: Option<ForwardPassWorkerType>,
     #[serde(default)]
@@ -312,6 +320,7 @@ impl AicTimingConfig {
             wideep_num_slots: self.wideep_num_slots,
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
+            encoder_parallel: self.encoder_parallel,
         })
     }
 
@@ -403,69 +412,6 @@ impl AicTimingConfig {
 
 type PhaseEvidenceKey = (u32, u32, u32, u32, bool);
 
-/// Vision-encoder op lists serialized by the Python model layer, split by the
-/// token count each op runs on: `patch` before merging, `output` after, and
-/// `transformer` on the ViT sequence. The shape math stays here; the per-op
-/// values come from the native engine's ad-hoc op-list evaluation.
-#[derive(Debug, Deserialize)]
-struct EncoderOpGroups {
-    encoder_dp_size: u32,
-    patch: Option<String>,
-    transformer: Option<String>,
-    output: Option<String>,
-}
-
-struct VisionTiming {
-    engine: Arc<Engine>,
-    ops: EncoderOpGroups,
-    cache: quick_cache::sync::Cache<VisionShape, TimingPhaseEvidence>,
-}
-
-impl VisionTiming {
-    /// Operation evidence of one encoder call over `shape.count` equal images.
-    /// Under encoder DP each rank encodes its ceil share; every image is one
-    /// encoder sequence, so `patches` is also the patch-embedding length.
-    fn phase(&self, shape: VisionShape) -> Result<TimingPhaseEvidence> {
-        if let Some(phase) = self.cache.get(&shape) {
-            return Ok(phase);
-        }
-        let batch = shape.count.div_ceil(self.ops.encoder_dp_size.max(1));
-        let groups = [
-            (&self.ops.patch, shape.patches),
-            (&self.ops.transformer, shape.patches),
-            (&self.ops.output, shape.visual_tokens),
-        ];
-        let mut entries = Vec::new();
-        for (ops_json, tokens) in groups {
-            let Some(ops_json) = ops_json else {
-                continue;
-            };
-            let x = batch
-                .checked_mul(tokens)
-                .context("vision batch tokens exceed AIC's u32 limit")?;
-            let values = self
-                .engine
-                .evaluate_ops_json(ops_json, true, batch, tokens, 0, 1.0, Some(x))
-                .map_err(|error| anyhow!("AIC vision evaluation failed: {error}"))?;
-            entries.extend(
-                values
-                    .into_iter()
-                    .map(|(name, latency_ms, energy_wms, source)| {
-                        (name, latency_ms, energy_wms, source.to_string())
-                    }),
-            );
-        }
-        ensure!(
-            !entries.is_empty(),
-            "AIC vision encoder returned no operation evidence for {} image(s)",
-            shape.count
-        );
-        let phase = phase_evidence_from_python(entries)?;
-        self.cache.insert(shape, phase.clone());
-        Ok(phase)
-    }
-}
-
 struct AicTimingModel {
     engine: Py<PyAny>,
     diagnostic_model: Option<ForwardPassPerfModel>,
@@ -474,11 +420,21 @@ struct AicTimingModel {
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceSummary>,
     phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, TimingPhaseEvidence>,
-    vision: Option<VisionTiming>,
+    /// Present when the rank hosts the vision tower.
+    vision: Option<VisionTimer>,
+}
+
+/// The canonical estimator's compiled vision tower and the encoder evidence it
+/// produced per image shape. Kept apart from the diagnostic handle, which
+/// replay drops when no evidence capture was requested.
+struct VisionTimer {
+    model: ForwardPassPerfModel,
+    cache: quick_cache::sync::Cache<VisionShape, TimingPhaseEvidence>,
 }
 
 impl AicTimingModel {
-    /// `vision` loads the model's encoder op groups so image batches can be timed.
+    /// `vision` marks a rank that hosts the vision tower: the canonical model
+    /// must then have been asked to compile it (`encoder_parallel`).
     fn build(
         config: &mut AicTimingConfig,
         worker_type: ForwardPassWorkerType,
@@ -494,6 +450,10 @@ impl AicTimingModel {
                     && config.nextn == 0
                     && config.speculation.is_none(),
                 "AIC vision timing requires backend=sglang with pp=1, attention_dp=1, and no speculative decoding"
+            );
+            ensure!(
+                config.encoder_parallel.is_some(),
+                "a rank hosting the vision encoder requires timing config encoder_parallel (tp or dp)"
             );
         }
         let model = ForwardPassPerfModel::best_available(config.estimator_request(worker_type)?)
@@ -519,28 +479,18 @@ impl AicTimingModel {
         let native = model.native_engine().context(
             "AIC regression estimator is not ready: offline replay requires trained observations or a native estimator"
         )?;
-        let vision = vision
-            .then(|| -> Result<VisionTiming> {
-                let ops = Python::with_gil(|py| -> PyResult<Option<String>> {
-                    let kwargs = aic_model_identity_kwargs(py, config)?;
-                    PyModule::import(py, "aisimulate_core.sdk.backends.base_backend")?
-                        .getattr("encoder_op_groups_json")?
-                        .call(
-                            (config.model.as_str(), config.backend.as_str()),
-                            Some(&kwargs),
-                        )?
-                        .extract()
-                })
-                .map_err(|error| anyhow!("AIC vision encoder ops could not be built: {error}"))?
-                .with_context(|| format!("AIC model {:?} has no vision encoder", config.model))?;
-                Ok(VisionTiming {
-                    engine: Arc::clone(&native),
-                    ops: serde_json::from_str(&ops)
-                        .context("AIC vision encoder op groups are malformed")?,
-                    cache: quick_cache::sync::Cache::new(64),
-                })
-            })
-            .transpose()?;
+        if vision {
+            ensure!(
+                native.has_vision(),
+                "AIC model {:?} compiled no vision tower for encoder_parallel {:?}",
+                config.model,
+                config.encoder_parallel
+            );
+        }
+        let vision = vision.then(|| VisionTimer {
+            model: model.clone(),
+            cache: quick_cache::sync::Cache::new(64),
+        });
         let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
             let engine = Py::new(py, crate::AicEngine::from_shared_engine(native))?.into_any();
             let ceiling = if use_fpm_decode_totals {
@@ -563,6 +513,43 @@ impl AicTimingModel {
             phase_cache: quick_cache::sync::Cache::new(128),
             vision,
         })
+    }
+
+    /// Operation evidence of one encoder call over `shape.count` equal images,
+    /// priced by the canonical model's compiled vision tower.
+    fn vision_phase(&self, shape: VisionShape) -> Result<TimingPhaseEvidence> {
+        let timer = self
+            .vision
+            .as_ref()
+            .context("this rank does not host the vision encoder")?;
+        if let Some(phase) = timer.cache.get(&shape) {
+            return Ok(phase);
+        }
+        let entries = timer
+            .model
+            .vision_operations(&[crate::EncoderImageShape {
+                sequences: shape.encoder.sequences,
+                patch_tokens: shape.encoder.patch_tokens,
+                transformer_tokens: shape.encoder.transformer_tokens,
+                output_tokens: shape.encoder.output_tokens,
+                images: shape.count,
+            }])
+            .map_err(|error| anyhow!("AIC vision evaluation failed: {error}"))?;
+        ensure!(
+            !entries.is_empty(),
+            "AIC vision encoder returned no operation evidence for {} image(s)",
+            shape.count
+        );
+        let phase = phase_evidence_from_python(
+            entries
+                .into_iter()
+                .map(|(name, latency_ms, energy_wms, source)| {
+                    (name, latency_ms, energy_wms, source.to_owned())
+                })
+                .collect(),
+        )?;
+        timer.cache.insert(shape, phase.clone());
+        Ok(phase)
     }
 
     fn predict_phase_evidence(
@@ -675,12 +662,12 @@ impl TimingModel for AicTimingModel {
     }
 
     fn predict_vision_ms(&self, shapes: &[VisionShape]) -> Result<Option<f64>> {
-        let Some(vision) = &self.vision else {
+        if self.vision.is_none() {
             return Ok(None);
-        };
+        }
         let mut latency_ms = 0.0;
         for shape in shapes {
-            let phase = vision.phase(*shape)?;
+            let phase = self.vision_phase(*shape)?;
             latency_ms += phase.latency_ms;
             // The encoder runs inside the prefill forward; its operations join
             // that phase's evidence under their own `encoder_*` names.
@@ -818,6 +805,10 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         // A rank hosting the vision encoder keeps its weights and embedding
         // cache outside the KV pool.
         kwargs.set_item("colocated_encoder", role.rank.vision)?;
+        kwargs.set_item(
+            "encoder_parallel",
+            config.encoder_parallel.map(crate::EncoderParallel::as_str),
+        )?;
         kwargs.set_item(
             "reserved_bytes",
             if role.rank.vision {
@@ -1083,9 +1074,20 @@ fn synthetic_images(traffic: &RuntimeTraffic) -> Result<Option<SyntheticImages>>
         visual_tokens: traffic
             .image_visual_tokens
             .context("image traffic requires image_visual_tokens")?,
-        patches: traffic
-            .image_patches
-            .context("image traffic requires image_patches")?,
+        encoder: crate::engine::EncoderShape {
+            sequences: traffic
+                .image_sequences
+                .context("image traffic requires image_sequences")?,
+            patch_tokens: traffic
+                .image_patch_tokens
+                .context("image traffic requires image_patch_tokens")?,
+            transformer_tokens: traffic
+                .image_transformer_tokens
+                .context("image traffic requires image_transformer_tokens")?,
+            output_tokens: traffic
+                .image_output_tokens
+                .context("image traffic requires image_output_tokens")?,
+        },
         feature_bytes: traffic
             .image_feature_bytes
             .context("image traffic requires image_feature_bytes")?,
@@ -2311,6 +2313,7 @@ mod tests {
             fpm_decode_kv_ceiling: None,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
             phase_cache: quick_cache::sync::Cache::new(128),
+            vision: None,
         }
     }
 
@@ -2389,6 +2392,7 @@ mod tests {
             systems_path: None,
             forward_model: None,
             decoder_replay: false,
+            encoder_parallel: None,
         }
     }
 

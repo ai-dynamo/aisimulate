@@ -709,6 +709,16 @@ This material is licensed under the Apache License 2.0.
 The upstream license at that revision is available at:
 https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE
 
+The Qwen VL `smart_resize` pixel-budget rule in
+`src/aisimulate_core/sdk/backends/base_backend.py` (`_qwen_smart_resize`) is a
+modified adaptation of the Qwen2-VL image processor in Hugging Face Transformers
+at tag `v4.57.0`:
+
+- https://github.com/huggingface/transformers/blob/v4.57.0/src/transformers/models/qwen2_vl/image_processing_qwen2_vl.py
+
+Copyright 2024 the HuggingFace Inc. team. All rights reserved.
+This material is licensed under the Apache License 2.0.
+
 The fixed-tile canvas and global-tile logic in
 `src/aiconfigurator_core/sdk/backends/base_backend.py`, and the processor metadata
 normalization in `src/aiconfigurator_core/sdk/utils.py`, are modified adaptations
