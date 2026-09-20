@@ -55,10 +55,21 @@ def request_pairs(batch) -> list[tuple[int, int]] | None:
 
 def patch_sglang_metrics_reporter(module: ModuleType) -> bool:
     """Install the hook on an imported ``metrics_reporter`` module. Returns ``True`` when applied."""
-    mixin = getattr(module, "SchedulerMetricsMixin", None)
+    # The owner class is SchedulerMetricsReporter in current SGLang; find it by
+    # method name so a rename does not silently disable the hook.
+    mixin = next(
+        (
+            obj
+            for obj in vars(module).values()
+            if isinstance(obj, type) and "_build_scheduled_request_metrics" in vars(obj)
+        ),
+        None,
+    )
     build = getattr(mixin, "_build_scheduled_request_metrics", None)
     if mixin is None or build is None:
-        logger.warning("fpm_hooks: SGLang metrics_reporter has no _build_scheduled_request_metrics; skipping")
+        logger.warning(
+            "fpm_hooks: no class in SGLang metrics_reporter defines _build_scheduled_request_metrics; skipping"
+        )
         return False
     if getattr(build, _PATCHED, False):
         return False

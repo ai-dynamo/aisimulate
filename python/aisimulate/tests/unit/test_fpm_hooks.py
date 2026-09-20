@@ -43,7 +43,7 @@ def fake_sglang(monkeypatch):
     fpm = _stock_fpm_module("sglang.srt.observability.forward_pass_metrics")
     reporter = types.ModuleType("sglang.srt.managers.scheduler_components.metrics_reporter")
 
-    class SchedulerMetricsMixin:
+    class SchedulerMetricsReporter:  # real name in SGLang; the hook finds it by method, not by name
         def _build_scheduled_request_metrics(self, batch):
             cls = sys.modules["sglang.srt.observability.forward_pass_metrics"].ScheduledRequestMetrics
             if batch.forward_mode.is_decode():
@@ -56,7 +56,7 @@ def fake_sglang(monkeypatch):
                 sum_prefill_kv_tokens=sum(pre),
             )
 
-    reporter.SchedulerMetricsMixin = SchedulerMetricsMixin
+    reporter.SchedulerMetricsReporter = SchedulerMetricsReporter
     for name in (
         "sglang",
         "sglang.srt",
@@ -113,7 +113,7 @@ def test_sglang_hook_adds_lists_from_schedule_batch(fake_sglang):
     fpm, reporter = fake_sglang
     assert sglang.patch_sglang_metrics_reporter(reporter) is True
     assert sglang.patch_sglang_metrics_reporter(reporter) is False  # idempotent
-    mixin = reporter.SchedulerMetricsMixin()
+    mixin = reporter.SchedulerMetricsReporter()
     batch = types.SimpleNamespace(
         forward_mode=_Mode("extend"),
         reqs=[_Req(), _Req()],
@@ -197,3 +197,18 @@ def test_hook_path_points_at_sitecustomize():
     import os
 
     assert os.path.exists(os.path.join(fpm_hooks.hook_path(), "sitecustomize.py"))
+
+
+def test_sglang_hook_finds_owner_class_by_method_name(fake_sglang):
+    fpm, reporter = fake_sglang
+    # rename the owner class: the hook must still locate the builder
+    reporter.SomeOtherReporter = reporter.SchedulerMetricsReporter
+    del reporter.SchedulerMetricsReporter
+    assert sglang.patch_sglang_metrics_reporter(reporter) is True
+    m = reporter.SomeOtherReporter()._build_scheduled_request_metrics(
+        types.SimpleNamespace(forward_mode=_Mode("decode"), reqs=[_Req(seqlen=5)])
+    )
+    assert m.past_kv_lengths == [5]
+    # a module without any builder is skipped, not an error
+    empty = types.ModuleType("sglang.srt.managers.scheduler_components.metrics_reporter_empty")
+    assert sglang.patch_sglang_metrics_reporter(empty) is False

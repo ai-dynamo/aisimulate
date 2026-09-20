@@ -8,7 +8,7 @@ The learned forward-pass model's per-request feature presets (``sglang18``,
 SGLang emit aggregates only. Instead of patching either code base, this package
 installs the two lists at import time inside the engine process:
 
-- SGLang: wraps ``SchedulerMetricsMixin._build_scheduled_request_metrics`` and
+- SGLang: wraps ``SchedulerMetricsReporter._build_scheduled_request_metrics`` and
   swaps ``ScheduledRequestMetrics`` for a subclass carrying the two lists
   (values from the schedule-time ``batch.extend_lens`` / ``batch.prefix_lens``).
 - Dynamo vLLM: wraps ``InstrumentedScheduler._extract_scheduled`` the same way
