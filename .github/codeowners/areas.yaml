@@ -50,6 +50,7 @@ areas:
       - python/aisimulate/src/aisimulate/traffic.py
       - tests/test_cli_config.py
       - tests/test_epd_cli.py
+      - tests/test_vl_cli.py
       - examples/cli/
       - tests/test_stack_discovery.py
       - tests/test_power_diagnostics.py
@@ -69,6 +70,7 @@ areas:
     github_team: "@ai-dynamo/aisimulate-mocker-codeowners"
     path_globs:
       - crates/core/src/engine/
+      - tools/frontend/
   - label: infra
     github_team: "@ai-dynamo/aisimulate-infra-codeowners"
     path_globs:
@@ -171,6 +173,10 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_epd_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tests/test_vl_cli.py
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
+  - glob: tools/frontend/
+    owners: [mocker, maintainers]
   - glob: examples/cli/
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py

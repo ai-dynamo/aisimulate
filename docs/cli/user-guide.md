@@ -673,7 +673,7 @@ the current SA convention.
 | `traffic.source.type` | `synthetic` | `x` | `-` | `synthetic`, `synthetic-session`, or `trace`. |
 | `traffic.source.input_tokens` | `1024` | `x` | `-` | Positive; `synthetic` only. |
 | `traffic.source.output_tokens` | `128` | `x` | `-` | Positive; `synthetic` only. |
-| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1); synthetic analytical EPD only; requires `engine.workers.encoder`. |
+| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1), `encoding` (`png` or `jpeg`), and `identity` (`unique` or `{pool: N}`); synthetic only. Requires `engine.workers.encoder` (analytical EPD) or an aggregated SGLang worker with `host` (native VL replay). |
 | `traffic.source.new_input_tokens_per_turn` | `1024` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.output_tokens_per_turn` | `128` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.session.turns` | `4` | `x` | `-` | At least `2`. |
@@ -997,6 +997,11 @@ engine:
 | `engine.workers.<role>.scheduler.max_batched_tokens` | Aggregated/prefill/decode: `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | `predict` only. Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
+| `engine.workers.<role>.scheduler.max_prefill_tokens` | `null` | `x` | `-` | Positive; SGLang only. Token budget of one EXTEND batch across requests. |
+| `engine.workers.aggregated.host` | Unset | `x` | `-` | SGLang scheduler-thread cost tables (`receive`, `select`, `launch_extend`, `launch_vision`, `launch_decode`, `result`, `tp_sync_ms`, `decode_launch_syncs_previous_gpu`); aggregated SGLang only. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
+| `engine.workers.aggregated.frontend` | Unset | `x` | `-` | Frontend worker pools (`io_workers`, `processor_workers`, `mm_workers`) and ordered `stages`; requires `host`. |
+| `engine.workers.aggregated.host_profile` | Unset | `x` | `-` | `{path, frontend, on_missing}`: take `host` and `frontend` from a measured profile; exclusive with explicit tables. |
+| `engine.workers.aggregated.vision.cache_mb` | `100` | `x` | `-` | Positive; SGLang multimodal embedding cache for image workloads encoded on the language worker. |
 | `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. Defaults are backend-specific, not version-specific. |
 | `engine.workers.<role>.kv_cache.prefix_caching` | `true` | `x` | `-` | Backend-supported. |
 | `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
@@ -1336,6 +1341,56 @@ These controls do not establish filesystem or real-GPU performance parity.
 The existing G2 full-external-hit boundary remains: Replay may recompute one
 full block where the reference vLLM external-receive path recomputes one token.
 G3 byte counters do not resolve that difference.
+
+<a id="native-sglang-vl-prediction"></a>
+
+### 12.3 Native SGLang VL prediction
+
+Image workloads can be predicted without an analytical encoder pool: an
+aggregated SGLang worker that models its scheduler thread (`host`) encodes the
+images itself, and optional `frontend` pools model the request path before the
+scheduler. Each pass becomes one iteration of SGLang's overlap scheduler loop,
+so time to first token includes frontend processing, scheduler receipt, batch
+selection, kernel launches, the vision encoder, and the one-iteration delay
+before results are observed.
+
+```yaml
+# vl-prediction.yaml
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 128
+    output_tokens: 64
+    images: {height: 1024, width: 1024, count: 1, encoding: png, identity: unique}
+  load: {type: concurrency, concurrency: 4}
+  stop: {requests: 32}
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-VL-8B-Instruct
+  hardware: h200_sxm
+  backend: sglang
+  workers:
+    aggregated:
+      parallelism: {replicas: 1, tensor: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 64}
+      host_profile: {path: ./host-profile.json, frontend: python}
+      vision: {cache_mb: 100}
+```
+
+```bash
+aisimulate predict --stack engine --config vl-prediction.yaml --capture-per-request
+```
+
+Cost tables are measured data: write them explicitly under `host` and `frontend`,
+or point `host_profile` at a profile produced by `python -m aisimulate.vl.calibrate`
+on a serving host. A profile that was measured for another model, frontend, image
+encoding, or SGLang revision is rejected, as is one that lacks a cost the deployment
+needs. The summary adds `mean_frontend_ms`, `mean_scheduler_receive_ms`,
+`mean_selection_wait_ms`, `mean_forward_ms`, and `mean_result_wait_ms`;
+`requests.jsonl` adds `frontend_ready_ms`, `scheduler_received_ms`, `selected_ms`,
+and `prefill_complete_ms`. `recommend` accepts the same worker fields as fixed
+data. Mechanics, scope, and validation are described in
+[SGLang VL host loop and frontend modeling](../sglang-vl-host-loop.md).
 
 <a id="router-dynamo-adapter"></a>
 
@@ -1801,7 +1856,8 @@ unavailable; their summary fields are explicit nulls where unsupported.
 ```
 
 - `prediction.json` preserves the selected runner's existing full prediction report.
-- `requests.jsonl` contains one record per request when explicitly enabled.
+- `requests.jsonl` contains one record per request when explicitly enabled. Host-aware SGLang
+  workers add their scheduler-thread stage timestamps to each record.
 - `resource-plan.json` describes preflight refusal, with null for unavailable host, budget,
   or workload estimates. `resource-runtime.json` records the effective budget and supervision
   outcome. `execution-events.jsonl` retains complete checkpoints after interruption; see
@@ -1873,7 +1929,9 @@ configuration loading, overrides, or core-schema validation leave existing artif
 `--format table` prints a concise human-readable summary. `--format json` prints the same summary as
 one JSON value for shell automation. Durable artifact formats do not change with this option.
 
-Prediction JSON without `--detail` on standard output is a summary object. Recommendation JSON is an array of selected
+Prediction JSON without `--detail` on standard output is a summary object. Host-aware SGLang
+predictions add the mean time-to-first-token split by stage (`mean_frontend_ms` through
+`mean_result_wait_ms`). Recommendation JSON is an array of selected
 rows with `rank`, `score`, `objectives`, `used_gpus`, and `config_path`. Single-objective scores are
 signed so higher is better; latency-minimizing targets report negative scores. Pareto rows carry
 the raw objective values in `objectives`. Use `recommendation.json` for the complete candidate ledger.

@@ -58,6 +58,7 @@
 /tests/golden/afd-*                                      @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_afd_*.py                                     @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_runner.py                                    @ai-dynamo/aisimulate-replay-codeowners
+/tests/test_vl_cli.py                                    @ai-dynamo/aisimulate-replay-codeowners
 /crates/core/examples/                                   @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_epd_cli.py                                   @ai-dynamo/aisimulate-replay-codeowners
 /tests/test_traffic.py                                   @ai-dynamo/aisimulate-replay-codeowners
@@ -74,6 +75,7 @@
 /tests/test_unified_traffic_runtime.py                   @ai-dynamo/aisimulate-replay-codeowners
 
 # === mocker  (@ai-dynamo/aisimulate-mocker-codeowners) ===
+/tools/frontend/                                         @ai-dynamo/aisimulate-mocker-codeowners
 /crates/core/src/engine/                                 @ai-dynamo/aisimulate-mocker-codeowners
 
 # === infra  (@ai-dynamo/aisimulate-infra-codeowners) ===
@@ -127,6 +129,7 @@
 /.gitattributes                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /DEVELOPMENT.md                                          @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/sweeper/                                          @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
+/tools/frontend/                                         @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/access-aisimulate-maintain
 /.coderabbit.yaml                                        @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/aic-sync.md                                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /docs/core-api.md                                        @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
@@ -140,6 +143,7 @@
 /tests/fpm_accuracy/                                     @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_afd_*.py                                     @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /tests/test_runner.py                                    @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain
+/tests/test_vl_cli.py                                    @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/README.md                                   @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/deny.toml                                   @ai-dynamo/aisimulate-mocker-codeowners @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /crates/core/examples/                                   @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/access-aisimulate-maintain

@@ -381,6 +381,16 @@ missing. Nonempty operation lists must agree with phase totals; a relative
 rounding tolerance applies only to this consistency check. The original infallible helpers remain available for already-valid
 evidence.
 
+`TimingModel::predict_vision_ms` prices one vision-encoder batch by image shape
+for the SGLang VL path. Latency-only providers keep the default `None`, and the
+scheduler then rejects image work instead of treating the encoder as free. The
+AIC provider loads the model's encoder operations when the rank hosts the vision
+tower (`EngineConfig::vision`) and evaluates them through the native engine's
+existing ad-hoc op-list API (`evaluate_ops_json`, the same path the Python
+encoder phase uses); the estimator itself is still constructed through
+`ForwardPassPerfModel::best_available`. Encoder operations join the prefill
+phase evidence under their `encoder_*` names.
+
 Whole-model FPM timing and the built-in fixed and polynomial timing models are
 latency-only and return `None` from `evidence_summary()`. Consumers must keep
 that distinction when producing power metrics: absence of evidence is not a
