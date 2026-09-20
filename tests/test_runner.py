@@ -6,13 +6,17 @@
 import json
 import math
 import pickle
+from dataclasses import replace
 
 import pytest
+from pydantic import ValidationError
 
 import aisimulate
 from aisimulate import capacity as aic
+from aisimulate.cli_args import build_parser
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.config.traffic import SyntheticSource
 from aisimulate.replay.config import ReplayCliConfig, ReplayOutputConfig
 from aisimulate.runner import (
     EngineReplayRunner,
@@ -27,6 +31,7 @@ from aisimulate.sweeper import (
     ReplaySpec,
     RuntimeHookSpec,
 )
+from aisimulate.sweeper.config import Workload
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 
 pytestmark = [
@@ -1483,6 +1488,123 @@ def test_runner_rejects_overflowing_ordinary_metric():
 
     with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
+
+
+@pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])
+def test_runner_honors_length_sampler(sampler):
+    # Fixed vectors from the benchmark's NumPy RandomState contract and the
+    # legacy Python sampler. The entire input vector is drawn first.
+    expected = {
+        "numpy_random_state": [(8, 4), (9, 4), (8, 5), (9, 4), (9, 4)],
+        "python_random": [(9, 5), (9, 5), (8, 5), (9, 5), (10, 5)],
+    }
+    for _ in range(2):
+        runtime = RecordingRuntime()
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(
+                workload={
+                    "isl": 10,
+                    "osl": 5,
+                    "request_count": 5,
+                    "arrival_interval_ms": 0.0,
+                    "random_range_ratio": 0.8,
+                    "random_seed": 0,
+                    "length_sampler": sampler,
+                }
+            )
+        )
+        assert [(r["input_tokens"], r["output_tokens"]) for r in runtime.execution_spec["requests"]] == expected[
+            sampler
+        ]
+
+
+def test_runner_rejects_unknown_length_sampler():
+    with pytest.raises(ValueError, match="length_sampler"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                workload={
+                    "isl": 10,
+                    "osl": 5,
+                    "request_count": 2,
+                    "arrival_interval_ms": 0.0,
+                    "length_sampler": "typo",
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "sampler,seed",
+    [("numpy_random_state", 0xFFFF_FFFF), ("python_random", 0x1_0000_0000), ("python_random", 0xFFFF_FFFF_FFFF_FFFF)],
+)
+def test_runner_sampler_seed_upper_bounds(sampler, seed):
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            workload={
+                "isl": 10,
+                "osl": 5,
+                "request_count": 2,
+                "arrival_interval_ms": 0.0,
+                "random_range_ratio": 0.8,
+                "random_seed": seed,
+                "length_sampler": sampler,
+            }
+        )
+    )
+    assert len(runtime.execution_spec["requests"]) == 2
+
+
+def test_runner_rejects_numpy_seed_above_uint32():
+    with pytest.raises(ValueError, match="numpy_random_state random_seed.*32-bit"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                workload={
+                    "isl": 10,
+                    "osl": 5,
+                    "request_count": 2,
+                    "arrival_interval_ms": 0.0,
+                    "random_seed": 0x1_0000_0000,
+                    "length_sampler": "numpy_random_state",
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize("sampler", ["numpy_random_state", "typo"])
+def test_runner_rejects_nondefault_sampler_for_trace(sampler):
+    with pytest.raises(ValueError, match="length_sampler only applies to synthetic replay"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(workload={"trace_path": "unused.jsonl", "length_sampler": sampler})
+        )
+
+
+@pytest.mark.parametrize("schema", [Workload, SyntheticSource])
+def test_length_sampler_is_not_exposed_by_public_workload_schemas(schema):
+    with pytest.raises(ValidationError) as error:
+        schema.model_validate({"length_sampler": "numpy_random_state"})
+    assert any(e["loc"] == ("length_sampler",) and e["type"] == "extra_forbidden" for e in error.value.errors())
+
+
+def test_length_sampler_is_not_exposed_by_public_cli(capsys):
+    with pytest.raises(SystemExit) as error:
+        build_parser().parse_args(["predict", "-c", "unused.yaml", "--length-sampler", "numpy_random_state"])
+    assert error.value.code == 2
+    assert "unrecognized arguments: --length-sampler numpy_random_state" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("source_type", ["synthetic", "trace"])
+@pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random", "typo"])
+@pytest.mark.parametrize("deployment_mode", ["agg", "disagg", "afd", "afd+pd"])
+def test_workload_driver_rejects_length_sampler_before_native_execution(source_type, sampler, deployment_mode):
+    runtime = RecordingRuntime()
+    spec = _spec(workload={"source_type": source_type, "length_sampler": sampler})
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, deployment_mode=deployment_mode))
+    with pytest.raises(
+        ValueError, match="length_sampler requires materialized direct synthetic replay without source_type"
+    ):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
 
 
 @pytest.mark.parametrize("layout", ["flat", "null_flat", "canonical", "canonical_fallback", "nested"])

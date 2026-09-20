@@ -1,0 +1,1955 @@
+{
+  "points": 263,
+  "successful_points": 263,
+  "completed_requests": 293180,
+  "changed_mapping_points": 31,
+  "precision_data_unchanged_points": 232,
+  "context_violations": 0,
+  "truncated_requests": 0,
+  "groups": {
+    "trtllm": {
+      "points": 166,
+      "mape_pct": {
+        "original": {
+          "ttft": 66.24674189164078,
+          "tpot": 68.1603347011892
+        },
+        "before": {
+          "ttft": 65.99932710369264,
+          "tpot": 66.71573133021964
+        },
+        "precision_data": {
+          "ttft": 58.0793887168306,
+          "tpot": 36.19155227698191
+        },
+        "client_lengths": {
+          "ttft": 57.814434932770986,
+          "tpot": 36.247247332744635
+        }
+      }
+    },
+    "sglang": {
+      "points": 97,
+      "mape_pct": {
+        "original": {
+          "ttft": 69.60881280689533,
+          "tpot": 12.550584383154693
+        },
+        "before": {
+          "ttft": 69.60881280689533,
+          "tpot": 12.550584383154693
+        },
+        "precision_data": {
+          "ttft": 69.60881280689533,
+          "tpot": 12.550584383154693
+        },
+        "client_lengths": {
+          "ttft": 69.77207211504447,
+          "tpot": 12.51701769210102
+        }
+      }
+    },
+    "trtllm/DeepSeek-R1-0528/b200": {
+      "points": 31,
+      "mape_pct": {
+        "original": {
+          "ttft": 64.00001913374423,
+          "tpot": 49.31907317174891
+        },
+        "before": {
+          "ttft": 64.00001913374423,
+          "tpot": 49.31907317174891
+        },
+        "precision_data": {
+          "ttft": 64.00001913374423,
+          "tpot": 49.31907317174891
+        },
+        "client_lengths": {
+          "ttft": 61.57913787090284,
+          "tpot": 49.18321237640418
+        }
+      }
+    },
+    "trtllm/gpt-oss-120b/h200": {
+      "points": 33,
+      "mape_pct": {
+        "original": {
+          "ttft": 79.53530478234222,
+          "tpot": 21.34985420167682
+        },
+        "before": {
+          "ttft": 79.53530478234222,
+          "tpot": 21.34985420167682
+        },
+        "precision_data": {
+          "ttft": 79.53530478234222,
+          "tpot": 21.34985420167682
+        },
+        "client_lengths": {
+          "ttft": 79.6762251104632,
+          "tpot": 21.41316751159219
+        }
+      }
+    },
+    "trtllm/gpt-oss-120b/b200": {
+      "points": 31,
+      "mape_pct": {
+        "original": {
+          "ttft": 86.99302235262971,
+          "tpot": 176.51718188221633
+        },
+        "before": {
+          "ttft": 85.6681560687784,
+          "tpot": 168.78156383121805
+        },
+        "precision_data": {
+          "ttft": 43.25816341654939,
+          "tpot": 5.329508255815983
+        },
+        "client_lengths": {
+          "ttft": 43.660482275955694,
+          "tpot": 5.329564895982209
+        }
+      }
+    },
+    "trtllm/DeepSeek-R1-0528/h200": {
+      "points": 10,
+      "mape_pct": {
+        "original": {
+          "ttft": 39.500050317882646,
+          "tpot": 24.21499332147967
+        },
+        "before": {
+          "ttft": 39.500050317882646,
+          "tpot": 24.21499332147967
+        },
+        "precision_data": {
+          "ttft": 39.500050317882646,
+          "tpot": 24.21499332147967
+        },
+        "client_lengths": {
+          "ttft": 39.86867900785781,
+          "tpot": 24.351692850180722
+        }
+      }
+    },
+    "sglang/Qwen-3.5-397B-A17B/b200": {
+      "points": 22,
+      "mape_pct": {
+        "original": {
+          "ttft": 77.85630573824852,
+          "tpot": 14.591644774189229
+        },
+        "before": {
+          "ttft": 77.85630573824852,
+          "tpot": 14.591644774189229
+        },
+        "precision_data": {
+          "ttft": 77.85630573824852,
+          "tpot": 14.591644774189229
+        },
+        "client_lengths": {
+          "ttft": 77.9703954168008,
+          "tpot": 14.536437292628792
+        }
+      }
+    },
+    "sglang/Qwen-3.5-397B-A17B/h200": {
+      "points": 10,
+      "mape_pct": {
+        "original": {
+          "ttft": 65.4062591101223,
+          "tpot": 18.81532309634113
+        },
+        "before": {
+          "ttft": 65.4062591101223,
+          "tpot": 18.81532309634113
+        },
+        "precision_data": {
+          "ttft": 65.4062591101223,
+          "tpot": 18.81532309634113
+        },
+        "client_lengths": {
+          "ttft": 65.62642361458465,
+          "tpot": 18.881058171851908
+        }
+      }
+    },
+    "sglang/Qwen-3.5-397B-A17B/b300": {
+      "points": 52,
+      "mape_pct": {
+        "original": {
+          "ttft": 63.58086690231202,
+          "tpot": 9.441198049816474
+        },
+        "before": {
+          "ttft": 63.58086690231202,
+          "tpot": 9.441198049816474
+        },
+        "precision_data": {
+          "ttft": 63.58086690231202,
+          "tpot": 9.441198049816474
+        },
+        "client_lengths": {
+          "ttft": 63.77418852894948,
+          "tpot": 9.386334397620272
+        }
+      }
+    },
+    "sglang/Qwen-3.5-397B-A17B/h100": {
+      "points": 13,
+      "mape_pct": {
+        "original": {
+          "ttft": 82.99603430814857,
+          "tpot": 16.71499773692108
+        },
+        "before": {
+          "ttft": 82.99603430814857,
+          "tpot": 16.71499773692108
+        },
+        "precision_data": {
+          "ttft": 82.99603430814857,
+          "tpot": 16.71499773692108
+        },
+        "client_lengths": {
+          "ttft": 83.07848125680587,
+          "tpot": 16.726855792399387
+        }
+      }
+    },
+    "trtllm/MiniMax-M2.5/b300": {
+      "points": 21,
+      "mape_pct": {
+        "original": {
+          "ttft": 48.53914152597353,
+          "tpot": 44.033185511753715
+        },
+        "before": {
+          "ttft": 48.53914152597353,
+          "tpot": 44.033185511753715
+        },
+        "precision_data": {
+          "ttft": 48.53914152597353,
+          "tpot": 44.033185511753715
+        },
+        "client_lengths": {
+          "ttft": 48.85445174824268,
+          "tpot": 44.15013574200505
+        }
+      }
+    },
+    "trtllm/MiniMax-M2.5/b200": {
+      "points": 21,
+      "mape_pct": {
+        "original": {
+          "ttft": 54.47878535865214,
+          "tpot": 39.1314238913374
+        },
+        "before": {
+          "ttft": 54.47878535865214,
+          "tpot": 39.1314238913374
+        },
+        "precision_data": {
+          "ttft": 54.47878535865214,
+          "tpot": 39.1314238913374
+        },
+        "client_lengths": {
+          "ttft": 54.69027656187981,
+          "tpot": 39.39819565230827
+        }
+      }
+    },
+    "trtllm/Qwen-3.5-397B-A17B/b200": {
+      "points": 19,
+      "mape_pct": {
+        "original": {
+          "ttft": 59.638570650606255,
+          "tpot": 85.29156496786527
+        },
+        "before": {
+          "ttft": 59.638570650606255,
+          "tpot": 85.29156496786527
+        },
+        "precision_data": {
+          "ttft": 59.638570650606255,
+          "tpot": 85.29156496786527
+        },
+        "client_lengths": {
+          "ttft": 59.596129528996414,
+          "tpot": 85.39371295403694
+        }
+      }
+    }
+  },
+  "regressions_over_0_1pp": {
+    "ttft": [
+      {
+        "index": 28,
+        "config_id": 155,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 4,
+        "before": 5.97067785474809,
+        "after": 65.78004166605464,
+        "delta_pp": 59.809363811306554
+      },
+      {
+        "index": 99,
+        "config_id": 283,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 64,
+        "before": 28.49436904421173,
+        "after": 77.53071927757256,
+        "delta_pp": 49.03635023336083
+      },
+      {
+        "index": 31,
+        "config_id": 155,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 32,
+        "before": 16.071851899473355,
+        "after": 63.55160077985149,
+        "delta_pp": 47.47974888037814
+      },
+      {
+        "index": 29,
+        "config_id": 155,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 16,
+        "before": 16.16960713363794,
+        "after": 63.567109315979756,
+        "delta_pp": 47.39750218234182
+      },
+      {
+        "index": 30,
+        "config_id": 155,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 17.848165526977674,
+        "after": 61.963780923136234,
+        "delta_pp": 44.11561539615856
+      },
+      {
+        "index": 98,
+        "config_id": 262,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 256,
+        "before": 27.57118058325296,
+        "after": 66.49031010820744,
+        "delta_pp": 38.91912952495448
+      },
+      {
+        "index": 51,
+        "config_id": 139,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 16.422305642198626,
+        "after": 53.46819905670914,
+        "delta_pp": 37.045893414510516
+      },
+      {
+        "index": 55,
+        "config_id": 133,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 4,
+        "before": 38.842919903403846,
+        "after": 74.10655186198794,
+        "delta_pp": 35.26363195858409
+      },
+      {
+        "index": 53,
+        "config_id": 133,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 19.79045910971629,
+        "after": 48.22453930362243,
+        "delta_pp": 28.434080193906137
+      },
+      {
+        "index": 52,
+        "config_id": 133,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 22.858031291043574,
+        "after": 45.656993527679084,
+        "delta_pp": 22.79896223663551
+      },
+      {
+        "index": 36,
+        "config_id": 155,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 32.49841291453372,
+        "after": 51.540236151022135,
+        "delta_pp": 19.041823236488412
+      },
+      {
+        "index": 50,
+        "config_id": 139,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 4,
+        "before": 61.592629672996516,
+        "after": 79.17348395815317,
+        "delta_pp": 17.580854285156654
+      },
+      {
+        "index": 32,
+        "config_id": 155,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 64,
+        "before": 42.58792341930815,
+        "after": 55.80629605943744,
+        "delta_pp": 13.218372640129296
+      },
+      {
+        "index": 56,
+        "config_id": 133,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 34.346978040469665,
+        "after": 42.463699021410534,
+        "delta_pp": 8.116720980940869
+      },
+      {
+        "index": 54,
+        "config_id": 133,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 38.85456322589779,
+        "after": 41.33906797415593,
+        "delta_pp": 2.4845047482581393
+      },
+      {
+        "index": 226,
+        "config_id": 1445,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 9.514984104529125,
+        "after": 11.490623463546967,
+        "delta_pp": 1.9756393590178423
+      },
+      {
+        "index": 3,
+        "config_id": 75,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 15.48665382242986,
+        "after": 17.45295426984718,
+        "delta_pp": 1.9663004474173196
+      },
+      {
+        "index": 88,
+        "config_id": 181,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 21.983460596258197,
+        "after": 23.900993398226003,
+        "delta_pp": 1.9175328019678055
+      },
+      {
+        "index": 215,
+        "config_id": 1388,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 5.204261592796897,
+        "after": 7.076598798303466,
+        "delta_pp": 1.872337205506569
+      },
+      {
+        "index": 103,
+        "config_id": 473,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 30.3549354824556,
+        "after": 32.02687987162458,
+        "delta_pp": 1.6719443891689814
+      },
+      {
+        "index": 227,
+        "config_id": 1445,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 11.021241196249596,
+        "after": 12.384596279487921,
+        "delta_pp": 1.363355083238325
+      },
+      {
+        "index": 230,
+        "config_id": 1445,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 11.876960805535827,
+        "after": 13.163030096630942,
+        "delta_pp": 1.2860692910951155
+      },
+      {
+        "index": 216,
+        "config_id": 1388,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 6.445877249350938,
+        "after": 7.694280286167966,
+        "delta_pp": 1.2484030368170274
+      },
+      {
+        "index": 253,
+        "config_id": 1554,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 57.631511706137466,
+        "after": 58.876459485796026,
+        "delta_pp": 1.2449477796585597
+      },
+      {
+        "index": 76,
+        "config_id": 185,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 47.32019587647146,
+        "after": 48.41767853708987,
+        "delta_pp": 1.097482660618411
+      },
+      {
+        "index": 228,
+        "config_id": 1445,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 12.526094676752766,
+        "after": 13.549946566265957,
+        "delta_pp": 1.0238518895131907
+      },
+      {
+        "index": 213,
+        "config_id": 1388,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 1.1616080520465188,
+        "after": 2.17821852068244,
+        "delta_pp": 1.0166104686359212
+      },
+      {
+        "index": 210,
+        "config_id": 1387,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 2048,
+        "before": 276.7408595017022,
+        "after": 277.72875886555505,
+        "delta_pp": 0.9878993638528755
+      },
+      {
+        "index": 188,
+        "config_id": 739,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 41.550355244495684,
+        "after": 42.497034357291234,
+        "delta_pp": 0.9466791127955503
+      },
+      {
+        "index": 17,
+        "config_id": 91,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 3.55785707908402,
+        "after": 4.49777542532064,
+        "delta_pp": 0.9399183462366199
+      },
+      {
+        "index": 86,
+        "config_id": 181,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 22.247349164850508,
+        "after": 23.13597536405725,
+        "delta_pp": 0.8886261992067404
+      },
+      {
+        "index": 148,
+        "config_id": 716,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 37.07556031428032,
+        "after": 37.909274223954036,
+        "delta_pp": 0.833713909673719
+      },
+      {
+        "index": 147,
+        "config_id": 716,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 50.61250685967062,
+        "after": 51.4186663914128,
+        "delta_pp": 0.8061595317421819
+      },
+      {
+        "index": 162,
+        "config_id": 737,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 49.93088905267438,
+        "after": 50.72340542798364,
+        "delta_pp": 0.7925163753092619
+      },
+      {
+        "index": 100,
+        "config_id": 473,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 270.60145555777746,
+        "after": 271.3713442897109,
+        "delta_pp": 0.7698887319334631
+      },
+      {
+        "index": 173,
+        "config_id": 738,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 51.96345165861449,
+        "after": 52.729780686190416,
+        "delta_pp": 0.766329027575928
+      },
+      {
+        "index": 202,
+        "config_id": 1385,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 18.01381405223787,
+        "after": 18.758160098349332,
+        "delta_pp": 0.7443460461114633
+      },
+      {
+        "index": 128,
+        "config_id": 621,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 43.85797679914752,
+        "after": 44.58923733120259,
+        "delta_pp": 0.7312605320550674
+      },
+      {
+        "index": 222,
+        "config_id": 1390,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 28.529748334326552,
+        "after": 29.21008011661489,
+        "delta_pp": 0.6803317822883379
+      },
+      {
+        "index": 243,
+        "config_id": 1450,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 24.791244189831993,
+        "after": 25.47156877878274,
+        "delta_pp": 0.6803245889507465
+      },
+      {
+        "index": 5,
+        "config_id": 75,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 28.303764089258287,
+        "after": 28.971049324440965,
+        "delta_pp": 0.6672852351826783
+      },
+      {
+        "index": 183,
+        "config_id": 739,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 39.31629757903136,
+        "after": 39.977873585618894,
+        "delta_pp": 0.6615760065875378
+      },
+      {
+        "index": 137,
+        "config_id": 716,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 41.16910441398883,
+        "after": 41.82262572169621,
+        "delta_pp": 0.6535213077073792
+      },
+      {
+        "index": 133,
+        "config_id": 621,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 59.03411780119161,
+        "after": 59.683558341395084,
+        "delta_pp": 0.6494405402034715
+      },
+      {
+        "index": 235,
+        "config_id": 1447,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 1024,
+        "before": 115.00987313787351,
+        "after": 115.65843246958252,
+        "delta_pp": 0.6485593317090093
+      },
+      {
+        "index": 106,
+        "config_id": 587,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 61.29812492104919,
+        "after": 61.9138435718196,
+        "delta_pp": 0.6157186507704111
+      },
+      {
+        "index": 239,
+        "config_id": 1448,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 29.365882885343126,
+        "after": 29.970372724208534,
+        "delta_pp": 0.6044898388654083
+      },
+      {
+        "index": 171,
+        "config_id": 738,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 54.396921190513275,
+        "after": 54.992730146248434,
+        "delta_pp": 0.5958089557351585
+      },
+      {
+        "index": 163,
+        "config_id": 737,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 54.3652166564798,
+        "after": 54.95830415198421,
+        "delta_pp": 0.5930874955044061
+      },
+      {
+        "index": 182,
+        "config_id": 739,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 55.65495171295565,
+        "after": 56.239504996503676,
+        "delta_pp": 0.5845532835480256
+      },
+      {
+        "index": 4,
+        "config_id": 75,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 0.5926755631872691,
+        "after": 1.1694020465583048,
+        "delta_pp": 0.5767264833710357
+      },
+      {
+        "index": 252,
+        "config_id": 1554,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 48.17487523437117,
+        "after": 48.746897557993044,
+        "delta_pp": 0.5720223236218729
+      },
+      {
+        "index": 25,
+        "config_id": 125,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 71.6330577077511,
+        "after": 72.20449500294133,
+        "delta_pp": 0.571437295190222
+      },
+      {
+        "index": 175,
+        "config_id": 738,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 45.84387160863165,
+        "after": 46.4150814233131,
+        "delta_pp": 0.5712098146814455
+      },
+      {
+        "index": 89,
+        "config_id": 181,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 27.753803720809987,
+        "after": 28.313952853358092,
+        "delta_pp": 0.5601491325481049
+      },
+      {
+        "index": 144,
+        "config_id": 716,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 31.34944627173344,
+        "after": 31.893088040243363,
+        "delta_pp": 0.5436417685099215
+      },
+      {
+        "index": 161,
+        "config_id": 737,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 47.96842402572899,
+        "after": 48.50626405358068,
+        "delta_pp": 0.5378400278516864
+      },
+      {
+        "index": 26,
+        "config_id": 125,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 63.59626061423262,
+        "after": 64.13280006576257,
+        "delta_pp": 0.5365394515299471
+      },
+      {
+        "index": 108,
+        "config_id": 587,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 60.10284402711899,
+        "after": 60.62321245595197,
+        "delta_pp": 0.5203684288329811
+      },
+      {
+        "index": 254,
+        "config_id": 1555,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 1024,
+        "before": 32.73529098824319,
+        "after": 33.243635303921856,
+        "delta_pp": 0.5083443156786629
+      },
+      {
+        "index": 131,
+        "config_id": 621,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 52.831563049083975,
+        "after": 53.32344321679983,
+        "delta_pp": 0.4918801677158555
+      },
+      {
+        "index": 7,
+        "config_id": 75,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 1.0991653602672433,
+        "after": 1.5907808535124188,
+        "delta_pp": 0.4916154932451755
+      },
+      {
+        "index": 143,
+        "config_id": 716,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 128,
+        "before": 18.925727396888295,
+        "after": 19.413105016573276,
+        "delta_pp": 0.48737761968498106
+      },
+      {
+        "index": 22,
+        "config_id": 125,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 65.14620503064666,
+        "after": 65.61944550099611,
+        "delta_pp": 0.4732404703494524
+      },
+      {
+        "index": 229,
+        "config_id": 1445,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 7.98662605055114,
+        "after": 8.452820095583037,
+        "delta_pp": 0.4661940450318971
+      },
+      {
+        "index": 201,
+        "config_id": 1359,
+        "hardware": "h100",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 69.86024527077191,
+        "after": 70.32574659722633,
+        "delta_pp": 0.4655013264544152
+      },
+      {
+        "index": 136,
+        "config_id": 621,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 38.83778852826231,
+        "after": 39.30052733490425,
+        "delta_pp": 0.4627388066419442
+      },
+      {
+        "index": 111,
+        "config_id": 587,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 57.00036269951067,
+        "after": 57.45096788733133,
+        "delta_pp": 0.4506051878206634
+      },
+      {
+        "index": 199,
+        "config_id": 1359,
+        "hardware": "h100",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 54.51612869576057,
+        "after": 54.961954014147615,
+        "delta_pp": 0.445825318387044
+      },
+      {
+        "index": 69,
+        "config_id": 180,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 79.05050164676953,
+        "after": 79.48438529417018,
+        "delta_pp": 0.43388364740064844
+      },
+      {
+        "index": 68,
+        "config_id": 180,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 74.25170567618721,
+        "after": 74.64776820511126,
+        "delta_pp": 0.39606252892404825
+      },
+      {
+        "index": 224,
+        "config_id": 1444,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 32.463715057025844,
+        "after": 32.85369731641274,
+        "delta_pp": 0.38998225938689757
+      },
+      {
+        "index": 115,
+        "config_id": 615,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 70.79151772916732,
+        "after": 71.18113667525729,
+        "delta_pp": 0.3896189460899677
+      },
+      {
+        "index": 97,
+        "config_id": 178,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 64,
+        "before": 19.741311994050815,
+        "after": 20.12950397335726,
+        "delta_pp": 0.3881919793064448
+      },
+      {
+        "index": 214,
+        "config_id": 1388,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 4,
+        "before": 7.853875982919849,
+        "after": 8.240597276860294,
+        "delta_pp": 0.38672129394044497
+      },
+      {
+        "index": 187,
+        "config_id": 739,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 51.6761763065443,
+        "after": 52.053748650051546,
+        "delta_pp": 0.37757234350724644
+      },
+      {
+        "index": 96,
+        "config_id": 192,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 256,
+        "before": 47.01864846638594,
+        "after": 47.38266250688673,
+        "delta_pp": 0.3640140405007912
+      },
+      {
+        "index": 172,
+        "config_id": 738,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 52.303639715671444,
+        "after": 52.667536499341644,
+        "delta_pp": 0.3638967836701994
+      },
+      {
+        "index": 87,
+        "config_id": 181,
+        "hardware": "h200",
+        "isl": 1024,
+        "concurrency": 32,
+        "before": 48.68045072664363,
+        "after": 49.04282208964024,
+        "delta_pp": 0.3623713629966119
+      },
+      {
+        "index": 164,
+        "config_id": 737,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 54.799345025263776,
+        "after": 55.13935345951666,
+        "delta_pp": 0.34000843425288707
+      },
+      {
+        "index": 113,
+        "config_id": 587,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 55.77962807729694,
+        "after": 56.115454626368994,
+        "delta_pp": 0.33582654907205267
+      },
+      {
+        "index": 221,
+        "config_id": 1390,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 31.967359372497388,
+        "after": 32.296476290195784,
+        "delta_pp": 0.32911691769839635
+      },
+      {
+        "index": 95,
+        "config_id": 192,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 34.67543766793305,
+        "after": 35.0035993655575,
+        "delta_pp": 0.328161697624445
+      },
+      {
+        "index": 66,
+        "config_id": 180,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 76.6522619840153,
+        "after": 76.97247335468657,
+        "delta_pp": 0.3202113706712737
+      },
+      {
+        "index": 6,
+        "config_id": 75,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 128,
+        "before": 58.05010922454539,
+        "after": 58.36261160107507,
+        "delta_pp": 0.31250237652968593
+      },
+      {
+        "index": 11,
+        "config_id": 82,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 45.16072270688968,
+        "after": 45.465951542174246,
+        "delta_pp": 0.30522883528456646
+      },
+      {
+        "index": 165,
+        "config_id": 737,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 128,
+        "before": 46.26792027133297,
+        "after": 46.569081958745045,
+        "delta_pp": 0.30116168741207616
+      },
+      {
+        "index": 94,
+        "config_id": 181,
+        "hardware": "h200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 54.03053723173651,
+        "after": 54.29837011757315,
+        "delta_pp": 0.2678328858366399
+      },
+      {
+        "index": 211,
+        "config_id": 1387,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 128,
+        "before": 61.51791290609244,
+        "after": 61.78574175991519,
+        "delta_pp": 0.2678288538227491
+      },
+      {
+        "index": 218,
+        "config_id": 1389,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 128,
+        "before": 62.23888069278896,
+        "after": 62.503026135505515,
+        "delta_pp": 0.26414544271655416
+      },
+      {
+        "index": 23,
+        "config_id": 125,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 73.3027810504579,
+        "after": 73.56633939310883,
+        "delta_pp": 0.26355834265093847
+      },
+      {
+        "index": 60,
+        "config_id": 179,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 83.5588550578515,
+        "after": 83.81154946613509,
+        "delta_pp": 0.25269440828358825
+      },
+      {
+        "index": 209,
+        "config_id": 1387,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 62.033057736360405,
+        "after": 62.28545064420839,
+        "delta_pp": 0.25239290784798385
+      },
+      {
+        "index": 57,
+        "config_id": 179,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 83.0934011976221,
+        "after": 83.3408287496737,
+        "delta_pp": 0.2474275520516045
+      },
+      {
+        "index": 58,
+        "config_id": 179,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 88.47795553979431,
+        "after": 88.72436115999437,
+        "delta_pp": 0.24640562020006485
+      },
+      {
+        "index": 258,
+        "config_id": 1556,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 53.424151152617306,
+        "after": 53.669897240338095,
+        "delta_pp": 0.24574608772078932
+      },
+      {
+        "index": 116,
+        "config_id": 615,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 69.7648116658912,
+        "after": 70.00850294710987,
+        "delta_pp": 0.24369128121867334
+      },
+      {
+        "index": 2,
+        "config_id": 75,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 57.381431738612186,
+        "after": 57.611497427345206,
+        "delta_pp": 0.23006568873302058
+      },
+      {
+        "index": 262,
+        "config_id": 1558,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 55.03947200008046,
+        "after": 55.26926676513668,
+        "delta_pp": 0.22979476505621932
+      },
+      {
+        "index": 104,
+        "config_id": 473,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 53.111633271825376,
+        "after": 53.33147865035794,
+        "delta_pp": 0.21984537853256114
+      },
+      {
+        "index": 125,
+        "config_id": 615,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 128,
+        "before": 65.09089767377358,
+        "after": 65.3057784307248,
+        "delta_pp": 0.21488075695121722
+      },
+      {
+        "index": 240,
+        "config_id": 1449,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 30.168270402846655,
+        "after": 30.382007073223807,
+        "delta_pp": 0.21373667037715194
+      },
+      {
+        "index": 67,
+        "config_id": 180,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 81.03362087410416,
+        "after": 81.22816982555118,
+        "delta_pp": 0.19454895144701823
+      },
+      {
+        "index": 236,
+        "config_id": 1447,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 50.91967034490572,
+        "after": 51.107552419639006,
+        "delta_pp": 0.1878820747332881
+      },
+      {
+        "index": 64,
+        "config_id": 179,
+        "hardware": "h200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 66.26084736634235,
+        "after": 66.43059484336801,
+        "delta_pp": 0.16974747702566617
+      },
+      {
+        "index": 75,
+        "config_id": 180,
+        "hardware": "h200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 89.91444252816709,
+        "after": 90.07491172226065,
+        "delta_pp": 0.1604691940935652
+      },
+      {
+        "index": 248,
+        "config_id": 1553,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 60.8293310536731,
+        "after": 60.98887533717333,
+        "delta_pp": 0.15954428350023164
+      },
+      {
+        "index": 197,
+        "config_id": 1359,
+        "hardware": "h100",
+        "isl": 8192,
+        "concurrency": 1,
+        "before": 69.19156277849945,
+        "after": 69.35104478715147,
+        "delta_pp": 0.1594820086520201
+      },
+      {
+        "index": 152,
+        "config_id": 736,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 76.190881946654,
+        "after": 76.34631547823663,
+        "delta_pp": 0.15543353158263074
+      },
+      {
+        "index": 244,
+        "config_id": 1552,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 4,
+        "before": 69.16206840255724,
+        "after": 69.31054420558611,
+        "delta_pp": 0.1484758030288731
+      },
+      {
+        "index": 90,
+        "config_id": 181,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 22.724693723468995,
+        "after": 22.867431581918048,
+        "delta_pp": 0.14273785844905262
+      },
+      {
+        "index": 18,
+        "config_id": 125,
+        "hardware": "h200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 76.78102599235402,
+        "after": 76.91659743689458,
+        "delta_pp": 0.13557144454055958
+      },
+      {
+        "index": 129,
+        "config_id": 621,
+        "hardware": "h200",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 85.0309707518985,
+        "after": 85.1606453154491,
+        "delta_pp": 0.12967456355060847
+      },
+      {
+        "index": 142,
+        "config_id": 716,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 15.019944958011637,
+        "after": 15.14729265816176,
+        "delta_pp": 0.1273477001501231
+      },
+      {
+        "index": 181,
+        "config_id": 739,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 67.47395329033063,
+        "after": 67.586856191448,
+        "delta_pp": 0.11290290111737988
+      },
+      {
+        "index": 166,
+        "config_id": 737,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 8,
+        "before": 78.0144812419027,
+        "after": 78.12268030992236,
+        "delta_pp": 0.10819906801965828
+      },
+      {
+        "index": 85,
+        "config_id": 186,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 12.750536819650572,
+        "after": 12.851725542850176,
+        "delta_pp": 0.10118872319960381
+      }
+    ],
+    "tpot": [
+      {
+        "index": 251,
+        "config_id": 1553,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 1024,
+        "before": 182.19831076568258,
+        "after": 185.90875378217322,
+        "delta_pp": 3.7104430164906432
+      },
+      {
+        "index": 206,
+        "config_id": 1386,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 1024,
+        "before": 89.33602802047682,
+        "after": 92.75414718724014,
+        "delta_pp": 3.4181191667633186
+      },
+      {
+        "index": 234,
+        "config_id": 1446,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 1024,
+        "before": 78.55899065393774,
+        "after": 81.80185899981885,
+        "delta_pp": 3.2428683458811065
+      },
+      {
+        "index": 247,
+        "config_id": 1553,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 1024,
+        "before": 86.1159967126461,
+        "after": 88.07907437874694,
+        "delta_pp": 1.963077666100844
+      },
+      {
+        "index": 82,
+        "config_id": 191,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 335.91649488792063,
+        "after": 337.7463114631881,
+        "delta_pp": 1.8298165752674436
+      },
+      {
+        "index": 238,
+        "config_id": 1447,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 1024,
+        "before": 71.02836060027391,
+        "after": 72.70280806455413,
+        "delta_pp": 1.6744474642802203
+      },
+      {
+        "index": 83,
+        "config_id": 191,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 256,
+        "before": 93.4420743647747,
+        "after": 95.0511948988452,
+        "delta_pp": 1.6091205340704988
+      },
+      {
+        "index": 219,
+        "config_id": 1389,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 1024,
+        "before": 49.96731508115967,
+        "after": 51.32375739659161,
+        "delta_pp": 1.3564423154319414
+      },
+      {
+        "index": 237,
+        "config_id": 1447,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 512,
+        "before": 119.85242884877128,
+        "after": 120.82434704224234,
+        "delta_pp": 0.9719181934710548
+      },
+      {
+        "index": 80,
+        "config_id": 183,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 183.09653717172145,
+        "after": 183.98188114263263,
+        "delta_pp": 0.8853439709111797
+      },
+      {
+        "index": 101,
+        "config_id": 473,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 20.308212860876402,
+        "after": 21.177873927221448,
+        "delta_pp": 0.8696610663450457
+      },
+      {
+        "index": 236,
+        "config_id": 1447,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 119.79842423120772,
+        "after": 120.56315582414251,
+        "delta_pp": 0.764731592934794
+      },
+      {
+        "index": 204,
+        "config_id": 1386,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 256,
+        "before": 63.88683489766508,
+        "after": 64.65039065610421,
+        "delta_pp": 0.763555758439125
+      },
+      {
+        "index": 235,
+        "config_id": 1447,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 1024,
+        "before": 142.3723655362033,
+        "after": 143.13036498913536,
+        "delta_pp": 0.7579994529320686
+      },
+      {
+        "index": 232,
+        "config_id": 1446,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 256,
+        "before": 61.29240280570985,
+        "after": 62.00140485628994,
+        "delta_pp": 0.7090020505800894
+      },
+      {
+        "index": 211,
+        "config_id": 1387,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 128,
+        "before": 39.49365399821635,
+        "after": 40.086005577366954,
+        "delta_pp": 0.592351579150602
+      },
+      {
+        "index": 6,
+        "config_id": 75,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 128,
+        "before": 49.57361625510564,
+        "after": 50.040923162220835,
+        "delta_pp": 0.4673069071151943
+      },
+      {
+        "index": 165,
+        "config_id": 737,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 128,
+        "before": 24.037888981334284,
+        "after": 24.482646425039714,
+        "delta_pp": 0.4447574437054307
+      },
+      {
+        "index": 90,
+        "config_id": 181,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 1.4577075452190162,
+        "after": 1.8867016465635922,
+        "delta_pp": 0.42899410134457594
+      },
+      {
+        "index": 143,
+        "config_id": 716,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 128,
+        "before": 15.268752355441704,
+        "after": 15.693006402771784,
+        "delta_pp": 0.42425404733008065
+      },
+      {
+        "index": 8,
+        "config_id": 75,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 128,
+        "before": 27.295886260674685,
+        "after": 27.6737299181995,
+        "delta_pp": 0.37784365752481364
+      },
+      {
+        "index": 115,
+        "config_id": 615,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 18.23583584619898,
+        "after": 18.551038870090164,
+        "delta_pp": 0.3152030238911827
+      },
+      {
+        "index": 260,
+        "config_id": 1557,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 128,
+        "before": 34.73264112623606,
+        "after": 35.04475387038968,
+        "delta_pp": 0.312112744153616
+      },
+      {
+        "index": 255,
+        "config_id": 1555,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 1024,
+        "before": 43.14003172686781,
+        "after": 43.44730478495279,
+        "delta_pp": 0.30727305808498073
+      },
+      {
+        "index": 128,
+        "config_id": 621,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 16.154230141265113,
+        "after": 16.456197867967475,
+        "delta_pp": 0.3019677267023617
+      },
+      {
+        "index": 227,
+        "config_id": 1445,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 1.4121922773734137,
+        "after": 1.6668205368593834,
+        "delta_pp": 0.2546282594859697
+      },
+      {
+        "index": 201,
+        "config_id": 1359,
+        "hardware": "h100",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 10.296566724741828,
+        "after": 10.499214718111253,
+        "delta_pp": 0.20264799336942474
+      },
+      {
+        "index": 217,
+        "config_id": 1389,
+        "hardware": "b300",
+        "isl": 1024,
+        "concurrency": 2048,
+        "before": 43.272469922708446,
+        "after": 43.47256030205818,
+        "delta_pp": 0.2000903793497315
+      },
+      {
+        "index": 25,
+        "config_id": 125,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 16.119312205993356,
+        "after": 16.31124233562153,
+        "delta_pp": 0.19193012962817235
+      },
+      {
+        "index": 26,
+        "config_id": 125,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 16.771396354853568,
+        "after": 16.951098996760635,
+        "delta_pp": 0.17970264190706686
+      },
+      {
+        "index": 142,
+        "config_id": 716,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 17.135294612305362,
+        "after": 17.313767797718338,
+        "delta_pp": 0.17847318541297597
+      },
+      {
+        "index": 68,
+        "config_id": 180,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 27.943337815984194,
+        "after": 28.11169358053284,
+        "delta_pp": 0.16835576454864665
+      },
+      {
+        "index": 69,
+        "config_id": 180,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 27.19710131323,
+        "after": 27.3545655292152,
+        "delta_pp": 0.15746421598520044
+      },
+      {
+        "index": 60,
+        "config_id": 179,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 32,
+        "before": 39.37476345547735,
+        "after": 39.5301696091605,
+        "delta_pp": 0.15540615368315258
+      },
+      {
+        "index": 209,
+        "config_id": 1387,
+        "hardware": "b300",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 35.598021143345,
+        "after": 35.74644254030619,
+        "delta_pp": 0.14842139696119006
+      },
+      {
+        "index": 117,
+        "config_id": 615,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 19.728970413856032,
+        "after": 19.868169114739555,
+        "delta_pp": 0.13919870088352226
+      },
+      {
+        "index": 89,
+        "config_id": 181,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 10.620141416469417,
+        "after": 10.757437677321581,
+        "delta_pp": 0.13729626085216395
+      },
+      {
+        "index": 133,
+        "config_id": 621,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 15.662178232976236,
+        "after": 15.78531500600482,
+        "delta_pp": 0.12313677302858395
+      },
+      {
+        "index": 132,
+        "config_id": 621,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 16,
+        "before": 10.408437001647666,
+        "after": 10.53089384055615,
+        "delta_pp": 0.12245683890848369
+      },
+      {
+        "index": 27,
+        "config_id": 125,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 9.466921277285723,
+        "after": 9.585447549847503,
+        "delta_pp": 0.11852627256178039
+      },
+      {
+        "index": 61,
+        "config_id": 179,
+        "hardware": "h200",
+        "isl": 1024,
+        "concurrency": 32,
+        "before": 31.78742504577217,
+        "after": 31.903021379144967,
+        "delta_pp": 0.11559633337279607
+      },
+      {
+        "index": 70,
+        "config_id": 180,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 64,
+        "before": 20.435810142801905,
+        "after": 20.546047599046116,
+        "delta_pp": 0.11023745624421011
+      },
+      {
+        "index": 92,
+        "config_id": 181,
+        "hardware": "h200",
+        "isl": 1024,
+        "concurrency": 4,
+        "before": 11.94599650609176,
+        "after": 12.05563163121597,
+        "delta_pp": 0.10963512512421048
+      },
+      {
+        "index": 76,
+        "config_id": 185,
+        "hardware": "h200",
+        "isl": 8192,
+        "concurrency": 8,
+        "before": 7.21602866093074,
+        "after": 7.3247042663290705,
+        "delta_pp": 0.10867560539833043
+      },
+      {
+        "index": 95,
+        "config_id": 192,
+        "hardware": "b200",
+        "isl": 8192,
+        "concurrency": 256,
+        "before": 148.63735061978912,
+        "after": 148.7434150619434,
+        "delta_pp": 0.10606444215429178
+      },
+      {
+        "index": 97,
+        "config_id": 178,
+        "hardware": "b200",
+        "isl": 1024,
+        "concurrency": 64,
+        "before": 3.510543921970952,
+        "after": 3.611142997944822,
+        "delta_pp": 0.10059907597386974
+      }
+    ]
+  },
+  "collection": {
+    "collector_ref": "3830b5a4",
+    "summary": {
+      "planned": 6,
+      "passed": 6,
+      "failed": 0,
+      "unattempted": 0,
+      "worker_exit_codes": [
+        0,
+        0
+      ],
+      "runner_sha256": "4c4c3584c2f69d89895a7cd749350f1854b2247775a62d2e488905f20efd4dc7"
+    },
+    "cuda_graph_measurements": 162,
+    "replaced_rows": 81,
+    "added_rows": 81,
+    "unchanged_rows": 218295,
+    "old_parquet_sha256": "1ff05df3a5715ca5d80e2435ba5ec8221e25da7f414ae7834a87af84c46b9b87",
+    "new_parquet_sha256": "db1930fde20b419284bf1f038fadd4b398d29701b12867fd4ac9da878808e781",
+    "collector_archive_sha256": "d2faeb65a3b63b714ebf6b67c342a3638c174f1342d1bec071a946d01a3cba6f",
+    "min_ratio": 0.6115285705012946,
+    "median_ratio": 0.9825005890555982,
+    "max_ratio": 1.1830778850944927
+  },
+  "provenance": {
+    "frozen_predictions_sha256": "c4d9e9f777216218459fb68001b2a989dacd09b9178031a8b55b6cde439be121",
+    "runtime_base": "89d2051137b772944a3e303c452108811790bef4",
+    "native_binary_sha256": "7c0ccae3937ef48224f1a35cbab04735ea13914a395bc0853435c63425ef62b8",
+    "runner_before_sha256": "0fd35eeec5e32f8ee4cfce279d3bc145eb534b5b2d927e83f214be2f4ea12879",
+    "runner_after_sha256": "f8d3db73c2c80ee8ed45f622955847d8e336ff970dbe2141c6c73ce4abc119ec",
+    "replay_script_sha256": "b3a73dfa02cc105ef74ff28faf6085902b54510a40e6fb60ba33870e5ed07698",
+    "slurm_job": "1995371",
+    "slurm_state": "COMPLETED",
+    "slurm_exit_code": "0:0"
+  }
+}
