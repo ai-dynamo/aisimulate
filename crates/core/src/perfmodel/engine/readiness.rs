@@ -285,10 +285,7 @@ impl Availability<'_> {
             | MoeDispatch(_) => Ok(()),
             Dsv41Attention(_) | Dsv41Mhc(_) | Dsv41Engram(_) | Dsv41Linear(_) => {
                 match self.db.database_mode {
-                    DatabaseMode::Silicon => Err(AicError::PerfDatabase(format!(
-                        "DeepSeek-V4.1 {} has no measured SILICON data",
-                        op.name()
-                    ))),
+                    DatabaseMode::Silicon => self.any(&["dsv41_module_perf.parquet"]),
                     DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(format!(
                         "DeepSeek-V4.1 {} has no empirical anchor",
                         op.name()
@@ -366,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    fn dsv41_stage_preserves_analytic_only_readiness() {
+    fn dsv41_stage_requires_measured_module_for_silicon() {
         use crate::operators::dsv41::{Dsv41LinearOp, Dsv41StageOp};
         let root = systems();
         let stage = Op::Dsv41Stage(Dsv41StageOp {
@@ -397,6 +394,15 @@ mod tests {
                 !matches!(mode, DatabaseMode::Silicon | DatabaseMode::Empirical)
             );
         }
+        table(
+            &root
+                .path()
+                .join("data/b200_sxm/vllm/0.24.0/dsv41_module_perf.parquet"),
+        );
+        let db = PerfDatabase::load(root.path(), "b200_sxm", "vllm", "0.24.0")
+            .unwrap()
+            .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+        assert!(validate(&db, [&stage].into_iter()).is_ok());
     }
 
     #[test]

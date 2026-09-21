@@ -76,6 +76,11 @@ redundant pre-MLP dispatch under the required DP=CP=1 topology. Shared
 the folded TP reduce-scatter plus DP all-gather, and its unqualified TRT-LLM
 path retains the previously documented collective behavior.
 
+Shared and routed expert compute are modeled sequentially, followed by the
+post-expert reduction, for every backend and EP configuration. Concurrent
+execution requires a qualified runtime contract before overlap can be priced;
+the measured SGLang EP1 eager path remains sequential.
+
 SGLang's pinned CUDA FlashMLA layout stores 584 bytes per main/SWA entry
 (FP8 NoPE, BF16 RoPE, scales/padding), and its low-ratio index stores 68 bytes.
 Three half-rate owners and one full-rate owner give a 1,630-byte global slope.
@@ -103,11 +108,16 @@ with the mHC and Engram buffers added separately, rather than the dense default.
 
 ## Result provenance
 
-SOL returns analytical bounds. HYBRID may combine existing measured/empirical
+SOL returns analytical bounds. With the default systems database, HYBRID may
+combine existing measured/empirical
 BF16 GEMM, MoE, and collective data with **SOL** contributions for CSA2, Engram,
 single-pass mHC, and 32x32-block FP8 shared-expert projections; those new components are uncalibrated. SILICON fails for missing
 V4.1 data and never substitutes V4 attention or mHC tables. EMPIRICAL similarly
-requires a V4.1 anchor. Measured support is a separate dependent change.
+requires a V4.1 anchor. The packaged
+[GB300 SILICON operator databases](../python/aisimulate/src/aisimulate_core/systems/profiles/dsv41/README.md)
+provide separate `full` and `decoder_bounded` systems roots for the measured
+SGLang runtime. Select the root matching `decoder_replay`; the flag does not
+automatically select a table.
 
 The independent FPM consumer uses the same model descriptor, resident inventory,
 execution profile, and Rust `f64` SOL methods. Its checkpoint/profile/residency

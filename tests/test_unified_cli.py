@@ -1374,6 +1374,57 @@ def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, cap
     assert "downstream Dynamo adapter export is not qualified" in text
 
 
+def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys) -> None:
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    class SnapshotFactory(_Factory):
+        def capabilities(self):
+            return EngineReplayRunnerFactory().capabilities()
+
+    trace_path = tmp_path / "play.json"
+    trace_path.write_text(
+        json.dumps({"id": "play", "block_size": 64, "requests": [{"t": 0, "type": "s", "in": 64, "out": 1}]})
+    )
+    config_path = tmp_path / "snapshot.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 1024,
+                    "workers": {"aggregated": {}},
+                },
+                "traffic": {
+                    "source": {"type": "trace", "format": "weka", "paths": [str(trace_path)]},
+                    "load": {"type": "trace_timestamps", "agentic_lanes": 2},
+                },
+            }
+        )
+    )
+    runner = _Runner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: SnapshotFactory(runner))
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--set",
+                "traffic.load.agentic_snapshot.seed=42",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert runner.spec.workload["agentic_snapshot"] == {"seed": 42}
+    assert runner.spec.workload["agentic_lanes"] == 2
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
 def test_time_source_tables_are_bounded_but_json_keeps_complete_evidence():
     from copy import deepcopy
 
