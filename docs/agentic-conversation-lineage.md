@@ -25,6 +25,15 @@ schema before relying on ancestry. No router policy is enabled by carrying these
 identities: a versioned consumer must invoke its native policy and independently
 qualify actual placement, cache behavior, and supported topologies.
 
+Placement policies receive optional default no-op `dispatch_committed` and
+`dispatch_aborted` callbacks. A successful dispatch means the engine accepted
+ownership; for P/D decode this is destination reservation, before transfer or
+token generation. A policy can hold a tentative binding during selection and
+commit it only after acceptance. `advance_clock(now_ms)` runs during semantic
+settlement and can release policy waiters after a commit or abort.
+`next_wakeup_ms()` must identify concrete future policy work. TTL housekeeping
+that cannot release a request should run lazily and must not extend the run.
+
 This contract uses AISimulate's existing graph edges and snapshot namespaces. It
 does not alter graph digests, sampling, request dependencies, cache allocation,
 warmup behavior, or the methodology qualification status of replay.

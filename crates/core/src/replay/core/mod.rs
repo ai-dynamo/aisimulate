@@ -105,6 +105,25 @@ pub trait PlacementPolicy<Request> {
         now_ms: f64,
     ) -> Result<PlacementEffects>;
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>>;
+    /// The selected engine accepted ownership (destination reservation for P/D
+    /// decode). Policies may commit a tentative binding only at this boundary.
+    fn dispatch_committed(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
+        Ok(())
+    }
+    /// The selected engine rejected ownership. Discard tentative policy state.
+    fn dispatch_aborted(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
+        Ok(())
+    }
+    /// Advance policy time using the replay clock and release any newly ready
+    /// placements. Wall time must not drive offline policy state.
+    fn advance_clock(&mut self, _now_ms: f64) -> Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    /// A concrete future wakeup for policy-owned work; idle housekeeping that
+    /// cannot release work should be performed lazily in `advance_clock`.
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        None
+    }
     fn cancel_pending(&mut self, request_id: Uuid) -> bool;
     fn request_terminal(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;
     fn prefill_completed(&mut self, request_id: Uuid, now_ms: f64) -> Result<Vec<Placement>>;

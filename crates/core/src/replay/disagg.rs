@@ -1295,6 +1295,7 @@ where
         ) {
             Ok(effects) => effects,
             Err(error) => {
+                self.prefill_placement.dispatch_aborted(uuid, self.now_ms)?;
                 self.acknowledge_action(
                     uuid,
                     action,
@@ -1304,8 +1305,11 @@ where
             }
         };
         if !matches!(effects.result, CommandResult::Submitted(id) if id == uuid) {
+            self.prefill_placement.dispatch_aborted(uuid, self.now_ms)?;
             bail!("offline disagg replay prefill submission returned an unexpected result");
         }
+        self.prefill_placement
+            .dispatch_committed(uuid, self.now_ms)?;
         self.flow.finish_prefill_submission(
             uuid,
             worker_idx,
@@ -1335,6 +1339,7 @@ where
         ) {
             Ok(effects) => effects,
             Err(error) => {
+                self.decode_placement.dispatch_aborted(uuid, self.now_ms)?;
                 self.acknowledge_action(
                     uuid,
                     action,
@@ -1347,8 +1352,11 @@ where
             effects.result,
             CommandResult::DestinationAccepted { request_id } if request_id == uuid
         ) {
+            self.decode_placement.dispatch_aborted(uuid, self.now_ms)?;
             bail!("offline disagg replay destination acceptance returned an unexpected result");
         }
+        self.decode_placement
+            .dispatch_committed(uuid, self.now_ms)?;
         let stored_hashes = self
             .flow
             .conformance_capture
@@ -1950,7 +1958,13 @@ where
     /// Return both the next event including telemetry and the canonical next
     /// timestamp that can advance replay semantics.
     fn next_timestamps(&mut self) -> (Option<f64>, Option<f64>) {
-        let next_arrival_ms = CoreAdmissionSource::next_ready_time_ms(&mut self.admission);
+        let next_arrival_ms = choose_next_timestamp(
+            CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
+            choose_next_timestamp(
+                self.prefill_placement.next_wakeup_ms(),
+                self.decode_placement.next_wakeup_ms(),
+            ),
+        );
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
             next_non_telemetry_event_ms(&mut self.events)
@@ -2502,6 +2516,11 @@ where
         }
         loop {
             let mut changed = self.prune_stale_transfer_events();
+            let prefill = self.prefill_placement.advance_clock(self.now_ms)?;
+            let decode = self.decode_placement.advance_clock(self.now_ms)?;
+            changed |= !prefill.is_empty() || !decode.is_empty();
+            self.dispatch_prefill_placements(prefill)?;
+            self.dispatch_decode_placements(decode)?;
             changed |= self.apply_worker_completions()?;
             changed |= self.apply_worker_ready_events()?;
             changed |= self.apply_transfer_completions()?;

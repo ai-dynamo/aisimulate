@@ -267,7 +267,11 @@ where
         uuid: Uuid,
         worker_idx: usize,
     ) -> anyhow::Result<()> {
-        self.engine.dispatch(worker_idx, request, self.now_ms)?;
+        if let Err(error) = self.engine.dispatch(worker_idx, request, self.now_ms) {
+            self.placement.dispatch_aborted(uuid, self.now_ms)?;
+            return Err(error);
+        }
+        self.placement.dispatch_committed(uuid, self.now_ms)?;
         // Aggregated replay uses a single pool. Treat the assignment as the
         // decode_worker_idx so per-request records consistently carry the
         // worker that served the request; prefill_worker_idx stays None,
@@ -456,7 +460,10 @@ where
         } else {
             next_event_ms
         };
-        let next_internal_deadline_ms = self.engine.next_internal_deadline_ms();
+        let next_internal_deadline_ms = choose_next_timestamp(
+            self.engine.next_internal_deadline_ms(),
+            self.placement.next_wakeup_ms(),
+        );
         (
             choose_next_timestamp(
                 choose_next_timestamp(next_arrival_ms, next_event_ms),
@@ -851,6 +858,9 @@ where
         let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = false;
+            let placements = self.placement.advance_clock(self.now_ms)?;
+            changed |= !placements.is_empty();
+            self.dispatch_placements(placements)?;
             // Settle idle deadlines first: a completion below may release a
             // queued placement and submit it to that same idle worker.
             changed |= self.settle_internal_work(&mut consecutive_internal_steps)?;
