@@ -800,7 +800,10 @@ fn load_pair(
         // their latency value is healed by the replacement pass below, after
         // the duplicate/collision checks.
         let kv_seed_regime = row.str_optional(kv_seed_col)?.unwrap_or("");
-        if !match_identity[15].is_empty()
+        if !match_identity[15..]
+            .iter()
+            .map(String::as_str)
+            .eq(LEGACY_EXECUTION_IDENTITY)
             && (workload_kind == "decode" || total_kv_read_tokens > 0)
             && kv_seed_regime != FPM_KV_SEED_REAL_KV
         {
@@ -1624,6 +1627,41 @@ pub(crate) mod tests {
                 .to_string()
                 .contains("requires real_kv")
         );
+    }
+
+    #[test]
+    fn every_nonlegacy_execution_tail_requires_real_kv_even_without_fingerprint() {
+        let tmp = tempfile::tempdir().unwrap();
+        for execution in [
+            ["", "decoder_bounded", "none", "text"],
+            ["", "full", "hbm_tp_sharded", "text"],
+            ["", "full", "none", "image"],
+            LEGACY_EXECUTION_IDENTITY,
+        ] {
+            for phase in ["prefill", "decode"] {
+                let mut rows: Vec<_> = default_rows()
+                    .into_iter()
+                    .filter(|r| r.workload_kind == phase)
+                    .collect();
+                for row in &mut rows {
+                    row.execution = Some(execution);
+                    row.kv_seed_regime = Some("fake_fallback");
+                }
+                write_pair(tmp.path(), &rows);
+                let table = loaded_table(tmp.path());
+                let result = table.cells();
+                if execution == LEGACY_EXECUTION_IDENTITY {
+                    assert!(result.is_ok());
+                } else {
+                    assert!(result.unwrap_err().to_string().contains("requires real_kv"));
+                    for row in &mut rows {
+                        row.kv_seed_regime = Some("real_kv");
+                    }
+                    write_pair(tmp.path(), &rows);
+                    assert!(loaded_table(tmp.path()).cells().is_ok());
+                }
+            }
+        }
     }
 
     #[test]

@@ -81,6 +81,9 @@ def _freeze_benchmark_points(path: str) -> tuple[str, str]:
                 value = point.get(field)
                 if type(value) is not int or value < minimum:
                     raise ValueError(f"benchmark-points {phase} {field} must be an integer >= {minimum}")
+            token_field = "total_prefill_tokens" if phase == "prefill" else "total_kv_read_tokens"
+            if point[token_field] < point["batch_size"]:
+                raise ValueError(f"benchmark-points {phase} {token_field} must be >= batch_size")
             if phase == "decode" and point.get("total_prefill_tokens", 0) != 0:
                 raise ValueError("benchmark-points decode total_prefill_tokens must be zero")
     if not payload["prefill"] and not payload["decode"]:

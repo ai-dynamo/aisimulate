@@ -409,7 +409,10 @@ def fpm_session(tmp_path):
         _row("decode", 8, 0, 16400, 9.5, model_path=model.model_path, identity=identity),
     ]
     # Separate selector lane makes swapped warning values observable.
-    rows += [dict(row, fmha_quant_mode="fp8") for row in rows]
+    rows += [
+        dict(row, fmha_quant_mode="fp8", cell_id=row["cell_id"] + "-fp8", latency_ms=row["latency_ms"] + 1.0)
+        for row in rows
+    ]
     # data_dir comes from the system yaml ("data/h200_sxm").
     data_dir = os.path.join(systems_root, "data", SYSTEM, BACKEND, VERSION)
     _write_pair(data_dir, rows)
@@ -659,12 +662,12 @@ def test_explicit_selector_emits_matched_cell_warning_once(fpm_session, capfd):
     handle = _cached_engine_handle(selected, database)
     first = handle.evaluate_context_ops([0], batch_size=1, s=512)
     warning = capfd.readouterr().err
-    assert first[0][1] == 22.0
+    assert first[0][1] == 23.0
     assert "WARNING: FPM table FMHA selector" in warning
     assert f'original_model_mode="{original}"' in warning
     assert f'selector="{selector}"' in warning
     assert "matched_cell_ids=" in warning
-    assert "fpm-test-prefill" in warning and "fpm-test-decode" in warning
+    assert "fpm-test-prefill-fp8" in warning and "fpm-test-decode-fp8" in warning
     assert "does not independently verify runtime attention precision" in warning
     assert handle.evaluate_context_ops([0], batch_size=1, s=512) == first
     assert "FPM table FMHA selector" not in capfd.readouterr().err
@@ -915,6 +918,7 @@ def test_external_fpm_pair_drives_afd_companion_replay(
                 gemm_quant_mode=common.GEMMQuantMode.fp8,
                 moe_quant_mode=common.MoEQuantMode.fp8,
                 fmha_quant_mode=common.FMHAQuantMode.fp8,
+                fpm_fmha_quant_mode=common.FMHAQuantMode.bfloat16,
                 kvcache_quant_mode=common.KVCacheQuantMode.fp8,
                 comm_quant_mode=common.CommQuantMode.fp8,
             ),
@@ -939,6 +943,7 @@ def test_external_fpm_pair_drives_afd_companion_replay(
         args.update(aic_system=custom_system, systems_path=str(systems_root), aic_fpm_parquet_path=expected_path)
         prefix = "aic_" if identity_fields == "prefixed" else ""
         args.update({f"{prefix}{field}_dtype": "fp8" for field in ("gemm", "moe", "fmha", "kv_cache", "comm")})
+        args[f"{prefix}fpm_fmha_dtype"] = "bfloat16"
         args.update(
             {
                 "aic_pp_size": 1,
@@ -980,3 +985,51 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_f
     assert sections["source"]["status"] == "unavailable"
     assert "whole-model FPM" in sections["source"]["unavailable_reason"]
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
+
+
+def test_fpm_selector_allows_fallback_to_untrained_regression(tmp_path):
+    systems = tmp_path / "systems"
+    systems.mkdir()
+    shutil.copy(Path(_CORE_SYSTEMS) / f"{SYSTEM}.yaml", systems / f"{SYSTEM}.yaml")
+    model = RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig(
+            model="Qwen/Qwen3-0.6B",
+            system=SYSTEM,
+            backend=BACKEND,
+            backend_version=VERSION,
+            worker_type="aggregated",
+            systems_paths=(str(systems),),
+            estimation_mode="fpm_interpolation",
+            fallback_policy="allow",
+            fpm_fmha_quant_mode="fp8",
+        )
+    )
+    diagnostics = model.diagnostics()
+    assert diagnostics["provenance"]["selected_estimation_mode"] == "fpm_regression"
+    model.close()
+
+
+def test_canonical_config_preserves_positional_quantization_fields():
+    config = ForwardPassPerfModelConfig(
+        "model",
+        "system",
+        "sglang",
+        "aggregated",
+        "version",
+        4,
+        1,
+        1,
+        4,
+        1,
+        "fp8",
+        "fp8",
+        "bfloat16",
+        "fp8",
+        "bfloat16",
+        0,
+        fpm_fmha_quant_mode="fp8",
+    )
+    assert config.kvcache_quant_mode == "fp8"
+    assert config.comm_quant_mode == "bfloat16"
+    assert config.nextn == 0
+    assert config.fpm_fmha_quant_mode == "fp8"

@@ -381,10 +381,11 @@ def _worker_performance_model_metadata(
         **({"decoder_replay": True} if engine.decoder_replay else {}),
         **{
             field: getattr(engine, field)
-            for field in ("database_mode", "enable_shared_layer", "strict_provenance")
+            for field in ("enable_shared_layer", "strict_provenance")
             if getattr(engine, field) is not None
         },
     }
+    config["database_mode"] = worker.timing.database_mode or engine.database_mode
     if engine.speculation is not None:
         config["speculation"] = engine.speculation.cost_config()
     if worker.timing.fpm_parquet_path is not None:
@@ -611,6 +612,8 @@ def _traffic(
             workload["arrival_speedup_ratio"] = load.speedup or 1.0
             if load.agentic_lanes is not None:
                 workload["agentic_lanes"] = load.agentic_lanes
+            if load.agentic_snapshot is not None:
+                workload["agentic_snapshot"] = load.agentic_snapshot.model_dump(mode="json")
         if stop is not None and stop.max_virtual_time_seconds is not None:
             workload["max_sim_time_ms"] = 1_000.0 * stop.max_virtual_time_seconds
         return workload, None

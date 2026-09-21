@@ -264,3 +264,15 @@ def test_explicit_fpm_flags_are_rejected_for_operator_collection(field, value):
 
     with pytest.raises(ValueError, match=field.replace("_", "-")):
         reject_fpm_arguments_without_fpm(argparse.Namespace(ops=["gemm"], **{field: value}))
+
+
+@pytest.mark.parametrize("phase,field", [("prefill", "total_prefill_tokens"), ("decode", "total_kv_read_tokens")])
+@pytest.mark.parametrize("tokens", [0, 1, 2])
+def test_manifest_requires_at_least_one_token_per_sequence(tmp_path, phase, field, tokens):
+    payload = _payload()
+    payload[phase][0][field] = tokens
+    if tokens < 2:
+        with pytest.raises(ValueError, match=f"benchmark-points {phase} {field}"):
+            _options(tmp_path, payload)
+    else:
+        _options(tmp_path, payload)

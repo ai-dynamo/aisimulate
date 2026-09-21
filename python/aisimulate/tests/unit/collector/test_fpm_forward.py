@@ -729,15 +729,18 @@ _DSV4_ATTENTION_OPS = {
 
 
 @pytest.mark.parametrize(
-    ("model_path", "expected_strategies", "expected_memory_rejections"),
+    ("model_path", "max_prefill_tokens", "expected_strategies", "expected_memory_rejections"),
     [
-        # PR #219 uses residual width for MoE workspace, admitting DEP at 16 GPUs.
-        ("sgl-project/DeepSeek-V4-Pro-FP8", {"pure_tp", "tep", "dep"}, 0),
-        ("sgl-project/DeepSeek-V4-Flash-FP8", {"pure_tp", "tep", "dep"}, 0),
+        # Residual-width MoE workspace fits Pro DEP at 8192 tokens; a larger
+        # activation envelope must still reject it on physical capacity.
+        ("sgl-project/DeepSeek-V4-Pro-FP8", 8192, {"pure_tp", "tep", "dep"}, 0),
+        ("sgl-project/DeepSeek-V4-Pro-FP8", 32768, {"pure_tp", "tep"}, 1),
+        ("sgl-project/DeepSeek-V4-Flash-FP8", 8192, {"pure_tp", "tep", "dep"}, 0),
     ],
 )
 def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admission(
     model_path,
+    max_prefill_tokens,
     expected_strategies,
     expected_memory_rejections,
 ):
@@ -751,6 +754,7 @@ def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admi
             _args(
                 fpm_max_gpus=16,
                 fpm_gpu_counts=[16],
+                fpm_max_prefill_isl=max_prefill_tokens,
             )
         ),
     )
@@ -764,6 +768,13 @@ def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admi
     assert plan.dtype_profile.kv_cache_dtypes == ("fp8",)
     assert {cell.parallel_strategy for cell in plan.cells} == expected_strategies
     assert plan.to_dict()["counts"]["memory_rejected_topologies"] == expected_memory_rejections
+    assert plan.to_dict()["counts"]["memory_unknown_topologies"] == 0
+    for decision in plan.topology_memory_admission:
+        assert decision.max_new_tokens == max_prefill_tokens
+        for estimate in decision.estimates:
+            assert (estimate.estimated_non_kv_bytes < estimate.gpu_capacity_bytes) == (
+                decision.disposition == "admitted"
+            )
     assert all(cell.to_dict()["point_source"] == "dynamo_native_self_benchmark" for cell in plan.cells)
 
 

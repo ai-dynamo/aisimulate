@@ -1552,7 +1552,11 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         moe_quant_mode: config.moe_quant_mode.clone(),
         kvcache_quant_mode: config.kvcache_quant_mode.clone(),
         fmha_quant_mode: config.fmha_quant_mode.clone(),
-        fpm_fmha_quant_mode: config.fpm_fmha_quant_mode.clone(),
+        fpm_fmha_quant_mode: if forward_model == "fpm" {
+            config.fpm_fmha_quant_mode.clone()
+        } else {
+            None
+        },
         comm_quant_mode: config.comm_quant_mode.clone(),
         attention_backend: config.attention_backend.clone(),
         moe_backend: config.moe_backend.clone(),

@@ -116,7 +116,7 @@ class ForwardPassPerfModelConfig:
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
     fmha_quant_mode: str | None = None
-    fpm_fmha_quant_mode: str | None = None
+    fpm_fmha_quant_mode: str | None = dataclass_field(default=None, kw_only=True)
     kvcache_quant_mode: str | None = None
     comm_quant_mode: str | None = None
     nextn: int = 0

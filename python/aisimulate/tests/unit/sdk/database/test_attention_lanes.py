@@ -243,7 +243,7 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_eighteen():
+def test_engine_spec_schema_version_is_twenty():
     """Verification width fields extend the positional operation payload."""
     from aisimulate.sdk import engine
 

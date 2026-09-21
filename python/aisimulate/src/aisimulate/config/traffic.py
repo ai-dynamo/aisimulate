@@ -110,6 +110,12 @@ class TrafficStop(StrictModel):
     max_virtual_time_seconds: PositiveFloat | None = None
 
 
+class AgenticSnapshotOptions(StrictModel):
+    """Seed for deterministic initial AgentX request-boundary snapshots."""
+
+    seed: int = Field(strict=True, ge=0, le=0xFFFF_FFFF_FFFF_FFFF)
+
+
 class TrafficPredictionLoad(StrictModel):
     type: Literal[
         "concurrency",
@@ -123,6 +129,7 @@ class TrafficPredictionLoad(StrictModel):
     seed: NonNegativeInt | None = None
     speedup: PositiveFloat | None = None
     agentic_lanes: PositiveInt | None = None
+    agentic_snapshot: AgenticSnapshotOptions | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -153,6 +160,7 @@ class TrafficRecommendationLoad(StrictModel):
     fraction: PositiveFloat | Choices[PositiveFloat] | NumericRange | None = None
     speedup: PositiveFloat | Choices[PositiveFloat] | NumericRange | None = None
     agentic_lanes: PositiveInt | None = None
+    agentic_snapshot: AgenticSnapshotOptions | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -190,6 +198,7 @@ def _validate_load_fields(load) -> None:
             "fraction",
             "speedup",
             "agentic_lanes",
+            "agentic_snapshot",
         )
         if getattr(load, name, None) is not None
     }
@@ -198,7 +207,7 @@ def _validate_load_fields(load) -> None:
         "poisson": {"requests_per_second", "sessions_per_second", "seed"},
         "constant_rate": {"requests_per_second", "sessions_per_second"},
         "kv_capacity_fraction": {"fraction"},
-        "trace_timestamps": {"speedup", "agentic_lanes"},
+        "trace_timestamps": {"speedup", "agentic_lanes", "agentic_snapshot"},
     }[load.type]
     unexpected = used - allowed
     if unexpected:
@@ -222,6 +231,8 @@ class _TrafficConfigBase(StrictModel):
     def _validate_source_load_stop(self, load) -> None:
         source = self.source
         stop = self.stop
+        if load.agentic_snapshot is not None and load.agentic_lanes is None:
+            raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if isinstance(source, TraceSource):
             if load.type not in {"trace_timestamps", "concurrency"}:
                 raise ValueError("trace traffic requires trace_timestamps or concurrency load")
