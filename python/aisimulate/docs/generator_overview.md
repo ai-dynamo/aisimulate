@@ -322,6 +322,15 @@ NVIDIA GPU node. The sum of all workers' resolved GPU counts must fit
 `NodeConfig.num_gpus_per_node`. Multinode workers, dedicated encode pools and
 Dynamo Planner are rejected rather than silently changing the topology.
 
+Set worker topology and engine configuration through the structured generator
+configuration. For Slurm, `Workers.<role>.extra_cli_args` cannot override parallel
+sizes, GPU placement, or launch options, including their backend aliases and
+abbreviations. Config-file and engine-overlay arguments (`--config`,
+`--extra-engine-args`, `--override-engine-args`, and `--trtllm.*`) are also reserved
+so they cannot change the GPU requirements after allocation. Ordinary tuning
+arguments remain available. `DYN_TRTLLM_OVERRIDE_ENGINE_ARGS` is rejected in
+`SlurmConfig.env` and cleared for TRT-LLM workers if inherited from the environment.
+
 The bundle contains:
 
 - `deploy.sbatch`: load the model, verify inference, then keep the Dynamo service

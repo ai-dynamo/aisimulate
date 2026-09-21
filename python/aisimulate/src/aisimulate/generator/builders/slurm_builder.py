@@ -33,6 +33,60 @@ _OWNED_ENV = {
     "DYN_DISCOVERY_BACKEND",
     "DYN_STORE_KV",
     "DYN_REQUEST_PLANE",
+    "DYN_TRTLLM_OVERRIDE_ENGINE_ARGS",
+}
+_TOPOLOGY_OPTIONS = {
+    "vllm": {
+        "-tp",
+        "-pp",
+        "-dp",
+        "-dpl",
+        "-dpn",
+        "-dpr",
+        "-dph",
+        "-dpe",
+        "-dcp",
+        "-pcp",
+        "-ep",
+        "-n",
+        "-r",
+        "--data-parallel-size",
+        "--data-parallel-size-local",
+        "--data-parallel-rank",
+        "--data-parallel-start-rank",
+        "--data-parallel-hybrid-lb",
+        "--data-parallel-external-lb",
+        "--decode-context-parallel-size",
+        "--prefill-context-parallel-size",
+        "--enable-expert-parallel",
+        "--no-enable-expert-parallel",
+        "--enable-elastic-ep",
+        "--distributed-executor-backend",
+    },
+    "sglang": {
+        "--tp-size",
+        "--pp-size",
+        "--data-parallel-size",
+        "--dp-size",
+        "--expert-parallel-size",
+        "--ep-size",
+        "--ep",
+        "--attention-context-parallel-size",
+        "--attn-cp-size",
+        "--moe-data-parallel-size",
+        "--moe-dp-size",
+        "--moe-dense-tp-size",
+        "--enable-dp-attention",
+        "--base-gpu-id",
+        "--gpu-id-step",
+    },
+    "trtllm": {
+        "--expert-parallel-size",
+        "--enable-attention-dp",
+        "--no-enable-attention-dp",
+        "--gpus-per-node",
+        "--override-engine-args",
+    },
 }
 
 
@@ -68,7 +122,9 @@ def _worker_command(context: dict, params: dict, backend: str, role: str) -> tup
     }
     kvbm = bool(worker_env)
     if backend == "trtllm":
-        command.extend(["--extra-engine-args", f"{role}_config.yaml"])
+        command.extend(["--extra-engine-args", f"{role}_config.yaml", "--gpus-per-node", str(context[f"{role}_gpu"])])
+        # An inherited Dynamo override must not replace the generated topology.
+        worker_env["DYN_TRTLLM_OVERRIDE_ENGINE_ARGS"] = ""
         if kvbm:
             command.extend(["--connector", "kvbm"])
     if role != "agg":
@@ -119,9 +175,26 @@ def _worker_command(context: dict, params: dict, backend: str, role: str) -> tup
         "--store-kv",
         "--request-plane",
         "--disaggregation-bootstrap-port",
+        "--tensor-parallel-size",
+        "--pipeline-parallel-size",
+        "--config",
     }
-    if any(token.split("=", 1)[0].replace("_", "-") in owned for token in extra):
-        raise ValueError(f"Workers.{role}.extra_cli_args overrides a Slurm-owned launch option")
+    owned.update(_TOPOLOGY_OPTIONS[backend])
+    for token in extra:
+        option = token.split("=", 1)[0].replace("_", "-")
+        if not option.startswith("-") or option in {"-", "--"}:
+            continue
+        # argparse accepts unambiguous prefixes and attached one-letter aliases
+        # (e.g. -n2); vLLM also normalizes underscores in option names.
+        if (
+            any(flag.startswith(option) for flag in owned)
+            or any(len(flag) == 2 and option.startswith(flag) for flag in owned)
+            or (backend == "trtllm" and option.startswith("--trtllm."))
+        ):
+            raise ValueError(
+                f"Workers.{role}.extra_cli_args overrides a Slurm-owned launch option: {option}; "
+                "set topology and engine configuration through the structured generator configuration"
+            )
     command.extend(extra)
     return command, worker_env
 
