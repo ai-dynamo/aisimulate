@@ -124,9 +124,14 @@ def test_sglang_hook_adds_lists_from_schedule_batch(fake_sglang):
     m = mixin._build_scheduled_request_metrics(batch)
     assert m.extend_lengths == [16384, 512] and m.past_kv_lengths == [32768, 0]
     assert m.sum_prefill_tokens == 16896
-    decode_batch = types.SimpleNamespace(forward_mode=_Mode("decode"), reqs=[_Req(seqlen=700), _Req(seqlen=90)])
+    # decode: schedule-time seq_lens_cpu (the aggregate's source); req.seqlen is +1 after the step
+    decode_batch = types.SimpleNamespace(
+        forward_mode=_Mode("decode"), reqs=[_Req(seqlen=701), _Req(seqlen=91)], seq_lens_cpu=[700, 90]
+    )
     d = mixin._build_scheduled_request_metrics(decode_batch)
     assert d.extend_lengths == [1, 1] and d.past_kv_lengths == [700, 90]
+    no_lens = types.SimpleNamespace(forward_mode=_Mode("decode"), reqs=[_Req(seqlen=701)])
+    assert mixin._build_scheduled_request_metrics(no_lens).past_kv_lengths == [700]
     # fallback when the schedule-time lists are absent
     fb = types.SimpleNamespace(
         forward_mode=_Mode("extend"), reqs=[_Req(extend_input_len=300, prefix=40)], decoding_reqs=None
@@ -206,7 +211,7 @@ def test_sglang_hook_finds_owner_class_by_method_name(fake_sglang):
     del reporter.SchedulerMetricsReporter
     assert sglang.patch_sglang_metrics_reporter(reporter) is True
     m = reporter.SomeOtherReporter()._build_scheduled_request_metrics(
-        types.SimpleNamespace(forward_mode=_Mode("decode"), reqs=[_Req(seqlen=5)])
+        types.SimpleNamespace(forward_mode=_Mode("decode"), reqs=[_Req(seqlen=6)], seq_lens_cpu=[5])
     )
     assert m.past_kv_lengths == [5]
     # a module without any builder is skipped, not an error

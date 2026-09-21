@@ -489,12 +489,13 @@ impl IterationFeatureVector {
                 sum_dkv_sq += nd * s.var_decode_kv_tokens.max(0.0) + nd * mean * mean;
             }
             // Sanity check on the past-KV total: prefix-cache hits and earlier
-            // chunks can only be as large as the aggregates describe (producers
-            // may read `sum_prefill_kv_tokens` after the step, hence the
-            // `+ ptok` slack). Extends are not bounded here: speculative decode
+            // chunks can only be as large as the aggregates describe. Slack:
+            // producers may read `sum_prefill_kv_tokens` after the step
+            // (`+ ptok`) and per-request decode lengths one token late
+            // (`+ nd`). Extends are not bounded here: speculative decode
             // legitimately extends a decode request by more than one token.
             let past_total: f64 = s.past_kv_lengths.iter().map(|&p| f64::from(p)).sum();
-            let past_consistent = past_total <= pkv + dkv + ptok;
+            let past_consistent = past_total <= pkv + dkv + ptok + nd;
             match pairs.as_mut() {
                 Some(list)
                     if !s.extend_lengths.is_empty()

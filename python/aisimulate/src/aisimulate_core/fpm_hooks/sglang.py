@@ -6,7 +6,8 @@ Applied to ``sglang.srt.managers.scheduler_components.metrics_reporter`` after
 import. Values come from the schedule-time ``ScheduleBatch.extend_lens`` /
 ``prefix_lens`` (aligned with ``batch.reqs``); the per-request attributes
 (``req.extend_input_len``) are already reset when metrics are emitted, so they
-are only a fallback. Decode batches contribute ``(1, seqlen)`` per request.
+are only a fallback. Decode batches contribute ``(1, seq_len)`` per request
+from ``batch.seq_lens_cpu``, the same source as the aggregate.
 
 Collect with ``--disable-overlap-schedule``: the stock FPM emitter accumulates
 every finished forward interval, which merges the next step into the current
@@ -33,7 +34,13 @@ def request_pairs(batch) -> list[tuple[int, int]] | None:
     if mode is None or not reqs:
         return None
     if mode.is_decode():
-        return [(1, int(getattr(req, "seqlen", 0))) for req in reqs]
+        # Same source as the stock aggregate (sum_decode_kv_tokens): the
+        # schedule-time sequence lengths. req.seqlen is already +1 when the
+        # metrics are emitted after the step.
+        seq_lens = getattr(batch, "seq_lens_cpu", None)
+        if seq_lens is not None and len(seq_lens) == len(reqs):
+            return [(1, int(sl)) for sl in seq_lens]
+        return [(1, max(int(getattr(req, "seqlen", 1)) - 1, 0)) for req in reqs]
     if not (mode.is_extend() or mode.is_mixed()):
         return None
     ext = getattr(batch, "extend_lens", None)

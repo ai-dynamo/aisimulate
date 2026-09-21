@@ -2373,6 +2373,11 @@ fn learned_model_refuses_request_features_without_lists() {
         .estimate_forward_pass_time_ms(&[decode_fpm(2, 200, 0.0)])
         .unwrap_err();
     assert!(err.to_string().contains("per-request features"), "{err}");
+    // Decode lengths read one token late (past = kv + 1 per request) stay within the slack.
+    let mut late = decode_fpm(2, 200, 0.0);
+    late.scheduled_requests.extend_lengths = vec![1, 1];
+    late.scheduled_requests.past_kv_lengths = vec![121, 81];
+    assert!(model.estimate_forward_pass_time_ms(&[late]).unwrap().is_some());
     // Lists whose past total exceeds every aggregate bound are treated as absent.
     let mut contradictory = decode_fpm(2, 200, 0.0);
     contradictory.scheduled_requests.extend_lengths = vec![1, 1];
