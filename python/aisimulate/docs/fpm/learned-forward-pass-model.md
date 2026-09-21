@@ -248,6 +248,52 @@ constant offset that the online correction grid absorbs. The overlap-on
 prefill records themselves are unusable as truth because of the accumulator
 merge, so no prefill cross-mode number is quoted.
 
+### Workload coverage: AgentX and ShareGPT (chatbot) on DeepSeek-V4.1-Flash
+
+Same V4.1-Flash SGLang deployment, overlap off, `sglang18` features. Two
+AgentX boots (c16/32/64/128 seed 42, c24/48/96 seed 7) and two ShareGPT
+chatbot boots (aiperf `--public-dataset sharegpt`, c32/64/128/256 seed 42,
+c48/96/192 seed 7), 2026-09-20/21. The two workloads occupy different parts
+of the input space: AgentX prefill is long-context with heavy prefix reuse
+(extend up to ~16k tokens, past KV in the hundreds of thousands) and its
+decode batches stay at or below 64; ShareGPT prefill is short (ISL median
+~530, almost no prefix hits) and its decode batch equals the concurrency,
+up to 256.
+
+Pooled 60/40 split with no shared step: every (boot, tier) window is cut
+into five consecutive time blocks, blocks 1/2/4 train and 3/5 test, so both
+sides see every boot and tier. Step-weighted MAPE (median / p95):
+
+| Training data | Test data | decode steps | decode | prefill steps | prefill |
+| --- | --- | --- | --- | --- | --- |
+| AgentX only | AgentX 40% | 200k | 1.70% (1.32% / 4.2%) | 3.5k | 2.52% (1.45% / 8.0%) |
+| ShareGPT only | ShareGPT 40% | 97k | 1.85% (1.30% / 5.4%) | 7.2k | 2.58% (1.82% / 6.3%) |
+| AgentX + ShareGPT | both, 40% | 297k | 1.69% (1.28% / 4.4%) | 10.7k | 2.45% (1.75% / 6.2%) |
+| AgentX + ShareGPT, equal steps per workload | both, 40% | 197k | 1.71% (1.29% / 4.5%) | 7.1k | 2.54% (1.81% / 6.7%) |
+
+Within the pooled model the AgentX tiers land at 1.5–2.0% decode /
+0.7–2.8% prefill and the ShareGPT tiers at 1.2–2.1% decode / 1.7–3.4%
+prefill, i.e. pooling costs neither workload anything against its own
+single-workload model. Splitting by whole boot instead of by time block
+(one boot per workload held out entirely) gives 1.46% / 2.52% for the
+pooled model.
+
+Training on one workload and testing on the other shows why both belong
+in a release model:
+
+| Train → test | decode | prefill |
+| --- | --- | --- |
+| AgentX → ShareGPT | 17.5% (c32 2.2%, c64 11%, c128 30%, c256 45%) | 4.7% |
+| ShareGPT → AgentX | 4.0% | 26.1% (c16–c64 20–24%, c96/c128 47%) |
+
+The decode error grows monotonically with batch sizes the AgentX model
+never saw; the prefill error is the ShareGPT model extrapolating to prefix
+lengths it never saw. Each direction is fine where the training data covers
+the test inputs (AgentX → ShareGPT prefill 4.7%, ShareGPT → AgentX decode
+4.0%). A release artifact should therefore be trained on the union of the
+workloads it is expected to simulate, and the pooled numbers above are what
+to expect from it.
+
 ## Limitations
 
 - Learned mode is SDK-only in this release: `best_available(config)` and
