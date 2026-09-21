@@ -117,16 +117,20 @@ runtime-clock contract, and the first tick runs no earlier than the barrier.
 
 ## Reference boundary
 
-**Attribution review is pending; this work is not cleared for merge/release.**
-The repository attribution gate also covers adapted behavior. The statement
-that no upstream code was copied does not by itself satisfy that gate.
+The sources below identify the methods and request-boundary semantics used as
+references. Shared requirements alone do not establish that implementation code,
+tests, or documentation were copied or adapted. The file-level comparison below
+supports treating this use as a methodological reference with an AISimulate
+implementation.
 
-Source audit (2026-09-18):
+Source audit (updated 2026-09-21):
 
 - Original snapshot reference: NVIDIA AIPerf,
   [`src/aiperf/timing/trajectory_source.py`](https://github.com/ai-dynamo/aiperf/blob/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/src/aiperf/timing/trajectory_source.py)
+  and its [`session_tree.py`](https://github.com/ai-dynamo/aiperf/blob/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/src/aiperf/timing/session_tree.py)
   at `7db2ba37a62aa80c882bc90eaf61cc8073e2387b`,
   [Apache-2.0](https://github.com/ai-dynamo/aiperf/blob/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/LICENSE).
+  Both source files carry NVIDIA copyright notices.
 - Additional corroborating reference located during this review: SemiAnalysisAI
   AgentX harness,
   [`docs/tutorials/agentx-mvp.md`](https://github.com/SemiAnalysisAI/agentx-harness/blob/56a0cf70f4c0359454ee4bd15a17770b541a3e3e/docs/tutorials/agentx-mvp.md),
@@ -138,22 +142,44 @@ Source audit (2026-09-18):
   [`packages/app/src/components/datasets/agentx-methodology-article.tsx`](https://github.com/SemiAnalysisAI/InferenceX-app/blob/9bb7b13eb4985217a6282f340459fd5948613276/packages/app/src/components/datasets/agentx-methodology-article.tsx)
   at `9bb7b13eb4985217a6282f340459fd5948613276`; the repository
   [license is GPL-3.0](https://github.com/SemiAnalysisAI/InferenceX-app/blob/9bb7b13eb4985217a6282f340459fd5948613276/LICENSE).
-  No website code, figures, or prose were copied into this implementation.
-  Maintainer/OSRB guidance is required on the behavioral-reference boundary;
-  neither the harness license nor the dataset license resolves that question.
+  The referenced content describes one-output-token primers, ten additional
+  warmup requests per lane, and a preparation/profile boundary. The comparison
+  did not identify website source code, figures, or prose copied into the
+  reviewed implementation. The later harness reference does not replace this
+  original source or its license.
 
-After that guidance, complete the derived-file inventory and canonical/packaged
-notices as required. Byte-identical notice copies alone do not establish that
-all required attribution is present. This audit does not grant an exemption or
-relicense any source.
+Implementation comparison:
 
-[AgentX methodology](https://inferencex.semianalysis.com/agentx/methodology)
-defines one-output-token primers and ten additional warmup requests per lane.
-The pinned [AIPerf implementation](https://github.com/ai-dynamo/aiperf/tree/7db2ba37a62aa80c882bc90eaf61cc8073e2387b/src/aiperf/timing)
-provides request-boundary snapshots and primers; its optional duration-based
-warmup advances trajectories. Repeating saved prefixes ten times is this
-implementation's explicit choice for preserving the saved frontier. It is not
-a claim of identical warmup payload selection in that AIPerf revision.
+- [`snapshot.rs`](../crates/core/src/replay/loadgen/snapshot.rs), inherited from
+  #207, follows AIPerf's request-start boundary and historical-prefix semantics.
+  It operates on AISimulate's validated dependency graph, uses a versioned
+  BLAKE3-based sample keyed by graph/play/lane identity, and allocates checked
+  per-play token ranges. The referenced AIPerf code operates on its Python
+  session trees and samples with its RNG. This is a separate source comparison
+  from the AgentX article.
+- [`phase.rs`](../crates/core/src/replay/loadgen/phase.rs) implements the primer
+  and warmup requirements using the prepared original-node inputs, per-lane
+  queues, distinct request identities, and native completion/settlement
+  feedback. It repeats saved prefixes and preserves the frontier; AIPerf's
+  optional duration-based warmup advances trajectories. The payload selection
+  policies therefore differ.
+- [`driver.rs`](../crates/core/src/replay/loadgen/driver.rs) and the native
+  [aggregated](../crates/core/src/replay/agg.rs) and
+  [P/D](../crates/core/src/replay/disagg.rs) paths integrate preparation
+  with AISimulate's existing executor, handoff, cache, and measurement state.
+  Their regression tests exercise these local interfaces and simulator timing;
+  matching the method's request counts is not itself evidence of copied tests.
+
+**Review status:** the [attribution finding](https://github.com/ai-dynamo/aisimulate/pull/235#discussion_r4042517941)
+remains open pending reviewer/maintainer acceptance of this reference scope.
+The earlier statement that adapted behavior automatically triggers the gate
+was too broad: [AGENTS.md](../AGENTS.md) addresses copied, adapted, translated,
+or substantially derived code or other content. This comparison does not claim
+a formal clean-room process or grant a license exemption. No notice entry is
+added for the proposed methodology-only treatment. If the review identifies
+specific copied or adapted content, record its file scope and applicable
+attribution in both canonical and packaged notices before closing the finding.
+The notice-equality check alone does not resolve it.
 
 Qualification must assert exact input tokens, ten requests per lane, one output
 token per request, barrier ordering, timer preservation, failure behavior, and
