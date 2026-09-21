@@ -92,6 +92,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "gemm_dtype": ("gemm_dtype", "aic_gemm_dtype"),
     "moe_dtype": ("moe_dtype", "aic_moe_dtype"),
     "fmha_dtype": ("fmha_dtype", "aic_fmha_dtype"),
+    "fpm_fmha_dtype": ("fpm_fmha_dtype", "aic_fpm_fmha_dtype"),
     "kv_cache_dtype": ("kv_cache_dtype", "aic_kv_cache_dtype"),
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
@@ -247,18 +248,20 @@ class AICAFDCompanionPerformanceModel:
         if not isinstance(model_name, str) or not model_name or not isinstance(hardware, str) or not hardware:
             raise ValueError(f"{role} AFD companion requires aic_model_path and aic_system")
         fpm_parquet_path = timing_overrides.get("fpm_parquet_path")
+        has_fpm_selector = "fpm_fmha_dtype" in timing_overrides
         metric = "ttft" if role == "prefill" else "tpot"
         source = "aisimulate.legacy_cli.api.cli_estimate"
         try:
-            if fpm_parquet_path is not None:
-                # Preserve static integration through the canonical model API.
+            if fpm_parquet_path is not None or has_fpm_selector:
+                # The canonical API is the only path that preserves FPM selectors.
                 if forward_model != "fpm":
-                    raise ValueError("fpm_parquet_path requires forward_model='fpm'")
+                    raise ValueError("FPM controls require forward_model='fpm'")
                 quantization = {}
                 for field, parameter in (
                     ("gemm_dtype", "gemm_quant_mode"),
                     ("moe_dtype", "moe_quant_mode"),
                     ("fmha_dtype", "fmha_quant_mode"),
+                    ("fpm_fmha_dtype", "fpm_fmha_quant_mode"),
                     ("kv_cache_dtype", "kvcache_quant_mode"),
                     ("comm_dtype", "comm_quant_mode"),
                 ):
@@ -279,7 +282,11 @@ class AICAFDCompanionPerformanceModel:
                     nextn=kwargs.get("nextn", 0),
                     kv_block_size=args.get("block_size"),
                     estimation_mode="fpm_interpolation",
-                    estimator_config={"fpm_interpolation": {"fpm_parquet_path": fpm_parquet_path}},
+                    estimator_config=(
+                        {"fpm_interpolation": {"fpm_parquet_path": fpm_parquet_path}}
+                        if fpm_parquet_path is not None
+                        else {}
+                    ),
                     systems_paths=(timing_overrides["systems_path"],) if "systems_path" in timing_overrides else (),
                     **quantization,
                     **{
@@ -329,6 +336,7 @@ class AICAFDCompanionPerformanceModel:
                 "backend_version": deployment.backend_version,
                 "forward_model": forward_model,
                 **({"fpm_parquet_path": fpm_parquet_path} if fpm_parquet_path is not None else {}),
+                **({"fpm_fmha_dtype": timing_overrides["fpm_fmha_dtype"]} if has_fpm_selector else {}),
                 "metric": metric,
             },
         )

@@ -105,6 +105,8 @@ class DeepSeekV41Config:
         return result
 
     def validate(self) -> None:
+        if self.sliding_window <= 0:
+            raise ValueError("DeepSeek-V4.1 sliding_window must be positive")
         layers = self.num_hidden_layers
         if len(self.compress_ratios) != layers or set(self.compress_ratios) - {0, 1, 2}:
             raise ValueError("DeepSeek-V4.1 requires one backbone compression ratio (0, 1, or 2) per layer")
