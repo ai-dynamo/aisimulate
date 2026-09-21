@@ -447,9 +447,10 @@ pub enum TimingModelConfig {
 /// Implementations may call AIC, interpolate profiler data, or use another
 /// provider without adding that dependency to `aisimulate-core`.
 pub trait TimingModel: Send + Sync {
-    /// Whether admission needs a checkpoint around `validate_prefill_batch`.
-    /// Existing custom providers default to the safe, fallible contract. Providers
-    /// opting out must accept every batch geometry in that validation hook.
+    /// Whether `validate_prefill_batch` may reject geometry. A false return
+    /// guarantees only that validation accepts every batch, not that prediction
+    /// or duration conversion is infallible. Admission must still protect those
+    /// later operations for external providers.
     fn prefill_batch_validation_can_fail(&self) -> bool {
         true
     }

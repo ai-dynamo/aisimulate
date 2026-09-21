@@ -336,6 +336,9 @@ class EstimatorPolicyConfig(StrictModel):
             or self.estimation_mode != "auto"
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)
+            or getattr(self, "decoder_replay", False)
+            or getattr(self, "enable_shared_layer", None) is not None
+            or getattr(self, "strict_provenance", None) is not None
         )
         roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
         unsupported_provider = "afd" in modes or getattr(workers, "encoder", None) is not None

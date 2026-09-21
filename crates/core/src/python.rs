@@ -179,6 +179,8 @@ struct AicTimingConfig {
     moe_dtype: Option<String>,
     #[serde(default, alias = "fmha_quant_mode")]
     fmha_dtype: Option<String>,
+    #[serde(default, alias = "fpm_fmha_quant_mode")]
+    fpm_fmha_dtype: Option<String>,
     #[serde(default, alias = "kvcache_quant_mode")]
     kv_cache_dtype: Option<String>,
     #[serde(default, alias = "comm_quant_mode")]
@@ -301,6 +303,7 @@ impl AicTimingConfig {
             gemm_quant_mode: self.gemm_dtype.clone(),
             moe_quant_mode: self.moe_dtype.clone(),
             fmha_quant_mode: self.fmha_dtype.clone(),
+            fpm_fmha_quant_mode: self.fpm_fmha_dtype.clone(),
             kvcache_quant_mode: self.kv_cache_dtype.clone(),
             comm_quant_mode: self.comm_dtype.clone(),
             nextn: self.nextn,
@@ -2469,6 +2472,7 @@ mod tests {
             gemm_dtype: None,
             moe_dtype: None,
             fmha_dtype: None,
+            fpm_fmha_dtype: None,
             kv_cache_dtype: None,
             comm_dtype: None,
             nextn: 0,
@@ -3044,6 +3048,7 @@ mod tests {
             let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
                 "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1,
                 "decoder_replay": replay, "database_mode": "SILICON",
+                "forward_model": "fpm", "fpm_fmha_dtype": "fp8",
                 "enable_shared_layer": false, "strict_provenance": true
             }))
             .unwrap();
@@ -3051,6 +3056,7 @@ mod tests {
                 .estimator_request(ForwardPassWorkerType::Aggregated)
                 .unwrap();
             assert_eq!(request.decoder_replay, replay);
+            assert_eq!(request.fpm_fmha_quant_mode.as_deref(), Some("fp8"));
             assert_eq!(request.database_mode, crate::DatabaseMode::Silicon);
             assert_eq!(request.enable_shared_layer, Some(false));
             assert!(request.strict_provenance);
