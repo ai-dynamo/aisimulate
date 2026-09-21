@@ -507,6 +507,7 @@ mod tests {
                 backend: BackendKind::Vllm,
                 backend_version: Some("test-version".to_string()),
                 forward_model: None,
+                fpm_parquet_path: None,
                 decoder_replay: false,
                 prefill_graph_profile: None,
                 prefill_graph_profile_id: None,

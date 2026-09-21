@@ -841,6 +841,7 @@ mod tests {
             backend: crate::BackendKind::Trtllm,
             backend_version: Some("1.0.0rc3".into()),
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
             prefill_graph_profile: None,
             prefill_graph_profile_id: None,

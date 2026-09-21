@@ -182,6 +182,10 @@ def test_profile_rejects_telemetry_tuning_and_energy_routes_including_empty_inpu
     for prefill in [False, True]:
         with pytest.raises(PrefillGraphProfileError, match="only direct"):
             graph_model.static_phase_diagnostics(batch_size=1, context_length=1024, prefill=prefill)
+        with pytest.raises(PrefillGraphProfileError, match="only direct"):
+            graph_model.static_phase_latency(batch_size=1, input_tokens=1024, output_tokens=2, prefill=prefill)
+        with pytest.raises(PrefillGraphProfileError, match="only direct"):
+            graph_model._inner.static_phase_latency(1, 1024, 2, prefill)
 
 
 def test_missing_profile_data_never_selects_a_fallback(tmp_path):

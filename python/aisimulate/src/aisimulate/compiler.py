@@ -362,32 +362,36 @@ def _worker_performance_model_metadata(
 ) -> dict[str, JSONValue]:
     parallel = worker.parallelism
     sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
+    config: dict[str, JSONValue] = {
+        "backend": engine.backend,
+        "backend_version": engine.backend_version,
+        "system": worker.hardware or engine.hardware,
+        "model_path": engine.model,
+        "tp_size": parallel.tensor,
+        "attention_dp_size": parallel.attention_data,
+        "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
+        "moe_ep_size": parallel.moe_expert if sharded_moe else None,
+        "nextn": engine.nextn or None,
+        "forward_model": worker.timing.forward_model,
+        **{
+            name: getattr(engine, name)
+            for name in ENGINE_MODEL_CONTROL_FIELDS
+            if getattr(engine, name) not in (None, False)
+        },
+        **({"decoder_replay": True} if engine.decoder_replay else {}),
+        **{
+            field: getattr(engine, field)
+            for field in ("database_mode", "enable_shared_layer", "strict_provenance")
+            if getattr(engine, field) is not None
+        },
+    }
+    if engine.speculation is not None:
+        config["speculation"] = engine.speculation.cost_config()
+    if worker.timing.fpm_parquet_path is not None:
+        config["fpm_parquet_path"] = worker.timing.fpm_parquet_path
     return {
         "provider": "aic",
-        "config": {
-            "backend": engine.backend,
-            "backend_version": engine.backend_version,
-            "system": worker.hardware or engine.hardware,
-            "model_path": engine.model,
-            "tp_size": parallel.tensor,
-            "attention_dp_size": parallel.attention_data,
-            "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
-            "moe_ep_size": parallel.moe_expert if sharded_moe else None,
-            "nextn": engine.nextn or None,
-            **({"speculation": engine.speculation.cost_config()} if engine.speculation is not None else {}),
-            "forward_model": worker.timing.forward_model,
-            **{
-                name: getattr(engine, name)
-                for name in ENGINE_MODEL_CONTROL_FIELDS
-                if getattr(engine, name) not in (None, False)
-            },
-            **({"decoder_replay": True} if engine.decoder_replay else {}),
-            **{
-                field: getattr(engine, field)
-                for field in ("database_mode", "enable_shared_layer", "strict_provenance")
-                if getattr(engine, field) is not None
-            },
-        },
+        "config": config,
     }
 
 
@@ -442,6 +446,8 @@ def _worker_engine_args(
     if worker.timing.type == "default" and worker.timing.forward_model != "op_level":
         # Only the non-default forward model is spelled out, so op_level specs stay byte-identical.
         payload["aic_forward_model"] = worker.timing.forward_model
+        if worker.timing.fpm_parquet_path is not None:
+            payload["aic_fpm_parquet_path"] = worker.timing.fpm_parquet_path
     if backend == "vllm" or isinstance(engine.context_length, int):
         payload["max_model_len"] = (
             engine.context_length
@@ -515,6 +521,11 @@ def _worker_engine_args(
             systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
         )
         timing_config = omit_inactive_moe_controls(canonical.to_dict())
+        if timing.fpm_parquet_path is not None:
+            interpolation = timing_config["estimator_config"].setdefault("fpm_interpolation", {})
+            if interpolation.get("fpm_parquet_path", timing.fpm_parquet_path) != timing.fpm_parquet_path:
+                raise ValueError("conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path")
+            interpolation["fpm_parquet_path"] = timing.fpm_parquet_path
         for key in (
             "gpu_memory_utilization",
             "mem_fraction_static",
