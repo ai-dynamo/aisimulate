@@ -1,0 +1,1019 @@
+{
+  "manifest": {
+    "runtime_commit": "89d2051137b772944a3e303c452108811790bef4",
+    "prediction_data_commit": "a85b9e10f5117439eafd7a5d113118b781229920",
+    "recipe_commit": "2baba8e27be8529b4453afc953f9859ec092c73d",
+    "trtllm_source_commit": "93cb6518b6d6dbd6095748189e626db731f44545",
+    "image_digest": "sha256:fe2f17d0c9698bafeb9f437929003c6badc56d17e8382a02505233145a07f61f",
+    "model_revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+    "model_prepare_job": 1994868,
+    "baseline_job": 1994872,
+    "diagnostic_job": 1994898,
+    "default_resolution": {
+      "source": "tensorrt_llm/_torch/model_config.py",
+      "source_sha256": "789291392c2c7d3683856b6fa9e56a9a6b4e45786cfdb0cf1b929bc81c117624",
+      "symbol": "ModelConfig.get_mxfp4_quant_algo",
+      "rule": "On SM >= 100, non-TRITON static MXFP4 checkpoints default to W4A8_MXFP4_MXFP8 unless OVERRIDE_QUANT_ALGO is set."
+    },
+    "scripts_sha256": {
+      "baseline-inner.sh": "4eca7d0152a133183485ab0e15edaed358b33ae180df7b7c8ffcbda8dbc07bad",
+      "benchmark_lib.sh": "9b8a17a79925b730149a99fd0dfa01d2ac81c313fec4665cecb04356fe740999",
+      "diagnostic-inner.sh": "3a357b1e6283d185a33f8615717731077c0c64eb214cf3d3f8f25ac7f3e94a28",
+      "hooks/sitecustomize.py": "33bbd70ab55ca5c26c47addff9d9e7f67b96399b11f73c949a3cc9b1565e9722",
+      "hooks-v2/sitecustomize.py": "bd51deb5bf93f573a9f65113864985126b07576d926594e2f0db7c78f5566606",
+      "inferencex/utils/bench_serving/backend_request_func.py": "4ebf482eb32685e59ed69bd39c51e9f1fd2134f5e9b8fe7ad10550d40ecca16c",
+      "inferencex/utils/bench_serving/benchmark_serving.py": "67077f1e7abef278faa367237e33143135032c65c27032100cf26e82de37d086",
+      "inferencex/utils/bench_serving/benchmark_utils.py": "b99a18940871b701e9e65c2cc098da1c5d33fc3f9d3890f8d2cddc539a9e3d51",
+      "inferencex/utils/bench_serving/encoding_dsv4.py": "bdbd57c132a1b3725042323d02b98b9d1df28e5f388f134399555d041f5055e0",
+      "prepare-model.sh": "f43f7d0bf16ad6f4e4a637227bdd8f7bbc0ca2a68387520009197b579d9c0fe9",
+      "replay-client-lengths.py": "bb682b61d25202cd7f4683e6efe1344ce37f3cb128b556d99897c7372078c671",
+      "replay-quantization.py": "c5e5ad82cbf46dca0a18921fe987a401ffba2fada1c9af4ae523f814df603ef1",
+      "routing-inner.sh": "05ce9a843a0b711d8631c0c062085a30832cfcf4ee52212aeef3c4f89b0b182f",
+      "run-baseline.sh": "49a8186c879b89d41b87aa5dac32fed64ac8a16832eb464e92141da3e02704ef",
+      "run-diagnostic.sh": "a9ccb10f5c347a6d127dbe46873a6e5f72301bcf4c4dbecb1b5bfeb309174470",
+      "run-routing.sh": "1afec2cd34b920dc45b86e947e22e0436e3cfddd6198b5043f95a9ea3a8e2367",
+      "upstream/cuda_graph_runner.py": "de98a824218958725db8705af01b4e55d9425c86e38b8fb34f9652cc309d4cda",
+      "upstream/fused_moe_trtllm_gen.py": "4c83eb8113f1c007d761718df8acaa05e4d6de22bbd0430281e1a9210c2d9751",
+      "upstream/image-cuda_graph_runner.py": "de98a824218958725db8705af01b4e55d9425c86e38b8fb34f9652cc309d4cda",
+      "upstream/image-fused_moe_trtllm_gen.py": "4c83eb8113f1c007d761718df8acaa05e4d6de22bbd0430281e1a9210c2d9751",
+      "upstream/interface.py": "1b4ea1e275f1fa998c8cc3e2a529da132dfd65891c0a2403cf367cf7b6f80be8",
+      "upstream/openai_server.py": "60ff86b178b1142f151ec59cf14f17121238c625ca7e4cfd3e1decfb2f99285f",
+      "upstream/profiler.py": "58e3e5f2e06e1980438ff96182216ffc0ea433f52163159bc7c3d272387959b4",
+      "upstream/py_executor.py": "4d3929d295a2bc65380cf3c4a463b3eb1a0e14d80c3acb95b0b78485f36ef1fe",
+      "upstream/serve.py": "2ad5bdd864fea525aa42b3d2310ab4f781100f037af31413188dd251da568dec"
+    },
+    "limits": [
+      "Historical model revision was not pinned by the original recipe. This run pins the revision used to resolve the replay config.",
+      "Original image digest is unavailable; current resolved rc14 tag digest is pinned.",
+      "CPU allocation, GPU node and serving dependencies are recorded but do not recreate the historical host.",
+      "Diagnostic graph copies and profiling are not used as the uninstrumented E2E truth."
+    ],
+    "routing_retry_job": 1995012,
+    "runtime_source_verified": {
+      "image-cuda_graph_runner.py": "de98a824218958725db8705af01b4e55d9425c86e38b8fb34f9652cc309d4cda",
+      "image-fused_moe_trtllm_gen.py": "4c83eb8113f1c007d761718df8acaa05e4d6de22bbd0430281e1a9210c2d9751"
+    }
+  },
+  "comparison": {
+    "completed": 2560,
+    "measured_ttft_ms": 189.62700960501024,
+    "measured_tpot_ms": 16.549248157714064,
+    "historical_ttft_ms": 183.61345084202867,
+    "historical_tpot_ms": 16.792121521213446,
+    "observed_vs_historical_tpot_pct": -1.4463530602286334,
+    "pure_decode_batch256_steps": 9233,
+    "previous_device_aligned_steps": 8246,
+    "pure_decode_device_median_ms": 14.058015823364258,
+    "pure_decode_host_median_ms": 13.551712036132812,
+    "quant_arms": [
+      {
+        "quant": "w4a16_mxfp4",
+        "ttft_ms": 487.35847630390583,
+        "tpot_ms": 65.16758265270599,
+        "ttft_ape_pct": 157.00899746247384,
+        "tpot_ape_pct": 293.7797175536918,
+        "lengths_match_client": true
+      },
+      {
+        "quant": "w4a8_mxfp4_mxfp8",
+        "ttft_ms": 120.92177186796793,
+        "tpot_ms": 17.17212172635788,
+        "ttft_ape_pct": 36.23177831056563,
+        "tpot_ape_pct": 3.76375749948179,
+        "lengths_match_client": true
+      }
+    ]
+  },
+  "trace": {
+    "graph_replays": 11,
+    "kernel_count": 5522,
+    "moe_layer_instances": 396,
+    "kernels_by_group": {
+      "other": {
+        "count": 352,
+        "summed_duration_per_step_ms": 0.28767754545454544
+      },
+      "norm": {
+        "count": 803,
+        "summed_duration_per_step_ms": 0.4094055454545455
+      },
+      "dense_gemm": {
+        "count": 1595,
+        "summed_duration_per_step_ms": 1.294778090909091
+      },
+      "attention": {
+        "count": 792,
+        "summed_duration_per_step_ms": 1.7492004545454547
+      },
+      "moe": {
+        "count": 1980,
+        "summed_duration_per_step_ms": 10.013167909090908
+      }
+    },
+    "moe_per_layer_ms": 0.278143553030303,
+    "kernel_names": [
+      "bmm_Bfloat16_MxE2m1MxE4m3_Fp32_bA32_bB32_t128x16x256_s6_et128x16_m256x16x32_c2x1x1_16dp256b_rM_TN_transOut_schPd2x1x2x3_biasM_bN_rgTma_clmp_dynB_sm100f",
+      "bmm_MxE4m3_MxE2m1MxE4m3_Fp32_bA32_bB32_bC32_t128x16x256_s6_et128x16_m256x16x32_c2x1x1_16dp256b_rM_TN_transOut_schPd2x1x2x3_biasM_bN_tma_ldgstsSf_rgTma_clmp_swiGlu_dynB_sm100f",
+      "void moe::dev::finalize::finalizeKernelVecLoad<moe::dev::finalize::KernelParams<cutlass::bfloat16_t, cutlass::bfloat16_t, true> >(moe::dev::finalize::KernelParams<cutlass::bfloat16_t, cutlass::bfloat16_t, true>)",
+      "void moe::dev::routing::routingCustom::routingIndicesClusterKernel<moe::dev::routing::routingCustom::KernelParams<__nv_bfloat16, __nv_bfloat16, 128, 4, moe::dev::routing::TopKExpertSelect<moe::dev::routing::NoOpPreprocess, moe::dev::routing::SoftmaxPostprocess> > >(moe::dev::routing::routingCustom::KernelParams<__nv_bfloat16, __nv_bfloat16, 128, 4, moe::dev::routing::TopKExpertSelect<moe::dev::routing::NoOpPreprocess, moe::dev::routing::SoftmaxPostprocess> >)",
+      "void tensorrt_llm::_v1::kernels::quantize_with_block_size<(tensorrt_llm::_v1::BlockScaleQuantizationType)2, __nv_bfloat16, 32, true>(int, int, int, int, __nv_bfloat16 const*, float const*, unsigned int*, unsigned int*, tensorrt_llm::_v1::QuantizationSFLayout)"
+    ],
+    "streams": {
+      "13": 5357,
+      "7": 165
+    },
+    "limitation": "Summed GPU kernel durations; not a full critical-path or profiler-free E2E measurement."
+  },
+  "routing": {
+    "job": 1995012,
+    "sampled_steps": 3,
+    "layers_per_step": 36,
+    "layer_observations": 108,
+    "tokens_per_layer": 256,
+    "experts": 128,
+    "topk": 4,
+    "max_tokens_per_expert": {
+      "min": 45,
+      "median": 84.5,
+      "max": 198
+    },
+    "active_experts": {
+      "min": 77,
+      "median": 105.0,
+      "max": 116
+    },
+    "model": {
+      "quant_algo": "W4A8_MXFP4_MXFP8",
+      "moe_class": "<class 'tensorrt_llm._torch.modules.fused_moe.configurable_moe.ConfigurableMoE'>",
+      "pid": 1236947
+    },
+    "layers": [
+      {
+        "step": 100,
+        "layer": 0,
+        "active_experts": 116,
+        "max_tokens_per_expert": 46
+      },
+      {
+        "step": 100,
+        "layer": 1,
+        "active_experts": 109,
+        "max_tokens_per_expert": 49
+      },
+      {
+        "step": 100,
+        "layer": 2,
+        "active_experts": 111,
+        "max_tokens_per_expert": 84
+      },
+      {
+        "step": 100,
+        "layer": 3,
+        "active_experts": 105,
+        "max_tokens_per_expert": 89
+      },
+      {
+        "step": 100,
+        "layer": 4,
+        "active_experts": 104,
+        "max_tokens_per_expert": 100
+      },
+      {
+        "step": 100,
+        "layer": 5,
+        "active_experts": 107,
+        "max_tokens_per_expert": 86
+      },
+      {
+        "step": 100,
+        "layer": 6,
+        "active_experts": 105,
+        "max_tokens_per_expert": 102
+      },
+      {
+        "step": 100,
+        "layer": 7,
+        "active_experts": 103,
+        "max_tokens_per_expert": 83
+      },
+      {
+        "step": 100,
+        "layer": 8,
+        "active_experts": 109,
+        "max_tokens_per_expert": 83
+      },
+      {
+        "step": 100,
+        "layer": 9,
+        "active_experts": 100,
+        "max_tokens_per_expert": 73
+      },
+      {
+        "step": 100,
+        "layer": 10,
+        "active_experts": 96,
+        "max_tokens_per_expert": 144
+      },
+      {
+        "step": 100,
+        "layer": 11,
+        "active_experts": 88,
+        "max_tokens_per_expert": 198
+      },
+      {
+        "step": 100,
+        "layer": 12,
+        "active_experts": 95,
+        "max_tokens_per_expert": 156
+      },
+      {
+        "step": 100,
+        "layer": 13,
+        "active_experts": 91,
+        "max_tokens_per_expert": 182
+      },
+      {
+        "step": 100,
+        "layer": 14,
+        "active_experts": 99,
+        "max_tokens_per_expert": 57
+      },
+      {
+        "step": 100,
+        "layer": 15,
+        "active_experts": 102,
+        "max_tokens_per_expert": 82
+      },
+      {
+        "step": 100,
+        "layer": 16,
+        "active_experts": 106,
+        "max_tokens_per_expert": 80
+      },
+      {
+        "step": 100,
+        "layer": 17,
+        "active_experts": 97,
+        "max_tokens_per_expert": 159
+      },
+      {
+        "step": 100,
+        "layer": 18,
+        "active_experts": 110,
+        "max_tokens_per_expert": 79
+      },
+      {
+        "step": 100,
+        "layer": 19,
+        "active_experts": 100,
+        "max_tokens_per_expert": 69
+      },
+      {
+        "step": 100,
+        "layer": 20,
+        "active_experts": 109,
+        "max_tokens_per_expert": 72
+      },
+      {
+        "step": 100,
+        "layer": 21,
+        "active_experts": 91,
+        "max_tokens_per_expert": 164
+      },
+      {
+        "step": 100,
+        "layer": 22,
+        "active_experts": 104,
+        "max_tokens_per_expert": 63
+      },
+      {
+        "step": 100,
+        "layer": 23,
+        "active_experts": 106,
+        "max_tokens_per_expert": 83
+      },
+      {
+        "step": 100,
+        "layer": 24,
+        "active_experts": 102,
+        "max_tokens_per_expert": 131
+      },
+      {
+        "step": 100,
+        "layer": 25,
+        "active_experts": 107,
+        "max_tokens_per_expert": 74
+      },
+      {
+        "step": 100,
+        "layer": 26,
+        "active_experts": 109,
+        "max_tokens_per_expert": 72
+      },
+      {
+        "step": 100,
+        "layer": 27,
+        "active_experts": 106,
+        "max_tokens_per_expert": 89
+      },
+      {
+        "step": 100,
+        "layer": 28,
+        "active_experts": 105,
+        "max_tokens_per_expert": 110
+      },
+      {
+        "step": 100,
+        "layer": 29,
+        "active_experts": 103,
+        "max_tokens_per_expert": 83
+      },
+      {
+        "step": 100,
+        "layer": 30,
+        "active_experts": 103,
+        "max_tokens_per_expert": 80
+      },
+      {
+        "step": 100,
+        "layer": 31,
+        "active_experts": 107,
+        "max_tokens_per_expert": 93
+      },
+      {
+        "step": 100,
+        "layer": 32,
+        "active_experts": 106,
+        "max_tokens_per_expert": 111
+      },
+      {
+        "step": 100,
+        "layer": 33,
+        "active_experts": 97,
+        "max_tokens_per_expert": 81
+      },
+      {
+        "step": 100,
+        "layer": 34,
+        "active_experts": 83,
+        "max_tokens_per_expert": 73
+      },
+      {
+        "step": 100,
+        "layer": 35,
+        "active_experts": 82,
+        "max_tokens_per_expert": 118
+      },
+      {
+        "step": 150,
+        "layer": 0,
+        "active_experts": 115,
+        "max_tokens_per_expert": 50
+      },
+      {
+        "step": 150,
+        "layer": 1,
+        "active_experts": 116,
+        "max_tokens_per_expert": 48
+      },
+      {
+        "step": 150,
+        "layer": 2,
+        "active_experts": 105,
+        "max_tokens_per_expert": 59
+      },
+      {
+        "step": 150,
+        "layer": 3,
+        "active_experts": 106,
+        "max_tokens_per_expert": 67
+      },
+      {
+        "step": 150,
+        "layer": 4,
+        "active_experts": 100,
+        "max_tokens_per_expert": 87
+      },
+      {
+        "step": 150,
+        "layer": 5,
+        "active_experts": 106,
+        "max_tokens_per_expert": 74
+      },
+      {
+        "step": 150,
+        "layer": 6,
+        "active_experts": 108,
+        "max_tokens_per_expert": 98
+      },
+      {
+        "step": 150,
+        "layer": 7,
+        "active_experts": 107,
+        "max_tokens_per_expert": 101
+      },
+      {
+        "step": 150,
+        "layer": 8,
+        "active_experts": 106,
+        "max_tokens_per_expert": 102
+      },
+      {
+        "step": 150,
+        "layer": 9,
+        "active_experts": 97,
+        "max_tokens_per_expert": 83
+      },
+      {
+        "step": 150,
+        "layer": 10,
+        "active_experts": 96,
+        "max_tokens_per_expert": 136
+      },
+      {
+        "step": 150,
+        "layer": 11,
+        "active_experts": 89,
+        "max_tokens_per_expert": 186
+      },
+      {
+        "step": 150,
+        "layer": 12,
+        "active_experts": 94,
+        "max_tokens_per_expert": 113
+      },
+      {
+        "step": 150,
+        "layer": 13,
+        "active_experts": 87,
+        "max_tokens_per_expert": 159
+      },
+      {
+        "step": 150,
+        "layer": 14,
+        "active_experts": 103,
+        "max_tokens_per_expert": 77
+      },
+      {
+        "step": 150,
+        "layer": 15,
+        "active_experts": 107,
+        "max_tokens_per_expert": 105
+      },
+      {
+        "step": 150,
+        "layer": 16,
+        "active_experts": 109,
+        "max_tokens_per_expert": 85
+      },
+      {
+        "step": 150,
+        "layer": 17,
+        "active_experts": 104,
+        "max_tokens_per_expert": 124
+      },
+      {
+        "step": 150,
+        "layer": 18,
+        "active_experts": 105,
+        "max_tokens_per_expert": 79
+      },
+      {
+        "step": 150,
+        "layer": 19,
+        "active_experts": 100,
+        "max_tokens_per_expert": 65
+      },
+      {
+        "step": 150,
+        "layer": 20,
+        "active_experts": 116,
+        "max_tokens_per_expert": 55
+      },
+      {
+        "step": 150,
+        "layer": 21,
+        "active_experts": 103,
+        "max_tokens_per_expert": 144
+      },
+      {
+        "step": 150,
+        "layer": 22,
+        "active_experts": 103,
+        "max_tokens_per_expert": 45
+      },
+      {
+        "step": 150,
+        "layer": 23,
+        "active_experts": 108,
+        "max_tokens_per_expert": 71
+      },
+      {
+        "step": 150,
+        "layer": 24,
+        "active_experts": 102,
+        "max_tokens_per_expert": 99
+      },
+      {
+        "step": 150,
+        "layer": 25,
+        "active_experts": 106,
+        "max_tokens_per_expert": 64
+      },
+      {
+        "step": 150,
+        "layer": 26,
+        "active_experts": 103,
+        "max_tokens_per_expert": 62
+      },
+      {
+        "step": 150,
+        "layer": 27,
+        "active_experts": 106,
+        "max_tokens_per_expert": 61
+      },
+      {
+        "step": 150,
+        "layer": 28,
+        "active_experts": 105,
+        "max_tokens_per_expert": 90
+      },
+      {
+        "step": 150,
+        "layer": 29,
+        "active_experts": 103,
+        "max_tokens_per_expert": 72
+      },
+      {
+        "step": 150,
+        "layer": 30,
+        "active_experts": 105,
+        "max_tokens_per_expert": 60
+      },
+      {
+        "step": 150,
+        "layer": 31,
+        "active_experts": 115,
+        "max_tokens_per_expert": 64
+      },
+      {
+        "step": 150,
+        "layer": 32,
+        "active_experts": 103,
+        "max_tokens_per_expert": 92
+      },
+      {
+        "step": 150,
+        "layer": 33,
+        "active_experts": 101,
+        "max_tokens_per_expert": 54
+      },
+      {
+        "step": 150,
+        "layer": 34,
+        "active_experts": 85,
+        "max_tokens_per_expert": 90
+      },
+      {
+        "step": 150,
+        "layer": 35,
+        "active_experts": 78,
+        "max_tokens_per_expert": 150
+      },
+      {
+        "step": 200,
+        "layer": 0,
+        "active_experts": 114,
+        "max_tokens_per_expert": 51
+      },
+      {
+        "step": 200,
+        "layer": 1,
+        "active_experts": 113,
+        "max_tokens_per_expert": 57
+      },
+      {
+        "step": 200,
+        "layer": 2,
+        "active_experts": 107,
+        "max_tokens_per_expert": 93
+      },
+      {
+        "step": 200,
+        "layer": 3,
+        "active_experts": 106,
+        "max_tokens_per_expert": 56
+      },
+      {
+        "step": 200,
+        "layer": 4,
+        "active_experts": 106,
+        "max_tokens_per_expert": 121
+      },
+      {
+        "step": 200,
+        "layer": 5,
+        "active_experts": 108,
+        "max_tokens_per_expert": 81
+      },
+      {
+        "step": 200,
+        "layer": 6,
+        "active_experts": 109,
+        "max_tokens_per_expert": 88
+      },
+      {
+        "step": 200,
+        "layer": 7,
+        "active_experts": 116,
+        "max_tokens_per_expert": 126
+      },
+      {
+        "step": 200,
+        "layer": 8,
+        "active_experts": 108,
+        "max_tokens_per_expert": 101
+      },
+      {
+        "step": 200,
+        "layer": 9,
+        "active_experts": 106,
+        "max_tokens_per_expert": 76
+      },
+      {
+        "step": 200,
+        "layer": 10,
+        "active_experts": 101,
+        "max_tokens_per_expert": 137
+      },
+      {
+        "step": 200,
+        "layer": 11,
+        "active_experts": 98,
+        "max_tokens_per_expert": 176
+      },
+      {
+        "step": 200,
+        "layer": 12,
+        "active_experts": 97,
+        "max_tokens_per_expert": 93
+      },
+      {
+        "step": 200,
+        "layer": 13,
+        "active_experts": 93,
+        "max_tokens_per_expert": 153
+      },
+      {
+        "step": 200,
+        "layer": 14,
+        "active_experts": 106,
+        "max_tokens_per_expert": 88
+      },
+      {
+        "step": 200,
+        "layer": 15,
+        "active_experts": 105,
+        "max_tokens_per_expert": 102
+      },
+      {
+        "step": 200,
+        "layer": 16,
+        "active_experts": 105,
+        "max_tokens_per_expert": 114
+      },
+      {
+        "step": 200,
+        "layer": 17,
+        "active_experts": 104,
+        "max_tokens_per_expert": 96
+      },
+      {
+        "step": 200,
+        "layer": 18,
+        "active_experts": 107,
+        "max_tokens_per_expert": 90
+      },
+      {
+        "step": 200,
+        "layer": 19,
+        "active_experts": 107,
+        "max_tokens_per_expert": 87
+      },
+      {
+        "step": 200,
+        "layer": 20,
+        "active_experts": 104,
+        "max_tokens_per_expert": 67
+      },
+      {
+        "step": 200,
+        "layer": 21,
+        "active_experts": 95,
+        "max_tokens_per_expert": 152
+      },
+      {
+        "step": 200,
+        "layer": 22,
+        "active_experts": 108,
+        "max_tokens_per_expert": 65
+      },
+      {
+        "step": 200,
+        "layer": 23,
+        "active_experts": 105,
+        "max_tokens_per_expert": 93
+      },
+      {
+        "step": 200,
+        "layer": 24,
+        "active_experts": 97,
+        "max_tokens_per_expert": 92
+      },
+      {
+        "step": 200,
+        "layer": 25,
+        "active_experts": 104,
+        "max_tokens_per_expert": 58
+      },
+      {
+        "step": 200,
+        "layer": 26,
+        "active_experts": 108,
+        "max_tokens_per_expert": 72
+      },
+      {
+        "step": 200,
+        "layer": 27,
+        "active_experts": 100,
+        "max_tokens_per_expert": 69
+      },
+      {
+        "step": 200,
+        "layer": 28,
+        "active_experts": 106,
+        "max_tokens_per_expert": 107
+      },
+      {
+        "step": 200,
+        "layer": 29,
+        "active_experts": 106,
+        "max_tokens_per_expert": 62
+      },
+      {
+        "step": 200,
+        "layer": 30,
+        "active_experts": 103,
+        "max_tokens_per_expert": 60
+      },
+      {
+        "step": 200,
+        "layer": 31,
+        "active_experts": 109,
+        "max_tokens_per_expert": 55
+      },
+      {
+        "step": 200,
+        "layer": 32,
+        "active_experts": 105,
+        "max_tokens_per_expert": 95
+      },
+      {
+        "step": 200,
+        "layer": 33,
+        "active_experts": 94,
+        "max_tokens_per_expert": 61
+      },
+      {
+        "step": 200,
+        "layer": 34,
+        "active_experts": 82,
+        "max_tokens_per_expert": 74
+      },
+      {
+        "step": 200,
+        "layer": 35,
+        "active_experts": 77,
+        "max_tokens_per_expert": 156
+      }
+    ],
+    "limitations": [
+      "Separate diagnostic run without the 512-request client warmup; not used for E2E accuracy.",
+      "Top-k reconstructed from observed logits with torch.topk; native ties can differ.",
+      "No causal routing-distribution ablation is claimed."
+    ]
+  },
+  "representative_decode": {
+    "batch": 256,
+    "context_length": 1024,
+    "generation_length": 512,
+    "quant": "w4a8_mxfp4_mxfp8",
+    "total_ms": 12.961707304601322,
+    "ops_ms": {
+      "generation_attention": 1.9882100820599273,
+      "generation_embedding": 0.0032393766233766233,
+      "generation_add_norm_1": 0.14247023376623377,
+      "generation_qkv_gemm": 0.3419581866613497,
+      "generation_proj_gemm": 0.3183382330770096,
+      "generation_add_norm_2": 0.14247023376623377,
+      "generation_router_gemm": 0.1929009641392992,
+      "generation_moe_pre_dispatch": 0.0,
+      "generation_moe": 9.568742465972901,
+      "generation_moe_post_dispatch": 0.0,
+      "generation_logits_gemm": 0.26337752853499063,
+      "generation_embedding_ar": 0.0,
+      "generation_p2p": 0.0
+    },
+    "raw_ops": [
+      [
+        "generation_attention",
+        1.9882100820599273,
+        0.0,
+        "silicon",
+        null
+      ],
+      [
+        "generation_embedding",
+        0.0032393766233766233,
+        0.0,
+        "empirical",
+        null
+      ],
+      [
+        "generation_add_norm_1",
+        0.14247023376623377,
+        0.0,
+        "empirical",
+        null
+      ],
+      [
+        "generation_qkv_gemm",
+        0.3419581866613497,
+        0.0,
+        "silicon",
+        null
+      ],
+      [
+        "generation_proj_gemm",
+        0.3183382330770096,
+        0.0,
+        "silicon",
+        null
+      ],
+      [
+        "generation_add_norm_2",
+        0.14247023376623377,
+        0.0,
+        "empirical",
+        null
+      ],
+      [
+        "generation_router_gemm",
+        0.1929009641392992,
+        0.0,
+        "silicon",
+        null
+      ],
+      [
+        "generation_moe_pre_dispatch",
+        0.0,
+        0.0,
+        "silicon",
+        null
+      ],
+      [
+        "generation_moe",
+        9.568742465972901,
+        9454.030786500407,
+        "silicon",
+        null
+      ],
+      [
+        "generation_moe_post_dispatch",
+        0.0,
+        0.0,
+        "silicon",
+        null
+      ],
+      [
+        "generation_logits_gemm",
+        0.26337752853499063,
+        0.0,
+        "silicon",
+        null
+      ],
+      [
+        "generation_embedding_ar",
+        0.0,
+        0.0,
+        "empirical",
+        null
+      ],
+      [
+        "generation_p2p",
+        0.0,
+        0.0,
+        "silicon",
+        null
+      ]
+    ],
+    "limitation": "Representative length query, not reconstruction of every profiled request KV length."
+  },
+  "model_manifest": {
+    "revision": "b5c939de8f754692c1647ca79fbf85e8c1e70f8a",
+    "shards": {
+      "model-00000-of-00014.safetensors": 4625017896,
+      "model-00001-of-00014.safetensors": 4115586736,
+      "model-00002-of-00014.safetensors": 4625017888,
+      "model-00003-of-00014.safetensors": 4115586752,
+      "model-00004-of-00014.safetensors": 4625017896,
+      "model-00005-of-00014.safetensors": 4115586696,
+      "model-00006-of-00014.safetensors": 4625017856,
+      "model-00007-of-00014.safetensors": 4060267176,
+      "model-00008-of-00014.safetensors": 4625017896,
+      "model-00009-of-00014.safetensors": 4170906304,
+      "model-00010-of-00014.safetensors": 4625017896,
+      "model-00011-of-00014.safetensors": 4115586752,
+      "model-00012-of-00014.safetensors": 4064660808,
+      "model-00013-of-00014.safetensors": 4625017896,
+      "model-00014-of-00014.safetensors": 4115586736
+    },
+    "metadata_sha256": {
+      "config.json": "933aeb666a3fd851133ddd7686414f369bc564c4185fb5704416550879f10566",
+      "model.safetensors.index.json": "ede2655fdc05008561983b6e0829c600727c28d591e071077377059f03a6c00e",
+      "tokenizer.json": "0614fe83cadab421296e664e1f48f4261fa8fef6e03e63bb75c20f38e37d07d3",
+      "tokenizer_config.json": "9279e942392b742d633c7adbb89ebe002c98399db8926a7af5125c726f404070"
+    }
+  },
+  "job_accounting": "JobID|JobName|NodeList|State|Elapsed|ExitCode\n1994868|trt-serving-model|nsc-svg-slurm-1-cpu-28|COMPLETED|00:03:14|0:0\n1994868.batch|batch|nsc-svg-slurm-1-cpu-28|COMPLETED|00:03:14|0:0\n1994868.extern|extern|nsc-svg-slurm-1-cpu-28|COMPLETED|00:03:14|0:0\n1994868.0|siowrapper|nsc-svg-slurm-1-cpu-28|COMPLETED|00:03:10|0:0\n1994872|trt-serving-baseline|nsc-svg-slurm-1-gpu-78|COMPLETED|00:06:30|0:0\n1994872.batch|batch|nsc-svg-slurm-1-gpu-78|COMPLETED|00:06:30|0:0\n1994872.extern|extern|nsc-svg-slurm-1-gpu-78|COMPLETED|00:06:31|0:0\n1994872.0|siowrapper|nsc-svg-slurm-1-gpu-78|COMPLETED|00:05:58|0:0\n1994898|trt-serving-diagnostic|nsc-svg-slurm-1-gpu-78|COMPLETED|00:05:59|0:0\n1994898.batch|batch|nsc-svg-slurm-1-gpu-78|COMPLETED|00:05:59|0:0\n1994898.extern|extern|nsc-svg-slurm-1-gpu-78|COMPLETED|00:05:59|0:0\n1994898.0|siowrapper|nsc-svg-slurm-1-gpu-78|COMPLETED|00:05:56|0:0\n1995012|trt-serving-routing|nsc-svg-slurm-1-gpu-162|COMPLETED|00:06:16|0:0\n1995012.batch|batch|nsc-svg-slurm-1-gpu-162|COMPLETED|00:06:16|0:0\n1995012.extern|extern|nsc-svg-slurm-1-gpu-162|COMPLETED|00:06:16|0:0\n1995012.0|siowrapper|nsc-svg-slurm-1-gpu-162|COMPLETED|00:06:13|0:0\n",
+  "artifacts_sha256": {
+    "baseline/client.log": "31c26290458da6ba6ec4e5b4e780811d9855735886a83b7cba5fda48812b4a6b",
+    "baseline/gpu-before.txt": "e5fb037fa3fe98bba25ce41dea4ed15de8001602b8965e85d09c1a3c1288a52c",
+    "baseline/result.json": "153f2744e915400203c29007840644cf6a9fabd91a0434347df3ec6e48a9597e",
+    "baseline/runtime.json": "870e0ebe2f083bf2fc1656672411f422199a92456e80460480532e825c24cc42",
+    "baseline/server.log": "182229cfce830ce9dc5040073cf6bfb572519818bdec92084b5fbe27bec7985d",
+    "baseline/telemetry.csv": "e57cb11f70daa8320da6118a4e8ed41d40acc948bce458cd1ed54a9534f9a53a",
+    "baseline-inner.sh": "4eca7d0152a133183485ab0e15edaed358b33ae180df7b7c8ffcbda8dbc07bad",
+    "benchmark_lib.sh": "9b8a17a79925b730149a99fd0dfa01d2ac81c313fec4665cecb04356fe740999",
+    "client-lengths-replay.json": "64ae4fe13e850d3a031a61deb2258796ead09d3514fa6f2bfec2dff8d01bd85f",
+    "client-lengths.jsonl": "5eba733ff20b8039910d10b248d46676506814658fa59f9c8d8395e603ae4bd7",
+    "client-w4a16_mxfp4.report.json.gz": "0b21be3052908406a9c855af1065d0de611ad5af71de2dc567feb199832459ce",
+    "client-w4a8_mxfp4_mxfp8.report.json.gz": "c34c8076a85d7bb87f2048ec7fc8520c12d228088f5d2578296640010237b7c0",
+    "comparison.json": "5bf7bc492c1b831b2c126736f84fe631c7d6a32344b6f5e308374f9140f1eff8",
+    "diagnostic/client.log": "3de3c9248a0530da9c022ae152d9dad0462a806e34bd14990c88eebc9974d379",
+    "diagnostic/gpu-before.txt": "247d5149c53245c9430b74073e82737713779907b2b82b3af9a86489f7350824",
+    "diagnostic/result.json": "b5ef8da52ab6987e25d6613e4f8004053d92bf3bc0cf44a33ca0d5d00fbdffbb",
+    "diagnostic/routing/hooks-loaded-3795361.json": "ac457acb83088743ec88696207f7201016790a8adbdf44293554e06c6103d037",
+    "diagnostic/routing/hooks-loaded-3795575.json": "3d841e0af540b58a95112059cae199b359a3e39e6aab7c624b615920aafe0cd4",
+    "diagnostic/runtime.json": "870e0ebe2f083bf2fc1656672411f422199a92456e80460480532e825c24cc42",
+    "diagnostic/server.log": "ce85439c24ff8717f30bcad536adcb215c355e47e2b1e9d880503abc330fd269",
+    "diagnostic/telemetry.csv": "a5115af9912281264ffa70fb1165485979c9b173ec49d0bc176eec3ba47d803b",
+    "diagnostic/trace-rank-0.json": "1982fe62cf41ed26ffe8c55aa1b4d2f83af0f63238532c521a9aa6af8e350c88",
+    "diagnostic-inner.sh": "3a357b1e6283d185a33f8615717731077c0c64eb214cf3d3f8f25ac7f3e94a28",
+    "hooks/sitecustomize.py": "33bbd70ab55ca5c26c47addff9d9e7f67b96399b11f73c949a3cc9b1565e9722",
+    "hooks-v2/sitecustomize.py": "bd51deb5bf93f573a9f65113864985126b07576d926594e2f0db7c78f5566606",
+    "inferencex/utils/bench_serving/backend_request_func.py": "4ebf482eb32685e59ed69bd39c51e9f1fd2134f5e9b8fe7ad10550d40ecca16c",
+    "inferencex/utils/bench_serving/benchmark_serving.py": "67077f1e7abef278faa367237e33143135032c65c27032100cf26e82de37d086",
+    "inferencex/utils/bench_serving/benchmark_utils.py": "b99a18940871b701e9e65c2cc098da1c5d33fc3f9d3890f8d2cddc539a9e3d51",
+    "inferencex/utils/bench_serving/encoding_dsv4.py": "bdbd57c132a1b3725042323d02b98b9d1df28e5f388f134399555d041f5055e0",
+    "job-status.txt": "b6c196c1592a00d469ae67bd84ae6556751145102cc84c06e498fa7ce2d3d3d5",
+    "manifest.json": "4f903fa8e54e4b5d734ebc72dafe94cb7be8c0257f0b36ebfbaefb0862990f10",
+    "model-manifest.json": "823cffec3f83f3bc22e766ba335376a33a8dd466897ee070e57508a99ecfbf51",
+    "model-metadata.json": "cc6570312b639a5b13b6997c6a333deb696a628e7e8326c3f818a969d985e1d3",
+    "prepare-model.sh": "f43f7d0bf16ad6f4e4a637227bdd8f7bbc0ca2a68387520009197b579d9c0fe9",
+    "replay-client-lengths.log": "32ad3b4ed26bbaf0379b4806df752fba4cd62d28212ed75ab2598d0108edf2d8",
+    "replay-client-lengths.py": "bb682b61d25202cd7f4683e6efe1344ce37f3cb128b556d99897c7372078c671",
+    "replay-quantization.log": "62f2f5b9d0960157c4466523769da2094954c11e6011770e3e1277e019a39993",
+    "replay-quantization.py": "c5e5ad82cbf46dca0a18921fe987a401ffba2fada1c9af4ae523f814df603ef1",
+    "routing-inner.sh": "05ce9a843a0b711d8631c0c062085a30832cfcf4ee52212aeef3c4f89b0b182f",
+    "routing-snapshots/model-1236947.json": "1453edd57dc0ac5346271f3cd1085790138fe067bc349088fdc5361f67717058",
+    "routing-snapshots/routing-1236947-100.json": "ac9f179a34f02c46d1c37731adea8f42bb53746004f4ecc87718142ef7ecb277",
+    "routing-snapshots/routing-1236947-100.pt": "2fd73e3559e54a4898ce165420c53f973678f4b77b981233e31ce85908758369",
+    "routing-snapshots/routing-1236947-150.json": "2f69ecc74fa932efba1bc120423f7db66e317c4e4e85c3f24a01c4c526317154",
+    "routing-snapshots/routing-1236947-150.pt": "eb9572487558a278dea9eb1bd8dad70ef3a6133cc40904f574d9f266a09fcdc4",
+    "routing-snapshots/routing-1236947-200.json": "9c36ed2b06bfe28a8aa1c28704b7bfe0ca3ee81750263fd286cfcaebf5e29316",
+    "routing-snapshots/routing-1236947-200.pt": "f5791c47cc76105d89a4a33780a260026c3fab8beba12f963de0ebaf388d17c7",
+    "routing-snapshots/state-1234272.json": "95fb663df229ea4fc9e81a735125b72850a9e9b4bfb39fe81d80792e8a23d5db",
+    "routing-snapshots/state-1236947.json": "20253369a776e1260fa49838b4b8a1a1fba929a4d8e185f5be22c27560fca103",
+    "routing-summary.json": "838756949109b5b1b9a194be4dd6c9cfea38311f4572d7369d5ca53e27e2beea",
+    "run-baseline.sh": "49a8186c879b89d41b87aa5dac32fed64ac8a16832eb464e92141da3e02704ef",
+    "run-diagnostic.sh": "a9ccb10f5c347a6d127dbe46873a6e5f72301bcf4c4dbecb1b5bfeb309174470",
+    "run-routing.sh": "1afec2cd34b920dc45b86e947e22e0436e3cfddd6198b5043f95a9ea3a8e2367",
+    "target.json": "255c9aa06ab68f548849ff3a24379620e564b224f666702ac2680049c4fd6d86",
+    "trace-rank-0.json": "1982fe62cf41ed26ffe8c55aa1b4d2f83af0f63238532c521a9aa6af8e350c88",
+    "trace-summary.json": "a7c08c68ec6874151b71e05e7890708471a99f5639a915ee1a06230c83f4e95a",
+    "upstream/cuda_graph_runner.py": "de98a824218958725db8705af01b4e55d9425c86e38b8fb34f9652cc309d4cda",
+    "upstream/fused_moe_trtllm_gen.py": "4c83eb8113f1c007d761718df8acaa05e4d6de22bbd0430281e1a9210c2d9751",
+    "upstream/image-cuda_graph_runner.py": "de98a824218958725db8705af01b4e55d9425c86e38b8fb34f9652cc309d4cda",
+    "upstream/image-fused_moe_trtllm_gen.py": "4c83eb8113f1c007d761718df8acaa05e4d6de22bbd0430281e1a9210c2d9751",
+    "upstream/interface.py": "1b4ea1e275f1fa998c8cc3e2a529da132dfd65891c0a2403cf367cf7b6f80be8",
+    "upstream/openai_server.py": "60ff86b178b1142f151ec59cf14f17121238c625ca7e4cfd3e1decfb2f99285f",
+    "upstream/profiler.py": "58e3e5f2e06e1980438ff96182216ffc0ea433f52163159bc7c3d272387959b4",
+    "upstream/py_executor.py": "4d3929d295a2bc65380cf3c4a463b3eb1a0e14d80c3acb95b0b78485f36ef1fe",
+    "upstream/serve.py": "2ad5bdd864fea525aa42b3d2310ab4f781100f037af31413188dd251da568dec",
+    "w4a8-decode-breakdown.json": "5eb972a5d19138b3fed6e114189475d33240c68a27dcc02ac4464b0a656fa84f",
+    "w4a8-replay.json": "04eed6913cc7d452f5745f543ad9ca1a79ded9a595f6e0587d2ef51c526cfda2",
+    "w4a8.report.json.gz": "891f58841d656dc4ae27278d6f9b8c4160367f7a17fb6f2969e39c6cc40350f5",
+    "w4a8.spec.json": "86e35e11a163a9c71e1847c4b3b79fd5278294fb8c5d98630777808f8cd6a99f"
+  }
+}

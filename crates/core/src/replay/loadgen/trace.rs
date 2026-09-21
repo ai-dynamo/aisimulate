@@ -799,6 +799,13 @@ impl Trace {
                 spec.shared_prefix_ratio
             );
         }
+        if spec.cached_prefix_tokens % spec.block_size != 0 {
+            bail!(
+                "cached_prefix_tokens {} must align to synthetic trace block_size {}",
+                spec.cached_prefix_tokens,
+                spec.block_size
+            );
+        }
 
         let mut rng = StdRng::seed_from_u64(spec.seed);
         let mut sessions = Vec::with_capacity(spec.num_sessions);
@@ -818,13 +825,24 @@ impl Trace {
             for turn_idx in 0..spec.turns_per_session {
                 let input_length = sample_length(&spec.input_tokens, 1, &mut rng);
                 let max_output_tokens = sample_length(&spec.output_tokens, 1, &mut rng);
+                if spec.cached_prefix_tokens > input_length {
+                    bail!(
+                        "cached_prefix_tokens {} exceeds sampled synthetic input length {}",
+                        spec.cached_prefix_tokens,
+                        input_length
+                    );
+                }
                 let num_blocks = input_length.div_ceil(spec.block_size);
-                let prefix_blocks =
+                let grouped_prefix_blocks =
                     ((num_blocks as f64) * spec.shared_prefix_ratio).round() as usize;
-                let prefix_blocks = prefix_blocks.min(num_blocks);
+                let grouped_prefix_blocks = grouped_prefix_blocks.min(num_blocks);
+                let cached_prefix_blocks = spec.cached_prefix_tokens / spec.block_size;
                 let mut hash_ids = Vec::with_capacity(num_blocks);
 
-                for block_idx in 0..prefix_blocks {
+                for block_idx in 0..cached_prefix_blocks {
+                    hash_ids.push(0xCA_C0_0000_0000_0000 | block_idx as u64);
+                }
+                for block_idx in cached_prefix_blocks..grouped_prefix_blocks {
                     if let Some(group_id) = group_id {
                         hash_ids.push(0xD00D_0000_0000_0000 | (group_id << 32) | block_idx as u64);
                     }

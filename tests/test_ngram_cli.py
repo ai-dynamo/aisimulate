@@ -342,3 +342,10 @@ def test_online_prediction_rejects_ngram():
     config = CorePredictionConfig.model_validate(_prediction())
     with pytest.raises(ValueError, match="offline engine stack"):
         prediction_to_replay_spec(config, execution_mode="online")
+
+
+def test_ngram_rejects_mtp_combination_before_compilation():
+    raw = _prediction(timing="default")
+    raw["engine"].update(nextn=2, nextn_accepted=1)
+    with pytest.raises(ValidationError, match="speculation cannot be combined with nextn"):
+        CorePredictionConfig.model_validate(raw)

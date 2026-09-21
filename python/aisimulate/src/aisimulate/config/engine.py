@@ -7,9 +7,16 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, StrictBool, field_validator, model_validator
 
-from .common import Choices, IntegerRange, NumericRange, StrictModel
+from .common import (
+    ENGINE_MODEL_CONTROL_FIELDS,
+    Choices,
+    IntegerRange,
+    NumericRange,
+    StrictModel,
+    is_active_engine_model_control,
+)
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
@@ -254,6 +261,42 @@ class KvTransferConfig(StrictModel):
 
 
 class EstimatorPolicyConfig(StrictModel):
+    nextn: NonNegativeInt = Field(default=0, le=5)
+    nextn_accepted: NonNegativeFloat | None = None
+    enable_chunked_prefill: bool | None = Field(default=None, strict=True)
+    enable_eplb: bool = Field(default=False, strict=True)
+    wideep_num_slots: PositiveInt | None = None
+    moe_backend: str | None = None
+    attention_backend: str | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_engine_controls(self):
+        if self.nextn and self.nextn_accepted is None:
+            raise ValueError("nextn requires explicit nextn_accepted")
+        if self.nextn_accepted is not None and (not self.nextn or self.nextn_accepted > self.nextn):
+            raise ValueError("nextn_accepted requires nextn > 0 and must be within [0, nextn]")
+        active = self.nextn or any(
+            is_active_engine_model_control(name, getattr(self, name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        )
+        mode = getattr(self, "mode", "aggregated")
+        modes = mode.choices if hasattr(mode, "choices") else [mode]
+        if "afd" in modes and self.enable_chunked_prefill is not None:
+            raise ValueError("enable_chunked_prefill is unsupported for AFD")
+        workers = getattr(self, "workers", None)
+        roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
+        if active and (
+            "afd" in modes
+            or getattr(workers, "encoder", None) is not None
+            or any(worker is not None and worker.timing.type != "default" for worker in roles)
+        ):
+            raise ValueError("engine model controls require default timing in every regular language role")
+        return self
+
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
     systems_paths: list[str] | None = None
@@ -335,6 +378,9 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
     hardware: str
     backend: Backend = "vllm"
     backend_version: str | None = None
+    decoder_replay: StrictBool = False
+    enable_shared_layer: StrictBool | None = None
+    strict_provenance: StrictBool | None = None
     context_length: PositiveInt | Literal["max"] = "max"
     speculation: NgramSpeculationConfig | None = None
     workers: WorkersPredictionConfig = Field(default_factory=WorkersPredictionConfig)
@@ -357,6 +403,14 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
 
     @model_validator(mode="after")
     def _validate_roles(self) -> EnginePredictionConfig:
+        if self.decoder_replay:
+            # Keep the pre-supervision configuration path lightweight. Import
+            # the canonical model identity only when this runtime feature is
+            # requested, rather than importing aisimulate_core for every CLI.
+            from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
+
+            if self.model != DEEPSEEK_V41_MODEL_PATH or self.backend != "sglang":
+                raise ValueError(f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'")
         _validate_worker_hardware(modes={self.mode}, workers=self.workers)
         if self.mode == "afd":
             _validate_prediction_afd(self)
@@ -542,6 +596,10 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
                 has_transfer=self.kv_transfer is not None,
             )
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
+        if isinstance(self.backend_version, dict):
+            unknown = sorted(set(self.backend_version) - backends)
+            if unknown:
+                raise ValueError(f"backend_version contains unconfigured backend(s): {unknown}")
         _validate_recommendation_host_offload(self)
         _validate_speculation(self, modes=modes, backends=backends)
         _validate_backend_block_sizes(backends=backends, modes=modes, workers=self.workers)
@@ -551,6 +609,8 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
 def _validate_speculation(engine, *, modes: set[str], backends: set[str]) -> None:
     if engine.speculation is None:
         return
+    if engine.nextn:
+        raise ValueError("speculation cannot be combined with nextn")
     if backends != {"vllm"} or "afd" in modes or engine.workers.encoder is not None:
         raise ValueError("ngram speculation requires vllm aggregated/disaggregated language workers")
     for role in ("aggregated", "prefill", "decode"):

@@ -415,6 +415,7 @@ pub struct SyntheticTraceSpec {
     pub turns_per_session: usize,
     pub input_tokens: LengthSpec,
     pub output_tokens: LengthSpec,
+    pub cached_prefix_tokens: usize,
     pub shared_prefix_ratio: f64,
     pub num_prefix_groups: usize,
     pub first_turn_arrivals: ArrivalSpec,

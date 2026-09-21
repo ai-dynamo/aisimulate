@@ -29,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serial
 
 from aisimulate.config.traffic import AgenticSnapshotOptions
 
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from ..config.engine import NgramSpeculationConfig
 
 
@@ -48,18 +49,20 @@ class OptimizationTarget(str, Enum):
     E2E_LATENCY = "e2e_latency"  # minimize mean end-to-end latency
     GOODPUT = "goodput"  # maximize SLA-satisfying throughput
     GOODPUT_PER_GPU = "goodput_per_gpu"  # maximize goodput / avg GPU (tok/s/gpu)
+    # Standalone AISimulate only; Dynamo integration does not support this target.
+    MIN_GPUS = "min_gpus"  # minimize provisioned GPUs subject to workload/SLA constraints
     PARETO = "pareto"  # multi-objective: Pareto front over pareto_objectives
 
     @property
     def maximize(self) -> bool:
-        """True when larger is better (everything except e2e_latency).
+        """True for maximized scalar targets.
 
         Raises for ``pareto`` — it has no single direction; use the per-objective
         directions in :attr:`OptimizationGoal.pareto_objectives` instead.
         """
         if self is OptimizationTarget.PARETO:
             raise ValueError("'pareto' is multi-objective and has no scalar direction")
-        return self not in {OptimizationTarget.TTFT, OptimizationTarget.E2E_LATENCY}
+        return self not in {OptimizationTarget.TTFT, OptimizationTarget.E2E_LATENCY, OptimizationTarget.MIN_GPUS}
 
 
 class SLATarget(BaseModel):
@@ -89,8 +92,8 @@ class SLATarget(BaseModel):
         return any(value is not None for value in (self.ttft_ms, self.itl_ms, self.e2e_ms))
 
 
-# Goodput-based scalar targets — the only ones that need an SLA (their metric counts
-# only SLA-satisfying requests). Used to gate the SLA requirement on both the scalar
+# Goodput-based scalar targets count only SLA-satisfying requests.
+# Used to gate their SLA requirement on both the scalar
 # target and the per-objective list under a pareto goal.
 _SLA_TARGETS = frozenset({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})
 
@@ -108,7 +111,8 @@ class OptimizationGoal(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     target: OptimizationTarget = OptimizationTarget.THROUGHPUT
-    sla: SLATarget | None = None  # required for goodput / goodput_per_gpu (scalar or pareto objective)
+    # Required for min_gpus and for goodput / goodput_per_gpu (scalar or Pareto objective).
+    sla: SLATarget | None = None
     # Only meaningful when target == pareto: the >=2 scalar objectives whose Pareto
     # front is sought. None -> the default pair (throughput_per_gpu, throughput_per_user).
     pareto_objectives: list[OptimizationTarget] | None = None
@@ -116,6 +120,11 @@ class OptimizationGoal(BaseModel):
     # enabled, configured SLA bounds also gate aggregate mean metrics before
     # scalar ranking or Pareto dominance (legacy ``--strict-sla`` parity).
     strict_sla: bool = Field(default=False, strict=True)
+    min_goodput_rps: float | None = Field(default=None, strict=True, gt=0, allow_inf_nan=False)
+
+    @property
+    def requires_aggregate_sla(self) -> bool:
+        return self.strict_sla or self.target is OptimizationTarget.MIN_GPUS
 
     @property
     def resolved_pareto_objectives(self) -> list[OptimizationTarget]:
@@ -140,6 +149,8 @@ class OptimizationGoal(BaseModel):
                 raise ValueError("a pareto goal needs at least 2 objectives")
             if OptimizationTarget.PARETO in objs:
                 raise ValueError("pareto_objectives cannot contain 'pareto' itself (objectives must be scalar)")
+            if OptimizationTarget.MIN_GPUS in objs:
+                raise ValueError("min_gpus is a constrained scalar target, not a Pareto objective")
             if len(set(objs)) != len(objs):
                 raise ValueError(f"pareto_objectives must be distinct, got {[o.value for o in objs]}")
             effective = set(objs)
@@ -151,8 +162,12 @@ class OptimizationGoal(BaseModel):
         if needs_sla and not has_sla:
             culprits = sorted(t.value for t in (effective & _SLA_TARGETS))
             raise ValueError(f"{culprits} require at least one SLA bound")
-        if self.strict_sla and (self.sla is None or not self.sla.has_bound):
+        if self.strict_sla and not has_sla:
             raise ValueError("strict_sla requires at least one SLA bound")
+        if self.target is OptimizationTarget.MIN_GPUS and not has_sla:
+            raise ValueError("min_gpus requires at least one SLA bound")
+        if self.min_goodput_rps is not None and self.target is not OptimizationTarget.MIN_GPUS:
+            raise ValueError("min_goodput_rps is only supported with min_gpus")
         return self
 
 
@@ -235,6 +250,7 @@ class Workload(BaseModel):
     num_request_ratio: float | None = None  # request count multiplier for concrete concurrency or request_rate
     random_range_ratio: float = 1.0
     random_seed: int = 0
+    cached_prefix_tokens: int = 0  # exact shared prefix length; the first request is cold
     shared_prefix_ratio: float = 0.0  # cache-locality / prefix sharing
     num_prefix_groups: int = 0
     turns_per_session: int = 1  # multi-turn sessions
@@ -302,6 +318,13 @@ class Workload(BaseModel):
     def _validate_random_seed_type(cls, value: Any) -> Any:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError(f"random_seed must be an unsigned 64-bit integer, got {value!r}")
+        return value
+
+    @field_validator("cached_prefix_tokens", mode="before")
+    @classmethod
+    def _validate_cached_prefix_tokens_type(cls, value: Any) -> Any:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"cached_prefix_tokens must be a non-negative integer, got {value!r}")
         return value
 
     @property
@@ -393,6 +416,8 @@ class Workload(BaseModel):
                 set_syn.append("random_range_ratio")
             if self.random_seed != 0:
                 set_syn.append("random_seed")
+            if self.cached_prefix_tokens != 0:
+                set_syn.append("cached_prefix_tokens")
             if set_syn:
                 raise ValueError(f"trace workload (trace_path set) must not set synthetic fields {set_syn}")
             if self.replay_concurrency is not None and self.replay_concurrency <= 0:
@@ -444,6 +469,12 @@ class Workload(BaseModel):
                 raise ValueError(
                     f"random_range_ratio={self.random_range_ratio} gives a zero-token lower bound for {name}={length}"
                 )
+        minimum_isl = int((self.isl or 0) * self.random_range_ratio)
+        if not 0 <= self.cached_prefix_tokens <= minimum_isl:
+            raise ValueError(
+                "cached_prefix_tokens must be within the shortest synthetic input "
+                f"length [0, {minimum_isl}], got {self.cached_prefix_tokens}"
+            )
         if isinstance(self.random_seed, bool) or self.random_seed < 0 or self.random_seed > 0xFFFF_FFFF_FFFF_FFFF:
             raise ValueError(f"random_seed must be an unsigned 64-bit integer, got {self.random_seed!r}")
         if self.random_range_ratio != 1.0 and self.turns_per_session != 1:
@@ -502,7 +533,18 @@ class SearchSpace(BaseModel):
     min_gpu_budget: int | None = None
     context_length: int | None = None
     startup_time: float | None = None
-    aic_nextn: int | None = None  # speculative-decode (MTP) depth, 1..5
+    aic_nextn: int | None = Field(default=None, strict=True, ge=0, le=5)
+    nextn_accepted: float | None = Field(default=None, strict=True, ge=0, allow_inf_nan=False)
+    enable_chunked_prefill: bool | None = Field(default=None, strict=True)
+    enable_eplb: bool = Field(default=False, strict=True)
+    wideep_num_slots: int | None = Field(default=None, strict=True, gt=0)
+    moe_backend: str | None = None
+    attention_backend: str | None = None
+    gemm_quant_mode: str | None = None
+    moe_quant_mode: str | None = None
+    kvcache_quant_mode: str | None = None
+    fmha_quant_mode: str | None = None
+    comm_quant_mode: str | None = None
     speculation: NgramSpeculationConfig | None = None
     encoder: EncoderSearch | None = None
 
@@ -779,6 +821,10 @@ class SearchSpace(BaseModel):
 
     @model_validator(mode="after")
     def _validate_estimator_controls(self):
+        from aisimulate_core.sdk.common import resolve_transfer_policy
+
+        from ..config.engine import TimingConfig
+
         allowed = {
             "estimation_mode",
             "fallback_policy",
@@ -812,6 +858,16 @@ class SearchSpace(BaseModel):
                     or any(not isinstance(p, str) or not p.strip() for p in paths)
                 ):
                     raise ValueError(f"{role} systems_paths must contain nonempty strings")
+            for name in ("estimation_mode", "fallback_policy", "database_mode", "estimator_config"):
+                if name in controls and controls[name] is None:
+                    raise ValueError(f"{role} {name} must not be null")
+            validated = TimingConfig.model_validate(controls)
+            normalized = validated.model_dump(include=set(controls))
+            if normalized.get("transfer_policy") is not None:
+                normalized["transfer_policy"] = sorted(
+                    kind.value for kind in resolve_transfer_policy(normalized["transfer_policy"])
+                )
+            self.role_estimator_controls[role] = normalized
         nondefault = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
@@ -855,6 +911,27 @@ class SearchSpace(BaseModel):
             if invalid:
                 raise ValueError(f"backend_version needs a non-empty version for {sorted(invalid)}")
             self.backend_version = {backend: version.strip() for backend, version in self.backend_version.items()}
+        return self
+
+    @model_validator(mode="after")
+    def _validate_engine_controls(self):
+        if self.enable_chunked_prefill is not None and any(
+            mode not in {"agg", "disagg"} for mode in self.deployment_mode
+        ):
+            raise ValueError("enable_chunked_prefill is unsupported for AFD")
+        if self.aic_nextn and self.nextn_accepted is None:
+            raise ValueError("aic_nextn requires explicit nextn_accepted")
+        if self.nextn_accepted is not None and (not self.aic_nextn or self.nextn_accepted > self.aic_nextn):
+            raise ValueError("nextn_accepted requires aic_nextn > 0 and must be within [0, aic_nextn]")
+        active = self.aic_nextn or any(
+            is_active_engine_model_control(name, getattr(self, name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        )
+        if active and (
+            self.encoder is not None
+            or any(mode not in {"agg", "disagg"} for mode in self.deployment_mode)
+            or any(getattr(self, f"{role}_timing_model") is not None for role in ("agg", "prefill", "decode"))
+        ):
+            raise ValueError("engine model controls require default timing in every regular language role")
         return self
 
     def requested_backend_version(self, backend: str) -> str | None:
@@ -1064,8 +1141,44 @@ class SmartSearchConfig(BaseModel):
     sweep: SweepConfig = Field(default_factory=SweepConfig)
 
     @model_validator(mode="after")
+    def _validate_min_gpus(self) -> SmartSearchConfig:
+        if self.goal.target is not OptimizationTarget.MIN_GPUS:
+            return self
+        workload = self.workload
+        if self.adapters:
+            raise ValueError("min_gpus requires static engine pools without adapters")
+        if (
+            workload.trace_path is not None
+            or workload.trace_paths is not None
+            or workload.source_type not in (None, "synthetic")
+            or workload.turns_per_session != 1
+            or workload.kv_load_ratio is not None
+            or workload.load_search_field is not None
+            or workload.load_choices is not None
+            or workload.load_range is not None
+        ):
+            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
+        allowed_load_types = (
+            {None, "constant_rate", "poisson"} if workload.request_rate is not None else {None, "concurrency"}
+        )
+        if workload.load_type not in allowed_load_types:
+            raise ValueError("min_gpus requires a synthetic load_type matching the fixed load field")
+        if workload.request_rate is not None:
+            if self.goal.min_goodput_rps is None:
+                raise ValueError("min_gpus with request-rate traffic requires min_goodput_rps")
+            if self.goal.min_goodput_rps > workload.request_rate:
+                raise ValueError("min_goodput_rps cannot exceed the offered request rate")
+        elif workload.concurrency is None:
+            raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
+        if self.search_space.encoder is not None and self.goal.min_goodput_rps is not None:
+            raise ValueError("analytical EPD cannot enforce min_goodput_rps")
+        return self
+
+    @model_validator(mode="after")
     def _validate_epd(self) -> SmartSearchConfig:
         encoder, workload = self.search_space.encoder, self.workload
+        if workload.cached_prefix_tokens and set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
+            raise ValueError("cached_prefix_tokens is unsupported for AFD")
         if (encoder is None) != (workload.images is None):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
         if encoder is None:
@@ -1079,7 +1192,7 @@ class SmartSearchConfig(BaseModel):
         if encoder.backend_version is not None and len(set(self.search_space.backend)) != 1:
             raise ValueError("encoder.backend_version requires a single backend")
         targets = self.goal.resolved_pareto_objectives if self.goal.is_pareto else [self.goal.target]
-        if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.strict_sla):
+        if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.requires_aggregate_sla):
             raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
         workload.require_fixed_epd()
         for role in ("agg", "prefill", "decode"):

@@ -651,7 +651,13 @@ def _run_attn_for_backend(
     log_perf(
         item_list=[
             {
-                "mla_dtype": "bfloat16",
+                # TRT-LLM quantizes context Q/K/V internally for FP8 KV on
+                # SM90/100/103/120. The BF16 Python inputs do not describe
+                # the FMHA compute precision (attentionOp.cpp:1228-1231 at
+                # c25c23f71786bad54d192893d696ce8043426eca / v1.3.0rc20).
+                "mla_dtype": (
+                    dtype_str if is_context_phase and get_sm_version() in (90, 100, 103, 120) else "bfloat16"
+                ),
                 "kv_cache_dtype": dtype_str,
                 "num_heads": num_heads,
                 "batch_size": len(context_sequence_lengths),

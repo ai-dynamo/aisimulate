@@ -85,6 +85,8 @@ def _fake_model(nextn: int = 0, spec_scheme=None, speculation=None):
     model.encoder_ops = []
     model.context_ops = [_RecordingOp("context_attention", 11.0)]
     model.generation_ops = [_RecordingOp("generation_attention", 2.0)]
+    model.get_resident_weights_bytes = lambda: sum(op.get_weights() for op in model.context_ops)
+    model.get_additional_activation_bytes = lambda num_tokens: 0.0
     model.config = _model_config(speculation=speculation)
     model.config.nextn = nextn
     if spec_scheme is None:

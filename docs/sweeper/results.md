@@ -31,6 +31,10 @@ run provenance, and counts remain available on the same result envelope.
 
 Strict aggregate SLA filtering happens before scalar ranking or Pareto dominance. Rejected candidates
 remain in the ledger with status `infeasible` and reason category `sla_constraint`.
+With `min_gpus`, measured goodput below the requested rate floor is `infeasible` with
+`load_constraint`; missing rate evidence is `failed` with `runner_contract`. Candidate metrics
+retain `request_throughput_rps`, `goodput_request_throughput_rps`, and `goodput_completed_requests`
+when supplied by the runner. GPU-count selection happens before the top-N view is truncated.
 
 ## Envelope
 
@@ -115,7 +119,7 @@ not create a duplicate ledger row.
 | `failed` | Materialization, runner execution, or the runner/result contract failed. |
 | `resource_limited` | Host memory admission or bounded runtime recovery could not complete this candidate. |
 
-Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `backend_topology`, `runtime_timeout`,
+Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `load_constraint`, `backend_topology`, `runtime_timeout`,
 `candidate_materialization`, `replay_runtime`, `runner_contract`, `invalid_metrics`, `no_samples`,
 `parallel_projection`, `adapter_constraint`, `resource_limit`, and `unknown`.
 
