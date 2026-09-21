@@ -468,9 +468,12 @@ modified analytical adaptations of the indexer layout in `dsv41_sparse.py`.
 
 The measured operator databases and adjacent documentation under
 `src/aisimulate_core/systems/profiles/dsv41/` contain AISimulate timings
-and geometry adapted from the same serving contracts. Their README identifies
-the immutable measurement archive and the source-audited indexer metadata
-correction; restoring the database does not change its measured timings.
+and geometry adapted from the same serving contracts (modified). Their
+README and adjacent provenance identify the immutable collection runtime
+and source identities. The restored GB300 tables preserve their historical
+timings and documented source-audited indexer metadata correction. The
+B300 TP4 and TP2 tables are new native measurements with loaded-module dimension
+validation; they do not inherit that historical correction.
 
 Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
 Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
