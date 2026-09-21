@@ -50,6 +50,7 @@ collector.sglang.collect_dsv41_module:
   - collector/cases/base_ops/dsv41_module.yaml
   - collector/sglang/dsv41_contract.py
   - collector/sglang/dsv41_native_runner.py
+  - collector/sglang/dsv41_humming.py
   - collector/sglang/dsv41_workloads.py
   - collector/sglang/dsv41_forward_results.py
   - src/aisimulate_core/sdk/deepseek_v41.py

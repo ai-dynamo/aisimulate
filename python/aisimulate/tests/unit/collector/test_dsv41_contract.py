@@ -413,6 +413,7 @@ def test_registry_provenance_covers_execution_and_geometry_dependencies(tmp_path
     baseline = provenance.collector_hash(module, tmp_path, closures)
     for relative in (
         "collector/sglang/dsv41_native_runner.py",
+        "collector/sglang/dsv41_humming.py",
         "collector/sglang/dsv41_workloads.py",
         "src/aisimulate_core/sdk/models/deepseek_v41.py",
         "src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json",

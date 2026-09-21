@@ -64,6 +64,15 @@ when that backend is explicitly selected; this is a distinct execution and
 perf-table identity. Keep startup failures as collection evidence and do not
 add collector-side padding or silently substitute a backend.
 
+Select collected Humming rows explicitly with
+`ModelConfig(moe_quant_mode=MoEQuantMode.w4a16_mxfp4_humming)` or the same
+`moe_quant_mode` in `Task`. The default Hopper selection remains CUTLASS.
+The canonical Humming dtype is written directly in `moe_perf.parquet`, so
+task validation and native lookup do not alias it to another kernel. The
+temporary fixtures in `test_dsv41_humming_consumer.py` exercise loading,
+task validation and a complete V4.1 decode prediction on H100/H200; their
+synthetic timings test selection only and are not measured profiles.
+
 ## Data contract
 
 `dsv41_module_perf.parquet` keys component, canonical native geometry excluding
