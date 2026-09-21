@@ -45,9 +45,10 @@ from typing import Any
 
 import aisimulate_core
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
+from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
-from aisimulate_core.sdk.models.helpers import resolve_sglang_mla_compute
+from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
 from aisimulate_core.sdk.operations import FPMForwardOp
 from aisimulate_core.sdk.operations.base import Operation
 from aisimulate_core.sdk.perf_database import load_system_spec
@@ -291,6 +292,7 @@ def _engine_config_dict(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> dict:
     """Build the ``EngineConfig`` JSON (matches the Rust modularised struct).
 
@@ -318,7 +320,9 @@ def _engine_config_dict(
         # Always a literal version directory name, never a slot alias — the
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
+        "fpm_parquet_path": fpm_parquet_path,
         "kv_block_size": kv_block_size,
+        "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
         # ParallelMapping (flattened)
         "tp_size": int(cfg.tp_size or 1),
         "pp_size": int(cfg.pp_size or 1),
@@ -417,15 +421,20 @@ def compile_engine(
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
+    moe_backend: str | None = None,
+    enable_eplb: bool = False,
+    wideep_num_slots: int | None = None,
     nextn: int = 0,
     speculation: dict | None = None,
     kv_block_size: int | None = None,
     systems_path: str | None = None,
     forward_model: str | None = None,
+    decoder_replay: bool = False,
     database_mode: str | None = None,
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -435,6 +444,18 @@ def compile_engine(
     decomposed), ``context_ops`` and ``generation_ops`` into OpSpecs and returns
     the bytes produced by the Rust ``engine_spec_bincode_from_json`` pyfunction.
     """
+    if not isinstance(decoder_replay, bool):
+        raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
+    if decoder_replay and (model_path != DEEPSEEK_V41_MODEL_PATH or backend != "sglang"):
+        raise InvalidEngineConfigurationError(
+            f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
+        )
+
+    if fpm_parquet_path is not None:
+        if not fpm_parquet_path:
+            raise ValueError("fpm_parquet_path cannot be empty")
+        if forward_model != "fpm":
+            raise ValueError("fpm_parquet_path requires forward_model='fpm'")
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
     from aisimulate_core.sdk.speculation import SpeculationConfig
@@ -456,11 +477,24 @@ def compile_engine(
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,
             attention_backend=attention_backend,
+            moe_backend=moe_backend,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
             speculation=resolved_speculation,
         )
         # Apply MTP BEFORE get_model so the walked op lists carry the
         # (L+nextn)/L compute scale; accepted-token progress is applied above core.
         apply_nextn(model_config, nextn)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InvalidEngineConfigurationError(str(exc)) from exc
+    if enable_eplb or wideep_num_slots is not None or moe_backend not in (None, "default"):
+        from aisimulate_core.sdk.models import check_is_moe
+
+        if not check_is_moe(model_path):
+            raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
+    model_config.decoder_replay = decoder_replay
+    try:
+        resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
     except (ValueError, TypeError, KeyError) as exc:
         raise InvalidEngineConfigurationError(str(exc)) from exc
 
@@ -499,6 +533,7 @@ def compile_engine(
         shared_layer=shared_layer,
         transfer_policy=transfer_policy,
         strict_provenance=strict_provenance,
+        fpm_parquet_path=fpm_parquet_path,
     )
 
     return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
@@ -576,6 +611,7 @@ def build_engine_spec_json(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> str:
     """Walk a built model's op lists into an ``EngineSpec`` JSON string.
 
@@ -623,6 +659,7 @@ def build_engine_spec_json(
             shared_layer=shared_layer,
             transfer_policy=transfer_policy,
             strict_provenance=strict_provenance,
+            fpm_parquet_path=fpm_parquet_path,
         ),
         "context_ops": context_ops,
         "generation_ops": generation_ops,

@@ -37,7 +37,10 @@ use serde::Deserialize;
 enum ExecutionPayload {
     Configured {
         spec: ReplaySpec,
-        traffic: Box<RuntimeTraffic>,
+        #[serde(default)]
+        traffic: Option<Box<RuntimeTraffic>>,
+        #[serde(default)]
+        capture_performance_diagnostics: bool,
     },
     Legacy(ReplaySpec),
 }
@@ -76,6 +79,8 @@ struct RuntimeTraffic {
     isl: Option<usize>,
     #[serde(default)]
     osl: Option<usize>,
+    #[serde(default)]
+    cached_prefix_tokens: Option<usize>,
     #[serde(default)]
     request_count: Option<usize>,
     #[serde(default)]
@@ -197,6 +202,10 @@ struct AicTimingConfig {
     #[serde(default)]
     forward_model: Option<String>,
     #[serde(default)]
+    fpm_parquet_path: Option<String>,
+    #[serde(default)]
+    decoder_replay: bool,
+    #[serde(default)]
     worker_type: Option<ForwardPassWorkerType>,
     #[serde(default)]
     estimation_mode: Option<EstimationMode>,
@@ -213,6 +222,12 @@ struct AicTimingConfig {
     #[serde(default)]
     attention_backend: Option<String>,
     #[serde(default)]
+    moe_backend: Option<String>,
+    #[serde(default)]
+    enable_eplb: bool,
+    #[serde(default)]
+    wideep_num_slots: Option<u32>,
+    #[serde(default, alias = "shared_layer")]
     enable_shared_layer: Option<bool>,
     #[serde(default)]
     strict_provenance: bool,
@@ -257,6 +272,21 @@ impl AicTimingConfig {
         } else {
             self.systems_paths.clone()
         };
+        let mut estimator_config = self.estimator_config.clone();
+        if let Some(path) = &self.fpm_parquet_path {
+            crate::config::validate_fpm_parquet_path(
+                Some(std::path::Path::new(path)),
+                mode == EstimationMode::FpmInterpolation,
+            )?;
+            let configured = &mut estimator_config.fpm_interpolation.fpm_parquet_path;
+            ensure!(
+                configured
+                    .as_ref()
+                    .is_none_or(|existing| existing == std::path::Path::new(path)),
+                "conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path"
+            );
+            *configured = Some(path.into());
+        }
         Ok(ForwardPassPerfModelConfig {
             model: self.model.clone(),
             system: self.system.clone(),
@@ -276,13 +306,17 @@ impl AicTimingConfig {
             nextn: self.nextn,
             speculation: self.speculation.clone(),
             kv_block_size: self.kv_block_size,
+            decoder_replay: self.decoder_replay,
             estimation_mode: mode,
             fallback_policy: self.fallback_policy,
-            estimator_config: self.estimator_config.clone(),
+            estimator_config,
             database_mode: self.database_mode,
             transfer_policy: self.transfer_policy.clone(),
             systems_paths: roots,
             attention_backend: self.attention_backend.clone(),
+            moe_backend: self.moe_backend.clone(),
+            enable_eplb: self.enable_eplb,
+            wideep_num_slots: self.wideep_num_slots,
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
         })
@@ -378,6 +412,8 @@ type PhaseEvidenceKey = (u32, u32, u32, u32, bool);
 
 struct AicTimingModel {
     engine: Py<PyAny>,
+    diagnostic_model: Option<ForwardPassPerfModel>,
+    decoder_replay: bool,
     use_fpm_decode_totals: bool,
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceSummary>,
@@ -404,6 +440,7 @@ impl AicTimingModel {
         config.estimation_mode = Some(provenance.selected_estimation_mode);
         config.worker_type = Some(worker_type);
         config.forward_model = None;
+        config.fpm_parquet_path = None;
         config.fallback_policy = ForwardPassFallbackPolicy::Deny;
         config.estimator_config = provenance.config.estimator_config.clone();
         let use_fpm_decode_totals =
@@ -425,6 +462,8 @@ impl AicTimingModel {
         })?;
         Ok(Self {
             engine,
+            diagnostic_model: Some(model),
+            decoder_replay: config.decoder_replay,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
@@ -446,6 +485,29 @@ impl AicTimingModel {
         }
         let key = (batch_size, isl, osl, prefix, prefill);
         if let Some(phase) = self.phase_cache.get(&key) {
+            return Ok(phase);
+        }
+        if let Some(model) = &self.diagnostic_model {
+            let entries = model.static_phase_diagnostics(batch_size, isl, prefix, prefill)?;
+            ensure!(
+                !entries.is_empty(),
+                "AIC {mode} returned empty operation diagnostics for nonzero work"
+            );
+            let operations = entries
+                .into_iter()
+                .map(|entry| {
+                    let mut operation = TimingOperationEvidence::new(
+                        entry.name,
+                        entry.latency_ms,
+                        Some(entry.energy_wms),
+                        TimingEvidenceSource::from_provider(entry.source),
+                    )?;
+                    operation.details = Some(entry.details);
+                    Ok(operation)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let phase = TimingPhaseEvidence::try_from_operations(operations)?;
+            self.phase_cache.insert(key, phase.clone());
             return Ok(phase);
         }
         let (context, generation) = Python::with_gil(|py| {
@@ -514,6 +576,21 @@ fn phase_evidence_from_python(
 }
 
 impl TimingModel for AicTimingModel {
+    fn prefill_batch_validation_can_fail(&self) -> bool {
+        self.decoder_replay
+    }
+
+    fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
+        if self.decoder_replay {
+            ensure!(
+                requests.windows(2).all(|pair| pair[0] == pair[1]),
+                "decoder replay requires identical per-request new-token and cached-prefix lengths; \
+                 heterogeneous prefill cannot be represented by the mean-based replay timing API"
+            );
+        }
+        Ok(())
+    }
+
     fn predict_prefill_ms(
         &self,
         batch_size: usize,
@@ -569,9 +646,14 @@ impl TimingModel for AicTimingModel {
         }
 
         let batch_size = checked_u32(batch_size, "decode batch size")?;
-        let mean_context_length = checked_u32(mean_context_length, "mean context length")?;
-        let evidence =
-            self.predict_phase_evidence(batch_size, mean_context_length, 2, 0, "static_gen")?;
+        // Both scheduler implementations include the current input token in
+        // their sequence length before sampling the next token. The op API's
+        // isl is past KV; osl=2 adds the current token exactly once.
+        let mean_past_kv = mean_context_length
+            .checked_sub(1)
+            .context("mean decode context must include the current input token")?;
+        let mean_past_kv = checked_u32(mean_past_kv, "mean past KV length")?;
+        let evidence = self.predict_phase_evidence(batch_size, mean_past_kv, 2, 0, "static_gen")?;
         let latency_ms = evidence.latency_ms;
         self.record_evidence(evidence, false)?;
         Ok(latency_ms)
@@ -619,6 +701,10 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
         kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
+        kwargs.set_item("moe_backend", config.moe_backend.as_deref())?;
+        kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
+        kwargs.set_item("enable_eplb", config.enable_eplb)?;
+        kwargs.set_item("wideep_num_slots", config.wideep_num_slots)?;
         kwargs.set_item(
             "cuda_graph_reserved_bytes",
             config.cuda_graph_reserved_bytes,
@@ -736,6 +822,7 @@ fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
     worker_type: ForwardPassWorkerType,
+    capture_performance_diagnostics: bool,
 ) -> Result<Option<Arc<dyn TimingModel>>> {
     let TimingModelConfig::External { provider, config } = role.rank.timing_model.clone() else {
         return Ok(None);
@@ -747,7 +834,10 @@ fn resolve_role_timing(
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
-    let timing = AicTimingModel::build(&mut config, worker_type)?;
+    let mut timing = AicTimingModel::build(&mut config, worker_type)?;
+    if !capture_performance_diagnostics {
+        timing.diagnostic_model = None;
+    }
     materialize_aic_capacity(
         &config,
         role,
@@ -1117,8 +1207,16 @@ fn build_runtime_input(
     } else {
         1
     };
+    let cached_prefix_tokens = traffic.cached_prefix_tokens.unwrap_or(0);
     let trace = Trace::synthetic(SyntheticTraceSpec {
-        block_size: engine_block_size,
+        // A one-token trace block preserves prefixes that are not aligned to
+        // the engine's scheduler block size. The driver still hashes them at
+        // `engine_block_size` when it constructs replay requests.
+        block_size: if cached_prefix_tokens == 0 {
+            engine_block_size
+        } else {
+            1
+        },
         num_sessions: sessions,
         turns_per_session: turns,
         input_tokens: LengthSpec {
@@ -1129,6 +1227,7 @@ fn build_runtime_input(
             mean: traffic.osl.context("synthetic traffic requires osl")?,
             stddev: 0.0,
         },
+        cached_prefix_tokens,
         shared_prefix_ratio: traffic.shared_prefix_ratio.unwrap_or(0.0),
         num_prefix_groups: traffic.num_prefix_groups.unwrap_or(0),
         first_turn_arrivals: synthetic_arrivals(&traffic)?,
@@ -1246,6 +1345,45 @@ fn phase_power_stats(combined: &TimingPhaseEvidence) -> Result<TracePowerStats> 
         .flatten()
         .filter(|power| power.is_finite() && *power > 0.0);
     TracePowerStats::new(power_w, coverage)
+}
+
+fn replay_performance_diagnostics(summary: Option<&TimingEvidenceSummary>) -> serde_json::Value {
+    let scope = "accumulated_active_forward_pass_per_gpu";
+    let Some(summary) = summary else {
+        return serde_json::json!({"status": "unavailable", "scope": scope, "latency_unit": "ms", "phases": [],
+            "unavailable_reason": "selected timing provider does not export operation diagnostics (whole-model FPM and latency-only providers are unsupported)"});
+    };
+    let phases = [("prefill", &summary.prefill), ("decode", &summary.decode)].into_iter().map(|(name, phase)| {
+        let mut operations = phase.operations.iter().map(|op| {
+            let sol = op.details.as_ref().and_then(|d| d.sol.as_ref());
+            serde_json::json!({"name": op.name, "latency_ms": op.latency_ms,
+                "source": op.source.as_str(),
+                "sol": sol,
+                "sol_unavailable_reason": if sol.is_some() { None } else {
+                    op.details.as_ref().and_then(|d| d.sol_unavailable_reason.as_deref()).or(Some("provider did not export SOL evidence"))
+                },
+                "latency_to_sol_ratio": sol.filter(|s| s.latency_ms > 0.0).map(|s| op.latency_ms / s.latency_ms).filter(|r| r.is_finite()),
+                "fallbacks": op.details.as_ref().map(|d| &d.fallbacks),
+            })
+        }).collect::<Vec<_>>();
+        operations.sort_by(|a,b| a["name"].as_str().cmp(&b["name"].as_str()));
+        let sol = phase.operations.iter().map(|op| op.details.as_ref()?.sol.as_ref()).collect::<Option<Vec<_>>>()
+            .filter(|ops| !ops.is_empty()).and_then(|ops| {
+                let latency_ms = ops.iter().map(|s| s.latency_ms).sum::<f64>();
+                let math_ms = ops.iter().map(|s| s.math_ms).sum::<f64>();
+                let memory_ms = ops.iter().map(|s| s.memory_ms).sum::<f64>();
+                [latency_ms, math_ms, memory_ms].iter().all(|v| v.is_finite()).then(||
+                    serde_json::json!({"latency_ms": latency_ms, "math_ms": math_ms, "memory_ms": memory_ms}))
+            });
+        serde_json::json!({"name": name, "latency_ms": phase.latency_ms, "sol": sol,
+            "sol_unavailable_reason": if sol.is_some() { None } else { Some("one or more operations lack SOL evidence, or this phase was not observed") },
+            "operations": operations})
+    }).collect::<Vec<_>>();
+    let observed = phases
+        .iter()
+        .any(|phase| !phase["operations"].as_array().unwrap().is_empty());
+    serde_json::json!({"status": if observed { "available" } else { "not_observed" },
+        "scope": scope, "latency_unit": "ms", "phases": phases})
 }
 
 fn replay_power_diagnostics(
@@ -1422,6 +1560,8 @@ fn scale_power_phase(
         operation.energy_wms = operation.energy_wms.map(|energy| energy * scale);
         operation.latency_ms *= scale;
         operation.covered_latency_ms *= scale;
+        // SOL compares the same scheduled work, before synthetic speedup; it
+        // remains an unscaled physical baseline.
     }
     Ok(phase)
 }
@@ -1458,10 +1598,14 @@ fn infer_aic_timing_topology(engine: &mut serde_json::Value) -> Result<()> {
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
-    let (mut spec, mut traffic) =
+    let (mut spec, mut traffic, capture_performance_diagnostics) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
-            ExecutionPayload::Configured { spec, traffic } => (spec, Some(*traffic)),
-            ExecutionPayload::Legacy(spec) => (spec, None),
+            ExecutionPayload::Configured {
+                spec,
+                traffic,
+                capture_performance_diagnostics,
+            } => (spec, traffic.map(|t| *t), capture_performance_diagnostics),
+            ExecutionPayload::Legacy(spec) => (spec, None, false),
         };
     let agentic_input = traffic.as_ref().and_then(|traffic| {
         traffic
@@ -1507,6 +1651,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 &mut role,
                 capacity_is_explicit,
                 ForwardPassWorkerType::Aggregated,
+                capture_performance_diagnostics,
             )?;
             if let Some(timing) = timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &role.rank));
@@ -1604,11 +1749,13 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 &mut prefill,
                 prefill_capacity_is_explicit,
                 ForwardPassWorkerType::Prefill,
+                capture_performance_diagnostics,
             )?;
             let decode_timing = resolve_role_timing(
                 &mut decode,
                 decode_capacity_is_explicit,
                 ForwardPassWorkerType::Decode,
+                capture_performance_diagnostics,
             )?;
             if let Some(timing) = prefill_timing.as_ref() {
                 power_sources.push(TimingPowerSource::new(Arc::clone(timing), &prefill.rank));
@@ -1696,6 +1843,10 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
     )?));
     let mut report_json =
         serde_json::to_value(&report).context("serializing AISimulate replay report summary")?;
+    if capture_performance_diagnostics {
+        report_json["performance_diagnostics"] =
+            replay_performance_diagnostics(timing_evidence.as_ref());
+    }
     if report.agentic_graph.is_some()
         && let Some((input_format, agentic_lanes, execution_model)) = agentic_input
     {
@@ -2259,6 +2410,8 @@ mod tests {
     fn timing_model(engine: Py<PyAny>, use_fpm_decode_totals: bool) -> AicTimingModel {
         AicTimingModel {
             engine,
+            diagnostic_model: None,
+            decoder_replay: false,
             use_fpm_decode_totals,
             fpm_decode_kv_ceiling: None,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
@@ -2333,10 +2486,15 @@ mod tests {
             transfer_policy: None,
             systems_paths: Vec::new(),
             attention_backend: None,
+            moe_backend: None,
+            enable_eplb: false,
+            wideep_num_slots: None,
             enable_shared_layer: None,
             strict_provenance: false,
             systems_path: None,
             forward_model: None,
+            fpm_parquet_path: None,
+            decoder_replay: false,
         }
     }
 
@@ -2730,6 +2888,7 @@ mod tests {
                 latency_ms: 2.0,
                 covered_latency_ms: 1.0,
                 source: TimingEvidenceSource::Mixed,
+                details: None,
             },
             Some(400.0),
         );
@@ -2750,6 +2909,7 @@ mod tests {
                 latency_ms: 0.0,
                 covered_latency_ms: 0.0,
                 source: TimingEvidenceSource::Silicon,
+                details: None,
             },
             Some(400.0),
         );
@@ -2757,6 +2917,74 @@ mod tests {
         assert_eq!(zero_latency["status"], "available");
         assert_eq!(zero_latency["power_coverage"], 0.0);
         assert!(zero_latency.get("uncovered_reason").is_none());
+    }
+
+    #[test]
+    fn performance_evidence_accumulates_sol_and_deduplicates_executed_fallbacks() {
+        use crate::perfmodel::engine::diagnostics::{
+            ExecutedFallback, OperationDetails, SolDiagnostics,
+        };
+        let mut op =
+            TimingOperationEvidence::new("dispatch", 10.0, None, TimingEvidenceSource::Estimated)
+                .unwrap();
+        op.details = Some(OperationDetails {
+            sol: Some(SolDiagnostics {
+                latency_ms: 2.0,
+                math_ms: 0.0,
+                memory_ms: 2.0,
+            }),
+            sol_unavailable_reason: None,
+            fallbacks: vec![ExecutedFallback {
+                inference_phase: "context".into(),
+                comm_backend: "deepep_ll".into(),
+                requested_ep_size: 32,
+                requested_node_num: 8,
+                measurement_ep_size: 4,
+                measurement_node_num: 1,
+            }],
+        });
+        let phase = TimingPhaseEvidence::try_from_operations(vec![op.clone()]).unwrap();
+        let mut total = phase.clone();
+        total.try_accumulate(phase).unwrap();
+        // Two scheduled 10ms steps, divided by synthetic speedup 2. SOL is
+        // the physical baseline: two 2ms steps, without synthetic speedup.
+        let summary = TimingEvidenceSummary {
+            prefill: scale_power_phase(total, 2.0).unwrap(),
+            decode: Default::default(),
+        };
+        let report = replay_performance_diagnostics(Some(&summary));
+        assert_eq!(report["phases"][0]["latency_ms"], 10.0);
+        assert_eq!(report["phases"][0]["sol"]["latency_ms"], 4.0);
+        assert_eq!(
+            report["phases"][0]["operations"][0]["latency_to_sol_ratio"],
+            2.5
+        );
+        assert_eq!(
+            report["phases"][0]["operations"][0]["fallbacks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        // A missing comparison in any scheduled step invalidates the total,
+        // but does not hide its source or executed fallback records.
+        op.details.as_mut().unwrap().sol = None;
+        op.details.as_mut().unwrap().sol_unavailable_reason = Some("unsupported shape".into());
+        let mut mixed = summary.prefill;
+        mixed
+            .try_accumulate(TimingPhaseEvidence::try_from_operations(vec![op]).unwrap())
+            .unwrap();
+        let report = replay_performance_diagnostics(Some(&TimingEvidenceSummary {
+            prefill: mixed,
+            decode: Default::default(),
+        }));
+        assert!(report["phases"][0]["sol"].is_null());
+        assert_eq!(
+            report["phases"][0]["operations"][0]["sol_unavailable_reason"],
+            "unsupported shape"
+        );
+        assert_eq!(report["phases"][0]["operations"][0]["source"], "estimated");
+        assert!(report["phases"][0]["operations"][0]["latency_to_sol_ratio"].is_null());
     }
 
     #[test]
@@ -2780,16 +3008,64 @@ mod tests {
     }
 
     #[test]
+    fn aic_timing_rejects_invalid_fpm_paths_before_entering_python() {
+        for (path, model) in [("", "fpm"), ("/missing/fpm.parquet", "op_level")] {
+            let mut config = aic_config();
+            config.fpm_parquet_path = Some(path.into());
+            config.forward_model = Some(model.into());
+            let err = AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated)
+                .err()
+                .expect("invalid path");
+            assert!(err.to_string().contains("fpm_parquet_path"), "{err}");
+        }
+    }
+
+    #[test]
     fn aic_timing_config_accepts_fpm_forward_model() {
         let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
             "model": "test-model",
             "backend": "vllm",
             "system": "test-system",
             "tp": 1,
-            "forward_model": "fpm"
+            "forward_model": "fpm",
+            "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet"
         }))
         .unwrap();
         assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+        assert_eq!(
+            config.fpm_parquet_path.as_deref(),
+            Some("/artifacts/reviewed-fpm.parquet")
+        );
+    }
+
+    #[test]
+    fn timing_policy_reaches_canonical_request() {
+        for replay in [false, true] {
+            let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+                "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1,
+                "decoder_replay": replay, "database_mode": "SILICON",
+                "enable_shared_layer": false, "strict_provenance": true
+            }))
+            .unwrap();
+            let request = config
+                .estimator_request(ForwardPassWorkerType::Aggregated)
+                .unwrap();
+            assert_eq!(request.decoder_replay, replay);
+            assert_eq!(request.database_mode, crate::DatabaseMode::Silicon);
+            assert_eq!(request.enable_shared_layer, Some(false));
+            assert!(request.strict_provenance);
+            let round_trip: ForwardPassPerfModelConfig =
+                serde_json::from_str(&serde_json::to_string(&request).unwrap()).unwrap();
+            assert_eq!(round_trip, request);
+        }
+        let defaults = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
+            "model": "test-model", "backend": "sglang", "system": "test-system", "tp": 1
+        }))
+        .unwrap();
+        assert!(!defaults.decoder_replay);
+        assert_eq!(defaults.database_mode, crate::DatabaseMode::default());
+        assert!(defaults.enable_shared_layer.is_none());
+        assert!(!defaults.strict_provenance);
     }
 
     #[test]
@@ -2817,6 +3093,48 @@ mod tests {
             .unwrap();
 
         assert_eq!(latency, 546_048.0);
+    }
+
+    #[test]
+    fn op_level_decode_timing_converts_inclusive_mean_to_past_kv() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let timing = timing_model(engine, false);
+
+        let latency = timing
+            .predict_decode_ms(35, 546_081, 15_602, 546_048)
+            .unwrap();
+
+        assert_eq!(latency, 546_070.0);
+        for inclusive_length in [1, 128, 129, 2049] {
+            assert_eq!(
+                timing
+                    .predict_decode_ms(2, 2 * inclusive_length, inclusive_length, 8192)
+                    .unwrap(),
+                (2 * inclusive_length) as f64,
+            );
+        }
+        assert!(timing.predict_decode_ms(1, 0, 0, 8192).is_err());
+    }
+
+    #[test]
+    fn bounded_replay_rejects_heterogeneous_actual_prefill_geometry() {
+        pyo3::prepare_freethreaded_python();
+        let engine = Python::with_gil(|py| Py::new(py, DecodeCoordinateProbe).unwrap().into_any());
+        let mut timing = timing_model(engine, false);
+        timing.decoder_replay = true;
+        for geometry in [vec![], vec![(3, 1536)], vec![(129, 128), (129, 128)]] {
+            timing.validate_prefill_batch(&geometry).unwrap();
+        }
+        for geometry in [vec![(127, 128), (129, 128)], vec![(3, 128), (3, 1536)]] {
+            assert!(timing.prefill_batch_validation_can_fail());
+            let error = timing.validate_prefill_batch(&geometry).unwrap_err();
+            assert!(error.to_string().contains("heterogeneous prefill"));
+            timing.decoder_replay = false;
+            assert!(!timing.prefill_batch_validation_can_fail());
+            timing.validate_prefill_batch(&geometry).unwrap();
+            timing.decoder_replay = true;
+        }
     }
 
     #[test]
@@ -2923,6 +3241,63 @@ mod tests {
         assert_eq!(
             timing.evidence_summary(),
             Some(TimingEvidenceSummary::default())
+        );
+    }
+
+    #[test]
+    fn empty_native_diagnostics_reject_nonzero_work() {
+        use crate::perfmodel::engine::{Engine, spec::EngineSpec};
+        use crate::perfmodel::fpm::ForwardPassPerfOptions;
+        pyo3::prepare_freethreaded_python();
+        let db = crate::perf_database::PerfDatabase::load(
+            &std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../python/aisimulate/src/aisimulate_core/systems"),
+            "h200_sxm",
+            "sglang",
+            "0.5.6.post2",
+        )
+        .unwrap();
+        let config = serde_json::from_value(serde_json::json!({
+            "schema_version": crate::ENGINE_CONFIG_SCHEMA_VERSION,
+            "model_name": "empty-fixture", "system_name": "h200_sxm",
+            "backend": "sglang", "backend_version": "0.5.6.post2",
+            "tp_size": 1, "pp_size": 1
+        }))
+        .unwrap();
+        let native = Engine::build(EngineSpec::new(config, vec![], vec![]), Arc::new(db)).unwrap();
+        let engine = Python::with_gil(|py| {
+            Py::new(py, PerOpEvidenceProbe::default())
+                .unwrap()
+                .into_any()
+        });
+        let mut timing = timing_model(engine, false);
+        timing.diagnostic_model = Some(ForwardPassPerfModel::from_engine(
+            Arc::new(native),
+            ForwardPassPerfOptions::default(),
+        ));
+        for mode in ["static_ctx", "static_gen"] {
+            let error = timing
+                .predict_phase_evidence(1, 128, 2, 0, mode)
+                .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("AIC {mode} returned empty operation diagnostics"))
+            );
+            assert_eq!(
+                timing
+                    .predict_phase_evidence(0, 128, 2, 0, mode)
+                    .unwrap()
+                    .latency_ms,
+                0.0
+            );
+        }
+        assert_eq!(
+            timing
+                .predict_phase_evidence(1, 128, 2, 128, "static_ctx")
+                .unwrap()
+                .latency_ms,
+            0.0
         );
     }
 

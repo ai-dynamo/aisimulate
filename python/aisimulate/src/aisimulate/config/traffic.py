@@ -31,6 +31,13 @@ class SyntheticSource(StrictModel):
     input_tokens: PositiveInt = 1024
     output_tokens: PositiveInt = 128
     images: ImageInput | None = None
+    cached_prefix_tokens: NonNegativeInt = 0
+
+    @model_validator(mode="after")
+    def _validate_cached_prefix(self):
+        if self.cached_prefix_tokens > self.input_tokens:
+            raise ValueError("cached_prefix_tokens cannot exceed input_tokens")
+        return self
 
 
 class SessionShape(StrictModel):

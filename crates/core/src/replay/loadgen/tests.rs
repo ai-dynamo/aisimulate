@@ -882,6 +882,7 @@ fn test_partition_by_session_round_robin_keeps_sessions_intact() {
             mean: 2,
             stddev: 0.0,
         },
+        cached_prefix_tokens: 0,
         shared_prefix_ratio: 0.5,
         num_prefix_groups: 2,
         first_turn_arrivals: ArrivalSpec::Burst,
@@ -918,6 +919,7 @@ fn test_synthetic_prefix_groups_share_prefixes_within_group() {
             mean: 2,
             stddev: 0.0,
         },
+        cached_prefix_tokens: 0,
         shared_prefix_ratio: 0.5,
         num_prefix_groups: 2,
         first_turn_arrivals: ArrivalSpec::Burst,
@@ -943,6 +945,46 @@ fn test_synthetic_prefix_groups_share_prefixes_within_group() {
 }
 
 #[test]
+fn test_synthetic_exact_cached_prefix_shares_only_requested_tokens() {
+    let trace = Trace::synthetic(SyntheticTraceSpec {
+        block_size: 1,
+        num_sessions: 3,
+        turns_per_session: 1,
+        input_tokens: LengthSpec {
+            mean: 8,
+            stddev: 0.0,
+        },
+        output_tokens: LengthSpec {
+            mean: 2,
+            stddev: 0.0,
+        },
+        cached_prefix_tokens: 3,
+        shared_prefix_ratio: 0.0,
+        num_prefix_groups: 0,
+        first_turn_arrivals: ArrivalSpec::Burst,
+        inter_turn_delays: DelaySpec::None,
+        seed: 42,
+        arrival_seed: 42,
+    })
+    .unwrap();
+
+    let prompts = trace
+        .sessions
+        .iter()
+        .map(|session| session.turns[0].synthesize_tokens(1).unwrap())
+        .collect::<Vec<_>>();
+    assert!(prompts.windows(2).all(|pair| pair[0][..3] == pair[1][..3]));
+    assert_eq!(
+        prompts
+            .iter()
+            .map(|tokens| tokens[3..].to_vec())
+            .collect::<HashSet<_>>()
+            .len(),
+        prompts.len()
+    );
+}
+
+#[test]
 fn test_synthetic_arrival_mode_changes_timestamps_only() {
     let build = |first_turn_arrivals, arrival_seed| {
         Trace::synthetic(SyntheticTraceSpec {
@@ -957,6 +999,7 @@ fn test_synthetic_arrival_mode_changes_timestamps_only() {
                 mean: 4,
                 stddev: 1.0,
             },
+            cached_prefix_tokens: 0,
             shared_prefix_ratio: 0.5,
             num_prefix_groups: 5,
             first_turn_arrivals,
@@ -1353,4 +1396,35 @@ fn test_trace_driver_rechunks_trace_blocks_into_engine_blocks() {
             .unwrap()
         )
     );
+}
+
+#[test]
+fn synthetic_exact_cached_prefix_rejects_unaligned_and_overlong_values() {
+    for (prefix, expected) in [
+        (3, "must align"),
+        (12, "exceeds sampled synthetic input length"),
+    ] {
+        let error = Trace::synthetic(SyntheticTraceSpec {
+            block_size: 4,
+            num_sessions: 1,
+            turns_per_session: 1,
+            input_tokens: LengthSpec {
+                mean: 8,
+                stddev: 0.0,
+            },
+            output_tokens: LengthSpec {
+                mean: 2,
+                stddev: 0.0,
+            },
+            cached_prefix_tokens: prefix,
+            shared_prefix_ratio: 0.0,
+            num_prefix_groups: 0,
+            first_turn_arrivals: ArrivalSpec::Burst,
+            inter_turn_delays: DelaySpec::None,
+            seed: 42,
+            arrival_seed: 42,
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    }
 }

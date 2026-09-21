@@ -20,6 +20,7 @@ from aisimulate import EngineReplayRunnerFactory, ReplayOutputRequirements
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.sweeper import SweepResult
+from aisimulate.sweeper.result import CandidateStatus
 
 pytestmark = [
     pytest.mark.integration,
@@ -335,49 +336,70 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
         _check_documented_candidate_renderer(output, tmp_path)
 
 
-_FPM_CASE = _CONFIG_ROOT / "predict/fpm/01-minimax-m27-h200-tp4-fpm.yaml"
-
-
-def test_engine_predict_accepts_forward_model_from_yaml_and_set(tmp_path: Path) -> None:
-    # The bundled FPM cell is collected outside the queryable version slots.
-    env = {"AIC_ALLOW_UNLISTED_VERSIONS": "1"}
-    fpm = json.loads(
-        _run_cli(
-            "predict",
-            "--stack",
-            "engine",
-            "--config",
-            str(_FPM_CASE),
-            "--output-dir",
-            str(tmp_path / "fpm"),
-            "--format",
-            "json",
-            env=env,
-        ).stdout
+@pytest.mark.parametrize("load_type", ["concurrency", "constant_rate", "poisson"])
+def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Path) -> None:
+    data = yaml.safe_load((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine/03-preset-off-ttft.yaml").read_text())
+    data["traffic"]["load"] = (
+        {"type": "concurrency", "concurrency": 2}
+        if load_type == "concurrency"
+        else {"type": load_type, "requests_per_second": 10}
     )
-    op_level = json.loads(
-        _run_cli(
-            "predict",
-            "--stack",
-            "engine",
+    data["traffic"]["stop"] = {"requests": 20}
+    data["evaluation"] = {"sla": {"e2e_ms": 100}}
+    data["optimization"] = {"target": "min_gpus", "constraints": {"max_candidate_gpus": 2}}
+    if load_type != "concurrency":
+        data["optimization"]["constraints"]["min_goodput_rps"] = 5
+    data["optimizer"]["max_trials"] = 8
+    config = tmp_path / "minimum.yaml"
+    config.write_text(yaml.safe_dump(data))
+    output = tmp_path / "recommend"
+    _run_cli("recommend", "--config", str(config), "--output-dir", str(output))
+    result = SweepResult.from_json((output / "recommendation.json").read_text())
+    counts = [candidate.used_gpus for candidate in result.selected_candidates]
+    assert counts == sorted(counts)
+    assert set(counts) == {1, 2}
+    candidate = result.selected_candidates[0]
+    assert candidate.used_gpus == 1
+    assert candidate.score == -1
+    assert all(c.metrics["mean_e2e_latency_ms"] <= 100 for c in result.selected_candidates)
+    assert {row.used_gpus for row in result.candidates} == {1, 2}
+    if load_type != "concurrency":
+        assert all(c.metrics["goodput_request_throughput_rps"] >= 5 for c in result.selected_candidates)
+    selected_path = sorted((output / "recommendations").glob("*.yaml"))[0]
+    prediction = _run_cli(
+        "predict", "--config", str(selected_path), "--output-dir", str(tmp_path / "predict"), "--format", "json"
+    )
+    assert json.loads(prediction.stdout)["completed_requests"] == 20
+
+    # All candidates miss this SLA: fail explicitly without manufacturing a smallest result.
+    no_result = tmp_path / "no-result"
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "recommend",
             "--config",
-            str(_FPM_CASE),
+            str(config),
             "--set",
-            "engine.workers.aggregated.timing.forward_model=op_level",
+            "evaluation.sla.e2e_ms=0.001",
             "--output-dir",
-            str(tmp_path / "op-level"),
-            "--format",
-            "json",
-            env=env,
-        ).stdout
+            str(no_result),
+        ],
+        cwd=_REPO_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=120,
+        check=False,
     )
-
-    # Both runs prove CLI plumbing only (the YAML field and the --set path are accepted and the
-    # replay completes). Whether the FPM data path is actually engaged is proven in-process by
-    # tests/test_unified_traffic_runtime.py (fail-closed on an uncovered identity); accuracy is a
-    # FPM-vs-silicon question and is not asserted anywhere in the test suite.
-    assert fpm["completed_requests"] == 8
-    assert op_level["completed_requests"] == 8
+    assert rejected.returncode == 1, rejected.stderr
+    empty = SweepResult.from_json((no_result / "recommendation.json").read_text())
+    assert empty.selected_candidates == []
+    assert empty.counts.infeasible > 0
+    infeasible = [c for c in empty.candidates if c.status is CandidateStatus.INFEASIBLE]
+    assert len(infeasible) == empty.counts.infeasible
+    assert all(c.metrics["mean_e2e_latency_ms"] > 0.001 for c in infeasible)
+    assert not list((no_result / "recommendations").glob("*.yaml"))
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])

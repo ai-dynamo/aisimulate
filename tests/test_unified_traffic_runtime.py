@@ -135,6 +135,7 @@ def test_prediction_spec_separates_perf_identity_from_fixed_timing() -> None:
                 "moe_ep_size": None,
                 "nextn": None,
                 "forward_model": "op_level",
+                "database_mode": "SILICON",
             },
         }
     }
@@ -267,7 +268,10 @@ def test_b200_power_survives_native_json_and_runner_normalization() -> None:
 
     assert report.metrics["completed_requests"] == 100
     native_summary = report.metadata["native_report"]
-    for name, expected in {"power_w": 655.9411158961074, "power_coverage": 0.9070317503277924}.items():
+    # Decode converts scheduler-inclusive length to past KV before pricing the
+    # current token. Reverting only that conversion reproduces the older
+    # section 4.11 capture (655.9411158961074 W, coverage 0.9070317503277924).
+    for name, expected in {"power_w": 655.957349601573, "power_coverage": 0.907023184956731}.items():
         assert native_summary[name] == pytest.approx(expected)
         assert report.metrics[name] == native_summary[name]
 
@@ -499,8 +503,15 @@ def _fpm_engine() -> dict:
         "workers": {
             "aggregated": {
                 "parallelism": {"tensor": 4, "moe_tensor": 4, "moe_expert": 1},
-                "kv_cache": {"prefix_caching": False},
-                "timing": {"type": "default", "forward_model": "fpm"},
+                "kv_cache": {
+                    "prefix_caching": False,
+                    "capacity": {"type": "fixed", "blocks": 4096},
+                },
+                "timing": {
+                    "type": "default",
+                    "forward_model": "fpm",
+                    "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet",
+                },
             }
         },
     }
@@ -516,8 +527,15 @@ def test_prediction_spec_lowers_fpm_forward_model_into_canonical_timing() -> Non
     assert timing["config"]["estimation_mode"] == "fpm_interpolation"
     assert timing["config"]["fallback_policy"] == "deny"
     assert timing["config"]["worker_type"] == "aggregated"
+    assert timing["config"]["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] == (
+        "/artifacts/reviewed-fpm.parquet"
+    )
     assert "aic_forward_model" not in deployment.agg_engine_args
     assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
+    assert (
+        deployment.performance_model_metadata["aggregated"]["config"]["fpm_parquet_path"]
+        == "/artifacts/reviewed-fpm.parquet"
+    )
 
 
 def test_prediction_spec_lowers_default_timing_into_canonical_auto_selection() -> None:
@@ -564,34 +582,14 @@ _SMALL_TRAFFIC = {
 }
 
 
-def test_engine_stack_replays_fpm_timing_from_the_bundled_cell(monkeypatch) -> None:
-    # The bundled MiniMax-M2.7 cell is collected at vLLM 0.25.1, outside the queryable version slots.
-    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-
-    report = _run({"engine": _fpm_engine(), "traffic": _SMALL_TRAFFIC})
-
-    assert report.metrics["completed_requests"] == 8
-
-
-def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(
-    monkeypatch,
-) -> None:
-    # tp2 has no FPM cell for this model on h200_sxm. The FPM path must refuse rather than fall
-    # back to op_level; the same shape still replays under op_level timing. This is a wiring
-    # check for the data path, not an accuracy statement about either model.
+def test_engine_stack_fpm_timing_fails_closed_when_external_parquet_is_missing(monkeypatch) -> None:
+    # The explicit external path is absent. FPM must refuse rather than fall
+    # back to op_level; the same shape still replays under op_level timing.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
-    engine["workers"]["aggregated"]["parallelism"] = {
-        "tensor": 2,
-        "moe_tensor": 2,
-        "moe_expert": 1,
-    }
 
-    with pytest.raises(RuntimeError, match="FPM"):
+    with pytest.raises(RuntimeError, match="reviewed-fpm.parquet"):
         _run({"engine": engine, "traffic": _SMALL_TRAFFIC})
-
-    engine["workers"]["aggregated"]["timing"] = {"type": "default"}
-    assert _run({"engine": engine, "traffic": _SMALL_TRAFFIC}).metrics["completed_requests"] == 8
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -793,7 +791,7 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
     validate(stdout["details"], schema)
     sections = stdout["details"]["sections"]
-    assert set(sections) == {"summary", "memory", "time", "energy"}
+    assert set(sections) == {"summary", "memory", "time", "energy", "source"}
     assert saved["power_diagnostics"]["power_w"] is None
     assert stdout["summary"]["power_w"] is None
     memory = sections["memory"]["roles"]["aggregated"]
@@ -807,7 +805,23 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     assert "wall_time_ms" not in sections["time"]["serving_metrics"]
     assert "duration_ms" not in sections["time"]["serving_metrics"]
     assert stdout["summary"]["duration_ms"] > 0
-    assert "phases" not in sections["time"]
+    timing = sections["time"]["diagnostics"]
+    assert timing["status"] == "available"
+    assert timing["scope"] == "accumulated_active_forward_pass_per_gpu"
+    assert sections["source"]["status"] == "available"
+    assert len(timing["phases"]) == 2
+    for phase, source in zip(timing["phases"], sections["source"]["phases"], strict=True):
+        assert phase["latency_ms"] == pytest.approx(sum(op["latency_ms"] for op in phase["operations"]))
+        assert phase["operations"]
+        assert any(op["sol"] is not None for op in phase["operations"])
+        for op, provenance in zip(phase["operations"], source["operations"], strict=True):
+            assert provenance == {key: op[key] for key in ("name", "latency_ms", "source", "fallbacks")}
+            assert isinstance(op["fallbacks"], list)
+            if op["sol"] is None:
+                assert op["sol_unavailable_reason"]
+            elif op["sol"]["latency_ms"] > 0:
+                assert op["latency_to_sol_ratio"] == pytest.approx(op["latency_ms"] / op["sol"]["latency_ms"])
+    assert "performance_diagnostics" not in stdout["summary"]
     # Repeating the same prediction without diagnostics keeps modeled metrics identical.
     plain_out = tmp_path / "plain"
     assert main(["predict", "-c", str(path), "--format", "json", "--output-dir", str(plain_out)]) == 0
@@ -817,26 +831,28 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
             assert plain[key] == value, key
 
 
-def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, capsys, monkeypatch):
-    import yaml
-
-    from aisimulate.main import main
-
-    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-    path = tmp_path / "fpm.yaml"
-    path.write_text(yaml.safe_dump({"engine": _fpm_engine(), "traffic": _SMALL_TRAFFIC}))
-    assert (
-        main(["predict", "-c", str(path), "--detail", "all", "--format", "json", "--output-dir", str(tmp_path / "out")])
-        == 0
+@pytest.mark.parametrize("prefix,reused", [(3, 0), (4, 4), (5, 4), (7, 4)])
+def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic(prefix, reused) -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"]["kv_cache"]["block_size"] = 4
+    report = _run(
+        {
+            "traffic": {
+                "source": {
+                    "type": "synthetic",
+                    "input_tokens": 8,
+                    "output_tokens": 2,
+                    "cached_prefix_tokens": prefix,
+                },
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 2},
+            },
+            "engine": engine,
+        }
     )
-    sections = json.loads(capsys.readouterr().out)["details"]["sections"]
-    memory = sections["memory"]["roles"]["aggregated"]
-    assert memory["scope"] == "capacity_estimate_per_rank"
-    assert memory["stage"] == "before_native_capacity_adjustments"
-    assert memory["estimated_num_gpu_blocks"] > 0
-    assert "num_gpu_blocks" not in memory
-    assert set(sections) == {"summary", "memory", "time", "energy"}
-    assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
+
+    records = report.metadata["native_report"]["per_request"]
+    assert [row["reused_input_tokens"] for row in records] == [0, reused]
 
 
 @pytest.mark.parametrize("backend,expected_warm_reuse", [("vllm", 64), ("sglang", 127)])

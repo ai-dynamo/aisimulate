@@ -252,3 +252,46 @@ def test_average_tokens_per_request_must_be_positive(monkeypatch):
             ratio=1.0,
             backend_version="v",
         )
+
+
+@pytest.mark.parametrize("source", ["resolved", "custom"])
+def test_capacity_uses_nonnull_version_and_resolved_controls(monkeypatch, source):
+    from aisimulate.sweeper import kv_load
+
+    sample = _sample("agg")
+    sample.update(enable_eplb=True, wideep_num_slots=32, moe_backend="deepep_moe")
+    identity = {"backend_version": None, "enable_eplb": False, "wideep_num_slots": 64, "moe_backend": None}
+    if source == "resolved":
+        sample["forward_pass_estimators"] = {"agg": {"config": identity}}
+    else:
+        sample["agg_timing_model"] = {"type": "external", "provider": "aic", "config": identity}
+    seen = []
+
+    def capacity(*args, **kwargs):
+        seen.append(kwargs)
+        return 6400
+
+    monkeypatch.setattr(kv_load, "_per_rank_capacity_tokens", capacity)
+    resolve_kv_load(
+        sample,
+        workload=Workload(isl=100, osl=100, request_count=1, kv_load_ratio=1.0),
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+        ratio=1,
+        backend_version="pinned-version",
+    )
+    assert seen[0]["backend_version"] == "pinned-version"
+    assert dict(seen[0]["model_controls"]) == {"wideep_num_slots": 64}
+
+
+@pytest.mark.parametrize("invalid", [None, 7, "invalid", []])
+def test_capacity_rejects_malformed_external_identity(invalid):
+    sample = _sample("agg")
+    sample["agg_timing_model"] = {"type": "external", "provider": "aic", "config": invalid}
+    with pytest.raises(ValueError, match="external AIC timing config must be a mapping"):
+        resolve_kv_load(
+            sample,
+            workload=Workload(isl=100, osl=100, request_count=1, kv_load_ratio=1.0),
+            parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+            ratio=1,
+            backend_version="v",
+        )

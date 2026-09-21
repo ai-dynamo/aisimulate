@@ -34,6 +34,10 @@ pub enum AicError {
     ModelConfig(String),
     #[error("perf database error: {0}")]
     PerfDatabase(String),
+    /// Malformed or incompatible measured data is never a coverage miss.
+    /// HYBRID and regression fallbacks must propagate this error.
+    #[error("invalid performance data: {0}")]
+    InvalidPerfData(String),
     /// A quant mode's compute dtype has no `*_tc_flops` entry in the system
     /// YAML. Mirrors Python's `MissingSystemFlopsError`: the platform either
     /// lacks hardware for that dtype or the YAML is incomplete — never

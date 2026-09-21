@@ -183,6 +183,80 @@ def test_ranks_feasible_best_first_and_passes_replay_specs(monkeypatch):
     assert factory.runner.closed
 
 
+@pytest.mark.parametrize(
+    ("small_report", "reason", "failed"),
+    [
+        ({"goodput_request_throughput_rps": 4.99}, "load_constraint", False),
+        ({"goodput_request_throughput_rps": 0.0}, "load_constraint", False),
+        ({"goodput_request_throughput_rps": -1.0}, "runner_contract", True),
+        ({"mean_e2e_latency_ms": 101.0}, "sla_constraint", False),
+        ({"num_e2e_latency_samples": 0.0}, "sla_constraint", False),
+        ({"goodput_request_throughput_rps": None}, "runner_contract", True),
+    ],
+)
+def test_min_gpus_gates_before_optimizer_feedback_and_top_n(monkeypatch, small_report, reason, failed):
+    shapes = tuple(_pc(tp=gpus, replicas=1) for gpus in (4, 1, 2))
+    branch = BranchSpace(
+        deployment_mode="agg",
+        parallel_configs=shapes,
+        supported_backends={shape: frozenset({"trtllm"}) for shape in shapes},
+        knob_choices={"backend": ["trtllm"]},
+    )
+    _stub(monkeypatch, branch)
+    observations = []
+
+    class Sampler(_FakeSampler):
+        def __init__(self, branch, study_id, objectives=None, **kwargs):
+            super().__init__(branch, study_id, objectives)
+
+        def suggest(self, count):
+            return [
+                Suggestion(selection=_selection(256 * (i + 1)), parallel_config=shape, handle=None)
+                for i, shape in enumerate(shapes[:count])
+            ]
+
+        def observe(self, suggestion, metrics):
+            observations.append(metrics)
+
+        def observe_infeasible(self, suggestion, reason):
+            observations.append(("infeasible", reason))
+
+    class Runner(_FakeRunner):
+        def run(self, spec):
+            seqs = spec.backend_deployment.agg_engine_args["max_num_seqs"]
+            metrics = {
+                "completed_requests": 10.0,
+                "num_e2e_latency_samples": 10.0,
+                "mean_e2e_latency_ms": 50.0,
+                "goodput_request_throughput_rps": 5.0,
+                "goodput_output_throughput_tok_s": 1000.0 if seqs == 256 else 100.0,
+            }
+            if seqs == 512:
+                metrics.update(small_report)
+            return ReplayReport(metrics={key: value for key, value in metrics.items() if value is not None})
+
+    config = SmartSearchConfig(
+        search_space=_config().search_space,
+        workload={"isl": 1024, "osl": 128, "request_rate": 10, "num_request_ratio": 2},
+        sweep={"max_trials": 3, "parallel_evals": 1, "candidates_per_round": 3, "max_eval_seconds": None},
+        goal={"target": "min_gpus", "sla": {"e2e_ms": 100}, "min_goodput_rps": 5},
+    )
+    result = Sweeper(runner_factory=_FakeRunnerFactory(Runner()), sampler_factory=Sampler, show_progress=False).run(
+        config,
+        top_n=1,
+    )
+    assert [candidate.used_gpus for candidate in result.selected_candidates] == [2]
+    assert [entry["objective"] for entry in observations if isinstance(entry, dict)] == [-4.0, -2.0]
+    rejected = [candidate for candidate in result.candidates if candidate.reason_category is not None]
+    assert len(rejected) == 1
+    assert rejected[0].reason_category.value == reason
+    assert rejected[0].used_gpus == 1
+    assert result.counts.failed == int(failed)
+    assert result.counts.infeasible == int(not failed)
+    assert result.counts.feasible == 2
+    assert result.selected_candidates[0].metrics["goodput_request_throughput_rps"] == 5
+
+
 def test_pinned_backend_version_bypasses_latest_resolution(monkeypatch):
     branch = _branch(_pc())
     monkeypatch.setattr(
@@ -1167,3 +1241,69 @@ def _isolate_estimator_data_for_orchestration(monkeypatch):
     from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
 
     monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_materialization_preserves_resolved_estimator_or_reports_failure(monkeypatch, fail):
+    from aisimulate.sweeper.forward_pass_estimator import (
+        ForwardPassEstimatorResolutionError,
+        ForwardPassEstimatorResolver,
+    )
+    from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+
+    config = _config()
+    config.search_space.agg_num_gpu_blocks = 128
+    identity = {
+        "model": "model",
+        "system": "system",
+        "backend": "trtllm",
+        "backend_version": "resolved-version",
+        "database_mode": "SILICON",
+        "estimation_mode": "op_level",
+        "fallback_policy": "deny",
+        "tp": 4,
+        "pp": 1,
+        "attention_dp_size": 1,
+        "moe_tp_size": 1,
+        "moe_ep_size": 4,
+        "systems_paths": ["root"],
+        "enable_eplb": False,
+        "moe_backend": None,
+        "wideep_num_slots": None,
+    }
+    resolved = ForwardPassEstimatorSpec(config=identity)
+
+    def resolve(self, sample):
+        if fail:
+            raise ForwardPassEstimatorResolutionError("fixture resolution failed")
+        return {"agg": resolved}
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", resolve)
+
+    def artifact(sample, spec):
+        assert sample["forward_pass_estimators"]["agg"]["config"] == identity
+        assert spec.backend_deployment.forward_pass_estimators["agg"].config == identity
+        return {"resolved": identity}
+
+    prepared, error = search_mod._materialize_one(
+        _selection(256),
+        _pc(),
+        config=config,
+        goal=config.goal,
+        providers={},
+        provider_plans={},
+        runner_factory=_FakeRunnerFactory(),
+        prediction_config_factory=artifact,
+    )
+    if fail:
+        assert prepared is None
+        assert error.outcome == "failed"
+        assert "fixture resolution failed" in error.reason
+    else:
+        assert error is None
+        assert prepared.sample["backend_version"] == "resolved-version"
+        assert prepared.prediction_config == {"resolved": identity}
+        payload = prepared.replay_spec.backend_deployment.agg_engine_args["timing_model"]["config"]
+        assert payload == {
+            k: v for k, v in identity.items() if k not in {"enable_eplb", "moe_backend", "wideep_num_slots"}
+        }

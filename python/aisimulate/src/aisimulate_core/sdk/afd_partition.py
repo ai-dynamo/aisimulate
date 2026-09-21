@@ -27,6 +27,16 @@ class AFDPartitionError(ValueError):
     """Raised when an op sequence cannot be safely partitioned for AFD."""
 
 
+def validate_afd_model_architecture(architecture: str) -> None:
+    """Reject architectures whose stages/residency cannot be split across A/F pools."""
+    if architecture == "DeepseekV41ForCausalLM":
+        raise NotImplementedError(
+            "AFD does not support DeepSeek-V4.1: mixed attention/FFN stages and "
+            "their weight, scale, Engram, and cache residency are not partitioned. "
+            "Use agg, disagg, or static estimation."
+        )
+
+
 @dataclass
 class AFDOpsPartition:
     """Partitioned AFD operation lists.

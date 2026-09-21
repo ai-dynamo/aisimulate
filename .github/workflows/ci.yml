@@ -25,6 +25,17 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  # Trusted PR copies share a group across push/manual events. Manual source
+  # branches replace their own runs. Unique lifecycle/tag groups preserve
+  # every validation and protected staging run.
+  group: >-
+    full-ci-${{ (startsWith(github.ref, 'refs/heads/pull-request/') ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') &&
+       github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')))
+      && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   verify-target:
     name: Verify Exact Target

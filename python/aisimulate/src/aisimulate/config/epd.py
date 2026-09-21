@@ -40,6 +40,8 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
             raise ValueError("encoder parameters or resolved database version changed")
         if engine.model != encoder.model or engine.backend != encoder.backend:
             raise ValueError("encoder model/backend identity changed")
+        if spec.backend_deployment.backend_version and engine.backend_version is None:
+            raise ValueError("selected language backend version was dropped")
         source = prediction.traffic.source
         if not isinstance(source, SyntheticSource) or source.images is None:
             raise ValueError("fixed image workload was dropped")
@@ -82,11 +84,11 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
 
 def _language_execution(spec: ReplaySpec) -> dict:
     """Normalize compiler/Sweeper spellings at the existing execution boundary."""
-    from aisimulate_core.sdk.perf_database import resolve_query_version
+    from aisimulate_core.sdk.perf_database import get_latest_database_version, resolve_query_version
 
-    from ..capacity import DEFAULT_BACKEND_VERSIONS
     from ..runner import _materialize_engine_role
-    from .engine import SchedulerPredictionConfig
+    from ..sweeper.forward_pass_estimator import resolve_systems_paths
+    from .engine import EstimatorPolicyConfig, SchedulerPredictionConfig
 
     deployment = spec.backend_deployment
     roles = (
@@ -104,12 +106,29 @@ def _language_execution(spec: ReplaySpec) -> dict:
         rank.setdefault("prefill_schedule_interval", SchedulerPredictionConfig().prefill_schedule_interval)
         rank.setdefault("prefill_decode_interval", SchedulerPredictionConfig().prefill_decode_interval)
         timing = rank["timing_model"]["config"]
+        roots = timing.get("systems_paths")
+        if not roots and timing.get("systems_path") is not None:
+            roots = [timing["systems_path"]]
+        resolved_roots = list(resolve_systems_paths(roots)) if roots is not None else None
+        version = timing.get("backend_version")
+        if not version:
+            version = get_latest_database_version(
+                timing["system"],
+                timing["backend"],
+                **({"systems_paths": resolved_roots} if resolved_roots is not None else {}),
+            )
+            if version is None:
+                raise ValueError(f"no perf database for system={timing['system']!r}, backend={timing['backend']!r}")
         timing["backend_version"] = resolve_query_version(
             timing["system"],
             timing["backend"],
-            timing.get("backend_version") or DEFAULT_BACKEND_VERSIONS[deployment.backend],
+            version,
+            systems_paths=resolved_roots,
         )
         timing.setdefault("cuda_graph_reserved_bytes", 0)
+        # Legacy Sweeper descriptors omit the default policy; the compiler
+        # serializes it explicitly. Compare their resolved execution meaning.
+        timing.setdefault("database_mode", EstimatorPolicyConfig().database_mode)
         # HandoffTransferTiming::delay_ms uses the same fallback for either mode
         # when a complete byte-count/bandwidth transfer model is unavailable.
         if rank.get("kv_transfer_bytes_per_token") is None or rank.get("kv_transfer_bandwidth") is None:

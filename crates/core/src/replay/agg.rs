@@ -1898,11 +1898,9 @@ mod agentic_warmup_tests {
                 report.per_request[0].agentic_phase,
                 Some(AgenticReplayPhase::Profile)
             );
-            let duration_ms = match backend {
-                Backend::Vllm => 61.0, // vLLM includes its 1 ms token-emission floor.
-                Backend::Sglang => 60.0,
-                _ => unreachable!(),
-            };
+            // The fixture keeps 50 ms of snapshot wait, then uses 10 ms prefill
+            // and zero decode time on both backends.
+            let duration_ms = 60.0;
             assert_eq!(report.throughput.duration_ms, duration_ms);
             assert!((report.throughput.decode_worker_seconds - duration_ms / 1000.0).abs() < 1e-9);
 

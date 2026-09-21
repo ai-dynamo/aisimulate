@@ -43,6 +43,25 @@ collector.sglang.collect_computescale:
   - collector/cases/base_ops/compute_scale.yaml
   - collector/cases/base_ops/gemm.yaml
   - __model_cases__
+collector.sglang.collect_dsv41_module:
+  # The native runner and workload helper execute the model-derived manifest;
+  # the SDK descriptor/graph and pinned checkpoint define its physical keys.
+  # Runtime image/source and the emitted manifest retain their separate hashes.
+  - collector/cases/base_ops/dsv41_module.yaml
+  - collector/sglang/dsv41_contract.py
+  - collector/sglang/dsv41_native_runner.py
+  - collector/sglang/dsv41_workloads.py
+  - collector/sglang/dsv41_forward_results.py
+  - src/aisimulate_core/sdk/deepseek_v41.py
+  - src/aisimulate_core/sdk/config.py
+  - src/aisimulate_core/sdk/common.py
+  - src/aisimulate_core/sdk/utils.py
+  - src/aisimulate_core/sdk/models/__init__.py
+  - src/aisimulate_core/sdk/models/base.py
+  - src/aisimulate_core/sdk/models/helpers.py
+  - src/aisimulate_core/sdk/models/deepseek_v41.py
+  - src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json
+  - __model_cases__
 collector.sglang.collect_dsv4_attn:
   - __model_cases__
 collector.sglang.collect_dsv4_megamoe:

@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 from aisimulate_core.sdk import (
@@ -14,7 +16,7 @@ from aisimulate_core.sdk import (
     RustForwardPassPerfModel,
 )
 
-from .config import SearchSpace
+from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .deploy import _role_hardware_sku
 from .replay import ForwardPassEstimatorSpec
 
@@ -67,6 +69,13 @@ class ForwardPassEstimatorResolver:
         nextn = sample.get("aic_nextn")
         if nextn is None:
             nextn = self._search_space.aic_nextn
+        estimator_config = deepcopy(controls.get("estimator_config", self._search_space.estimator_config))
+        path = sample.get(f"{role}_fpm_parquet_path")
+        if path is not None:
+            interpolation = estimator_config.setdefault("fpm_interpolation", {})
+            if interpolation.get("fpm_parquet_path", path) != path:
+                raise ValueError("conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path")
+            interpolation["fpm_parquet_path"] = path
         return ForwardPassPerfModelConfig(
             model=self._search_space.model_name,
             system=_role_hardware_sku(sample, role),
@@ -79,6 +88,7 @@ class ForwardPassEstimatorResolver:
             moe_tp_size=moe_tp if moe_tp * moe_ep > 1 else None,
             moe_ep_size=moe_ep if moe_tp * moe_ep > 1 else None,
             nextn=int(nextn or 0),
+            **{name: getattr(self._search_space, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
             speculation=self._search_space.speculation.cost_config()
             if self._search_space.speculation is not None
             else None,
@@ -88,10 +98,18 @@ class ForwardPassEstimatorResolver:
             transfer_policy=controls.get("transfer_policy", transfer_policy),
             systems_paths=resolve_systems_paths(self._search_space.systems_paths_for(role)),
             fallback_policy=controls.get("fallback_policy", self._search_space.fallback_policy),
-            estimator_config=controls.get("estimator_config", self._search_space.estimator_config),
+            estimator_config=estimator_config,
         )
 
     def _resolve(self, request: ForwardPassPerfModelConfig, role: str) -> ForwardPassEstimatorSpec:
+        # Bind an external file before caching so identical relative spellings
+        # from different working directories cannot reuse another pair.
+        interpolation = request.estimator_config.get("fpm_interpolation", {})
+        path = interpolation.get("fpm_parquet_path")
+        if isinstance(path, str) and path and not Path(path).is_absolute():
+            estimator_config = deepcopy(request.estimator_config)
+            estimator_config["fpm_interpolation"]["fpm_parquet_path"] = str(Path(path).absolute())
+            request = replace(request, estimator_config=estimator_config)
         request_payload = vars(request)
         cache_key = json.dumps(request.to_dict(), sort_keys=True)
         cached = self._resolved.get(cache_key)
@@ -147,6 +165,7 @@ class ForwardPassEstimatorResolver:
             "speculation",
             "kv_block_size",
             "worker_type",
+            *ENGINE_MODEL_CONTROL_FIELDS,
         ):
             if resolved_config.get(field) != request_payload.get(field):
                 raise ForwardPassEstimatorResolutionError(

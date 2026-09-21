@@ -32,6 +32,76 @@ def _workload(**overrides):
     }
 
 
+def test_min_gpus_requires_sla_and_rejects_pareto_use():
+    with pytest.raises(ValidationError, match="SLA bound"):
+        OptimizationGoal(target="min_gpus")
+    with pytest.raises(ValidationError, match="not a Pareto objective"):
+        OptimizationGoal(target="pareto", pareto_objectives=["min_gpus", "throughput"])
+    with pytest.raises(ValidationError, match="only supported with min_gpus"):
+        OptimizationGoal(target="throughput", min_goodput_rps=2)
+
+
+@pytest.mark.parametrize("minimum", [0, -1, float("nan"), float("inf"), True])
+def test_min_gpus_rejects_invalid_min_goodput(minimum):
+    with pytest.raises(ValidationError):
+        OptimizationGoal(target="min_gpus", sla={"itl_ms": 30}, min_goodput_rps=minimum)
+
+
+@pytest.mark.parametrize(
+    ("workload", "minimum", "error"),
+    [
+        (_workload(concurrency=None, request_rate=10), None, "requires min_goodput_rps"),
+        (_workload(concurrency=None, request_rate=10), 11, "cannot exceed"),
+        (_workload(concurrency=None, kv_load_ratio=0.5), None, "fixed synthetic"),
+        ({"trace_path": "trace.jsonl"}, 1, "fixed synthetic"),
+        (_workload(load_search_field="concurrency", load_choices=[2, 4]), None, "fixed synthetic"),
+    ],
+)
+def test_min_gpus_sdk_validates_workload(workload, minimum, error):
+    with pytest.raises(ValidationError, match=error):
+        SmartSearchConfig(
+            search_space=_search_space(),
+            workload=workload,
+            goal={"target": "min_gpus", "sla": {"itl_ms": 30}, "min_goodput_rps": minimum},
+        )
+
+
+def test_min_gpus_sdk_accepts_goodput_floor_equal_to_offered_request_rate():
+    config = SmartSearchConfig(
+        search_space=_search_space(),
+        workload=_workload(concurrency=None, request_rate=10),
+        goal={"target": "min_gpus", "sla": {"itl_ms": 30}, "min_goodput_rps": 10},
+    )
+    assert config.goal.min_goodput_rps == config.workload.request_rate == 10
+
+
+@pytest.mark.parametrize(
+    ("load", "load_type", "valid"),
+    [
+        ({"concurrency": 2}, None, True),
+        ({"concurrency": 2}, "concurrency", True),
+        ({"concurrency": None, "request_rate": 10}, None, True),
+        ({"concurrency": None, "request_rate": 10}, "constant_rate", True),
+        ({"concurrency": None, "request_rate": 10}, "poisson", True),
+        ({"concurrency": None, "request_rate": 10}, "trace_timestamps", False),
+        ({"concurrency": None, "request_rate": 10}, "concurrency", False),
+        ({"concurrency": 2}, "poisson", False),
+        ({"concurrency": 2}, "unknown", False),
+    ],
+)
+def test_min_gpus_sdk_validates_synthetic_load_type(load, load_type, valid):
+    args = {
+        "search_space": _search_space(),
+        "workload": _workload(**load, load_type=load_type),
+        "goal": {"target": "min_gpus", "sla": {"itl_ms": 30}, "min_goodput_rps": 5},
+    }
+    if valid:
+        assert SmartSearchConfig(**args).workload.load_type == load_type
+    else:
+        with pytest.raises(ValidationError, match="synthetic load_type"):
+            SmartSearchConfig(**args)
+
+
 def test_backend_only_yaml_and_adapter_search_space_load(tmp_path):
     path = tmp_path / "sweep.yaml"
     path.write_text(

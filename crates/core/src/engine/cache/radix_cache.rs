@@ -43,6 +43,7 @@ impl KvPageId {
 /// Manages free / allocated pages for the simulated SGLang KV cache.
 ///
 /// SGLang's paged allocator owns and frees whole pages in production.
+#[derive(Clone)]
 pub struct PagePool {
     next_fresh: usize,
     free: Vec<KvPageId>,
@@ -157,6 +158,7 @@ impl PagePool {
 }
 
 /// A single node in the radix tree.
+#[derive(Clone)]
 pub struct TreeNode {
     /// Children keyed by the first complete page on the child edge.
     pub children: FxHashMap<LocalBlockHash, NodeId>,
@@ -195,6 +197,7 @@ pub struct RadixCache {
 }
 
 /// Optional forecast metadata; physical ownership and leaf eligibility stay in the radix tree.
+#[derive(Clone)]
 struct BeladyLeaves {
     oracle: BeladyOracle,
     cursor: usize,
@@ -205,6 +208,23 @@ struct BeladyLeaves {
 }
 
 impl RadixCache {
+    /// Snapshot allocator and radix metadata for a fallible admission transaction.
+    /// This is not a second owner of live request leases; only one cache state may commit.
+    pub(crate) fn admission_checkpoint(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            root: self.root,
+            page_pool: self.page_pool.clone(),
+            page_size: self.page_size,
+            #[cfg(test)]
+            test_now: self.test_now,
+            evictable_leaves: self.evictable_leaves.clone(),
+            belady: self.belady.clone(),
+            evictable_size: self.evictable_size,
+            protected_size: self.protected_size,
+        }
+    }
+
     pub fn new(total_tokens: usize, page_size: usize) -> Self {
         assert!(page_size >= 1, "page_size must be >= 1");
         let mut nodes = SlotMap::with_key();

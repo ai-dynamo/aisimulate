@@ -12,6 +12,7 @@ from importlib import resources as pkg_resources
 
 from packaging.version import InvalidVersion, Version
 
+from aisimulate_core.sdk.deepseek_v41 import DeepSeekV41Config as DeepSeekV41Config
 from aisimulate_core.sdk.errors import MissingSystemFlopsError
 
 
@@ -656,6 +657,7 @@ The list of default models for testing is derived from the support matrix CSV fi
 and this set via get_default_models()
 """
 DefaultHFModels = {
+    "deepseek-ai/DeepSeek-V4.1-Flash",
     # Llama 3.1 Models
     "meta-llama/Meta-Llama-3.1-8B",
     "meta-llama/Meta-Llama-3.1-70B",
@@ -812,6 +814,7 @@ ModelFamily = {
     "DEEPSEEK",
     "DEEPSEEKV32",
     "DEEPSEEKV4",
+    "DEEPSEEKV41",
     "KIMIK25",
     "KIMIK3",
     "NEMOTRONNAS",
@@ -837,6 +840,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "DeepseekV32ForCausalLM": "DEEPSEEKV32",
     "GlmMoeDsaForCausalLM": "DEEPSEEKV32",
     "DeepseekV4ForCausalLM": "DEEPSEEKV4",
+    "DeepseekV41ForCausalLM": "DEEPSEEKV41",
     "KimiK25ForConditionalGeneration": "KIMIK25",
     "KimiK3ForConditionalGeneration": "KIMIK3",
     "NemotronForCausalLM": "NEMOTRONNAS",
@@ -871,6 +875,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
 # _parse_hf_config_json will flatten these before parsing.
 MULTIMODAL_TEXT_CONFIG_KEY = {
+    "DeepseekV41ForCausalLM": "text_config",
     "KimiK25ForConditionalGeneration": "text_config",
     "KimiK3ForConditionalGeneration": "text_config",
     # Step-3.7/3.5-Flash ship a vision tower and nest the whole decoder under
@@ -1348,6 +1353,7 @@ class PerfDataFilename(Enum):
     msa_context_module = "msa_context_module_perf.parquet"
     msa_generation_module = "msa_generation_module_perf.parquet"
     mhc_module = "mhc_module_perf.parquet"
+    dsv41_module = "dsv41_module_perf.parquet"
     # DeepSeek-V4 module-level data — one file per (attn_kind ∈ {csa, hca},
     # mode ∈ {context, generation}) = 4 files. Each file contains all
     # (tp_size, gemm_type, b, s) rows for that kind+mode.  SWA layers are
