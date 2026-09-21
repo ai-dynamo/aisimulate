@@ -433,3 +433,24 @@ findings:
     - instrument:path_diff
     - platform:sm90
     - platform:sm103
+  vllm_0290_full_op_sweep:
+    statement: 'FULL-GRID VALIDATION of the in-place 0.29 upgrade (H20, 4 GPUs, 2026-09-20/21, ~290k perf rows,
+      15 op tables finalized to parquet; evidence workspace facts/opsweep_full_0290/ incl. TRIAGE.md + staging_patch.diff
+      — the staging rehearsal that became commit 993f9cdf). Row parity vs 0.24/0.25 baselines: gemm 111444 (exact),
+      attention ctx/gen 53777/66708 (exact), computescale/scale_matrix/encoder/mla_bmm exact, msa+gdn above baseline,
+      moe 58k. ALL four failure clusters root-caused, ZERO 0.29 regressions and ZERO upgrade-code bugs: (1) msa
+      Triton CompilationError 1616x = kernel domain boundary — sparse_num_index_heads shards to non-power-of-2 at
+      collector heads 48/96, unreachable in serving (real tp gives 4/2/1); (2+3) attention fp8-KV 1625x = HISTORICAL
+      blank: 0.24/0.25 baselines contain zero fp8 rows (100% bfloat16), the grid always swept an unsupported region,
+      only the error text changed; (4a) dsa ctx fp8-KV 776x = flashmla int64_stride_to_int input constraint on the
+      NEW fp8 collection key — FIXME(kernel-limit) class; (4b) dsa gen IMA ~4% = BISECT-EXONERATED from the
+      block-table zero-pad fix (same 300 cases: 22 fails with fix, 19 without), highly shape-correlated (16/18
+      overlap with the full-run set) with worker-reuse history sensitivity — an independent 0.29 sparse-MLA decode
+      issue, recorded+classified per failure_handling; escalation needs serving-parity audit + compute-sanitizer.
+      Harness lessons banked: PerfFile.SCALE_MATRIX enum gap (fixed), measurement containers must never share host
+      network (setup_distributed port collisions), collection images need deps pre-baked, executor ignores --ops
+      CLI order, sharding is manual via --case-filter.'
+    applies_to:
+    - framework:vllm-0.29.0
+    - platform:sm90
+    - instrument:collect.py
