@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+deployment.json: |
+  {
+    "backend": "vllm",
+    "mode": "agg",
+    "gpus": 2,
+    "port": 8000,
+    "model": "test-model",
+    "frontend": [
+      "python3",
+      "-m",
+      "dynamo.frontend",
+      "--http-port",
+      "8000"
+    ],
+    "workers": [
+      {
+        "name": "agg-0",
+        "argv": [
+          "python3",
+          "-m",
+          "dynamo.vllm",
+          "--model",
+          "/models/Qwen 3",
+          "--served-model-name",
+          "test-model",
+          "--tensor-parallel-size",
+          "2",
+          "--pipeline-parallel-size",
+          "1",
+          "--data-parallel-size",
+          "1",
+          "--max-model-len",
+          "1692",
+          "--max-num-seqs",
+          "512",
+          "--max-num-batched-tokens",
+          "2140"
+        ],
+        "env": {},
+        "gpu_offset": 0,
+        "gpu_count": 2
+      }
+    ],
+    "env": {
+      "HF_HUB_OFFLINE": "1"
+    },
+    "startup_timeout": 1800,
+    "benchmark_timeout": 1800,
+    "benchmark_concurrency": [
+      1,
+      4
+    ],
+    "benchmark_rounds": 20
+  }

@@ -6,14 +6,17 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import socket
 import subprocess
 import sys
 import time
 import urllib.error
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from threading import Thread
 
 import pytest
+import yaml
 
 from aisimulate.generator.api import (
     generate_backend_artifacts,
@@ -22,7 +25,21 @@ from aisimulate.generator.api import (
 )
 from aisimulate.generator.builders.slurm_runtime import Supervisor
 from aisimulate.generator.naive import build_naive_generator_params
-from aisimulate.generator.request import from_legacy_params, to_legacy_params
+from aisimulate.generator.request import (
+    SweeperCandidateError,
+    from_legacy_params,
+    from_sweeper_candidate,
+    to_legacy_params,
+)
+
+_BACKENDS = [("vllm", "0.20.1"), ("sglang", "0.5.11"), ("trtllm", "1.3.0rc14")]
+_GOLDEN = Path(__file__).resolve().parents[2] / "golden/generator/slurm"
+
+
+@pytest.fixture
+def local_http_without_proxy(monkeypatch):
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
 
 
 def _params(backend="vllm", mode="agg"):
@@ -31,7 +48,12 @@ def _params(backend="vllm", mode="agg"):
             "ServiceConfig": {"model_path": "/models/Qwen 3", "served_model_name": "test-model"},
             "DynConfig": {"mode": mode},
             "Workers": {
-                role: {"tensor_parallel_size": 2, "max_batch_size": 8}
+                role: {
+                    "tensor_parallel_size": 2,
+                    "pipeline_parallel_size": 1,
+                    "data_parallel_size": 1,
+                    "max_batch_size": 8,
+                }
                 for role in (["agg"] if mode == "agg" else ["prefill", "decode"])
             },
             "NodeConfig": {"num_gpus_per_node": 8},
@@ -49,21 +71,24 @@ def _params(backend="vllm", mode="agg"):
     )
 
 
-@pytest.mark.parametrize("backend,version", [("vllm", "0.20.1"), ("sglang", "0.5.11"), ("trtllm", "1.3.0rc14")])
+@pytest.mark.parametrize("backend,version", _BACKENDS)
 @pytest.mark.parametrize("mode", ["agg", "disagg"])
 def test_all_backends_render_standalone_slurm_bundle(backend, version, mode, tmp_path):
+    params = _params(backend, mode)
+    params["generator_dynamo_version"] = "1.2.0"
     artifacts = generate_backend_artifacts(
-        _params(backend, mode), backend, backend_version=version, deployment_target="slurm", output_dir=str(tmp_path)
+        params, backend, backend_version=version, deployment_target="slurm", output_dir=str(tmp_path)
     )
-    assert set(artifacts) >= {
-        "deploy.sbatch",
-        "benchmark.sbatch",
-        "submit.sh",
-        "environment.sh",
-        "deployment.json",
-        "slurm_runtime.py",
-        "bench_run.sh",
+    # Every emitted byte has a static expected value. Common fixtures avoid
+    # duplicating the unchanged supervisor and shared scripts for each backend.
+    expected = {
+        name: body
+        for path in (_GOLDEN / "common.yaml", _GOLDEN / f"{mode}.yaml", _GOLDEN / backend / version / f"{mode}.yaml")
+        for name, body in yaml.safe_load(path.read_text()).items()
     }
+    assert artifacts.keys() == expected.keys()
+    for name, body in artifacts.items():
+        assert body == expected[name], name
     assert not {"k8s_deploy.yaml", "k8s_bench.yaml", "sflow.yaml", "run_0.sh"}.intersection(artifacts)
     for name, body in artifacts.items():
         assert (tmp_path / name).is_file()
@@ -81,6 +106,111 @@ def test_all_backends_render_standalone_slurm_bundle(backend, version, mode, tmp
             assert config in artifacts
         if mode == "disagg":
             assert "--disaggregation-mode" in worker["argv"]
+
+
+@pytest.mark.parametrize("backend,version", _BACKENDS)
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_moe_topology_matches_slurm_allocation_and_worker_commands(backend, version, mode):
+    params = _params(backend, mode)
+    params["ModelConfig"] = {"is_moe": True}
+    # The attention TP starts at one; the public generator must derive the
+    # four-GPU expert world. vLLM divides that world across attention DP ranks.
+    for role in ["agg"] if mode == "agg" else ["prefill", "decode"]:
+        params["params"][role].update(
+            tensor_parallel_size=1,
+            data_parallel_size=2 if backend == "vllm" else 1,
+            moe_tensor_parallel_size=2,
+            moe_expert_parallel_size=2,
+        )
+    artifacts = generate_backend_artifacts(params, backend, backend_version=version, deployment_target="slurm")
+    spec = json.loads(artifacts["deployment.json"])
+    expected_gpus = 4 if mode == "agg" else 8
+    assert spec["gpus"] == expected_gpus
+    assert [worker["gpu_count"] for worker in spec["workers"]] == [4] * (expected_gpus // 4)
+    assert [worker["gpu_offset"] for worker in spec["workers"]] == list(range(0, expected_gpus, 4))
+    for name in ("deploy.sbatch", "benchmark.sbatch"):
+        assert f"#SBATCH --gres=gpu:{expected_gpus}\n" in artifacts[name]
+    for worker in spec["workers"]:
+        argv = worker["argv"]
+        if backend == "trtllm":
+            assert argv[argv.index("--gpus-per-node") + 1] == "4"
+            assert worker["env"]["DYN_TRTLLM_OVERRIDE_ENGINE_ARGS"] == ""
+            engine = yaml.safe_load(artifacts[argv[argv.index("--extra-engine-args") + 1]])
+            assert engine["tensor_parallel_size"] == 4
+            assert engine["moe_tensor_parallel_size"] == 2
+            assert engine["moe_expert_parallel_size"] == 2
+        else:
+            assert argv[argv.index("--tensor-parallel-size") + 1] == ("2" if backend == "vllm" else "4")
+            assert argv[argv.index("--data-parallel-size") + 1] == ("2" if backend == "vllm" else "1")
+            if backend == "vllm":
+                assert "--enable-expert-parallel" in argv
+            else:
+                assert argv[argv.index("--expert-parallel-size") + 1] == "2"
+
+
+@pytest.mark.parametrize("backend,version", _BACKENDS)
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_prefix_cache_enables_router_and_worker_events(backend, version, mode):
+    params = _params(backend, mode)
+    params["ModelConfig"] = {"prefix": 64}
+    artifacts = generate_backend_artifacts(params, backend, backend_version=version, deployment_target="slurm")
+    spec = json.loads(artifacts["deployment.json"])
+    frontend = spec["frontend"]
+    assert frontend[frontend.index("--router-mode") + 1] == "kv"
+    for worker in spec["workers"]:
+        argv = worker["argv"]
+        if backend == "trtllm":
+            assert "--publish-events-and-metrics" in argv
+            engine = yaml.safe_load(artifacts[argv[argv.index("--extra-engine-args") + 1]])
+            assert engine["kv_cache_config"]["enable_block_reuse"] is True
+        else:
+            assert "--no-enable-prefix-caching" not in argv
+            assert "--disable-radix-cache" not in argv
+            event = json.loads(argv[argv.index("--kv-events-config") + 1])
+            assert event == {
+                "publisher": "zmq",
+                "topic": "kv-events",
+                "endpoint": "tcp://*:@EVENT_PORT@",
+                **({"enable_kv_cache_events": True} if backend == "vllm" else {}),
+            }
+
+
+@pytest.mark.parametrize("backend,version", _BACKENDS)
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+@pytest.mark.parametrize("nextn", [0, 2])
+def test_mtp_settings_reach_every_worker(backend, version, mode, nextn):
+    params = _params(backend, mode)
+    params["ModelConfig"] = {"nextn": nextn}
+    artifacts = generate_backend_artifacts(params, backend, backend_version=version, deployment_target="slurm")
+    spec = json.loads(artifacts["deployment.json"])
+    for worker in spec["workers"]:
+        argv = worker["argv"]
+        if backend == "trtllm":
+            engine = yaml.safe_load(artifacts[argv[argv.index("--extra-engine-args") + 1]])
+            expected = {"decoding_type": "MTP", "num_nextn_predict_layers": nextn} if nextn else None
+            assert engine.get("speculative_config") == expected
+        elif not nextn:
+            assert not any(token.startswith("--speculative-") for token in argv)
+        elif backend == "vllm":
+            assert json.loads(argv[argv.index("--speculative-config") + 1]) == {
+                "method": "mtp",
+                "num_speculative_tokens": nextn,
+            }
+        else:
+            for flag, value in (
+                ("--speculative-algorithm", "NEXTN"),
+                ("--speculative-num-steps", "2"),
+                ("--speculative-eagle-topk", "1"),
+                ("--speculative-num-draft-tokens", "3"),
+            ):
+                assert argv[argv.index(flag) + 1] == value
+
+
+def test_slurm_candidate_rejects_unsupported_prompt_lookup(tmp_path):
+    candidate = {"config": {"speculation": {"kind": "ngram", "num_speculative_tokens": 2}}}
+    with pytest.raises(SweeperCandidateError, match="ngram deployment generation is unsupported"):
+        from_sweeper_candidate(candidate, deployment_target="slurm", output_dir=str(tmp_path))
+    assert not list(tmp_path.iterdir())
 
 
 def test_typed_request_preserves_cluster_overrides(tmp_path):
@@ -193,7 +323,11 @@ def test_uncertain_submission_keeps_lock(tmp_path):
 
 
 def test_supervisor_preserves_assigned_gpu_ids(monkeypatch, tmp_path):
-    artifacts = generate_backend_artifacts(_params(mode="disagg"), "vllm", deployment_target="slurm")
+    params = _params(mode="disagg")
+    with socket.socket() as sock:
+        sock.bind(("0.0.0.0", 0))
+        params["ServiceConfig"]["port"] = sock.getsockname()[1]
+    artifacts = generate_backend_artifacts(params, "vllm", deployment_target="slurm")
     spec = json.loads(artifacts["deployment.json"])
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-a,GPU-b,GPU-c,GPU-d")
     supervisor = Supervisor(spec, tmp_path)
@@ -257,6 +391,7 @@ def test_cli_accepts_slurm_target(cli_args_factory):
     assert args.deployment_target == "slurm"
 
 
+@pytest.mark.usefixtures("local_http_without_proxy")
 def test_health_accepts_plain_http_response(tmp_path):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
@@ -277,6 +412,7 @@ def test_health_accepts_plain_http_response(tmp_path):
 
 
 @pytest.mark.parametrize("status", [404, 503, 400])
+@pytest.mark.usefixtures("local_http_without_proxy")
 def test_inference_readiness_handles_late_frontend_registration(tmp_path, status):
     class Handler(BaseHTTPRequestHandler):
         attempts = 0
