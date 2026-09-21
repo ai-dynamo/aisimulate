@@ -250,15 +250,28 @@ merge, so no prefill cross-mode number is quoted.
 
 ### Workload coverage: AgentX and ShareGPT (chatbot) on DeepSeek-V4.1-Flash
 
-Same V4.1-Flash SGLang deployment, overlap off, `sglang18` features. Two
-AgentX boots (c16/32/64/128 seed 42, c24/48/96 seed 7) and two ShareGPT
-chatbot boots (aiperf `--public-dataset sharegpt`, c32/64/128/256 seed 42,
-c48/96/192 seed 7), 2026-09-20/21. The two workloads occupy different parts
-of the input space: AgentX prefill is long-context with heavy prefix reuse
-(extend up to ~16k tokens, past KV in the hundreds of thousands) and its
-decode batches stay at or below 64; ShareGPT prefill is short (ISL median
-~530, almost no prefix hits) and its decode batch equals the concurrency,
-up to 256.
+Same V4.1-Flash SGLang deployment, overlap off, `sglang18` features, four
+AgentX boots (seeds 42/7/11/23; tiers c16/32/64/128 or c24/48/96) and four
+ShareGPT chatbot boots (aiperf `--public-dataset sharegpt`, seeds 42/7/11/23;
+tiers c32/64/128/256 or c48/96/192), 2026-09-19 to 09-21, dlcluster GB300.
+
+The two workloads occupy different parts of the input space. Per scheduler
+step, from the FPM per-request lists of one boot each (p5 / p50 / p95 / max):
+
+| Quantity | AgentX | ShareGPT |
+| --- | --- | --- |
+| prefill batch size (requests / step) | 1 / 1 / 2 / 11 | 1 / 3 / 9 / 63 |
+| prefill extend per request (tokens, 16k chunking) | 333 / 3,743 / 16,384 / 16,384 | 40 / 326 / 796 / 1,934 |
+| prefill past KV per request (prefix hit + earlier chunks) | 0 / 70,144 / 194,816 / 252,672 | 0 / 0 / 1,280 / 1,792 |
+| request ISL (past + extend at the last chunk) | 6,656 / 82,949 / 213,369 / 254,199 | 40 / 531 / 1,642 / 2,134 |
+| prefix-cache hit at admission (engine log) | 54% of requests hit; hit size p50 31k, p95 176k | almost none (past is the earlier chunks of the same request) |
+| decode batch size (requests / step) | 1 / 7 / 30 / 43 | 26 / 58 / 243 / 256 |
+| decode context per request | 36,268 / 115,407 / 233,765 / 254,469 | 122 / 779 / 1,879 / 2,886 |
+
+AgentX prefill is long-context with heavy prefix reuse and its decode batch
+never exceeds 64 (requests are long, so few are in flight); ShareGPT prefill
+is short with essentially no prefix hits, and its decode batch equals the
+concurrency.
 
 Pooled 60/40 split with no shared step: every (boot, tier) window is cut
 into five consecutive time blocks, blocks 1/2/4 train and 3/5 test, so both
@@ -266,33 +279,34 @@ sides see every boot and tier. Step-weighted MAPE (median / p95):
 
 | Training data | Test data | decode steps | decode | prefill steps | prefill |
 | --- | --- | --- | --- | --- | --- |
-| AgentX only | AgentX 40% | 200k | 1.70% (1.32% / 4.2%) | 3.5k | 2.52% (1.45% / 8.0%) |
-| ShareGPT only | ShareGPT 40% | 97k | 1.85% (1.30% / 5.4%) | 7.2k | 2.58% (1.82% / 6.3%) |
-| AgentX + ShareGPT | both, 40% | 297k | 1.69% (1.28% / 4.4%) | 10.7k | 2.45% (1.75% / 6.2%) |
-| AgentX + ShareGPT, equal steps per workload | both, 40% | 197k | 1.71% (1.29% / 4.5%) | 7.1k | 2.54% (1.81% / 6.7%) |
+| AgentX only (4 boots) | AgentX 40% | 460k | 2.34% (1.74% / 6.4%) | 8.4k | 2.24% (1.50% / 6.4%) |
+| ShareGPT only (4 boots) | ShareGPT 40% | 208k | 2.26% (1.57% / 6.7%) | 15.3k | 2.55% (1.81% / 6.2%) |
+| AgentX + ShareGPT (8 boots) | both, 40% | 668k | 2.21% (1.63% / 6.3%) | 23.6k | 2.45% (1.73% / 6.3%) |
+| AgentX + ShareGPT, equal steps per workload | both, 40% | 438k | 2.20% (1.61% / 6.3%) | 16.0k | 2.43% (1.72% / 6.4%) |
 
-Within the pooled model the AgentX tiers land at 1.5–2.0% decode /
-0.7–2.8% prefill and the ShareGPT tiers at 1.2–2.1% decode / 1.7–3.4%
-prefill, i.e. pooling costs neither workload anything against its own
-single-workload model. Splitting by whole boot instead of by time block
-(one boot per workload held out entirely) gives 1.46% / 2.52% for the
-pooled model.
+Pooling costs neither workload anything against its own single-workload
+model. Holding out whole boots instead of time blocks (3 of 8 boots, 49% of
+the decode steps) gives 2.14% decode / 2.29% prefill for the pooled model.
+The first two boots of each workload alone (one seed pair, 2026-09-20) land
+at 1.69% / 2.45% pooled; the extra boots add boot-to-boot variation (one
+AgentX boot runs with a 10–12% decode p95 against the others' 4–6%), which
+is what the numbers above include.
 
-Training on one workload and testing on the other shows why both belong
-in a release model:
+Training on one workload and testing on all four boots of the other:
 
 | Train → test | decode | prefill |
 | --- | --- | --- |
-| AgentX → ShareGPT | 17.5% (c32 2.2%, c64 11%, c128 30%, c256 45%) | 4.7% |
-| ShareGPT → AgentX | 4.0% | 26.1% (c16–c64 20–24%, c96/c128 47%) |
+| AgentX → ShareGPT | 14.1% overall; c32 2–3%, c64 5–7%, c128 24–26%, c256 41–43% | 3.5% (2.5–4.9% per tier) |
+| ShareGPT → AgentX | 3.9% (3.1–5.9% per tier) | 26.2%; c16–c64 20–25%, c96/c128 36–46% |
 
 The decode error grows monotonically with batch sizes the AgentX model
 never saw; the prefill error is the ShareGPT model extrapolating to prefix
-lengths it never saw. Each direction is fine where the training data covers
-the test inputs (AgentX → ShareGPT prefill 4.7%, ShareGPT → AgentX decode
-4.0%). A release artifact should therefore be trained on the union of the
-workloads it is expected to simulate, and the pooled numbers above are what
-to expect from it.
+and extend lengths it never saw (its longest request is ~2k tokens). Each
+direction is fine where the training data covers the test inputs
+(AgentX → ShareGPT prefill 3.5%, ShareGPT → AgentX decode 3.9%). A release
+artifact should therefore be trained on the union of the workloads it is
+expected to simulate, and the pooled numbers above are what to expect
+from it.
 
 ## Limitations
 
