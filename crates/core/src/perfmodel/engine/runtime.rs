@@ -348,6 +348,22 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
+        Self::validate_fpm_spec(&spec)?;
+        Ok(Engine {
+            context_ops: spec.context_ops,
+            generation_ops: spec.generation_ops,
+            db,
+            nextn,
+        })
+    }
+
+    fn validate_fpm_spec(spec: &EngineSpec) -> Result<(), AicError> {
+        let nextn = spec
+            .engine
+            .speculative
+            .as_ref()
+            .and_then(|s| s.nextn)
+            .unwrap_or(0);
         // Whole-model FPM phases lead with the target forward pass, followed
         // only by draft operations whose work is absent from the collected
         // autoregressive curves. Validate hand-built specs as well as Python's.
@@ -368,7 +384,10 @@ impl Engine {
             })
         }
         let any_fpm = contains_fpm(&spec.context_ops) || contains_fpm(&spec.generation_ops);
-        if any_fpm {
+        if any_fpm
+            || spec.engine.fpm_parquet_path.is_some()
+            || spec.engine.forward_model.as_deref() == Some("fpm")
+        {
             // Hybrid speculative shape: the FIRST op of each phase is the
             // whole-model FpmForward (target), optionally followed by
             // op-level DRAFT ops (the Python rewrite keeps a scheme's
@@ -383,6 +402,10 @@ impl Engine {
                 Some(Op::FpmForward(d)) if d.phase == FpmPhase::Decode
             ) && !contains_fpm(&spec.context_ops[1..])
                 && !contains_fpm(&spec.generation_ops[1..]);
+            crate::config::validate_fpm_parquet_path(
+                spec.engine.fpm_parquet_path.as_deref(),
+                shape_ok,
+            )?;
             if !shape_ok {
                 return Err(AicError::InvalidEngineConfig(
                     "forward_model='fpm' spec must contain exactly one FpmForward op per phase \
@@ -417,12 +440,7 @@ impl Engine {
                 ));
             }
         }
-        Ok(Engine {
-            context_ops: spec.context_ops,
-            generation_ops: spec.generation_ops,
-            db,
-            nextn,
-        })
+        Ok(())
     }
 
     /// FPM whole-model engine: each phase list LEADS with one `FpmForward`
@@ -458,6 +476,7 @@ impl Engine {
         systems_root: &std::path::Path,
     ) -> Result<Engine, AicError> {
         let spec = EngineSpec::from_bincode(bytes)?;
+        Self::validate_fpm_spec(&spec)?;
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         let version = spec.engine.backend_version.as_deref().ok_or_else(|| {
             AicError::InvalidEngineConfig(
@@ -475,7 +494,7 @@ impl Engine {
         // engines would lazily re-parse the same parquet files on its first
         // query (~0.5s per engine on data-rich systems). Mode/policy, memo
         // caches, and the provenance accumulator stay per-engine.
-        let db = PerfDatabase::load_resolved_shared(
+        let db = PerfDatabase::load_resolved_shared_with_fpm(
             systems_root,
             &spec.engine.system_name,
             spec.engine.backend.as_str(),
@@ -500,6 +519,7 @@ impl Engine {
                 spec.engine.database_mode,
                 DatabaseMode::Empirical | DatabaseMode::Sol
             ) || spec.engine.tolerate_dirless_version,
+            spec.engine.fpm_parquet_path.as_deref(),
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
         Engine::build(spec, Arc::new(db))
@@ -2301,6 +2321,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
             kv_block_size: None,
             parallel: ParallelMapping {
@@ -3217,17 +3238,25 @@ mod tests {
     /// prefill], generation = [FpmForward decode], empty sol_ops (grid-exact
     /// queries never call SOL).
     fn build_fpm_engine(tmp: &std::path::Path, nextn: Option<u32>) -> Result<Engine, AicError> {
+        let spec = build_fpm_spec(tmp, nextn);
+        Engine::from_spec_bytes(&spec.to_bincode()?, tmp)
+    }
+
+    fn build_fpm_spec(tmp: &std::path::Path, nextn: Option<u32>) -> EngineSpec {
         use crate::perf_database::fpm_forward::tests::{
             default_identity, default_rows, write_pair,
         };
-        write_pair(tmp, &default_rows());
-        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
-        db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
-            tmp.to_path_buf(),
-            "b200_sxm",
-            "vllm",
-            "0.25.1",
-        ));
+        let parquet = write_pair(tmp, &default_rows());
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.join("b200_sxm.yaml"),
+        )
+        .unwrap();
+        let mut config = fixture_engine_config(nextn);
+        config.backend_version = Some("0.25.1".into());
+        config.forward_model = Some("fpm".into());
+        config.fpm_parquet_path = Some(parquet);
+        config.systems_path = Some(tmp.to_path_buf());
         let fpm_op = |phase: FpmPhase| {
             Op::FpmForward(FpmForwardOp {
                 name: format!("fpm_forward_{}", phase.as_str()),
@@ -3240,12 +3269,55 @@ mod tests {
                 sol_ops: vec![],
             })
         };
-        let spec = EngineSpec::new(
-            fixture_engine_config(nextn),
+        EngineSpec::new(
+            config,
             vec![fpm_op(FpmPhase::Prefill)],
             vec![fpm_op(FpmPhase::Decode)],
-        );
-        Engine::build(spec, Arc::new(db))
+        )
+    }
+
+    #[test]
+    fn external_fpm_engines_share_tables_without_backend_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = build_fpm_engine(tmp.path(), None).unwrap();
+        let second = build_fpm_engine(tmp.path(), None).unwrap();
+        assert!(!tmp.path().join("data").exists());
+        assert!(Arc::ptr_eq(
+            first.database().tables_arc(),
+            second.database().tables_arc()
+        ));
+    }
+
+    #[test]
+    fn external_fpm_rejects_invalid_specs_before_database_loading() {
+        let tmp = tempfile::tempdir().unwrap();
+        for path in ["", "/missing/reviewed-fpm.parquet"] {
+            let mut config = fixture_engine_config(None);
+            config.fpm_parquet_path = Some(path.into());
+            let spec = EngineSpec::new(config, context_ops(), generation_ops());
+            let err = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+            assert!(matches!(err, AicError::InvalidEngineConfig(_)), "{err}");
+            assert!(err.to_string().contains("fpm_parquet_path"), "{err}");
+        }
+    }
+
+    #[test]
+    fn external_fpm_invalid_artifacts_fail_on_first_query() {
+        for missing_parquet in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let spec = build_fpm_spec(tmp.path(), None);
+            let path = spec.engine.fpm_parquet_path.as_ref().unwrap();
+            let expected = if missing_parquet {
+                std::fs::remove_file(path).unwrap();
+                "does not exist"
+            } else {
+                std::fs::write(path.with_extension("metadata.json"), "not JSON").unwrap();
+                "metadata"
+            };
+            let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap();
+            let err = engine.predict_prefill_latency(1, 512, 0).unwrap_err();
+            assert!(err.to_string().contains(expected), "{err}");
+        }
     }
 
     #[test]

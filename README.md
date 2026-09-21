@@ -14,6 +14,12 @@ configurations offline, without bringing up a GPU serving cluster.
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
+Whole-forward FPM data is supplied at runtime rather than shipped in this
+repository. Supply both the Parquet file and its adjacent, same-stem
+`.metadata.json` sidecar (for example, `reviewed-fpm.parquet` and
+`reviewed-fpm.metadata.json`). Set `estimation_mode="fpm_interpolation"` and
+`estimator_config.fpm_interpolation.fpm_parquet_path` in the canonical Python or Rust configuration. Prediction/recommendation YAML also accepts the legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` fields; see the [core API guide](docs/core-api.md#external-whole-forward-fpm-data).
+
 AISimulate is the successor to the
 [AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
 repository. It brings the complete AIC application and estimator into one

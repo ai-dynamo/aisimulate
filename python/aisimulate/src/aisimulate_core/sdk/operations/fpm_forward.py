@@ -13,8 +13,9 @@ whole-model weight bytes, and the original granular op list, and
 ``Op::FpmForward`` — the Rust core owns the loader
 (``perf_database/fpm_forward.rs``), the interpolation/clamp semantics
 (``operators/fpm_forward.rs``), and the whole-model SOL roofline derived from
-the granular list (``operators/fpm_sol.rs``). The formal database pair it
-reads:
+the granular list (``operators/fpm_sol.rs``). ``fpm_parquet_path`` may point
+at the parquet anywhere on disk; its adjacent ``.metadata.json`` sidecar is
+required. The legacy lookup path is:
 
     systems/data/<system>/<backend>/<version>/fpm_forward_perf.parquet
     systems/data/<system>/<backend>/<version>/fpm_forward_perf.metadata.json
