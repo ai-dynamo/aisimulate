@@ -457,8 +457,11 @@ findings:
       the framework''s own q-padding in _fp8_flash_mla_kernel (pad to 64/128 heads -> (1,T,128,576) new_zeros,
       batch stride breaks int32 at T>~29k); serving reachable only with a per-step token budget above ~29k.
       (1) msa kernel limit converted to an invocation-site guard raising a classified error with the framework
-      citation (commit c0f7f035). dsv4 full-grid rerun on the merged lane: generation 3088/3088 PASS (was 100%
-      dead); context retry in flight at ~0.2% errors.
+      citation (commit c0f7f035). dsv4 full-grid rerun on the merged lane, FINAL:
+      22589/22604 collected (99.93%) across 6 ops — generation 3088/3088, paged_mqa_logits + hca_attn 3918/3918
+      each, hca ctx 5840/5840 after retries; the sole residual is a DETERMINISTIC 15-case subcluster in csa ctx,
+      all one shape family (seq=16 chunk + batch=64 + fp8-KV + prefix=4096, both FP8 checkpoints, heads 1-8) —
+      the fp8 csa large-prefix small-tail-chunk path; classified, re-tested free on the next version bump.
       Harness lessons banked: PerfFile.SCALE_MATRIX enum gap (fixed), measurement containers must never share host
       network (setup_distributed port collisions), collection images need deps pre-baked, executor ignores --ops
       CLI order, sharding is manual via --case-filter.'
