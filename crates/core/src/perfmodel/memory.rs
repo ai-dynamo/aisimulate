@@ -16,7 +16,7 @@
 //! ALL of the work -- fraction + tolerance validation, HF-config parsing, the
 //! AIC backend memory model, the OfFree/OfTotal budget math, the naive heuristic
 //! fallback, AND the tolerance margin -- lives in
-//! `aiconfigurator.sdk.memory.estimate_kv_cache`. The Rust side:
+//! `aisimulate.sdk.memory.estimate_kv_cache`. The Rust side:
 //!
 //! 1. crosses into Python once (`with_gil → import → call estimate_kv_cache →
 //!    extract dict`), forwarding `tolerance_fraction` through;
@@ -25,7 +25,7 @@
 //!
 //! The two budget formulas (TRT-LLM free-fraction vs vLLM/SGLang total-fraction),
 //! the naive fallback, and the tolerance margin all live on the Python side; see
-//! the docstring of `aiconfigurator.sdk.memory.estimate_kv_cache`. The
+//! the docstring of `aisimulate.sdk.memory.estimate_kv_cache`. The
 //! [`KvCacheMemoryFraction`] enum still encodes the backend↔fraction XOR so the
 //! request shape is unambiguous; the variant is validated against
 //! `engine.backend` in Python.
@@ -221,7 +221,7 @@ impl std::error::Error for KvCacheEstimateError {}
 /// Estimate KV-cache memory (raw estimate + optional tolerance margin).
 ///
 /// Pure forwarder: crosses into Python once to compute the COMPLETE estimate. The
-/// Python `aiconfigurator.sdk.memory.estimate_kv_cache` does the backend↔fraction
+/// Python `aisimulate.sdk.memory.estimate_kv_cache` does the backend↔fraction
 /// and tolerance validation, the native AIC memory breakdown + budget math, the
 /// naive heuristic fallback, AND the tolerance margin (`tolerance_adjusted`); the
 /// Rust side rebuilds a [`KvCacheEstimate`] from the returned dict with no math
@@ -242,7 +242,7 @@ pub fn estimate_kv_cache(
 /// Cross into Python once to compute the complete estimate.
 ///
 /// Mirrors the `AicEngineBuilder` → `compile_engine` crossing: `with_gil →
-/// import aiconfigurator.sdk.memory → call estimate_kv_cache(...) → extract
+/// import aisimulate.sdk.memory → call estimate_kv_cache(...) → extract
 /// the returned dict`. `tolerance_fraction` is forwarded; the Python fn applies
 /// the tolerance and returns `tolerance_adjusted` in the dict.
 #[cfg(feature = "python")]
@@ -254,7 +254,7 @@ fn fetch_python_estimate(
     let engine = &req.engine;
 
     Python::with_gil(|py| -> PyResult<KvCacheEstimate> {
-        let engine_mod = py.import("aiconfigurator.sdk.memory")?;
+        let engine_mod = py.import("aisimulate.sdk.memory")?;
         let kwargs = estimate_kwargs(py, req)?;
 
         let out = engine_mod.call_method(
@@ -444,7 +444,7 @@ mod tests {
     use super::*;
 
     // Tolerance validation + application and the native/naive budget math now
-    // live entirely in Python (`aiconfigurator.sdk.memory.estimate_kv_cache`),
+    // live entirely in Python (`aisimulate.sdk.memory.estimate_kv_cache`),
     // exercised by `tests/unit/sdk/test_memory_estimation.py` and the integration
     // parity test. The Rust side is a pure forwarder; the only pure-Rust unit
     // left here is the memory-fraction wire mapping. The dict round-trip
@@ -507,6 +507,8 @@ mod tests {
                 backend: BackendKind::Vllm,
                 backend_version: Some("test-version".to_string()),
                 forward_model: None,
+                fpm_parquet_path: None,
+                decoder_replay: false,
                 kv_block_size: None,
                 parallel: ParallelMapping {
                     tp_size: 1,

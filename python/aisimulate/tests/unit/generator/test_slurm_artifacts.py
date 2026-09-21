@@ -15,14 +15,14 @@ from threading import Thread
 
 import pytest
 
-from aiconfigurator.generator.api import (
+from aisimulate.generator.api import (
     generate_backend_artifacts,
     generate_config_from_input_dict,
     generate_from_request,
 )
-from aiconfigurator.generator.builders.slurm_runtime import Supervisor
-from aiconfigurator.generator.naive import build_naive_generator_params
-from aiconfigurator.generator.request import from_legacy_params, to_legacy_params
+from aisimulate.generator.builders.slurm_runtime import Supervisor
+from aisimulate.generator.naive import build_naive_generator_params
+from aisimulate.generator.request import from_legacy_params, to_legacy_params
 
 
 def _params(backend="vllm", mode="agg"):
@@ -105,12 +105,12 @@ def test_benchmark_request_matches_dynamo_protocol(backend, target, version, leg
 
 def test_naive_cli_input_preserves_benchmark_sizing_rule(monkeypatch):
     monkeypatch.setattr(
-        "aiconfigurator.generator.naive._get_system_config",
+        "aisimulate.generator.naive._get_system_config",
         lambda _: {"gpus_per_node": 8, "vram_per_gpu": 192 * 1024**3},
     )
-    monkeypatch.setattr("aiconfigurator.generator.naive._estimate_model_weight_bytes", lambda *a, **kw: 16 * 1024**3)
+    monkeypatch.setattr("aisimulate.generator.naive._estimate_model_weight_bytes", lambda *a, **kw: 16 * 1024**3)
     monkeypatch.setattr(
-        "aiconfigurator.generator.naive.get_model_config_from_model_path",
+        "aisimulate.generator.naive.get_model_config_from_model_path",
         lambda _: {"architecture": "Qwen3ForCausalLM", "num_experts": 0},
     )
     params = build_naive_generator_params(

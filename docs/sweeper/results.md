@@ -6,7 +6,7 @@ subtitle: A lossless candidate ledger with scalar and Pareto views
 ---
 
 > [!WARNING]
-> **Experimental.** Schema version `1.0` is the first machine-readable Sweeper result contract.
+> **Experimental.** Schema version `1.1` adds explicit resource-limited candidate outcomes; `1.0` remains readable.
 > Within a schema version, fields keep their meaning and units; incompatible changes require a new
 > `schema_version` and an explicit converter.
 
@@ -31,12 +31,16 @@ run provenance, and counts remain available on the same result envelope.
 
 Strict aggregate SLA filtering happens before scalar ranking or Pareto dominance. Rejected candidates
 remain in the ledger with status `infeasible` and reason category `sla_constraint`.
+With `min_gpus`, measured goodput below the requested rate floor is `infeasible` with
+`load_constraint`; missing rate evidence is `failed` with `runner_contract`. Candidate metrics
+retain `request_throughput_rps`, `goodput_request_throughput_rps`, and `goodput_completed_requests`
+when supplied by the runner. GPU-count selection happens before the top-N view is truncated.
 
 ## Envelope
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Result contract version. The only accepted value in this release is `1.0`. |
+| `schema_version` | Result contract version. New results emit `1.1`; reading `1.0` explicitly upgrades the envelope and defaults resource-limited counts to zero. |
 | `candidate_retention` | `all`, `feasible`, or `views`; counts always describe the complete run. |
 | `counts` | Outcome and cache counts for the complete run. |
 | `candidates` | Retained candidate records in evaluation order. |
@@ -56,7 +60,7 @@ Every materialized or capability-gated candidate attempt has one record when ret
 | Field | Meaning |
 |---|---|
 | `candidate_id` | Stable within the result, formatted `candidate-NNNNNN`. |
-| `status` | `feasible`, `infeasible`, `unsupported`, `timed_out`, or `failed`. |
+| `status` | `feasible`, `infeasible`, `unsupported`, `timed_out`, `failed`, or `resource_limited`. |
 | `config` | Concrete backend, topology, engine knobs, load, and adapter configuration available at the terminal status. |
 | `prediction_config` | Concrete public `aisimulate predict` configuration when produced by the unified CLI. |
 | `used_gpus` | Provisioned GPU count, or `null` if materialization failed before it was known. Unit: GPUs. |
@@ -100,7 +104,8 @@ a conforming result; it cannot infer coverage from a legacy wattage column alone
 
 `evaluated` is the number of candidate attempts that reached materialization or replay and equals
 `feasible + infeasible + timed_out + failed`. `unsupported` is separate because capability gating
-rejects it before evaluation. `cache_hits` counts repeated optimizer suggestions served from the
+rejects it before evaluation. `resource_limited` is also separate: the host could not complete
+an evaluation, so it is not a modeled constraint failure. `cache_hits` counts repeated optimizer suggestions served from the
 run-local completed-result cache or coalesced with an identical suggestion in the same ask batch.
 Each such suggestion consumes a trial budget slot and is counted explicitly as a cache hit, but does
 not create a duplicate ledger row.
@@ -112,10 +117,11 @@ not create a duplicate ledger row.
 | `unsupported` | The runner does not support the backend/topology pair. |
 | `timed_out` | Replay exceeded `max_eval_seconds`. It remains infeasible to the optimizer, but is distinct in results. |
 | `failed` | Materialization, runner execution, or the runner/result contract failed. |
+| `resource_limited` | Host memory admission or bounded runtime recovery could not complete this candidate. |
 
-Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `backend_topology`, `runtime_timeout`,
+Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `load_constraint`, `backend_topology`, `runtime_timeout`,
 `candidate_materialization`, `replay_runtime`, `runner_contract`, `invalid_metrics`, `no_samples`,
-`parallel_projection`, `adapter_constraint`, and `unknown`.
+`parallel_projection`, `adapter_constraint`, `resource_limit`, and `unknown`.
 
 ## Provenance
 
@@ -263,8 +269,8 @@ between calls, even when the same `Sweeper` instance is reused.
 A `Candidate` is a ranked simulation result, not a deployment manifest. The downstream
 AIConfigurator generator owns artifact rendering. In the unified AISimulate application, pass the
 selected candidate and its matching workload to
-`aiconfigurator.generator.request.from_sweeper_candidate`, then render the resulting typed request
-with `aiconfigurator.generator.api.generate_from_request`.
+`aisimulate.generator.request.from_sweeper_candidate`, then render the resulting typed request
+with `aisimulate.generator.api.generate_from_request`.
 
 The bridge preserves evaluated engine limits and supported adapter configuration, and rejects
 candidate data it cannot lower without loss. Pareto output has no implicit winner: callers must
@@ -274,3 +280,12 @@ AFD candidates are intentionally outside that native generator bridge because it
 no A/F worker or routing contract. Pass a selected AFD recommendation to `aisimulate predict`
 instead; the prediction writes deterministic `afd-replay-spec.json` and
 `afd-qualification.json` analytical artifacts and marks native launch generation unsupported.
+
+### Host resource interruptions
+
+`resource_limited` candidates have reason category `resource_limit` and no
+simulated metrics or score. `counts.resource_limited` is separate from
+`counts.evaluated`: a host admission refusal is not evidence about model
+feasibility. A recommendation with resource-limited candidates covers only
+completed evaluations. The CLI preserves completed results and exits with
+status 3 to make this partial coverage visible. See [local execution resources](../local-resources.md).

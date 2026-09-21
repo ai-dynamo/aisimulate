@@ -44,6 +44,13 @@ pub struct SchedulerRank {
 }
 
 impl SchedulerRank {
+    pub(crate) fn set_belady_oracle(&mut self, oracle: crate::engine::belady::BeladyOracle) {
+        match &mut self.core {
+            EngineCore::Vllm(core) => core.set_belady_oracle(oracle),
+            EngineCore::Sglang(core) => core.set_belady_oracle(oracle),
+        }
+    }
+
     pub(crate) fn set_g3_offload(
         &mut self,
         registry: crate::engine::g3_offload::SharedG3Tier,
@@ -195,7 +202,10 @@ impl RankEngine for SchedulerRank {
         } else {
             false
         };
-        if suppressed_pending_output && let Some((request_id, _)) = pending_suppression {
+        if suppressed_pending_output
+            && let Some((request_id, _)) = pending_suppression
+            && !effects.retired_requests.contains(&request_id)
+        {
             // A final output can be suppressed after the native scheduler has
             // already retired its request. Replay still owns its accounting
             // until the pass completion is observed, so publish the same
@@ -591,6 +601,7 @@ fn split_pass(
         kv_event_visibility,
         kv_events,
         fpm,
+        decode_acceptance,
         ..
     } = pass;
     let (start_kv, completion_kv) = match kv_event_visibility {
@@ -623,6 +634,7 @@ fn split_pass(
         kv_events: completion_kv,
         metrics: map_metrics(mocker_metrics),
         forward_pass_metrics: fpm.map(map_fpm).unwrap_or_default(),
+        decode_acceptance,
     };
     Ok((same_timestamp_retry, start, completion))
 }
@@ -991,6 +1003,7 @@ mod tests {
 
         assert_eq!(effects.result, CommandResult::Applied);
         assert!(effects.suppressed_pending_output);
+        assert_eq!(effects.retired_requests, vec![request_id]);
         assert!(pending.effects.outputs.is_empty());
     }
 
@@ -1041,6 +1054,7 @@ mod tests {
 
         assert_eq!(effects.result, CommandResult::Noop);
         assert!(effects.suppressed_pending_output);
+        assert_eq!(effects.retired_requests, vec![request_id]);
         assert!(pending.effects.outputs.is_empty());
     }
 

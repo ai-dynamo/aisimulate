@@ -38,10 +38,11 @@ Every `OptimizationTarget` and the exact report metric it reads (`score.objectiv
 | `e2e_latency` | **minimize** | `mean_e2e_latency_ms` | no |
 | `goodput` | maximize | `goodput_output_throughput_tok_s` | **yes** |
 | `goodput_per_gpu` | maximize | `goodput_output_throughput_tok_s / avg_gpu` (tok/s/gpu) | **yes** |
+| `min_gpus` | minimize | concrete candidate `used_gpus` (provisioned GPUs) | **yes** |
 | `pareto` | per-objective | a vector — one value per `pareto_objectives` entry | iff an objective needs it |
 
-`ttft` and `e2e_latency` are minimized targets: `OptimizationTarget.maximize` returns
-`False` for both (and raises for `pareto`, which has no single direction). `score_report` negates
+`ttft`, `e2e_latency`, and `min_gpus` are minimized targets: `OptimizationTarget.maximize` returns
+`False` for all three (and raises for `pareto`, which has no single direction). `score_report` negates
 minimized targets so **higher is always better** internally; for a Pareto goal the raw
 (unsigned) value is kept and `_dominates` applies each objective's own direction.
 Missing-key defaults differ by direction: a maximized target reads `0.0` when its key is
@@ -75,7 +76,7 @@ values), and the `*_per_gpu` targets then return `0.0` (divide-by-zero guard).
 
 ### SLA requirement rule
 
-Only the **goodput** targets need an SLA — their metric
+The **goodput** targets need an SLA because their metric
 (`goodput_output_throughput_tok_s`) counts only SLA-satisfying requests (the replay
 bridge's per-request goodput SLA). `_SLA_TARGETS = {goodput, goodput_per_gpu}`.
 
@@ -105,6 +106,34 @@ opt-in: it filters aggregate mean metrics before scalar ranking or Pareto domina
 Strict aggregate comparisons are inclusive (`value <= bound`). A configured bound with
 a missing/non-finite report metric or no qualifying latency samples rejects the candidate.
 
+## Minimum GPUs
+
+`goal.target: min_gpus` selects the smallest qualifying configuration found by the sweep.
+It always enforces the configured aggregate-mean latency bounds, even when `strict_sla` is
+false. For fixed synthetic request-rate traffic, also set a positive `goal.min_goodput_rps`:
+the measured `goodput_request_throughput_rps` must meet that floor. This metric counts only
+requests satisfying the per-request SLA, divided by the complete replay duration, including
+startup and drain. Choose the measurement duration and offered traffic explicitly; offering
+exactly the required rate can fall below the floor on a short run. The floor must not exceed
+the offered rate. Missing rate evidence fails closed; raw throughput or offered rate is never
+substituted. Fixed synthetic concurrency needs no rate floor, but may specify one.
+
+The optimizer observes `-used_gpus` for qualifying candidates and infeasibility for latency or
+load failures. Final selection applies the same constraints to the full candidate pool before
+top-N truncation, then sorts by GPU count, higher SLA-compliant output throughput, lower mean
+E2E latency, and a deterministic configuration key. GPU count is provisioned topology size,
+not time-averaged usage. A finite trial budget establishes the smallest qualifying configuration
+found, not a global optimum. No qualifying candidate produces an empty selection.
+
+This target supports standalone AISimulate static engine pools with fixed synthetic request-rate
+or concurrency traffic. Dynamo integration is not supported. It rejects adapters, traces, sessions,
+candidate-relative KV load, and searched load domains. Analytical EPD supports concurrency plus aggregate latency only, without a rate floor.
+`min_gpus` cannot be a Pareto objective, and `min_goodput_rps` is only accepted with this target.
+
+In the CLI, use `optimization.target: min_gpus` and
+`optimization.constraints.min_goodput_rps`; SLA remains under `evaluation.sla`. See the
+[minimum-GPU example](../cli/migrate-from-aiconfigurator.md#minimum-gpu-sizing).
+
 ## Pareto
 
 `pareto` is the one **multi-objective** target. Instead of a scalar score it optimizes the
@@ -133,7 +162,7 @@ tradeoff between the scalar targets in `pareto_objectives`.
   front is **sorted by the last objective ascending** — the x-axis — so the list traces
   the frontier left-to-right (e.g. low→high per-user throughput). `Sweeper.run`
   returns this front for a Pareto goal, and `rank` (best score, ties → fewer GPUs) for
-  every scalar goal.
+  every scalar goal except `min_gpus`, which uses the constrained GPU-count ordering above.
 
 - **swept load dimension** — `workload.concurrency` is always one fixed in-flight cap.
   A Pareto workload may instead set `kv_load_ratio: [min, max]`, which Vizier models as a

@@ -8,12 +8,13 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any
 
-from .aic import (
+from .capacity import (
     estimate_kv_bytes_per_token,
     materialize_aic_num_gpu_blocks,
     resolve_model_context_length,
 )
 from .config.cli import CorePredictionConfig
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
@@ -38,12 +39,15 @@ def prediction_to_replay_spec(
 ) -> ReplaySpec:
     """Compile one concrete public prediction config."""
 
+    if config.engine.speculation is not None and (adapter_specs or execution_mode != "offline"):
+        raise ValueError("ngram speculation requires the offline engine stack without adapters")
     workload, concurrency = _traffic(config)
     deployment = _deployment(
         config.engine,
         workload=workload,
         afd_performance_model=afd_performance_model,
     )
+    deployment = _pin_estimator_version_aliases(deployment)
     if config.engine.mode == "disaggregated":
         assert config.engine.workers.prefill is not None
         for adapter in (adapter_specs or {}).values():
@@ -66,6 +70,54 @@ def prediction_to_replay_spec(
         concurrency=concurrency,
         adapters=dict(adapter_specs or {}),
     )
+
+
+def _pin_estimator_version_aliases(deployment: BackendDeploymentSpec) -> BackendDeploymentSpec:
+    if deployment.backend_version not in {"current", "previous", "next"}:
+        return deployment
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    updates = {}
+    metadata = dict(deployment.performance_model_metadata)
+    versions = set()
+    for role, field in (
+        ("aggregated", "agg_engine_args"),
+        ("prefill", "prefill_engine_args"),
+        ("decode", "decode_engine_args"),
+    ):
+        args = getattr(deployment, field)
+        timing = (args or {}).get("timing_model", {})
+        if timing.get("provider") != "aic" or "estimation_mode" not in timing.get("config", {}):
+            continue
+        config = dict(timing["config"])
+        memory = {
+            name: config.pop(name)
+            for name in (
+                "gpu_memory_utilization",
+                "mem_fraction_static",
+                "free_gpu_memory_fraction",
+                "cuda_graph_reserved_bytes",
+            )
+            if name in config
+        }
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            diagnostics = model.diagnostics()
+        finally:
+            model.close()
+        if diagnostics["readiness"] != "ready":
+            raise ValueError("regression estimator is not ready; replay requires training observations")
+        resolved = diagnostics["provenance"]["config"]
+        versions.add(resolved["backend_version"])
+        updates[field] = {**args, "timing_model": {**timing, "config": {**resolved, **memory}}}
+        metadata[role] = {"provider": "aic", "config": resolved, "selection": diagnostics}
+    if len(versions) > 1:
+        raise ValueError(
+            f"estimator version alias resolves to different backend versions across roles: {sorted(versions)}"
+        )
+    if versions:
+        updates.update(backend_version=versions.pop(), performance_model_metadata=metadata)
+    return replace(deployment, **updates)
 
 
 def _prediction_encoder(config: CorePredictionConfig, workload):
@@ -114,20 +166,30 @@ def _deployment(
         )
     mode = "agg" if engine.mode == "aggregated" else "disagg"
     if mode == "disagg":
-        from aiconfigurator_core.sdk.perf_database import load_system_spec
+        from aisimulate_core.sdk.perf_database import load_system_spec
+
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
 
         workers = (engine.workers.prefill, engine.workers.decode)
+        root_kwargs = {}
         for role, worker in zip(("prefill", "decode"), workers, strict=True):
-            if worker is not None and worker.hardware is not None and not load_system_spec(worker.hardware):
+            paths = engine.systems_paths
+            if worker is not None and worker.timing.systems_paths is not None:
+                paths = worker.timing.systems_paths
+            root_kwargs[role] = {"systems_paths": list(resolve_systems_paths(paths))}
+            if (
+                worker is not None
+                and worker.hardware is not None
+                and not load_system_spec(worker.hardware, **root_kwargs[role])
+            ):
                 raise ValueError(f"unknown workers.{role}.hardware {worker.hardware!r}: no system configuration found")
         if engine.backend_version is None and any(
-            worker is not None and worker.hardware is not None for worker in workers
+            worker is not None and (worker.hardware is not None or worker.timing.systems_paths is not None)
+            for worker in workers
         ):
             versions = {
-                worker.hardware or engine.hardware: resolve_backend_version(
-                    worker.hardware or engine.hardware, engine.backend
-                )
-                for worker in workers
+                role: resolve_backend_version(worker.hardware or engine.hardware, engine.backend, **root_kwargs[role])
+                for role, worker in zip(("prefill", "decode"), workers, strict=True)
                 if worker is not None
             }
             if len(set(versions.values())) != 1:
@@ -300,20 +362,37 @@ def _worker_performance_model_metadata(
 ) -> dict[str, JSONValue]:
     parallel = worker.parallelism
     sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
+    config: dict[str, JSONValue] = {
+        "backend": engine.backend,
+        "backend_version": engine.backend_version,
+        "system": worker.hardware or engine.hardware,
+        "model_path": engine.model,
+        "tp_size": parallel.tensor,
+        "attention_dp_size": parallel.attention_data,
+        "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
+        "moe_ep_size": parallel.moe_expert if sharded_moe else None,
+        "nextn": engine.nextn or None,
+        "forward_model": worker.timing.forward_model,
+        **{
+            name: getattr(engine, name)
+            for name in ENGINE_MODEL_CONTROL_FIELDS
+            if getattr(engine, name) not in (None, False)
+        },
+        **({"decoder_replay": True} if engine.decoder_replay else {}),
+        **{
+            field: getattr(engine, field)
+            for field in ("enable_shared_layer", "strict_provenance")
+            if getattr(engine, field) is not None
+        },
+    }
+    config["database_mode"] = worker.timing.database_mode or engine.database_mode
+    if engine.speculation is not None:
+        config["speculation"] = engine.speculation.cost_config()
+    if worker.timing.fpm_parquet_path is not None:
+        config["fpm_parquet_path"] = worker.timing.fpm_parquet_path
     return {
         "provider": "aic",
-        "config": {
-            "backend": engine.backend,
-            "backend_version": engine.backend_version,
-            "system": worker.hardware or engine.hardware,
-            "model_path": engine.model,
-            "tp_size": parallel.tensor,
-            "attention_dp_size": parallel.attention_data,
-            "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
-            "moe_ep_size": parallel.moe_expert if sharded_moe else None,
-            "nextn": None,
-            "forward_model": worker.timing.forward_model,
-        },
+        "config": config,
     }
 
 
@@ -350,8 +429,16 @@ def _worker_engine_args(
         "enable_prefix_caching": cache.prefix_caching,
         "startup_time": worker.startup_seconds,
     }
+    if engine.speculation is not None:
+        payload["speculation"] = engine.speculation.model_dump(mode="json")
     if engine.backend_version is not None:
         payload["aic_backend_version"] = engine.backend_version
+    if engine.decoder_replay:
+        payload["aic_decoder_replay"] = True
+    for field in ("database_mode", "enable_shared_layer", "strict_provenance"):
+        value = getattr(engine, field)
+        if value is not None:
+            payload[f"aic_{field}"] = value
     if parallel.pipeline != 1:
         payload["aic_pp_size"] = parallel.pipeline
     if parallel.moe_tensor * parallel.moe_expert > 1:
@@ -360,7 +447,9 @@ def _worker_engine_args(
     if worker.timing.type == "default" and worker.timing.forward_model != "op_level":
         # Only the non-default forward model is spelled out, so op_level specs stay byte-identical.
         payload["aic_forward_model"] = worker.timing.forward_model
-    if backend == "vllm":
+        if worker.timing.fpm_parquet_path is not None:
+            payload["aic_fpm_parquet_path"] = worker.timing.fpm_parquet_path
+    if backend == "vllm" or isinstance(engine.context_length, int):
         payload["max_model_len"] = (
             engine.context_length
             if isinstance(engine.context_length, int)
@@ -398,6 +487,65 @@ def _worker_engine_args(
             "aic_moe_ep_size",
         ):
             payload.pop(name, None)
+    if worker.timing.type == "default" and engine.mode != "afd" and engine.workers.encoder is None:
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+        from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+        timing = worker.timing
+        sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
+        canonical = ForwardPassPerfModelConfig(
+            model=engine.model,
+            system=worker.hardware or engine.hardware,
+            backend=backend,
+            backend_version=engine.backend_version,
+            worker_type=role,
+            decoder_replay=engine.decoder_replay,
+            enable_shared_layer=engine.enable_shared_layer,
+            strict_provenance=bool(engine.strict_provenance),
+            tp=parallel.tensor,
+            pp=parallel.pipeline,
+            attention_dp=parallel.attention_data,
+            moe_tp_size=parallel.moe_tensor if sharded_moe else None,
+            moe_ep_size=parallel.moe_expert if sharded_moe else None,
+            kv_block_size=block_size,
+            nextn=engine.nextn,
+            **{name: getattr(engine, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
+            speculation=engine.speculation.cost_config() if engine.speculation is not None else None,
+            estimation_mode=timing.estimation_mode or engine.estimation_mode,
+            fallback_policy=timing.fallback_policy or engine.fallback_policy,
+            estimator_config=timing.estimator_config
+            if timing.estimator_config is not None
+            else engine.estimator_config,
+            database_mode=timing.database_mode or engine.database_mode,
+            transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
+            systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
+        )
+        timing_config = omit_inactive_moe_controls(canonical.to_dict())
+        if timing.fpm_parquet_path is not None:
+            interpolation = timing_config["estimator_config"].setdefault("fpm_interpolation", {})
+            if interpolation.get("fpm_parquet_path", timing.fpm_parquet_path) != timing.fpm_parquet_path:
+                raise ValueError("conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path")
+            interpolation["fpm_parquet_path"] = timing.fpm_parquet_path
+        for key in (
+            "gpu_memory_utilization",
+            "mem_fraction_static",
+            "free_gpu_memory_fraction",
+            "cuda_graph_reserved_bytes",
+        ):
+            if key in payload:
+                timing_config[key] = payload[key]
+        payload["timing_model"] = {"type": "external", "provider": "aic", "config": timing_config}
+        payload["tensor_parallel_size"] = parallel.tensor
+        payload["dp_size"] = parallel.attention_data
+        for key in tuple(payload):
+            if key.startswith("aic_") and key != "aic_nextn":
+                payload.pop(key)
+    if engine.enable_chunked_prefill is not None and role != "decode":
+        payload["enable_chunked_prefill"] = engine.enable_chunked_prefill
+    if engine.nextn:
+        payload["aic_nextn"] = engine.nextn
+        payload["aic_nextn_accepted"] = engine.nextn_accepted
     host_offload = cache.host_offload
     if host_offload is not None:
         payload["kv_cache_bytes_per_token"] = _resolve_kv_bytes_per_token(
@@ -433,6 +581,7 @@ def _resolve_kv_bytes_per_token(
         pp_size=parallel.pipeline,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
+        **({"kvcache_quant_mode": engine.kvcache_quant_mode} if engine.kvcache_quant_mode else {}),
     )
 
 
@@ -463,12 +612,16 @@ def _traffic(
             workload["arrival_speedup_ratio"] = load.speedup or 1.0
             if load.agentic_lanes is not None:
                 workload["agentic_lanes"] = load.agentic_lanes
+            if load.agentic_snapshot is not None:
+                workload["agentic_snapshot"] = load.agentic_snapshot.model_dump(mode="json")
         if stop is not None and stop.max_virtual_time_seconds is not None:
             workload["max_sim_time_ms"] = 1_000.0 * stop.max_virtual_time_seconds
         return workload, None
 
     if isinstance(source, SyntheticSource):
-        workload.update(isl=source.input_tokens, osl=source.output_tokens)
+        workload.update(
+            isl=source.input_tokens, osl=source.output_tokens, cached_prefix_tokens=source.cached_prefix_tokens
+        )
         if source.images is not None:
             workload["images"] = source.images.model_dump(mode="json")
         stop_count = stop.requests if stop is not None else None

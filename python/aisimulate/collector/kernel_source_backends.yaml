@@ -43,6 +43,7 @@ mappings:
   - {framework: sglang, kernel_source: flash_attention_v4, backend: fa4, source: "collector/sglang/collect_attn_encoder.py"}
   - {framework: sglang, kernel_source: trtllm_mha, backend: trtllm_mha, source: "collector/sglang/collect_attn.py (TRTLLMHAAttnBackend, SM100+)"}
   - {framework: sglang, kernel_source: trtllm_mla, backend: trtllm_mla, source: "collector/sglang/collect_mla.py (_select_default_mla_backend, SM100)"}
+  - {framework: sglang, kernel_source: mla_trtllm_mla, backend: trtllm_mla, source: "collector/sglang/collect_mla_module.py (ordinary MLA module, server_args.attention_backend)"}
   - {framework: sglang, kernel_source: triton, backend: triton, source: "collector/sglang/collect_attn.py (TritonAttnBackend)"}
   - {framework: sglang, kernel_source: fa3, backend: fa3, source: "collector/wideep/sglang (attn_backend arg)"}
   - {framework: sglang, kernel_source: flashinfer, backend: flashinfer, source: "collector/wideep/sglang (attn_backend arg)"}
@@ -249,6 +250,7 @@ mappings:
   - {framework: vllm, kernel_source: vllm_flashinfer_fidecode, backend: flashinfer, source: "PR#1344 collect_attn.py"}
   - {framework: vllm, kernel_source: vllm_flashinfer_trtllmprefill, backend: trtllm_mha, source: "PR#1344 collect_attn.py (flashinfer trtllm-gen prefill)"}
   - {framework: vllm, kernel_source: vllm_flashinfer_trtllmdecode, backend: trtllm_mha, source: "PR#1344 collect_attn.py (flashinfer trtllm-gen decode)"}
+  - {framework: vllm, kernel_source: vllm_flashinfer_flashinfertrtllmapidecode, backend: unverified, source: "collector/vllm/collect_attn.py:_dense_kernel_source records only the metadata class; vllm/v1/attention/backends/flashinfer.py:502-509,1539-1546@v0.25.0 uses FlashInferTrtllmAPIDecode for both XQA and TRTLLM_GEN. The label omits the kernel discriminator, so it cannot identify one backend across systems. https://github.com/vllm-project/vllm/blob/v0.25.0/vllm/v1/attention/backends/flashinfer.py"}
   # MLA module labels: the AttentionBackendEnum member that ran.
   - {framework: vllm, kernel_source: FLASH_ATTN, backend: flash_attn, source: "PR#1344 collect_mla_module.py (enum-name labels)"}
   - {framework: vllm, kernel_source: FLASH_ATTN_MLA, backend: flash_attn, source: "PR#1344 collect_mla_module.py"}

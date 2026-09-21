@@ -3043,7 +3043,7 @@ mod tests {
             serde_json::from_str(include_str!("testdata/moe_a2a_oracle.json"))
                 .expect("oracle fixture must parse");
         let systems = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../python/aisimulate/src/aiconfigurator_core/systems");
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
         let samples = oracle["samples"].as_array().expect("samples array");
         let mut tables: BTreeMap<String, MoeA2aTable> = BTreeMap::new();
         let mut max_rel = 0.0_f64;

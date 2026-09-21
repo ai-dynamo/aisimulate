@@ -17,5 +17,9 @@ htmlcov/
 *.so
 *.dylib
 
+# Whole-forward FPM datasets are external runtime inputs, not source assets.
+**/fpm_forward_perf.parquet
+**/fpm_forward_perf.metadata.json
+
 # Rust build output
 target/

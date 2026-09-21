@@ -155,10 +155,10 @@ Update the draft PR body whenever scope changes or a meaningful checkpoint lands
 
 If the system is new or incomplete:
 
-1. Add `aic-core/src/aiconfigurator_core/systems/<system>.yaml`.
+1. Add `src/aisimulate_core/systems/<system>.yaml`.
 2. Add `<system>` to `SupportedSystems` in
-   `aic-core/src/aiconfigurator_core/sdk/common.py`.
-3. Create `aic-core/src/aiconfigurator_core/systems/data/<system>/`.
+   `src/aisimulate_core/sdk/common.py`.
+3. Create `src/aisimulate_core/systems/data/<system>/`.
 4. Populate YAML with conservative, documented values:
    - `gpu.mem_bw`
    - `gpu.mem_capacity`
@@ -267,7 +267,7 @@ For very long runs, commit and push safe progress periodically:
 
 ```bash
 git status --short
-git add collector tests src/aiconfigurator/systems
+git add collector tests src/aisimulate_core/systems
 git commit --signoff -m "<backend>: <op family> progress"
 git push
 ```
@@ -391,7 +391,7 @@ The canonical destination family comes from
 `collector/op_backend_catalog.yaml`. Accept a perf file only when:
 
 - It is finalized as parquet under
-  `aic-core/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version>/`.
+  `src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version>/`.
 - It is not empty and has the expected parquet schema.
 - Rows contain the expected framework, version, and device name.
 - Latency values are finite and plausible. They should usually be positive;
@@ -406,7 +406,7 @@ The canonical destination family comes from
 Useful checks:
 
 ```bash
-find aic-core/src/aiconfigurator_core/systems/data/<system>/<family>/<backend>/<version> \
+find src/aisimulate_core/systems/data/<system>/<family>/<backend>/<version> \
   -maxdepth 1 -type f -name '*_perf.parquet' -print
 python3 - <<'PY'
 from pathlib import Path
@@ -416,7 +416,7 @@ import pyarrow.parquet as pq
 ZERO_LATENCY_FILES = {"computescale_perf.parquet"}
 
 root = Path(
-    "aic-core/src/aiconfigurator_core/systems/data/"
+    "src/aisimulate_core/systems/data/"
     "<system>/<family>/<backend>/<version>"
 )
 failed = False
@@ -472,7 +472,7 @@ Instantiate the database:
 
 ```bash
 python3 - <<'PY'
-from aiconfigurator.sdk.perf_database import get_database
+from aisimulate.sdk.perf_database import get_database
 db = get_database("<system>", "<backend>", "<version>")
 print(db is not None)
 print(db.system_spec["gpu"])

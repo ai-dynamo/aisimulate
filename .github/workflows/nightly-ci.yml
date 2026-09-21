@@ -17,10 +17,10 @@ name: Main branch nightly CI
 # consumers; GitHub also retains dependency inventories and license evidence.
 #
 # Versioning: every run stamps the tree with scripts/apply_dev_version.py —
-# wheels get `<base>.devYYYYMMDD` (the ai-dynamo/dynamo nightly convention),
-# the crate `<base>-dev.YYYYMMDD` (dotted so SemVer orders the date
-# numerically). The date is computed once in the guard job so both arch
-# legs agree across a UTC midnight.
+# wheels get `<base>.devYYYYMMDDNNNNNNNNNN`, and the crate gets the same
+# numeric suffix after `-dev.`. The ten-digit workflow run number makes
+# scheduled and manual publications distinct while preserving date ordering.
+# The original run creation date and number are stable across retries.
 #
 # Staging: each arch job uploads its wheel to the internal PyPI repo (and
 # the amd64 leg the crate to the internal Cargo repo) under
@@ -42,6 +42,18 @@ on:
   schedule:
     # 08:00 UTC daily, matching the ai-dynamo org nightly convention.
     - cron: "0 8 * * *"
+  # Manual runs do the full nightly including publish, gated by
+  # manual-release-approver. Dispatch from main so old release sources use
+  # the current workflow.
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: >-
+          Full commit SHA to build, stage, and publish; must be on main or
+          release/*. Dispatch from main. Empty builds main at dispatch time.
+        required: false
+        default: ""
+        type: string
 
 # Read-only default token; only the guard job adds actions:read.
 permissions:
@@ -56,7 +68,7 @@ concurrency:
 
 jobs:
   changes-guard:
-    name: Skip when main is unchanged
+    name: Resolve target and skip unchanged nightlies
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -65,20 +77,84 @@ jobs:
     outputs:
       should-build: ${{ steps.decide.outputs.should-build }}
       dev-date: ${{ steps.version.outputs.dev-date }}
+      dev-version: ${{ steps.version.outputs.dev-version }}
+      target-sha: ${{ steps.target.outputs.sha }}
+      target-ref: ${{ steps.target.outputs.ref }}
     steps:
+      # Runs with no secrets and no environment. Every manual target —
+      # including main's own tip — must lie on main or a release/* branch.
+      - name: Resolve and validate the target commit
+        id: target
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        env:
+          REQUESTED_SHA: ${{ inputs.commit_sha }}
+        with:
+          script: |
+            if (context.eventName === 'schedule') {
+              core.setOutput('sha', context.sha);
+              core.setOutput('ref', context.ref);
+              return;
+            }
+            if (context.ref !== 'refs/heads/main') {
+              core.setFailed('Dispatch from main; use commit_sha to select release source');
+              return;
+            }
+            const requested = (process.env.REQUESTED_SHA || '').trim() || context.sha;
+            if (!/^[0-9a-f]{40}$/.test(requested)) {
+              core.setFailed('commit_sha must be a full 40-hex commit SHA');
+              return;
+            }
+            const branches = (await github.paginate(
+              github.rest.repos.listBranches, {...context.repo, per_page: 100}))
+              .map(b => b.name)
+              .filter(n => n === 'main' || n.startsWith('release/'));
+            for (const branch of branches) {
+              try {
+                const {data} = await github.rest.repos.compareCommitsWithBasehead({
+                  ...context.repo, basehead: `${requested}...${branch}`});
+                // ahead/identical: the branch tip contains the requested commit.
+                if (data.status === 'ahead' || data.status === 'identical') {
+                  const {data: commit} = await github.rest.repos.getCommit(
+                    {...context.repo, ref: requested});
+                  core.notice(`Building ${requested} on ${branch}: ` +
+                    `${commit.commit.committer.date} ` +
+                    `"${commit.commit.message.split('\n')[0]}"`);
+                  core.setOutput('sha', requested);
+                  core.setOutput('ref', `refs/heads/${branch}`);
+                  return;
+                }
+              } catch (error) {
+                // A missing comparison may mean the commit is unknown;
+                // authentication, rate-limit, and server failures are fatal.
+                if (error.status !== 404) throw error;
+              }
+            }
+            core.setFailed('commit_sha is not on main or any release/* branch');
+      # Downstream migrations consume this development wheel before they can
+      # merge. Their completion is a stable-release prerequisite, not a nightly gate.
       # Computed once here so both arch legs stamp the same date even if the
       # run crosses a UTC midnight.
-      - name: Compute nightly version date
+      - name: Compute unique nightly version
         id: version
-        run: echo "dev-date=$(date -u +%Y%m%d)" >> "${GITHUB_OUTPUT}"
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const {data: run} = await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: context.runId});
+            const date = run.created_at.slice(0, 10).replaceAll('-', '');
+            const number = String(run.run_number);
+            if (!/^\d{8}$/.test(date) || !/^[1-9]\d{0,9}$/.test(number)) {
+              throw new Error('invalid nightly creation date or run number');
+            }
+            core.setOutput('dev-date', date);
+            core.setOutput('dev-version', date + number.padStart(10, '0'));
 
       - name: Compare HEAD with the last successful nightly
         id: decide
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
-            // Only scheduled runs dedup; any other event (e.g. a future
-            // workflow_dispatch) always builds.
+            // Only scheduled runs dedup; other events always build.
             if (context.eventName !== 'schedule') {
               core.setOutput('should-build', 'true');
               return;
@@ -89,6 +165,8 @@ jobs:
                 repo: context.repo.repo,
                 workflow_id: 'nightly-ci.yml',
                 branch: 'main',
+                // Dispatch runs pin older SHAs; only prior crons may dedup.
+                event: 'schedule',
                 status: 'success',
                 per_page: 1,
               });
@@ -130,15 +208,24 @@ jobs:
           echo "run-attempt=${GITHUB_RUN_ATTEMPT}" >> "${GITHUB_OUTPUT}"
 
   python-compliance:
-    name: Python Dependency Licenses (${{ matrix.arch }})
+    name: Python Dependency Licenses (${{ matrix.arch }}, ${{ matrix.python-version }})
     # No release environment or build artifacts are available to dependency
     # build hooks. Both architectures must pass before staging can start.
-    needs: changes-guard
-    if: needs.changes-guard.outputs.should-build == 'true'
+    needs: [changes-guard, manual-approval]
+    # Dependency installation uses production runners, so manual runs and
+    # retries need approval before even this isolated compliance work starts.
+    # !cancelled() allows the skipped approval ancestor on scheduled first runs.
+    if: >-
+      !cancelled() &&
+      needs.changes-guard.outputs.should-build == 'true' &&
+      ((github.event_name == 'schedule' && github.run_attempt == '1') ||
+      (needs.manual-approval.result == 'success' &&
+      needs.manual-approval.outputs.approved-attempt == github.run_attempt))
     strategy:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
+        python-version: ["3.11", "3.12", "3.13"]
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
     timeout-minutes: 15
     container:
@@ -147,25 +234,34 @@ jobs:
         HOME: /__w/aisimulate/aisimulate
         USER: runner
     steps:
+      # Keep the license policy/tooling at the workflow revision. Older
+      # release sources need only their package manifest, not this helper.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.changes-guard.outputs.target-sha }}
+          path: source
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
       - name: Check Python dependency licenses
         env:
           MATRIX_ARCH: ${{ matrix.arch }}
+          PYTHON_SERIES: ${{ matrix.python-version }}
         run: |
           python -m venv "${RUNNER_TEMP}/venv-licenses"
           python scripts/check_python_licenses.py \
+            --pyproject source/python/aisimulate/pyproject.toml \
             --python "${RUNNER_TEMP}/venv-licenses/bin/python" \
-            --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-3.12.csv"
+            --inventory "${RUNNER_TEMP}/python-inventory/${MATRIX_ARCH}-${PYTHON_SERIES}.csv"
       - name: Preserve the dependency inventory as data
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: nightly-python-inventory-${{ matrix.arch }}
+          name: nightly-python-inventory-${{ matrix.arch }}-${{ matrix.python-version }}
           path: ${{ runner.temp }}/python-inventory/*.csv
           if-no-files-found: error
           retention-days: 30
@@ -232,10 +328,22 @@ jobs:
       # uv.toml discovered in the workspace.
       UV_PYTHON_PREFERENCE: only-managed
       UV_NO_CONFIG: "1"
-      DEV_DATE: ${{ needs.changes-guard.outputs.dev-date }}
+      DEV_DATE: ${{ needs.changes-guard.outputs.dev-version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ needs.changes-guard.outputs.target-sha }}
+          persist-credentials: false
+      # Historical sources retain their package/build code, while version
+      # stamping and the artifact contract come from the trusted workflow.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          path: release-tooling
+          sparse-checkout: |
+            /scripts/apply_dev_version.py
+            /scripts/build_release_artifacts.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
 
       # HOME above is the checked-out workspace: anything written there
@@ -329,17 +437,17 @@ jobs:
       - name: Stamp nightly dev version
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" scripts/apply_dev_version.py ".dev${DEV_DATE}"
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/apply_dev_version.py ".dev${DEV_DATE}" .
 
       - name: Validate release manifests
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" scripts/build_release_artifacts.py --check-only
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/build_release_artifacts.py --root . --check-only
 
       - name: Build release artifacts
         run: |
           set -euo pipefail
-          "${TOOLS_DIR}/venv-build/bin/python" scripts/build_release_artifacts.py \
+          "${TOOLS_DIR}/venv-build/bin/python" release-tooling/scripts/build_release_artifacts.py --root . \
             --output-dir "${DIST_DIR}"
 
       - name: Drop duplicate crate (non-amd64 legs)
@@ -359,7 +467,7 @@ jobs:
           UV_TARGET: ${{ matrix.uv_target }}
         run: |
           set -euo pipefail
-          [[ "${DEV_DATE}" =~ ^[0-9]{8}$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
+          [[ "${DEV_DATE}" =~ ^[0-9]{8}([0-9]{10})?$ ]] || { echo "::error::bad DEV_DATE"; exit 1; }
           plat="${UV_TARGET%%-*}"
           wheel="$(basename "${DIST_DIR}"/aisimulate-*.whl)"
           [[ "${wheel}" == aisimulate-*.dev"${DEV_DATE}"-cp311-abi3-manylinux_2_28_"${plat}".whl ]] || {
@@ -379,8 +487,8 @@ jobs:
           MATRIX_RUNNER: ${{ matrix.runner }}
           GH_REPOSITORY: ${{ github.repository }}
           GH_WORKFLOW_REF: ${{ github.workflow_ref }}
-          GH_REF: ${{ github.ref }}
-          GH_SHA: ${{ github.sha }}
+          GH_REF: ${{ needs.changes-guard.outputs.target-ref }}
+          GH_SHA: ${{ needs.changes-guard.outputs.target-sha }}
           GH_RUN_ID: ${{ github.run_id }}
           GH_RUN_ATTEMPT: ${{ github.run_attempt }}
           GH_EVENT_NAME: ${{ github.event_name }}
@@ -577,8 +685,6 @@ jobs:
           import importlib.metadata as metadata
           import os
 
-          import aiconfigurator
-          import aiconfigurator_core
           import aisimulate
           import aisimulate_core
 
@@ -609,6 +715,12 @@ jobs:
   license-evidence:
     name: License compliance evidence
     needs: [build-artifacts, python-compliance]
+    # !cancelled(): the implicit success() also inspects the transitively
+    # needed manual-approval job, which is skipped on scheduled runs.
+    if: >-
+      !cancelled() &&
+      needs.build-artifacts.result == 'success' &&
+      needs.python-compliance.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -643,7 +755,8 @@ jobs:
                                    "version": r["Version"], "spdx_license": r["License"]})
           if not rows:
               raise SystemExit("missing Python dependency inventories")
-          meta = json.load(open(f"{outdir}/cargo-metadata.json"))
+          with open(f"{outdir}/cargo-metadata.json") as f:
+              meta = json.load(f)
           workspace = set(meta.get("workspace_members") or [])
           for p in meta["packages"]:
               if p.get("id") in workspace:
@@ -676,23 +789,26 @@ jobs:
                       "Authorization": f"Bearer {token}",
                       "Accept": "application/vnd.github+json"})
                   return urllib.request.urlopen(req, timeout=30)
-              runs = json.load(get(
+              with get(
                   f"https://api.github.com/repos/{repo}/actions/workflows/"
-                  "nightly-ci.yml/runs?branch=main&status=success&per_page=10"))
+                  "nightly-ci.yml/runs?branch=main&event=schedule&status=success&per_page=10") as response:
+                  runs = json.load(response)
               for run in runs.get("workflow_runs", []):
                   if str(run["id"]) == current:
                       continue
-                  arts = json.load(get(run["artifacts_url"]))
+                  with get(run["artifacts_url"]) as response:
+                      arts = json.load(response)
                   for a in arts.get("artifacts", []):
                       if "license" not in a["name"] or a.get("expired"):
                           continue
-                      data = get(a["archive_download_url"]).read()
+                      with get(a["archive_download_url"]) as response:
+                          data = response.read()
                       with zipfile.ZipFile(io.BytesIO(data)) as zf:
                           for n in zf.namelist():
                               if os.path.basename(n) == "deps.csv":
-                                  reader = csv.DictReader(
-                                      io.TextIOWrapper(zf.open(n)))
-                                  return {identity(r): r for r in reader}
+                                  with io.TextIOWrapper(zf.open(n)) as stream:
+                                      reader = csv.DictReader(stream)
+                                      return {identity(r): r for r in reader}
               return None
 
           try:
@@ -744,16 +860,23 @@ jobs:
   # Refresh strict-native op-level FPE coverage at the exact nightly source
   # SHA and with the same amd64 wheel verified against Artifactory.
   # The GitLab publish trigger below requires this to succeed, and a failed
-  # refresh fails the run, so consumers never advance to it.
+  # refresh fails the run, so consumers never advance to it. Current tooling
+  # qualifies historical sources using their inventory and exact staged wheel.
   fpe-support-matrix:
-    name: FPE Support Matrix (main)
+    name: FPE Support Matrix (selected source)
     needs: [changes-guard, build-artifacts]
-    if: needs.changes-guard.outputs.should-build == 'true'
+    # !cancelled(): the implicit success() also inspects the transitively
+    # needed manual-approval job, which is skipped on scheduled runs.
+    if: >-
+      !cancelled() &&
+      needs.changes-guard.outputs.should-build == 'true' &&
+      needs.build-artifacts.result == 'success'
     permissions:
       contents: read
     uses: ./.github/workflows/fpe-support-matrix.yml
     with:
-      expected_sha: ${{ github.sha }}
+      expected_sha: ${{ needs.changes-guard.outputs.target-sha }}
+      source_branch: ${{ needs.changes-guard.outputs.target-ref }}
       wheel_artifact: nightly-dist-amd64
 
   # Security scanning runs in the internal GitLab release-automation
@@ -764,16 +887,17 @@ jobs:
   # access exist; flip GITLAB_SECURITY_TRIGGER_ENABLED to activate.
   trigger-gitlab-security:
     name: Trigger GitLab security pipeline
-    needs: [manual-approval, build-artifacts, fpe-support-matrix, license-evidence]
+    needs: [changes-guard, manual-approval, build-artifacts, fpe-support-matrix, license-evidence]
     # Same unattended-vs-approved split as build-artifacts, so re-running
     # only this job cannot fire an unapproved publish. The FPE refresh must
     # have succeeded before anything advances to the internal pipeline.
+    # Approved manual runs publish too, under a distinct run-number version.
     if: >-
       !cancelled() &&
       needs.build-artifacts.result == 'success' &&
       needs.fpe-support-matrix.result == 'success' &&
       needs.license-evidence.result == 'success' &&
-      github.event_name == 'schedule' && github.ref == 'refs/heads/main' &&
+      github.ref == 'refs/heads/main' &&
       ((github.event_name == 'schedule' && github.run_attempt == '1') ||
       (needs.manual-approval.result == 'success' &&
       needs.manual-approval.outputs.approved-attempt == github.run_attempt)) &&
@@ -817,11 +941,12 @@ jobs:
           GITLAB_PIPELINE_URL: ${{ secrets.GITLAB_PIPELINE_URL }}
           SLACK_CHANNEL_ID: ${{ secrets.SLACK_RELEASE_CHANNEL_ID }}
           GH_RUN_ID: ${{ github.run_id }}
-          GH_SHA: ${{ github.sha }}
+          GH_SHA: ${{ needs.changes-guard.outputs.target-sha }}
+          TOOLING_SHA: ${{ github.sha }}
           WHEEL_VERSION: ${{ needs.build-artifacts.outputs.wheel-version }}
         run: |
           set -euo pipefail
-          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL WHEEL_VERSION; do
+          for name in GITLAB_TRIGGER_TOKEN GITLAB_PIPELINE_URL WHEEL_VERSION TOOLING_SHA; do
             [ -n "${!name}" ] || { echo "::error::${name} is not available"; exit 1; }
           done
           # Variable names follow the release-automation root pipeline's
@@ -839,6 +964,7 @@ jobs:
             -F "variables[WHEEL_VERSION]=${WHEEL_VERSION}" \
             -F "variables[GITHUB_RUN_ID]=${GH_RUN_ID}" \
             -F "variables[COMMIT_SHA]=${GH_SHA}" \
+            -F "variables[AISIMULATE_TOOLING_SHA]=${TOOLING_SHA}" \
             -F "variables[SLACK_THREAD_TS]=${SLACK_THREAD_TS}" \
             -F "variables[SLACK_CHANNEL_ID]=${SLACK_CHANNEL_ID}" \
             -F "variables[DRY_RUN]=false" \

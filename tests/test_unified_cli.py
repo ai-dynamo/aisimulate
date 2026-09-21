@@ -25,6 +25,7 @@ class _RecommendationResult:
         }
         self._selected_ids = list(self._candidates)
         self._failed = failed
+        self.counts = SimpleNamespace(resource_limited=0)
 
     @property
     def selected_candidate_ids(self):
@@ -420,6 +421,17 @@ def test_predict_online_rejects_runner_without_online_capability(tmp_path, monke
     assert "runner does not support execution mode 'online'" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_dry_run_is_rejected_before_execution(command, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: pytest.fail("removed option must stop before replay"))
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main([command, "--config", "unused.yaml", "--dry-run"])
+
+    assert exc.value.code == 2
+    assert "unrecognized arguments: --dry-run" in capsys.readouterr().err
+
+
 def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
     def unavailable(_stack):
         raise cli.StackResolutionError("stack unavailable")
@@ -436,6 +448,9 @@ def test_stack_resolution_precedes_config_read(monkeypatch, capsys) -> None:
 
 @pytest.mark.filterwarnings("error")
 def test_recommend_runner_incompatibility_is_cli_config_error(tmp_path, monkeypatch, capsys) -> None:
+    from aisimulate.recommend import _run_recommendation
+
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
     config_path = tmp_path / "recommendation.yaml"
     config_path.write_text(
         yaml.safe_dump(
@@ -654,7 +669,7 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert generated["placement"] == {"policy": "first"}
     assert generated["evaluation"]["sla"] == {sla_field: bound}
     result = json.loads((recommendation_output / "recommendation.json").read_text())
-    assert result["schema_version"] == "1.0"
+    assert result["schema_version"] == "1.1"
     assert result["counts"]["feasible"] == 1
     assert result["views"]["top_n"] == ["candidate-000001"]
     assert result["candidates"][0]["prediction_config"] == generated
@@ -825,7 +840,8 @@ def test_partial_sla_recommendation_yaml_round_trips_into_predict(
     assert unsupported_summary["power_coverage"] is None
 
 
-def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("resource_limited", [0, 1])
+def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypatch, capsys, resource_limited) -> None:
     concrete = {
         "traffic": {
             "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
@@ -900,26 +916,25 @@ def test_recommendation_outputs_each_concrete_prediction_once(tmp_path, monkeypa
         for selection, score in (("first", 2.0), ("second", 1.0))
     ]
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: _Factory(_Runner()))
+    partial = _RecommendationResult(candidates)
+    partial.counts.resource_limited = resource_limited
     monkeypatch.setattr(
         "aisimulate.recommend.run_recommendation",
-        lambda *args, **kwargs: _RecommendationResult(candidates),
+        lambda *args, **kwargs: partial,
     )
 
     output = tmp_path / "out"
-    assert (
-        cli.main(
-            [
-                "recommend",
-                "--config",
-                str(config_path),
-                "--output-dir",
-                str(output),
-                "--format",
-                "json",
-            ]
-        )
-        == 0
-    )
+    assert cli.main(
+        [
+            "recommend",
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ]
+    ) == (3 if resource_limited else 0)
 
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) == 1
@@ -962,7 +977,10 @@ def test_overwrite_only_removes_known_outputs(tmp_path) -> None:
     assert not (recommendations / "0001.yaml").exists()
 
 
-def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("resource_limited", [0, 1])
+def test_recommendation_writes_an_empty_result_before_returning_failure(
+    tmp_path, monkeypatch, capsys, resource_limited
+) -> None:
     import aisimulate.recommend as recommendation_module
 
     monkeypatch.setattr(
@@ -971,11 +989,14 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path
         staticmethod(lambda raw: object()),
     )
     monkeypatch.setattr(cli, "_resolve_section_adapters", lambda sections, stack: {})
+    result = _RecommendationResult([], failed=1)
+    result.counts.resource_limited = resource_limited
     monkeypatch.setattr(
         recommendation_module,
         "run_recommendation",
-        lambda *args, **kwargs: _RecommendationResult([], failed=1),
+        lambda *args, **kwargs: result,
     )
+    monkeypatch.setattr(cli, "_resource_plan", lambda *args: {"status": "admitted"})
     output = tmp_path / "empty-result"
 
     status = cli._recommend(
@@ -989,7 +1010,7 @@ def test_recommendation_writes_an_empty_result_before_returning_failure(tmp_path
         object(),
     )
 
-    assert status == 1
+    assert status == (3 if resource_limited else 1)
     assert json.loads((output / "recommendation.json").read_text())["counts"] == {
         "failed": 1,
         "feasible": 0,
@@ -1046,7 +1067,7 @@ def test_predict_uses_validated_power_metrics_over_raw_metadata(
         assert summary["power_coverage"] == coverage
 
 
-@pytest.mark.parametrize("selector", ["", "unknown", "time,", "all,unknown", "SUMMARY", "source", "power"])
+@pytest.mark.parametrize("selector", ["", "unknown", "time,", "all,unknown", "SUMMARY", "power"])
 def test_detail_rejects_unsupported_sections_before_loading_config(selector, monkeypatch):
     monkeypatch.setattr(cli, "_load_mapping", lambda *_: pytest.fail("must validate selector first"))
     with pytest.raises(SystemExit) as exc:
@@ -1168,7 +1189,7 @@ def test_detail_selected_json_and_skips_match_saved_report(tmp_path, monkeypatch
     assert stdout["summary"]["duration_ms"] == 100.0
     details = stdout["details"]
     validate(details, _detail_schema())
-    expected = {"all": {"summary", "time", "energy"}, "time,time": {"time"}, "memory": set()}[selector]
+    expected = {"all": {"summary", "time", "energy", "source"}, "time,time": {"time"}, "memory": set()}[selector]
     assert set(details["sections"]) == expected
     assert ("memory" in details["skipped"]) == (selector != "time,time")
     assert runner.output_requirements.capture_memory_diagnostics == (selector != "time,time")
@@ -1217,9 +1238,10 @@ def test_detail_table_skips_missing_evidence(tmp_path, monkeypatch, capsys):
     )
     stdout = capsys.readouterr().out
     assert "Skipped memory:" in stdout
-    assert "Skipped time:" in stdout
+    assert "Detail: time" in stdout
+    assert "did not export operation timing" in stdout
     assert "Detail: energy" in stdout
-    assert "Detail: source" not in stdout
+    assert "Detail: source" in stdout
 
 
 @pytest.mark.parametrize(
@@ -1350,3 +1372,295 @@ def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, cap
     text = capsys.readouterr().out
     assert "did not export typed timing-energy evidence" in text
     assert "downstream Dynamo adapter export is not qualified" in text
+
+
+def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys) -> None:
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    class SnapshotFactory(_Factory):
+        def capabilities(self):
+            return EngineReplayRunnerFactory().capabilities()
+
+    trace_path = tmp_path / "play.json"
+    trace_path.write_text(
+        json.dumps({"id": "play", "block_size": 64, "requests": [{"t": 0, "type": "s", "in": 64, "out": 1}]})
+    )
+    config_path = tmp_path / "snapshot.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 1024,
+                    "workers": {"aggregated": {}},
+                },
+                "traffic": {
+                    "source": {"type": "trace", "format": "weka", "paths": [str(trace_path)]},
+                    "load": {"type": "trace_timestamps", "agentic_lanes": 2},
+                },
+            }
+        )
+    )
+    runner = _Runner()
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: SnapshotFactory(runner))
+    assert (
+        cli.main(
+            [
+                "predict",
+                "--config",
+                str(config_path),
+                "--output-dir",
+                str(tmp_path / "out"),
+                "--set",
+                "traffic.load.agentic_snapshot.seed=42",
+                "--format",
+                "json",
+            ]
+        )
+        == 0
+    )
+    assert runner.spec.workload["agentic_snapshot"] == {"seed": 42}
+    assert runner.spec.workload["agentic_lanes"] == 2
+    assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
+def test_time_source_tables_are_bounded_but_json_keeps_complete_evidence():
+    from copy import deepcopy
+
+    from jsonschema import validate
+
+    from aisimulate.detail import build_prediction_details, format_prediction_details
+
+    operations = [
+        {
+            "name": f"op{i}",
+            "latency_ms": float(i),
+            "source": "empirical",
+            "fallbacks": [],
+            "sol": None,
+            "sol_unavailable_reason": "unsupported test operation",
+            "latency_to_sol_ratio": None,
+        }
+        for i in range(20)
+    ]
+    native = {
+        "summary": {"mean_ttft_ms": 8},
+        "performance_diagnostics": {
+            "status": "available",
+            "scope": "accumulated_active_forward_pass_per_gpu",
+            "latency_unit": "ms",
+            "phases": [
+                {
+                    "name": "prefill",
+                    "latency_ms": 190,
+                    "sol": None,
+                    "sol_unavailable_reason": "unsupported test operation",
+                    "operations": operations,
+                }
+            ],
+        },
+    }
+    original = deepcopy(native)
+    details = build_prediction_details(native, ("time", "source"))
+    validate(details, _detail_schema())
+    text = format_prediction_details(details, energy_top_n=2)
+    assert "op19:" in text and "op0:" not in text
+    assert "18 more operations in JSON" in text
+    assert len(details["sections"]["time"]["diagnostics"]["phases"][0]["operations"]) == 20
+    assert len(details["sections"]["source"]["phases"][0]["operations"]) == 20
+    assert native == original
+
+
+@pytest.fixture
+def performance_record():
+    return {
+        "status": "available",
+        "scope": "accumulated_active_forward_pass_per_gpu",
+        "latency_unit": "ms",
+        "phases": [
+            {
+                "name": "prefill",
+                "latency_ms": 2.0,
+                "sol": None,
+                "sol_unavailable_reason": "unsupported",
+                "operations": [
+                    {
+                        "name": "dispatch",
+                        "latency_ms": 2.0,
+                        "source": "estimated",
+                        "sol": None,
+                        "sol_unavailable_reason": "unsupported",
+                        "latency_to_sol_ratio": None,
+                        "fallbacks": [
+                            {
+                                "inference_phase": "context",
+                                "comm_backend": "deepep_ll",
+                                "requested_ep_size": 16,
+                                "requested_node_num": 2,
+                                "measurement_ep_size": 8,
+                                "measurement_node_num": 1,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (("status",), "invented"),
+        (("scope",), "seconds"),
+        (("latency_unit",), "s"),
+        (("phases",), {}),
+        (("phases", 0), None),
+        (("phases", 0, "operations"), "invalid"),
+        (("phases", 0, "latency_ms"), float("inf")),
+        (("phases", 0, "latency_ms"), float("nan")),
+        (("phases", 0, "operations", 0, "name"), ""),
+        (("phases", 0, "operations", 0, "source"), 1),
+        (("phases", 0, "operations", 0, "latency_ms"), True),
+        (("phases", 0, "operations", 0, "sol"), {}),
+        (("phases", 0, "operations", 0, "sol_unavailable_reason"), None),
+        (("phases", 0, "operations", 0, "latency_to_sol_ratio"), -1),
+        (("phases", 0, "operations", 0, "fallbacks"), "bad"),
+        (("phases", 0, "operations", 0, "fallbacks", 0, "requested_ep_size"), 0),
+        (("phases", 0, "operations", 0, "fallbacks", 0, "measurement_node_num"), True),
+    ],
+)
+def test_performance_detail_rejects_malformed_nested_records(performance_record, path, value):
+    from aisimulate.detail import build_prediction_details
+
+    record = performance_record
+    for key in path[:-1]:
+        record = record[key]
+    record[path[-1]] = value
+    expected_path = "performance_diagnostics" + "".join(
+        f"[{key}]" if isinstance(key, int) else f".{key}" for key in path
+    )
+    with pytest.raises(ValueError) as error:
+        build_prediction_details({"performance_diagnostics": performance_record}, ("source",))
+    assert expected_path in str(error.value)
+
+
+def test_performance_detail_rejects_missing_fields_and_preserves_valid_records(performance_record):
+    from copy import deepcopy
+
+    from jsonschema import validate
+
+    from aisimulate.detail import performance_diagnostics
+
+    for path in [(), ("phases", 0), ("phases", 0, "operations", 0), ("phases", 0, "operations", 0, "fallbacks", 0)]:
+        record = performance_record
+        for key in path:
+            record = record[key]
+        for field in record:
+            invalid = deepcopy(performance_record)
+            target = invalid
+            for key in path:
+                target = target[key]
+            del target[field]
+            with pytest.raises(ValueError, match=field):
+                performance_diagnostics({"performance_diagnostics": invalid})
+    result = performance_diagnostics({"performance_diagnostics": performance_record})
+    schema = _detail_schema()
+    validate(result, {"$defs": schema["$defs"], "$ref": "#/$defs/performanceDiagnostics"})
+    assert result == performance_record
+    result["phases"][0]["operations"].clear()
+    assert performance_record["phases"][0]["operations"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ("unavailable_reason",),
+        ("phases", 0, "name"),
+        ("phases", 0, "sol_unavailable_reason"),
+        ("phases", 0, "operations", 0, "name"),
+        ("phases", 0, "operations", 0, "source"),
+        ("phases", 0, "operations", 0, "sol_unavailable_reason"),
+        ("phases", 0, "operations", 0, "fallbacks", 0, "comm_backend"),
+    ],
+)
+def test_diagnostic_string_contract_rejects_whitespace_in_schema_and_adapter(performance_record, path):
+    from jsonschema import Draft202012Validator
+
+    from aisimulate.detail import build_prediction_details, performance_diagnostics
+
+    if path == ("unavailable_reason",):
+        performance_record.update(status="unavailable", phases=[], unavailable_reason="unsupported")
+    details = build_prediction_details({"performance_diagnostics": performance_record}, ("time", "source"))
+    record = details["sections"]["time"]["diagnostics"]
+    target = record
+    for key in path[:-1]:
+        target = target[key]
+    target[path[-1]] = " \t\n"
+    validator = Draft202012Validator(_detail_schema())
+    assert not validator.is_valid(details)
+    with pytest.raises(ValueError, match="nonempty string"):
+        performance_diagnostics({"performance_diagnostics": record})
+
+    # Source uses separate phase/operation definitions, and omits SOL fields.
+    if path[-1] != "sol_unavailable_reason":
+        del details["sections"]["time"]
+        target = details["sections"]["source"]
+        for key in path[:-1]:
+            target = target[key]
+        target[path[-1]] = " \t\n"
+        assert not validator.is_valid(details)
+
+
+@pytest.mark.parametrize(
+    "sol,reason,ratio,valid",
+    [
+        (None, None, None, False),
+        (None, "  ", None, False),
+        (None, "unsupported", 1.0, False),
+        ({"latency_ms": 1, "math_ms": 0, "memory_ms": 1}, "unsupported", 2.0, False),
+        ({"latency_ms": 1, "math_ms": 0, "memory_ms": 1}, None, 2.0, True),
+        ({"latency_ms": 0, "math_ms": 0, "memory_ms": 0}, None, None, True),
+        ({"latency_ms": 0, "math_ms": 0, "memory_ms": 0}, None, 2.0, False),
+    ],
+)
+def test_performance_sol_states_match_schema(performance_record, sol, reason, ratio, valid):
+    from jsonschema import Draft202012Validator
+
+    from aisimulate.detail import performance_diagnostics
+
+    operation = performance_record["phases"][0]["operations"][0]
+    operation.update(sol=sol, sol_unavailable_reason=reason, latency_to_sol_ratio=ratio)
+    schema = _detail_schema()
+    validator = Draft202012Validator({"$defs": schema["$defs"], "$ref": "#/$defs/performanceDiagnostics"})
+    assert validator.is_valid(performance_record) is valid
+    if valid:
+        assert performance_diagnostics({"performance_diagnostics": performance_record}) == performance_record
+    else:
+        with pytest.raises(ValueError, match="performance_diagnostics.phases"):
+            performance_diagnostics({"performance_diagnostics": performance_record})
+
+
+def test_cli_reports_invalid_adapter_diagnostic_field(tmp_path, monkeypatch, capsys):
+    class InvalidDiagnosticsRunner(_Runner):
+        def run(self, *args, **kwargs):
+            report = super().run(*args, **kwargs)
+            report.metadata["native_report"]["performance_diagnostics"] = {"status": "available"}
+            return report
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda _: _Factory(InvalidDiagnosticsRunner()))
+    with pytest.raises(SystemExit) as error:
+        cli.main(
+            [
+                "predict",
+                "-c",
+                str(_detail_config(tmp_path)),
+                "--detail",
+                "source",
+                "--output-dir",
+                str(tmp_path / "out"),
+            ]
+        )
+    assert error.value.code == 2
+    assert "performance_diagnostics.latency_unit must be present" in capsys.readouterr().err

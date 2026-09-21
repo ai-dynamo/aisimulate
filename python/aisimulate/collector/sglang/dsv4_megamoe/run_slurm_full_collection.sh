@@ -329,7 +329,7 @@ python3 "${SCRIPT_DIR}/validate_perf.py" validate \
 
 if [[ "${COPY_VALIDATED}" == "1" ]]; then
   target_system="$(printf '%s' "${SYSTEM_NAME}" | tr '[:upper:]' '[:lower:]')"
-  target_dir="${LOCAL_REPO}/aic-core/src/aiconfigurator_core/systems/data/${target_system}/moe/sglang/${TARGET_SGLANG_VERSION}"
+  target_dir="${LOCAL_REPO}/src/aisimulate_core/systems/data/${target_system}/moe/sglang/${TARGET_SGLANG_VERSION}"
   PYTHONPATH="${LOCAL_REPO}${PYTHONPATH:+:${PYTHONPATH}}" \
     python3 "${SCRIPT_DIR}/finalize_validated.py" \
       --staging-csv "${LOCAL_RESULT_DIR}/merged/${PERF_FILE}" \

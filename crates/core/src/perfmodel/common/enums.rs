@@ -3,7 +3,7 @@
 
 //! Backend, database-mode, quant-mode, model-family, and perf-data-filename
 //! enums plus the `QuantMapping` payload shared by the quant-mode enums.
-//! Mirrors the enum surface of `src/aiconfigurator/sdk/common.py`.
+//! Mirrors the enum surface of `src/aisimulate/sdk/common.py`.
 //!
 //! HF-architecture-to-family routing lives in `models/registry.rs`, not
 //! here, because it carries AIC-specific lookup tables that depend on
@@ -539,6 +539,7 @@ pub enum ModelFamily {
     MinimaxM3,
     Qwen3Vl,
     Qwen3VlMoe,
+    DeepSeekV41,
 }
 
 impl ModelFamily {
@@ -552,6 +553,7 @@ impl ModelFamily {
             Self::DeepSeek => "DEEPSEEK",
             Self::DeepSeekV32 => "DEEPSEEKV32",
             Self::DeepSeekV4 => "DEEPSEEKV4",
+            Self::DeepSeekV41 => "DEEPSEEKV41",
             Self::KimiK25 => "KIMIK25",
             Self::NemotronNas => "NEMOTRONNAS",
             Self::NemotronH => "NEMOTRONH",

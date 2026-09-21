@@ -16,8 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-from aiconfigurator.sdk.utils import HuggingFaceDownloadError
 from collector.fpm_forward.capabilities import resolve_model_capability
 from collector.fpm_forward.config import FPMCollectionOptions, PrefillSamplingProfile, add_fpm_arguments
 from collector.fpm_forward.database import (
@@ -35,6 +33,8 @@ from collector.fpm_forward.planner import (
 )
 from collector.fpm_forward.topology import enumerate_fpm_topologies
 from collector.fpm_forward.types import ParallelTopology
+
+from aisimulate.sdk.utils import HuggingFaceDownloadError
 
 pytestmark = pytest.mark.unit
 
@@ -715,15 +715,18 @@ _DSV4_ATTENTION_OPS = {
 
 
 @pytest.mark.parametrize(
-    ("model_path", "expected_strategies", "expected_memory_rejections"),
+    ("model_path", "max_prefill_tokens", "expected_strategies", "expected_memory_rejections"),
     [
-        # PR #219 uses residual width for MoE workspace, admitting DEP at 16 GPUs.
-        ("sgl-project/DeepSeek-V4-Pro-FP8", {"pure_tp", "tep", "dep"}, 0),
-        ("sgl-project/DeepSeek-V4-Flash-FP8", {"pure_tp", "tep", "dep"}, 0),
+        # Residual-width MoE workspace fits Pro DEP at 8192 tokens; a larger
+        # activation envelope must still reject it on physical capacity.
+        ("sgl-project/DeepSeek-V4-Pro-FP8", 8192, {"pure_tp", "tep", "dep"}, 0),
+        ("sgl-project/DeepSeek-V4-Pro-FP8", 32768, {"pure_tp", "tep"}, 1),
+        ("sgl-project/DeepSeek-V4-Flash-FP8", 8192, {"pure_tp", "tep", "dep"}, 0),
     ],
 )
 def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admission(
     model_path,
+    max_prefill_tokens,
     expected_strategies,
     expected_memory_rejections,
 ):
@@ -737,6 +740,7 @@ def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admi
             _args(
                 fpm_max_gpus=16,
                 fpm_gpu_counts=[16],
+                fpm_max_prefill_isl=max_prefill_tokens,
             )
         ),
     )
@@ -750,6 +754,13 @@ def test_dsv4_fp8_keeps_exact_capabilities_and_applies_max_new_token_memory_admi
     assert plan.dtype_profile.kv_cache_dtypes == ("fp8",)
     assert {cell.parallel_strategy for cell in plan.cells} == expected_strategies
     assert plan.to_dict()["counts"]["memory_rejected_topologies"] == expected_memory_rejections
+    assert plan.to_dict()["counts"]["memory_unknown_topologies"] == 0
+    for decision in plan.topology_memory_admission:
+        assert decision.max_new_tokens == max_prefill_tokens
+        for estimate in decision.estimates:
+            assert (estimate.estimated_non_kv_bytes < estimate.gpu_capacity_bytes) == (
+                decision.disposition == "admitted"
+            )
     assert all(cell.to_dict()["point_source"] == "dynamo_native_self_benchmark" for cell in plan.cells)
 
 
@@ -1959,14 +1970,14 @@ def test_formal_database_requires_family_measured_version_in_curated_tree(tmp_pa
 
 def test_curated_systems_root_resolves_to_the_sdk_default_tree():
     """The default publication root must be the tree the SDK's
-    --systems-paths default actually reads (the aiconfigurator_core package
+    --systems-paths default actually reads (the aisimulate_core package
     data), not a repo-relative guess."""
 
     from collector.fpm_forward.database import _curated_systems_root
 
     root = _curated_systems_root()
     assert root.parts[-2:] == ("systems", "data")
-    assert "aiconfigurator_core" in root.parts
+    assert "aisimulate_core" in root.parts
     assert root.is_dir()
 
 
@@ -2353,7 +2364,7 @@ def test_missing_perf_data_stays_runnable_under_memory_admission(monkeypatch):
     """Coverage gaps are not structural invalidity: collection may be exactly
     what fills them, so strict admission must not reject them."""
 
-    from aiconfigurator_core.sdk.errors import PerfDataNotAvailableError
+    from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
     def unavailable(*_args, **_kwargs):
         raise PerfDataNotAvailableError("no perf rows for this shape")

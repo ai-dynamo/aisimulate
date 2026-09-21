@@ -6,6 +6,8 @@ from __future__ import annotations
 import time
 from typing import ClassVar
 
+import pytest
+
 import aisimulate.sweeper.search as search_module
 from aisimulate.sweeper.config import SmartSearchConfig
 from aisimulate.sweeper.parallel_enum import (
@@ -384,3 +386,12 @@ def test_candidate_timeout_applies_with_parallelism_one(monkeypatch) -> None:
 
     assert result.selected_candidates == []
     assert _CountingSampler.suggested == 1
+
+
+@pytest.fixture(autouse=True)
+def _isolate_estimator_data_for_orchestration(monkeypatch):
+    # These tests use synthetic models/runners. Native construction is exercised
+    # by the estimator contract tests and CLI round trips.
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+
+    monkeypatch.setattr(ForwardPassEstimatorResolver, "resolve_candidate", lambda self, sample: {})

@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-
 from tools.sanity_check.moe_chart_profiles import MoeChartProfile, select_moe_chart_profiles
 
 pytestmark = pytest.mark.unit

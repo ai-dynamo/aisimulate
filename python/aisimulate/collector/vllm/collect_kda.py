@@ -786,9 +786,8 @@ def run_kda_torch(
 if __name__ == "__main__":
     import sys
 
-    from vllm.version import __version__ as _v
-
     from collector.registry_types import PerfFile
+    from vllm.version import __version__ as _v
 
     print(f"KDA Collector - vLLM {_v}")
     print(f"SM Version: {get_sm_version()}")

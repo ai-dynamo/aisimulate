@@ -20,7 +20,7 @@ from pathlib import Path
 
 import yaml
 
-from aiconfigurator.sdk.perf_database import PerfDataNotAvailableError, get_database
+from aisimulate.sdk.perf_database import PerfDataNotAvailableError, get_database
 
 # Disable interactive backend
 os.environ["MPLBACKEND"] = "agg"
@@ -29,7 +29,7 @@ import matplotlib.pyplot as plt
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-SYSTEMS_PREFIX = "aic-core/src/aiconfigurator_core/systems/"
+SYSTEMS_PREFIX = "src/aisimulate_core/systems/"
 
 # Import validate_database.ipynb jupyter notebook
 old_cwd = os.getcwd()
@@ -58,7 +58,7 @@ OPTIONAL_CHART_ERROR_SNIPPETS = (
 # Legacy top-level backend dirs (family-first layout treats any other first-level
 # directory under <system>/ as a family dir containing <backend>/<version>
 # subtrees). Keep textually identical to the CANONICAL _KNOWN_BACKEND_DIRS in
-# aic-core/src/aiconfigurator_core/sdk/operations/base.py, which lists every
+# src/aisimulate_core/sdk/operations/base.py, which lists every
 # copy that must stay in sync (this standalone tool cannot import aic-core).
 _KNOWN_BACKEND_DIRS = {"trtllm", "sglang", "vllm", "nccl", "oneccl"}
 
@@ -66,14 +66,14 @@ _KNOWN_BACKEND_DIRS = {"trtllm", "sglang", "vllm", "nccl", "oneccl"}
 def _dir_is_incomplete(path: str) -> bool:
     """Yaml-first partial-dir check (collection_meta.yaml status:partial), with
     INCOMPLETE.txt as the legacy fallback. Duplicated (not imported) from
-    aiconfigurator_core.sdk.perf_database._version_dir_state, the source of
+    aisimulate_core.sdk.perf_database._version_dir_state, the source of
     truth for this semantic — kept local so this tool doesn't take an aic-core
     dependency for one predicate. Malformed collection_meta.yaml raises
     ValueError naming the file, matching that canonical loader's fail-loudly
     behavior (unlike operations/base.py's deliberately lenient hot-path
     duplicate of this same predicate). See the CONTRACT NOTE on
     _version_dir_is_partial in
-    aic-core/src/aiconfigurator_core/sdk/operations/base.py
+    src/aisimulate_core/sdk/operations/base.py
     for the intentional resolver-lenient/admission-strict split and
     the full list of copies."""
     meta_path = os.path.join(path, "collection_meta.yaml")
@@ -91,7 +91,7 @@ def _dir_is_incomplete(path: str) -> bool:
 
 
 def _systems_data_root() -> str:
-    return os.path.join(REPO_ROOT, "aic-core", "src", "aiconfigurator_core", "systems", "data")
+    return os.path.join(REPO_ROOT, "src", "aisimulate_core", "systems", "data")
 
 
 def _legacy_data_dir(system: str, backend: str, backend_version: str) -> str:
@@ -191,7 +191,7 @@ def _chart_op_name(create_chart_func) -> str:
 
 def _load_chart_op_data(database, op: str) -> None:
     """Load the lazy op data expected by the legacy notebook visualizers."""
-    from aiconfigurator.sdk.operations import (
+    from aisimulate.sdk.operations import (
         GEMM,
         NCCL,
         ContextAttention,

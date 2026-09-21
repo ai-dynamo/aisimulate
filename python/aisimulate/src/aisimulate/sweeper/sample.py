@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Any
 
 from .afd_parallel import AFDParallelConfig
-from .config import SearchSpace
+from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 
 # Pinned deployment/runtime scalars folded in so the selected sample stands alone.
@@ -20,6 +20,9 @@ _DEPLOYMENT_PINNED = (
     "context_length",
     "startup_time",
     "aic_nextn",
+    "nextn_accepted",
+    "enable_chunked_prefill",
+    *ENGINE_MODEL_CONTROL_FIELDS,
 )
 
 # engine knobs per branch: searched batching + pinned scalars.
@@ -33,6 +36,7 @@ _AGG_PINNED = (
     "agg_num_gpu_blocks",
     "agg_timing_model",
     "agg_forward_model",
+    "agg_fpm_parquet_path",
     "agg_startup_time",
 )
 _PREFILL_SEARCHED = ("prefill_max_num_batched_tokens", "prefill_max_num_seqs")
@@ -45,6 +49,7 @@ _PREFILL_PINNED = (
     "prefill_num_gpu_blocks",
     "prefill_timing_model",
     "prefill_forward_model",
+    "prefill_fpm_parquet_path",
     "prefill_startup_time",
 )
 _DECODE_SEARCHED = ("decode_max_num_batched_tokens", "decode_max_num_seqs")
@@ -57,6 +62,7 @@ _DECODE_PINNED = (
     "decode_num_gpu_blocks",
     "decode_timing_model",
     "decode_forward_model",
+    "decode_fpm_parquet_path",
     "decode_startup_time",
 )
 
@@ -161,4 +167,6 @@ def unroll_sample(
             "kv_transfer_timing_mode",
         ):
             sample[key] = getattr(search_space, key)
+    if search_space.speculation is not None:
+        sample["speculation"] = search_space.speculation.model_dump(mode="json")
     return sample

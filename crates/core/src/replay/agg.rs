@@ -169,6 +169,11 @@ where
         })
     }
 
+    pub(crate) fn with_sla_thresholds(mut self, sla: crate::replay::SlaThresholds) -> Self {
+        self.collector.set_sla_thresholds(sla);
+        self
+    }
+
     /// Toggle per-request record capture on the underlying collector. When
     /// `true`, the final `ReplayReport` returned from `run()` will
     /// have `per_request` populated. Default `false` (cheap).
@@ -341,7 +346,7 @@ where
             );
         }
         self.collector
-            .on_arrival(uuid, arrival_time_ms, input_length, output_length);
+            .try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
         if let Some(context) = request.metadata().replay_context.as_ref() {
             self.collector.on_request_context(uuid, context);
         }
@@ -600,6 +605,10 @@ where
         payload: WorkerCompletionPayload<Observation::Batch>,
     ) -> anyhow::Result<()> {
         debug_assert_eq!(payload.stage, SimulationWorkerStage::Aggregated);
+        if let Some(fpm) = &payload.fpm {
+            self.collector
+                .on_completed_prefill_work(fpm.sum_prefill_tokens);
+        }
         if let Some(sink) = &self.artifact_sink {
             sink.record_pass_completion_kv_events(
                 payload.pass_started_at_ms,
@@ -1389,6 +1398,7 @@ where
     /// timestamp would exceed that cap; in-flight requests at that point are
     /// reported as incomplete.
     pub(crate) fn run(mut self) -> anyhow::Result<(TraceCollector, AggRuntimeStats)> {
+        self.collector.begin_batch_reporting();
         self.run_to_completion()?;
 
         self.progress.finish();
@@ -1399,6 +1409,9 @@ where
             self.collector.set_agentic_graph(identity);
         }
         self.collector.g3_offload = self.engine.g3_stats();
+        if let Some(snapshots) = self.admission.agentic_snapshot_evidence() {
+            self.collector.set_agentic_snapshots(snapshots);
+        }
         if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
             self.collector.set_agentic_lifecycle(transcript);
         }
@@ -1406,6 +1419,7 @@ where
             self.collector.set_agentic_play_outcomes(outcomes);
         }
         self.collector.set_runtime_evidence(self.evidence.finish());
+        self.collector.prepare_batch_report()?;
         Ok((self.collector, self.stats))
     }
 }

@@ -10,8 +10,15 @@ configurations offline, without bringing up a GPU serving cluster.
 
 [Website](https://ai-dynamo.org/aisimulate/) ·
 [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accuracy/) ·
+[FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/) ·
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
+
+Whole-forward FPM data is supplied at runtime rather than shipped in this
+repository. Supply both the Parquet file and its adjacent, same-stem
+`.metadata.json` sidecar (for example, `reviewed-fpm.parquet` and
+`reviewed-fpm.metadata.json`). Set `estimation_mode="fpm_interpolation"` and
+`estimator_config.fpm_interpolation.fpm_parquet_path` in the canonical Python or Rust configuration. Prediction/recommendation YAML also accepts the legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` fields; see the [core API guide](docs/core-api.md#external-whole-forward-fpm-data).
 
 AISimulate is the successor to the
 [AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
@@ -62,10 +69,16 @@ artifacts and their compatible AISimulate wheel:
 ```bash
 # Example for Dynamo 1.5.0 RC9; change this to your installed build's revision.
 DYNAMO_REF=ffd7c1a90eb403c0d43911690c5c9b8457acd826
-python3 -m pip install -r \
+python3 -m pip install "grpcio-tools<=1.76.0" -r \
   "https://raw.githubusercontent.com/ai-dynamo/dynamo/${DYNAMO_REF}/container/deps/requirements.planner.txt"
 python3 -m pip check
 ```
+
+The `grpcio-tools` cap matches RC9's
+[common requirements](https://github.com/ai-dynamo/dynamo/blob/ffd7c1a90eb403c0d43911690c5c9b8457acd826/container/deps/requirements.common.txt).
+It keeps the tooling compatible with Planner's `protobuf==6.33.6` pin.
+When selecting another Dynamo revision, check its common requirements and
+update this cap together with `DYNAMO_REF`.
 
 For release candidates, use the exact release artifacts; a package version
 alone may not identify the RC build. Alternatively, use the matching
@@ -77,7 +90,7 @@ does not verify that optional adapters can load.
 ### Upgrade from standalone AIConfigurator
 
 Remove the former standalone distributions first so that only AISimulate owns
-the compatibility imports and command:
+the installed package files and legacy command:
 
 ```bash
 python3 -m pip uninstall -y aiconfigurator aiconfigurator-core
@@ -180,7 +193,7 @@ contract.
 ## AIConfigurator compatibility CLI
 
 The `aisimulate` wheel preserves the established `aiconfigurator` command for
-workflows that have not yet moved to the unified CLI. AISimulate 0.12.0 keeps
+workflows that have not yet moved to the unified CLI. AISimulate 0.13.0 keeps
 this compatibility surface, while new prediction and search integrations
 should start with `aisimulate predict` and `aisimulate recommend`.
 
@@ -209,8 +222,8 @@ The compatibility CLI preserves six workflows:
 | `support` | Check model and system coverage |
 
 Read the [Legacy AIC CLI User Guide](docs/cli/legacy-aic-user-guide.md) for
-command examples and the [AIC CLI and Python API overview](python/aisimulate/README.md)
-for the complete compatibility surface. The
+command examples and the [package overview](python/aisimulate/README.md)
+for installation and current AISimulate workflows. The
 [AIC migration guide](docs/cli/migrate-from-aiconfigurator.md)
 explains which AIC workflows map to `predict` or `recommend` and which ones
 must continue using the compatibility command for now.
@@ -224,7 +237,7 @@ development, releases, issues, and pull requests; open all new issues and pull
 requests in this repository.
 
 The `aiconfigurator` compatibility command remains available from the
-`aisimulate` wheel in 0.12.0. It is targeted for removal in AISimulate 0.13.0,
+`aisimulate` wheel through 0.13.0. It is targeted for removal in AISimulate 0.14.0,
 after every remaining AIC workflow has a verified replacement in the unified
 `aisimulate` CLI. Until then, use the compatibility command for the workflows
 identified in the migration guide.
@@ -251,7 +264,7 @@ APIs:
 - [FPM collection-to-prediction workflow](python/aisimulate/docs/fpm/end-to-end-workflow.md)
 - [Replay SDK and artifact contract](crates/core/src/replay/README.md)
 - [Sweeper SDK](docs/sweeper/overview.md)
-- [AIConfigurator compatibility Python API](python/aisimulate/README.md#python-api)
+- [Legacy CLI reference](docs/cli/legacy-aic-user-guide.md)
 
 ## Support and accuracy
 
@@ -292,7 +305,7 @@ The compatibility support matrix covers AIC command-based aggregated and
 disaggregated workflows by model, system, backend, and backend version:
 
 - [Interactive legacy AIC support matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
-- [AIC support-matrix data](python/aisimulate/src/aiconfigurator_core/systems/support_matrix/)
+- [AIC support-matrix data](python/aisimulate/src/aisimulate_core/systems/support_matrix/)
 - [Curated model roster](python/aisimulate/docs/support-matrix/model-roster.md)
 
 Check one exact cell from the installed package with:
@@ -333,8 +346,9 @@ This repository produces exactly two release artifacts:
 
 It does **not** publish an `aiconfigurator` or `aiconfigurator-core` wheel, a
 Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
-`aisimulate` wheel preserves the `aiconfigurator`, `aiconfigurator_core`, and
-`aisimulate_core` Python import namespaces during the compatibility window.
+`aisimulate` wheel exposes the `aisimulate` application and `aisimulate_core`
+estimator packages. Only the legacy `aiconfigurator` executable remains; see
+[Python source migration](docs/python-source-migration.md) for removed imports.
 
 The AISimulate wheel does not declare Dynamo as an installation dependency.
 Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
@@ -372,7 +386,7 @@ The published [E2E Accuracy Overview](https://ai-dynamo.org/aisimulate/e2e-accur
 reports matched client-observed TTFT and TPOT accuracy against measured silicon
 operating points. It keeps accuracy, evidence coverage, and curve-shape error
 separate and includes a machine-readable aggregate with exact snapshot digests.
-See the [snapshot and regeneration details](python/aisimulate/docs/e2e-accuracy/README.md)
+See the [snapshot and regeneration details](pages/e2e-accuracy/README.md)
 for evidence provenance and instructions to rebuild the report.
 
 The checked-in snapshot excludes multi-node configurations and applies only to
@@ -393,3 +407,29 @@ See the [CI guide](docs/ci.md) for the Fast/Full/Nightly hierarchy, code review,
 complete test coverage, and release gates. Use [DEVELOPMENT.md](DEVELOPMENT.md)
 for environment and local test details and [CONTRIBUTING.md](CONTRIBUTING.md)
 before sending a change.
+
+Direct Python `ReplaySpec.workload` synthetic workloads accept
+`length_sampler: numpy_random_state` for InferenceX-compatible seeded token
+lengths in Gym replay. The public prediction/recommendation YAML and CLI, and
+the Sweeper `Workload` schema, do not expose this option and reject it.
+The supported direct path must omit `source_type`; all workload-driver inputs
+with `source_type` reject `length_sampler` at the common runner entrypoint,
+including AFD and AFD+PD. Materialized trace replay rejects
+non-default samplers. The default `python_random`
+preserves existing workloads. Both sample the full input vector before output
+lengths; unknown sampler names are rejected. NumPy seeds must fit an unsigned
+32-bit integer; the Python sampler retains unsigned 64-bit seed support.
+Each replay initializes its own seeded sampler, so independent runs reproduce
+the same request lengths.
+
+### FPM accuracy overview
+
+The [FPM Accuracy Overview](https://ai-dynamo.org/aisimulate/fpm-accuracy/?branch=main)
+reports daily FPM (KV warmup on), FPM (KV warmup off), and online regression accuracy against
+pinned Hugging Face measurements. It evaluates main and releases >= 0.12.0,
+with MAPE, prediction coverage, and exact source provenance. Results stay in
+GitHub Actions artifacts; the main Pages build publishes qualified aggregates.
+See [evaluation and publication details](pages/fpm-accuracy/README.md).
+
+Webpage sources live in [pages/](pages/README.md). Rust design documentation
+remains under docs and is not deployed.

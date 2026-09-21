@@ -1641,14 +1641,13 @@ mod tests {
     fn b200_sxm_spec() -> SystemSpec {
         let systems_yaml = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
-            .join("python/aisimulate/src/aiconfigurator_core/systems/b200_sxm.yaml");
+            .join("python/aisimulate/src/aisimulate_core/systems/b200_sxm.yaml");
         SystemSpec::load(&systems_yaml).expect("b200_sxm.yaml must parse")
     }
 
     fn b200_sglang_root() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(
-            "../../python/aisimulate/src/aiconfigurator_core/systems/data/b200_sxm/sglang/0.5.14",
-        )
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/sglang/0.5.14")
     }
 
     #[test]
@@ -2062,11 +2061,11 @@ mod tests {
     /// ```text
     /// PYTHONPATH=src python3 -c "
     /// import math
-    /// from aiconfigurator.sdk.perf_database import PerfDatabase
-    /// from aiconfigurator.sdk.operations.dsv4 import _deepseek_v4_attention_sol
-    /// from aiconfigurator.sdk import common
+    /// from aisimulate.sdk.perf_database import PerfDatabase
+    /// from aisimulate.sdk.operations.dsv4 import _deepseek_v4_attention_sol
+    /// from aisimulate.sdk import common
     /// db = PerfDatabase('b200_sxm','sglang','0.5.10',
-    ///                   systems_root='python/aisimulate/src/aiconfigurator_core/systems', database_mode='SOL')
+    ///                   systems_root='python/aisimulate/src/aisimulate_core/systems', database_mode='SOL')
     /// def sol(s, hidden, q_lora, index_topk):
     ///     return _deepseek_v4_attention_sol(db, is_context=True, b=1, s=s, prefix=0,
     ///         num_heads=64, hidden_size=hidden, q_lora_rank=q_lora, o_lora_rank=1024,

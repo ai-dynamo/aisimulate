@@ -10,9 +10,9 @@ import pandas as pd
 import pytest
 import yaml
 
-from aiconfigurator.generator.api import generate_backend_artifacts
-from aiconfigurator.generator.module_bridge import task_config_to_generator_config
-from aiconfigurator_core.sdk.config import ModelConfig
+from aisimulate.generator.api import generate_backend_artifacts
+from aisimulate.generator.module_bridge import task_config_to_generator_config
+from aisimulate_core.sdk.config import ModelConfig
 
 pytestmark = pytest.mark.unit
 

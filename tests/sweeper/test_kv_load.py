@@ -14,6 +14,83 @@ from aisimulate.sweeper.parallel_enum import (
 )
 
 
+@pytest.mark.parametrize("source", ["resolved", "custom", "legacy_custom"])
+def test_capacity_cache_includes_resolved_root(tmp_path, monkeypatch, source):
+    from aisimulate.sweeper import kv_load
+
+    roots = [tmp_path / "first", tmp_path / "second"]
+    for root in roots:
+        root.mkdir()
+    calls = []
+
+    def capacity(*args, systems_paths, **kwargs):
+        calls.append(systems_paths)
+        return 6400 if systems_paths == [str(roots[0])] else 12800
+
+    monkeypatch.setattr(kv_load, "estimate_kv_tokens", capacity)
+    kv_load._per_rank_capacity_tokens.cache_clear()
+    sample = _sample("agg")
+    parallel = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    capacities = []
+    try:
+        for root in [roots[0], roots[1], roots[0]]:
+            if source == "resolved":
+                sample["forward_pass_estimators"] = {"agg": {"config": {"systems_paths": [str(root)]}}}
+                sample["agg_timing_model"] = {
+                    "type": "external",
+                    "provider": "aic",
+                    "config": {"systems_paths": ["must-not-be-used"]},
+                }
+            else:
+                config = {"systems_paths": [str(root)]} if source == "custom" else {"systems_path": str(root)}
+                sample["agg_timing_model"] = {"type": "external", "provider": "aic", "config": config}
+            result = resolve_kv_load(
+                sample,
+                workload=Workload(isl=100, osl=100, kv_load_ratio=1.0, request_count=1),
+                parallel_config=parallel,
+                ratio=1.0,
+                backend_version="v",
+            )
+            capacities.append(result.role_capacity_tokens["agg"])
+        assert capacities == [6400, 12800, 6400]
+        assert calls == [[str(roots[0])], [str(roots[1])]]
+    finally:
+        kv_load._per_rank_capacity_tokens.cache_clear()
+
+
+@pytest.mark.parametrize("custom_role", ["prefill", "decode"])
+def test_mixed_timing_capacity_uses_each_roles_own_root(tmp_path, monkeypatch, custom_role):
+    from aisimulate.sweeper import kv_load
+
+    sample = _sample("disagg")
+    roots = {role: tmp_path / role for role in ("prefill", "decode")}
+    for root in roots.values():
+        root.mkdir()
+    canonical_role = "prefill" if custom_role == "decode" else "decode"
+    sample["forward_pass_estimators"] = {canonical_role: {"config": {"systems_paths": [str(roots[canonical_role])]}}}
+    sample[f"{custom_role}_timing_model"] = {
+        "type": "external",
+        "provider": "aic",
+        "config": {"systems_paths": [str(roots[custom_role])]},
+    }
+    seen = []
+
+    def capacity(*args, systems_paths, **kwargs):
+        seen.append(systems_paths)
+        return 6400
+
+    monkeypatch.setattr(kv_load, "_per_rank_capacity_tokens", capacity)
+    parallel = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    resolve_kv_load(
+        sample,
+        workload=Workload(isl=100, osl=100, kv_load_ratio=1.0, request_count=1),
+        parallel_config=DisaggParallelConfig(prefill=parallel, decode=parallel),
+        ratio=1.0,
+        backend_version="v",
+    )
+    assert seen == [(str(roots["prefill"]),), (str(roots["decode"]),)]
+
+
 def _sample(mode: str) -> dict:
     sample = {
         "deployment_mode": mode,
@@ -173,5 +250,48 @@ def test_average_tokens_per_request_must_be_positive(monkeypatch):
             workload=SimpleNamespace(isl=0, osl=0),
             parallel_config=config,
             ratio=1.0,
+            backend_version="v",
+        )
+
+
+@pytest.mark.parametrize("source", ["resolved", "custom"])
+def test_capacity_uses_nonnull_version_and_resolved_controls(monkeypatch, source):
+    from aisimulate.sweeper import kv_load
+
+    sample = _sample("agg")
+    sample.update(enable_eplb=True, wideep_num_slots=32, moe_backend="deepep_moe")
+    identity = {"backend_version": None, "enable_eplb": False, "wideep_num_slots": 64, "moe_backend": None}
+    if source == "resolved":
+        sample["forward_pass_estimators"] = {"agg": {"config": identity}}
+    else:
+        sample["agg_timing_model"] = {"type": "external", "provider": "aic", "config": identity}
+    seen = []
+
+    def capacity(*args, **kwargs):
+        seen.append(kwargs)
+        return 6400
+
+    monkeypatch.setattr(kv_load, "_per_rank_capacity_tokens", capacity)
+    resolve_kv_load(
+        sample,
+        workload=Workload(isl=100, osl=100, request_count=1, kv_load_ratio=1.0),
+        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+        ratio=1,
+        backend_version="pinned-version",
+    )
+    assert seen[0]["backend_version"] == "pinned-version"
+    assert dict(seen[0]["model_controls"]) == {"wideep_num_slots": 64}
+
+
+@pytest.mark.parametrize("invalid", [None, 7, "invalid", []])
+def test_capacity_rejects_malformed_external_identity(invalid):
+    sample = _sample("agg")
+    sample["agg_timing_model"] = {"type": "external", "provider": "aic", "config": invalid}
+    with pytest.raises(ValueError, match="external AIC timing config must be a mapping"):
+        resolve_kv_load(
+            sample,
+            workload=Workload(isl=100, osl=100, request_count=1, kv_load_ratio=1.0),
+            parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+            ratio=1,
             backend_version="v",
         )

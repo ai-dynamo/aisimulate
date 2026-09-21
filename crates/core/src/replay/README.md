@@ -15,6 +15,42 @@ For operator-facing CLI documentation, see
 This README covers the virtual clock, event queue, logical workers, and the
 placement/scaling boundary used by Dynamo adapters.
 
+## Best-effort Belady eviction
+
+Set `engine.kv_eviction_policy` to `"belady"` in the native replay descriptor to
+evict pages whose next input demand is farthest away. LRU remains the default;
+there is no Cargo gate or new CLI wiring. Supported runs are open-loop, complete
+input traces on fixed aggregated SGLang, vLLM, or TRT-LLM workers, with prefix
+caching and one attention-DP rank per worker. Closed-loop/generated/agentic or
+delta inputs, scaling, disaggregation, and host/G3 offload are rejected.
+
+The forecast counts complete input prefix blocks in global trace order. It does
+not predict which worker will use them or forecast output blocks; native output
+caching still works when a later input matches. Demand retires at the request's
+first committed prefill or terminal removal, never merely because time passes.
+Later chunks and preemption retries do not recreate demand. These are intentional
+assumptions: adding execution-dependent refinement would change the model.
+
+The oracle supplies eviction rankings only. The engine preserves causal arrivals,
+execution, and cache ownership. SGLang evicts unlocked leaf tails; vLLM/TRT evicts
+inactive copies, preferring duplicates before the last useful copy. Multiworker
+forecasts may retain data needed elsewhere, so optimal reuse is not guaranteed.
+Reports label the assumption `global_input_trace_order_v1`; compare
+`first_admission_prefix_cache_reused_ratio` and `committed_prefill_tokens` on
+completed runs, alongside serving throughput and latency.
+
+Mooncake validation used a Llama-3.1-8B/H200 timing profile and 4,096 cache blocks
+of 64 tokens, after smoke sweeps confirmed eviction losses and the load knee.
+All full-trace comparisons completed 23,608 requests and 4,299,817 output tokens.
+Loaded 1/2/4-worker **simulated** throughput gains were 2.01–2.11% for vLLM and
+0.39–0.77% for SGLang, with less prefill work; TRT-LLM gained 3.01% on 1,000 requests.
+Arrival-limited throughput stayed unchanged. A SGLang smoke case lost 0.165%
+despite better reuse because attention batch/context costs increased; maximum
+TTFT also worsened in one full run. Better reuse does not guarantee faster serving
+or better tails. Local simulator wall time rose about 3.4%/7.2% for vLLM/SGLang.
+The [validation record in PR #256](https://github.com/ai-dynamo/aisimulate/pull/256)
+contains the revisions, trace checksums, configuration, commands, and paired results.
+
 ## Where It Sits
 
 The public entrypoint is `Replayer<C>`, where `C: ReplayComposition` supplies
@@ -47,7 +83,7 @@ and deleted when the check exits; the complete 570 MB corpus is not downloaded.
 
 ### Agentic driver/runtime contract
 
-M1 execution consumes one completely preloaded, immutable
+Static agentic replay consumes one completely preloaded, immutable
 `ValidatedAgenticGraph`; neither the runtime nor an engine adapter polls a
 client or extends the graph dynamically. The replay runtime is the sole owner
 of logical time. At each timestamp it collects engine feedback and applies it
@@ -110,13 +146,13 @@ reason independent of engine callback order.
 For a failed play, `causal_terminal_ms` records this primary failure, which may
 precede client lane release while already-dispatched siblings finish.
 
-### Public AgentX M1 qualification
+### Public AgentX replay qualification
 
 The built-in Python/CLI engine stack qualifies aggregated vLLM and SGLang with
 HBM-only KV cache and speculative decoding disabled. Use a Weka or Agentic
-Mooncake v2 trace with `trace_timestamps` and `agentic_lanes: 1`; M1 starts at
-turn zero and runs the play to settlement. The public engine boundary rejects
-agentic TensorRT-LLM, host offload, and speculative decoding configurations.
+Mooncake v2 trace with `trace_timestamps` and `agentic_lanes: 1`; the functional
+qualification starts at turn zero and runs the play to settlement. The public
+engine boundary rejects agentic TensorRT-LLM, host offload, and speculative decoding configurations.
 Generic native runtime conformance, including P/D, has a broader scope than
 this public qualification.
 
@@ -132,8 +168,8 @@ run these commands from the repository root:
 
 ```sh
 cargo test --locked -p aisimulate-core --test agentx_qualification --example qualify_weka
-python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_m1'
-python/aisimulate/.venv/bin/python scripts/qualify_agentx_m1.py --output /tmp/agentx-m1.json
+python/aisimulate/.venv/bin/pytest -q tests/test_unified_traffic_runtime.py tests/e2e/test_unified_cli_engine.py -k 'weka or agentx_replay'
+python/aisimulate/.venv/bin/python scripts/qualify_agentx_replay.py --output /tmp/agentx-replay.json
 ```
 
 The last command is an opt-in network gate. It verifies the revision-pinned
@@ -163,18 +199,80 @@ default public runner while rejecting any attempted Dynamo import.
 These gates cover the AISimulate portion of AIC-1815. Dynamo compatibility
 qualification remains in [Dynamo PR #14355](https://github.com/ai-dynamo/dynamo/pull/14355)
 and must be rerun against matching AISimulate artifacts before declaring the
-cross-repository M1 milestone complete.
+cross-repository Milestone 1 complete.
 
 When Dynamo upgrades its AISimulate dependency to include these capability
 fields, `DynamoReplayRunnerFactory` must explicitly declare its qualified
 AgentX backend, host-offload, and speculative-decoding support. Matching this
-M1 boundary requires `supported_agentic_backends=("vllm", "sglang")`,
+functional replay boundary requires `supported_agentic_backends=("vllm", "sglang")`,
 `supports_agentic_host_offload=False`, and
 `supports_agentic_speculative_decoding=False`, with corresponding rejection
 tests. Shared `RunnerCapabilities` defaults preserve generic runner behavior;
 they do not certify a downstream factory's AgentX support. Coordinate the
 factory change with the dependency upgrade because older AISimulate revisions
 do not accept these constructor fields.
+
+### Seeded request-boundary snapshots
+
+Opt into initial snapshots through the existing traffic load configuration:
+
+```yaml
+traffic:
+  source:
+    type: trace
+    format: weka
+    paths: [corpus]
+  load:
+    type: trace_timestamps
+    agentic_lanes: 2
+    agentic_snapshot:
+      seed: 42
+```
+
+The seed is an unsigned 64-bit integer. The same corpus, lane count, and seed
+reproduce each lane's source play, sampled cut, and play/cache identity. Initial
+lanes take source plays in corpus order, wrapping when necessary. Each cut is
+uniformly sampled between 25% and 75% of that play's first-to-last request-start
+span; a zero-width span uses its single timestamp. Sampling uses original source
+time. The configured `speedup` applies only to remaining execution timers.
+Omitting `agentic_snapshot` preserves turn-zero replay. CLI users can set the
+seed with `--set traffic.load.agentic_snapshot.seed=42`; prediction and
+recommendation use the same field.
+
+This is a request-boundary snapshot. Requests whose recorded start is strictly
+before the cut are history, including requests whose recorded service interval
+crosses the cut. Requests at or after the cut remain in the continuation.
+Recorded service intervals provide dependency-timer provenance. Dynamo request
+traces retain their existing first-request clock origin and preserve all source
+intervals separately from completion-relative execution gates; legacy graph
+serialization and digests are unchanged. The snapshot
+does not estimate partial decode progress or restore a physical engine checkpoint.
+For each continuing conversation with earlier history, its primer description
+references the latest prior request's complete original input. No prompt is
+renormalized after truncation, and no synthetic response is appended to a primer.
+
+Rust consumers call `ValidatedAgenticGraph::prepare_snapshots` with
+`AgenticSnapshotOptions`, inspect `PreparedAgenticSnapshots::snapshots`, and pass
+the preparation to `WorkloadDriver::new_agentic_snapshots`. The retained
+`AgenticReplayContext` can prepare further explicit play instances with fresh
+ordinals. Every incarnation receives disjoint logical token identities and
+request-instance identities; primer and profile prefix views share their play's
+mapping. Identity capacity exhaustion fails instead of reusing an old range.
+These APIs reuse the existing dependency executor and runtime feedback contract.
+
+Public snapshot execution currently runs the remaining requests against a cold
+engine. Primer descriptions are evidence for AIC-1812; they are not submitted as
+hidden warmup requests. Physical warmup and its profile barrier belong to
+AIC-1812, fixed-duration lane recycling to AIC-1813, and Dynamo placement policy
+to AIC-1817. Aggregated vLLM/SGLang, HBM-only, non-speculative public qualification
+continues to apply; snapshot output remains `functional_only`.
+
+The native report's `agentic_snapshots` collection records source/graph identity,
+seed, lane/play/cache identity, sampled cut, recorded request intervals, retained
+frontier and remaining dependency timers, and primer descriptions. Default Python
+results retain it in metadata; full native reports and CLI JSON preserve the same
+evidence. Per-request agentic identities allow events to be attributed to their
+original play even when a future phase reuses its lane.
 
 ## File Map
 
@@ -442,9 +540,12 @@ All runtimes emit request timing into `TraceCollector` in `src/replay/report.rs`
 - token emission
 - completion
 
-The harness does not compute final throughput/latency metrics incrementally. It
-records events, then `TraceCollector::finish()` derives the final
-`ReplayReport`.
+Batch summary reporting folds completed requests into aggregate statistics after
+their completion callbacks and spills exact latency samples as needed.
+`prepare_batch_report()` collects the remaining state and computes the final
+distributions; `TraceCollector::finish()` returns that prepared `ReplayReport`.
+Detailed reporting and steppable runtimes retain the request records needed by
+their consumers and derive the report when `finish()` is called.
 
 ## Mental Model
 
@@ -456,3 +557,34 @@ The easiest way to think about offline replay is:
 4. Record the same request lifecycle timings into `TraceCollector`.
 
 That keeps the harness fast, reproducible, and close to the real scheduler behavior without needing to boot a live runtime.
+
+## Batch report memory
+
+Offline aggregated and disaggregated batch replay discard terminal collector
+records after completion callbacks. Disaggregated handoff state is removed only
+once both pipelines and the coordinator are quiescent. Active request state and
+token timelines still scale with the configured concurrency and output length.
+
+Summary latency distributions retain at most 4096 in-memory samples each, then
+spill exact values to anonymous temporary files. Quantiles use the same rounded
+rank as detailed reports; eight sequential radix-selection passes require fixed
+memory. Counts and quantiles remain exact. Floating-point mean and standard
+deviation accumulation can differ at roundoff because completion order replaces
+request-ID order. Existing ITL and per-user throughput sketches retain their
+existing 0.1% relative quantile error; this change introduces no new sketch.
+
+The 4096-sample threshold only changes where values are stored; it never drops
+samples or stops the replay. Temporary storage grows with the workload, without
+an application-imposed byte or sample cap. Actual filesystem failures stop the
+replay with a `resource_limited` error, without returning a partial report.
+Only the replay's own anonymous temporary files are closed on success, failure,
+or process exit; no existing user files are deleted.
+
+Detailed batch output retains its complete, ordered list API without a request
+cap. It continues retaining the records needed to satisfy that API. This change
+does not introduce a streaming-output API, reduce the requested workload, or
+impose host-resource budgets. Engine state, input traces, detailed records,
+trajectory metadata, and other capture options still require host memory.
+
+Steppable SDK engines preserve completed-request queries until their reporting
+epoch is drained; this batch optimization does not change that API contract.

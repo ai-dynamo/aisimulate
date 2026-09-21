@@ -189,7 +189,7 @@ pytest tests/test_perf_database*.py tests/test_data_loaders.py -v --html=report.
 
 To run with coverage report:
 ```bash
-pytest tests/test_perf_database*.py tests/test_data_loaders.py --cov=aiconfigurator.sdk.perf_database --cov-report=html
+pytest tests/test_perf_database*.py tests/test_data_loaders.py --cov=aisimulate.sdk.perf_database --cov-report=html
 ```
 
 ## Notes

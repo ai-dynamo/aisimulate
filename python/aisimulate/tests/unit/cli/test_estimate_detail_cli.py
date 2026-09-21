@@ -3,10 +3,10 @@
 
 import pytest
 
-import aiconfigurator.cli.api as cli_api
-import aiconfigurator.cli.main as cli_main
-from aiconfigurator.cli.api import EstimateResult
-from aiconfigurator.sdk.errors import (
+import aisimulate.legacy_cli.api as cli_api
+import aisimulate.legacy_cli.main as cli_main
+from aisimulate.legacy_cli.api import EstimateResult
+from aisimulate.sdk.errors import (
     EmpiricalNotImplementedError,
     MissingSystemFlopsError,
     PerfDataNotAvailableError,

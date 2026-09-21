@@ -7,8 +7,11 @@
 //! `compile_engine` walks the model once and emits an [`engine::spec::EngineSpec`]
 //! (op lists + [`EngineConfig`] identity); the Rust [`engine::Engine`] executes
 //! it without re-entering Python. With the `python` feature enabled,
-//! [`AicEngineBuilder`] is the preferred Rust → Python → Rust embedded build
-//! entry point and [`AicEngine`] is the PyO3 hot-path pyclass.
+//! [`AicEngineBuilder`] is the low-level Rust → Python → Rust build path for
+//! embedders that need an [`AicEngine`] step-latency handle (for example Dynamo
+//! Mocker). It is not a forward-pass estimator constructor: Planner, Replay,
+//! and Sweeper use [`ForwardPassPerfModel::best_available`] and the canonical
+//! [`ForwardPassPerfModelConfig`] contract.
 //!
 //! This directory remains a stable mirror of the former AIConfigurator Rust
 //! crate. Keeping the imported implementation behind one namespace makes
@@ -29,6 +32,7 @@ pub(crate) mod common;
 pub(crate) mod config;
 pub mod engine;
 pub(crate) mod fpm;
+pub(crate) mod kd_tree;
 pub mod memory;
 pub(crate) mod operators;
 pub(crate) mod perf_database;
@@ -41,9 +45,16 @@ pub use common::{AicError, enums::DatabaseMode};
 // planner / Mocker) can use it natively; also exposed to Python via the
 // `RustForwardPassPerfModel` pyclass in `py.rs`.
 pub use fpm::{
-    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfOptions,
-    ForwardPassPerfReadiness, ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
-    ForwardPassRegressionWorkloadKind, ForwardPassWorkerType,
+    CorrectionConfig, EstimationMode, EstimatorConfig, ForwardPassFallbackPolicy,
+    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
+    ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
+    ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassWorkerType,
+    FpmRegressionConfig, RegressionFeatureWeights, SamplingConfig,
+};
+pub use fpm::{
+    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,
+    RegressionFitConfig, RegressionFitKind,
 };
 // Forward-pass metrics telemetry types and schema version, plus the
 // crate-internal validation helper. Re-exported at the crate root so existing
@@ -60,7 +71,8 @@ pub use memory::{
     KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction, MemoryBreakdown,
 };
 // PyO3 bindings. `AicEngine` is the Python -> Rust hot-path pyclass;
-// `AicEngineBuilder` is the Rust -> Python -> Rust entry point. They must be
+// `AicEngineBuilder` is the low-level Rust -> Python -> Rust compiled-engine
+// entry point. It does not construct a forward-pass estimator. They must be
 // `pub`-re-exported here because the `py` module itself is private.
 #[cfg(feature = "python")]
 pub use py::{AicEngine, AicEngineBuilder};

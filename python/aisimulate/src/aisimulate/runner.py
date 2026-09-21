@@ -16,7 +16,12 @@ from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
-from .aic import materialize_aic_num_gpu_blocks
+import numpy as np
+
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+from .capacity import materialize_aic_num_gpu_blocks
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -61,6 +66,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "replay_concurrency",
         "isl",
         "osl",
+        "cached_prefix_tokens",
         "request_count",
         "turns_per_session",
         "shared_prefix_ratio",
@@ -74,6 +80,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "kv_load_ratio",
         "max_sim_time_ms",
         "agentic_lanes",
+        "agentic_snapshot",
     }
 )
 
@@ -89,6 +96,15 @@ _AIC_TIMING_FIELD_ALIASES = {
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
+    "fpm_parquet_path": ("fpm_parquet_path", "aic_fpm_parquet_path"),
+    "moe_backend": ("aic_moe_backend",),
+    "attention_backend": ("aic_attention_backend",),
+    "enable_eplb": ("aic_enable_eplb",),
+    "wideep_num_slots": ("aic_wideep_num_slots",),
+    "decoder_replay": ("decoder_replay", "aic_decoder_replay"),
+    "database_mode": ("database_mode", "aic_database_mode"),
+    "enable_shared_layer": ("enable_shared_layer", "shared_layer", "aic_enable_shared_layer"),
+    "strict_provenance": ("strict_provenance", "aic_strict_provenance"),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -181,19 +197,15 @@ class AICAFDCompanionPerformanceModel:
                 provenance={"provider": "fixed", "field": key},
             )
 
+        timing_overrides = _pop_aic_timing_overrides(dict(args), role)
         estimator = self._estimator
         if estimator is None:
-            from aiconfigurator.cli.api import cli_estimate
+            from aisimulate.legacy_cli.api import cli_estimate
 
             estimator = cli_estimate
         prefix = f"{role}_"
         parallel = deployment.parallel_config
-        forward_model = args.get("aic_forward_model", "op_level")
-        if not isinstance(forward_model, str) or forward_model not in _AIC_FORWARD_MODELS:
-            raise ValueError(
-                f"{role} AFD companion aic_forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, "
-                f"got {forward_model!r}"
-            )
+        forward_model = timing_overrides.get("forward_model", "op_level")
         kwargs: dict[str, Any] = {
             "mode": "static_ctx" if role == "prefill" else "static_gen",
             "backend_name": deployment.backend,
@@ -215,20 +227,94 @@ class AICAFDCompanionPerformanceModel:
         ):
             if parallel.get(source) is not None:
                 kwargs[target] = _positive_int(parallel[source], f"parallel_config.{source}")
+        # Timing identity must agree with deployment topology and provenance.
+        for identity_field, parameter in (
+            ("backend_version", "backend_version"),
+            ("pp", "pp_size"),
+            ("moe_tp_size", "moe_tp_size"),
+            ("moe_ep_size", "moe_ep_size"),
+        ):
+            if identity_field in timing_overrides and timing_overrides[identity_field] != kwargs.get(parameter):
+                raise ValueError(
+                    f"{role} AFD companion {identity_field}={timing_overrides[identity_field]!r} "
+                    f"conflicts with deployment value {kwargs.get(parameter)!r}; "
+                    "set identity fields in BackendDeploymentSpec"
+                )
         if args.get("aic_nextn") is not None:
             kwargs["nextn"] = _positive_int(args["aic_nextn"], "aic_nextn")
         model_name = args.get("aic_model_path")
         hardware = args.get("aic_system")
         if not isinstance(model_name, str) or not model_name or not isinstance(hardware, str) or not hardware:
             raise ValueError(f"{role} AFD companion requires aic_model_path and aic_system")
+        fpm_parquet_path = timing_overrides.get("fpm_parquet_path")
+        metric = "ttft" if role == "prefill" else "tpot"
+        source = "aisimulate.legacy_cli.api.cli_estimate"
         try:
-            result = estimator(model_name, hardware, **kwargs)
+            if fpm_parquet_path is not None:
+                # Preserve static integration through the canonical model API.
+                if forward_model != "fpm":
+                    raise ValueError("fpm_parquet_path requires forward_model='fpm'")
+                quantization = {}
+                for field, parameter in (
+                    ("gemm_dtype", "gemm_quant_mode"),
+                    ("moe_dtype", "moe_quant_mode"),
+                    ("fmha_dtype", "fmha_quant_mode"),
+                    ("kv_cache_dtype", "kvcache_quant_mode"),
+                    ("comm_dtype", "comm_quant_mode"),
+                ):
+                    if field in timing_overrides:
+                        quantization[parameter] = timing_overrides[field]
+                sharded_moe = kwargs.get("moe_tp_size", 1) * kwargs.get("moe_ep_size", 1) > 1
+                config = ForwardPassPerfModelConfig(
+                    model=model_name,
+                    system=hardware,
+                    backend=deployment.backend,
+                    backend_version=deployment.backend_version,
+                    worker_type=role,
+                    tp=kwargs["tp_size"],
+                    pp=kwargs["pp_size"],
+                    attention_dp=kwargs["attention_dp_size"],
+                    moe_tp_size=kwargs.get("moe_tp_size") if sharded_moe else None,
+                    moe_ep_size=kwargs.get("moe_ep_size") if sharded_moe else None,
+                    nextn=kwargs.get("nextn", 0),
+                    kv_block_size=args.get("block_size"),
+                    estimation_mode="fpm_interpolation",
+                    estimator_config={"fpm_interpolation": {"fpm_parquet_path": fpm_parquet_path}},
+                    systems_paths=(timing_overrides["systems_path"],) if "systems_path" in timing_overrides else (),
+                    **quantization,
+                    **{
+                        name: timing_overrides[name]
+                        for name in (
+                            "attention_backend",
+                            "moe_backend",
+                            "enable_eplb",
+                            "wideep_num_slots",
+                            "decoder_replay",
+                            "database_mode",
+                            "enable_shared_layer",
+                            "strict_provenance",
+                        )
+                        if name in timing_overrides
+                    },
+                )
+                model = RustForwardPassPerfModel.best_available(config)
+                try:
+                    latency = model.static_phase_latency(
+                        batch_size=batch_capacity, input_tokens=isl, output_tokens=osl, prefill=role == "prefill"
+                    )
+                    if role == "decode":
+                        latency /= max(1, osl - 1)
+                finally:
+                    model.close()
+                raw = {metric: latency}
+                source = "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
+            else:
+                result = estimator(model_name, hardware, **kwargs)
+                raw = getattr(result, "raw", None)
         except Exception as exc:
             raise InvalidRunnerError(
                 f"AIC could not measure the AFD {role} companion: {type(exc).__name__}: {exc}"
             ) from exc
-        raw = getattr(result, "raw", None)
-        metric = "ttft" if role == "prefill" else "tpot"
         if not isinstance(raw, Mapping):
             raise InvalidRunnerError("AIC AFD companion estimate did not return a result mapping")
         latency = _positive_number(raw.get(metric), f"AIC AFD companion {metric}")
@@ -239,9 +325,10 @@ class AICAFDCompanionPerformanceModel:
             workers=workers,
             provenance={
                 "provider": "aic",
-                "source": "aiconfigurator.cli.api.cli_estimate",
+                "source": source,
                 "backend_version": deployment.backend_version,
                 "forward_model": forward_model,
+                **({"fpm_parquet_path": fpm_parquet_path} if fpm_parquet_path is not None else {}),
                 "metric": metric,
             },
         )
@@ -270,6 +357,9 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
+            supports_cached_prefix_tokens=True,
+            supports_mtp_expected_acceptance=True,
+            supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -279,6 +369,7 @@ class EngineReplayRunnerFactory:
                 "weka",
             ),
             supports_agentic_lanes=True,
+            supports_agentic_snapshots=True,
             supported_agentic_topologies=("agg",),
             supported_agentic_backends=("vllm", "sglang"),
             supports_agentic_host_offload=False,
@@ -339,6 +430,8 @@ class EngineReplayRunner:
         output_requirements = output_requirements or ReplayOutputRequirements()
         if output_requirements.capture_telemetry:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
+        if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
+            raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
         encoder = spec.backend_deployment.encoder
         if encoder is None and spec.workload.get("images") is not None:
@@ -360,9 +453,13 @@ class EngineReplayRunner:
             if spec.adapters or spec.execution_mode != "offline":
                 raise InvalidRunnerError("analytical EPD requires offline static pools without adapters")
             goal = OptimizationGoal.model_validate(spec.goal)
-            if (goal.sla is not None and not goal.strict_sla) or any(
-                target.value.startswith("goodput")
-                for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+            if (
+                goal.min_goodput_rps is not None
+                or (goal.sla is not None and not goal.requires_aggregate_sla)
+                or any(
+                    target.value.startswith("goodput")
+                    for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+                )
             ):
                 raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
             workload = Workload.model_validate(spec.workload)
@@ -407,12 +504,25 @@ class EngineReplayRunner:
             record_per_request=output_requirements.capture_per_request,
             memory_diagnostics=memory_diagnostics,
         )
+        if output_requirements.capture_performance_diagnostics:
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["capture_performance_diagnostics"] = True
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,
             separators=(",", ":"),
         )
-        report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+        try:
+            report_json = self._resolve_runtime().run_replay_json(execution_spec_json)
+        except MemoryError as error:
+            # Resource-aware installations classify a report storage failure as host
+            # exhaustion, not a failed candidate. Older SDKs retain MemoryError.
+            try:
+                from .resources import ResourceLimitError
+            except ImportError:
+                raise error from None
+            raise ResourceLimitError(str(error)) from error
         if not isinstance(report_json, str):
             raise InvalidRunnerError("AISimulate engine replay runtime report must be a JSON string")
         try:
@@ -436,6 +546,7 @@ class EngineReplayRunner:
                 output_requirements.include_raw_report
                 or output_requirements.capture_per_request
                 or output_requirements.capture_memory_diagnostics
+                or output_requirements.capture_performance_diagnostics
             ),
         )
         if encoder is not None:
@@ -792,6 +903,7 @@ def _run_afd_replay(
         metrics["goodput_completed_requests"] = float(
             sum(1 for record in request_records if _request_passes_sla(record, sla))
         )
+        metrics["goodput_request_throughput_rps"] = metrics["goodput_completed_requests"] / duration_s
         metrics["goodput_output_throughput_tok_s"] = good_output_tokens / duration_s
     metrics.update(normalize_power_summary({}))
     summary: dict[str, JSONValue] = {
@@ -976,7 +1088,14 @@ def _execution_target_model(
     if isinstance(metadata, Mapping):
         config = metadata.get("config")
         if isinstance(config, Mapping):
-            model = config.get("model_path")
+            model = config.get("model", config.get("model_path"))
+            if isinstance(model, str) and model.strip():
+                return model.strip()
+    timing = raw_engine_args.get("timing_model")
+    if isinstance(timing, Mapping) and timing.get("provider") == "aic":
+        config = timing.get("config")
+        if isinstance(config, Mapping):
+            model = config.get("model")
             if isinstance(model, str) and model.strip():
                 return model.strip()
     model = raw_engine_args.get("aic_model_path")
@@ -994,6 +1113,32 @@ def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:
         if value is None:
             value = workload.get("concurrency")
     return _positive_int(value, "concurrency") if value is not None else None
+
+
+def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str, JSONValue]:
+    aic_timing_overrides: dict[str, JSONValue] = {}
+    for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
+        configured = [alias for alias in aliases if alias in rank]
+        if len(configured) > 1:
+            names = ", ".join(configured)
+            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
+        if not configured:
+            continue
+        value = rank.pop(configured[0])
+        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
+            value = _positive_int(value, f"engine provider {role} {target}")
+        elif target in {"enable_eplb", "decoder_replay", "enable_shared_layer", "strict_provenance"}:
+            if not isinstance(value, bool):
+                raise ValueError(f"engine provider {role} {target} must be a boolean")
+        elif not isinstance(value, str) or not value:
+            raise ValueError(f"engine provider {role} {target} must be a string")
+        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
+            raise ValueError(
+                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
+            )
+        aic_timing_overrides[target] = value
+
+    return aic_timing_overrides
 
 
 def _required_engine_args(payload: dict[str, JSONValue] | None, role: str) -> dict[str, JSONValue]:
@@ -1015,6 +1160,8 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
             raise TypeError("trace_path must be a non-empty string")
         if workload.get("random_range_ratio", 1.0) != 1.0 or workload.get("random_seed", 0) != 0:
             raise ValueError("random_range_ratio and random_seed only apply to synthetic replay")
+        if workload.get("length_sampler", "python_random") != "python_random":
+            raise ValueError("length_sampler only applies to synthetic replay")
         configured_trace_block_size = workload.get("trace_block_size")
         requests = materialize_configured_traffic(
             {
@@ -1074,7 +1221,15 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
 
     random_range_ratio = _random_range_ratio(workload.get("random_range_ratio", 1.0))
     random_seed = _random_seed(workload.get("random_seed", 0))
-    length_rng = random.Random(random_seed)
+    sampler = workload.get("length_sampler", "python_random")
+    if sampler == "numpy_random_state":
+        if random_seed > 0xFFFF_FFFF:
+            raise ValueError("numpy_random_state random_seed must be an unsigned 32-bit integer")
+        length_rng = np.random.RandomState(random_seed)
+    elif sampler == "python_random":
+        length_rng = random.Random(random_seed)
+    else:
+        raise ValueError(f"unsupported length_sampler: {sampler!r}")
     # Follow InferenceX's draw order: sample the complete ISL vector before OSL.
     input_lengths = _sample_synthetic_lengths(isl, request_count, random_range_ratio, length_rng)
     output_lengths = _sample_synthetic_lengths(osl, request_count, random_range_ratio, length_rng)
@@ -1088,6 +1243,24 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
         }
         for index in range(request_count)
     ]
+    cached_prefix_tokens = workload.get("cached_prefix_tokens", 0)
+    if (
+        not isinstance(cached_prefix_tokens, int)
+        or isinstance(cached_prefix_tokens, bool)
+        or cached_prefix_tokens < 0
+        or cached_prefix_tokens > min(input_lengths)
+    ):
+        raise ValueError(
+            "cached_prefix_tokens must be a non-negative integer no greater than every synthetic input length"
+        )
+    if cached_prefix_tokens:
+        prefix = list(range(1, cached_prefix_tokens + 1))
+        for index, request in enumerate(requests):
+            suffix_length = input_lengths[index] - cached_prefix_tokens
+            suffix_seed = (index + 1) * 1_000_003 + cached_prefix_tokens
+            request["input_token_ids"] = prefix + [
+                (suffix_seed + offset) & 0xFFFF_FFFF for offset in range(suffix_length)
+            ]
     return requests, concurrency
 
 
@@ -1135,6 +1308,42 @@ def _materialize_engine_role(
     num_gpu_blocks_is_explicit = False
     if "rank" not in role_config:
         num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
+        for name in ("aic_backend_version", "backend_version"):
+            if role_config.get(name) is None:
+                role_config.pop(name, None)
+        # Propagate authored versions before capacity preflight. Otherwise a
+        # deployment pin reaches timing only after capacity has used current.
+        timing = role_config.get("timing_model")
+        timing_config = None
+        if (
+            isinstance(timing, dict)
+            and timing.get("type") == "external"
+            and timing.get("provider") == "aic"
+            and isinstance(timing.get("config"), dict)
+        ):
+            timing_config = timing["config"]
+        version = next(
+            (
+                value
+                for value in (
+                    role_config.get("aic_backend_version"),
+                    role_config.get("backend_version"),
+                    timing_config.get("backend_version") if timing_config is not None else None,
+                    deployment_backend_version or None,
+                )
+                if value is not None
+            ),
+            None,
+        )
+        if version is not None:
+            if (
+                not num_gpu_blocks_is_explicit
+                and role_config.get("aic_backend") is not None
+                and not any(name in role_config for name in ("aic_backend_version", "backend_version"))
+            ):
+                role_config["aic_backend_version"] = version
+            if timing_config is not None and timing_config.get("backend_version") is None:
+                role_config["timing_model"] = {**timing, "config": {**timing_config, "backend_version": version}}
         role_config = materialize_aic_num_gpu_blocks(
             role_config,
             **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
@@ -1159,6 +1368,23 @@ def _materialize_engine_role(
     # the AIC timing config because the native runtime rematerializes inferred
     # capacity before execution.
     cuda_graph_reserved_bytes = role_config.pop("cuda_graph_reserved_bytes", None)
+    timing_rank = role_config.get("rank", role_config)
+    timing = timing_rank.get("timing_model") if isinstance(timing_rank, dict) else None
+    if isinstance(timing, dict) and timing.get("type") == "external" and timing.get("provider") == "aic":
+        canonical = timing.get("config")
+        if not isinstance(canonical, dict):
+            raise ValueError("external AIC timing config must be a mapping")
+        for aliases, fields in (
+            (("tensor_parallel_size", "aic_tp_size"), ("tp", "tp_size")),
+            (("dp_size", "aic_attention_dp_size"), ("attention_dp", "attention_dp_size")),
+        ):
+            expected = canonical.get(fields[0], canonical.get(fields[1]))
+            if expected is not None:
+                for alias in aliases:
+                    if alias in role_config and role_config[alias] != expected:
+                        raise ValueError(f"{alias} conflicts with canonical AIC timing topology")
+                if not any(alias in role_config for alias in aliases):
+                    role_config[aliases[0]] = expected
     raw_dp_size = _pop_matching_aliases(role_config, "attention DP", ("dp_size", "aic_attention_dp_size"), 1)
     raw_tp_size = _pop_matching_aliases(role_config, "tensor parallel", ("tensor_parallel_size", "aic_tp_size"), 1)
     dp_size = _positive_int(
@@ -1254,24 +1480,7 @@ def _materialize_engine_role(
         if not num_gpu_blocks_is_explicit:
             memory_fraction_overrides[memory_field] = float(value)
 
-    aic_timing_overrides: dict[str, JSONValue] = {}
-    for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
-        configured = [alias for alias in aliases if alias in rank]
-        if len(configured) > 1:
-            names = ", ".join(configured)
-            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
-        if not configured:
-            continue
-        value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size"}:
-            value = _positive_int(value, f"engine provider {role} {target}")
-        elif not isinstance(value, str) or not value:
-            raise ValueError(f"engine provider {role} {target} must be a string")
-        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
-            raise ValueError(
-                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
-            )
-        aic_timing_overrides[target] = value
+    aic_timing_overrides = _pop_aic_timing_overrides(rank, role)
 
     timing_model = rank.get("timing_model")
     uses_aic_timing = timing_model is None or (
@@ -1288,7 +1497,32 @@ def _materialize_engine_role(
             "rank.num_gpu_blocks explicitly or use AIC timing"
         )
     if deployment_backend_version:
+
+        def resolved_version(value):
+            if value not in {"current", "previous", "next"}:
+                return value
+            from aisimulate_core.sdk.perf_database import resolve_query_version
+
+            from .sweeper.forward_pass_estimator import resolve_systems_paths
+
+            identity = timing_model.get("config", {}) if isinstance(timing_model, dict) else {}
+            roots = identity.get("systems_paths")
+            if roots is None and identity.get("systems_path") is not None:
+                roots = [identity["systems_path"]]
+            if roots is None and aic_timing_overrides.get("systems_path") is not None:
+                roots = [aic_timing_overrides["systems_path"]]
+            return resolve_query_version(
+                identity.get("system", system),
+                backend,
+                value,
+                systems_paths=list(resolve_systems_paths(roots)),
+            )
+
+        if uses_aic_timing:
+            deployment_backend_version = resolved_version(deployment_backend_version)
         configured_version = aic_timing_overrides.get("backend_version")
+        if uses_aic_timing:
+            configured_version = resolved_version(configured_version)
         if configured_version is not None and configured_version != deployment_backend_version:
             raise ValueError(
                 f"engine provider {role} backend version {configured_version!r} "
@@ -1298,6 +1532,10 @@ def _materialize_engine_role(
         if uses_aic_timing:
             timing_config = timing_model.get("config") if isinstance(timing_model, dict) else None
             timing_backend_version = timing_config.get("backend_version") if isinstance(timing_config, dict) else None
+            timing_backend_version = resolved_version(timing_backend_version)
+            if timing_backend_version is not None:
+                timing_model = {**timing_model, "config": {**timing_config, "backend_version": timing_backend_version}}
+                rank["timing_model"] = timing_model
             if timing_backend_version is not None and timing_backend_version != deployment_backend_version:
                 raise ValueError(
                     f"engine provider {role} timing_model.config.backend_version="
@@ -1311,9 +1549,37 @@ def _materialize_engine_role(
     # model. They have already served their non-timing purposes and must not be
     # interpreted as an attempt to override that concrete timing model.
     if not uses_aic_timing:
+        if any(
+            is_active_engine_model_control(name, aic_timing_overrides.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS
+        ):
+            raise ValueError("engine model controls require an AIC timing model")
         aic_timing_overrides.clear()
         if capacity_materialized:
             memory_fraction_overrides.clear()
+
+    speculation_raw = rank.pop("speculation", None)
+    speculation = None
+    if speculation_raw is not None:
+        from .config.engine import NgramSpeculationConfig
+
+        speculation = NgramSpeculationConfig.model_validate(speculation_raw)
+        if backend != "vllm" or rank.get("native_host_offload") is not None:
+            raise ValueError("ngram speculation requires vllm without host_offload")
+        if any(
+            rank.get(key) is not None
+            for key in (
+                "aic_nextn",
+                "nextn",
+                "aic_nextn_accept_rates",
+                "nextn_accept_rates",
+                "aic_mtp_seed",
+                "mtp_seed",
+            )
+        ):
+            raise ValueError("speculation cannot be combined with legacy speculative decoding fields")
+        rank["aic_nextn"] = speculation.num_speculative_tokens
+        rank["aic_nextn_accept_rates"] = ",".join(str(rate) for rate in speculation.acceptance_rates)
+        rank["aic_mtp_seed"] = speculation.seed
 
     nextn = _pop_alias(rank, "aic_nextn", ("aic_nextn", "nextn"))
     if nextn is not None:
@@ -1333,6 +1599,18 @@ def _materialize_engine_role(
         if not isinstance(accept_rates, str):
             raise ValueError(f"engine provider {role} aic_nextn_accept_rates must be a string")
         rank["aic_nextn_accept_rates"] = accept_rates
+
+    nextn_accepted = _pop_alias(
+        rank,
+        "aic_nextn_accepted",
+        ("aic_nextn_accepted", "nextn_accepted"),
+    )
+    if nextn_accepted is not None:
+        if nextn is None:
+            raise ValueError(f"engine provider {role} aic_nextn_accepted requires aic_nextn")
+        if accept_rates is not None:
+            raise ValueError(f"engine provider {role} cannot set both aic_nextn_accepted and aic_nextn_accept_rates")
+        rank["aic_nextn_accept_rates"] = _accept_rates_for_expected(nextn, nextn_accepted, role=role)
 
     mtp_seed = _pop_alias(rank, "aic_mtp_seed", ("aic_mtp_seed", "mtp_seed"))
     if mtp_seed is not None:
@@ -1357,7 +1635,7 @@ def _materialize_engine_role(
             timing_config["kv_block_size"] = block_size
         timing_config.update(memory_fraction_overrides)
         timing_config.update(aic_timing_overrides)
-        if nextn is not None:
+        if nextn is not None and speculation is None:
             timing_config["nextn"] = nextn
         rank["timing_model"] = {
             "type": "external",
@@ -1398,13 +1676,23 @@ def _materialize_engine_role(
         ):
             timing_model = dict(timing_model)
             timing_config = dict(timing_model["config"])
+            if speculation is not None:
+                cost_config = speculation.cost_config()
+                if timing_config.get("nextn") not in (None, 0):
+                    raise ValueError("ngram speculation conflicts with timing_model.config.nextn")
+                if timing_config.get("speculation") not in (None, cost_config):
+                    raise ValueError("ngram speculation conflicts with timing_model.config.speculation")
+                if timing_config.get("forward_model", "op_level") != "op_level":
+                    raise ValueError("ngram speculation requires op_level timing")
+                timing_config["speculation"] = cost_config
             configured_nextn = timing_config.get("nextn")
-            if configured_nextn is not None and configured_nextn != nextn:
+            if speculation is None and configured_nextn is not None and configured_nextn != nextn:
                 raise ValueError(
                     f"engine provider {role} aic_nextn={nextn} conflicts with "
                     f"timing_model.config.nextn={configured_nextn!r}"
                 )
-            timing_config["nextn"] = nextn
+            if speculation is None:
+                timing_config["nextn"] = nextn
             timing_model["config"] = timing_config
             rank["timing_model"] = timing_model
 
@@ -1420,6 +1708,26 @@ def _positive_int(value: JSONValue, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"{name} must be a positive integer")
     return value
+
+
+def _accept_rates_for_expected(nextn: int, value: JSONValue, *, role: str) -> str:
+    """Lower an explicit expected accepted-token count to conditional rates."""
+
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or not 0.0 <= float(value) <= nextn
+    ):
+        raise ValueError(f"engine provider {role} aic_nextn_accepted must be finite and within [0, {nextn}]")
+    expected = float(value)
+    whole = int(expected)
+    fraction = expected - whole
+    rates = [1.0] * whole
+    if len(rates) < nextn:
+        rates.append(fraction)
+    rates.extend([0.0] * (nextn - len(rates)))
+    return ",".join(format(rate, ".17g") for rate in rates)
 
 
 def _random_range_ratio(value: JSONValue) -> float:
@@ -1444,13 +1752,15 @@ def _sample_synthetic_lengths(
     upper: int,
     count: int,
     random_range_ratio: float,
-    rng: random.Random,
+    rng: random.Random | np.random.RandomState,
 ) -> list[int]:
     if random_range_ratio == 1.0:
         return [upper] * count
     lower = int(upper * random_range_ratio)
     if lower == 0:
         raise ValueError(f"random_range_ratio={random_range_ratio} gives a zero-token lower bound for length {upper}")
+    if isinstance(rng, np.random.RandomState):
+        return rng.randint(lower, upper + 1, size=count).tolist()
     return [rng.randint(lower, upper) for _ in range(count)]
 
 
@@ -1558,6 +1868,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
             "agentic_qualification",
             "agentic_input_format",
             "agentic_lanes",
+            "agentic_snapshots",
             "agentic_model_projection",
             "weka_nested_timestamp_basis",
         )

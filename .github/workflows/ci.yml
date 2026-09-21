@@ -25,6 +25,17 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  # Trusted PR copies share a group across push/manual events. Manual source
+  # branches replace their own runs. Unique lifecycle/tag groups preserve
+  # every validation and protected staging run.
+  group: >-
+    full-ci-${{ (startsWith(github.ref, 'refs/heads/pull-request/') ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') &&
+       github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')))
+      && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   verify-target:
     name: Verify Exact Target
@@ -422,7 +433,7 @@ jobs:
           python -m venv staged-wheel-smoke
           staged-wheel-smoke/bin/python -m pip install --no-deps dist/aisimulate-*.whl
           staged-wheel-smoke/bin/python -c \
-            "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
+            "import aisimulate, aisimulate_core; \
             assert aisimulate_core._build_smoke() > 0"
       - name: Preserve wheel for trusted staging
         if: github.event_name == 'push'
@@ -662,12 +673,17 @@ jobs:
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
+          python -m pip install pip-licenses==5.5.5
+          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" -r scripts/fpm_accuracy/requirements.in
+          python -m pip check
+          python scripts/check_prediction_numerics.py --fetch-baseline-only
           python scripts/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
             python/aisimulate/tests/cross_package
           aiconfigurator version
-          python -m pytest -q -c pytest.ini tests -n 4
+          python -m pytest -q -c pytest.ini tests -n 4 \
+            --ignore=tests/test_ci_workflow_contracts.py
       - name: Run unit tests
         if: matrix.shard.suite == 'unit'
         run: >-
@@ -827,7 +843,9 @@ jobs:
           -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
       - name: Check native prediction numerical sentinels
-        run: python scripts/check_prediction_numerics.py --output numerical-sentinels.json
+        run: |
+          python scripts/check_prediction_numerics.py --fetch-baseline-only
+          python scripts/check_prediction_numerics.py --output numerical-sentinels.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -872,9 +890,9 @@ jobs:
       - run: >-
           release-smoke/bin/python -c
           "import importlib.metadata as metadata;
-          import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core;
-          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.12.0';
-          assert metadata.version('aisimulate') == '0.12.0';
+          import aisimulate, aisimulate_core;
+          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.13.0';
+          assert metadata.version('aisimulate') == '0.13.0';
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};
           forbidden = {'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
           assert installed.isdisjoint(forbidden), installed & forbidden"

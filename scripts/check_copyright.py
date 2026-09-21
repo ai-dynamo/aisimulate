@@ -90,18 +90,12 @@ def main() -> int:
             missing.append(str(path))
 
     if missing:
-        print(
-            f"{len(missing)} file(s) missing the required "
-            "NVIDIA/Apache-2.0 SPDX header:"
-        )
+        print(f"{len(missing)} file(s) missing the required NVIDIA/Apache-2.0 SPDX header:")
         for name in missing:
             print(f"  {name}")
         return 1
 
-    print(
-        f"all {len(sources)} tracked source files carry the required "
-        "NVIDIA/Apache-2.0 SPDX header"
-    )
+    print(f"all {len(sources)} tracked source files carry the required NVIDIA/Apache-2.0 SPDX header")
     return 0
 
 

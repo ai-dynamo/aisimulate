@@ -12,9 +12,31 @@
 //! root, so `crate::EngineConfig`, `crate::BackendKind`, ... resolve unchanged.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// Validate an explicit FPM input before loading data or entering Python.
+pub(crate) fn validate_fpm_parquet_path(
+    path: Option<&Path>,
+    is_fpm: bool,
+) -> Result<Option<&str>, crate::AicError> {
+    let Some(path) = path else { return Ok(None) };
+    let path = path.to_str().ok_or_else(|| {
+        crate::AicError::InvalidEngineConfig("fpm_parquet_path must be valid UTF-8".into())
+    })?;
+    if path.is_empty() {
+        return Err(crate::AicError::InvalidEngineConfig(
+            "fpm_parquet_path cannot be empty".into(),
+        ));
+    }
+    if !is_fpm {
+        return Err(crate::AicError::InvalidEngineConfig(
+            "fpm_parquet_path requires forward_model='fpm' with exactly one FpmForward op per phase".into(),
+        ));
+    }
+    Ok(Some(path))
+}
 
 pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // bincode op payloads are positional, so a producer/consumer skew is only
@@ -80,7 +102,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   batch/query widths and FpmForwardOp gained verify_width. Upstream used
 //   14/15, already occupied here; these are positional bincode layout changes.
 //   TokenScale was appended to remap draft query widths before op lookup.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 18;
+// - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
+//   separating physical backend KV payload from attention arithmetic precision.
+//   Its appended enum changes positional bincode layout; old JSON defaults only.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -114,6 +139,16 @@ pub struct EngineConfig {
     /// predictor API (additive-optional: absent in older payloads).
     #[serde(default)]
     pub forward_model: Option<String>,
+
+    /// Optional external FPM parquet used when `forward_model == "fpm"`.
+    /// The required metadata sidecar is resolved by replacing the parquet
+    /// extension with `.metadata.json`.
+    #[serde(default)]
+    pub fpm_parquet_path: Option<PathBuf>,
+
+    /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
+    #[serde(default)]
+    pub decoder_replay: bool,
 
     // KV
     pub kv_block_size: Option<u32>,

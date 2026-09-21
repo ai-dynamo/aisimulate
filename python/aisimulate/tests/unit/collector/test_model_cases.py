@@ -12,7 +12,6 @@ from itertools import pairwise
 from pathlib import Path
 
 import pytest
-
 from collector.case_generator import (
     get_attention_head_configs,
     get_gemm_case_specs,
@@ -29,7 +28,7 @@ from collector.model_cases import (
 pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SUPPORT_MATRIX_ROOT = REPO_ROOT / "src" / "aiconfigurator" / "systems" / "support_matrix"
+SUPPORT_MATRIX_ROOT = REPO_ROOT / "src" / "aisimulate_core" / "systems" / "support_matrix"
 
 
 def _load_mla_adapter(module_path: str, globals_dict: dict):
@@ -868,8 +867,9 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     xpu_cases = get_gemm_case_specs("vllm_xpu")
 
     # Base gemm sweep expansion, then model_case_values.gemm rows. Qwen3.8-Max
-    # adds two output widths across the base token-count grid.
-    # PR #219's DeepSeek-V4 shared-expert shapes add 74 default and 21 XPU cases.
+    # adds two output widths across the base token-count grid. DeepSeek-V4 Pro
+    # adds (n, k) = (7168, 384) for all 74 standard / 21 XPU token counts;
+    # its other shared-expert projections overlap the existing base shapes.
     assert len(cases) == 37518
     assert cases[0] == GemmCommonTestCase(x=32768, n=65536, k=51200)
     assert cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
@@ -879,6 +879,11 @@ def test_gemm_common_cases_expand_from_base_op_yaml_shape_specs():
     assert xpu_cases[0] == GemmCommonTestCase(x=8192, n=65536, k=12288)
     assert xpu_cases[-1] == GemmCommonTestCase(x=1, n=1, k=4096)
     assert get_gemm_type_specs("vllm_xpu") == ["bfloat16", "fp8"]
+
+    for backend_cases in (cases, xpu_cases):
+        keys = {(case.x, case.n, case.k) for case in backend_cases}
+        assert len(keys) == len(backend_cases)
+        assert {x for x, n, k in keys if (n, k) == (7168, 384)} == {x for x, _, _ in keys}
 
     compute_scale_cases = get_compute_scale_case_specs()
     assert len(compute_scale_cases) == 1628
@@ -1504,7 +1509,7 @@ def test_mla_module_targeted_artifacts_keep_requested_checkpoint(monkeypatch):
 def test_vllm_mla_module_artifacts_have_local_configs():
     from collector.case_generator import get_mla_module_model_specs
 
-    config_root = REPO_ROOT / "src" / "aiconfigurator" / "model_configs"
+    config_root = REPO_ROOT / "src" / "aisimulate_core" / "model_configs"
     for spec in get_mla_module_model_specs(backend="vllm", apply_model_filter=False):
         config_path = config_root / f"{spec.model_path.replace('/', '--')}_config.json"
         assert config_path.is_file(), f"{spec.model_path} would require a runtime Hub download"
@@ -1888,7 +1893,7 @@ def test_nemotron_super_fp8_vllm_moe_case_covers_missing_consumer_key(monkeypatc
     assert moe_model_allows_quantization("vllm", model_path, "fp8")
     assert not moe_model_allows_quantization("vllm", model_path, "bfloat16")
 
-    config_path = REPO_ROOT / "src/aiconfigurator/model_configs" / f"{model_path.replace('/', '--')}_config.json"
+    config_path = REPO_ROOT / "src/aisimulate_core/model_configs" / f"{model_path.replace('/', '--')}_config.json"
     assert config_path.is_file()
 
 

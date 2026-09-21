@@ -256,6 +256,7 @@ impl TestDisaggConfig {
         factory: ReplayEngineFactory,
     ) -> anyhow::Result<OfflineDisaggReplayConfig> {
         let engine = ReplayEngineConfig {
+            kv_eviction_policy: crate::engine::KvEvictionPolicy::Lru,
             dp_size: 1,
             tensor_parallel_size: 1,
             num_gpu_blocks_is_explicit: None,
@@ -605,6 +606,7 @@ fn run_trace_collect(
     let pending = crate::replay::normalize_trace_requests(requests, arrival_speedup_ratio).unwrap();
     DisaggRuntime::from_requests(config, router_config, None, pending, ReplayMode::Trace)
         .unwrap()
+        .with_per_request_records(true)
         .run()
         .unwrap()
 }
@@ -706,6 +708,7 @@ fn run_concurrency_collect(
         ReplayMode::Concurrency { max_in_flight },
     )
     .unwrap()
+    .with_per_request_records(true)
     .run()
     .unwrap()
 }
@@ -720,6 +723,7 @@ fn run_trace_workload_collect(
         .unwrap();
     DisaggRuntime::new_workload(config, router_config, None, driver, ReplayMode::Trace)
         .unwrap()
+        .with_per_request_records(true)
         .run()
         .unwrap()
 }
@@ -741,6 +745,7 @@ fn run_concurrency_workload_collect(
         ReplayMode::Concurrency { max_in_flight },
     )
     .unwrap()
+    .with_per_request_records(true)
     .run()
     .unwrap()
 }
@@ -2318,8 +2323,10 @@ fn source_only_reuse_does_not_reduce_destination_missing_transfer() {
     }
 }
 
-#[test]
-fn test_cancellation_during_transfer_ignores_retired_completion_event() {
+#[rstest::rstest]
+fn test_cancellation_during_transfer_ignores_retired_completion_event(
+    #[values(false, true)] batch_reporting: bool,
+) {
     for mode in [
         KvTransferTimingMode::FullPrompt,
         KvTransferTimingMode::DestinationMissing,
@@ -2343,6 +2350,9 @@ fn test_cancellation_during_transfer_ignores_retired_completion_event() {
             )
             .unwrap()
             .with_per_request_records(true);
+            if batch_reporting {
+                runtime.collector.begin_batch_reporting();
+            }
 
             runtime.drain_current_timestamp().unwrap();
             for _ in 0..16 {
@@ -2377,7 +2387,15 @@ fn test_cancellation_during_transfer_ignores_retired_completion_event() {
                 runtime.advance_now_ms(next);
                 runtime.drain_current_timestamp().unwrap();
             }
-            assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+            if batch_reporting {
+                assert_eq!(
+                    runtime.stats.request_snapshots[&uuid].phase,
+                    DisaggPhase::Done
+                );
+                assert!(!runtime.flow.requests.contains_key(&uuid));
+            } else {
+                assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+            }
             assert_eq!(runtime.total_prefill_count(), 0);
             assert_eq!(runtime.total_decode_count(), 0);
             assert!(
@@ -2533,8 +2551,10 @@ fn destination_first_workload_materializes_for_decode_reservation_then_completes
     assert_eq!(collector.finish().request_counts.total_output_tokens, 4);
 }
 
-#[test]
-fn canceling_worker_waiting_compact_prefill_drops_deferred_prompt() {
+#[rstest::rstest]
+fn canceling_worker_waiting_compact_prefill_drops_deferred_prompt(
+    #[values(false, true)] batch_reporting: bool,
+) {
     let mut config = disagg_config();
     config.num_prefill_workers = 1;
     let trace = Trace {
@@ -2553,6 +2573,9 @@ fn canceling_worker_waiting_compact_prefill_drops_deferred_prompt() {
     let driver = WorkloadDriver::new_trace(trace, 64).unwrap();
     let mut runtime =
         DisaggRuntime::new_workload(&config, None, None, driver, ReplayMode::Trace).unwrap();
+    if batch_reporting {
+        runtime.collector.begin_batch_reporting();
+    }
     runtime.apply_scaling(0, config.num_decode_workers).unwrap();
 
     assert!(runtime.release_ready_arrivals().unwrap());
@@ -2573,11 +2596,22 @@ fn canceling_worker_waiting_compact_prefill_drops_deferred_prompt() {
         .unwrap();
     runtime.drain_current_timestamp().unwrap();
 
-    assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
-    assert!(
-        runtime.state(uuid).unwrap().materialized_tokens().is_err(),
-        "cancellation should release the deferred request payload"
-    );
+    if batch_reporting {
+        assert_eq!(
+            runtime.stats.request_snapshots[&uuid].phase,
+            DisaggPhase::Done
+        );
+        assert!(
+            !runtime.flow.requests.contains_key(&uuid),
+            "batch cancellation releases request state"
+        );
+    } else {
+        assert_eq!(runtime.state(uuid).unwrap().phase, DisaggPhase::Done);
+        assert!(
+            runtime.state(uuid).unwrap().materialized_tokens().is_err(),
+            "cancellation releases the deferred payload"
+        );
+    }
 }
 
 #[test]

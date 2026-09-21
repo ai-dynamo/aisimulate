@@ -42,7 +42,7 @@ def load_configs() -> list[dict]:
 
 
 def run_config(config: dict) -> dict:
-    from aiconfigurator.cli.api import cli_estimate
+    from aisimulate.legacy_cli.api import cli_estimate
 
     try:
         with redirect_stdout(io.StringIO()):

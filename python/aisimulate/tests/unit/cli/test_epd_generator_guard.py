@@ -13,9 +13,9 @@ from unittest.mock import patch
 import pandas as pd
 import pytest
 
-from aiconfigurator.cli.main import build_default_tasks
-from aiconfigurator.cli.report_and_save import save_results
-from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
+from aisimulate.legacy_cli.main import build_default_tasks
+from aisimulate.legacy_cli.report_and_save import save_results
+from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
 
 pytestmark = pytest.mark.unit
 
@@ -51,11 +51,11 @@ def test_epd_rows_skip_generator_artifacts(tmp_path, caplog):
     caplog.set_level(logging.WARNING)
     with (
         patch(
-            "aiconfigurator.cli.report_and_save.get_default_dynamo_version_mapping",
+            "aisimulate.legacy_cli.report_and_save.get_default_dynamo_version_mapping",
             return_value=("1.0.0", {"vllm": "current"}),
         ),
         patch(
-            "aiconfigurator.cli.report_and_save.task_config_to_generator_config",
+            "aisimulate.legacy_cli.report_and_save.task_config_to_generator_config",
             return_value={},
         ) as bridge,
     ):

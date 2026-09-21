@@ -11,8 +11,8 @@ the analytical disagg point against measured silicon.
 import pandas as pd
 import pytest
 
-from aiconfigurator.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
-from aiconfigurator.sdk.picking import (
+from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN, MoECommFallback
+from aisimulate.sdk.picking import (
     _RATE_MATCHING_DECODE_DEGRADATION_FACTOR,
     _RATE_MATCHING_PREFILL_DEGRADATION_FACTOR,
     pick_autoscale,
