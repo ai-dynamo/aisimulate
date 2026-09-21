@@ -5,6 +5,7 @@ mod arrival;
 mod driver;
 mod dynamo;
 mod generated;
+mod lineage;
 mod phase;
 mod snapshot;
 mod steppable;

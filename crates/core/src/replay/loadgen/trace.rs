@@ -1585,6 +1585,7 @@ impl AgenticTraceBuilder {
             plays.sort_by(|left, right| left.play_id.cmp(&right.play_id));
         }
         let graph_digest = canonical_agentic_graph_digest(self.header.block_size, &mut self.nodes)?;
+        let conversation_lineage = super::lineage::conversation_lineage(&self.nodes);
 
         Ok(AgenticTrace {
             block_size: self.header.block_size,
@@ -1592,6 +1593,7 @@ impl AgenticTraceBuilder {
             graph_digest,
             nodes: self.nodes,
             plays,
+            conversation_lineage,
         })
     }
 }
