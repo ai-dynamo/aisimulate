@@ -455,9 +455,15 @@ def _worker_engine_args(
             if isinstance(engine.context_length, int)
             else resolve_model_context_length(engine.model)
         )
+    if cache.state_cache is not None:
+        payload["state_cache"] = cache.state_cache.model_dump(mode="json")
+        payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
-        assert capacity.blocks is not None
-        payload["num_gpu_blocks"] = capacity.blocks
+        if capacity.blocks is not None:
+            payload["num_gpu_blocks"] = capacity.blocks
+        else:
+            assert capacity.bytes is not None and isinstance(cache.bytes_per_token, int)
+            payload["num_gpu_blocks"] = capacity.bytes // (block_size * cache.bytes_per_token)
     else:
         assert memory_fraction is not None
         payload["cuda_graph_reserved_bytes"] = capacity.cuda_graph_reserved_bytes
@@ -477,7 +483,7 @@ def _worker_engine_args(
     elif worker.timing.type == "polynomial":
         payload["timing_model"] = {"type": "polynomial"}
     if worker.timing.type != "default":
-        if capacity.type == "default":
+        if capacity.type == "default" and cache.state_cache is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
             "aic_backend_version",
