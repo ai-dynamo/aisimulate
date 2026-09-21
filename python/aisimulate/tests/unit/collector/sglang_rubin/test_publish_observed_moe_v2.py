@@ -257,7 +257,8 @@ class Composite:
         self.seal()
 
     def run(self, **kwargs):
-        return publisher.publish(
+        # Fixed-identity public replay is covered separately with real archives.
+        return publisher._publish_current(
             base_systems=self.base,
             output_systems=self.output,
             v1_archive=self.old.archive,

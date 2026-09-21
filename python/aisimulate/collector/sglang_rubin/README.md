@@ -46,6 +46,31 @@ python -m collector.sglang_rubin.publish_prefill_graph \
 
 The approximation reuses synthetic attention weights/activations/KV without intervening MLP/communication queue work, uses repeated-state communication throughput and ideal router/routed-versus-shared overlap, and retains empirical norm/add terms. Original full-model structural weight inventory is preserved; these measurements do not qualify peak graph/KV memory.
 
+## Reproduce qualified observed-MoE data
+
+The two fixed observed-MoE profiles retain the exact publisher source that their consumers admit. Shared collector code has since changed, so reproduction requires the original `evidence/<distribution>/publisher-source` directory as well as the approved raw archive, review and base systems tree. The current public Python `publish()` APIs and CLIs require `publisher_source` / `--publisher-source`; omitting it fails before creating output.
+
+From the Python package directory:
+
+```bash
+python -m collector.sglang_rubin.publish_observed_moe \
+  --publisher-source /artifacts/v1-evidence/publisher-source \
+  --base-systems /artifacts/original-81-row-systems \
+  --archive /artifacts/v1-native.tar.gz --review /artifacts/v1-review.json \
+  --output-systems /artifacts/replayed-v1-systems > /artifacts/v1-replay.json
+
+python -m collector.sglang_rubin.publish_observed_moe_v2 \
+  --publisher-source /artifacts/v2-evidence/publisher-source \
+  --base-systems /artifacts/qualified-original-84-row-systems \
+  --v1-archive /artifacts/v1-native.tar.gz --v1-review /artifacts/v1-review.json \
+  --tail-archive /artifacts/tail-native.tar.gz --tail-review /artifacts/tail-review.json \
+  --output-systems /artifacts/replayed-v2-systems > /artifacts/v2-replay.json
+```
+
+The v1 closure must match `sha256:067ad7797474518eab028911d4f0d6f314e1dd0456b08be5bae45de267f3e332`; v2 must match `sha256:bbe3ebf2d450053f524d38b0a8ef97f0e55df000b6c6f61430b0207afc622eaf`. Missing, extra, changed or symlinked source files fail admission. Replay copies the verified sources unchanged and executes them in an isolated subprocess; collector imports are restricted to that private package. Current registry/catalog support is staged explicitly and recorded separately from the historical publisher. The JSON result records both source sets, imported files, replay launcher and dependency versions. Preserve it beside the output bundle.
+
+The unmodified historical publisher rechecks the complete approved archive, source, case plan, raw measurements, independent review and base before writing. V2 requires the exact originally qualified 84-row systems tree, including its historical evidence; a fresh v1 republication has a different publication timestamp and is not that base. `--validate-only` performs admission and derivation without publication. These CPU workflows preserve fixed profile IDs and performance-data contracts and do not qualify a new workload or generate GPU measurements.
+
 ## Frozen inputs
 
 - Runtime tag: `gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci:8a8fb0687160e73169fd6236d93ed19dec80ef54-68286189-rubin-sglang-arm64`.

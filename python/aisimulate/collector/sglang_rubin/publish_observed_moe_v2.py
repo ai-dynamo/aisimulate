@@ -267,7 +267,36 @@ def _tail_primary(root, identity, old_root):
     )
 
 
-def publish(*, base_systems, output_systems, v1_archive, v1_review, tail_archive, tail_review, validate_only=False):
+def publish(
+    *,
+    base_systems,
+    output_systems,
+    v1_archive,
+    v1_review,
+    tail_archive,
+    tail_review,
+    validate_only=False,
+    publisher_source=None,
+):
+    """Replay the retained qualified composite publisher without changing its pins."""
+    from collector.sglang_rubin.replay_observed_moe import replay
+
+    return replay(
+        version="v2",
+        publisher_source=publisher_source,
+        base_systems=base_systems,
+        output_systems=output_systems,
+        v1_archive=v1_archive,
+        v1_review=v1_review,
+        tail_archive=tail_archive,
+        tail_review=tail_review,
+        validate_only=validate_only,
+    )
+
+
+def _publish_current(
+    *, base_systems, output_systems, v1_archive, v1_review, tail_archive, tail_review, validate_only=False
+):
     """Validate complete pinned inputs and atomically append a distinct profile."""
     import pyarrow.parquet as pq
     import yaml
@@ -473,7 +502,15 @@ def publish(*, base_systems, output_systems, v1_archive, v1_review, tail_archive
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    for name in ("base-systems", "output-systems", "v1-archive", "v1-review", "tail-archive", "tail-review"):
+    for name in (
+        "base-systems",
+        "output-systems",
+        "v1-archive",
+        "v1-review",
+        "tail-archive",
+        "tail-review",
+        "publisher-source",
+    ):
         parser.add_argument(f"--{name}", type=Path, required=True)
     parser.add_argument("--validate-only", action="store_true")
     print(json.dumps(publish(**vars(parser.parse_args())), indent=2, allow_nan=False))

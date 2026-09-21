@@ -205,7 +205,22 @@ def _primary(root, identity):
     return means, case_ids
 
 
-def publish(*, base_systems, output_systems, archive, review, validate_only=False):
+def publish(*, base_systems, output_systems, archive, review, validate_only=False, publisher_source=None):
+    """Replay the retained qualified publisher; current source is not its identity."""
+    from collector.sglang_rubin.replay_observed_moe import replay
+
+    return replay(
+        version="v1",
+        publisher_source=publisher_source,
+        base_systems=base_systems,
+        output_systems=output_systems,
+        archive=archive,
+        review=review,
+        validate_only=validate_only,
+    )
+
+
+def _publish_current(*, base_systems, output_systems, archive, review, validate_only=False):
     """Validate exact approved input; publish only to an absent fresh systems root."""
     import pyarrow.parquet as pq
     import yaml
@@ -400,6 +415,9 @@ def main():
     parser.add_argument("--output-systems", type=Path, required=True)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--review", type=Path, required=True)
+    parser.add_argument(
+        "--publisher-source", type=Path, required=True, help="Retained qualified publisher-source directory"
+    )
     parser.add_argument("--validate-only", action="store_true")
     args = vars(parser.parse_args())
     print(json.dumps(publish(**args), indent=2, allow_nan=False))

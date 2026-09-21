@@ -234,7 +234,8 @@ class Campaign:
         self.seal()
 
     def run(self, **kwargs):
-        return publisher.publish(
+        # Synthetic fixtures exercise derivation guards, not qualified replay.
+        return publisher._publish_current(
             base_systems=self.base,
             output_systems=self.output,
             archive=self.archive,
