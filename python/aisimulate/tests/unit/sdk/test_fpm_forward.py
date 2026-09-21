@@ -31,13 +31,13 @@ import yaml
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config import CorePredictionConfig
 from aisimulate.main import main
-from aisimulate.runner import EngineReplayRunnerFactory
+from aisimulate.runner import AICAFDCompanionPerformanceModel, EngineReplayRunnerFactory
 from aisimulate.sdk import common, models
 from aisimulate.sdk import config as sdk_config
 from aisimulate.sdk.backends.factory import get_backend
 from aisimulate.sdk.operations import FPMForwardOp
 from aisimulate.sdk.perf_database import PerfDatabase
-from aisimulate.sweeper import AFDLayerTimes
+from aisimulate.sweeper import AFDLayerTimes, AFDTopology, BackendDeploymentSpec, ReplaySpec
 from aisimulate.sweeper.replay import ReplayOutputRequirements
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
@@ -420,6 +420,54 @@ def fpm_session(tmp_path):
     database = PerfDatabase(SYSTEM, BACKEND, VERSION, systems_root=str(systems_root))
     backend = get_backend(BACKEND)
     return model, database, backend, isl, osl
+
+
+def test_afd_companion_packaged_fpm_selector_reaches_native_loader(fpm_session):
+    _, database, _, isl, osl = fpm_session
+    topology = AFDTopology(
+        n_a_nodes=1,
+        n_f_nodes=1,
+        gpus_per_node=1,
+        tp_a=1,
+        a_batch_size=1,
+        num_microbatches=1,
+        phase="decode",
+        combined_with_pd=True,
+    )
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode=topology.adapter_topology,
+            backend=BACKEND,
+            backend_version=VERSION,
+            parallel_config={
+                "prefill_tp": 1,
+                "prefill_pp": 1,
+                "prefill_attention_dp": 1,
+                "prefill_moe_tp": 1,
+                "prefill_moe_ep": 1,
+            },
+            prefill_engine_args={
+                "max_num_batched_tokens": isl,
+                "max_num_seqs": 1,
+                "aic_model_path": "Qwen/Qwen3-0.6B",
+                "aic_system": SYSTEM,
+                "aic_forward_model": "fpm",
+                "aic_fpm_fmha_dtype": "fp8",
+                "systems_path": database.systems_root,
+            },
+            num_prefill_workers=1,
+        ),
+        workload={"isl": isl, "osl": osl},
+        goal={"target": "throughput", "sla": None},
+        concurrency=1,
+    )
+
+    timing = AICAFDCompanionPerformanceModel().measure(spec)
+
+    # The data tree has a separate fp8 selector row with latency 22.0 + 1.0.
+    assert timing.latency_ms == pytest.approx(23.0)
+    assert timing.provenance["source"] == "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
+    assert timing.provenance["fpm_fmha_dtype"] == "fp8"
 
 
 class TestFPMStaticAndMixed:
