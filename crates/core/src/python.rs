@@ -200,6 +200,8 @@ struct AicTimingConfig {
     #[serde(default)]
     forward_model: Option<String>,
     #[serde(default)]
+    fpm_parquet_path: Option<String>,
+    #[serde(default)]
     decoder_replay: bool,
     #[serde(default)]
     worker_type: Option<ForwardPassWorkerType>,
@@ -268,6 +270,21 @@ impl AicTimingConfig {
         } else {
             self.systems_paths.clone()
         };
+        let mut estimator_config = self.estimator_config.clone();
+        if let Some(path) = &self.fpm_parquet_path {
+            crate::config::validate_fpm_parquet_path(
+                Some(std::path::Path::new(path)),
+                mode == EstimationMode::FpmInterpolation,
+            )?;
+            let configured = &mut estimator_config.fpm_interpolation.fpm_parquet_path;
+            ensure!(
+                configured
+                    .as_ref()
+                    .is_none_or(|existing| existing == std::path::Path::new(path)),
+                "conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path"
+            );
+            *configured = Some(path.into());
+        }
         Ok(ForwardPassPerfModelConfig {
             model: self.model.clone(),
             system: self.system.clone(),
@@ -290,7 +307,7 @@ impl AicTimingConfig {
             decoder_replay: self.decoder_replay,
             estimation_mode: mode,
             fallback_policy: self.fallback_policy,
-            estimator_config: self.estimator_config.clone(),
+            estimator_config,
             database_mode: self.database_mode,
             transfer_policy: self.transfer_policy.clone(),
             systems_paths: roots,
@@ -421,6 +438,7 @@ impl AicTimingModel {
         config.estimation_mode = Some(provenance.selected_estimation_mode);
         config.worker_type = Some(worker_type);
         config.forward_model = None;
+        config.fpm_parquet_path = None;
         config.fallback_policy = ForwardPassFallbackPolicy::Deny;
         config.estimator_config = provenance.config.estimator_config.clone();
         let use_fpm_decode_totals =
@@ -2268,6 +2286,7 @@ mod tests {
             strict_provenance: false,
             systems_path: None,
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
         }
     }
@@ -2782,16 +2801,34 @@ mod tests {
     }
 
     #[test]
+    fn aic_timing_rejects_invalid_fpm_paths_before_entering_python() {
+        for (path, model) in [("", "fpm"), ("/missing/fpm.parquet", "op_level")] {
+            let mut config = aic_config();
+            config.fpm_parquet_path = Some(path.into());
+            config.forward_model = Some(model.into());
+            let err = AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated)
+                .err()
+                .expect("invalid path");
+            assert!(err.to_string().contains("fpm_parquet_path"), "{err}");
+        }
+    }
+
+    #[test]
     fn aic_timing_config_accepts_fpm_forward_model() {
         let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
             "model": "test-model",
             "backend": "vllm",
             "system": "test-system",
             "tp": 1,
-            "forward_model": "fpm"
+            "forward_model": "fpm",
+            "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet"
         }))
         .unwrap();
         assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+        assert_eq!(
+            config.fpm_parquet_path.as_deref(),
+            Some("/artifacts/reviewed-fpm.parquet")
+        );
     }
 
     #[test]

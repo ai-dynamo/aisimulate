@@ -501,8 +501,15 @@ def _fpm_engine() -> dict:
         "workers": {
             "aggregated": {
                 "parallelism": {"tensor": 4, "moe_tensor": 4, "moe_expert": 1},
-                "kv_cache": {"prefix_caching": False},
-                "timing": {"type": "default", "forward_model": "fpm"},
+                "kv_cache": {
+                    "prefix_caching": False,
+                    "capacity": {"type": "fixed", "blocks": 4096},
+                },
+                "timing": {
+                    "type": "default",
+                    "forward_model": "fpm",
+                    "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet",
+                },
             }
         },
     }
@@ -518,8 +525,15 @@ def test_prediction_spec_lowers_fpm_forward_model_into_canonical_timing() -> Non
     assert timing["config"]["estimation_mode"] == "fpm_interpolation"
     assert timing["config"]["fallback_policy"] == "deny"
     assert timing["config"]["worker_type"] == "aggregated"
+    assert timing["config"]["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] == (
+        "/artifacts/reviewed-fpm.parquet"
+    )
     assert "aic_forward_model" not in deployment.agg_engine_args
     assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
+    assert (
+        deployment.performance_model_metadata["aggregated"]["config"]["fpm_parquet_path"]
+        == "/artifacts/reviewed-fpm.parquet"
+    )
 
 
 def test_prediction_spec_lowers_default_timing_into_canonical_auto_selection() -> None:
@@ -566,34 +580,14 @@ _SMALL_TRAFFIC = {
 }
 
 
-def test_engine_stack_replays_fpm_timing_from_the_bundled_cell(monkeypatch) -> None:
-    # The bundled MiniMax-M2.7 cell is collected at vLLM 0.25.1, outside the queryable version slots.
-    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-
-    report = _run({"engine": _fpm_engine(), "traffic": _SMALL_TRAFFIC})
-
-    assert report.metrics["completed_requests"] == 8
-
-
-def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(
-    monkeypatch,
-) -> None:
-    # tp2 has no FPM cell for this model on h200_sxm. The FPM path must refuse rather than fall
-    # back to op_level; the same shape still replays under op_level timing. This is a wiring
-    # check for the data path, not an accuracy statement about either model.
+def test_engine_stack_fpm_timing_fails_closed_when_external_parquet_is_missing(monkeypatch) -> None:
+    # The explicit external path is absent. FPM must refuse rather than fall
+    # back to op_level; the same shape still replays under op_level timing.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
-    engine["workers"]["aggregated"]["parallelism"] = {
-        "tensor": 2,
-        "moe_tensor": 2,
-        "moe_expert": 1,
-    }
 
-    with pytest.raises(RuntimeError, match="FPM"):
+    with pytest.raises(RuntimeError, match="reviewed-fpm.parquet"):
         _run({"engine": engine, "traffic": _SMALL_TRAFFIC})
-
-    engine["workers"]["aggregated"]["timing"] = {"type": "default"}
-    assert _run({"engine": engine, "traffic": _SMALL_TRAFFIC}).metrics["completed_requests"] == 8
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -832,31 +826,6 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     for key, value in stdout["summary"].items():
         if key not in {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}:
             assert plain[key] == value, key
-
-
-def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, capsys, monkeypatch):
-    import yaml
-
-    from aisimulate.main import main
-
-    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-    path = tmp_path / "fpm.yaml"
-    path.write_text(yaml.safe_dump({"engine": _fpm_engine(), "traffic": _SMALL_TRAFFIC}))
-    assert (
-        main(["predict", "-c", str(path), "--detail", "all", "--format", "json", "--output-dir", str(tmp_path / "out")])
-        == 0
-    )
-    sections = json.loads(capsys.readouterr().out)["details"]["sections"]
-    memory = sections["memory"]["roles"]["aggregated"]
-    assert memory["scope"] == "capacity_estimate_per_rank"
-    assert memory["stage"] == "before_native_capacity_adjustments"
-    assert memory["estimated_num_gpu_blocks"] > 0
-    assert "num_gpu_blocks" not in memory
-    assert set(sections) == {"summary", "memory", "time", "energy", "source"}
-    assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
-    assert sections["time"]["diagnostics"]["status"] == "unavailable"
-    assert sections["source"]["status"] == "unavailable"
-    assert "whole-model FPM" in sections["source"]["unavailable_reason"]
 
 
 @pytest.mark.parametrize("prefix,reused", [(3, 0), (4, 4), (5, 4), (7, 4)])

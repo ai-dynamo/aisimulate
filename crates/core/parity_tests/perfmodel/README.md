@@ -104,6 +104,10 @@ covers 68 engine-step records, 19 compiled-engine references, and three
 per-op cases. It follows removal of eager vLLM 0.24.0 FP8-block timings
 and explicit reuse of the graph-timed 0.25.0 GEMM table. Declared reuse
 also fills missing GEMM shapes for the other retained precisions.
+Hand-built Rust engine/FPM fixtures that query this 0.24.0 FP8-block identity
+must use `PerfDatabase::load_resolved` with shared-layer reuse enabled, as the
+production engine does. Primary-only `PerfDatabase::load` intentionally cannot
+answer those removed rows.
 
 The three per-op cases change only 12 QKV/projection GEMM latency values;
 other per-op latencies, energies, and source labels are unchanged. For
@@ -120,7 +124,7 @@ These are prediction-regression baselines, not whole-model silicon validation.
 ## Engine-Step Benchmark
 
 Historical Python-vs-Rust speedup numbers (dated + commit-stamped) live in
-[`perf-speedup-report.md`](../docs/perf-speedup-report.md); they cannot be
+[`perf-speedup-report.md`](../../perfmodel/docs/perf-speedup-report.md); they cannot be
 regenerated (the Python arm is gone). The benchmark now times the rust
 engine-step alone:
 

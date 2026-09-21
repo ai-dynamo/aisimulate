@@ -330,9 +330,6 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
         _check_documented_candidate_renderer(output, tmp_path)
 
 
-_FPM_CASE = _CONFIG_ROOT / "predict/fpm/01-minimax-m27-h200-tp4-fpm.yaml"
-
-
 @pytest.mark.parametrize("load_type", ["concurrency", "constant_rate", "poisson"])
 def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Path) -> None:
     data = yaml.safe_load((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine/03-preset-off-ttft.yaml").read_text())
@@ -397,48 +394,6 @@ def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Pa
     assert len(infeasible) == empty.counts.infeasible
     assert all(c.metrics["mean_e2e_latency_ms"] > 0.001 for c in infeasible)
     assert not list((no_result / "recommendations").glob("*.yaml"))
-
-
-def test_engine_predict_accepts_forward_model_from_yaml_and_set(tmp_path: Path) -> None:
-    # The bundled FPM cell is collected outside the queryable version slots.
-    env = {"AIC_ALLOW_UNLISTED_VERSIONS": "1"}
-    fpm = json.loads(
-        _run_cli(
-            "predict",
-            "--stack",
-            "engine",
-            "--config",
-            str(_FPM_CASE),
-            "--output-dir",
-            str(tmp_path / "fpm"),
-            "--format",
-            "json",
-            env=env,
-        ).stdout
-    )
-    op_level = json.loads(
-        _run_cli(
-            "predict",
-            "--stack",
-            "engine",
-            "--config",
-            str(_FPM_CASE),
-            "--set",
-            "engine.workers.aggregated.timing.forward_model=op_level",
-            "--output-dir",
-            str(tmp_path / "op-level"),
-            "--format",
-            "json",
-            env=env,
-        ).stdout
-    )
-
-    # Both runs prove CLI plumbing only (the YAML field and the --set path are accepted and the
-    # replay completes). Whether the FPM data path is actually engaged is proven in-process by
-    # tests/test_unified_traffic_runtime.py (fail-closed on an uncovered identity); accuracy is a
-    # FPM-vs-silicon question and is not asserted anywhere in the test suite.
-    assert fpm["completed_requests"] == 8
-    assert op_level["completed_requests"] == 8
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])

@@ -59,11 +59,13 @@ fn shared_tables_key(
     backend: &str,
     version: &str,
     resolver: &SourceResolver,
+    fpm_parquet_path: Option<&Path>,
 ) -> String {
     format!(
-        "{}\x1f{system}\x1f{backend}\x1f{version}\x1f{}",
+        "{}\x1f{system}\x1f{backend}\x1f{version}\x1f{}\x1f{}",
         systems_root.display(),
-        resolver.identity_key()
+        resolver.identity_key(),
+        fpm_parquet_path.map_or_else(String::new, |path| path.display().to_string())
     )
 }
 
@@ -387,6 +389,7 @@ impl PerfDatabase {
             version,
             Arc::new(SourceResolver::fixed(perf_db_sources.clone())),
             tolerate_missing_data,
+            None,
         )
     }
 
@@ -443,6 +446,7 @@ impl PerfDatabase {
             version,
             Arc::new(SourceResolver::live(ctx)),
             tolerate_missing_data,
+            None,
         )
     }
 
@@ -453,6 +457,7 @@ impl PerfDatabase {
         version: &str,
         resolver: Arc<SourceResolver>,
         tolerate_missing_data: bool,
+        fpm_parquet_path: Option<&Path>,
     ) -> Result<Self, AicError> {
         let system_yaml = systems_root.join(format!("{system}.yaml"));
         let spec = SystemSpec::load(&system_yaml)?;
@@ -464,7 +469,10 @@ impl PerfDatabase {
         // the known legacy backend names). `data_root` stays the legacy path
         // either way — each table's `resolver.sources_for` call resolves the
         // actual per-file location (legacy or family) independently.
+        // External FPM cells do not need op data. This allowance is separate
+        // from estimate-only tolerance, so external tables remain memoized.
         if !tolerate_missing_data
+            && fpm_parquet_path.is_none()
             && !data_root.is_dir()
             && !has_family_backend_version(&system_data_root, backend, version)
         {
@@ -548,7 +556,15 @@ impl PerfDatabase {
             )?,
             // Deliberately NOT shared-layer aware: FPM whole-model data is
             // valid only for its exact backend/version (fpm_forward.rs).
-            fpm_forward: FpmForwardTable::new(data_root.clone(), system, backend, version),
+            fpm_forward: match fpm_parquet_path {
+                Some(path) => FpmForwardTable::from_parquet_path(
+                    path.to_path_buf(),
+                    system,
+                    backend,
+                    version,
+                )?,
+                None => FpmForwardTable::new(data_root.clone(), system, backend, version),
+            },
             system_spec: spec,
             // Kept for the table-view folds (`table_view.rs`), which resolve
             // every basename themselves — including the wideep/deepep files
@@ -587,6 +603,32 @@ impl PerfDatabase {
         strict_provenance: bool,
         tolerate_missing_data: bool,
     ) -> Result<Self, AicError> {
+        Self::load_resolved_shared_with_fpm(
+            systems_root,
+            system,
+            backend,
+            version,
+            enable_shared_layer,
+            strict_provenance,
+            tolerate_missing_data,
+            None,
+        )
+    }
+
+    /// [`Self::load_resolved_shared`] with an optional external FPM parquet.
+    /// The path is part of the shared-table cache identity, so two engines
+    /// using different FPM artifacts cannot share the wrong loaded table.
+    #[allow(clippy::too_many_arguments)]
+    pub fn load_resolved_shared_with_fpm(
+        systems_root: &Path,
+        system: &str,
+        backend: &str,
+        version: &str,
+        enable_shared_layer: bool,
+        strict_provenance: bool,
+        tolerate_missing_data: bool,
+        fpm_parquet_path: Option<&Path>,
+    ) -> Result<Self, AicError> {
         static SHARED_TABLES: OnceLock<SharedTablesMemo> = OnceLock::new();
         Self::load_resolved_shared_in(
             SHARED_TABLES.get_or_init(Default::default),
@@ -597,6 +639,7 @@ impl PerfDatabase {
             enable_shared_layer,
             strict_provenance,
             tolerate_missing_data,
+            fpm_parquet_path,
         )
     }
 
@@ -616,20 +659,40 @@ impl PerfDatabase {
         enable_shared_layer: bool,
         strict_provenance: bool,
         tolerate_missing_data: bool,
+        fpm_parquet_path: Option<&Path>,
     ) -> Result<Self, AicError> {
+        // Pin external data before memo lookup and lazy loading. The same
+        // relative spelling can name different pairs after a cwd change.
+        let fpm_parquet_path = fpm_parquet_path
+            .map(|path| {
+                std::path::absolute(path).map_err(|source| AicError::Io {
+                    path: path.to_path_buf(),
+                    source,
+                })
+            })
+            .transpose()?;
+        let fpm_parquet_path = fpm_parquet_path.as_deref();
         if tolerate_missing_data {
             // Estimate-only loads bypass the memo entirely: caching a set of
             // empty tables under the plain identity key would let a later
             // STRICT load of the same identity silently succeed with empty
             // tables instead of raising the loud missing-directory error.
-            return Self::load_resolved(
+            let ctx = Self::resolve_ctx(
                 systems_root,
                 system,
                 backend,
                 version,
                 enable_shared_layer,
                 strict_provenance,
+            );
+            return Self::load_with_resolver(
+                systems_root,
+                system,
+                backend,
+                version,
+                Arc::new(SourceResolver::live(ctx?)),
                 true,
+                fpm_parquet_path,
             );
         }
         let ctx = Self::resolve_ctx(
@@ -641,11 +704,26 @@ impl PerfDatabase {
             strict_provenance,
         )?;
         let resolver = Arc::new(SourceResolver::live(ctx));
-        let key = shared_tables_key(systems_root, system, backend, version, &resolver);
+        let key = shared_tables_key(
+            systems_root,
+            system,
+            backend,
+            version,
+            &resolver,
+            fpm_parquet_path,
+        );
         if let Some(tables) = memo.lock().unwrap().get(&key).and_then(Weak::upgrade) {
             return Ok(Self::from_tables(tables));
         }
-        let db = Self::load_with_resolver(systems_root, system, backend, version, resolver, false)?;
+        let db = Self::load_with_resolver(
+            systems_root,
+            system,
+            backend,
+            version,
+            resolver,
+            false,
+            fpm_parquet_path,
+        )?;
         let mut map = memo.lock().unwrap();
         map.retain(|_, weak| weak.strong_count() > 0);
         map.insert(key, Arc::downgrade(&db.tables));
@@ -1010,6 +1088,39 @@ mod tests {
     }
 
     #[test]
+    fn external_fpm_load_does_not_require_a_backend_version_directory() {
+        use super::fpm_forward::tests::{default_identity, default_rows, write_pair};
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.path().join("b200_sxm.yaml"),
+        )
+        .expect("copy system yaml");
+        let external_dir = tmp.path().join("downloaded");
+        std::fs::create_dir_all(&external_dir).expect("create external dir");
+        let parquet = write_pair(&external_dir, &default_rows());
+
+        let db = PerfDatabase::load_resolved_shared_with_fpm(
+            tmp.path(),
+            "b200_sxm",
+            "vllm",
+            "0.25.1",
+            false,
+            false,
+            false,
+            Some(&parquet),
+        )
+        .expect("external FPM should load without in-repository perf data");
+
+        assert!(
+            db.fpm_forward
+                .select_cell(&default_identity(4), "org/model-a")
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn shared_load_reuses_tables_and_isolates_view_state() {
         // A PRIVATE memo: against the process-global one this assertion is
         // flaky under parallel `cargo test` — other tests loading the same
@@ -1026,6 +1137,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         )
         .expect("shared load must succeed");
         let db2 = PerfDatabase::load_resolved_shared_in(
@@ -1037,6 +1149,7 @@ mod tests {
             false,
             false,
             false,
+            None,
         )
         .expect("shared load must succeed");
         assert!(
