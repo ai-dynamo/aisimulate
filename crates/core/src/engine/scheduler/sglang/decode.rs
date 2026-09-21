@@ -113,7 +113,7 @@ fn commit_materialized_prefix(
     config: &SglangConfig,
     deferred: &mut Vec<(Uuid, usize)>,
 ) {
-    if config.host.is_some() {
+    if config.host_loop {
         deferred.push((req.uuid, req.materialized_tokens));
     } else {
         cache_materialized_prefix(req, kv_manager, config);
@@ -344,7 +344,7 @@ fn prefill_first_tokens(
                 config.kv_transfer_bytes_per_token,
             ),
         });
-        if config.host.is_some() {
+        if config.host_loop {
             // The scheduler observes this completion one iteration later; until then
             // the request stays a member of the next batch.
             req.pending_terminal = true;
@@ -514,7 +514,7 @@ fn simulate_step(
         })
         .collect::<Vec<_>>();
     let mut completed_requests = Vec::new();
-    if config.host.is_some() {
+    if config.host_loop {
         // The scheduler observes these completions with this forward's result; until
         // then the rows stay batch members like any other finished request.
         for &idx in &already_completed_indices {
@@ -670,7 +670,7 @@ fn simulate_step(
             });
 
             if is_complete {
-                if config.host.is_some() {
+                if config.host_loop {
                     req.pending_terminal = true;
                 } else {
                     completed_indices.push(idx);

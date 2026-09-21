@@ -478,28 +478,27 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
         result["agg_vision"] = deepcopy(aggregated.get("vision") or {"cache_mib": 100, "encoder_parallel": "tp"})
     profile_config = aggregated.get("host_profile")
     if profile_config is None:
-        for name in ("host", "frontend"):
-            if aggregated.get(name) is not None:
-                result[f"agg_{name}"] = deepcopy(aggregated[name])
+        if aggregated.get("host_loop"):
+            result["agg_host_loop"] = True
+        if aggregated.get("frontend") is not None:
+            result["agg_frontend"] = deepcopy(aggregated["frontend"])
         return result
     if images is None:
         raise ValueError("host_profile requires an image workload")
     from .config.engine import HostProfileConfig
-    from .vl.profile import profile_digest, resolve_host_profile
+    from .vl.table import resolve_frontend
 
-    # Lower once for a single rank; candidates apply their tensor-parallel sync entry.
-    profile, host, frontend = resolve_host_profile(
+    # Resolved once; every candidate shares the measured stages, identified by content.
+    frontend, digest = resolve_frontend(
         HostProfileConfig.model_validate(profile_config),
         model=config.engine.model,
         images=images.model_dump(mode="json"),
-        tensor_parallel=1,
         text_tokens=getattr(source, "input_tokens", None),
     )
     result.update(
-        agg_host=host.model_dump(mode="json"),
+        agg_host_loop=True,
         agg_frontend=frontend.model_dump(mode="json"),
-        agg_tp_sync_ms=dict(profile.tp_sync_ms),
-        agg_host_profile_digest=profile_digest(profile),
+        agg_host_profile_digest=digest,
     )
     return result
 
@@ -963,12 +962,11 @@ def _candidate_prediction(
             rendered = engine["workers"][public_role]
             if sample.get("agg_max_prefill_tokens") is not None:
                 rendered["scheduler"]["max_prefill_tokens"] = sample["agg_max_prefill_tokens"]
-            # The tables are written out as the runner executed them (tensor-parallel
-            # sync applied): a saved candidate must not depend on a profile file that
-            # can change or disappear after scoring.
+            # The stages are written out as the runner executed them: a saved candidate
+            # must not depend on a table file that can change or disappear after scoring.
             executed = deployment.agg_engine_args or {}
-            if (executed.get("sglang") or {}).get("host") is not None:
-                rendered["host"] = deepcopy(executed["sglang"]["host"])
+            if (executed.get("sglang") or {}).get("host_loop"):
+                rendered["host_loop"] = True
             if executed.get("frontend") is not None:
                 rendered["frontend"] = deepcopy(executed["frontend"])
             if sample.get("agg_vision") is not None:

@@ -225,51 +225,36 @@ class CostFnConfig(StrictModel):
     per_mib_ms: NonNegativeFloat = 0.0
 
 
-class HostPredictionConfig(StrictModel):
-    """SGLang scheduler-thread costs; turns each pass into one overlap-loop iteration."""
-
-    receive: CostFnConfig = Field(default_factory=CostFnConfig)
-    select: CostFnConfig = Field(default_factory=CostFnConfig)
-    prepare_extend: CostFnConfig = Field(
-        default_factory=CostFnConfig,
-        description="Input preparation an EXTEND forward waits for before its first kernel.",
-    )
-    launch_extend: CostFnConfig = Field(default_factory=CostFnConfig)
-    prepare_vision: CostFnConfig = Field(
-        default_factory=CostFnConfig,
-        description="Feature copies and embedding placement the encoder waits for; per cache-miss image batch.",
-    )
-    launch_vision: CostFnConfig = Field(default_factory=CostFnConfig)
-    launch_decode: CostFnConfig = Field(default_factory=CostFnConfig)
-    result: CostFnConfig = Field(default_factory=CostFnConfig)
-    tp_sync_ms: NonNegativeFloat = 0.0
-    decode_launch_syncs_previous_gpu: StrictBool = True
-
-
 class FrontendStageConfig(StrictModel):
-    resource: Literal["tm_loop", "io_decode", "processor", "mm_worker"]
-    unit: Literal["image", "request"]
+    """One black-box frontend stage: request-level service on a worker pool or on the tokenizer-manager loop."""
+
+    resource: Literal["tm_loop", "pool"]
+    workers: PositiveInt = Field(
+        default=1, description="Workers of a pool stage; the tokenizer-manager loop is one thread."
+    )
     cost: CostFnConfig = Field(default_factory=CostFnConfig)
     concurrency_scale: list[PositiveFloat] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _validate_workers(self) -> FrontendStageConfig:
+        if self.resource == "tm_loop" and self.workers != 1:
+            raise ValueError("a tm_loop stage runs on the single tokenizer-manager thread; workers must be 1")
+        if self.concurrency_scale and len(self.concurrency_scale) != self.workers:
+            raise ValueError("concurrency_scale needs one entry per worker")
+        return self
+
 
 class FrontendPredictionConfig(StrictModel):
-    """Frontend worker pools requests cross before the SGLang scheduler."""
+    """Frontend stages a request crosses, in order, before the SGLang scheduler admits it."""
 
-    io_workers: PositiveInt = 16
-    processor_workers: PositiveInt = 2
-    mm_workers: PositiveInt = 8
     stages: list[FrontendStageConfig] = Field(min_length=1)
 
 
 class HostProfileConfig(StrictModel):
-    """Take the host and frontend tables from a measured profile instead of spelling them out."""
+    """Take the frontend stages from a measured host cost table instead of spelling them out."""
 
     path: str = Field(min_length=1)
     frontend: Literal["python", "rust"]
-    on_missing: Literal["error", "calibrate"] = Field(
-        default="error", description="calibrate: sample the workload on this host into `path` when it does not exist."
-    )
 
 
 class VisionPredictionConfig(StrictModel):
@@ -292,23 +277,27 @@ class WorkerPredictionConfig(StrictModel):
     kv_cache: KvCachePredictionConfig = Field(default_factory=KvCachePredictionConfig)
     timing: TimingConfig = Field(default_factory=TimingConfig)
     startup_seconds: float = Field(default=0.0, ge=0.0)
-    host: HostPredictionConfig | None = None
+    host_loop: StrictBool = Field(
+        default=False,
+        description="Model each pass as one SGLang overlap-scheduler iteration: requests are received at "
+        "iteration boundaries and a forward's outputs become visible one iteration later.",
+    )
     frontend: FrontendPredictionConfig | None = None
     host_profile: HostProfileConfig | None = None
     vision: VisionPredictionConfig | None = None
 
     @model_validator(mode="after")
     def _validate_host_features(self) -> WorkerPredictionConfig:
-        if self.frontend is not None and self.host is None:
-            raise ValueError("frontend requires host")
-        if self.host_profile is not None and (self.host is not None or self.frontend is not None):
-            raise ValueError("host_profile replaces explicit host and frontend tables")
+        if self.frontend is not None and not self.host_loop:
+            raise ValueError("frontend requires host_loop")
+        if self.host_profile is not None and self.frontend is not None:
+            raise ValueError("host_profile replaces the explicit frontend stages")
         return self
 
     @property
     def hosts_scheduler_thread(self) -> bool:
-        """Whether this worker models its scheduler thread, explicitly or from a profile."""
-        return self.host is not None or self.host_profile is not None
+        """Whether this worker models its scheduler loop, explicitly or through a host cost table."""
+        return self.host_loop or self.host_profile is not None
 
 
 class EncoderPredictionConfig(StrictModel):
@@ -627,23 +616,23 @@ class WorkerRecommendationConfig(StrictModel):
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
     timing: TimingConfig = Field(default_factory=TimingConfig)
     startup_seconds: float = Field(default=0.0, ge=0.0)
-    # Host tables are measured data, not search dimensions; every candidate shares them.
-    host: HostPredictionConfig | None = None
+    # Frontend stages are measured data, not search dimensions; every candidate shares them.
+    host_loop: StrictBool = False
     frontend: FrontendPredictionConfig | None = None
     host_profile: HostProfileConfig | None = None
     vision: VisionPredictionConfig | None = None
 
     @model_validator(mode="after")
     def _validate_host_features(self) -> WorkerRecommendationConfig:
-        if self.frontend is not None and self.host is None:
-            raise ValueError("frontend requires host")
-        if self.host_profile is not None and (self.host is not None or self.frontend is not None):
-            raise ValueError("host_profile replaces explicit host and frontend tables")
+        if self.frontend is not None and not self.host_loop:
+            raise ValueError("frontend requires host_loop")
+        if self.host_profile is not None and self.frontend is not None:
+            raise ValueError("host_profile replaces the explicit frontend stages")
         return self
 
     @property
     def hosts_scheduler_thread(self) -> bool:
-        return self.host is not None or self.host_profile is not None
+        return self.host_loop or self.host_profile is not None
 
 
 class EncoderRecommendationConfig(StrictModel):
@@ -785,11 +774,13 @@ def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
         if worker is None or (not worker.hosts_scheduler_thread and worker.vision is None):
             continue
         if engine.backend != "sglang":
-            raise ValueError(f"workers.{role}.host and workers.{role}.vision are supported only for backend=sglang")
+            raise ValueError(
+                f"workers.{role}.host_loop and workers.{role}.vision are supported only for backend=sglang"
+            )
         if engine.mode != "aggregated":
-            raise ValueError(f"workers.{role}.host and workers.{role}.vision require engine.mode='aggregated'")
+            raise ValueError(f"workers.{role}.host_loop and workers.{role}.vision require engine.mode='aggregated'")
         if worker.parallelism.pipeline != 1 or worker.parallelism.attention_data != 1:
-            raise ValueError(f"workers.{role}.host requires pipeline=1 and attention_data=1")
+            raise ValueError(f"workers.{role}.host_loop requires pipeline=1 and attention_data=1")
 
 
 def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:

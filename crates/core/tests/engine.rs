@@ -9,8 +9,8 @@ use std::sync::Arc;
 use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
     Backend, Command, CostFn, Engine, EngineConfig, EngineFactory, FrontendConfig,
-    FrontendResource, FrontendStage, FrontendUnit, HostLoopConfig, NativeHostOffloadConfig,
-    PassCompletionEffects, Request, SglangConfig, TimingModel, TimingModelConfig,
+    FrontendResource, FrontendStage, NativeHostOffloadConfig, PassCompletionEffects, Request,
+    SglangConfig, TimingModel, TimingModelConfig,
 };
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
@@ -1690,19 +1690,8 @@ fn sglang_host_loop_reports_scheduler_stage_timestamps_per_request() {
         decode_ms: 4.0,
     });
     config.rank.backend = Backend::Sglang;
-    let cost = |const_ms: f64| CostFn {
-        const_ms,
-        ..CostFn::default()
-    };
     config.rank.sglang = SglangConfig {
-        host: Some(HostLoopConfig {
-            receive: cost(2.0),
-            select: cost(1.0),
-            launch_extend: cost(5.0),
-            launch_decode: cost(3.0),
-            result: cost(1.0),
-            ..HostLoopConfig::default()
-        }),
+        host_loop: true,
         ..SglangConfig::default()
     };
     let mut replay = spec(config);
@@ -1713,13 +1702,12 @@ fn sglang_host_loop_reports_scheduler_stage_timestamps_per_request() {
     assert_eq!(report.request_counts.completed_requests, 1);
     let record = &report.per_request[0];
     assert_eq!(record.scheduler_received_ms, Some(0.0));
-    assert_eq!(record.selected_ms, Some(3.0));
-    // Replay dates admissions at the pass start; `selected_ms` carries the scheduler-thread time.
+    assert_eq!(record.selected_ms, Some(0.0));
     assert_eq!(record.first_admit_ms, Some(0.0));
-    assert_eq!(record.prefill_complete_ms, Some(23.0));
-    // Observed after the next iteration's decode launch synchronized with the forward.
-    assert_eq!(record.first_token_ms, Some(27.0));
-    assert_eq!(record.terminal_time_ms, 27.0);
+    assert_eq!(record.prefill_complete_ms, Some(20.0));
+    // Observed when the next iteration's decode launch synchronized with the forward.
+    assert_eq!(record.first_token_ms, Some(20.0));
+    assert_eq!(record.terminal_time_ms, 20.0);
 }
 
 #[test]
@@ -1730,22 +1718,19 @@ fn sglang_frontend_pools_delay_scheduler_receipt() {
     });
     config.rank.backend = Backend::Sglang;
     config.rank.sglang = SglangConfig {
-        host: Some(HostLoopConfig::default()),
+        host_loop: true,
         ..SglangConfig::default()
     };
     config.rank.frontend = Some(FrontendConfig {
         stages: vec![FrontendStage {
-            resource: FrontendResource::Processor,
-            unit: FrontendUnit::Request,
+            resource: FrontendResource::Pool,
+            workers: 1,
             cost: CostFn {
                 const_ms: 4.0,
                 ..CostFn::default()
             },
             concurrency_scale: Vec::new(),
         }],
-        io_workers: 1,
-        processor_workers: 1,
-        mm_workers: 1,
     });
     let mut replay = spec(config);
     replay.requests = vec![request("first", 0.0, 4, 1), request("second", 0.0, 4, 1)];

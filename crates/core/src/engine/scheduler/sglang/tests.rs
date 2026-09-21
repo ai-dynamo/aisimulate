@@ -2982,7 +2982,7 @@ mod host_loop_passes {
     use std::sync::Arc;
 
     use super::*;
-    use crate::engine::{CostFn, HostLoopConfig, TtftMilestone};
+    use crate::engine::TtftMilestone;
 
     struct FixedTiming {
         prefill_ms: f64,
@@ -3001,28 +3001,9 @@ mod host_loop_passes {
         }
     }
 
-    fn cost(const_ms: f64) -> CostFn {
-        CostFn {
-            const_ms,
-            ..CostFn::default()
-        }
-    }
-
-    /// receive 2 / select 1 / launch_extend 5 / launch_decode 3 / result 1.
-    fn costs() -> HostLoopConfig {
-        HostLoopConfig {
-            receive: cost(2.0),
-            select: cost(1.0),
-            launch_extend: cost(5.0),
-            launch_decode: cost(3.0),
-            result: cost(1.0),
-            ..HostLoopConfig::default()
-        }
-    }
-
-    fn core(host: Option<HostLoopConfig>) -> SglangCore {
+    fn core(host_loop: bool) -> SglangCore {
         let mut args = test_args(128, 1, 8192);
-        args.sglang.as_mut().unwrap().host = host;
+        args.sglang.as_mut().unwrap().host_loop = host_loop;
         args.perf_model = crate::engine::common::perf_model::PerfModel::External {
             timing: Arc::new(FixedTiming {
                 prefill_ms: 20.0,
@@ -3069,55 +3050,55 @@ mod host_loop_passes {
 
     #[test]
     fn one_request_is_observed_one_iteration_after_its_forward() {
-        let mut core = core(Some(costs()));
+        let mut core = core(true);
         let uuid = core.receive(direct_request((0..16).collect(), 1));
 
-        // Iteration 1: receive (2) + select (1) = 3; the forward runs 3..23 while the
-        // launch (5) returns the loop at 8 with nothing to observe yet.
+        // Iteration 1: the request is received and selected at 0 and its forward runs
+        // 0..20; the free loop returns at once with nothing to observe yet.
         let first = core.execute_hidden_pass(0.0);
-        assert_eq!(first.end_ms, 8.0);
+        assert_eq!(first.end_ms, 0.0);
         assert!(first.output_signals.is_empty());
         assert_eq!(stage(&first, TtftMilestone::Received), vec![(uuid, 0.0)]);
-        assert_eq!(stage(&first, TtftMilestone::Selected), vec![(uuid, 3.0)]);
+        assert_eq!(stage(&first, TtftMilestone::Selected), vec![(uuid, 0.0)]);
         assert_eq!(
             stage(&first, TtftMilestone::PrefillComplete),
-            vec![(uuid, 23.0)]
+            vec![(uuid, 20.0)]
         );
         assert!(!core.is_drained());
 
-        // Iteration 2: the finished request is still a batch member, so a decode launches
-        // at 9; it synchronizes with the forward (23), enqueues until 26 and the GPU runs
-        // 23..27. The first forward's result is processed at max(26, 23) + 1 = 27.
+        // Iteration 2: the finished request is still a batch member, so a decode
+        // launches; it synchronizes with the forward (20) and the GPU runs it 20..24.
+        // The first forward's result is observed at 20.
         let second = core.execute_hidden_pass(first.end_ms);
-        assert_eq!(second.end_ms, 27.0);
+        assert_eq!(second.end_ms, 20.0);
         assert_eq!(second.output_signals.len(), 1);
         assert!(second.output_signals[0].completed);
         assert_eq!(second.output_signals[0].uuid, uuid);
         assert!(!core.is_drained());
 
-        // Iteration 3: nothing to launch; the ghost decode's empty result is processed
-        // when the GPU finishes it (27) plus result (1).
+        // Iteration 3: nothing to launch; the ghost decode's empty result is observed
+        // when the GPU finishes it (24).
         let third = core.execute_hidden_pass(second.end_ms);
-        assert_eq!(third.end_ms, 28.0);
+        assert_eq!(third.end_ms, 24.0);
         assert!(third.output_signals.is_empty());
         assert!(core.is_drained());
     }
 
     #[test]
     fn requests_arriving_during_an_iteration_are_received_at_the_next_one() {
-        let mut core = core(Some(costs()));
+        let mut core = core(true);
         let first = core.receive(direct_request((0..16).collect(), 1));
         let pass = core.execute_hidden_pass(0.0);
-        assert_eq!(pass.end_ms, 8.0);
+        assert_eq!(pass.end_ms, 0.0);
 
-        // Delivered at 5, i.e. while iteration 1 is still on the scheduler thread.
+        // Delivered after iteration 1 drained its inbox: received by iteration 2.
         let second = core.receive(direct_request((100..116).collect(), 1));
         let pass = core.execute_hidden_pass(pass.end_ms);
-        assert_eq!(stage(&pass, TtftMilestone::Received), vec![(second, 8.0)]);
-        assert_eq!(stage(&pass, TtftMilestone::Selected), vec![(second, 11.0)]);
-        // An EXTEND launch does not wait for the running forward: the loop reaches the
-        // first request's result at max(launch end 16, forward end 23) + 1.
-        assert_eq!(pass.end_ms, 24.0);
+        assert_eq!(stage(&pass, TtftMilestone::Received), vec![(second, 0.0)]);
+        assert_eq!(stage(&pass, TtftMilestone::Selected), vec![(second, 0.0)]);
+        // An EXTEND launch does not wait for the running forward; the loop then
+        // reaches the first request's result when that forward ends (20).
+        assert_eq!(pass.end_ms, 20.0);
         assert_eq!(
             pass.output_signals
                 .iter()
@@ -3125,18 +3106,18 @@ mod host_loop_passes {
                 .collect::<Vec<_>>(),
             vec![first]
         );
-        // The second forward queues behind the first on the GPU: 23..43.
+        // The second forward queues behind the first on the GPU: 20..40.
         assert_eq!(
             stage(&pass, TtftMilestone::PrefillComplete),
-            vec![(second, 43.0)]
+            vec![(second, 40.0)]
         );
     }
 
     #[test]
     fn a_free_host_loop_reproduces_the_legacy_token_times() {
-        let mut legacy = core(None);
+        let mut legacy = core(false);
         legacy.receive(direct_request((0..16).collect(), 4));
-        let mut host = core(Some(HostLoopConfig::default()));
+        let mut host = core(true);
         host.receive(direct_request((0..16).collect(), 4));
 
         let expected = vec![20.0, 24.0, 28.0, 32.0];
@@ -3146,7 +3127,7 @@ mod host_loop_passes {
 
     #[test]
     fn prefix_cache_commits_become_visible_when_the_forward_is_observed() {
-        let mut core = core(Some(costs()));
+        let mut core = core(true);
         let prompt: Vec<u32> = vec![1, 2, 3, 4];
         core.receive(direct_request(prompt.clone(), 2));
         let first = core.execute_hidden_pass(0.0);
@@ -3167,7 +3148,7 @@ mod host_loop_passes {
 
     #[test]
     fn a_cancelled_request_emits_no_output_from_the_forward_in_flight() {
-        let mut core = core(Some(costs()));
+        let mut core = core(true);
         let uuid = core.receive(direct_request((0..16).collect(), 1));
         let first = core.execute_hidden_pass(0.0);
         assert!(first.output_signals.is_empty());
@@ -3190,7 +3171,7 @@ mod host_loop_passes {
         // still allocates and commits its row's slot, and `release_kv_cache` caches the
         // committed KV page aligned when the finish is observed.
         let mut args = test_args(3, 4, 8192);
-        args.sglang.as_mut().unwrap().host = Some(HostLoopConfig::default());
+        args.sglang.as_mut().unwrap().host_loop = true;
         let config = SglangConfig::from_args(&args);
         let mut kv_manager = SglangKvManager::new(12, 4, KvEventPublishers::default(), 0);
         let prompt: Vec<u32> = (1..=8).collect();
@@ -3233,7 +3214,7 @@ mod host_loop_passes {
 
     #[test]
     fn a_zero_output_request_completes_when_its_forward_is_observed() {
-        let mut core = core(Some(costs()));
+        let mut core = core(true);
         let uuid = core.receive(direct_request((0..16).collect(), 0));
         let first = core.execute_hidden_pass(0.0);
         assert!(first.output_signals.is_empty());
@@ -3374,29 +3355,23 @@ mod vision_batches {
 
 mod frontend_pools {
     use super::*;
-    use crate::engine::{
-        CostFn, FrontendConfig, FrontendResource, FrontendStage, FrontendUnit, HostLoopConfig,
-        TtftMilestone,
-    };
+    use crate::engine::{CostFn, FrontendConfig, FrontendResource, FrontendStage, TtftMilestone};
 
-    /// One processor worker charging 4 ms per request ahead of a free host loop.
+    /// One pool worker charging 4 ms per request ahead of the host loop.
     fn core() -> SglangCore {
         let mut args = test_args(128, 1, 8192);
         let sglang = args.sglang.as_mut().unwrap();
-        sglang.host = Some(HostLoopConfig::default());
+        sglang.host_loop = true;
         sglang.frontend = Some(FrontendConfig {
             stages: vec![FrontendStage {
-                resource: FrontendResource::Processor,
-                unit: FrontendUnit::Request,
+                resource: FrontendResource::Pool,
+                workers: 1,
                 cost: CostFn {
                     const_ms: 4.0,
                     ..CostFn::default()
                 },
                 concurrency_scale: Vec::new(),
             }],
-            io_workers: 1,
-            processor_workers: 1,
-            mm_workers: 1,
         });
         SglangCore::new(args)
     }

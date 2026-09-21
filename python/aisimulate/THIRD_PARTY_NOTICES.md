@@ -469,27 +469,19 @@ and physical FlashMLA cache payload from logical FP4 values.
 The native VL replay path models sgl-project/sglang v0.5.19 at immutable commit
 `0bcd822377da7b5718e674eaf9c870d349424dd1`. Repository-root paths:
 
-- `tools/frontend/sglang-v0.5.19-timing.patch` contains modified upstream source
-  context (`rust/sglang-mm/src/driver.rs`,
-  `rust/sglang-server/src/multi_modality/worker.rs`,
-  `rust/sglang-server/src/tokenizer_manager/{to_scheduler,channel}.rs`,
-  `rust/sglang-server/src/lib.rs`) that adds optional worker timing; the added
-  `rust/sglang-server/src/ais_timing.rs` is original helper code. The full
-  upstream license is preserved in `tools/frontend/SGLANG-LICENSE`.
 - `crates/core/src/engine/scheduler/sglang/{host_loop,vision,frontend}.rs` and
   their tests re-implement the observed behavior of `Scheduler.event_loop_overlap`,
   `run_batch`, `recv_requests`, `process_batch_result_prefill`,
   `_batch_encode_per_image_misses`, `MultiModalStaticCache`, `TokenizerManager`
   and `BaseMultimodalProcessor` as performance models. They do not execute or
   copy the upstream implementation.
-- `python/aisimulate/src/aisimulate/vl/calibrate/` wraps the pinned upstream
-  frontend and scheduler functions read-only to sample their service times; it
-  does not copy or modify their implementations.
+- `python/aisimulate/src/aisimulate/vl/collect/` instantiates the pinned
+  upstream frontend objects unmodified on the serving host and times them from
+  the outside; it does not copy or modify their implementations.
 
 Source: https://github.com/sgl-project/sglang/tree/0bcd822377da7b5718e674eaf9c870d349424dd1
 Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
-reproduced in `tools/frontend/SGLANG-LICENSE` and at
-https://github.com/sgl-project/sglang/blob/0bcd822377da7b5718e674eaf9c870d349424dd1/LICENSE.
+at https://github.com/sgl-project/sglang/blob/0bcd822377da7b5718e674eaf9c870d349424dd1/LICENSE.
 
 ## DeepSeek model configuration files
 

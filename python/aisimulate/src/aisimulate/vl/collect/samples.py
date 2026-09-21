@@ -1,15 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Turn measured service intervals into the cost tables the engine consumes."""
+"""Service-interval statistics shared by the collector and its worker script.
+
+Standard library only and Python 3.10 compatible: the worker script imports
+this module by path under the serving host's SGLang interpreter.
+"""
 
 from __future__ import annotations
 
 import statistics
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-
-from ...config.engine import CostFnConfig
 
 STEADY_FRACTION = 0.9
 """A sample counts toward a concurrency level when its active overlap reaches this share of it."""
@@ -19,7 +21,7 @@ MIN_STEADY_SAMPLES = 10
 
 @dataclass(frozen=True)
 class Span:
-    """One service interval measured inside a worker, executor wait excluded."""
+    """One service interval measured inside a worker, queue wait excluded."""
 
     started_ns: int
     ended_ns: int
@@ -27,26 +29,6 @@ class Span:
     @property
     def service_ms(self) -> float:
         return (self.ended_ns - self.started_ns) / 1e6
-
-
-def union_ms(spans: Iterable[Span]) -> float:
-    """Length of the interval union: time during which at least one span was running.
-
-    Pool work of one request runs in parallel, so its spans overlap; summing
-    them would subtract the same wall-clock interval more than once.
-    """
-    total = 0
-    current: tuple[int, int] | None = None
-    for started, ended in sorted((span.started_ns, span.ended_ns) for span in spans):
-        if current is not None and started <= current[1]:
-            current = (current[0], max(current[1], ended))
-            continue
-        if current is not None:
-            total += current[1] - current[0]
-        current = (started, ended)
-    if current is not None:
-        total += current[1] - current[0]
-    return total / 1e6
 
 
 def mean_active_concurrency(spans: Sequence[Span]) -> list[float]:
@@ -73,30 +55,18 @@ def steady_samples(spans: Sequence[Span], target: int) -> list[Span]:
     ]
 
 
-def curves_by_active_concurrency(spans: Sequence[Span], capacity: int) -> dict[int, list[Span]]:
-    """Group observed spans by the (rounded) concurrency they ran under, clamped to `capacity`."""
-    curves: dict[int, list[Span]] = {}
-    for span, active in zip(spans, mean_active_concurrency(spans), strict=True):
-        curves.setdefault(min(max(round(active), 1), capacity), []).append(span)
-    return curves
-
-
 def mean_service_ms(spans: Iterable[Span]) -> float:
     return statistics.fmean(span.service_ms for span in spans)
 
 
-def stage_costs(curves: dict[int, Sequence[Span]], *, capacity: int | None = None) -> tuple[CostFnConfig, list[float]]:
-    """Lower per-concurrency service curves of one fixed workload shape.
+def steady_means(curves: dict[int, Sequence[Span]], capacity: int) -> dict[int, float]:
+    """Mean steady service time per concurrency level from one to `capacity`.
 
-    Every sample processes the same shape, so the cost is a constant per job and
-    sharing shows up as a per-concurrency scale relative to running alone. The
-    scale must cover every level from one to `capacity` (the resource's worker
-    count; the highest measured level when omitted) with steady samples, or the
-    engine would reject the table or silently run unmeasured levels.
+    Every level needs `MIN_STEADY_SAMPLES` steady samples, or the engine would
+    reject the table or silently run unmeasured levels.
     """
     if 1 not in curves:
         raise ValueError("stage curves must include the single-job concurrency")
-    capacity = max(curves) if capacity is None else capacity
     problems = []
     means = {}
     for concurrency in range(1, capacity + 1):
@@ -110,5 +80,4 @@ def stage_costs(curves: dict[int, Sequence[Span]], *, capacity: int | None = Non
             f"stage curves must have at least {MIN_STEADY_SAMPLES} steady samples at every concurrency "
             f"from 1 to {capacity}: " + "; ".join(problems)
         )
-    alone = means[1]
-    return CostFnConfig(const_ms=alone), [means[c] / alone for c in range(1, capacity + 1)]
+    return means

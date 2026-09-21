@@ -70,7 +70,6 @@ areas:
     github_team: "@ai-dynamo/aisimulate-mocker-codeowners"
     path_globs:
       - crates/core/src/engine/
-      - tools/frontend/
   - label: infra
     github_team: "@ai-dynamo/aisimulate-infra-codeowners"
     path_globs:
@@ -175,8 +174,8 @@ shared:
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_vl_cli.py
     owners: [replay, sweeper, forward-pass-engine, maintainers]
-  - glob: tools/frontend/
-    owners: [mocker, maintainers]
+  - glob: python/aisimulate/src/aisimulate/vl/
+    owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: examples/cli/
     owners: [replay, sweeper, forward-pass-engine, maintainers]
   - glob: tests/test_stack_discovery.py

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Scheduler-thread timing that turns one AIS pass into one SGLang loop iteration.
+//! Iteration structure that turns one AIS pass into one SGLang loop iteration.
 //!
 //! Behavioral model of the SGLang overlap scheduler loop (`Scheduler.event_loop_overlap`,
 //! `Scheduler.run_batch`, `SchedulerRequestReceiver.recv_requests`,
@@ -12,66 +12,40 @@
 //! Re-implemented in Rust from the observed semantics; no SGLang source is copied.
 //!
 //! Each iteration drains the requests that reached the scheduler since the last
-//! drain, prepares them on the scheduler thread, selects and launches this
-//! iteration's batch, and only then waits for the previous forward and processes
-//! its result. The GPU is one stream: a forward starts when its launch begins and
-//! the previous forward has finished, and it cannot end before its launch does.
-//! Consequently the outputs, terminals, and KV release of batch `k` become visible
-//! at the end of iteration `k+1`, and a request that finished in batch `k` still
-//! fills a slot in batch `k+1` because SGLang's `filter_batch` only sees
-//! `finished()` after that result is processed. Everything a forward produces
-//! for the scheduler's bookkeeping travels with the batch: its output tokens and
-//! the prefix-cache commits of `maybe_cache_unfinished_req` become visible
-//! together when the batch is observed, and a cancelled request takes its share
-//! of that payload with it while the device work stays charged. A launch has two
-//! parts: input preparation the first kernel waits for, and kernel enqueueing that
-//! overlaps the forward. The timing arithmetic below is independently
-//! implemented; the cost coefficients come from a measured host profile lowered
-//! by the Python configuration layer.
+//! drain, selects and launches this iteration's batch, and only then waits for
+//! the previous forward and processes its result. The GPU is one stream: a
+//! forward starts when its launch begins and the previous forward has finished.
+//! A DECODE launch first waits for the previous forward, as SGLang's position
+//! update copies a device tensor to the host before the decode kernels launch.
+//! Consequently the outputs, terminals, and KV release of batch `k` become
+//! visible at the end of iteration `k+1`, and a request that finished in batch
+//! `k` still fills a slot in batch `k+1` because SGLang's `filter_batch` only
+//! sees `finished()` after that result is processed. Everything a forward
+//! produces for the scheduler's bookkeeping travels with the batch: its output
+//! tokens and the prefix-cache commits of `maybe_cache_unfinished_req` become
+//! visible together when the batch is observed, and a cancelled request takes
+//! its share of that payload with it while the device work stays charged.
+//!
+//! The scheduler thread itself is modeled as free: request preparation is
+//! priced in the frontend stages ahead of the inbox, and batch selection,
+//! kernel launch, and result processing are not charged. With a free thread the
+//! observation of a forward lands where that forward ends.
 
 use std::collections::VecDeque;
 
 use uuid::Uuid;
 
-use crate::engine::HostLoopConfig;
 use crate::engine::common::protocols::OutputSignal;
 
 use super::request::SglangRequest;
 
-/// Cache-miss images an EXTEND batch encodes before its language-model forward.
-#[derive(Debug, Clone, Copy, Default)]
-pub(super) struct VisionWork {
-    pub(super) images: usize,
-    pub(super) visual_tokens: usize,
-    pub(super) feature_bytes: u64,
-}
-
-/// Batch launched by one iteration, as the scheduler thread charges it.
-#[derive(Debug, Clone, Copy)]
+/// Batch launched by one iteration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LaunchKind {
-    /// An EXTEND forward over `tokens` newly computed prompt tokens.
-    Extend {
-        requests: usize,
-        tokens: usize,
-        vision: VisionWork,
-    },
-    /// A DECODE step over `requests` running sequences, ghosts included.
-    Decode { requests: usize },
-}
-
-impl LaunchKind {
-    pub(super) fn requests(self) -> usize {
-        match self {
-            Self::Extend { requests, .. } | Self::Decode { requests } => requests,
-        }
-    }
-
-    fn tokens(self) -> usize {
-        match self {
-            Self::Extend { tokens, .. } => tokens,
-            Self::Decode { requests } => requests,
-        }
-    }
+    /// An EXTEND forward over newly computed prompt tokens.
+    Extend,
+    /// A DECODE step over the running sequences, ghosts included.
+    Decode,
 }
 
 /// Scheduler-thread timeline of one iteration.
@@ -109,13 +83,11 @@ impl ForwardOutputs {
 #[derive(Debug)]
 struct InFlightBatch {
     gpu_end_ms: f64,
-    requests: usize,
     outputs: ForwardOutputs,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct HostLoop {
-    config: HostLoopConfig,
     /// Requests delivered to the scheduler and waiting for the next `recv_requests`.
     inbox: VecDeque<SglangRequest>,
     in_flight: Option<InFlightBatch>,
@@ -123,13 +95,8 @@ pub(super) struct HostLoop {
 }
 
 impl HostLoop {
-    pub(super) fn new(config: HostLoopConfig) -> Self {
-        Self {
-            config,
-            inbox: VecDeque::new(),
-            in_flight: None,
-            gpu_free_ms: 0.0,
-        }
+    pub(super) fn new() -> Self {
+        Self::default()
     }
 
     /// Whether the loop owns no delivered request and no unobserved batch.
@@ -137,7 +104,7 @@ impl HostLoop {
         self.inbox.is_empty() && self.in_flight.is_none()
     }
 
-    pub(super) fn holds_request(&self, uuid: uuid::Uuid) -> bool {
+    pub(super) fn holds_request(&self, uuid: Uuid) -> bool {
         self.inbox.iter().any(|request| request.uuid == uuid)
     }
 
@@ -148,7 +115,7 @@ impl HostLoop {
     }
 
     /// Remove a delivered request before the scheduler receives it.
-    pub(super) fn take_request(&mut self, uuid: uuid::Uuid) -> Option<SglangRequest> {
+    pub(super) fn take_request(&mut self, uuid: Uuid) -> Option<SglangRequest> {
         let index = self.inbox.iter().position(|request| request.uuid == uuid)?;
         self.inbox.remove(index)
     }
@@ -159,42 +126,18 @@ impl HostLoop {
     }
 
     /// Forget what the forward in flight would deliver for `uuid`. Its device
-    /// work and result processing stay charged: the batch already ran with it.
+    /// work stays charged: the batch already ran with it.
     pub(super) fn discard_request(&mut self, uuid: Uuid) {
         if let Some(batch) = &mut self.in_flight {
             batch.outputs.discard_request(uuid);
         }
     }
 
-    /// Scheduler-thread cost of preparing one received request.
-    pub(super) fn receive_cost_ms(&self, request: &SglangRequest) -> f64 {
-        let feature_bytes = request.images.iter().map(|image| image.feature_bytes).sum();
-        self.config
-            .receive
-            .eval(1, request.images.len(), request.prompt_len(), feature_bytes)
-    }
-
-    /// Selection time of an iteration that starts at `start_ms` after charging
-    /// `receive_ms` of request preparation and, when a batch forms, its selection.
-    pub(super) fn selected_ms(
-        &self,
-        start_ms: f64,
-        receive_ms: f64,
-        batch: Option<LaunchKind>,
-    ) -> f64 {
-        let select_ms = batch.map_or(0.0, |batch| {
-            self.config
-                .select
-                .eval(batch.requests(), 0, batch.tokens(), 0)
-        });
-        start_ms + receive_ms + self.config.tp_sync_ms + select_ms
-    }
-
-    /// Lay this iteration's launch, forward, and result observation on the
-    /// scheduler and GPU timelines. `gpu_ms` is the forward's modeled device
-    /// time and `outputs` what it produces for the scheduler; they are held
-    /// back and returned by the next call, which observes them. The returned
-    /// outputs are `None` when no batch was in flight.
+    /// Lay this iteration's forward and result observation on the GPU timeline.
+    /// `gpu_ms` is the forward's modeled device time and `outputs` what it
+    /// produces for the scheduler; they are held back and returned by the next
+    /// call, which observes them. The returned outputs are `None` when no batch
+    /// was in flight.
     pub(super) fn plan(
         &mut self,
         selected_ms: f64,
@@ -207,56 +150,17 @@ impl HostLoop {
             "an iteration without a batch launches no forward"
         );
         let previous_gpu_end_ms = self.in_flight.as_ref().map(|batch| batch.gpu_end_ms);
-        let (launch_end_ms, gpu_end_ms) = match batch {
+        let (launch_ms, gpu_end_ms) = match batch {
             Some(kind) => {
-                let launch_start_ms = match kind {
-                    LaunchKind::Decode { .. } if self.config.decode_launch_syncs_previous_gpu => {
+                let launch_ms = match kind {
+                    LaunchKind::Decode => {
                         previous_gpu_end_ms.map_or(selected_ms, |gpu_end| selected_ms.max(gpu_end))
                     }
-                    _ => selected_ms,
+                    LaunchKind::Extend => selected_ms,
                 };
-                let (prepare_cost, launch_cost) = match kind {
-                    LaunchKind::Extend {
-                        requests,
-                        tokens,
-                        vision,
-                    } => {
-                        let (prepare_vision, launch_vision) = if vision.images > 0 {
-                            let eval = |cost: &crate::engine::CostFn| {
-                                cost.eval(
-                                    1,
-                                    vision.images,
-                                    vision.visual_tokens,
-                                    vision.feature_bytes,
-                                )
-                            };
-                            (
-                                eval(&self.config.prepare_vision),
-                                eval(&self.config.launch_vision),
-                            )
-                        } else {
-                            (0.0, 0.0)
-                        };
-                        (
-                            self.config.prepare_extend.eval(requests, 0, tokens, 0)
-                                + prepare_vision,
-                            self.config.launch_extend.eval(requests, 0, tokens, 0) + launch_vision,
-                        )
-                    }
-                    LaunchKind::Decode { requests } => (
-                        0.0,
-                        self.config.launch_decode.eval(requests, 0, requests, 0),
-                    ),
-                };
-                // Input preparation gates the first kernel. Eager launches then enqueue
-                // asynchronously: the forward runs as soon as the stream is free, and a
-                // launch-bound forward ends with its launch.
-                let input_ready_ms = launch_start_ms + prepare_cost;
-                let launch_end_ms = input_ready_ms + launch_cost;
-                let gpu_start_ms = self.gpu_free_ms.max(input_ready_ms);
-                let gpu_end_ms = (gpu_start_ms + gpu_ms).max(launch_end_ms);
+                let gpu_end_ms = self.gpu_free_ms.max(launch_ms) + gpu_ms;
                 self.gpu_free_ms = gpu_end_ms;
-                (launch_end_ms, Some(gpu_end_ms))
+                (launch_ms, Some(gpu_end_ms))
             }
             None => (selected_ms, None),
         };
@@ -264,16 +168,12 @@ impl HostLoop {
         // `copy_done.synchronize()` on the previous batch is the only point where
         // the scheduler thread waits for the GPU.
         let end_ms = match &observed {
-            Some(previous) => {
-                launch_end_ms.max(previous.gpu_end_ms)
-                    + self.config.result.eval(previous.requests, 0, 0, 0)
-            }
-            None => launch_end_ms,
+            Some(previous) => launch_ms.max(previous.gpu_end_ms),
+            None => launch_ms,
         };
-        if let (Some(kind), Some(gpu_end_ms)) = (batch, gpu_end_ms) {
+        if let (Some(_), Some(gpu_end_ms)) = (batch, gpu_end_ms) {
             self.in_flight = Some(InFlightBatch {
                 gpu_end_ms,
-                requests: kind.requests(),
                 outputs,
             });
         }
@@ -291,29 +191,6 @@ impl HostLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::CostFn;
-
-    fn config() -> HostLoopConfig {
-        HostLoopConfig {
-            select: CostFn {
-                const_ms: 1.0,
-                ..CostFn::default()
-            },
-            launch_extend: CostFn {
-                const_ms: 5.0,
-                ..CostFn::default()
-            },
-            launch_decode: CostFn {
-                const_ms: 3.0,
-                ..CostFn::default()
-            },
-            result: CostFn {
-                const_ms: 1.0,
-                ..CostFn::default()
-            },
-            ..HostLoopConfig::default()
-        }
-    }
 
     fn signal() -> OutputSignal {
         OutputSignal {
@@ -334,99 +211,78 @@ mod tests {
     }
 
     #[test]
-    fn forward_starts_at_launch_start_and_waits_for_the_previous_forward() {
-        let mut host = HostLoop::new(config());
-        let extend = Some(LaunchKind::Extend {
-            requests: 1,
-            tokens: 8,
-            vision: VisionWork::default(),
-        });
-        let selected = host.selected_ms(0.0, 2.0, extend);
-        assert_eq!(selected, 3.0);
-        let (timing, observed) = host.plan(selected, extend, 20.0, outputs(vec![signal()]));
+    fn a_forward_is_observed_when_the_next_iteration_synchronizes_with_it() {
+        let mut host = HostLoop::new();
+        let (timing, observed) =
+            host.plan(0.0, Some(LaunchKind::Extend), 20.0, outputs(vec![signal()]));
         assert!(observed.is_none());
-        // No previous batch: the iteration ends with its launch while the GPU keeps running.
+        // No previous batch: the free loop returns at once while the GPU keeps running.
         assert_eq!(
             timing,
             IterationTiming {
-                selected_ms: 3.0,
-                gpu_end_ms: Some(23.0),
-                end_ms: 8.0
+                selected_ms: 0.0,
+                gpu_end_ms: Some(20.0),
+                end_ms: 0.0
             }
         );
 
-        let decode = Some(LaunchKind::Decode { requests: 1 });
-        let selected = host.selected_ms(8.0, 0.0, decode);
-        let (timing, observed) = host.plan(selected, decode, 4.0, ForwardOutputs::default());
+        // The decode launch synchronizes with the previous forward (20), the GPU
+        // runs it 20..24, and the previous forward's result is observed at 20.
+        let (timing, observed) = host.plan(
+            0.0,
+            Some(LaunchKind::Decode),
+            4.0,
+            ForwardOutputs::default(),
+        );
         assert_eq!(
             observed.map(|outputs| outputs.output_signals.len()),
             Some(1)
         );
-        // The decode launch synchronizes with the previous forward, then the
-        // result of that forward is processed before the loop returns.
         assert_eq!(
             timing,
             IterationTiming {
-                selected_ms: 9.0,
-                gpu_end_ms: Some(27.0),
-                end_ms: 27.0
+                selected_ms: 0.0,
+                gpu_end_ms: Some(24.0),
+                end_ms: 20.0
             }
         );
     }
 
     #[test]
-    fn launch_bound_forwards_end_with_their_launch() {
-        let mut host = HostLoop::new(HostLoopConfig {
-            launch_extend: CostFn {
-                const_ms: 10.0,
-                ..CostFn::default()
-            },
-            ..HostLoopConfig::default()
-        });
-        let extend = Some(LaunchKind::Extend {
-            requests: 1,
-            tokens: 4,
-            vision: VisionWork::default(),
-        });
-        let (timing, _) = host.plan(0.0, extend, 1.0, ForwardOutputs::default());
-        assert_eq!(timing.gpu_end_ms, Some(10.0));
-        assert_eq!(timing.end_ms, 10.0);
-    }
-
-    #[test]
-    fn input_preparation_delays_the_forward_instead_of_overlapping_it() {
-        let mut host = HostLoop::new(HostLoopConfig {
-            prepare_extend: CostFn {
-                const_ms: 100.0,
-                ..CostFn::default()
-            },
-            ..HostLoopConfig::default()
-        });
-        let extend = Some(LaunchKind::Extend {
-            requests: 1,
-            tokens: 4,
-            vision: VisionWork::default(),
-        });
-        // 100 ms of preparation the kernels depend on, then 10 ms of device work.
-        let (timing, _) = host.plan(0.0, extend, 10.0, ForwardOutputs::default());
-        assert_eq!(timing.gpu_end_ms, Some(110.0));
-        assert_eq!(timing.end_ms, 100.0);
+    fn an_extend_launch_queues_behind_the_running_forward_without_waiting_for_it() {
+        let mut host = HostLoop::new();
+        host.plan(0.0, Some(LaunchKind::Extend), 20.0, outputs(vec![signal()]));
+        // Launched at 5 while the first forward runs: the GPU serves it 20..30 and
+        // the loop returns when the first forward is observed.
+        let (timing, observed) = host.plan(
+            5.0,
+            Some(LaunchKind::Extend),
+            10.0,
+            ForwardOutputs::default(),
+        );
+        assert_eq!(
+            observed.map(|outputs| outputs.output_signals.len()),
+            Some(1)
+        );
+        assert_eq!(
+            timing,
+            IterationTiming {
+                selected_ms: 5.0,
+                gpu_end_ms: Some(30.0),
+                end_ms: 20.0
+            }
+        );
     }
 
     #[test]
     fn a_discarded_request_leaves_the_forward_in_flight_without_its_outputs() {
-        let mut host = HostLoop::new(config());
-        let extend = Some(LaunchKind::Extend {
-            requests: 1,
-            tokens: 4,
-            vision: VisionWork::default(),
-        });
+        let mut host = HostLoop::new();
         let cancelled = uuid::Uuid::from_u128(7);
         let mut cancelled_signal = signal();
         cancelled_signal.uuid = cancelled;
         host.plan(
             0.0,
-            extend,
+            Some(LaunchKind::Extend),
             20.0,
             ForwardOutputs {
                 output_signals: vec![cancelled_signal, signal()],
@@ -438,19 +294,19 @@ mod tests {
         let observed = observed.expect("the batch is still observed");
         assert_eq!(observed.output_signals.len(), 1);
         assert_eq!(observed.cache_commits, vec![(uuid::Uuid::nil(), 4)]);
-        // The result of the batch that ran with the request is still processed.
-        assert_eq!(timing.end_ms, 21.0);
+        // The batch that ran with the request is still waited for.
+        assert_eq!(timing.end_ms, 20.0);
     }
 
     #[test]
     fn an_iteration_without_a_batch_only_observes_the_previous_forward() {
-        let mut host = HostLoop::new(config());
-        let extend = Some(LaunchKind::Extend {
-            requests: 1,
-            tokens: 4,
-            vision: VisionWork::default(),
-        });
-        host.plan(0.0, extend, 30.0, ForwardOutputs::default());
+        let mut host = HostLoop::new();
+        host.plan(
+            0.0,
+            Some(LaunchKind::Extend),
+            30.0,
+            ForwardOutputs::default(),
+        );
         let (timing, observed) = host.plan(12.0, None, 0.0, ForwardOutputs::default());
         assert!(observed.is_some());
         assert_eq!(
@@ -458,7 +314,7 @@ mod tests {
             IterationTiming {
                 selected_ms: 12.0,
                 gpu_end_ms: None,
-                end_ms: 31.0
+                end_ms: 30.0
             }
         );
         assert!(host.is_idle());

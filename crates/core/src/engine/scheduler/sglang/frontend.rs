@@ -1,24 +1,24 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Frontend worker pools between request arrival and the scheduler inbox.
+//! Frontend stages between request arrival and the scheduler inbox.
 //!
-//! Behavioral model of the multimodal request path of `TokenizerManager` and
-//! `BaseMultimodalProcessor` as of sgl-project/sglang v0.5.19 (`0bcd822`,
+//! Behavioral model of the multimodal request path of `TokenizerManager`,
+//! `BaseMultimodalProcessor`, and the Rust multimodal workers as of
+//! sgl-project/sglang v0.5.19 (`0bcd822`,
 //! `python/sglang/srt/managers/tokenizer_manager.py`,
-//! `python/sglang/srt/multimodal/processors/base_processor.py`). Re-implemented
-//! in Rust from the observed semantics; no SGLang source is copied.
+//! `python/sglang/srt/multimodal/processors/base_processor.py`,
+//! `python/sglang/srt/rust_server/server.py`). Re-implemented in Rust from the
+//! observed semantics; no SGLang source is copied.
 //!
-//! A request walks the configured stages in order. Image stages fan one job
-//! per image out to a worker pool and join before the next stage; request
-//! stages run one job. Jobs on one resource share its workers, and their
-//! service time is rescaled by the number of jobs sharing it. When a stage runs
-//! on the tokenizer-manager event loop, that loop cannot dispatch arrivals or
-//! stage continuations while it executes such a job; work already handed to
-//! the executor pools keeps running. The Rust frontend is configured with the
-//! same mechanics over its multimodal worker pool. Processor-sized processor
-//! measurements exclude executor wait, which this queue model supplies. The
-//! queueing arithmetic is independently implemented.
+//! A request walks the configured stages in order, one job per stage. Each
+//! stage is a black box measured as request-level service time: a `pool` stage
+//! owns its workers and reprices its jobs by how many share them; a
+//! tokenizer-manager `tm_loop` stage runs on the one loop thread, which cannot
+//! dispatch arrivals or stage continuations while it executes such a job, while
+//! work already handed to pools keeps running. The scheduler's per-request
+//! receive preparation is a final single-worker pool stage. The queueing
+//! arithmetic is independently implemented.
 //!
 //! Every entry point settles the completions due before its instant first, so
 //! the timeline never depends on when the scheduler last looked; requests that
@@ -28,7 +28,7 @@ use std::collections::VecDeque;
 
 use uuid::Uuid;
 
-use crate::engine::{FrontendConfig, FrontendResource, FrontendUnit};
+use crate::engine::{FrontendConfig, FrontendResource};
 
 use super::request::SglangRequest;
 
@@ -42,14 +42,8 @@ struct Job {
 
 struct Stage {
     resource: FrontendResource,
-    unit: FrontendUnit,
     waiting: VecDeque<Job>,
     active: Vec<Job>,
-}
-
-struct Pending {
-    request: SglangRequest,
-    images_remaining: usize,
 }
 
 /// A request whose dispatch onto `stage` waits for the tokenizer-manager loop.
@@ -62,7 +56,7 @@ pub(super) struct FrontendRuntime {
     config: FrontendConfig,
     now_ms: f64,
     stages: Vec<Stage>,
-    requests: Vec<Pending>,
+    requests: Vec<SglangRequest>,
     /// Dispatches blocked behind a synchronous tokenizer-manager job, in order.
     loop_queue: VecDeque<Continuation>,
     /// Requests that left the last stage, with their exit time, until the
@@ -77,7 +71,6 @@ impl FrontendRuntime {
             .iter()
             .map(|stage| Stage {
                 resource: stage.resource,
-                unit: stage.unit,
                 waiting: VecDeque::new(),
                 active: Vec::new(),
             })
@@ -97,16 +90,23 @@ impl FrontendRuntime {
     }
 
     pub(super) fn holds_request(&self, uuid: Uuid) -> bool {
-        self.requests
-            .iter()
-            .any(|pending| pending.request.uuid == uuid)
+        self.requests.iter().any(|request| request.uuid == uuid)
             || self.ready.iter().any(|(request, _)| request.uuid == uuid)
     }
 
-    fn active_on(&self, resource: FrontendResource) -> usize {
+    /// Jobs occupying the resource of stage `index`: every loop stage shares
+    /// the one tokenizer-manager thread; a pool belongs to its stage.
+    fn active_on(&self, index: usize) -> usize {
+        match self.stages[index].resource {
+            FrontendResource::TmLoop => self.active_on_loop(),
+            FrontendResource::Pool => self.stages[index].active.len(),
+        }
+    }
+
+    fn active_on_loop(&self) -> usize {
         self.stages
             .iter()
-            .filter(|stage| stage.resource == resource)
+            .filter(|stage| stage.resource == FrontendResource::TmLoop)
             .map(|stage| stage.active.len())
             .sum()
     }
@@ -119,7 +119,7 @@ impl FrontendRuntime {
 
     /// Current service time of a job on `stage` given the resource's load.
     fn latency_ms(&self, stage: usize, job: &Job) -> f64 {
-        let sharing = self.active_on(self.stages[stage].resource);
+        let sharing = self.active_on(stage);
         let scale = self.config.stages[stage]
             .concurrency_scale
             .get(sharing.saturating_sub(1))
@@ -151,8 +151,7 @@ impl FrontendRuntime {
     /// Start waiting jobs wherever their resource has a free worker.
     fn refill(&mut self) {
         for index in 0..self.stages.len() {
-            let resource = self.stages[index].resource;
-            while self.active_on(resource) < self.config.capacity(resource) {
+            while self.active_on(index) < self.config.capacity(index) {
                 let Some(job) = self.stages[index].waiting.pop_front() else {
                     break;
                 };
@@ -161,57 +160,28 @@ impl FrontendRuntime {
         }
     }
 
-    fn pending(&self, uuid: Uuid) -> &Pending {
+    fn request(&self, uuid: Uuid) -> &SglangRequest {
         self.requests
             .iter()
-            .find(|pending| pending.request.uuid == uuid)
+            .find(|request| request.uuid == uuid)
             .expect("frontend request in flight")
     }
 
-    fn pending_mut(&mut self, uuid: Uuid) -> &mut Pending {
-        self.requests
-            .iter_mut()
-            .find(|pending| pending.request.uuid == uuid)
-            .expect("frontend request in flight")
-    }
-
-    /// Hand a request to `stage`, one job per image or one per request.
+    /// Hand a request to `stage` as one job priced for the whole request.
     fn submit_stage(&mut self, uuid: Uuid, stage: usize) {
         let cost = self.config.stages[stage].cost;
-        let request = &self.pending(uuid).request;
-        let jobs: Vec<Job> = match self.stages[stage].unit {
-            FrontendUnit::Image => request
-                .images
-                .iter()
-                .map(|image| Job {
-                    request_id: uuid,
-                    service_ms: cost.eval(
-                        1,
-                        1,
-                        image.encoder.total_patch_tokens(),
-                        image.feature_bytes,
-                    ),
-                    remaining: 1.0,
-                })
-                .collect(),
-            FrontendUnit::Request => vec![Job {
-                request_id: uuid,
-                service_ms: cost.eval(
-                    1,
-                    request.images.len(),
-                    request.prompt_len(),
-                    request.images.iter().map(|image| image.feature_bytes).sum(),
-                ),
-                remaining: 1.0,
-            }],
+        let request = self.request(uuid);
+        let job = Job {
+            request_id: uuid,
+            service_ms: cost.eval(
+                1,
+                request.images.len(),
+                request.prompt_len(),
+                request.images.iter().map(|image| image.feature_bytes).sum(),
+            ),
+            remaining: 1.0,
         };
-        if jobs.is_empty() {
-            // No image to process: the join is immediate.
-            self.finish_stage(uuid, stage);
-            return;
-        }
-        self.pending_mut(uuid).images_remaining = jobs.len();
-        self.stages[stage].waiting.extend(jobs);
+        self.stages[stage].waiting.push_back(job);
     }
 
     /// Dispatch `uuid` onto `stage` now, or once the tokenizer-manager loop is free.
@@ -229,7 +199,7 @@ impl FrontendRuntime {
     /// Let the tokenizer-manager loop dispatch queued work while no
     /// synchronous job occupies it.
     fn resume_loop(&mut self) {
-        while self.active_on(FrontendResource::TmLoop) == 0 {
+        while self.active_on_loop() == 0 {
             let Some(next) = self.loop_queue.pop_front() else {
                 break;
             };
@@ -239,15 +209,15 @@ impl FrontendRuntime {
     }
 
     /// Move `uuid` past `stage`; the last stage releases the request at the
-    /// current instant, whether it completed a job or had none to run.
+    /// current instant.
     fn finish_stage(&mut self, uuid: Uuid, stage: usize) {
         if stage + 1 == self.stages.len() {
             let index = self
                 .requests
                 .iter()
-                .position(|pending| pending.request.uuid == uuid)
+                .position(|request| request.uuid == uuid)
                 .expect("frontend request in flight");
-            let request = self.requests.remove(index).request;
+            let request = self.requests.remove(index);
             self.ready.push((request, self.now_ms));
             return;
         }
@@ -258,10 +228,7 @@ impl FrontendRuntime {
     pub(super) fn submit(&mut self, request: SglangRequest, now_ms: f64) {
         self.settle_due(now_ms);
         let uuid = request.uuid;
-        self.requests.push(Pending {
-            request,
-            images_remaining: 0,
-        });
+        self.requests.push(request);
         self.dispatch(uuid, 0);
         self.refill();
         self.resume_loop();
@@ -337,16 +304,9 @@ impl FrontendRuntime {
                 }
             }
             for (index, uuid) in completed {
-                if self.stages[index].unit == FrontendUnit::Image {
-                    let pending = self.pending_mut(uuid);
-                    pending.images_remaining -= 1;
-                    if pending.images_remaining > 0 {
-                        continue;
-                    }
-                }
                 self.finish_stage(uuid, index);
             }
-            // Executor pools start their queued jobs before the loop dispatches.
+            // Pools start their queued jobs before the loop dispatches.
             self.refill();
             self.resume_loop();
         }
@@ -366,8 +326,8 @@ impl FrontendRuntime {
         let index = self
             .requests
             .iter()
-            .position(|pending| pending.request.uuid == uuid)?;
-        let pending = self.requests.remove(index);
+            .position(|request| request.uuid == uuid)?;
+        let request = self.requests.remove(index);
         for stage in &mut self.stages {
             stage.active.retain(|job| job.request_id != uuid);
             stage.waiting.retain(|job| job.request_id != uuid);
@@ -375,7 +335,7 @@ impl FrontendRuntime {
         self.loop_queue.retain(|next| next.request_id != uuid);
         self.refill();
         self.resume_loop();
-        Some(pending.request)
+        Some(request)
     }
 
     /// Virtual time the pools were last advanced to.
@@ -390,10 +350,10 @@ mod tests {
     use crate::engine::common::protocols::DirectRequest;
     use crate::engine::{CostFn, FrontendStage, ImageSpec};
 
-    fn stage(resource: FrontendResource, unit: FrontendUnit, const_ms: f64) -> FrontendStage {
+    fn pool(workers: usize, const_ms: f64) -> FrontendStage {
         FrontendStage {
-            resource,
-            unit,
+            resource: FrontendResource::Pool,
+            workers,
             cost: CostFn {
                 const_ms,
                 ..CostFn::default()
@@ -402,13 +362,15 @@ mod tests {
         }
     }
 
-    fn config(stages: Vec<FrontendStage>, workers: usize) -> FrontendConfig {
-        FrontendConfig {
-            stages,
-            io_workers: workers,
-            processor_workers: workers,
-            mm_workers: workers,
+    fn tm_loop(const_ms: f64) -> FrontendStage {
+        FrontendStage {
+            resource: FrontendResource::TmLoop,
+            ..pool(1, const_ms)
         }
+    }
+
+    fn config(stages: Vec<FrontendStage>) -> FrontendConfig {
+        FrontendConfig { stages }
     }
 
     fn request(id: u128, images: usize) -> SglangRequest {
@@ -449,164 +411,117 @@ mod tests {
 
     #[test]
     fn workers_queue_requests_without_double_counting() {
-        let mut pool = FrontendRuntime::new(config(
-            vec![stage(
-                FrontendResource::Processor,
-                FrontendUnit::Request,
-                10.0,
-            )],
-            2,
-        ));
+        let mut pools = FrontendRuntime::new(config(vec![pool(2, 10.0)]));
         for id in 1..=3 {
-            pool.submit(request(id, 1), 0.0);
+            pools.submit(request(id, 1), 0.0);
         }
-        assert_eq!(pool.next_deadline_ms(), Some(10.0));
-        assert_eq!(ready_ids(&pool.advance(10.0)), [(1, 10.0), (2, 10.0)]);
-        assert_eq!(pool.next_deadline_ms(), Some(20.0));
-        assert_eq!(ready_ids(&pool.advance(20.0)), [(3, 20.0)]);
-        assert!(pool.is_empty());
+        assert_eq!(pools.next_deadline_ms(), Some(10.0));
+        assert_eq!(ready_ids(&pools.advance(10.0)), [(1, 10.0), (2, 10.0)]);
+        assert_eq!(pools.next_deadline_ms(), Some(20.0));
+        assert_eq!(ready_ids(&pools.advance(20.0)), [(3, 20.0)]);
+        assert!(pools.is_empty());
     }
 
     #[test]
     fn sharing_reprices_remaining_work_on_arrival_and_cancellation() {
-        let mut pool = FrontendRuntime::new(FrontendConfig {
-            stages: vec![FrontendStage {
-                concurrency_scale: vec![1.0, 2.0],
-                ..stage(FrontendResource::Processor, FrontendUnit::Request, 10.0)
-            }],
-            ..config(Vec::new(), 2)
-        });
-        pool.submit(request(1, 1), 0.0);
-        assert!(pool.advance(5.0).is_empty());
+        let mut pools = FrontendRuntime::new(config(vec![FrontendStage {
+            concurrency_scale: vec![1.0, 2.0],
+            ..pool(2, 10.0)
+        }]));
+        pools.submit(request(1, 1), 0.0);
+        assert!(pools.advance(5.0).is_empty());
         // Half done alone; the second job doubles both service times.
-        pool.submit(request(2, 1), 5.0);
-        assert_eq!(pool.next_deadline_ms(), Some(15.0));
-        assert!(pool.advance(10.0).is_empty());
-        assert!(pool.cancel(Uuid::from_u128(2), 10.0).is_some());
-        assert_eq!(pool.next_deadline_ms(), Some(12.5));
-        assert_eq!(ready_ids(&pool.advance(12.5)), [(1, 12.5)]);
+        pools.submit(request(2, 1), 5.0);
+        assert_eq!(pools.next_deadline_ms(), Some(15.0));
+        assert!(pools.advance(10.0).is_empty());
+        assert!(pools.cancel(Uuid::from_u128(2), 10.0).is_some());
+        assert_eq!(pools.next_deadline_ms(), Some(12.5));
+        assert_eq!(ready_ids(&pools.advance(12.5)), [(1, 12.5)]);
     }
 
     #[test]
-    fn image_fan_out_joins_before_the_request_stage() {
-        let mut pool = FrontendRuntime::new(FrontendConfig {
-            stages: vec![
-                stage(FrontendResource::IoDecode, FrontendUnit::Image, 4.0),
-                stage(FrontendResource::Processor, FrontendUnit::Request, 10.0),
-            ],
-            io_workers: 2,
-            processor_workers: 1,
-            mm_workers: 1,
-        });
-        pool.submit(request(1, 3), 0.0);
-        pool.submit(request(2, 1), 0.0);
-        // Two decoders: images 0/1 finish at 4, image 2 and request 2's image at 8.
-        assert!(pool.advance(8.0).is_empty());
-        assert_eq!(ready_ids(&pool.advance(18.0)), [(1, 18.0)]);
-        assert_eq!(ready_ids(&pool.advance(28.0)), [(2, 28.0)]);
-        assert!(pool.is_empty());
+    fn pool_stages_own_their_workers_while_loop_stages_share_the_thread() {
+        // Two single-worker pools run different requests at once; two loop
+        // stages cannot.
+        let mut pools = FrontendRuntime::new(config(vec![pool(1, 4.0), pool(1, 10.0)]));
+        pools.submit(request(1, 1), 0.0);
+        pools.submit(request(2, 1), 0.0);
+        // 1: 0..4 then 4..14; 2: 4..8 then queues behind 1 on the second pool, 14..24.
+        assert_eq!(ready_ids(&pools.advance(30.0)), [(1, 14.0), (2, 24.0)]);
+
+        let mut loops = FrontendRuntime::new(config(vec![tm_loop(4.0), tm_loop(10.0)]));
+        loops.submit(request(1, 1), 0.0);
+        loops.submit(request(2, 1), 0.0);
+        // The loop serves one job at a time and dispatches in arrival order: 1 runs
+        // 0..4, then 2's queued first job 4..8, then the continuations 8..18 and 18..28.
+        assert_eq!(ready_ids(&loops.advance(30.0)), [(1, 18.0), (2, 28.0)]);
     }
 
     #[test]
-    fn a_synchronous_loop_stage_blocks_dispatch_but_not_submitted_executor_work() {
-        let mut pool = FrontendRuntime::new(FrontendConfig {
-            stages: vec![
-                stage(FrontendResource::IoDecode, FrontendUnit::Image, 2.0),
-                stage(FrontendResource::Processor, FrontendUnit::Request, 4.0),
-                stage(FrontendResource::TmLoop, FrontendUnit::Request, 10.0),
-            ],
-            io_workers: 2,
-            processor_workers: 1,
-            mm_workers: 1,
-        });
-        let submit = |pool: &mut FrontendRuntime, id, at| {
-            assert!(pool.advance(at).is_empty());
-            pool.submit(request(id, 1), at);
+    fn a_synchronous_loop_stage_blocks_dispatch_but_not_submitted_pool_work() {
+        let mut pools =
+            FrontendRuntime::new(config(vec![pool(2, 2.0), pool(1, 4.0), tm_loop(10.0)]));
+        let submit = |pools: &mut FrontendRuntime, id, at| {
+            assert!(pools.advance(at).is_empty());
+            pools.submit(request(id, 1), at);
         };
-        submit(&mut pool, 1, 0.0);
-        submit(&mut pool, 2, 1.0);
-        submit(&mut pool, 3, 4.0);
-        // 1: decode 0..2, processor 2..6, loop 6..16.
-        // 2: decode 1..3, processor 6..10 (already queued on the executor).
-        // 3: arrives at 4 while the loop is free (dispatch immediate), decode 4..6,
-        //    processor continuation waits for the loop until 16, then runs 16..20.
+        submit(&mut pools, 1, 0.0);
+        submit(&mut pools, 2, 1.0);
+        submit(&mut pools, 3, 4.0);
+        // 1: first pool 0..2, second pool 2..6, loop 6..16.
+        // 2: first pool 1..3, second pool 6..10 (already queued on that pool).
+        // 3: arrives at 4 while the loop is free (dispatch immediate), first pool 4..6,
+        //    its continuation waits for the loop until 16, then the second pool 16..20.
         // Loop: 2's continuation at 10 waits for 1 (16..26); 3's at 20 (26..36).
-        let ready = pool.advance(40.0);
+        let ready = pools.advance(40.0);
         assert_eq!(ready_ids(&ready), [(1, 16.0), (2, 26.0), (3, 36.0)]);
-        assert!(pool.is_empty());
-        assert_eq!(pool.next_deadline_ms(), None);
+        assert!(pools.is_empty());
+        assert_eq!(pools.next_deadline_ms(), None);
     }
 
     #[test]
     fn arrivals_settle_past_completions_before_queueing() {
-        let mut pool = FrontendRuntime::new(config(
-            vec![stage(
-                FrontendResource::MmWorker,
-                FrontendUnit::Request,
-                10.0,
-            )],
-            1,
-        ));
-        pool.submit(request(1, 1), 0.0);
-        pool.submit(request(2, 1), 5.0);
+        let mut pools = FrontendRuntime::new(config(vec![pool(1, 10.0)]));
+        pools.submit(request(1, 1), 0.0);
+        pools.submit(request(2, 1), 5.0);
         // 1 finished at 10 and 2 ran 10..20 before this arrival; the worker is free.
-        pool.submit(request(3, 1), 30.0);
-        assert_eq!(pool.next_deadline_ms(), Some(10.0));
-        assert!(pool.holds_request(Uuid::from_u128(1)));
+        pools.submit(request(3, 1), 30.0);
+        assert_eq!(pools.next_deadline_ms(), Some(10.0));
+        assert!(pools.holds_request(Uuid::from_u128(1)));
         assert_eq!(
-            ready_ids(&pool.advance(100.0)),
+            ready_ids(&pools.advance(100.0)),
             [(1, 10.0), (2, 20.0), (3, 40.0)]
         );
-        assert!(pool.is_empty());
+        assert!(pools.is_empty());
     }
 
     #[test]
-    fn a_request_without_images_leaves_an_image_stage_at_once() {
-        let mut pool = FrontendRuntime::new(config(
-            vec![stage(FrontendResource::IoDecode, FrontendUnit::Image, 4.0)],
-            2,
-        ));
-        pool.submit(request(1, 0), 7.0);
-        assert!(!pool.is_empty());
-        assert_eq!(pool.next_deadline_ms(), Some(7.0));
-        assert_eq!(ready_ids(&pool.advance(7.0)), [(1, 7.0)]);
-        assert!(pool.is_empty());
-    }
-
-    #[test]
-    fn empty_image_stages_chain_into_the_request_stage() {
-        let mut pool = FrontendRuntime::new(config(
-            vec![
-                stage(FrontendResource::IoDecode, FrontendUnit::Image, 4.0),
-                stage(FrontendResource::Processor, FrontendUnit::Image, 4.0),
-                stage(FrontendResource::MmWorker, FrontendUnit::Request, 5.0),
-            ],
-            1,
-        ));
-        pool.submit(request(1, 0), 3.0);
-        assert_eq!(pool.next_deadline_ms(), Some(8.0));
-        assert_eq!(ready_ids(&pool.advance(8.0)), [(1, 8.0)]);
-        assert!(pool.is_empty());
+    fn a_request_without_images_still_pays_the_request_cost() {
+        let mut pools = FrontendRuntime::new(config(vec![FrontendStage {
+            cost: CostFn {
+                const_ms: 3.0,
+                per_image_ms: 100.0,
+                ..CostFn::default()
+            },
+            ..pool(2, 0.0)
+        }]));
+        pools.submit(request(1, 0), 7.0);
+        assert_eq!(pools.next_deadline_ms(), Some(10.0));
+        assert_eq!(ready_ids(&pools.advance(10.0)), [(1, 10.0)]);
+        assert!(pools.is_empty());
     }
 
     #[test]
     fn cancelling_another_request_keeps_settled_exits() {
-        let mut pool = FrontendRuntime::new(config(
-            vec![stage(
-                FrontendResource::MmWorker,
-                FrontendUnit::Request,
-                10.0,
-            )],
-            1,
-        ));
-        pool.submit(request(1, 1), 0.0);
-        assert!(pool.cancel(Uuid::from_u128(2), 50.0).is_none());
-        assert!(pool.holds_request(Uuid::from_u128(1)));
-        assert_eq!(ready_ids(&pool.advance(60.0)), [(1, 10.0)]);
+        let mut pools = FrontendRuntime::new(config(vec![pool(1, 10.0)]));
+        pools.submit(request(1, 1), 0.0);
+        assert!(pools.cancel(Uuid::from_u128(2), 50.0).is_none());
+        assert!(pools.holds_request(Uuid::from_u128(1)));
+        assert_eq!(ready_ids(&pools.advance(60.0)), [(1, 10.0)]);
         // A parked request can still be withdrawn before the scheduler collects it.
-        pool.submit(request(3, 1), 60.0);
-        assert!(pool.cancel(Uuid::from_u128(3), 80.0).is_some());
-        assert!(pool.advance(90.0).is_empty());
-        assert!(pool.is_empty());
+        pools.submit(request(3, 1), 60.0);
+        assert!(pools.cancel(Uuid::from_u128(3), 80.0).is_some());
+        assert!(pools.advance(90.0).is_empty());
+        assert!(pools.is_empty());
     }
 }

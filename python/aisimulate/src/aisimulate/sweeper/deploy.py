@@ -187,34 +187,26 @@ def _engine_args_payload(
         if sample.get("kv_transfer_timing_mode") is not None:
             payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
     if role == "agg" and backend == "sglang":
-        payload.update(_native_vl_engine_args(sample, tp=tp))
+        payload.update(_native_vl_engine_args(sample))
     return payload
 
 
-def _native_vl_engine_args(sample: dict[str, Any], *, tp: int) -> dict[str, Any]:
+def _native_vl_engine_args(sample: dict[str, Any]) -> dict[str, Any]:
     """Mirror the compiler's SGLang host-aware lowering for a sweeper candidate."""
-    from .provider import InfeasibleCandidate
-
-    host = sample.get("agg_host")
+    host_loop = bool(sample.get("agg_host_loop"))
     vision = sample.get("agg_vision")
     max_prefill = sample.get("agg_max_prefill_tokens")
     result: dict[str, Any] = {}
     sglang: dict[str, Any] = {}
-    if host is not None or vision is not None or max_prefill is not None:
+    if host_loop or vision is not None or max_prefill is not None:
         sglang["chunked_prefill_size"] = int(sample["agg_max_num_batched_tokens"])
     if max_prefill is not None:
         sglang["max_prefill_tokens"] = int(max_prefill)
     if vision is not None:
         sglang["vlm_cache_bytes"] = int(vision.get("cache_mib", 100)) << 20
         result["vision"] = True
-    if host is not None:
-        host = deepcopy(host)
-        tp_sync = sample.get("agg_tp_sync_ms")
-        if tp > 1 and tp_sync is not None:
-            if str(tp) not in tp_sync:
-                raise InfeasibleCandidate(f"host profile has no tp_sync_ms entry for tensor parallel {tp}")
-            host["tp_sync_ms"] = float(tp_sync[str(tp)])
-        sglang["host"] = host
+    if host_loop:
+        sglang["host_loop"] = True
     if sglang:
         result["sglang"] = sglang
     if sample.get("agg_frontend") is not None:

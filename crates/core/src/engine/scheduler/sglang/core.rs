@@ -29,7 +29,7 @@ use crate::engine::common::utils::prefill_handoff_transfer_timing;
 use crate::engine::kv_manager::SglangKvManager;
 use crate::engine::kv_manager::sglang_backend::SglangDestinationReservation;
 use crate::engine::trace::TraceCollector;
-use crate::engine::{HandoffId, ImageSpec, TtftMilestone, modeled_duration_ms};
+use crate::engine::{HandoffId, TtftMilestone, modeled_duration_ms};
 
 use super::config::SglangConfig;
 use super::decode::{
@@ -37,7 +37,7 @@ use super::decode::{
     simulate_decode_step_with_sampler, simulate_prefill_first_tokens,
 };
 use super::frontend::FrontendRuntime;
-use super::host_loop::{ForwardOutputs, HostLoop, LaunchKind, VisionWork};
+use super::host_loop::{ForwardOutputs, HostLoop, LaunchKind};
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
@@ -148,7 +148,7 @@ impl SglangCore {
         kv_event_publishers: KvEventPublishers,
     ) -> Self {
         let config = SglangConfig::from_args(&args);
-        let host = config.host.map(HostLoop::new);
+        let host = config.host_loop.then(HostLoop::new);
         let frontend = config.frontend.clone().map(FrontendRuntime::new);
         let vision_cache = VisionCache::new(config.vlm_cache_bytes);
         let total_tokens = args.num_gpu_blocks * args.block_size;
@@ -243,7 +243,7 @@ impl SglangCore {
                     | SchedulerCommand::ReserveDestination { .. }
             )
         {
-            anyhow::bail!("sglang.host is supported only for aggregated ranks");
+            anyhow::bail!("sglang.host_loop is supported only for aggregated ranks");
         }
         match command {
             SchedulerCommand::Submit(mut request) => {
@@ -886,10 +886,8 @@ impl SglangCore {
             .map(|request| request.uuid)
             .collect::<Vec<_>>();
         self.deliver_frontend(now_ms);
-        let mut received_ms = 0.0;
         if let Some(host) = &mut self.host {
             for request in host.take_received() {
-                received_ms += host.receive_cost_ms(&request);
                 self.lifecycle_events
                     .push(SchedulerLifecycleEvent::TtftMilestone {
                         request_id: request.uuid,
@@ -1039,32 +1037,15 @@ impl SglangCore {
 
         let launch = self.host.as_ref().and_then(|_| {
             if batch_size > 0 {
-                Some(LaunchKind::Extend {
-                    requests: batch_size,
-                    tokens: admit
-                        .prefill_fpm
-                        .iter()
-                        .map(|item| item.tokens_computed)
-                        .sum(),
-                    vision: VisionWork {
-                        images: vision_misses.len(),
-                        visual_tokens: vision_misses.iter().map(ImageSpec::visual_tokens).sum(),
-                        feature_bytes: vision_misses.iter().map(|image| image.feature_bytes).sum(),
-                    },
-                })
+                Some(LaunchKind::Extend)
             } else if self.running.is_empty() {
                 None
             } else {
-                // Ghost members are still charged: `filter_batch` has not seen them finish.
-                Some(LaunchKind::Decode {
-                    requests: self.running.len(),
-                })
+                // Ghost members still form a batch: `filter_batch` has not seen them finish.
+                Some(LaunchKind::Decode)
             }
         });
-        let selected_ms = match &self.host {
-            Some(host) => host.selected_ms(now_ms, received_ms, launch),
-            None => now_ms,
-        };
+        let selected_ms = now_ms;
 
         admissions.append(&mut admit.admissions);
         for admission in &admissions {

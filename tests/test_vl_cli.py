@@ -5,7 +5,6 @@
 
 import dataclasses
 import json
-import subprocess
 from copy import deepcopy
 
 import pytest
@@ -50,19 +49,12 @@ def _prediction():
                     "parallelism": {"replicas": 1, "tensor": 1},
                     "scheduler": {"max_batched_tokens": 8192, "max_sequences": 8},
                     "kv_cache": {"capacity": {"type": "fixed", "blocks": 4096}},
-                    "host": {
-                        "receive": {"const_ms": 0.5},
-                        "select": {"const_ms": 0.2},
-                        "launch_extend": {"const_ms": 5.0},
-                        "launch_decode": {"const_ms": 2.0},
-                        "result": {"const_ms": 0.3},
-                    },
+                    "host_loop": True,
                     "frontend": {
-                        "processor_workers": 1,
                         "stages": [
                             {
-                                "resource": "processor",
-                                "unit": "request",
+                                "resource": "pool",
+                                "workers": 1,
                                 "cost": {"const_ms": 3.0},
                             }
                         ],
@@ -79,8 +71,8 @@ def test_native_vl_lowering_targets_the_host_aware_sglang_rank():
     assert args["vision"] is True
     assert args["sglang"]["chunked_prefill_size"] == 8192
     assert args["sglang"]["vlm_cache_bytes"] == 100 << 20
-    assert args["sglang"]["host"]["launch_extend"]["const_ms"] == 5.0
-    assert args["frontend"]["processor_workers"] == 1
+    assert args["sglang"]["host_loop"] is True
+    assert args["frontend"]["stages"][0]["workers"] == 1
     assert spec.workload["images"]["identity"] == {"pool": 2}
     assert (
         spec.workload["isl"] == 128
@@ -107,21 +99,26 @@ def test_native_vl_predict_reports_ttft_milestones(tmp_path, capsys):
     assert report["completed_requests"] == 4
     # 448x448 -> 196 visual tokens per image on top of the 128 text tokens.
     assert report["total_input_tokens"] == 4 * (128 + 196)
-    for key in (
-        "mean_frontend_ms",
-        "mean_scheduler_inbox_wait_ms",
-        "mean_receive_to_admit_ms",
-        "mean_prefill_elapsed_ms",
-    ):
+    for key in ("mean_frontend_ms", "mean_prefill_elapsed_ms"):
         assert stdout[key] == report[key] > 0.0
-    # Two arrivals share one processor worker: 3 ms and 6 ms in the frontend.
-    assert report["mean_frontend_ms"] == pytest.approx(4.5)
+    # The scheduler thread is free: a received request is selected in the same instant.
+    assert report["mean_receive_to_admit_ms"] == 0.0
     assert (
         report["mean_ttft_ms"]
         >= report["mean_frontend_ms"] + report["mean_prefill_elapsed_ms"]
     )
-    for line in (output / "requests.jsonl").read_text().splitlines():
-        record = json.loads(line)
+    records = [
+        json.loads(line)
+        for line in (output / "requests.jsonl").read_text().splitlines()
+    ]
+    # The two initial arrivals share one pool worker: 3 ms and 6 ms in the frontend.
+    delays = sorted(
+        record["frontend_ready_ms"] - record["arrival_time_ms"]
+        for record in records
+        if record["arrival_time_ms"] == 0.0
+    )
+    assert delays == pytest.approx([3.0, 6.0])
+    for record in records:
         assert (
             record["arrival_time_ms"]
             <= record["frontend_ready_ms"]
@@ -140,7 +137,7 @@ def test_native_vl_schema_rejects_unsupported(kind):
     raw = _prediction()
     worker = raw["engine"]["workers"]["aggregated"]
     if kind == "no_host":
-        del worker["host"]
+        del worker["host_loop"]
         del worker["frontend"]
     elif kind == "encoder_and_host":
         raw["engine"]["workers"]["encoder"] = {
@@ -149,7 +146,7 @@ def test_native_vl_schema_rejects_unsupported(kind):
             "replicas": 1,
         }
     elif kind == "frontend_without_host":
-        del worker["host"]
+        worker["host_loop"] = False
     elif kind == "vllm":
         raw["engine"]["backend"] = "vllm"
         del worker["frontend"]
@@ -159,38 +156,32 @@ def test_native_vl_schema_rejects_unsupported(kind):
         CorePredictionConfig.model_validate(deepcopy(raw))
 
 
-def _host_profile(**overrides):
+def _host_table(**row_overrides):
     worker = _prediction()["engine"]["workers"]["aggregated"]
-    profile = {
-        "schema_version": 2,
+    row = {
         "identity": {
+            "cpu": "example-cpu",
             "sglang_revision": "0bcd822377da7b5718e674eaf9c870d349424dd1",
             "model": "Qwen/Qwen3-VL-8B-Instruct",
             "frontend": "python",
-            "images": {"height": 448, "width": 448, "count": 1, "encoding": "png"},
-            "text_tokens": 128,
-            "processor": "transformers.Qwen3VLProcessor",
-            "cpu": "example-cpu",
-            "threads": 16,
         },
-        "host": worker["host"],
-        "frontend": worker["frontend"],
-        "tp_sync_ms": {"2": 0.4},
+        "shape": {"height": 448, "width": 448, "count": 1, "encoding": "png", "text_tokens": 128},
+        "stages": worker["frontend"]["stages"],
         "provenance": {"sampled_on": "example-host"},
     }
-    profile.update(overrides)
-    return profile
+    row.update(row_overrides)
+    return {"schema_version": 3, "rows": [row]}
 
 
-def test_host_profile_lowers_to_the_explicit_tables(tmp_path):
-    path = tmp_path / "profile.json"
-    path.write_text(json.dumps(_host_profile()))
+def test_host_profile_lowers_to_the_explicit_stages(tmp_path):
+    path = tmp_path / "table.json"
+    path.write_text(json.dumps(_host_table()))
     explicit = prediction_to_replay_spec(
         CorePredictionConfig.model_validate(_prediction())
     )
     raw = _prediction()
     worker = raw["engine"]["workers"]["aggregated"]
-    del worker["host"], worker["frontend"]
+    del worker["host_loop"], worker["frontend"]
     worker["host_profile"] = {"path": str(path), "frontend": "python"}
     profiled = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
     assert (
@@ -200,86 +191,34 @@ def test_host_profile_lowers_to_the_explicit_tables(tmp_path):
     vl = profiled.backend_deployment.performance_model_metadata["aggregated"]["vl"]
     assert vl["frontend"] == "python" and len(vl["host_profile_digest"]) == 16
 
-    worker["parallelism"]["tensor"] = 2
-    tp2 = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-    assert tp2.backend_deployment.agg_engine_args["sglang"]["host"]["tp_sync_ms"] == 0.4
 
-
-@pytest.mark.parametrize("kind", ["frontend", "encoding", "tp_sync", "missing"])
-def test_host_profile_mismatches_fail_closed(tmp_path, kind):
+@pytest.mark.parametrize("kind", ["frontend", "encoding", "text_tokens", "revision"])
+def test_host_profile_misses_fail_closed_with_the_collect_command(tmp_path, kind):
     raw = _prediction()
     worker = raw["engine"]["workers"]["aggregated"]
-    del worker["host"], worker["frontend"]
-    profile = _host_profile()
+    del worker["host_loop"], worker["frontend"]
+    table = _host_table()
+    frontend = "python"
     if kind == "frontend":
-        worker["host_profile"] = {"path": "", "frontend": "rust"}
-        expected = "frontend: profile='python', prediction='rust'"
+        frontend = "rust"
     elif kind == "encoding":
         raw["traffic"]["source"]["images"]["encoding"] = "jpeg"
-        expected = "images.encoding: profile='png', prediction='jpeg'"
-    elif kind == "tp_sync":
-        worker["parallelism"]["tensor"] = 4
-        expected = "no tp_sync_ms entry for tensor parallel 4"
+    elif kind == "text_tokens":
+        raw["traffic"]["source"]["input_tokens"] = 256
     else:
-        profile["missing"] = ["launch_extend"]
-        expected = "lacks measured costs for: launch_extend"
-    path = tmp_path / "profile.json"
-    path.write_text(json.dumps(profile))
-    worker["host_profile"] = {
-        "path": str(path),
-        "frontend": worker.get("host_profile", {}).get("frontend", "python"),
-    }
-    with pytest.raises(ValueError, match=expected):
+        table["rows"][0]["identity"]["sglang_revision"] = "0" * 40
+    path = tmp_path / "table.json"
+    path.write_text(json.dumps(table))
+    worker["host_profile"] = {"path": str(path), "frontend": frontend}
+    with pytest.raises(ValueError) as error:
         prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-
-
-def test_missing_profile_is_calibrated_in_an_unsupervised_subprocess(
-    tmp_path, monkeypatch
-):
-    profile_path = tmp_path / "fresh-profile.json"
-    raw = _prediction()
-    worker = raw["engine"]["workers"]["aggregated"]
-    del worker["host"], worker["frontend"]
-    worker["host_profile"] = {
-        "path": str(profile_path),
-        "frontend": "python",
-        "on_missing": "calibrate",
-    }
-    monkeypatch.setenv("OMP_NUM_THREADS", "1")
-    monkeypatch.setenv("_AISIMULATE_SUPERVISED_BUDGET", "{}")
-    monkeypatch.setenv("_AISIMULATE_HOST_CPUS", "[0]")
-    seen = {}
-
-    def fake_run(command, **kwargs):
-        seen["command"] = command
-        seen["env"] = kwargs["env"]
-        seen["preexec_fn"] = kwargs["preexec_fn"]
-        profile_path.write_text(json.dumps(_host_profile()))
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
-    assert seen["command"][1:5] == [
-        "-m",
-        "aisimulate.vl.calibrate",
-        "--frontend",
-        "python",
-    ]
-    assert "--images" in seen["command"] and "448x448x1" in seen["command"]
-    assert seen["command"][seen["command"].index("--text-tokens") + 1] == "128"
-    assert (
-        "OMP_NUM_THREADS" not in seen["env"]
-        and "_AISIMULATE_SUPERVISED_BUDGET" not in seen["env"]
-        and "_AISIMULATE_HOST_CPUS" not in seen["env"]
-    )
-    # The sampler runs on the host's CPU mask, not the supervised worker's slice.
-    assert seen["preexec_fn"] is not None
-    assert (
-        spec.backend_deployment.agg_engine_args["sglang"]["host"]["launch_extend"][
-            "const_ms"
-        ]
-        == 5.0
-    )
+    message = str(error.value)
+    assert "has no row for" in message
+    # The failure names the exact measurement that would add the row.
+    assert "-m aisimulate.vl.collect" in message and f"--frontend {frontend}" in message
+    expected_shape = "448x448x1 --encoding " + ("jpeg" if kind == "encoding" else "png")
+    assert f"--images {expected_shape}" in message
+    assert f"--text-tokens {256 if kind == 'text_tokens' else 128}" in message
 
 
 def _recommendation():
@@ -331,11 +270,13 @@ def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
     result = SweepResult.from_json((root / "recommendation.json").read_text())
     candidate = result.selected_candidates[0]
     assert candidate.config["prediction_config_supported"] is True
-    assert candidate.config["agg_host"]["launch_extend"]["const_ms"] == 5.0
+    assert candidate.config["agg_host_loop"] is True
+    assert candidate.config["agg_frontend"]["stages"][0]["cost"]["const_ms"] == 3.0
 
     saved = root / "recommendations" / "0001.yaml"
     concrete = CorePredictionConfig.from_yaml(saved)
-    assert concrete.engine.workers.aggregated.host.launch_extend.const_ms == 5.0
+    assert concrete.engine.workers.aggregated.host_loop is True
+    assert concrete.engine.workers.aggregated.frontend.stages[0].cost.const_ms == 3.0
     assert concrete.engine.workers.aggregated.vision.cache_mib == 100
     output = tmp_path / "predict"
     assert (
@@ -359,32 +300,29 @@ def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
     spec = prediction_to_replay_spec(concrete)
     raw = concrete.model_dump(mode="python", exclude_none=True)
     validate_vl_prediction_mapping(raw, spec)
-    raw["engine"]["workers"]["aggregated"]["host"]["launch_extend"]["const_ms"] = 1.0
+    raw["engine"]["workers"]["aggregated"]["frontend"]["stages"][0]["cost"]["const_ms"] = 1.0
     with pytest.raises(ValueError, match="prediction-ready"):
         validate_vl_prediction_mapping(raw, spec)
 
 
-def test_profile_backed_recommendation_pins_the_resolved_tables(tmp_path, capsys):
-    path = tmp_path / "profile.json"
-    path.write_text(json.dumps(_host_profile()))
+def test_profile_backed_recommendation_pins_the_resolved_stages(tmp_path, capsys):
+    path = tmp_path / "table.json"
+    path.write_text(json.dumps(_host_table()))
     raw = _recommendation()
     worker = raw["engine"]["workers"]["aggregated"]
-    explicit_host, explicit_frontend = worker.pop("host"), worker.pop("frontend")
+    del worker["host_loop"]
+    explicit_frontend = worker.pop("frontend")
     worker["host_profile"] = {"path": str(path), "frontend": "python"}
     worker["parallelism"]["tensor"] = 2
     lowered = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw))
     space = lowered.search_space
-    # Candidates score the tables resolved from the profile, identified by content;
+    # Candidates score the stages resolved from the table, identified by content;
     # the mutable file path is not part of what a candidate carries or exports.
+    assert space.agg_host_loop is True
     assert (
-        space.agg_host["launch_extend"]["const_ms"]
-        == explicit_host["launch_extend"]["const_ms"]
+        space.agg_frontend["stages"][0]["cost"]["const_ms"]
+        == explicit_frontend["stages"][0]["cost"]["const_ms"]
     )
-    assert (
-        space.agg_frontend["processor_workers"]
-        == explicit_frontend["processor_workers"]
-    )
-    assert space.agg_tp_sync_ms == {"2": 0.4}
     assert len(space.agg_host_profile_digest) == 16
     assert not hasattr(space, "agg_host_profile")
 
@@ -408,12 +346,11 @@ def test_profile_backed_recommendation_pins_the_resolved_tables(tmp_path, capsys
     capsys.readouterr()
     result = SweepResult.from_json((root / "recommendation.json").read_text())
     assert result.selected_candidates
-    # A tensor-parallel candidate saves the table it was scored with, sync entry applied.
     for candidate in result.selected_candidates:
         assert candidate.config["prediction_config_supported"] is True
         assert candidate.config["tp"] == 2
     saved = CorePredictionConfig.from_yaml(root / "recommendations" / "0001.yaml")
-    assert saved.engine.workers.aggregated.host.tp_sync_ms == 0.4
+    assert saved.engine.workers.aggregated.frontend.stages[0].cost.const_ms == 3.0
     assert saved.engine.workers.aggregated.host_profile is None
 
 
@@ -422,7 +359,7 @@ def test_text_only_host_tables_reach_predict_and_recommend_alike(tmp_path, capsy
     del raw["traffic"]["source"]["images"]
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
     args = spec.backend_deployment.agg_engine_args
-    assert args["sglang"]["host"]["launch_extend"]["const_ms"] == 5.0
+    assert args["sglang"]["host_loop"] is True
     assert "vision" not in args and "images" not in spec.workload
 
     search = _recommendation()
@@ -430,7 +367,7 @@ def test_text_only_host_tables_reach_predict_and_recommend_alike(tmp_path, capsy
     space = recommendation_to_sweeper(
         CoreRecommendationConfig.model_validate(search)
     ).search_space
-    assert space.agg_host == args["sglang"]["host"]
+    assert space.agg_host_loop is True
     assert space.agg_frontend == args["frontend"]
     assert space.agg_vision is None
 
@@ -460,7 +397,7 @@ def test_text_only_host_tables_reach_predict_and_recommend_alike(tmp_path, capsy
         for c in result.selected_candidates
     )
     saved = CorePredictionConfig.from_yaml(root / "recommendations" / "0001.yaml")
-    assert saved.engine.workers.aggregated.host.launch_extend.const_ms == 5.0
+    assert saved.engine.workers.aggregated.host_loop is True
     assert saved.traffic.source.images is None
 
 

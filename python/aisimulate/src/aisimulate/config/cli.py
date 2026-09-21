@@ -116,13 +116,13 @@ def _validate_epd(traffic, engine) -> None:
     native_vl = native_vl_worker(engine)
     if encoder is not None and native_vl is not None:
         raise ValueError(
-            "engine.workers.encoder (analytical EPD) and workers.aggregated.host (native VL replay) are exclusive"
+            "engine.workers.encoder (analytical EPD) and workers.aggregated.host_loop (native VL replay) are exclusive"
         )
     if encoder is None and images is not None:
         if native_vl is None:
             raise ValueError(
                 "image workloads require engine.workers.encoder (analytical EPD) or an aggregated SGLang worker "
-                "with host configured (native VL replay)"
+                "with host_loop enabled (native VL replay)"
             )
         if native_vl.timing.type != "default":
             raise ValueError("native VL replay requires default timing")

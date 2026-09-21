@@ -133,7 +133,7 @@ pub enum SglangSchedulePolicy {
 ///
 /// [`Self::eval`] charges `const_ms` once plus one term per unit of the work it
 /// is applied to. The all-zero function models a free operation. Coefficients
-/// come from a measured host profile lowered by the Python configuration layer.
+/// come from measured frontend service times lowered by the Python configuration layer.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct CostFn {
@@ -171,113 +171,28 @@ impl CostFn {
     }
 }
 
-/// Scheduler-thread costs that turn one SGLang pass into one scheduler loop
-/// iteration with deferred result observation.
-///
-/// Absent, the SGLang rank keeps its zero-host model: a pass is one forward and
-/// its outputs are visible when the forward ends. See
-/// `crates/core/src/engine/scheduler/sglang/host_loop.rs` for the iteration
-/// timeline these costs feed.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct HostLoopConfig {
-    /// Per received request: feature materialization, hashing, and placeholder padding.
-    pub receive: CostFn,
-    /// Per iteration that forms a batch: batch selection and forward-batch preparation.
-    pub select: CostFn,
-    /// Per EXTEND batch, before its first kernel can run: the input preparation
-    /// the forward depends on (input tensors and positions moved to the device).
-    /// The GPU waits for it; kernel enqueueing does not overlap it.
-    pub prepare_extend: CostFn,
-    /// Per EXTEND batch: eager language-model kernel launches, overlapping the forward.
-    pub launch_extend: CostFn,
-    /// Per EXTEND batch that encodes cache-miss images, before the encoder can
-    /// run: feature host-to-device copies and embedding placement, applied to one
-    /// encoder call over the miss images, their visual tokens, and their feature bytes.
-    pub prepare_vision: CostFn,
-    /// Per EXTEND batch that encodes cache-miss images: encoder kernel launches,
-    /// overlapping the forward, over the same miss images.
-    pub launch_vision: CostFn,
-    /// Per DECODE batch: CUDA-graph replay launch.
-    pub launch_decode: CostFn,
-    /// Per observed batch: result processing once the previous forward completed.
-    pub result: CostFn,
-    /// Fixed per-iteration cost of TP-group collectives on the scheduler thread; zero for TP=1.
-    pub tp_sync_ms: f64,
-    /// Whether a DECODE launch blocks on the previous forward. SGLang's decode
-    /// position update copies a device tensor to the host before the decode
-    /// kernels launch, which synchronizes the stream.
-    pub decode_launch_syncs_previous_gpu: bool,
-}
-
-impl Default for HostLoopConfig {
-    fn default() -> Self {
-        Self {
-            receive: CostFn::default(),
-            select: CostFn::default(),
-            prepare_extend: CostFn::default(),
-            launch_extend: CostFn::default(),
-            prepare_vision: CostFn::default(),
-            launch_vision: CostFn::default(),
-            launch_decode: CostFn::default(),
-            result: CostFn::default(),
-            tp_sync_ms: 0.0,
-            decode_launch_syncs_previous_gpu: true,
-        }
-    }
-}
-
-impl HostLoopConfig {
-    fn validate(&self) -> Result<()> {
-        self.receive.validate("sglang.host.receive")?;
-        self.select.validate("sglang.host.select")?;
-        self.prepare_extend.validate("sglang.host.prepare_extend")?;
-        self.launch_extend.validate("sglang.host.launch_extend")?;
-        self.prepare_vision.validate("sglang.host.prepare_vision")?;
-        self.launch_vision.validate("sglang.host.launch_vision")?;
-        self.launch_decode.validate("sglang.host.launch_decode")?;
-        self.result.validate("sglang.host.result")?;
-        ensure!(
-            self.tp_sync_ms.is_finite() && self.tp_sync_ms >= 0.0,
-            "sglang.host.tp_sync_ms must be finite and non-negative"
-        );
-        Ok(())
-    }
-}
-
 /// Host resource a frontend stage occupies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FrontendResource {
     /// The single-threaded tokenizer-manager event loop; synchronous jobs on it
-    /// also stall the dispatch of arrivals and stage continuations.
+    /// also stall the dispatch of arrivals and stage continuations. Every loop
+    /// stage shares that one thread.
     TmLoop,
-    /// Image decode thread pool.
-    IoDecode,
-    /// Processor worker pool.
-    Processor,
-    /// Rust frontend multimodal worker pool.
-    MmWorker,
+    /// A worker pool private to the stage, `workers` wide.
+    Pool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FrontendUnit {
-    /// One job per image, joined before the next stage.
-    Image,
-    /// One job per request.
-    Request,
-}
-
-/// One frontend processing stage.
+/// One frontend processing stage: a request-level service on one resource.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrontendStage {
     pub resource: FrontendResource,
-    pub unit: FrontendUnit,
-    /// Service cost of one job at a concurrency scale of one. An image job is
-    /// charged one image, its patches as tokens, and its feature bytes; a
-    /// request job its image count, prompt tokens, and total feature bytes.
+    /// Workers of a `pool` stage; a loop stage always has one.
+    #[serde(default = "one_worker")]
+    pub workers: usize,
+    /// Service cost of one request at a concurrency scale of one, charged its
+    /// image count, prompt tokens, and total feature bytes.
     pub cost: CostFn,
     /// Entry `c - 1` scales the service time while `c` jobs share the resource;
     /// empty keeps the service time independent of sharing.
@@ -285,17 +200,11 @@ pub struct FrontendStage {
     pub concurrency_scale: Vec<f64>,
 }
 
-/// Frontend worker pools that requests traverse before reaching the scheduler.
+/// Frontend stages that requests traverse, in order, before reaching the scheduler.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrontendConfig {
     pub stages: Vec<FrontendStage>,
-    #[serde(default = "one_worker")]
-    pub io_workers: usize,
-    #[serde(default = "one_worker")]
-    pub processor_workers: usize,
-    #[serde(default = "one_worker")]
-    pub mm_workers: usize,
 }
 
 const fn one_worker() -> usize {
@@ -303,13 +212,11 @@ const fn one_worker() -> usize {
 }
 
 impl FrontendConfig {
-    /// Workers serving `resource`; the tokenizer-manager loop is one thread.
-    pub fn capacity(&self, resource: FrontendResource) -> usize {
-        match resource {
+    /// Workers serving stage `index`; the tokenizer-manager loop is one thread.
+    pub fn capacity(&self, index: usize) -> usize {
+        match self.stages[index].resource {
             FrontendResource::TmLoop => 1,
-            FrontendResource::IoDecode => self.io_workers,
-            FrontendResource::Processor => self.processor_workers,
-            FrontendResource::MmWorker => self.mm_workers,
+            FrontendResource::Pool => self.stages[index].workers,
         }
     }
 
@@ -320,11 +227,15 @@ impl FrontendConfig {
         );
         for (index, stage) in self.stages.iter().enumerate() {
             stage.cost.validate(&format!("frontend.stages[{index}]"))?;
-            let capacity = self.capacity(stage.resource);
             ensure!(
-                capacity > 0,
-                "frontend.stages[{index}] runs on a resource with zero workers"
+                stage.workers > 0,
+                "frontend.stages[{index}].workers must be positive"
             );
+            ensure!(
+                stage.resource == FrontendResource::Pool || stage.workers == 1,
+                "frontend.stages[{index}] runs on the tokenizer-manager loop, which has one worker"
+            );
+            let capacity = self.capacity(index);
             ensure!(
                 stage.concurrency_scale.is_empty() || stage.concurrency_scale.len() == capacity,
                 "frontend.stages[{index}].concurrency_scale needs one entry per worker ({capacity})"
@@ -362,9 +273,12 @@ pub struct SglangConfig {
     /// Vision embedding cache capacity in bytes (`SGLANG_VLM_CACHE_SIZE_MB`).
     #[serde(default = "default_vlm_cache_bytes")]
     pub vlm_cache_bytes: u64,
-    /// Scheduler-thread costs; absent keeps the zero-host pass model.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub host: Option<HostLoopConfig>,
+    /// Model one pass as one iteration of SGLang's overlap scheduler loop:
+    /// requests are received at iteration boundaries and a forward's outputs,
+    /// terminals, and prefix-cache commits become visible one iteration later.
+    /// Off, a pass is one forward whose outputs are visible when it ends. See
+    /// `crates/core/src/engine/scheduler/sglang/host_loop.rs`.
+    pub host_loop: bool,
 }
 
 const fn default_vlm_cache_bytes() -> u64 {
@@ -380,7 +294,7 @@ impl Default for SglangConfig {
             clip_max_new_tokens: default_clip_max_new_tokens(),
             schedule_conservativeness: default_schedule_conservativeness(),
             vlm_cache_bytes: default_vlm_cache_bytes(),
-            host: None,
+            host_loop: false,
         }
     }
 }
@@ -399,9 +313,6 @@ impl SglangConfig {
             self.schedule_conservativeness.is_finite() && self.schedule_conservativeness >= 0.0,
             "sglang.schedule_conservativeness must be finite and non-negative"
         );
-        if let Some(host) = &self.host {
-            host.validate()?;
-        }
         Ok(())
     }
 }
@@ -629,7 +540,7 @@ pub struct EngineConfig {
     pub sglang: SglangConfig,
     /// TensorRT-LLM-only scheduler controls.
     pub trtllm: TrtllmConfig,
-    /// SGLang-only frontend worker pools; requires `sglang.host`.
+    /// SGLang-only frontend stages; requires `sglang.host_loop`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frontend: Option<FrontendConfig>,
     /// The rank hosts the model's vision encoder: image batches are timed
@@ -824,13 +735,13 @@ impl EngineConfig {
             "prefill_decode_interval is supported only for backend=sglang"
         );
         ensure!(
-            self.backend == Backend::Sglang || self.sglang.host.is_none(),
-            "sglang.host is supported only for backend=sglang"
+            self.backend == Backend::Sglang || !self.sglang.host_loop,
+            "sglang.host_loop is supported only for backend=sglang"
         );
         if let Some(frontend) = &self.frontend {
             ensure!(
-                self.backend == Backend::Sglang && self.sglang.host.is_some(),
-                "frontend requires backend=sglang with sglang.host configured"
+                self.backend == Backend::Sglang && self.sglang.host_loop,
+                "frontend requires backend=sglang with sglang.host_loop enabled"
             );
             frontend.validate()?;
         }
