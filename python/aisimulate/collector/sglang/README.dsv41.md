@@ -38,6 +38,25 @@ fingerprints and finite-logit checks. These are component timings, not a
 whole-forward overlap or throughput validation. `used_cuda_graph=false` is
 explicit. The graph's separate collective nodes remain active.
 
+The optional `--collect-baselines` sweep observes the loaded expert method.
+Blackwell's native TRTLLM MXFP4/MXFP8 path retains
+`moe_dtype=w4a8_mxfp4_mxfp8`; Hopper's native CUTLASS MXFP4/BF16 path uses
+`moe_dtype=w4a16_mxfp4_cutlass`. Both use the existing perf-table contract and
+record the actual kernel source. The collector rejects the optional Humming
+FP8-activation and SM120 paths rather than labelling them as Hopper W4A16.
+See the pinned framework's
+[`Fp8Config` selector](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/layers/quantization/fp8.py#L421)
+and [CUTLASS method](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/layers/quantization/mxfp4_flashinfer_cutlass_moe.py#L39).
+
+This dispatch support does not qualify a complete model run. The native
+collector still loads the full text backbone with both Engram tables in GPU
+memory; `decoder_bounded` does not reduce resident weights. The pinned
+CUTLASS constructor also requires each local expert intermediate dimension
+to be divisible by 128. For V4.1 TP4, the dimension is 576, which that
+constructor rejects. Keep startup failures as collection evidence. Do not
+borrow the TRTLLM implementation's padding or change the selected backend
+to make a Hopper campaign pass.
+
 ## Data contract
 
 `dsv41_module_perf.parquet` keys component, canonical native geometry excluding

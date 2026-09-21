@@ -210,10 +210,27 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
         or tuple(lm_head.weight.shape) != (local_vocab_size, 5120)
     ):
         raise RuntimeError("native baseline GEMM physical padding differs from model TP graph")
-    if type(experts.quant_method).__name__ != "Mxfp4FlashinferTrtllmMoEMethod":
-        raise RuntimeError("native baseline MoE requires verified MXFP4 TRTLLM dispatch")
-    if experts.quant_method.flashinfer_mxfp4_moe_precision != "default":
-        raise RuntimeError("native baseline MoE requires MXFP8 activations")
+    quant_method = experts.quant_method
+    # SGLang@1aa0e962 fp8.py:421-434 selects CUTLASS on SM90 and
+    # TRTLLM on SM100. Inspect the loaded method, not the intended device.
+    # mxfp4_flashinfer_cutlass_moe.py:39-45,214-222 distinguishes native
+    # SM90 W4A16 from the optional Humming W4A8 and SM120 MXFP8 paths.
+    if type(quant_method).__name__ == "Mxfp4FlashinferTrtllmMoEMethod":
+        if quant_method.flashinfer_mxfp4_moe_precision != "default":
+            raise RuntimeError("native baseline TRTLLM MoE requires MXFP8 activations")
+        moe_dtype = "w4a8_mxfp4_mxfp8"
+        moe_kernel_source = "sglang_mxfp4_flashinfer_trtllm_moe"
+    elif type(quant_method).__name__ == "Mxfp4FlashinferCutlassMoEMethod":
+        if (
+            getattr(quant_method, "_use_mxfp8_act_scaling", None) is not False
+            or getattr(quant_method, "_use_sm90_humming", None) is not False
+            or getattr(experts, "_dsv4_mxfp4_backend", None) != "flashinfer_cutlass_sm90"
+        ):
+            raise RuntimeError("native baseline CUTLASS MoE requires loaded SM90 W4A16 dispatch")
+        moe_dtype = "w4a16_mxfp4_cutlass"
+        moe_kernel_source = "sglang_flashinfer_cutlass_moe"
+    else:
+        raise RuntimeError("native baseline MoE requires verified MXFP4 TRTLLM or SM90 CUTLASS dispatch")
     if getattr(experts, "reduce_results", False):
         raise RuntimeError("native expert kernel unexpectedly owns a collective")
     recorder_path = Path(options.output) / f"baseline-rank-{tp_rank}.jsonl"
@@ -247,7 +264,7 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                 (
                     "moe",
                     {
-                        "moe_dtype": "w4a8_mxfp4_mxfp8",
+                        "moe_dtype": moe_dtype,
                         "num_tokens": tokens,
                         "hidden_size": 5120,
                         "inter_size": 2304,
@@ -258,7 +275,7 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                         "distribution": "uniform",
                     },
                     lambda: experts(hidden, topk),
-                    "sglang_mxfp4_flashinfer_trtllm_moe",
+                    moe_kernel_source,
                 ),
             ]
             for width in (5120, 6144):
