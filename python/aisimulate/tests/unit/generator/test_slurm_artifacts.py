@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import importlib.util
 import json
@@ -16,8 +17,10 @@ from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -27,8 +30,10 @@ from aisimulate.generator.api import (
     generate_from_request,
 )
 from aisimulate.generator.builders.slurm_runtime import Supervisor
+from aisimulate.generator.module_bridge import task_config_to_generator_config
 from aisimulate.generator.naive import build_naive_generator_params
 from aisimulate.generator.request import (
+    ModelFacts,
     SweeperCandidateError,
     from_legacy_params,
     from_sweeper_candidate,
@@ -283,6 +288,149 @@ def test_typed_request_preserves_cluster_overrides(tmp_path):
     req = dataclasses.replace(req, emit=dataclasses.replace(req.emit, deployment_target="slurm"))
     assert to_legacy_params(req)["SlurmConfig"] == params["SlurmConfig"]
     assert "benchmark.sbatch" in generate_from_request(req, output_dir=str(tmp_path))
+
+
+@pytest.mark.parametrize("source", ["sdk", "sweeper"])
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_sdk_and_sweeper_inputs_reach_persisted_slurm_bundle(source, mode, tmp_path):
+    overrides = {
+        "generator_dynamo_version": "1.2.0",
+        "rule": "benchmark",
+        "preserve_engine_limits": True,
+        "ServiceConfig": {"served_model_name": "selected-model"},
+        "SlurmConfig": {
+            "account": "selected-account",
+            "partition": "selected-partition",
+            "container_image": "/images/selected dynamo.sqsh",
+            "container_mounts": ["/checkpoints:/models:ro"],
+            "cpus_per_task": 24,
+            "memory": "96G",
+            "env": {"HF_HUB_OFFLINE": "1", "NCCL_DEBUG": "WARN"},
+            "benchmark_concurrency": [2, 8],
+            "benchmark_rounds": 3,
+            "benchmark_timeout": 2700,
+        },
+    }
+    original_overrides = copy.deepcopy(overrides)
+    roles = {"agg": (2, 8)} if mode == "agg" else {"prefill": (1, 8), "decode": (2, 16)}
+    if source == "sdk":
+        task = SimpleNamespace(
+            primary_backend_name="vllm",
+            primary_system_name="h200_sxm",
+            primary_backend_version="0.20.1",
+            primary_model_path="/models/Qwen3",
+            prefix=0,
+            is_moe=False,
+            nextn=0,
+            nextn_accepted=None,
+            serving_mode=mode,
+            total_gpus=0,
+            prefill_system_name="h200_sxm",
+            decode_system_name="h200_sxm",
+            isl=512,
+            osl=128,
+            ttft=2000.0,
+            tpot=50.0,
+        )
+        row = {}
+        for role, (count, batch_size) in roles.items():
+            prefix = {"agg": "", "prefill": "(p)", "decode": "(d)"}[role]
+            row.update(
+                {f"{prefix}{key}": value for key, value in {"tp": 2, "workers": count, "bs": batch_size}.items()}
+            )
+        params = task_config_to_generator_config(task, pd.Series(row), overrides, num_gpus_per_node=8)
+        generate_backend_artifacts(
+            params, "vllm", backend_version="0.20.1", deployment_target="slurm", output_dir=str(tmp_path)
+        )
+    else:
+        config = {
+            "deployment_mode": mode,
+            "model_name": "/models/Qwen3",
+            "backend": "vllm",
+            "backend_version": "0.20.1",
+            "hardware_sku": "h200_sxm",
+            "context_length": 8192,
+            "used_gpus": 4 if mode == "agg" else 6,
+        }
+        for role, (count, batch_size) in roles.items():
+            prefix = "" if role == "agg" else f"{role}_"
+            config.update(
+                {
+                    f"{prefix}tp": 2,
+                    f"{prefix}pp": 1,
+                    f"{prefix}attention_dp": 1,
+                    f"{prefix}moe_tp": 1,
+                    f"{prefix}moe_ep": 1,
+                    f"{prefix}replicas": count,
+                    f"{role}_max_num_seqs": batch_size,
+                    f"{role}_max_num_batched_tokens": 4096,
+                    f"{role}_block_size": 16,
+                    f"{role}_gpu_memory_utilization": 0.9,
+                }
+            )
+        request = from_sweeper_candidate(
+            {"config": config, "used_gpus": config["used_gpus"]},
+            workload={"isl": 512, "osl": 128},
+            deployment_target="slurm",
+            output_dir=str(tmp_path),
+            generator_overrides=overrides,
+            model_facts=ModelFacts(is_moe=False, architecture="Qwen3ForCausalLM"),
+        )
+        generate_from_request(request)
+
+    assert overrides == original_overrides
+    spec = json.loads((tmp_path / "deployment.json").read_text())
+    assert spec["mode"] == mode
+    assert spec["gpus"] == (4 if mode == "agg" else 6)
+    assert spec["model"] == "selected-model"
+    assert spec["env"] == {"HF_HUB_OFFLINE": "1", "NCCL_DEBUG": "WARN"}
+    assert spec["benchmark_concurrency"] == [2, 8]
+    assert spec["benchmark_rounds"] == 3
+    assert spec["benchmark_timeout"] == 2700
+    assert spec["startup_timeout"] == 1800
+    expected_workers = (
+        [("agg-0", 8), ("agg-1", 8)] if mode == "agg" else [("prefill-0", 8), ("decode-0", 16), ("decode-1", 16)]
+    )
+    assert [worker["name"] for worker in spec["workers"]] == [name for name, _ in expected_workers]
+    for index, (worker, (name, batch_size)) in enumerate(zip(spec["workers"], expected_workers, strict=True)):
+        assert (worker["gpu_count"], worker["gpu_offset"]) == (2, index * 2)
+        argv = worker["argv"]
+        assert argv[:3] == ["python3", "-m", "dynamo.vllm"]
+        for flag, value in (
+            ("--model", "/models/Qwen3"),
+            ("--served-model-name", "selected-model"),
+            ("--tensor-parallel-size", "2"),
+            ("--max-num-seqs", str(batch_size)),
+        ):
+            assert argv[argv.index(flag) + 1] == value
+        if mode == "disagg":
+            assert argv[argv.index("--disaggregation-mode") + 1] == name.split("-")[0]
+        else:
+            assert "--disaggregation-mode" not in argv
+        if source == "sweeper":
+            assert argv[argv.index("--max-num-batched-tokens") + 1] == "4096"
+            assert argv[argv.index("--max-model-len") + 1] == "8192"
+
+    for operation, filename in (("serve", "deploy.sbatch"), ("benchmark", "benchmark.sbatch")):
+        job = (tmp_path / filename).read_text()
+        for directive in (
+            f"--job-name=aic-dynamo-{operation}",
+            "--account=selected-account",
+            "--partition=selected-partition",
+            f"--gres=gpu:{spec['gpus']}",
+            "--cpus-per-task=24",
+            "--mem=96G",
+            "--time=01:00:00",
+        ):
+            assert f"#SBATCH {directive}\n" in job
+        assert f"python3 /work/slurm_runtime.py {operation} &" in job
+    environment = (tmp_path / "environment.sh").read_text()
+    assert "export AIC_SLURM_IMAGE='/images/selected dynamo.sqsh'" in environment
+    assert "export AIC_SLURM_MOUNTS=/checkpoints:/models:ro" in environment
+    benchmark = (tmp_path / "bench_run.sh").read_text()
+    assert 'BENCH_MODEL="${AICONFIGURATOR_BENCH_MODEL:-selected-model}"' in benchmark
+    assert 'BENCH_ISL="${AICONFIGURATOR_BENCH_ISL:-512}"' in benchmark
+    assert 'BENCH_OSL="${AICONFIGURATOR_BENCH_OSL:-128}"' in benchmark
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
