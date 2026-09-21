@@ -311,8 +311,18 @@ impl ForwardPassPerfModel {
     /// Construct and pin one estimator. Auto searches all modes even when
     /// fallback is denied; explicit modes use the requested fallback policy.
     /// A regression model may be constructed before it has enough observations.
-    pub fn best_available(config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+    pub fn best_available(mut config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
         config.validate()?;
+        if let Some(path) = config
+            .estimator_config
+            .fpm_interpolation
+            .fpm_parquet_path
+            .as_mut()
+        {
+            *path = std::path::absolute(&*path).map_err(|error| {
+                AicError::InvalidEngineConfig(format!("cannot resolve fpm_parquet_path: {error}"))
+            })?;
+        }
         let requested_estimation_mode = config.estimation_mode;
         let mut failures = Vec::new();
         let mut last_error = None;
@@ -621,6 +631,54 @@ impl ForwardPassPerfModel {
         &self.options
     }
 
+    /// Static phase latency before online correction, using the native engine's
+    /// existing integration. Decode returns the total for all generated tokens.
+    pub fn static_phase_latency(
+        &self,
+        batch_size: u32,
+        input_tokens: u32,
+        output_tokens: u32,
+        prefill: bool,
+    ) -> Result<f64, AicError> {
+        let engine = self.native_engine().ok_or_else(|| {
+            AicError::InvalidEngineConfig("static phase latency requires a native estimator".into())
+        })?;
+        if prefill {
+            engine.predict_prefill_latency(batch_size, input_tokens, 0)
+        } else {
+            engine.predict_decode_latency(batch_size, input_tokens, output_tokens)
+        }
+    }
+
+    /// Native operation evidence for one static prefill or decode step. Values
+    /// precede learned online correction; SOL is a comparison only. Whole-model
+    /// estimators cannot provide an operation decomposition and fail explicitly.
+    pub fn static_phase_diagnostics(
+        &self,
+        batch_size: u32,
+        context_length: u32,
+        prefix: u32,
+        prefill: bool,
+    ) -> Result<Vec<crate::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError>
+    {
+        if self
+            .provenance
+            .as_ref()
+            .is_some_and(|p| p.selected_estimation_mode != EstimationMode::OpLevel)
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "operation diagnostics require op_level estimation".into(),
+            ));
+        }
+        self.native_engine()
+            .ok_or_else(|| {
+                AicError::InvalidEngineConfig(
+                    "operation diagnostics require a native op-level estimator".into(),
+                )
+            })?
+            .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+    }
+
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {
         match &self.mode {
             ForwardPassPerfMode::Native { engine, .. } => Some(Arc::clone(engine)),
@@ -645,6 +703,18 @@ impl ForwardPassPerfModel {
 fn build_native_candidate(
     config: &ForwardPassPerfModelConfig,
 ) -> Result<(Engine, PathBuf), AicError> {
+    if config.estimation_mode == EstimationMode::FpmInterpolation
+        && (config.enable_eplb
+            || config.wideep_num_slots.is_some()
+            || config
+                .moe_backend
+                .as_deref()
+                .is_some_and(|value| value != "default"))
+    {
+        return Err(AicError::UnsupportedModel(
+            "FPM interpolation does not support EPLB, slots or moe_backend overrides".into(),
+        ));
+    }
     if config.estimation_mode == EstimationMode::FpmInterpolation && config.nextn != 0 {
         return Err(AicError::UnsupportedModel(
             "FPM interpolation does not support MTP".into(),
@@ -1038,7 +1108,26 @@ fn can_fallback_to_regression(err: &AicError) -> bool {
             | AicError::ModelConfig(_)
             | AicError::PerfDatabase(_)
             | AicError::Io { .. }
-            | AicError::Yaml { .. }
-            | AicError::Parquet { .. }
     )
+}
+
+#[cfg(test)]
+mod fallback_errors {
+    use super::*;
+
+    #[test]
+    fn corruption_is_not_a_coverage_gap() {
+        let yaml = serde_yaml::from_str::<serde_yaml::Value>("broken: [").unwrap_err();
+        assert!(!can_fallback_to_regression(&AicError::Yaml {
+            path: "system.yaml".into(),
+            source: yaml
+        }));
+        assert!(!can_fallback_to_regression(&AicError::Parquet {
+            path: "gemm_perf.parquet".into(),
+            source: parquet::errors::ParquetError::General("corrupt footer".into()),
+        }));
+        assert!(can_fallback_to_regression(&AicError::UnsupportedModel(
+            "no coverage".into()
+        )));
+    }
 }

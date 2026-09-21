@@ -133,6 +133,15 @@ def _validate_token_streams(payload: dict[str, Any], path: Path) -> None:
     if not isinstance(warmups, list) or (schema == 1 and warmups):
         raise ValueError(f"V4.1 warmup histories require token-stream schema 2: {path}")
     measured = payload["results"]
+    if any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("point"), dict)
+        or type(row["point"].get("benchmark_id")) is not int
+        or row["point"].get("point_type") not in ("prefill", "decode")
+        or not isinstance(row["point"].get("sample_reasons", []), list)
+        for row in measured + warmups
+    ):
+        raise ValueError(f"V4.1 native result has malformed token-stream points: {path}")
     warmup_ids = set()
     for row in warmups:
         point = row.get("point", {})
@@ -155,6 +164,8 @@ def _validate_token_streams(payload: dict[str, Any], path: Path) -> None:
     streams = {}
     for line in lines:
         stream = json.loads(line)
+        if not isinstance(stream, dict):
+            raise ValueError(f"V4.1 token-stream record must be an object: {path}")
         benchmark_id = stream.get("benchmark_id")
         if type(benchmark_id) is not int or benchmark_id in streams:
             raise ValueError(f"V4.1 token-stream benchmark ID is invalid or duplicated: {path}")
@@ -373,17 +384,6 @@ def validate_native_collection(
     rank_timings: list[tuple[int, float, float]] = []
 
     for path, payload in rank_payloads:
-        evidence = _validate_execution_provenance(cell, payload, path)
-        if evidence is not None:
-            _validate_token_streams(payload, path)
-        if input_provenance is None:
-            input_provenance = evidence
-        elif {k: v for k, v in evidence.items() if k != "token_stream_manifest"} != {
-            k: v for k, v in input_provenance.items() if k != "token_stream_manifest"
-        } or {k: v for k, v in evidence["token_stream_manifest"].items() if k != "file"} != {
-            k: v for k, v in input_provenance["token_stream_manifest"].items() if k != "file"
-        }:
-            raise ValueError(f"native DP ranks disagree on input provenance: {path}")
         if (
             payload.get("schema_version") != FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION
             or payload.get("artifact_type") != "rank"
@@ -408,7 +408,20 @@ def validate_native_collection(
         rows = payload.get("results")
         groups = payload.get("iteration_groups")
         if not isinstance(coverage, dict) or not isinstance(rows, list) or not isinstance(groups, list):
-            raise TypeError(f"native result is missing coverage/results/iteration_groups: {path}")
+            raise ValueError(f"native result is missing coverage/results/iteration_groups: {path}")
+        if any(not isinstance(row, dict) or not isinstance(row.get("point"), dict) for row in rows):
+            raise ValueError(f"native result has malformed result points: {path}")
+        evidence = _validate_execution_provenance(cell, payload, path)
+        if evidence is not None:
+            _validate_token_streams(payload, path)
+        if input_provenance is None:
+            input_provenance = evidence
+        elif {k: v for k, v in evidence.items() if k != "token_stream_manifest"} != {
+            k: v for k, v in input_provenance.items() if k != "token_stream_manifest"
+        } or {k: v for k, v in evidence["token_stream_manifest"].items() if k != "file"} != {
+            k: v for k, v in input_provenance["token_stream_manifest"].items() if k != "file"
+        }:
+            raise ValueError(f"native DP ranks disagree on input provenance: {path}")
         expected = coverage.get("expected_points")
         if (
             not isinstance(expected, int)

@@ -42,7 +42,7 @@ from typing import Any
 from aisimulate_core.sdk import perf_database
 from aisimulate_core.sdk.backends.factory import get_backend
 from aisimulate_core.sdk.common import DefaultHFModels
-from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_nextn
+from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls, validate_nextn
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.helpers import resolve_sglang_mla_compute
 from aisimulate_core.sdk.utils import (
@@ -278,6 +278,10 @@ class KVCacheEstimator:
         kvcache_quant_mode: str | None = None,
         fmha_quant_mode: str | None = None,
         comm_quant_mode: str | None = None,
+        moe_backend: str | None = None,
+        attention_backend: str | None = None,
+        enable_eplb: bool = False,
+        wideep_num_slots: int | None = None,
         nextn: int = 0,
         systems_path: str | None = None,
     ) -> KVCacheEstimator:
@@ -299,11 +303,14 @@ class KVCacheEstimator:
         diagnostics but excludes them from the static weights/KV pool: its
         ``mem_fraction_static`` already reserves transient execution headroom.
 
-        Raises when AIC cannot build the model/backend or the perf DB is missing --
+        Raises when AIC cannot build the model/backend or the system spec is missing --
         the signal for the caller to fall back to the naive estimator.
         """
         resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
         resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
+        validate_moe_controls(
+            model_path=model_path, enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots, moe_backend=moe_backend
+        )
         model_config = build_model_config(
             tp_size=tp_size,
             pp_size=pp_size,
@@ -315,6 +322,10 @@ class KVCacheEstimator:
             fmha_quant_mode=fmha_quant_mode,
             moe_quant_mode=moe_quant_mode,
             comm_quant_mode=comm_quant_mode,
+            moe_backend=moe_backend,
+            attention_backend=attention_backend,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
         )
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale
@@ -323,7 +334,11 @@ class KVCacheEstimator:
         # Memory is cost-side only; accepted-token progress never enters
         # capacity math.
         apply_nextn(model_config, nextn)
-        database = perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
+        # Capacity needs model/system metadata, including when external FPM
+        # timing has no backend data directory.
+        database = perf_database.get_database(
+            system, backend, backend_version, systems_paths=systems_path, allow_missing_data=True
+        )
         resolve_sglang_mla_compute(model_config, model_path, backend, database.version, database.system_spec)
         model = get_model(model_path, model_config, backend)
         backend_obj = get_backend(backend)
@@ -1001,6 +1016,10 @@ def estimate_kv_cache(
     kvcache_quant_mode: str | None = None,
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
+    moe_backend: str | None = None,
+    attention_backend: str | None = None,
+    enable_eplb: bool = False,
+    wideep_num_slots: int | None = None,
     nextn: int = 0,
     systems_path: str | None = None,
     gpu_memory_capacity_bytes_override: int | None = None,
@@ -1069,6 +1088,9 @@ def estimate_kv_cache(
 
     # Validate the compute-side MTP depth before any fallback path.
     validate_nextn(nextn)
+    validate_moe_controls(
+        model_path=model_path, enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots, moe_backend=moe_backend
+    )
 
     try:
         native = KVCacheEstimator.from_request(
@@ -1088,11 +1110,21 @@ def estimate_kv_cache(
             kvcache_quant_mode=kvcache_quant_mode,
             fmha_quant_mode=fmha_quant_mode,
             comm_quant_mode=comm_quant_mode,
+            moe_backend=moe_backend,
+            attention_backend=attention_backend,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
             nextn=int(nextn),
             systems_path=systems_path,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
-        if not allow_naive_fallback:
+        if (
+            not allow_naive_fallback
+            or enable_eplb
+            or wideep_num_slots is not None
+            or moe_backend not in (None, "default")
+            or attention_backend is not None
+        ):
             raise ValueError(
                 f"unsupported model/backend/GPU for KV-cache estimation: "
                 f"model={model_path}, backend={backend}, gpu_sku={system}: {exc}"
@@ -1149,6 +1181,10 @@ def estimate_num_gpu_blocks(
     kvcache_quant_mode: str | None = None,
     fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
+    moe_backend: str | None = None,
+    attention_backend: str | None = None,
+    enable_eplb: bool = False,
+    wideep_num_slots: int | None = None,
     nextn: int = 0,
     systems_path: str | None = None,
     gpu_memory_capacity_bytes_override: int | None = None,
@@ -1207,6 +1243,10 @@ def estimate_num_gpu_blocks(
         kvcache_quant_mode=kvcache_quant_mode,
         fmha_quant_mode=fmha_quant_mode,
         comm_quant_mode=comm_quant_mode,
+        moe_backend=moe_backend,
+        attention_backend=attention_backend,
+        enable_eplb=enable_eplb,
+        wideep_num_slots=wideep_num_slots,
         nextn=int(nextn),
         systems_path=systems_path,
         gpu_memory_capacity_bytes_override=gpu_memory_capacity_bytes_override,

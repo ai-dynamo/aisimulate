@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from functools import cache
 from typing import Any
 
-from .config import Workload
+from .config import ENGINE_MODEL_CONTROL_FIELDS, Workload
 from .forward_pass_estimator import resolve_systems_paths
 from .kv_estimate import estimate_kv_tokens
 from .parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
@@ -42,6 +42,7 @@ def _per_rank_capacity_tokens(
     max_batch_size: int,
     memory_fraction: float,
     nextn: int,
+    model_controls: tuple[tuple[str, str | int | bool], ...] = (),
 ) -> int:
     tokens = estimate_kv_tokens(
         shape,
@@ -54,6 +55,7 @@ def _per_rank_capacity_tokens(
         max_batch_size=max_batch_size,
         memory_fraction=memory_fraction,
         nextn=nextn,
+        **({"model_controls": dict(model_controls)} if model_controls else {}),
     )
     if tokens is None:
         raise InfeasibleKVCapacity(
@@ -95,12 +97,18 @@ def _role_capacity_tokens(
             model_name=str(resolved.get("model", resolved.get("model_path", sample["model_name"]))),
             hardware_sku=str(resolved.get("system", sample.get(f"{role}_hardware_sku") or sample["hardware_sku"])),
             backend=str(resolved.get("backend", sample["backend"])),
-            backend_version=resolved.get("backend_version", backend_version),
+            backend_version=resolved.get("backend_version") or backend_version,
             systems_paths=resolve_systems_paths(roots),
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),
-            nextn=int(sample.get("aic_nextn") or 0),
+            nextn=int(resolved.get("nextn", sample.get("aic_nextn")) or 0),
+            model_controls=tuple(
+                (name, resolved.get(name, sample.get(name)))
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+                if resolved.get(name, sample.get(name)) is not None
+                and not (name == "enable_eplb" and resolved.get(name, sample.get(name)) is False)
+            ),
         )
     # Dynamo's AIC estimator returns per-rank blocks. Offline replay models one
     # engine-wide KV pool, so attention-DP ranks contribute independent capacity;

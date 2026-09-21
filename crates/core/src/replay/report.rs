@@ -12,10 +12,11 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 use uuid::Uuid;
 
 use crate::engine::CacheTierAttribution;
-use crate::replay::PlacementCacheSample;
 use crate::replay::loadgen::{
-    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPlayOutcome, AgenticTrajectorySnapshot,
+    AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPlayOutcome, AgenticSnapshotEvidence,
+    AgenticTrajectorySnapshot,
 };
+use crate::replay::{AgenticRuntimeIdentity, PlacementCacheSample};
 
 // 0.1% relative quantile error. The enlarged store covers latency/rate values
 // spanning roughly 10^28 within one sign while remaining bounded (~512 KiB for
@@ -44,6 +45,8 @@ pub struct ReplayReport {
     pub latency: TraceLatencyStats,
     pub trajectories: Option<TraceTrajectoryStats>,
     pub agentic_graph: Option<AgenticGraphIdentity>,
+    /// Source-clock snapshot preparation, separate from actual execution events.
+    pub agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
     /// Canonical driver lifecycle evidence. The compact JSON report publishes
     /// only its digest and event count; conformance tests can inspect all events.
     pub agentic_lifecycle: Option<AgenticLifecycleTranscript>,
@@ -503,6 +506,9 @@ impl Serialize for ReplayReport {
         if let Some(agentic_graph) = &self.agentic_graph {
             map.serialize_entry("agentic_graph", agentic_graph)?;
         }
+        if let Some(snapshots) = &self.agentic_snapshots {
+            map.serialize_entry("agentic_snapshots", snapshots)?;
+        }
         if let Some(lifecycle) = &self.agentic_lifecycle {
             map.serialize_entry("agentic_lifecycle_event_count", &lifecycle.events.len())?;
             map.serialize_entry(
@@ -594,6 +600,7 @@ struct TraceRequestStats {
     play_id: Option<String>,
     dispatched_at_ms: Option<f64>,
     metadata: Value,
+    agentic: Option<AgenticRuntimeIdentity>,
     detail: Option<Box<PerRequestDetail>>,
 }
 
@@ -802,6 +809,8 @@ pub struct PerRequestRecord {
     /// Authored provider-neutral metadata retained for correlation.
     #[serde(skip_serializing_if = "Value::is_null")]
     pub metadata: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agentic: Option<AgenticRuntimeIdentity>,
     pub uuid: String,
     pub arrival_time_ms: f64,
     pub dispatched_at_ms: Option<f64>,
@@ -984,6 +993,7 @@ pub struct TraceCollector {
     runtime_evidence: crate::replay::OfflineRuntimeEvidence,
     agentic_trajectory: Option<AgenticTrajectorySnapshot>,
     agentic_graph: Option<AgenticGraphIdentity>,
+    agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
     agentic_lifecycle: Option<AgenticLifecycleTranscript>,
     agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
 }
@@ -1220,6 +1230,7 @@ impl TraceCollector {
                 play_id: None,
                 dispatched_at_ms: None,
                 metadata: Value::Null,
+                agentic: None,
                 first_admission_reused_input_tokens: 0,
                 detail: self
                     .capture_per_request
@@ -1269,6 +1280,10 @@ impl TraceCollector {
         self.agentic_graph = Some(identity);
     }
 
+    pub fn set_agentic_snapshots(&mut self, snapshots: Vec<AgenticSnapshotEvidence>) {
+        self.agentic_snapshots = Some(snapshots);
+    }
+
     pub fn set_agentic_lifecycle(&mut self, transcript: AgenticLifecycleTranscript) {
         self.agentic_lifecycle = Some(transcript);
     }
@@ -1292,6 +1307,7 @@ impl TraceCollector {
             stats.session_id = context.session_id.clone().or(stats.session_id.take());
             stats.turn_index = context.turn_index.or(stats.turn_index);
             stats.metadata = context.metadata.clone();
+            stats.agentic = context.agentic.clone();
         }
     }
 
@@ -1717,6 +1733,7 @@ impl TraceCollector {
         let decode_gpus_per_worker = self.decode_gpus_per_worker;
         let runtime_evidence = self.runtime_evidence;
         let agentic_graph = self.agentic_graph;
+        let agentic_snapshots = self.agentic_snapshots;
         let agentic_lifecycle = self.agentic_lifecycle;
         let agentic_play_outcomes = self.agentic_play_outcomes;
         let trajectories = self
@@ -1876,6 +1893,7 @@ impl TraceCollector {
             },
             trajectories,
             agentic_graph,
+            agentic_snapshots,
             agentic_lifecycle,
             agentic_play_outcomes,
             goodput,
@@ -1912,6 +1930,7 @@ impl TraceCollector {
                 session_id: stats.session_id.clone(),
                 turn_index: stats.turn_index,
                 metadata: stats.metadata.clone(),
+                agentic: stats.agentic.clone(),
                 uuid: uuid.to_string(),
                 arrival_time_ms: stats.arrival_time_ms,
                 dispatched_at_ms: stats.dispatched_at_ms,

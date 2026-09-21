@@ -71,6 +71,10 @@ class _AicPredictor(ForwardPassTimePredictor):
                 ) from exc
             return cls(model, None)
 
+        # Regression is isolated by worker and learns from this case's measured
+        # workload. Only native FPM requires a supported topology mapping.
+        if context.worker.config.parallelism.decode_context_parallel_size != 1:
+            raise DependencyError("Native FPM does not support decode context parallelism (dcp > 1).")
         engine_config = cls._native_engine_config(context)
         prepared_fpm = None
         if cls.mode == "fpm":

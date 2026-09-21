@@ -384,7 +384,10 @@ def test_cleanup_permission_error_is_reported_without_losing_interrupt(monkeypat
     assert any("PermissionError" in note for note in error.__notes__)
 
 
-@pytest.mark.skipif(not hasattr(os, "WNOWAIT"), reason="Requires waitid without reaping to stage the real exit race")
+@pytest.mark.skipif(
+    not (hasattr(os, "waitid") and hasattr(os, "WNOWAIT")),
+    reason="Requires waitid without reaping to stage the real exit race",
+)
 def test_darwin_probe_reaps_child_that_exits_between_poll_and_killpg(monkeypatch):
     from collector.fpm_forward import runner as campaign
 
@@ -428,7 +431,7 @@ def test_darwin_probe_reaps_child_that_exits_between_poll_and_killpg(monkeypatch
 
 
 @pytest.mark.parametrize("force", [False, True])
-@pytest.mark.skipif(not hasattr(os, "WNOWAIT"), reason="Requires a real unreaped child")
+@pytest.mark.skipif(not (hasattr(os, "waitid") and hasattr(os, "WNOWAIT")), reason="Requires a real unreaped child")
 def test_darwin_signal_accepts_only_reaped_disappeared_group(monkeypatch, force):
     from collector.fpm_forward import runner as campaign
 
@@ -477,3 +480,71 @@ def test_group_permission_denial_is_not_hidden_by_direct_child_exit(monkeypatch,
         else:
             campaign._signal_command(child, force=operation == "kill")
     assert len(calls) == (2 if platform == "darwin" else 1)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX transport process groups")
+def test_darwin_cleanup_waits_for_communicate_owner_to_reap(monkeypatch):
+    """Portable reproduction of Darwin EPERM while communicate owns waitpid."""
+    from collector.fpm_forward import runner as campaign
+
+    owner_waiting = threading.Event()
+    release_owner = threading.Event()
+    children, results, failures = [], [], []
+    real_popen, real_killpg = subprocess.Popen, os.killpg
+    denied = []
+
+    def popen(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        children.append(child)
+        real_wait = child._wait
+
+        def wait(timeout):
+            # communicate() calls this wait. Keep its owner's waitpid lock
+            # across the first cleanup signal/probe without using waitid.
+            with child._waitpid_lock:
+                owner_waiting.set()
+                assert release_owner.wait(5)
+            return real_wait(timeout)
+
+        child._wait = wait
+        return child
+
+    def killpg(pid, sig):
+        if not release_owner.is_set():
+            if sig == signal.SIGTERM:
+                real_killpg(pid, sig)
+            elif sig == 0:
+                release_owner.set()
+            denied.append(sig)
+            raise PermissionError("Darwin zombie awaiting communicate owner")
+        return real_killpg(pid, sig)
+
+    def run():
+        try:
+            results.append(
+                campaign._run_command(
+                    [sys.executable, "-c", "import os, time; os.close(1); os.close(2); time.sleep(30)"], check=False
+                )
+            )
+        except BaseException as error:
+            failures.append(error)
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(os, "killpg", killpg)
+    monkeypatch.setattr(campaign, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(campaign, "_COMMAND_TERMINATION_GRACE_SECONDS", 1)
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert owner_waiting.wait(5)
+        campaign._stop_commands(children)
+    finally:
+        release_owner.set()
+        for child in children:
+            if child.poll() is None:
+                real_killpg(child.pid, signal.SIGKILL)
+        worker.join(5)
+    assert not worker.is_alive()
+    assert not failures
+    assert results[0].returncode == -signal.SIGTERM
+    assert denied[:2] == [signal.SIGTERM, 0]

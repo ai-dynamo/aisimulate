@@ -236,6 +236,10 @@ pub struct AgenticNode {
     pub(super) not_before_ms: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) recorded_api_time_ms: Option<f64>,
+    // Importer provenance for formats whose execution gates do not retain
+    // recorded request starts. Excluded from the canonical graph contract.
+    #[serde(skip)]
+    pub(super) recorded_interval_ms: Option<(f64, Option<f64>)>,
     pub(super) priority: i32,
     pub(super) strict_priority: u32,
     pub(super) policy_class: Option<String>,
@@ -411,6 +415,7 @@ pub struct SyntheticTraceSpec {
     pub turns_per_session: usize,
     pub input_tokens: LengthSpec,
     pub output_tokens: LengthSpec,
+    pub cached_prefix_tokens: usize,
     pub shared_prefix_ratio: f64,
     pub num_prefix_groups: usize,
     pub first_turn_arrivals: ArrivalSpec,

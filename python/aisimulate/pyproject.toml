@@ -140,6 +140,8 @@ include = [
     "src/aisimulate_core/systems/**/*.txt",
     "src/aisimulate_core/systems/**/*.parquet",
     "src/aisimulate_core/systems/data/**/*.yaml",
+    "src/aisimulate_core/systems/profiles/**/*.yaml",
+    "src/aisimulate_core/systems/profiles/**/*.md",
     "src/aisimulate_core/systems/data/**/README.md",
     "src/aisimulate_core/model_configs/*.json",
     "src/aisimulate_core/model_configs/*.md",

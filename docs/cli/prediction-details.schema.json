@@ -110,7 +110,11 @@
           "type": "object",
           "properties": {
             "status": {
-              "const": "available"
+              "enum": [
+                "available",
+                "unavailable",
+                "not_observed"
+              ]
             },
             "scope": {
               "const": "serving_workload"
@@ -120,7 +124,6 @@
             },
             "serving_metrics": {
               "type": "object",
-              "minProperties": 1,
               "propertyNames": {
                 "enum": [
                   "max_e2e_latency_ms",
@@ -184,6 +187,9 @@
                 "type": "number",
                 "minimum": 0
               }
+            },
+            "diagnostics": {
+              "$ref": "#/$defs/performanceDiagnostics"
             }
           },
           "required": [
@@ -440,6 +446,75 @@
               }
             }
           ]
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "enum": [
+                "available",
+                "unavailable",
+                "not_observed"
+              ]
+            },
+            "scope": {
+              "const": "accumulated_active_forward_pass_per_gpu"
+            },
+            "phases": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/sourcePhase"
+              }
+            },
+            "unavailable_reason": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "status",
+            "scope",
+            "phases"
+          ],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "unavailable"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "unavailable_reason"
+                ],
+                "properties": {
+                  "phases": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "status": {
+                    "const": "available"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "phases": {
+                    "minItems": 1
+                  }
+                }
+              }
+            }
+          ]
         }
       },
       "required": [],
@@ -461,6 +536,10 @@
           "minLength": 1
         },
         "energy": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source": {
           "type": "string",
           "minLength": 1
         }
@@ -858,6 +937,392 @@
           }
         }
       ]
+    },
+    "sol": {
+      "type": "object",
+      "properties": {
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "math_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "memory_ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "latency_ms",
+        "math_ms",
+        "memory_ms"
+      ],
+      "additionalProperties": false
+    },
+    "fallback": {
+      "type": "object",
+      "properties": {
+        "inference_phase": {
+          "enum": [
+            "context",
+            "generation"
+          ]
+        },
+        "comm_backend": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "requested_ep_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "requested_node_num": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "measurement_ep_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "measurement_node_num": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "inference_phase",
+        "comm_backend",
+        "requested_ep_size",
+        "requested_node_num",
+        "measurement_ep_size",
+        "measurement_node_num"
+      ],
+      "additionalProperties": false
+    },
+    "sourceOperation": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "fallbacks": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/fallback"
+              }
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "latency_ms",
+        "source",
+        "fallbacks"
+      ],
+      "additionalProperties": false
+    },
+    "timeOperation": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "fallbacks": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/fallback"
+              }
+            }
+          ]
+        },
+        "sol": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sol"
+            }
+          ]
+        },
+        "sol_unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "latency_to_sol_ratio": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "latency_ms",
+        "source",
+        "fallbacks",
+        "sol",
+        "sol_unavailable_reason",
+        "latency_to_sol_ratio"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "sol": {
+              "type": "null"
+            },
+            "sol_unavailable_reason": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        },
+        {
+          "properties": {
+            "sol": {
+              "$ref": "#/$defs/sol"
+            },
+            "sol_unavailable_reason": {
+              "type": "null"
+            }
+          }
+        }
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sol": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "latency_ms": {
+                        "const": 0
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "latency_to_sol_ratio": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "timePhase": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "sol": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/sol"
+            }
+          ]
+        },
+        "sol_unavailable_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/timeOperation"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "latency_ms",
+        "sol",
+        "sol_unavailable_reason",
+        "operations"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "sol": {
+              "type": "null"
+            },
+            "sol_unavailable_reason": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
+        },
+        {
+          "properties": {
+            "sol": {
+              "$ref": "#/$defs/sol"
+            },
+            "sol_unavailable_reason": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    },
+    "sourcePhase": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "operations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/sourceOperation"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "operations"
+      ],
+      "additionalProperties": false
+    },
+    "performanceDiagnostics": {
+      "type": "object",
+      "properties": {
+        "status": {
+          "enum": [
+            "available",
+            "unavailable",
+            "not_observed"
+          ]
+        },
+        "scope": {
+          "const": "accumulated_active_forward_pass_per_gpu"
+        },
+        "latency_unit": {
+          "const": "ms"
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/timePhase"
+          }
+        },
+        "unavailable_reason": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "status",
+        "scope",
+        "latency_unit",
+        "phases"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "unavailable"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "unavailable_reason"
+            ],
+            "properties": {
+              "phases": {
+                "maxItems": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "available"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "phases": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
     }
   },
   "$comment": "SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. SPDX-License-Identifier: Apache-2.0",
@@ -921,6 +1386,22 @@
           "skipped": {
             "required": [
               "energy"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "not": {
+        "properties": {
+          "sections": {
+            "required": [
+              "source"
+            ]
+          },
+          "skipped": {
+            "required": [
+              "source"
             ]
           }
         }

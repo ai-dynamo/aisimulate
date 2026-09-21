@@ -48,10 +48,10 @@ installed above.
 
 | AIC command | Path to use | Key difference |
 |---|---|---|
-| `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#54-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
-| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Normal summaries include serving metrics and [power and coverage](#411-power-and-energy-analysis). Use `predict --detail summary,memory,time` for optional detail sections. [Example](#410-inspect-prediction-details). `predict --detail energy` adds [energy diagnostics](#411-power-and-energy-analysis) on supported engine paths. [Static estimate modes are intentionally not migrated](#531-static-estimates). Keep AIC for those modes and [remaining diagnostic gaps](#detailed-diagnostics). |
+| `generate` | No `aisimulate generate` command planned. | AIC's fast shortcut skips search and SLA optimization. [Deployment-file output](#53-deployment-artifacts) is a separate current gap in the AISimulate CLI. |
+| `estimate` | `aisimulate predict` for serving prediction. [Example](#31-migrate-one-concrete-deployment). | Normal summaries include serving metrics and [power and coverage](#411-power-and-energy-analysis). Use `predict --detail summary,memory,time` for optional detail sections. [Example](#410-inspect-prediction-details). `predict --detail energy` adds [energy diagnostics](#411-power-and-energy-analysis) on supported engine paths. [Static estimate modes are intentionally not migrated](#521-static-estimates). See [provider-specific diagnostic limits](#detailed-diagnostics). |
 | `support` | Keep AIC `support`. | No unified support-query command. |
-| `recommend` | [Keep AIC for minimum-GPU sizing](#52-keep-minimum-gpu-sizing-on-the-compatibility-cli). | AISimulate `recommend` offers [search under a specified load](#33-search-under-a-request-rate), with a different objective. |
+| `recommend` | [`aisimulate recommend` with `target: min_gpus`](#minimum-gpu-sizing). | Select the smallest qualifying configuration found under fixed traffic and SLA constraints. Keep AIC for its analytical replica-sizing result. |
 | `default` | `aisimulate recommend`. [Example](#32-search-with-a-fixed-gpu-budget). | Supply traffic, a GPU ceiling, and a search objective. |
 | `exp` | Keep AIC for existing experiment files. | Translate individual experiments to `predict` or `recommend`; no equivalent file orchestration. |
 
@@ -233,8 +233,8 @@ instead, use `--set 'traffic.load={type: concurrency, concurrency: 32}'`.
 
 **What changed:** offered request rate and in-flight concurrency describe traffic; they do not
 ask AISimulate for the smallest fleet that can serve it. Ranking by `goodput_per_gpu` can select
-more GPUs than the smallest SLA-compliant configuration. If minimum GPU or replica count is your
-required result, keep the AIC command above.
+more GPUs than the smallest SLA-compliant configuration. Use [minimum-GPU selection](#minimum-gpu-sizing)
+when GPU count is the objective, or keep AIC for its analytical replica-sizing result.
 
 ## 4. Advanced migration examples
 
@@ -250,6 +250,7 @@ required result, keep the AIC command above.
 - [4.10 Prediction details](#410-inspect-prediction-details)
 - [4.11 Power and energy analysis](#411-power-and-energy-analysis)
 - [4.12 Ngram prompt-lookup speculative decoding](#412-ngram-prompt-lookup-speculative-decoding)
+- [4.13 Minimum-GPU sizing](#minimum-gpu-sizing)
 
 The first examples reuse `prediction.yaml` and `budget-search.yaml` from the general examples;
 run them from the directory containing those files. Commands with checked-in configuration paths
@@ -407,13 +408,15 @@ prefill savings.
 
 To model reuse, enable `engine.workers.<role>.kv_cache.prefix_caching` on a supported backend and
 supply shared prefixes through a [trace](user-guide.md#trace-source) or
-[synthetic sessions](user-guide.md#synthetic-session-source). Enabling caching alone does not
-create shared input. Session `shared_prefix_ratio` and `prefix_groups` describe workload sharing;
-they do not guarantee a cache-hit count or ratio. This KV prefix reuse is separate from ngram
+[synthetic sessions](user-guide.md#synthetic-session-source). For independent synthetic requests,
+set `traffic.source.cached_prefix_tokens` to share an exact number of input tokens, as shown in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). This also preserves a cold first
+request. Enabling caching alone does not create shared input. Session `shared_prefix_ratio` and
+`prefix_groups` describe workload sharing; they do not guarantee a cache-hit count or ratio. This KV prefix reuse is separate from ngram
 prompt-lookup speculative decoding.
 
 Keep the bundled AIC compatibility CLI for controlled cached-prefix what-if estimates or
-comparisons that require the same fixed-token assumption. The [AIC example in section 5.6](#exact-cached-prefix-estimates)
+comparisons that require the same fixed-token assumption. The [AIC example in section 5.5](#exact-cached-prefix-estimates)
 shows that workflow. Its fixed-count option is a deliberate compatibility boundary, not pending
 unified-CLI migration work.
 
@@ -460,6 +463,9 @@ AIC_ALLOW_UNLISTED_VERSIONS=1 aiconfigurator cli estimate \
 ```
 
 **After — use FPM timing in a serving prediction for the same model, hardware, and parallelism:**
+
+Supply a matching external `/data/reviewed-fpm.parquet` and
+`/data/reviewed-fpm.metadata.json` pair.
 
 ```bash
 AIC_ALLOW_UNLISTED_VERSIONS=1 aisimulate predict \
@@ -537,6 +543,78 @@ policy, estimator mode, and full estimator configuration for a subsequent predic
 current native correction stores and the latest role-bound regression routing remain unchanged.
 The unified CLI does not expose AIC's per-operation source breakdown shown above; keep the
 compatibility CLI or SDK for that diagnostic.
+
+<a id="preserve-pinned-engine-and-request-controls"></a>
+
+#### 4.6.3 Preserve pinned engine and request controls
+
+The unified `predict` and `recommend` configurations accept the following flat
+`engine` controls. They use the same canonical estimator interface as estimator
+selection and fallback policy.
+
+| AIC control | Unified configuration |
+| --- | --- |
+| `nextn`, `nextn_accepted` | `engine.nextn`, `engine.nextn_accepted` (both required for MTP) |
+| Chunked prefill | `engine.enable_chunked_prefill` (omit for backend default) |
+| EPLB and redundant expert slots | `engine.enable_eplb`, `engine.wideep_num_slots` |
+| MoE and attention kernel backends | `engine.moe_backend`, `engine.attention_backend` |
+| Quantization overrides | `engine.gemm_quant_mode`, `engine.moe_quant_mode`, `engine.kvcache_quant_mode`, `engine.fmha_quant_mode`, `engine.comm_quant_mode` |
+| Exact synthetic shared prefix | `traffic.source.cached_prefix_tokens` |
+| Maximum sequence length | Existing `engine.context_length` |
+| GPU memory fraction | Existing `engine.workers.<role>.kv_cache.capacity.memory_fraction` |
+
+`enable_wideep` is obsolete: topology now determines the MoE execution regime.
+The new model controls require default timing on every language role. AFD and
+analytical encoder configurations reject them. Backend/model compatibility is
+validated by the canonical constructor before simulation. Use `--stack engine`
+for these controls and exact synthetic shared prefixes. Older Dynamo adapters
+do not support them and fail capability validation before replay. Explicit MTP
+expected acceptance also requires an opt-in runner capability; legacy acceptance-rate
+payloads retain their existing compatibility. AFD and
+AFD+PD reject positive `cached_prefix_tokens`.
+
+This recommendation example preserves a token-exact shared prefix and explicit
+KV quantization while using the existing capacity field:
+
+```yaml
+engine:
+  mode: aggregated
+  model: Qwen/Qwen3-32B
+  hardware: h200_sxm
+  backend: vllm
+  context_length: 4096
+  estimation_mode: op_level
+  fallback_policy: deny
+  kvcache_quant_mode: fp8
+  enable_chunked_prefill: true
+  workers:
+    aggregated:
+      kv_cache:
+        capacity:
+          memory_fraction: 0.85
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 1024
+    output_tokens: 128
+    cached_prefix_tokens: 256
+  load:
+    type: concurrency
+    concurrency: 8
+  stop:
+    requests: 32
+optimization:
+  constraints:
+    max_candidate_gpus: 8
+```
+
+For MTP-capable models, specify both `engine.nextn: 2` and
+`engine.nextn_accepted: 1.25`. The accepted count is a workload assumption:
+replay uses one guaranteed accepted draft token and a 25% chance of a second.
+Saved candidate YAML retains these values and all engine model controls.
+A shared prefix does not mean a prewarmed cache; the first request remains cold.
+Only complete cache blocks can be reused, so a shared prefix shorter than the
+engine cache block size can produce zero hits.
 
 <a id="predict-and-search-analytical-epd"></a>
 
@@ -751,8 +829,9 @@ aisimulate predict --config prediction.yaml --detail summary,memory,time \
 | --- | --- |
 | `summary` | Existing serving prediction metrics. |
 | `memory` | Initial per-rank capacity estimate and available memory components, with `stage: before_native_capacity_adjustments`. |
-| `time` | Existing serving latency metrics in milliseconds; no phase/operation breakdown or SOL comparison. |
-| `all` | The three sections above plus the [energy diagnostics in section 4.11](#411-power-and-energy-analysis). |
+| `time` | Serving latency statistics plus native accumulated phase/operation latency, SOL comparisons, and latency/SOL ratios. |
+| `source` | Per-operation source tags and executed MoE communication measurement substitutions. |
+| `all` | All five selectors, including [energy diagnostics in section 4.11](#411-power-and-energy-analysis). |
 
 **Captured result for the `prediction.yaml` above** (AISimulate 0.12.0 with this detail
 implementation, 2026-09-15; simulation results, latency/throughput rounded):
@@ -780,15 +859,17 @@ The terminal identifies skipped sections with reasons. `prediction.json` stores 
 exported estimate. Its block count is an initial estimate, not a final runtime allocation.
 Analytical EPD retains available language-worker estimates and identifies the missing encoder
 component breakdown; it does not claim a complete EPD memory report.
-`source` remains unsupported and is rejected. `energy` is supported, and `all` includes it;
-see [section 4.11](#411-power-and-energy-analysis) for energy evidence and availability.
+`time` and `source` operation evidence requires the native op-level engine path. SOL gaps carry
+null values and explicit reasons; source records preserve executed measurement substitutions.
+`--detail-top-n` bounds tables only; JSON keeps complete evidence. See
+[section 4.11](#411-power-and-energy-analysis) for energy availability.
 For recommendation details, run `predict --detail` on a saved recommendation YAML.
 See the [detail output contract](user-guide.md#prediction-details).
 
 **What changed:** AISimulate reports the configured serving workload, rather than reproducing
-AIC's fixed-batch estimate. Its `time` section contains serving latency metrics. Phase and
-per-operation timing, SOL comparisons, and other unsupported diagnostics remain
-[separate gaps](#detailed-diagnostics).
+AIC's fixed-batch estimate. Its `time` section separates request statistics from accumulated
+scheduled forward-pass work per GPU; operation sums are not wall-clock or request latency.
+[Provider availability limits](#detailed-diagnostics) remain explicit.
 
 <a id="power-and-energy-analysis"></a>
 <a id="54-power-and-energy-analysis"></a>
@@ -798,7 +879,7 @@ per-operation timing, SOL comparisons, and other unsupported diagnostics remain
 **Migration status: implemented by the power stack.** Normal engine prediction and
 recommendation summaries always show both power fields; `--detail energy` adds a breakdown.
 Section 4.10 retains the captured output from the initial three-section detail implementation.
-This extension adds `energy` and includes it in `--detail all`; `source` remains unsupported.
+`--detail all` includes both `energy` and the operation provenance in `source`.
 The native engine runner exports phase and operation evidence with op-level timing on supported
 topologies. The external Dynamo Python adapter's diagnostics export is not qualified by this
 stack; missing exports receive an explicit unavailable reason.
@@ -1094,6 +1175,78 @@ from KV prefix reuse and AIC's `--prefix N` cached-input assumption. See the
 [ngram configuration and supported combinations](user-guide.md#prompt-lookup-ngram-speculative-decoding).
 Other speculative schemes retain their [compatibility/SDK interfaces](#estimator-controls-and-speculative-decoding).
 
+<a id="keep-minimum-gpu-sizing-on-the-compatibility-cli"></a>
+<a id="52-keep-minimum-gpu-sizing-on-the-compatibility-cli"></a>
+<a id="52-select-the-smallest-qualifying-gpu-configuration"></a>
+<a id="minimum-gpu-sizing"></a>
+<a id="412-select-the-smallest-qualifying-gpu-configuration"></a>
+
+### 4.13 Select the smallest qualifying GPU configuration
+
+**Before — AIC estimates minimum GPUs and replica counts:**
+
+Use `aiconfigurator cli recommend` with `--target-request-rate` or `--target-concurrency` for
+AIC's minimum-GPU and replica-sizing result. For four requests/s under explicit latency limits:
+
+```bash
+aiconfigurator cli recommend \
+  --model-path meta-llama/Meta-Llama-3.1-8B \
+  --system h200_sxm --backend vllm --backend-version 0.24.0 \
+  --target-request-rate 4 --isl 1024 --osl 128 \
+  --ttft 800 --tpot 30 --strict-sla
+```
+
+**Result to inspect:** the sizing table reports required GPUs, parallel configurations, and replica
+counts under the requested load and SLA. For closed-loop sizing, replace `--target-request-rate 4`
+with `--target-concurrency 32`. The [request-rate example](#33-search-under-a-request-rate) explains
+why AISimulate's alternative configuration ranking can choose a different GPU count.
+
+Legacy `default` also routes to sizing when a load target is supplied without `--total-gpus`.
+If both are supplied, it uses the GPU budget and warns that the load target is ignored.
+
+**After — AISimulate searches for the smallest qualifying configuration:**
+
+Use `optimization.target: min_gpus` to minimize provisioned GPUs among evaluated configurations
+that meet your workload and latency requirements. For a required four SLA-compliant requests/s,
+reuse `budget-search.yaml` from section 3.2:
+
+```bash
+aisimulate recommend --config budget-search.yaml \
+  --set 'traffic.load={type: constant_rate, requests_per_second: 5}' \
+  --set traffic.stop.requests=500 \
+  --set optimization.target=min_gpus \
+  --set optimization.constraints.min_goodput_rps=4 \
+  --output-dir ./minimum-gpu-search
+```
+
+**Result to inspect:** `recommendation.json` records provisioned `used_gpus`, measured
+`goodput_request_throughput_rps` for the request-rate floor, and rejected candidates. Selected YAML
+files are ordered by fewest GPUs, then higher `goodput_output_throughput_tok_s` and lower E2E
+latency. The optimizer receives the same feasibility checks and GPU-count objective used for
+final selection, before top-N truncation. No qualifying result
+exits with status 1 and produces no selected YAML.
+
+The example offers five requests/s and requires four completed within the per-request SLA per
+second over the full replay, including startup and drain. These are separate controls; offering
+exactly four requests/s may not deliver four over a short finite replay. Increase the duration and
+trial budget for your workload. This result is the **smallest qualifying configuration found**,
+not a proof of a global minimum or an extrapolated replica estimate.
+
+For fixed-concurrency sizing, reuse the original `budget-search.yaml` and set only the objective:
+
+```bash
+aisimulate recommend --config budget-search.yaml \
+  --set optimization.target=min_gpus \
+  --output-dir ./minimum-gpu-concurrency
+```
+
+`min_gpus` always enforces the configured aggregate-mean SLA bounds. A delivered-goodput floor is
+optional for fixed concurrency and required for fixed request-rate traffic. This initial path
+supports standalone AISimulate static engine pools and fixed synthetic request-rate or concurrency
+traffic; Dynamo integration is not supported. It rejects
+adapters, traces, sessions, searched traffic loads, and candidate-relative KV load. Analytical EPD
+supports fixed concurrency and aggregate latency only. See the [scoring contract](../sweeper/optimization-goals.md#minimum-gpus).
+
 ## 5. Remaining feature and performance gaps
 
 These gaps concern the unified `aisimulate predict` and `aisimulate recommend` commands. The
@@ -1102,7 +1255,7 @@ in the package without a unified-CLI replacement.
 
 Migration prioritizes features that materially support serving prediction and deployment decisions.
 It does not aim to reproduce every AIC option. Some differences are deliberate product boundaries,
-including the [static estimate modes](#531-static-estimates) and
+including the [static estimate modes](#521-static-estimates) and
 [fixed cached-prefix counts](#fixed-cached-prefix-counts), rather than planned migration work.
 
 <a id="recommendation-runtime"></a>
@@ -1169,34 +1322,14 @@ results and early stopping can reduce the number of unique replays. The AIC outp
 sizing result. This H200 example measures your local workload; it does not
 reproduce the dated B200 benchmark table or establish equivalent AIC/AISimulate answers.
 
-<a id="keep-minimum-gpu-sizing-on-the-compatibility-cli"></a>
-
-### 5.2 Keep minimum-GPU sizing on the compatibility CLI
-
-Use `aiconfigurator cli recommend` with `--target-request-rate` or `--target-concurrency` for
-AIC's minimum-GPU and replica-sizing result. For four requests/s under explicit latency limits:
-
-```bash
-aiconfigurator cli recommend \
-  --model-path meta-llama/Meta-Llama-3.1-8B \
-  --system h200_sxm --backend vllm --backend-version 0.24.0 \
-  --target-request-rate 4 --isl 1024 --osl 128 \
-  --ttft 800 --tpot 30 --strict-sla
-```
-
-**Result to inspect:** the sizing table reports required GPUs, parallel configurations, and replica
-counts under the requested load and SLA. For closed-loop sizing, replace `--target-request-rate 4`
-with `--target-concurrency 32`. The [request-rate example](#33-search-under-a-request-rate) explains
-why AISimulate's alternative configuration ranking can choose a different GPU count.
-
-Legacy `default` also routes to sizing when a load target is supplied without `--total-gpus`.
-If both are supplied, it uses the GPU budget and warns that the load target is ignored.
-
 <a id="static-estimates-and-diagnostics"></a>
+<a id="53-static-estimates-and-diagnostics"></a>
 
-### 5.3 Static estimates and diagnostics
+### 5.2 Static estimates and diagnostics
 
-#### 5.3.1 Static estimates
+<a id="531-static-estimates"></a>
+
+#### 5.2.1 Static estimates
 
 **Intentionally not migrated to the AISimulate CLI.** AIC's `static` (fixed-batch prefill plus
 decode), `static_ctx` (prefill only), and `static_gen` (decode only) modes are not exposed by
@@ -1229,32 +1362,39 @@ aiconfigurator cli estimate \
 
 <a id="detailed-diagnostics"></a>
 <a id="532-detailed-diagnostics"></a>
+<a id="532-remaining-detailed-diagnostic-gaps"></a>
+<a id="532-detailed-diagnostic-availability-limits"></a>
+<a id="522-remaining-detailed-diagnostic-gaps"></a>
 
-#### 5.3.2 Remaining detailed-diagnostic gaps
+#### 5.2.2 Detailed-diagnostic availability limits
 
-The initial `summary`, `memory`, `time`, and `all` selectors are covered in
-[section 4.10](#410-inspect-prediction-details). The power stack adds `energy` and includes it in
-`all`, as shown in [section 4.11](#411-power-and-energy-analysis). Keep AIC `estimate --detail`
-when you need these additional diagnostic capabilities:
+All five selectors (`summary,memory,time,energy,source`) are supported by `predict`; `all`
+requests them together. [Section 4.10](#410-inspect-prediction-details) covers timing and
+provenance; [section 4.11](#411-power-and-energy-analysis) covers energy.
 
-| Remaining gap | AIC selector and evidence |
-| --- | --- |
-| Phase and per-operation timing; speed-of-light (SOL) comparisons | `time`, when the estimator exports the corresponding evidence. |
-| Per-operation data provenance and fallback information | `source`. |
+The native op-level engine exports scheduled phase/operation timings, SOL comparisons, source
+tags, and executed MoE communication measurement substitutions. An operation without a SOL
+implementation keeps its actual timing and provenance and reports the SOL reason. These
+comparisons use the same scheduled shapes and do not replace the selected estimator.
 
-AIC `all` requests `summary,memory,time,energy,source`; AISimulate `all` requests
-`summary,memory,time,energy`. AISimulate energy evidence requires a supported engine path;
-the external Dynamo Python adapter's diagnostics export remains unqualified. Available AIC
-sections depend on the estimate mode and data;
-static-mode `--detail energy` can display `<no energy data>` when operation-energy data is
-absent. For specialized fixed-batch diagnostics, use the compatibility
-[static-estimate workflow](#531-static-estimates).
+Whole-model FPM and latency-only providers do not expose per-operation timing/source evidence.
+Analytical EPD/AFD overlays and the external Dynamo Python adapter do not export a qualified
+combined operation report. Such paths retain explicit unavailable reasons; serving timing
+statistics remain available where exported. Source tags describe the engine's provenance
+classification, not full file/row lineage. Fallback records describe executed measurement
+substitutions, not every estimator-construction attempt.
+
+For specialized fixed-batch diagnostics, keep the compatibility
+[static-estimate workflow](#521-static-estimates).
 
 <a id="deployment-artifacts"></a>
+<a id="54-deployment-artifacts"></a>
 
-### 5.4 Deployment artifacts
+### 5.3 Deployment artifacts
 
-#### 5.4.1 Standalone `generate` command: not planned
+<a id="541-standalone-generate-command-not-planned"></a>
+
+#### 5.3.1 Standalone `generate` command: not planned
 
 `aiconfigurator cli generate` is a fast shortcut for a basic deployment configuration without
 search or SLA optimization. We do not plan to add an equivalent standalone `aisimulate generate`
@@ -1272,7 +1412,9 @@ aiconfigurator cli generate \
 **Result to inspect:** `deployment/` contains a basic deployment configuration generated without
 search or SLA optimization.
 
-#### 5.4.2 Deployment files: not yet available in the AISimulate CLI
+<a id="542-deployment-files-not-yet-available-in-the-aisimulate-cli"></a>
+
+#### 5.3.2 Deployment files: not yet available in the AISimulate CLI
 
 `aisimulate recommend` does not yet create deployment files, such as launch scripts or Kubernetes
 manifests. It saves the setups it recommends in `recommendations/*.yaml`. Pass one of these files
@@ -1285,11 +1427,12 @@ a separate `generate` command is not required. Generation does not support
 analytical EPD/AFD or heterogeneous P/D hardware.
 
 <a id="experiment-files-and-support-queries"></a>
+<a id="55-experiment-files-and-support-queries"></a>
 
-### 5.5 Experiment files and support queries
+### 5.4 Experiment files and support queries
 
 Existing named experiments still run with AIC. For a complete runnable input, save
-`legacy-search.yaml` from the [legacy search example](#57-legacy-search-domains-and-topology-coverage)
+`legacy-search.yaml` from the [legacy search example](#56-legacy-search-domains-and-topology-coverage)
 below, then run it and query model support:
 
 ```bash
@@ -1303,14 +1446,19 @@ Translate each experiment separately before moving it to the unified CLI. Estima
 alone does not establish support for an entire CLI workflow.
 
 <a id="estimator-controls-and-speculative-decoding"></a>
+<a id="56-estimator-controls-and-speculative-decoding"></a>
+<a id="55-estimator-controls-and-speculative-decoding"></a>
+<a id="56-remaining-estimator-and-speculative-decoding-gaps"></a>
 
-### 5.6 Estimator controls and speculative decoding
+### 5.5 Remaining estimator and speculative-decoding gaps
 
 For supported estimator selection, fallback, database/transfer policies, system roots, and
 regression/correction tuning, see [section 4.6](#46-select-and-configure-performance-estimators).
-The controls below continue to use AIC or the estimator SDK: explicit quantization/kernel
-selectors, exact cached-prefix assumptions, and non-ngram speculative decoding. Per-operation source
-diagnostics also remain on the compatibility CLI or SDK.
+Unified prediction and recommendation also support pinned quantization/kernel controls and
+MTP with explicit accepted-token assumptions; see [section 4.6.3](#preserve-pinned-engine-and-request-controls).
+Ngram prediction and recommendation are covered in [section 4.12](#412-ngram-prompt-lookup-speculative-decoding).
+Fixed-batch estimates, fixed cached-token assumptions, speculative schemes beyond MTP and ngram,
+and per-operation source diagnostics continue to use the compatibility CLI or SDK.
 
 **Pin quantization and select an attention implementation.** For a dense-model decode estimate
 with explicit BF16 compute/cache settings and the framework's default attention implementation:
@@ -1327,8 +1475,10 @@ aiconfigurator cli estimate \
 ```
 
 **Result to inspect:** the printed configuration and timing/source breakdown use the requested
-settings. Supported selectors depend on the backend and data. MoE-specific quantization and kernel
-selectors also use AIC/SDK controls; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
+settings. Supported selectors depend on the backend and data. For serving simulation, pin the
+same supported quantization and kernel selectors through the unified `engine` fields in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). The static estimate and source
+breakdown above remain compatibility features; see [advanced AIC tuning](../../python/aisimulate/docs/advanced_tuning.md).
 
 <a id="exact-cached-prefix-estimates"></a>
 
@@ -1349,18 +1499,25 @@ aiconfigurator cli estimate \
 **Result to inspect:** the summary prints `Prefix: 256`, followed by the timing breakdown for that
 assumption. AISimulate supports prefix-cache simulation, but `kv_cache.prefix_caching: true` enables
 reuse instead of setting a fixed cached-token count. Session shared-prefix settings describe
-workload sharing. Keep AIC when you require its exact cached-token assumption.
+workload sharing. `traffic.source.cached_prefix_tokens` likewise sets an exact shared prefix for
+synthetic requests, with a cold first request and reuse governed by cache state. Keep AIC when
+you require its fixed cached-token assumption.
 
 **Other speculative-decoding schemes.** Ngram prediction and recommendation are covered in
-[section 4.12](#412-ngram-prompt-lookup-speculative-decoding). MTP, EAGLE-3, DFlash, DSpark, and
-standalone draft models still use the compatibility CLI or SDK, subject to
+[section 4.12](#412-ngram-prompt-lookup-speculative-decoding). The unified CLI supports MTP through
+`engine.nextn` and an explicit `engine.nextn_accepted`, as shown in
+[section 4.6.3](#preserve-pinned-engine-and-request-controls). Neither path predicts acceptance rates.
+EAGLE-3, DFlash, DSpark, and standalone draft models still use the compatibility CLI or SDK, subject to
 [scheme-specific configuration and limits](../../python/aisimulate/src/aisimulate_core/sdk/speculation/README.md#estimate-command).
 
 <a id="legacy-search-domains-and-topology-coverage"></a>
+<a id="57-legacy-search-domains-and-topology-coverage"></a>
 
-### 5.7 Legacy search domains and topology coverage
+### 5.6 Legacy search domains and topology coverage
 
-#### 5.7.1 Pipeline parallelism (PP)
+<a id="571-pipeline-parallelism-pp"></a>
+
+#### 5.6.1 Pipeline parallelism (PP)
 
 **Keep PP-dependent workflows on the AIC compatibility CLI.**
 AIC supports PP estimation and search. AISimulate's default search fixes PP=1. Explicit
@@ -1399,7 +1556,9 @@ aiconfigurator cli exp --yaml-path legacy-search.yaml --save-dir ./legacy-search
 including feasible TP/PP configurations and their latency/throughput. This example requests PP=1/2
 and pins CP=1.
 
-#### 5.7.2 Context parallelism (CP)
+<a id="572-context-parallelism-cp"></a>
+
+#### 5.6.2 Context parallelism (CP)
 
 **The unified AISimulate CLI has no CP configuration field.** AIC exposes per-role
 `agg_cp_candidates`, `prefill_cp_candidates`, and `decode_cp_candidates`. CP>1 support depends on
@@ -1407,7 +1566,9 @@ the model family and backend; the dense-model PP example above does not establis
 Keep supported CP workflows on AIC. See
 [advanced AIC search controls](../../python/aisimulate/docs/advanced_tuning.md).
 
-#### 5.7.3 GPUs per worker and parallelism search domains
+<a id="573-gpus-per-worker-and-parallelism-search-domains"></a>
+
+#### 5.6.3 GPUs per worker and parallelism search domains
 
 **AISimulate's default preset does not reproduce every AIC parallelism domain.** AIC's
 `*_num_gpu_candidates` lists explicit GPU counts per worker. AISimulate's default preset uses
@@ -1415,30 +1576,38 @@ Keep supported CP workflows on AIC. See
 Explicit supported parallelism configurations are a separate path. Keep AIC when you need its
 exact candidate domain; see the [default search projection](../sweeper/architecture.md#parallelism-search-projection).
 
-#### 5.7.4 Fixed batch sizes and capacity sweeps
+<a id="574-fixed-batch-sizes-and-capacity-sweeps"></a>
+
+#### 5.6.4 Fixed batch sizes and capacity sweeps
 
 **AIC batch size has no direct mapping to regular AISimulate serving batches.** AIC can estimate
 a fixed `--batch-size` and sweep operating points. AISimulate's aggregated and P/D schedulers
 form batches from the workload: `traffic.load.concurrency` controls in-flight requests, while
 `scheduler.max_sequences` limits batch admission. Neither fixes every batch to a requested size.
-Fixed-batch static modes are [intentionally not migrated](#531-static-estimates). Keep AIC for
+Fixed-batch static modes are [intentionally not migrated](#521-static-estimates). Keep AIC for
 those diagnostics or its original capacity-sweep behavior.
 
-#### 5.7.5 Context and request-length sweeps
+<a id="575-context-and-request-length-sweeps"></a>
+
+#### 5.6.5 Context and request-length sweeps
 
 **Context length and synthetic request lengths stay fixed within one unified-CLI search.**
 `engine.context_length`, `traffic.source.input_tokens`, and `traffic.source.output_tokens` do not
 accept recommendation domains. Use separate AISimulate configurations to compare lengths, or
 keep AIC `exp` for existing named experiments with different ISL, OSL, and context limits.
 
-#### 5.7.6 Exhaustive search and legacy ranking
+<a id="576-exhaustive-search-and-legacy-ranking"></a>
+
+#### 5.6.6 Exhaustive search and legacy ranking
 
 **AISimulate recommendation does not guarantee exhaustive coverage of a search domain.**
 Its Bayesian and random optimizers sample within `optimizer.max_trials`; increasing the budget
 does not guarantee every valid configuration is evaluated. Keep AIC when you need its enumerated
 capacity sweep and ranking semantics.
 
-#### 5.7.7 Model, backend, and topology combinations
+<a id="577-model-backend-and-topology-combinations"></a>
+
+#### 5.6.7 Model, backend, and topology combinations
 
 **Support for one model/backend does not imply support for every topology.** Check the specific
 feature's restrictions before migrating:

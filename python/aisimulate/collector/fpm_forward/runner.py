@@ -309,7 +309,11 @@ def _stop_commands(processes: list[subprocess.Popen[str]]) -> None:
         try:
             _signal_command(process, force=force)
         except OSError as error:
-            errors.append(error)
+            # On Darwin the owner may still be reaping a zombie while holding
+            # Popen's wait lock. Defer TERM EPERM to the group grace probes;
+            # persistent denial still fails, and KILL failures are never hidden.
+            if force or sys.platform != "darwin" or not isinstance(error, PermissionError):
+                errors.append(error)
 
     for process in processes:
         send(process, force=False)
@@ -322,9 +326,11 @@ def _stop_commands(processes: list[subprocess.Popen[str]]) -> None:
                 if _command_group_running(process):
                     running.append(process)
             except OSError as error:
-                # EPERM is not evidence of disappearance. Still attempt KILL,
-                # report the observation, and continue cleaning other groups.
-                errors.append(error)
+                # EPERM is not evidence of disappearance. Give Darwin's
+                # communicate owner the grace period to reap; persistent denial
+                # is reported before escalation, without skipping other groups.
+                if sys.platform != "darwin" or not isinstance(error, PermissionError) or time.monotonic() >= deadline:
+                    errors.append(error)
                 running.append(process)
         pending = running
         remaining = deadline - time.monotonic()

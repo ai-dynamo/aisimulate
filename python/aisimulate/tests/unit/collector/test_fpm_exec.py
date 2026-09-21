@@ -956,7 +956,7 @@ def test_fpm_exec_result_naming_matches_contract_on_shared_vectors(
         assert Path(path).is_file(), path
 
 
-@pytest.mark.parametrize("budget, expected_status", [(1, 1), (3, 0)])
+@pytest.mark.parametrize("budget, expected_status", [(1, 1), (10, 0)])
 def test_follower_readiness_budget_covers_delayed_leader_start(tmp_path, budget, expected_status):
     marker = tmp_path / "engine-started"
     staged = _stage(
@@ -967,8 +967,22 @@ def test_follower_readiness_budget_covers_delayed_leader_start(tmp_path, budget,
     (staged.workdir / "collector-runtime-env.sh").write_text(f"export FPM_READINESS_TIMEOUT_SECONDS={budget}\n")
     stop = threading.Event()
     ready = threading.Event()
+    readiness_started = tmp_path / "readiness-started"
+    # Mark the actual follower loop, not the time the shell was spawned.
+    source = staged.script.read_text()
+    deadline_line = "deadline = time.monotonic() + float(sys.argv[2])"
+    assert source.count(deadline_line) == 1
+    staged.script.write_text(
+        source.replace(
+            deadline_line,
+            deadline_line + f"\nopen({str(readiness_started)!r}, 'w').close()",
+        )
+    )
 
     def delayed_leader():
+        while not readiness_started.exists():
+            if stop.wait(0.01):
+                return
         if stop.wait(1.4):
             return
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:

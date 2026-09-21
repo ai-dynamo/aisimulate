@@ -183,6 +183,55 @@ model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
 
+### External whole-forward FPM data
+
+Set `estimator_config.fpm_interpolation.fpm_parquet_path` on the canonical configuration to use an external parquet and its required same-stem `.metadata.json` sidecar:
+
+```python
+config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-0.6B",
+    system="h200_sxm",
+    backend="vllm",
+    backend_version="0.25.1",
+    worker_type="aggregated",
+    estimation_mode="fpm_interpolation",
+    estimator_config={
+        "fpm_interpolation": {"fpm_parquet_path": "/data/reviewed-fpm.parquet"},
+    },
+)
+model = RustForwardPassPerfModel.best_available(config)
+```
+
+The parquet identity must match the requested model, hardware, backend version, topology, and quantization. The systems YAML is still required, but a backend timing-data directory is unnecessary. Relative paths bind to the working directory when the model is constructed; resolved provenance stores the absolute path. The control applies when FPM interpolation is selected; other estimators retain it in provenance without opening the file. Saved legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` inputs migrate to the same canonical control, which is preserved in replay and per-role recommendation output.
+
+`model.static_phase_latency(batch_size=1, input_tokens=512, output_tokens=4, prefill=False)` exposes the native engine's existing static integration before online correction. Prefill returns one prefill latency; decode returns total decode latency for the output sequence. This method requires a native estimator. AFD+PD uses it for an external-FPM regular companion, dividing total decode latency by `max(1, output_tokens - 1)` for TPOT. AFD attention and FFN workers retain their existing timing provider.
+
+### Engine identity controls
+
+The canonical configuration also carries quantization overrides and
+`attention_backend`, `moe_backend`, `enable_eplb` (default `false`), and
+`wideep_num_slots` (default absent). These controls reach model construction,
+KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend
+selection require an MoE model. Collected FPM interpolation cannot represent
+EPLB, slots, or MoE backend overrides; it rejects an explicit incompatible
+request and is skipped during automatic selection for those identities.
+
+Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add
+`moe_backend: None`, `enable_eplb: false`, and `wideep_num_slots: None`.
+`ForwardPassPerfModelConfig::new(...)` supplies these defaults. This extends
+the canonical configuration introduced by #242.
+
+Rust callers constructing `SyntheticTraceSpec` must also add
+`cached_prefix_tokens: 0` to preserve existing prefix-sharing behavior. A positive
+value creates shared input tokens; cache hits still depend on runtime state.
+The value must align to the trace's `block_size` and must not exceed any sampled
+input length. Unified replay uses one-token trace blocks for an exact prefix,
+then applies the engine's cache block size when calculating reuse.
+
+`nextn` remains compute-side identity. Expected accepted draft tokens are a
+simulator workload assumption, supplied separately by the unified CLI as
+`engine.nextn_accepted`; they do not tune the estimator.
+
 ### Selection and fallback
 
 `estimation_mode` defaults to `auto`; `fallback_policy` defaults to `deny`.
@@ -318,6 +367,24 @@ missing-data sentinel, not evidence of a zero-power operation. See the
 [modeled-power contract](power-model.md) for the latency-weighted coverage gate,
 aggregation rules, and public output boundary. Typed per-op energy alone does
 not make unified replay power available.
+
+## Static phase diagnostics
+
+The canonical `ForwardPassPerfModel` returned by `best_available` exposes
+`static_phase_diagnostics(batch_size, context_length, prefix, prefill)` in Rust; the Python
+`RustForwardPassPerfModel` wrapper accepts the same named arguments (with `prefix=0`).
+It returns name-folded operation latency/energy, source tags, executed MoE communication
+measurement substitutions, and optional SOL latency/compute/memory evidence. Decode means one
+step at `context_length + 1`; prefill removes the cached prefix. Values precede learned online
+correction. Whole-model estimators reject operation decomposition; missing SOL implementations
+carry explicit reasons without changing the selected latency estimate.
+
+Replay requests this evidence through `ReplayOutputRequirements(capture_performance_diagnostics=True)`.
+`TimingOperationEvidence.details` is optional; providers without it must retain `None` (Rust
+struct literals must initialize the new field). The constructor keeps it absent by default.
+The CLI's time/source reports sum the observed phase work, including repeated cached timing
+queries, and preserve distinct fallback records while folding repeated operation names.
+Identical substitutions are deduplicated, so record counts are not execution counts.
 
 ## Replay timing evidence
 

@@ -105,7 +105,7 @@ class DeepseekV41RealKVScheduler(native.InstrumentedScheduler):
                 EXECUTION_COLUMNS,
                 execution_identity(
                     raw_config,
-                    engram_cpu_offload=config.model_config.engram_config.cpu_offload,
+                    engram_cpu_offload=engram.cpu_offload,
                     input_modality="text",  # This producer creates only text token-ID requests.
                 ),
                 strict=True,

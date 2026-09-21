@@ -348,6 +348,22 @@ impl Engine {
             .as_ref()
             .and_then(|s| s.nextn)
             .unwrap_or(0);
+        Self::validate_fpm_spec(&spec)?;
+        Ok(Engine {
+            context_ops: spec.context_ops,
+            generation_ops: spec.generation_ops,
+            db,
+            nextn,
+        })
+    }
+
+    fn validate_fpm_spec(spec: &EngineSpec) -> Result<(), AicError> {
+        let nextn = spec
+            .engine
+            .speculative
+            .as_ref()
+            .and_then(|s| s.nextn)
+            .unwrap_or(0);
         // Whole-model FPM phases lead with the target forward pass, followed
         // only by draft operations whose work is absent from the collected
         // autoregressive curves. Validate hand-built specs as well as Python's.
@@ -368,7 +384,10 @@ impl Engine {
             })
         }
         let any_fpm = contains_fpm(&spec.context_ops) || contains_fpm(&spec.generation_ops);
-        if any_fpm {
+        if any_fpm
+            || spec.engine.fpm_parquet_path.is_some()
+            || spec.engine.forward_model.as_deref() == Some("fpm")
+        {
             // Hybrid speculative shape: the FIRST op of each phase is the
             // whole-model FpmForward (target), optionally followed by
             // op-level DRAFT ops (the Python rewrite keeps a scheme's
@@ -383,6 +402,10 @@ impl Engine {
                 Some(Op::FpmForward(d)) if d.phase == FpmPhase::Decode
             ) && !contains_fpm(&spec.context_ops[1..])
                 && !contains_fpm(&spec.generation_ops[1..]);
+            crate::config::validate_fpm_parquet_path(
+                spec.engine.fpm_parquet_path.as_deref(),
+                shape_ok,
+            )?;
             if !shape_ok {
                 return Err(AicError::InvalidEngineConfig(
                     "forward_model='fpm' spec must contain exactly one FpmForward op per phase \
@@ -417,12 +440,7 @@ impl Engine {
                 ));
             }
         }
-        Ok(Engine {
-            context_ops: spec.context_ops,
-            generation_ops: spec.generation_ops,
-            db,
-            nextn,
-        })
+        Ok(())
     }
 
     /// FPM whole-model engine: each phase list LEADS with one `FpmForward`
@@ -458,6 +476,7 @@ impl Engine {
         systems_root: &std::path::Path,
     ) -> Result<Engine, AicError> {
         let spec = EngineSpec::from_bincode(bytes)?;
+        Self::validate_fpm_spec(&spec)?;
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         let version = spec.engine.backend_version.as_deref().ok_or_else(|| {
             AicError::InvalidEngineConfig(
@@ -475,7 +494,7 @@ impl Engine {
         // engines would lazily re-parse the same parquet files on its first
         // query (~0.5s per engine on data-rich systems). Mode/policy, memo
         // caches, and the provenance accumulator stay per-engine.
-        let db = PerfDatabase::load_resolved_shared(
+        let db = PerfDatabase::load_resolved_shared_with_fpm(
             systems_root,
             &spec.engine.system_name,
             spec.engine.backend.as_str(),
@@ -500,6 +519,7 @@ impl Engine {
                 spec.engine.database_mode,
                 DatabaseMode::Empirical | DatabaseMode::Sol
             ) || spec.engine.tolerate_dirless_version,
+            spec.engine.fpm_parquet_path.as_deref(),
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
         Engine::build(spec, Arc::new(db))
@@ -516,19 +536,10 @@ impl Engine {
     }
 
     pub(crate) fn validate_forward_pass_readiness(&self) -> Result<(), AicError> {
-        let Some((prefill, decode)) = self.fpm_ops() else {
-            return super::readiness::validate(
-                &self.db,
-                self.context_ops.iter().chain(&self.generation_ops),
-            );
-        };
-        self.db
-            .fpm_forward
-            .select_cell(&prefill.match_identity, &prefill.model_path)?;
-        self.db
-            .fpm_forward
-            .select_cell(&decode.match_identity, &decode.model_path)?;
-        Ok(())
+        super::readiness::validate(
+            &self.db,
+            self.context_ops.iter().chain(&self.generation_ops),
+        )
     }
 
     /// Shared perf database handle.
@@ -1350,6 +1361,155 @@ impl Engine {
         Ok((prefill_component, marginal_decode))
     }
 
+    /// One prefill or decode step with executed provenance and a diagnostic SOL
+    /// comparison. SOL failures do not change the selected estimator or latency.
+    pub(crate) fn static_phase_diagnostics(
+        &self,
+        batch_size: u32,
+        context_length: u32,
+        prefix: u32,
+        prefill: bool,
+    ) -> Result<Vec<super::diagnostics::StaticOperationDiagnostics>, AicError> {
+        use super::diagnostics::{
+            ExecutedFallback, OperationDetails, SolDiagnostics, StaticOperationDiagnostics,
+        };
+        if prefix > context_length || (!prefill && prefix != 0) {
+            return Err(AicError::InvalidEngineConfig(
+                "invalid static phase prefix".into(),
+            ));
+        }
+        if !prefill && context_length == u32::MAX {
+            return Err(AicError::InvalidEngineConfig(
+                "decode context length overflows the next token".into(),
+            ));
+        }
+        if batch_size == 0 || (prefill && context_length == prefix) {
+            return Ok(Vec::new());
+        }
+        let token_count = if prefill {
+            batch_size.checked_mul(context_length - prefix)
+        } else {
+            self.nextn
+                .checked_add(1)
+                .and_then(|width| batch_size.checked_mul(width))
+        };
+        if token_count.is_none() {
+            return Err(AicError::InvalidEngineConfig(
+                "static phase token count exceeds u32".into(),
+            ));
+        }
+        let runtime = RuntimeConfig {
+            batch_size,
+            isl: context_length,
+            prefix,
+            osl: if prefill { 1 } else { 2 },
+            ..Default::default()
+        };
+        let mode = if prefill {
+            StaticMode::Context
+        } else {
+            StaticMode::Generation
+        };
+        let (context, generation) =
+            self.run_static_per_op_with_metadata(&runtime, mode, DEFAULT_STATIC_STRIDE)?;
+        let entries = if prefill { context } else { generation };
+        let sol_db = self.db.sol_full_view();
+        let ops = if prefill {
+            &self.context_ops
+        } else {
+            &self.generation_ops
+        };
+        entries
+            .into_iter()
+            .map(|(name, latency_ms, energy_wms, source, fallbacks)| {
+                let mut sol = PerOpSolFold::default();
+                let comparison = ops
+                    .iter()
+                    .filter(|op| op.name() == name)
+                    .try_for_each(|op| {
+                        let result = if prefill {
+                            query_context_op(
+                                op,
+                                &sol_db,
+                                batch_size,
+                                context_length - prefix,
+                                prefix,
+                                1.0,
+                                None,
+                            )
+                        } else {
+                            query_generation_op(
+                                op,
+                                &sol_db,
+                                batch_size.saturating_mul(self.nextn.saturating_add(1)),
+                                1,
+                                context_length.saturating_add(1),
+                                1.0,
+                                0,
+                                None,
+                            )
+                        }?;
+                        sol.add(op, result)
+                    });
+                let (sol, sol_unavailable_reason) = match comparison {
+                    Ok(()) => match sol.into_values().into_iter().next() {
+                        Some((_, latency_ms, math_ms, memory_ms))
+                            if [latency_ms, math_ms, memory_ms]
+                                .iter()
+                                .all(|v| v.is_finite() && *v >= 0.0) =>
+                        {
+                            (
+                                Some(SolDiagnostics {
+                                    latency_ms,
+                                    math_ms,
+                                    memory_ms,
+                                }),
+                                None,
+                            )
+                        }
+                        _ => (
+                            None,
+                            Some("operation did not export finite SOL evidence".into()),
+                        ),
+                    },
+                    Err(error) => (None, Some(error.to_string())),
+                };
+                let fallbacks = fallbacks
+                    .into_iter()
+                    .flat_map(|(first, rest)| std::iter::once(first).chain(rest))
+                    .map(
+                        |(
+                            phase,
+                            backend,
+                            requested_ep_size,
+                            requested_node_num,
+                            measurement_ep_size,
+                            measurement_node_num,
+                        )| ExecutedFallback {
+                            inference_phase: phase.into(),
+                            comm_backend: backend.into(),
+                            requested_ep_size,
+                            requested_node_num,
+                            measurement_ep_size,
+                            measurement_node_num,
+                        },
+                    )
+                    .collect();
+                Ok(StaticOperationDiagnostics {
+                    name,
+                    latency_ms,
+                    energy_wms,
+                    source: source.into(),
+                    details: OperationDetails {
+                        sol,
+                        sol_unavailable_reason,
+                        fallbacks,
+                    },
+                })
+            })
+            .collect()
+    }
+
     /// [`Self::run_static`] with the per-op values kept instead of summed:
     /// `(context, generation)` lists of `(name, latency_ms, energy_wms,
     /// source)`, NAME-FOLDED (see [`PerOpValue`]): each name crosses once,
@@ -2161,6 +2321,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
             kv_block_size: None,
             parallel: ParallelMapping {
@@ -2350,6 +2511,17 @@ mod tests {
         let (_, generation) = engine
             .run_static_per_op_with_metadata(&runtime, StaticMode::Generation, 32)
             .unwrap();
+        let diagnostics = engine.static_phase_diagnostics(1, 1024, 0, false).unwrap();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].latency_ms, generation[0].1);
+        assert_eq!(diagnostics[0].source, generation[0].3);
+        let records = &diagnostics[0].details.fallbacks;
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].requested_ep_size, 32);
+        assert_eq!(records[1].requested_ep_size, 64);
+        assert!(records.iter().all(|r| r.measurement_ep_size == 4
+            && r.measurement_node_num == 1
+            && r.inference_phase == "generation"));
         assert_eq!(generation.len(), 1, "same-name ops must remain name-folded");
         assert_eq!(
             generation[0].4,
@@ -2358,6 +2530,51 @@ mod tests {
                 vec![("generation", "deepep_ll", 64, 16, 4, 1)],
             ))
         );
+    }
+
+    #[test]
+    fn phase_diagnostics_match_latency_and_preserve_sol_with_prefix_and_mtp() {
+        for nextn in [None, Some(2)] {
+            let engine = build_engine(nextn);
+            assert!(
+                engine
+                    .static_phase_diagnostics(u32::MAX, 2, 0, true)
+                    .is_err()
+            );
+            if nextn.is_some() {
+                assert!(
+                    engine
+                        .static_phase_diagnostics(u32::MAX, 2, 0, false)
+                        .is_err()
+                );
+            }
+            for prefill in [true, false] {
+                let prefix = if prefill { 128 } else { 0 };
+                let rows = engine
+                    .static_phase_diagnostics(4, 512, prefix, prefill)
+                    .unwrap();
+                let expected = if prefill {
+                    engine.predict_prefill_latency(4, 512, prefix).unwrap()
+                } else {
+                    engine.predict_decode_latency(4, 512, 2).unwrap()
+                };
+                assert!((rows.iter().map(|r| r.latency_ms).sum::<f64>() - expected).abs() < 1e-10);
+                // RMSNorm moves 8192 bytes per token; SOL is memory bandwidth only.
+                let norm = rows.iter().find(|r| r.name == "rmsnorm").unwrap();
+                let tokens = if prefill {
+                    4 * (512 - prefix)
+                } else {
+                    4 * (nextn.unwrap_or(0) + 1)
+                };
+                let expected_sol =
+                    8192.0 * tokens as f64 / engine.database().system_spec.gpu.mem_bw * 1000.0;
+                let sol = norm.details.sol.as_ref().unwrap();
+                assert!((sol.memory_ms - expected_sol).abs() < 1e-12);
+                assert_eq!(sol.math_ms, 0.0);
+                assert_eq!(sol.latency_ms, sol.memory_ms);
+                assert!(norm.details.fallbacks.is_empty());
+            }
+        }
     }
 
     #[test]
@@ -2496,6 +2713,39 @@ mod tests {
         query_context_op(&stage.children[0], &engine.db, 1, 1, 0, 1.0, None)
             .unwrap()
             .latency_ms
+    }
+
+    #[test]
+    fn phase_diagnostics_preserve_dsv41_bounded_prefill_and_decode_geometry() {
+        for replay in [false, true] {
+            let engine = dsv41_probe_engine(replay);
+            let unit = dsv41_probe_token_ms(&engine);
+            for query in [1, 127, 128, 129, 256] {
+                let prefill = engine
+                    .static_phase_diagnostics(2, 1024 + query, 1024, true)
+                    .unwrap();
+                let decoder_tokens = if replay { query.min(128) } else { query };
+                // Two requests, two memory probes per stage. Only the decoder
+                // stage clips its new-token work when bounded replay is enabled.
+                let expected = 4.0 * f64::from(query + decoder_tokens) * unit;
+                assert!(
+                    (prefill.iter().map(|row| row.latency_ms).sum::<f64>() - expected).abs()
+                        < 1e-12
+                );
+                let decode = engine
+                    .static_phase_diagnostics(2, 1024 + query, 0, false)
+                    .unwrap();
+                assert!(
+                    (decode.iter().map(|row| row.latency_ms).sum::<f64>() - 8.0 * unit).abs()
+                        < 1e-12
+                );
+                for row in prefill.iter().chain(&decode) {
+                    let sol = row.details.sol.as_ref().unwrap();
+                    assert!((sol.latency_ms - row.latency_ms).abs() < 1e-12);
+                    assert!(row.details.sol_unavailable_reason.is_none());
+                }
+            }
+        }
     }
 
     #[test]
@@ -2988,17 +3238,25 @@ mod tests {
     /// prefill], generation = [FpmForward decode], empty sol_ops (grid-exact
     /// queries never call SOL).
     fn build_fpm_engine(tmp: &std::path::Path, nextn: Option<u32>) -> Result<Engine, AicError> {
+        let spec = build_fpm_spec(tmp, nextn);
+        Engine::from_spec_bytes(&spec.to_bincode()?, tmp)
+    }
+
+    fn build_fpm_spec(tmp: &std::path::Path, nextn: Option<u32>) -> EngineSpec {
         use crate::perf_database::fpm_forward::tests::{
             default_identity, default_rows, write_pair,
         };
-        write_pair(tmp, &default_rows());
-        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
-        db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
-            tmp.to_path_buf(),
-            "b200_sxm",
-            "vllm",
-            "0.25.1",
-        ));
+        let parquet = write_pair(tmp, &default_rows());
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.join("b200_sxm.yaml"),
+        )
+        .unwrap();
+        let mut config = fixture_engine_config(nextn);
+        config.backend_version = Some("0.25.1".into());
+        config.forward_model = Some("fpm".into());
+        config.fpm_parquet_path = Some(parquet);
+        config.systems_path = Some(tmp.to_path_buf());
         let fpm_op = |phase: FpmPhase| {
             Op::FpmForward(FpmForwardOp {
                 name: format!("fpm_forward_{}", phase.as_str()),
@@ -3011,12 +3269,55 @@ mod tests {
                 sol_ops: vec![],
             })
         };
-        let spec = EngineSpec::new(
-            fixture_engine_config(nextn),
+        EngineSpec::new(
+            config,
             vec![fpm_op(FpmPhase::Prefill)],
             vec![fpm_op(FpmPhase::Decode)],
-        );
-        Engine::build(spec, Arc::new(db))
+        )
+    }
+
+    #[test]
+    fn external_fpm_engines_share_tables_without_backend_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = build_fpm_engine(tmp.path(), None).unwrap();
+        let second = build_fpm_engine(tmp.path(), None).unwrap();
+        assert!(!tmp.path().join("data").exists());
+        assert!(Arc::ptr_eq(
+            first.database().tables_arc(),
+            second.database().tables_arc()
+        ));
+    }
+
+    #[test]
+    fn external_fpm_rejects_invalid_specs_before_database_loading() {
+        let tmp = tempfile::tempdir().unwrap();
+        for path in ["", "/missing/reviewed-fpm.parquet"] {
+            let mut config = fixture_engine_config(None);
+            config.fpm_parquet_path = Some(path.into());
+            let spec = EngineSpec::new(config, context_ops(), generation_ops());
+            let err = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+            assert!(matches!(err, AicError::InvalidEngineConfig(_)), "{err}");
+            assert!(err.to_string().contains("fpm_parquet_path"), "{err}");
+        }
+    }
+
+    #[test]
+    fn external_fpm_invalid_artifacts_fail_on_first_query() {
+        for missing_parquet in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let spec = build_fpm_spec(tmp.path(), None);
+            let path = spec.engine.fpm_parquet_path.as_ref().unwrap();
+            let expected = if missing_parquet {
+                std::fs::remove_file(path).unwrap();
+                "does not exist"
+            } else {
+                std::fs::write(path.with_extension("metadata.json"), "not JSON").unwrap();
+                "metadata"
+            };
+            let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap();
+            let err = engine.predict_prefill_latency(1, 512, 0).unwrap_err();
+            assert!(err.to_string().contains(expected), "{err}");
+        }
     }
 
     #[test]
@@ -4021,6 +4322,44 @@ mod tests {
             generation_ops_list,
         );
         (spec, db)
+    }
+
+    #[test]
+    fn fpm_readiness_checks_granular_draft_tail() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("data/b200_sxm/vllm/0.24.0")).unwrap();
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.path().join("b200_sxm.yaml"),
+        )
+        .unwrap();
+        for missing_gemm in [false, true] {
+            let tail = if missing_gemm {
+                Op::Gemm(GemmOp::new("draft_gemm", 16, 16, GemmQuantMode::Bfloat16))
+            } else {
+                generation_ops().remove(0)
+            };
+            let (spec, _) = fpm_hybrid_spec(tmp.path(), Some(7), 8, vec![tail], vec![]);
+            let mut db = PerfDatabase::load(tmp.path(), "b200_sxm", "vllm", "0.24.0").unwrap();
+            db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                "vllm",
+                "0.25.1",
+            ));
+            let engine = Engine::build(spec, Arc::new(db)).unwrap();
+            let result = engine.validate_forward_pass_readiness();
+            if missing_gemm {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("gemm_perf.parquet")
+                );
+            } else {
+                result.unwrap();
+            }
+        }
     }
 
     /// Hybrid shape validation: draft tails are legal; a width/nextn

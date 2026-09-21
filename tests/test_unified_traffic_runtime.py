@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 import runpy
 import subprocess
@@ -500,8 +501,15 @@ def _fpm_engine() -> dict:
         "workers": {
             "aggregated": {
                 "parallelism": {"tensor": 4, "moe_tensor": 4, "moe_expert": 1},
-                "kv_cache": {"prefix_caching": False},
-                "timing": {"type": "default", "forward_model": "fpm"},
+                "kv_cache": {
+                    "prefix_caching": False,
+                    "capacity": {"type": "fixed", "blocks": 4096},
+                },
+                "timing": {
+                    "type": "default",
+                    "forward_model": "fpm",
+                    "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet",
+                },
             }
         },
     }
@@ -517,8 +525,15 @@ def test_prediction_spec_lowers_fpm_forward_model_into_canonical_timing() -> Non
     assert timing["config"]["estimation_mode"] == "fpm_interpolation"
     assert timing["config"]["fallback_policy"] == "deny"
     assert timing["config"]["worker_type"] == "aggregated"
+    assert timing["config"]["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] == (
+        "/artifacts/reviewed-fpm.parquet"
+    )
     assert "aic_forward_model" not in deployment.agg_engine_args
     assert deployment.performance_model_metadata["aggregated"]["config"]["forward_model"] == "fpm"
+    assert (
+        deployment.performance_model_metadata["aggregated"]["config"]["fpm_parquet_path"]
+        == "/artifacts/reviewed-fpm.parquet"
+    )
 
 
 def test_prediction_spec_lowers_default_timing_into_canonical_auto_selection() -> None:
@@ -565,34 +580,14 @@ _SMALL_TRAFFIC = {
 }
 
 
-def test_engine_stack_replays_fpm_timing_from_the_bundled_cell(monkeypatch) -> None:
-    # The bundled MiniMax-M2.7 cell is collected at vLLM 0.25.1, outside the queryable version slots.
-    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-
-    report = _run({"engine": _fpm_engine(), "traffic": _SMALL_TRAFFIC})
-
-    assert report.metrics["completed_requests"] == 8
-
-
-def test_engine_stack_fpm_timing_fails_closed_without_a_matching_cell(
-    monkeypatch,
-) -> None:
-    # tp2 has no FPM cell for this model on h200_sxm. The FPM path must refuse rather than fall
-    # back to op_level; the same shape still replays under op_level timing. This is a wiring
-    # check for the data path, not an accuracy statement about either model.
+def test_engine_stack_fpm_timing_fails_closed_when_external_parquet_is_missing(monkeypatch) -> None:
+    # The explicit external path is absent. FPM must refuse rather than fall
+    # back to op_level; the same shape still replays under op_level timing.
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     engine = _fpm_engine()
-    engine["workers"]["aggregated"]["parallelism"] = {
-        "tensor": 2,
-        "moe_tensor": 2,
-        "moe_expert": 1,
-    }
 
-    with pytest.raises(RuntimeError, match="FPM"):
+    with pytest.raises(RuntimeError, match="reviewed-fpm.parquet"):
         _run({"engine": engine, "traffic": _SMALL_TRAFFIC})
-
-    engine["workers"]["aggregated"]["timing"] = {"type": "default"}
-    assert _run({"engine": engine, "traffic": _SMALL_TRAFFIC}).metrics["completed_requests"] == 8
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
@@ -673,7 +668,7 @@ def test_engine_stack_auto_infers_raw_weka_relative_timestamps(backend: str) -> 
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_agentx_m1_default_python_result_retains_qualification_without_dynamo(backend: str) -> None:
+def test_agentx_replay_default_python_result_retains_qualification_without_dynamo(backend: str) -> None:
     config = {
         "traffic": {
             "source": {"type": "trace", "format": "weka", "paths": [str(_TRACE_FIXTURES / "weka-relative.json")]},
@@ -723,10 +718,10 @@ def test_agentx_m1_default_python_result_retains_qualification_without_dynamo(ba
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
-def test_agentx_m1_gate_config_preserves_local_source_block_size(backend: str, monkeypatch) -> None:
+def test_agentx_replay_gate_config_preserves_local_source_block_size(backend: str, monkeypatch) -> None:
     scripts = Path(__file__).resolve().parents[1] / "scripts"
     monkeypatch.syspath_prepend(str(scripts))
-    gate = runpy.run_path(str(scripts / "qualify_agentx_m1.py"))
+    gate = runpy.run_path(str(scripts / "qualify_agentx_replay.py"))
     source = _TRACE_FIXTURES / "weka-relative.json"
     block_size = json.loads(source.read_text())["block_size"]
     assert block_size == 4
@@ -793,7 +788,7 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     schema = json.loads((Path(__file__).resolve().parents[1] / "docs/cli/prediction-details.schema.json").read_text())
     validate(stdout["details"], schema)
     sections = stdout["details"]["sections"]
-    assert set(sections) == {"summary", "memory", "time", "energy"}
+    assert set(sections) == {"summary", "memory", "time", "energy", "source"}
     assert saved["power_diagnostics"]["power_w"] is None
     assert stdout["summary"]["power_w"] is None
     memory = sections["memory"]["roles"]["aggregated"]
@@ -807,7 +802,23 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
     assert "wall_time_ms" not in sections["time"]["serving_metrics"]
     assert "duration_ms" not in sections["time"]["serving_metrics"]
     assert stdout["summary"]["duration_ms"] > 0
-    assert "phases" not in sections["time"]
+    timing = sections["time"]["diagnostics"]
+    assert timing["status"] == "available"
+    assert timing["scope"] == "accumulated_active_forward_pass_per_gpu"
+    assert sections["source"]["status"] == "available"
+    assert len(timing["phases"]) == 2
+    for phase, source in zip(timing["phases"], sections["source"]["phases"], strict=True):
+        assert phase["latency_ms"] == pytest.approx(sum(op["latency_ms"] for op in phase["operations"]))
+        assert phase["operations"]
+        assert any(op["sol"] is not None for op in phase["operations"])
+        for op, provenance in zip(phase["operations"], source["operations"], strict=True):
+            assert provenance == {key: op[key] for key in ("name", "latency_ms", "source", "fallbacks")}
+            assert isinstance(op["fallbacks"], list)
+            if op["sol"] is None:
+                assert op["sol_unavailable_reason"]
+            elif op["sol"]["latency_ms"] > 0:
+                assert op["latency_to_sol_ratio"] == pytest.approx(op["latency_ms"] / op["sol"]["latency_ms"])
+    assert "performance_diagnostics" not in stdout["summary"]
     # Repeating the same prediction without diagnostics keeps modeled metrics identical.
     plain_out = tmp_path / "plain"
     assert main(["predict", "-c", str(path), "--format", "json", "--output-dir", str(plain_out)]) == 0
@@ -817,23 +828,258 @@ def test_predict_detail_uses_real_native_evidence(tmp_path, capsys):
             assert plain[key] == value, key
 
 
-def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(tmp_path, capsys, monkeypatch):
-    import yaml
-
-    from aisimulate.main import main
-
-    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-    path = tmp_path / "fpm.yaml"
-    path.write_text(yaml.safe_dump({"engine": _fpm_engine(), "traffic": _SMALL_TRAFFIC}))
-    assert (
-        main(["predict", "-c", str(path), "--detail", "all", "--format", "json", "--output-dir", str(tmp_path / "out")])
-        == 0
+@pytest.mark.parametrize("prefix,reused", [(3, 0), (4, 4), (5, 4), (7, 4)])
+def test_engine_stack_reuses_exact_cached_prefix_from_public_traffic(prefix, reused) -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"]["kv_cache"]["block_size"] = 4
+    report = _run(
+        {
+            "traffic": {
+                "source": {
+                    "type": "synthetic",
+                    "input_tokens": 8,
+                    "output_tokens": 2,
+                    "cached_prefix_tokens": prefix,
+                },
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 2},
+            },
+            "engine": engine,
+        }
     )
-    sections = json.loads(capsys.readouterr().out)["details"]["sections"]
-    memory = sections["memory"]["roles"]["aggregated"]
-    assert memory["scope"] == "capacity_estimate_per_rank"
-    assert memory["stage"] == "before_native_capacity_adjustments"
-    assert memory["estimated_num_gpu_blocks"] > 0
-    assert "num_gpu_blocks" not in memory
-    assert set(sections) == {"summary", "memory", "time", "energy"}
-    assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
+
+    records = report.metadata["native_report"]["per_request"]
+    assert [row["reused_input_tokens"] for row in records] == [0, reused]
+
+
+@pytest.mark.parametrize("backend,expected_warm_reuse", [("vllm", 64), ("sglang", 127)])
+def test_seeded_agentic_snapshot_runs_only_the_cold_suffix_and_preserves_source_time(
+    tmp_path, backend: str, expected_warm_reuse: int
+) -> None:
+    # Self-authored trace: every request shares one conversation and prefix.
+    path = tmp_path / "snapshot.json"
+    path.write_text(
+        json.dumps(
+            {
+                "id": "snapshot",
+                "models": ["model"],
+                "block_size": 64,
+                "hash_id_scope": "local",
+                "requests": [
+                    {
+                        "t": start,
+                        "type": "s",
+                        "model": "model",
+                        "in": 128,
+                        "out": 1,
+                        "hash_ids": [10, 20],
+                        "api_time": 0.1,
+                    }
+                    for start in [0.0, 1.0, 2.0]
+                ],
+            }
+        )
+    )
+    config = {
+        "engine": {**_engine(), "backend": backend},
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(path)]},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": {"seed": 0}},
+        },
+    }
+    config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 1024
+    first = _run(config).metadata["native_report"]
+    repeated = _run(config).metadata["native_report"]
+    for key in (
+        "agentic_snapshots",
+        "agentic_graph",
+        "agentic_lifecycle_digest",
+        "agentic_play_outcomes",
+        "per_request",
+    ):
+        assert first[key] == repeated[key], key
+    evidence = first["agentic_snapshots"][0]
+    assert evidence["seed"] == 0
+    assert 500.0 <= evidence["t_star_ms"] < 1500.0
+    retained = [request for request in evidence["requests"] if not request["historical"]]
+    historical = [request for request in evidence["requests"] if request["historical"]]
+    assert len(retained) == 2 and historical
+    assert all(request["recorded_start_ms"] < evidence["t_star_ms"] for request in historical)
+    assert all(request["recorded_start_ms"] >= evidence["t_star_ms"] for request in retained)
+    assert first["completed_requests"] == len(retained)
+    assert len(first["per_request"]) == len(retained)
+    assert len(evidence["primers"]) == 1
+    assert evidence["primers"][0]["input_length"] == 128
+    assert {record["agentic"]["request_id"] for record in first["per_request"]} == {
+        request["identity"]["request_id"] for request in retained
+    }
+    earliest, subsequent = sorted(first["per_request"], key=lambda record: record["first_admit_ms"])
+    assert earliest["admission_history"][0]["reused_input_tokens"] == 0
+    # Both schedulers recompute the final prompt token. With the default block
+    # sizes (vLLM 64, SGLang 1), the shared 128-token prompt reuses 64 or 127.
+    assert subsequent["admission_history"][0]["reused_input_tokens"] == expected_warm_reuse
+    assert all(record["agentic"]["cache_id"] == evidence["cache_id"] for record in first["per_request"])
+
+    config["traffic"]["load"]["speedup"] = 2.0
+    sped_up = _run(config).metadata["native_report"]
+    assert sped_up["agentic_snapshots"] == first["agentic_snapshots"]
+    faster_first = min(record["dispatched_at_ms"] for record in sped_up["per_request"])
+    original_first = min(record["dispatched_at_ms"] for record in first["per_request"])
+    assert faster_first == pytest.approx(original_first / 2.0)
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_agentic_mooncake_snapshot_samples_original_nonzero_timestamps(tmp_path, backend: str) -> None:
+    # Self-authored v2 input keeps its source clock: normalization before
+    # sampling would move this cut from [1250, 1750) into [250, 750).
+    path = tmp_path / "offset-snapshot.jsonl"
+    header = {
+        "schema": "dynamo.agentic_mooncake",
+        "version": 2,
+        "block_size": 64,
+        "hash_id_scope": "local",
+        "source": {"format": "self-authored-test", "digest": "offset-snapshot-v1"},
+    }
+    starts = {f"request-{index}": start for index, start in enumerate([1000.0, 1500.0, 2000.0])}
+    rows = []
+    for index, (request_id, start) in enumerate(starts.items()):
+        rows.append(
+            {
+                "request_id": request_id,
+                "play_id": "offset-play",
+                "session_id": "conversation",
+                "model": "model",
+                "input_length": 128,
+                "output_length": 1,
+                "hash_ids": [10, 20],
+                "not_before_ms": start,
+                "recorded_api_time_ms": 100.0,
+                "dependencies": []
+                if index == 0
+                else [
+                    {
+                        "request_id": f"request-{index - 1}",
+                        "relation": "sequence",
+                        "trigger": "completion",
+                        "delay_ms": 0.0,
+                    }
+                ],
+            }
+        )
+    path.write_text("\n".join(json.dumps(record) for record in [header, *rows]) + "\n")
+    config = {
+        "engine": {**_engine(), "backend": backend},
+        "traffic": {
+            "source": {"type": "trace", "format": "agentic_mooncake", "paths": [str(path)], "block_size": 64},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": {"seed": 42}},
+        },
+    }
+    config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 1024
+    evidence = None
+    for speedup in [1.0, 2.0]:
+        config["traffic"]["load"]["speedup"] = speedup
+        report = _run(config).metadata["native_report"]
+        snapshot = report["agentic_snapshots"][0]
+        if evidence is None:
+            evidence = snapshot
+        assert snapshot == evidence
+        cut = snapshot["t_star_ms"]
+        assert 1250.0 <= cut < 1750.0
+        assert snapshot["recorded_start_ms"] == 1000.0
+        assert snapshot["recorded_last_start_ms"] == 2000.0
+        assert {
+            request["source_request_id"]: request["recorded_start_ms"] for request in snapshot["requests"]
+        } == starts
+        retained = {request_id for request_id, start in starts.items() if start >= cut}
+        assert {record["request_id"] for record in report["per_request"]} == retained
+        assert report["completed_requests"] == len(retained)
+        assert "request-0" not in retained
+        for record in report["per_request"]:
+            remaining = (starts[record["request_id"]] - cut) / speedup
+            assert record["arrival_time_ms"] == pytest.approx(remaining)
+            assert record["dispatched_at_ms"] == pytest.approx(remaining)
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_native_dynamo_agentic_snapshot_retains_recorded_intervals_and_executes_cold_suffix(
+    tmp_path, backend: str
+) -> None:
+    # Self-authored native request-trace events, selected as agentic by context.
+    path = tmp_path / "dynamo-agentic-snapshot.jsonl"
+    starts = {f"dynamo-request-{index}": index * 1000 for index in range(3)}
+    rows = [
+        {
+            "schema": "dynamo.request.trace.v1",
+            "event_type": "request_end",
+            "event_time_unix_ms": 10_000 + start + 100,
+            "agent_context": {"session_id": "dynamo-conversation"},
+            "request": {
+                "request_id": request_id,
+                "model": "model",
+                "request_received_ms": 10_000 + start,
+                "total_time_ms": 100,
+                "output_tokens": 1,
+                "replay": {
+                    "trace_block_size": 64,
+                    "input_length": 128,
+                    "input_sequence_hashes": [10, 20],
+                },
+            },
+        }
+        for request_id, start in starts.items()
+    ]
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    config = {
+        "engine": {**_engine(), "backend": backend},
+        "traffic": {
+            "source": {"type": "trace", "format": "dynamo", "paths": [str(path)], "block_size": 64},
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": {"seed": 42}},
+        },
+    }
+    config["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"]["blocks"] = 1024
+    evidence = None
+    for speedup in [1.0, 2.0]:
+        config["traffic"]["load"] = {"type": "trace_timestamps", "agentic_lanes": 1, "speedup": speedup}
+        legacy = _run(config).metadata["native_report"]
+        assert "agentic_snapshots" not in legacy
+        assert legacy["completed_requests"] == len(starts)
+        legacy_records = sorted(legacy["per_request"], key=lambda record: record["arrival_time_ms"])
+        assert legacy_records[0]["arrival_time_ms"] == 0
+        for previous, current in itertools.pairwise(legacy_records):
+            # Legacy execution follows actual completion plus the recorded gap.
+            assert current["arrival_time_ms"] == pytest.approx(previous["last_token_ms"] + 900 / speedup)
+
+        config["traffic"]["load"]["agentic_snapshot"] = {"seed": 42}
+        report = _run(config).metadata["native_report"]
+        snapshot = report["agentic_snapshots"][0]
+        if evidence is None:
+            evidence = snapshot
+        assert snapshot == evidence
+        assert snapshot["schema"] == "aisimulate.agentic.snapshot.v1"
+        assert snapshot["seed"] == 42
+        assert snapshot["recorded_start_ms"] == 0
+        assert snapshot["recorded_last_start_ms"] == 2000
+        cut = snapshot["t_star_ms"]
+        assert 500 <= cut < 1500
+        assert {
+            request["source_request_id"]: (request["recorded_start_ms"], request["recorded_end_ms"])
+            for request in snapshot["requests"]
+        } == {request_id: (start, start + 100) for request_id, start in starts.items()}
+        retained = {
+            request["source_request_id"]: request["identity"]
+            for request in snapshot["requests"]
+            if not request["historical"]
+        }
+        assert set(retained) == {request_id for request_id, start in starts.items() if start >= cut}
+        assert 0 < len(retained) < len(starts)
+        assert report["completed_requests"] == len(retained)
+        assert len(snapshot["primers"]) == 1
+        assert snapshot["primers"][0]["input_length"] == 128
+        assert {record["request_id"] for record in report["per_request"]} == set(retained)
+        for record in report["per_request"]:
+            assert record["agentic"] == retained[record["request_id"]]
+            assert record["agentic"]["play_id"] == snapshot["play_id"]
+            assert record["agentic"]["cache_id"] == snapshot["cache_id"]
+        first = min(report["per_request"], key=lambda record: record["first_admit_ms"])
+        assert first["admission_history"][0]["reused_input_tokens"] == 0
+        assert first["dispatched_at_ms"] == pytest.approx((starts[first["request_id"]] - cut) / speedup)

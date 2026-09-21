@@ -10,11 +10,12 @@
 //! collector pair
 //!
 //! ```text
-//! <data_root>/fpm_forward_perf.parquet
-//! <data_root>/fpm_forward_perf.metadata.json
+//! /data/reviewed-fpm.parquet
+//! /data/reviewed-fpm.metadata.json
 //! ```
 //!
-//! is validated (sidecar schema/sha256/row_count, per-row workload checks,
+//! The parquet may be supplied outside the AISimulate repository and is
+//! validated (sidecar schema/sha256/row_count, per-row workload checks,
 //! duplicate physical row keys), healed of
 //! `kv_seed_regime == "fake_fallback"` values (fabricated-KV measurements
 //! replaced in memory by in-station extrapolation; see
@@ -212,7 +213,37 @@ impl FpmForwardTable {
     /// parquet copied into a b200 tree — must fail loudly, not merge).
     pub fn new(data_root: PathBuf, system: &str, backend: &str, version: &str) -> Self {
         let raw = std::env::var(FPM_FAKE_FALLBACK_RAW_ENV).is_ok_and(|v| v == "1");
-        Self::new_with_replacement(data_root, system, backend, version, !raw)
+        Self::from_parquet_path_with_replacement(
+            data_root.join(FPM_FORWARD_BASENAME),
+            system,
+            backend,
+            version,
+            !raw,
+        )
+    }
+
+    /// Construct a table backed by an explicitly supplied parquet outside the
+    /// bundled systems-data tree. The adjacent `.metadata.json` sidecar keeps
+    /// the same atomic identity, digest, and schema validation as bundled data.
+    /// Relative paths are anchored at construction, before the first query.
+    pub fn from_parquet_path(
+        parquet_path: PathBuf,
+        system: &str,
+        backend: &str,
+        version: &str,
+    ) -> Result<Self, AicError> {
+        let parquet_path = std::path::absolute(&parquet_path).map_err(|source| AicError::Io {
+            path: parquet_path,
+            source,
+        })?;
+        let raw = std::env::var(FPM_FAKE_FALLBACK_RAW_ENV).is_ok_and(|v| v == "1");
+        Ok(Self::from_parquet_path_with_replacement(
+            parquet_path,
+            system,
+            backend,
+            version,
+            !raw,
+        ))
     }
 
     /// Explicit-replacement constructor: lets tests pin both semantics
@@ -224,8 +255,24 @@ impl FpmForwardTable {
         version: &str,
         replace_fake_fallback: bool,
     ) -> Self {
+        Self::from_parquet_path_with_replacement(
+            data_root.join(FPM_FORWARD_BASENAME),
+            system,
+            backend,
+            version,
+            replace_fake_fallback,
+        )
+    }
+
+    fn from_parquet_path_with_replacement(
+        parquet_path: PathBuf,
+        system: &str,
+        backend: &str,
+        version: &str,
+        replace_fake_fallback: bool,
+    ) -> Self {
         Self {
-            parquet_path: data_root.join(FPM_FORWARD_BASENAME),
+            parquet_path,
             system: system.to_string(),
             backend: backend.to_string(),
             version: version.to_string(),
@@ -753,7 +800,10 @@ fn load_pair(
         // their latency value is healed by the replacement pass below, after
         // the duplicate/collision checks.
         let kv_seed_regime = row.str_optional(kv_seed_col)?.unwrap_or("");
-        if !match_identity[15].is_empty()
+        if !match_identity[15..]
+            .iter()
+            .map(String::as_str)
+            .eq(LEGACY_EXECUTION_IDENTITY)
             && (workload_kind == "decode" || total_kv_read_tokens > 0)
             && kv_seed_regime != FPM_KV_SEED_REAL_KV
         {
@@ -1494,6 +1544,30 @@ pub(crate) mod tests {
         FpmForwardTable::new_with_replacement(dir.to_path_buf(), "b200_sxm", "vllm", "0.25.1", true)
     }
 
+    #[test]
+    fn external_parquet_path_supports_an_arbitrary_stem() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let canonical = write_pair(tmp.path(), &default_rows());
+        let external = tmp.path().join("reviewed-fpm.parquet");
+        std::fs::rename(&canonical, &external).expect("rename parquet");
+        std::fs::rename(
+            canonical.with_extension("metadata.json"),
+            external.with_extension("metadata.json"),
+        )
+        .expect("rename sidecar");
+
+        let table =
+            FpmForwardTable::from_parquet_path(external.clone(), "b200_sxm", "vllm", "0.25.1")
+                .unwrap();
+
+        assert_eq!(table.parquet_path(), external);
+        assert!(
+            table
+                .select_cell(&default_identity(4), "org/model-a")
+                .is_ok()
+        );
+    }
+
     fn loaded_table_raw(dir: &Path) -> FpmForwardTable {
         FpmForwardTable::new_with_replacement(
             dir.to_path_buf(),
@@ -1553,6 +1627,41 @@ pub(crate) mod tests {
                 .to_string()
                 .contains("requires real_kv")
         );
+    }
+
+    #[test]
+    fn every_nonlegacy_execution_tail_requires_real_kv_even_without_fingerprint() {
+        let tmp = tempfile::tempdir().unwrap();
+        for execution in [
+            ["", "decoder_bounded", "none", "text"],
+            ["", "full", "hbm_tp_sharded", "text"],
+            ["", "full", "none", "image"],
+            LEGACY_EXECUTION_IDENTITY,
+        ] {
+            for phase in ["prefill", "decode"] {
+                let mut rows: Vec<_> = default_rows()
+                    .into_iter()
+                    .filter(|r| r.workload_kind == phase)
+                    .collect();
+                for row in &mut rows {
+                    row.execution = Some(execution);
+                    row.kv_seed_regime = Some("fake_fallback");
+                }
+                write_pair(tmp.path(), &rows);
+                let table = loaded_table(tmp.path());
+                let result = table.cells();
+                if execution == LEGACY_EXECUTION_IDENTITY {
+                    assert!(result.is_ok());
+                } else {
+                    assert!(result.unwrap_err().to_string().contains("requires real_kv"));
+                    for row in &mut rows {
+                        row.kv_seed_regime = Some("real_kv");
+                    }
+                    write_pair(tmp.path(), &rows);
+                    assert!(loaded_table(tmp.path()).cells().is_ok());
+                }
+            }
+        }
     }
 
     #[test]

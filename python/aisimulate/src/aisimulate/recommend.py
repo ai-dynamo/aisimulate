@@ -13,6 +13,7 @@ from typing import Any
 
 from .capacity import resolve_model_context_length
 from .config.cli import CorePredictionConfig, CoreRecommendationConfig
+from .config.common import ENGINE_MODEL_CONTROL_FIELDS
 from .config.traffic import TrafficPredictionConfig
 from .config_adapter import (
     CompiledSweepProvider,
@@ -162,6 +163,15 @@ def recommendation_to_sweeper(
     ):
         if name in engine:
             search_space[name] = deepcopy(engine[name])
+    search_space.update(
+        {
+            name: deepcopy(engine[name])
+            for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted")
+            if name in engine
+        }
+    )
+    if engine.get("nextn"):
+        search_space["aic_nextn"] = engine["nextn"]
     search_space["role_estimator_controls"] = {
         ("agg" if role == "aggregated" else role): {
             name: deepcopy(raw.get("timing", {})[name])
@@ -434,6 +444,7 @@ def _role_search_space(
             result[f"{legacy_role}_forward_model"] = (
                 "fpm" if timing["estimation_mode"] == "fpm_interpolation" else "op_level"
             )
+        result[f"{legacy_role}_fpm_parquet_path"] = timing.get("fpm_parquet_path")
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
     # Remove empty internal maps so legacy serialization remains concise.
     if not result["engine_float_ranges"]:
@@ -647,11 +658,17 @@ def _recommendation_workload(raw: dict[str, Any] | None) -> dict[str, Any]:
             )
             if load.get("agentic_lanes") is not None:
                 result["agentic_lanes"] = load["agentic_lanes"]
+            if load.get("agentic_snapshot") is not None:
+                result["agentic_snapshot"] = deepcopy(load["agentic_snapshot"])
         if isinstance(stop, dict) and stop.get("max_virtual_time_seconds") is not None:
             result["max_sim_time_ms"] = 1_000.0 * float(stop["max_virtual_time_seconds"])
         return result
     if source_type == "synthetic":
-        result.update(isl=source.get("input_tokens", 1024), osl=source.get("output_tokens", 128))
+        result.update(
+            isl=source.get("input_tokens", 1024),
+            osl=source.get("output_tokens", 128),
+            cached_prefix_tokens=source.get("cached_prefix_tokens", 0),
+        )
         if source.get("images") is not None:
             result["images"] = deepcopy(source["images"])
         count = stop.get("requests") if isinstance(stop, dict) else None
@@ -746,6 +763,8 @@ def _goal(config: CoreRecommendationConfig) -> dict[str, Any]:
         "target": target,
         "strict_sla": config.optimization.strict_sla,
     }
+    if config.optimization.constraints.min_goodput_rps is not None:
+        payload["min_goodput_rps"] = config.optimization.constraints.min_goodput_rps
     sla = config.evaluation.sla
     if sla is not None:
         payload["sla"] = sla.model_dump(mode="json", exclude_none=True)
@@ -775,6 +794,11 @@ def _candidate_prediction(
         "context_length": sample.get("context_length") or "max",
         "workers": {},
     }
+    for name in (*ENGINE_MODEL_CONTROL_FIELDS, "enable_chunked_prefill", "nextn_accepted"):
+        if sample.get(name) is not None:
+            engine[name] = sample[name]
+    if sample.get("aic_nextn"):
+        engine["nextn"] = sample["aic_nextn"]
     raw_engine = source.engine.model_dump(mode="python", exclude_none=True)
     if deployment.forward_pass_estimators:
         for name in (
@@ -839,6 +863,8 @@ def _candidate_prediction(
             timing = deepcopy(timing_model)
         else:
             timing = {"type": "default", "forward_model": sample.get(f"{role}_forward_model") or "op_level"}
+            if sample.get(f"{role}_fpm_parquet_path") is not None:
+                timing["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
         estimator = deployment.forward_pass_estimators.get(role)
         if estimator is not None:
             resolved = estimator.config

@@ -107,6 +107,7 @@ fn fixture_engine_config() -> EngineConfig {
         backend: BackendKind::Vllm,
         backend_version: Some("0.24.0".to_string()),
         forward_model: None,
+        fpm_parquet_path: None,
         decoder_replay: false,
         kv_block_size: None,
         parallel: ParallelMapping {
@@ -1962,4 +1963,45 @@ fn native_model_starts_ready_with_aic_source() {
     assert_eq!(diag.source, ForwardPassPerfSource::Aic);
     assert_eq!(diag.readiness, ForwardPassPerfReadiness::Ready);
     assert_eq!(diag.retained_observations, 0);
+}
+
+#[test]
+fn canonical_static_phase_diagnostics_are_available_only_for_native_models() {
+    let model = native_model(ForwardPassPerfOptions::default());
+    let engine = model.native_engine().unwrap();
+    assert_eq!(
+        model.static_phase_latency(4, 512, 4, true).unwrap(),
+        engine.predict_prefill_latency(4, 512, 0).unwrap()
+    );
+    assert_eq!(
+        model.static_phase_latency(4, 512, 4, false).unwrap(),
+        engine.predict_decode_latency(4, 512, 4).unwrap()
+    );
+    assert!(
+        model
+            .static_phase_diagnostics(4, u32::MAX, 0, false)
+            .is_err()
+    );
+    assert!(model.static_phase_diagnostics(0, 128, 129, true).is_err());
+    let rows = model.static_phase_diagnostics(4, 512, 0, true).unwrap();
+    assert!(rows.iter().any(|row| row.details.sol.is_some()));
+    assert!(model.static_phase_diagnostics(4, 512, 513, true).is_err());
+    assert!(model.static_phase_diagnostics(4, 512, 1, false).is_err());
+    assert!(
+        model
+            .static_phase_diagnostics(4, 512, 512, true)
+            .unwrap()
+            .is_empty()
+    );
+    let regression = regression_model(
+        ForwardPassWorkerType::Aggregated,
+        ForwardPassPerfOptions::default(),
+    )
+    .unwrap();
+    assert!(
+        regression
+            .static_phase_diagnostics(4, 512, 0, true)
+            .is_err()
+    );
+    assert!(regression.static_phase_latency(4, 512, 4, true).is_err());
 }

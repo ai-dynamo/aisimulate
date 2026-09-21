@@ -116,7 +116,7 @@ class ForwardPassPerfModelConfig:
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
     fmha_quant_mode: str | None = None
-    fpm_fmha_quant_mode: str | None = None
+    fpm_fmha_quant_mode: str | None = dataclass_field(default=None, kw_only=True)
     kvcache_quant_mode: str | None = None
     comm_quant_mode: str | None = None
     nextn: int = 0
@@ -132,6 +132,9 @@ class ForwardPassPerfModelConfig:
     attention_backend: str | None = None
     enable_shared_layer: bool | None = None
     strict_provenance: bool = False
+    moe_backend: str | None = None
+    enable_eplb: bool = False
+    wideep_num_slots: int | None = None
 
     @classmethod
     def from_legacy_engine_config(
@@ -156,7 +159,8 @@ class ForwardPassPerfModelConfig:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
-        payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
+        if self.estimation_mode != "fpm_regression" or self.systems_paths:
+            payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
         return payload
 
 
@@ -305,6 +309,25 @@ class RustForwardPassPerfModel:
         to one iteration.
         """
         self._inner.tune_with_fpms(_json_dumps(_normalize_tuning_iterations(iterations)))
+
+    def static_phase_latency(self, *, batch_size: int, input_tokens: int, output_tokens: int, prefill: bool) -> float:
+        """Native static latency in ms, before online correction.
+
+        Decode returns total latency across the generated tokens, using the
+        engine's static integration. Regression estimators are unsupported.
+        """
+        return self._inner.static_phase_latency(batch_size, input_tokens, output_tokens, prefill)
+
+    def static_phase_diagnostics(
+        self, *, batch_size: int, context_length: int, prefill: bool, prefix: int = 0
+    ) -> list[dict[str, Any]]:
+        """Native op-level evidence for one static phase, before online correction.
+
+        Decode evaluates one step at ``context_length + 1``. SOL is an analytic
+        comparison and does not change timing. Unsupported SOL families carry
+        a reason; whole-model estimators reject operation decomposition.
+        """
+        return json.loads(self._inner.static_phase_diagnostics(batch_size, context_length, prefix, prefill))
 
     def diagnostics(self) -> dict[str, Any]:
         """API: ``model.diagnostics() -> dict[str, Any]``.
