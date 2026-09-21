@@ -248,8 +248,8 @@ slurm_runtime.py: |
                       timeout=max(0.1, min(120, deadline - time.monotonic())),
                   )
                   break
-              except urllib.error.HTTPError as error:
-                  if error.code not in {404, 503}:
+              except OSError as error:
+                  if isinstance(error, urllib.error.HTTPError) and error.code not in {404, 503}:
                       raise
                   self.result["last_readiness_error"] = str(error)
                   self.result["readiness_retries"] = self.result.get("readiness_retries", 0) + 1

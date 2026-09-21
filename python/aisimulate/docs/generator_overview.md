@@ -368,16 +368,17 @@ slice of Slurm's actual `CUDA_VISIBLE_DEVICES`, including nonzero IDs or GPU UUI
 Each job starts its own etcd/NATS with separate ports and data directories.
 Model discovery can precede frontend route registration. Readiness therefore
 requires a successful inference request, retrying temporary HTTP 404/503 responses
-within the startup deadline; other request errors fail the job.
+and transport errors such as disconnects, connection refusal and timeouts within
+the startup deadline. Other HTTP errors fail immediately; malformed inference
+responses and responses without generated text fail the job.
 
-Cluster validation covers Qwen3-8B on B200 with Dynamo 1.2.1, vLLM 0.20.1 and
-AIPerf 0.8.0: aggregated TP=2, P/D with one GPU per role, and persistent serving
-followed by cancellation. DeepSeek V4 Flash and GLM 5.2 NVFP4 were also generated
-through `aiconfigurator cli generate` and validated on four B200 GPUs each with
-Dynamo 1.3.0, vLLM 0.25.1 and AIPerf 0.8.0: aggregated TP=4, real inference
-readiness, and 56 error-free benchmark requests per model at concurrency 1/2/4.
-SGLang and TRT-LLM have artifact-generation coverage; their Slurm runtime execution
-has not yet been validated.
+Automated tests cover emitted artifacts for vLLM, SGLang and TRT-LLM, including
+static file snapshots and shell syntax. CPU supervisor tests exercise real local
+HTTP requests, socket binding and child-process cleanup with simulated service
+launches. This coverage does not qualify Slurm/Pyxis integration, GPU execution,
+model capacity or performance estimates. Validate the chosen container, model and
+topology on the target cluster with the generated smoke and benchmark job, and
+retain its logs, package versions and AIPerf reports.
 
 Example unified generator input (`slurm.yaml`):
 
@@ -462,14 +463,11 @@ emit only the supported root-level `ignore_eos` field; older versions retain the
 legacy request form.
 
 Backend sizing rules still apply. In particular, the vLLM `benchmark` rule sets
-decode `max_num_tokens` to `max_batch_size`. With vLLM 0.20.1 / FlashInfer, a decode
-batch size of 8 failed during kernel warmup in cluster validation; the P/D
-validation input uses 32. Inspect `deployment.json` to see the resolved limits.
-DeepSeek V4 Flash with vLLM 0.25.1 requires explicit FP8 KV cache; the tested
-input uses `Workers.agg.kv_cache_dtype: fp8` and block size 256. The naive model
-weight estimator currently overestimates these DS/GLM quantized checkpoints;
-their four-GPU validation used explicit topology overrides based on the actual
-checkpoint sizes, and does not validate automatic capacity estimation.
+decode `max_num_tokens` to `max_batch_size`. Inspect `deployment.json` and any
+generated engine YAML for the resolved worker settings before submission. Check
+that the selected container can load the actual checkpoint and complete inference
+and benchmarking with those settings; artifact generation alone does not validate
+capacity or backend runtime compatibility.
 
 Logs, smoke responses, actual package versions and AIPerf reports are retained
 under `results/<job-id>/`. `result.json` records failure causes and cleanup.

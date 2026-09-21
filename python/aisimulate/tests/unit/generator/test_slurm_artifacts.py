@@ -86,7 +86,10 @@ def _emitted_supervisor(tmp_path, params, backend="vllm", version=None):
 
 @pytest.fixture
 def free_service_ports():
-    for base in range(20000, 31960, 40):
+    worker = int(os.environ.get("PYTEST_XDIST_WORKER", "gw0").removeprefix("gw"))
+    workers = int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1"))
+    # A busy block must not make one xdist worker scan another worker's blocks.
+    for base in range(20000 + worker * 40, 31960, workers * 40):
         try:
             with ExitStack() as sockets:
                 for port in range(base, base + 40):
@@ -96,6 +99,33 @@ def free_service_ports():
             continue
         return base
     pytest.fail("Could not find free control ports for the supervisor test")
+
+
+def test_service_port_fixture_keeps_worker_blocks_disjoint_after_fallback(monkeypatch):
+    def bind(address):
+        if 20000 <= address[1] < 20160:
+            raise OSError("First block occupied for each worker")
+
+    # Simulate busy ports without occupying blocks belonging to other live
+    # xdist workers. Emitted-worker tests below exercise real socket consumers.
+    sock = MagicMock()
+    sock.__enter__.return_value = sock
+    sock.bind.side_effect = bind
+    monkeypatch.setattr(socket, "socket", lambda: sock)
+    monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", "4")
+    selected = []
+    for worker in range(4):
+        monkeypatch.setenv("PYTEST_XDIST_WORKER", f"gw{worker}")
+        base = free_service_ports.__wrapped__()
+        assert 20160 <= base < 31960
+        selected.extend(range(base, base + 40))
+    assert len(selected) == len(set(selected))
+    monkeypatch.delenv("PYTEST_XDIST_WORKER")
+    monkeypatch.delenv("PYTEST_XDIST_WORKER_COUNT")
+    assert free_service_ports.__wrapped__() == 20160
+    sock.bind.side_effect = OSError("Every block occupied")
+    with pytest.raises(pytest.fail.Exception, match="Could not find free control ports"):
+        free_service_ports.__wrapped__()
 
 
 @pytest.mark.parametrize("backend,version", _BACKENDS)
@@ -695,32 +725,184 @@ def test_emitted_model_readiness_retries_http_responses(monkeypatch, tmp_path, p
             thread.join()
 
 
-@pytest.mark.parametrize("status", [404, 503, 400])
-@pytest.mark.usefixtures("local_http_without_proxy")
-def test_inference_readiness_handles_late_frontend_registration(tmp_path, status):
+@pytest.mark.parametrize(
+    "failure,outcome",
+    [
+        (404, "ready"),
+        (503, "ready"),
+        (400, "fatal"),
+        ("disconnect", "ready"),
+        ("disconnect", "timeout"),
+        ("disconnect", "child-exit"),
+    ],
+)
+def test_emitted_inference_readiness_retries_temporary_failures(tmp_path, failure, outcome):
     class Handler(BaseHTTPRequestHandler):
         attempts = 0
 
+        def log_message(self, *args):
+            pass
+
         def do_POST(self):
-            self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            assert self.path == "/v1/chat/completions"
+            assert body["model"] == "test-model"
             Handler.attempts += 1
-            self.send_response(status if Handler.attempts == 1 else 200)
+            if outcome == "child-exit":
+                child = supervisor.start("failed-worker", [sys.executable, "-c", "raise SystemExit(7)"])
+                child.wait(timeout=5)
+            failing = Handler.attempts == 1 or outcome != "ready"
+            if failure == "disconnect" and failing:
+                self.close_connection = True
+                return
+            self.send_response(failure if failing else 200)
             self.end_headers()
             self.wfile.write(json.dumps({"choices": [{"message": {"content": "Hello"}}]}).encode())
 
     server = HTTPServer(("127.0.0.1", 0), Handler)
+    params = _params()
+    params["ServiceConfig"]["port"] = server.server_port
+    _, supervisor = _emitted_supervisor(tmp_path, params)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        supervisor = Supervisor({"env": {}, "port": server.server_port, "model": "test"}, tmp_path)
-        if status == 400:
-            with pytest.raises(urllib.error.HTTPError):
+        if outcome == "fatal":
+            with pytest.raises(urllib.error.HTTPError) as error:
                 supervisor.smoke_test(time.monotonic() + 5)
+            assert error.value.code == failure
             assert Handler.attempts == 1
-        else:
+            assert "readiness_retries" not in supervisor.result
+        elif outcome == "ready":
             supervisor.smoke_test(time.monotonic() + 5)
-            assert supervisor.result["readiness_retries"] == 1
-            assert supervisor.result["smoke_response"]["choices"][0]["message"]["content"] == "Hello"
+            assert Handler.attempts == 2
+            result = json.loads((tmp_path / "results/result.json").read_text())
+            assert result["readiness_retries"] == 1
+            assert result["last_readiness_error"]
+            assert result["smoke_response"]["choices"][0]["message"]["content"] == "Hello"
+        else:
+            error, message = (
+                (TimeoutError, "Readiness deadline exceeded waiting for frontend inference")
+                if outcome == "timeout"
+                else (RuntimeError, "failed-worker exited with code 7")
+            )
+            started = time.monotonic()
+            with pytest.raises(error, match=message):
+                supervisor.smoke_test(started + (1.5 if outcome == "timeout" else 5))
+            assert time.monotonic() - started < 3
+            assert Handler.attempts == (2 if outcome == "timeout" else 1)
+            assert supervisor.result["readiness_retries"] == Handler.attempts
+            assert "smoke_response" not in supervisor.result
+    finally:
+        supervisor.stop()
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("failure", ["refused", "timeout"])
+def test_emitted_inference_readiness_retries_socket_errors(monkeypatch, tmp_path, failure):
+    class Handler(BaseHTTPRequestHandler):
+        attempts = 0
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            Handler.attempts += 1
+            if failure == "timeout" and Handler.attempts == 1:
+                time.sleep(0.1)
+                self.close_connection = True
+                return
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"choices":[{"message":{"content":"Hello"}}]}')
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    if failure == "timeout":
+        thread.start()
+    else:
+        server.server_close()
+    params = _params()
+    params["ServiceConfig"]["port"] = server.server_port
+    _, supervisor = _emitted_supervisor(tmp_path, params)
+    actual_request = supervisor.request
+    errors = []
+
+    def request(*args, **kwargs):
+        nonlocal server, thread
+        # Shorten the first transport timeout; retries retain the real deadline.
+        if failure == "timeout" and not errors:
+            kwargs["timeout"] = 0.05
+        try:
+            return actual_request(*args, **kwargs)
+        except OSError as error:
+            errors.append(error)
+            if failure == "refused":
+                server = HTTPServer(server.server_address, Handler)
+                thread = Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+            raise
+
+    monkeypatch.setattr(supervisor, "request", request)
+    try:
+        supervisor.smoke_test(time.monotonic() + 5)
+        assert len(errors) == 1
+        if failure == "refused":
+            assert isinstance(errors[0], urllib.error.URLError)
+            assert isinstance(errors[0].reason, ConnectionRefusedError)
+        else:
+            assert isinstance(errors[0], TimeoutError)
+        result = json.loads((tmp_path / "results/result.json").read_text())
+        assert result["readiness_retries"] == 1
+        assert result["last_readiness_error"] == str(errors[0])
+        assert result["smoke_response"]["choices"][0]["message"]["content"] == "Hello"
+    finally:
+        if thread.ident is not None:
+            server.shutdown()
+            thread.join()
+        server.server_close()
+
+
+@pytest.mark.parametrize(
+    "payload,error",
+    [
+        (b"not-json", json.JSONDecodeError),
+        (b"{}", KeyError),
+        (b'{"choices":[{"message":{"content":""}}]}', RuntimeError),
+        (b'{"choices":[{"message":{"reasoning_content":"Hello"}}]}', None),
+    ],
+)
+def test_emitted_inference_readiness_validates_generated_text(tmp_path, payload, error):
+    class Handler(BaseHTTPRequestHandler):
+        attempts = 0
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            Handler.attempts += 1
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    params = _params()
+    params["ServiceConfig"]["port"] = server.server_port
+    _, supervisor = _emitted_supervisor(tmp_path, params)
+    try:
+        if error is None:
+            supervisor.smoke_test(time.monotonic() + 5)
+            assert supervisor.result["smoke_response"] == json.loads(payload)
+        else:
+            with pytest.raises(error):
+                supervisor.smoke_test(time.monotonic() + 5)
+        assert Handler.attempts == 1
+        assert "readiness_retries" not in supervisor.result
     finally:
         server.shutdown()
         server.server_close()
