@@ -59,6 +59,15 @@ For a specific task, jump to [Dynamo integration](#choose-an-execution-stack),
 [AgentX and other trace formats](#trace-format-compatibility), or [troubleshooting](#troubleshooting).
 Use the [configuration reference](#configuration-model) when you need individual fields.
 
+Seeded AgentX snapshots are optional under `traffic.load.agentic_snapshot`:
+`{seed: 42}` requires `trace_timestamps` load and positive `agentic_lanes`, with
+Weka, Agentic Mooncake v2, or agentic Dynamo input. The seed is an unsigned 64-bit
+integer. Omit this field for turn-zero replay. The existing `--set
+traffic.load.agentic_snapshot.seed=42` override selects it for prediction or
+recommendation. Snapshot evidence is retained in JSON results. This executes the
+remaining request suffix against a cold engine; primer execution and benchmark
+warmup are separate phase-orchestration work.
+
 <a id="commands"></a>
 
 ## 2. Commands
@@ -692,6 +701,7 @@ the current SA convention.
 | `traffic.load.fraction` | `null` | `-` | `-` | Positive finite number; `kv_capacity_fraction` only and may exceed `1`. |
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
+| `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |

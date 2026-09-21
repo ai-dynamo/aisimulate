@@ -1409,6 +1409,9 @@ where
             self.collector.set_agentic_graph(identity);
         }
         self.collector.g3_offload = self.engine.g3_stats();
+        if let Some(snapshots) = self.admission.agentic_snapshot_evidence() {
+            self.collector.set_agentic_snapshots(snapshots);
+        }
         if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
             self.collector.set_agentic_lifecycle(transcript);
         }
