@@ -16,8 +16,9 @@ use crate::replay::{
     ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
     ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
-        ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec, SyntheticTraceSpec, Trace,
-        WekaImportOptions, WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
+        AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec,
+        SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
+        WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
         load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
 };
@@ -70,6 +71,8 @@ struct RuntimeTraffic {
     replay_concurrency: Option<usize>,
     #[serde(default)]
     agentic_lanes: Option<usize>,
+    #[serde(default)]
+    agentic_snapshot: Option<AgenticSnapshotOptions>,
     #[serde(default)]
     isl: Option<usize>,
     #[serde(default)]
@@ -137,15 +140,15 @@ fn validate_public_agentic_engine(input: &ReplayRuntimeInput, rank: &EngineConfi
     }
     ensure!(
         matches!(rank.backend, Backend::Vllm | Backend::Sglang),
-        "agentic M1 execution supports only vLLM and SGLang backends"
+        "agentic replay supports only vLLM and SGLang backends"
     );
     ensure!(
         rank.native_host_offload.is_none(),
-        "agentic M1 execution requires HBM-only KV cache; host offload is unsupported"
+        "agentic replay requires HBM-only KV cache; host offload is unsupported"
     );
     ensure!(
         rank.aic_nextn.is_none(),
-        "agentic M1 execution requires speculative decoding disabled"
+        "agentic replay requires speculative decoding disabled"
     );
     Ok(())
 }
@@ -196,6 +199,8 @@ struct AicTimingConfig {
     systems_path: Option<String>,
     #[serde(default)]
     forward_model: Option<String>,
+    #[serde(default)]
+    fpm_parquet_path: Option<String>,
     #[serde(default)]
     decoder_replay: bool,
     #[serde(default)]
@@ -265,6 +270,21 @@ impl AicTimingConfig {
         } else {
             self.systems_paths.clone()
         };
+        let mut estimator_config = self.estimator_config.clone();
+        if let Some(path) = &self.fpm_parquet_path {
+            crate::config::validate_fpm_parquet_path(
+                Some(std::path::Path::new(path)),
+                mode == EstimationMode::FpmInterpolation,
+            )?;
+            let configured = &mut estimator_config.fpm_interpolation.fpm_parquet_path;
+            ensure!(
+                configured
+                    .as_ref()
+                    .is_none_or(|existing| existing == std::path::Path::new(path)),
+                "conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path"
+            );
+            *configured = Some(path.into());
+        }
         Ok(ForwardPassPerfModelConfig {
             model: self.model.clone(),
             system: self.system.clone(),
@@ -287,7 +307,7 @@ impl AicTimingConfig {
             decoder_replay: self.decoder_replay,
             estimation_mode: mode,
             fallback_policy: self.fallback_policy,
-            estimator_config: self.estimator_config.clone(),
+            estimator_config,
             database_mode: self.database_mode,
             transfer_policy: self.transfer_policy.clone(),
             systems_paths: roots,
@@ -418,6 +438,7 @@ impl AicTimingModel {
         config.estimation_mode = Some(provenance.selected_estimation_mode);
         config.worker_type = Some(worker_type);
         config.forward_model = None;
+        config.fpm_parquet_path = None;
         config.fallback_policy = ForwardPassFallbackPolicy::Deny;
         config.estimator_config = provenance.config.estimator_config.clone();
         let use_fpm_decode_totals =
@@ -965,12 +986,44 @@ fn resolve_kv_capacity_concurrency(
     Ok(Some(concurrency))
 }
 
+fn build_agentic_driver(
+    graph: ValidatedAgenticGraph,
+    traffic: &RuntimeTraffic,
+    engine_block_size: usize,
+    speedup: f64,
+) -> Result<WorkloadDriver> {
+    if let Some(options) = &traffic.agentic_snapshot {
+        let lanes = traffic
+            .agentic_lanes
+            .context("agentic_snapshot requires positive agentic_lanes")?;
+        // Sample recorded time before applying speedup to remaining timers.
+        let prepared = graph.prepare_snapshots(lanes, *options)?;
+        WorkloadDriver::new_agentic_snapshots(prepared, engine_block_size, true, speedup)
+    } else {
+        WorkloadDriver::new_agentic_trace_with_options(
+            graph.normalize_starts().speed_up_timing(speedup)?,
+            engine_block_size,
+            true,
+            traffic.agentic_lanes,
+        )
+    }
+}
+
 fn build_runtime_input(
     traffic: RuntimeTraffic,
     engine_block_size: usize,
     allow_agentic: bool,
 ) -> Result<BuiltRuntimeInput> {
     ensure!(engine_block_size > 0, "engine block size must be positive");
+    if traffic.agentic_snapshot.is_some() {
+        ensure!(
+            traffic.source_type == "trace"
+                && traffic.load_type.as_deref() == Some("trace_timestamps")
+                && traffic.agentic_lanes.is_some_and(|lanes| lanes > 0)
+                && traffic.replay_concurrency.is_none(),
+            "agentic_snapshot requires trace_timestamps agentic input with positive agentic_lanes"
+        );
+    }
     ensure!(
         traffic.source_type == "trace" || traffic.agentic_lanes.is_none(),
         "agentic_lanes requires agentic trace input"
@@ -1017,15 +1070,13 @@ fn build_runtime_input(
                 traffic.replay_concurrency.is_none(),
                 "agentic_mooncake does not support concurrency load"
             );
-            let trace = load_agentic_mooncake(&paths[0], trace_block_size)?
-                .normalize_starts()
-                .speed_up_timing(speedup)?;
+            let trace = load_agentic_mooncake(&paths[0], trace_block_size)?;
             return Ok(BuiltRuntimeInput::without_weka_basis(
-                ReplayRuntimeInput::Workload(WorkloadDriver::new_agentic_trace_with_options(
+                ReplayRuntimeInput::Workload(build_agentic_driver(
                     trace,
+                    &traffic,
                     engine_block_size,
-                    true,
-                    traffic.agentic_lanes,
+                    speedup,
                 )?),
             ));
         }
@@ -1056,16 +1107,13 @@ fn build_runtime_input(
                     nested_timestamp_basis: requested_basis,
                 },
             )?;
-            let trace = trace.normalize_starts().speed_up_timing(speedup)?;
             return Ok(BuiltRuntimeInput {
-                input: ReplayRuntimeInput::Workload(
-                    WorkloadDriver::new_agentic_trace_with_options(
-                        trace,
-                        engine_block_size,
-                        true,
-                        traffic.agentic_lanes,
-                    )?,
-                ),
+                input: ReplayRuntimeInput::Workload(build_agentic_driver(
+                    trace,
+                    &traffic,
+                    engine_block_size,
+                    speedup,
+                )?),
                 weka_nested_timestamp_basis: Some(resolved_basis),
             });
         }
@@ -1092,22 +1140,15 @@ fn build_runtime_input(
                         traffic.replay_concurrency.is_none(),
                         "agentic Dynamo trace does not support concurrency load"
                     );
-                    WorkloadDriver::new_agentic_trace_with_options(
-                        {
-                            ensure!(
-                                allow_agentic,
-                                "agentic Dynamo trace requires aggregated topology"
-                            );
-                            ensure!(
-                                traffic.max_sim_time_ms.is_none(),
-                                "agentic Dynamo trace does not support max virtual time"
-                            );
-                            trace.normalize_starts().speed_up_timing(speedup)?
-                        },
-                        engine_block_size,
-                        true,
-                        traffic.agentic_lanes,
-                    )?
+                    ensure!(
+                        allow_agentic,
+                        "agentic Dynamo trace requires aggregated topology"
+                    );
+                    ensure!(
+                        traffic.max_sim_time_ms.is_none(),
+                        "agentic Dynamo trace does not support max virtual time"
+                    );
+                    build_agentic_driver(trace, &traffic, engine_block_size, speedup)?
                 }
             };
             return Ok(BuiltRuntimeInput::without_weka_basis(
@@ -1921,6 +1962,45 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_options_are_strict_at_the_native_json_boundary() {
+        let base = serde_json::json!({
+            "source_type": "trace", "load_type": "trace_timestamps",
+            "trace_path": "unused", "trace_format": "weka", "agentic_lanes": 1,
+        });
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"seed": true}),
+            serde_json::json!({"seed": -1}),
+            serde_json::json!({"seed": 1.0}),
+            serde_json::json!({"seed": "42"}),
+            serde_json::json!({"seed": 42, "extra": 0}),
+        ] {
+            let mut traffic = base.clone();
+            traffic["agentic_snapshot"] = invalid;
+            assert!(serde_json::from_value::<RuntimeTraffic>(traffic).is_err());
+        }
+        for (field, invalid) in [
+            ("source_type", serde_json::json!("synthetic")),
+            ("load_type", serde_json::json!("concurrency")),
+            ("agentic_lanes", serde_json::json!(0)),
+            ("agentic_lanes", serde_json::Value::Null),
+            ("replay_concurrency", serde_json::json!(1)),
+        ] {
+            let mut traffic = base.clone();
+            traffic["agentic_snapshot"] = serde_json::json!({"seed": u64::MAX});
+            traffic[field] = invalid;
+            let traffic = serde_json::from_value::<RuntimeTraffic>(traffic).unwrap();
+            assert!(
+                build_runtime_input(traffic, 64, true)
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("agentic_snapshot requires")
+            );
+        }
+    }
+
+    #[test]
     fn public_agentic_json_rejects_unqualified_modes_without_restricting_standard_dynamo() {
         let directory = tempfile::tempdir().unwrap();
         let dynamo = serde_json::json!({
@@ -2206,6 +2286,7 @@ mod tests {
             strict_provenance: false,
             systems_path: None,
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
         }
     }
@@ -2720,16 +2801,34 @@ mod tests {
     }
 
     #[test]
+    fn aic_timing_rejects_invalid_fpm_paths_before_entering_python() {
+        for (path, model) in [("", "fpm"), ("/missing/fpm.parquet", "op_level")] {
+            let mut config = aic_config();
+            config.fpm_parquet_path = Some(path.into());
+            config.forward_model = Some(model.into());
+            let err = AicTimingModel::build(&mut config, ForwardPassWorkerType::Aggregated)
+                .err()
+                .expect("invalid path");
+            assert!(err.to_string().contains("fpm_parquet_path"), "{err}");
+        }
+    }
+
+    #[test]
     fn aic_timing_config_accepts_fpm_forward_model() {
         let config = serde_json::from_value::<AicTimingConfig>(serde_json::json!({
             "model": "test-model",
             "backend": "vllm",
             "system": "test-system",
             "tp": 1,
-            "forward_model": "fpm"
+            "forward_model": "fpm",
+            "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet"
         }))
         .unwrap();
         assert_eq!(config.forward_model.as_deref(), Some("fpm"));
+        assert_eq!(
+            config.fpm_parquet_path.as_deref(),
+            Some("/artifacts/reviewed-fpm.parquet")
+        );
     }
 
     #[test]

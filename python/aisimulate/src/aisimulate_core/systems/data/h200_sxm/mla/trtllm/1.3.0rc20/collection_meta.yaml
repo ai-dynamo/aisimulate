@@ -2,12 +2,18 @@
 # SPDX-License-Identifier: Apache-2.0
 
 schema_version: 1
-provenance: collected
+provenance: local
 runtime:
   framework: trtllm
   version: 1.3.0rc20
 tables:
   context_mla_perf:
+    collector_ref: ce9a396642674e8008fda2b778580dc8d9e310b4
+    collector_hash: sha256:9d396ec69d649ddfeb9c3450f0cd35881309628c5ca1ded9b4259c98cf074e2e
+    case_plan_hash: sha256:c0fd09dd4f806c0c23a84de0e452f6093b889ec3bc4adcdf1fdf4f30d2b66606
+    collected_at: '2026-09-17'
+    rows: 3080
+    classified_failures: 0
     status: complete
   generation_mla_perf:
     status: complete

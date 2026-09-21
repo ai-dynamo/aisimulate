@@ -36,17 +36,20 @@ at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/13b5cf2697876692b0a52098266c81162add11fc/LICENSE
 
 The 18 B200 TensorRT-LLM 1.3.0rc20 performance tables under
-`src/aiconfigurator_core/systems/data/b200_sxm/*/trtllm/1.3.0rc20/` include
+`src/aisimulate_core/systems/data/b200_sxm/*/trtllm/1.3.0rc20/` include
 power measurements derived from AIConfigurator commit
-`915f590680d8a79fe9c39f6f3a9ff13bc267fcce` (PR #1584). Sixteen tables are
-unmodified, byte-identical copies. The context-attention and
+`915f590680d8a79fe9c39f6f3a9ff13bc267fcce` (PR #1584). Fourteen tables remain
+unmodified, byte-identical copies after the September 17-18 refresh. The
+context-MLA table was replaced with locally collected measurements, and the
+MoE table has locally refreshed MXFP4 rows with unavailable-power sentinels.
+The context-attention and
 generation-attention tables are modified derivatives: AISimulate preserves
 newer local timing rows and adds the typed `0.0` / `0.0` unavailable sentinel
 to those local-only identities. Source paths, row counts, measured coverage,
 and merge details are recorded in
-`src/aiconfigurator_core/systems/data/b200_sxm/README.md`. The two unmodified
+`src/aisimulate_core/systems/data/b200_sxm/README.md`. The two unmodified
 upstream attention copies under
-`src/aiconfigurator_core/systems/data/b200_sxm/power_upstream/` support focused
+`src/aisimulate_core/systems/data/b200_sxm/power_upstream/` support focused
 import regression tests, which pin source and packaged SHA-256 digests.
 
 The corresponding energy expectations in the repository-root file
@@ -453,6 +456,24 @@ SGLang's serving architecture at immutable commit
 - `python/sglang/srt/layers/attention/deepseek_v4_backend.py`
 - `python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py`
 - `python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py`
+- `python/sglang/benchmark/one_batch.py`
+
+The original integration adapter
+`collector/sglang/dsv41_native_runner.py` calls that pinned benchmark's model
+builder and request lifecycle. Its component boundaries are modified from
+the serving contracts above; it does not copy framework metadata builders.
+The matching loaded-dimension guards in `collector/sglang/dsv41_contract.py`
+and their CPU fixtures in `tests/unit/collector/test_dsv41_contract.py` are
+modified analytical adaptations of the indexer layout in `dsv41_sparse.py`.
+
+The measured operator databases and adjacent documentation under
+`src/aisimulate_core/systems/profiles/dsv41/` contain AISimulate timings
+and geometry adapted from the same serving contracts (modified). Their
+README and adjacent provenance identify the immutable collection runtime
+and source identities. The restored GB300 tables preserve their historical
+timings and documented source-audited indexer metadata correction. The
+B300 TP4 and TP2 tables are new native measurements with loaded-module dimension
+validation; they do not inherit that historical correction.
 
 Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
 Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
@@ -471,12 +492,12 @@ adaptations of, the named DeepSeek model repositories:
 
 | AISimulate file | Upstream revision |
 | --- | --- |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-R1_config.json` | `deepseek-ai/DeepSeek-R1@56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad` |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V3_config.json` | `deepseek-ai/DeepSeek-V3@e815299b0bcbac849fa540c768ef21845365c9eb` |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json` | `deepseek-ai/DeepSeek-V3.2@c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3` |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json` | `deepseek-ai/DeepSeek-V4-Flash@60d8d70770c6776ff598c94bb586a859a38244f1` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-R1_config.json` | `deepseek-ai/DeepSeek-R1@56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3_config.json` | `deepseek-ai/DeepSeek-V3@e815299b0bcbac849fa540c768ef21845365c9eb` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json` | `deepseek-ai/DeepSeek-V3.2@c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Flash_config.json` | `deepseek-ai/DeepSeek-V4-Flash@60d8d70770c6776ff598c94bb586a859a38244f1` |
 | `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4.1-Flash_config.json` | `deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d` |
-| `src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json` | `deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1` |
+| `src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V4-Pro_config.json` | `deepseek-ai/DeepSeek-V4-Pro@b5968e9190ef611bbf34a7229255be88a0e937c1` |
 
 The V4.1 descriptor and performance formulas in `src/aisimulate_core/sdk/deepseek_v41.py`,
 `src/aisimulate_core/sdk/models/deepseek_v41.py`, and repository-root

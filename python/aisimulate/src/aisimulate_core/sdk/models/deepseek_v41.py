@@ -209,7 +209,7 @@ class DeepSeekV41Model(BaseModel):
                 ),
             ]
             # The post-expert reduction consumes both routed and shared
-            # partials, and therefore follows the optional compute overlap.
+            # partials, and therefore follows both compute groups.
             combine = ops.MoEDispatch(
                 f"{phase}_moe_post_dispatch",
                 1,
@@ -225,14 +225,18 @@ class DeepSeekV41Model(BaseModel):
                 is_context=context,
                 attn_ar_modeled=True,
             )
+            if ep == 1:
+                # The text TP baseline uses an explicit NCCL collective,
+                # consistently with attention/Engram and its measured comm
+                # table. Serving validation disables custom all-reduce.
+                combine = ops.NCCL(f"{phase}_moe_post_dispatch", 1, "all_reduce", h, mtp, common.CommQuantMode.half)
+
             # SGLang's qualified TP eager path executes forward_normal on
             # one stream. Dual-stream shared/routed work requires capture or
             # graph/SBO dispatch (sglang@1aa0e962 deepseek_v2.py:885-960,
-            # 1107-1126,1191-1222). Other backend/EP modes remain assumptions.
-            if context or (ep == 1 and backend_name == "sglang"):
-                children.extend(shared + routed)
-            else:
-                children.append(ops.OverlapOp(f"{phase}_moe_overlap", group_a=routed, group_b=shared))
+            # 1107-1126,1191-1222). Keep all backend/EP modes sequential until
+            # their concurrent execution has a qualified runtime contract.
+            children.extend(shared + routed)
             children.append(combine)
             return _native(
                 "Dsv41Stage",

@@ -27,6 +27,8 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
+from aisimulate.config.traffic import AgenticSnapshotOptions
+
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from ..config.engine import NgramSpeculationConfig
 
@@ -271,6 +273,7 @@ class Workload(BaseModel):
     weka_nested_timestamp_basis: Literal["auto", "absolute", "relative"] | None = None
     arrival_speedup_ratio: float = 1.0  # scale trace inter-arrival times
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
+    agentic_snapshot: AgenticSnapshotOptions | None = None
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
     # *synthetic* closed-loop workload use ``concurrency`` or ``kv_load_ratio`` instead.
@@ -384,6 +387,8 @@ class Workload(BaseModel):
             self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
         ):
             raise ValueError("weka_nested_timestamp_basis requires Weka trace input")
+        if self.agentic_snapshot is not None and self.agentic_lanes is None:
+            raise ValueError("agentic_snapshot requires positive agentic_lanes")
         if self.agentic_lanes is not None:
             if (
                 self.trace_path is None
@@ -569,7 +574,8 @@ class SearchSpace(BaseModel):
     prefill_native_host_offload: dict[str, Any] | None = None
     prefill_num_gpu_blocks: int | None = None
     prefill_timing_model: dict[str, Any] | None = None
-    prefill_forward_model: str = "op_level"
+    prefill_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    prefill_fpm_parquet_path: str | None = None
     prefill_startup_time: float | None = None
 
     # decode engine (disagg branch): scheduler batching capacity
@@ -583,7 +589,8 @@ class SearchSpace(BaseModel):
     decode_native_host_offload: dict[str, Any] | None = None
     decode_num_gpu_blocks: int | None = None
     decode_timing_model: dict[str, Any] | None = None
-    decode_forward_model: str = "op_level"
+    decode_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    decode_fpm_parquet_path: str | None = None
     decode_startup_time: float | None = None
 
     # agg engine (agg branch): scheduler batching capacity
@@ -597,7 +604,8 @@ class SearchSpace(BaseModel):
     agg_native_host_offload: dict[str, Any] | None = None
     agg_num_gpu_blocks: int | None = None
     agg_timing_model: dict[str, Any] | None = None
-    agg_forward_model: str = "op_level"
+    agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
+    agg_fpm_parquet_path: str | None = None
     agg_startup_time: float | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
@@ -683,6 +691,13 @@ class SearchSpace(BaseModel):
             for role in ("agg", "prefill", "decode"):
                 mode = self.role_estimator_controls.get(role, {}).get("estimation_mode", self.estimation_mode)
                 setattr(self, f"{role}_forward_model", "fpm" if mode == "fpm_interpolation" else "op_level")
+        for role in ("prefill", "decode", "agg"):
+            path = getattr(self, f"{role}_fpm_parquet_path")
+            if path is not None:
+                if not path:
+                    raise ValueError(f"{role}_fpm_parquet_path cannot be empty")
+                if getattr(self, f"{role}_forward_model") != "fpm" or getattr(self, f"{role}_timing_model") is not None:
+                    raise ValueError(f"{role}_fpm_parquet_path requires default timing with forward_model='fpm'")
         return self
 
     def _uses_legacy_estimator_provider(self) -> bool:

@@ -765,28 +765,18 @@ impl SglangCore {
         let defer_prefill = self.prefill_rounds_remaining > 0;
         let remaining_after_round = self.prefill_rounds_remaining.saturating_sub(1);
         let new_token_ratio_before = self.new_token_ratio;
+        // Keep rejected requests alive until the pass succeeds so a provider
+        // failure can restore both their queue position and terminal bookkeeping.
         let mut rejected = Vec::new();
         if let Some(limit) = self.config.max_model_len {
-            self.waiting.retain(|request| {
+            for index in 0..self.waiting.len() {
+                let request = self.waiting.pop_front().expect("waiting request retained");
                 if request.prompt_len() < limit {
-                    return true;
+                    self.waiting.push_back(request);
+                } else {
+                    rejected.push((index, request));
                 }
-                rejected.push(OutputSignal {
-                    uuid: request.uuid,
-                    token_id: None,
-                    completed: true,
-                    rejected: true,
-                    cached_tokens: None,
-                    handoff_delay_ms: None,
-                });
-                false
-            });
-        }
-        for signal in &rejected {
-            self.source_holds.remove_request(signal.uuid);
-        }
-        if let Some(oracle) = &self.belady {
-            oracle.retire_requests(rejected.iter().map(|signal| signal.uuid));
+            }
         }
         // Only providers with fallible geometry validation need to preserve the
         // admission state. Normal polynomial and unrestricted AIC passes avoid
@@ -875,6 +865,9 @@ impl SglangCore {
                 for request in self.running.drain(running_before_admission..).rev() {
                     self.prebuilt_ready.push_front(request);
                 }
+                for (index, request) in rejected {
+                    self.waiting.insert(index.min(self.waiting.len()), request);
+                }
                 return Err(error);
             }
         };
@@ -934,13 +927,13 @@ impl SglangCore {
         self.interval_idle_in_pass = defer_prefill && scheduled_decode_lens.is_empty();
 
         let decode_start_ms = now_ms + prefill_time.as_secs_f64() * 1000.0;
-        let mut decode = if prefill_pass {
+        let decode = if prefill_pass {
             simulate_prefill_first_tokens(
                 &mut self.running,
                 &mut self.kv_manager,
                 &self.config,
                 decode_start_ms,
-            )?
+            )
         } else {
             simulate_decode_step_with_sampler(
                 &mut self.running,
@@ -949,7 +942,16 @@ impl SglangCore {
                 self.speculative_sampler.as_mut(),
                 decode_start_ms,
                 true,
-            )?
+            )
+        };
+        let mut decode = match decode {
+            Ok(decode) => decode,
+            Err(error) => {
+                for (index, request) in rejected {
+                    self.waiting.insert(index.min(self.waiting.len()), request);
+                }
+                return Err(error);
+            }
         };
         self.model_work_in_pass = self.prefill_in_pass
             || (!prefill_pass && decode.output_signals.iter().any(|s| s.token_id.is_some()));
@@ -962,7 +964,20 @@ impl SglangCore {
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);
         }
-        decode.output_signals.extend(rejected);
+        if let Some(oracle) = &self.belady {
+            oracle.retire_requests(rejected.iter().map(|(_, request)| request.uuid));
+        }
+        for (_, request) in rejected {
+            self.source_holds.remove_request(request.uuid);
+            decode.output_signals.push(OutputSignal {
+                uuid: request.uuid,
+                token_id: None,
+                completed: true,
+                rejected: true,
+                cached_tokens: None,
+                handoff_delay_ms: None,
+            });
+        }
 
         if let Some(collector) = collector {
             for signal in &decode.output_signals {

@@ -15,7 +15,7 @@ from aisimulate.config.engine import (
 )
 from aisimulate.recommend import _candidate_prediction, recommendation_to_sweeper
 from aisimulate.sweeper.deploy import build_backend_deployment
-from aisimulate.sweeper.parallel_enum import ParallelShape, ReplicaParallelConfig
+from aisimulate.sweeper.parallel_enum import DisaggParallelConfig, ParallelShape, ReplicaParallelConfig
 from aisimulate.sweeper.replay import ReplaySpec
 from aisimulate.sweeper.sample import unroll_sample
 
@@ -864,12 +864,27 @@ def test_prediction_timing_forward_model_defaults_to_op_level() -> None:
 
 def test_prediction_timing_accepts_fpm_forward_model_with_default_timing() -> None:
     engine = _engine()
-    engine["workers"]["aggregated"] = {"timing": {"type": "default", "forward_model": "fpm"}}
+    engine["workers"]["aggregated"] = {
+        "timing": {
+            "type": "default",
+            "forward_model": "fpm",
+            "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet",
+        }
+    }
 
     config = CorePredictionConfig.model_validate({"engine": engine})
 
     assert config.engine.workers.aggregated is not None
     assert config.engine.workers.aggregated.timing.forward_model == "fpm"
+    assert config.engine.workers.aggregated.timing.fpm_parquet_path == "/artifacts/reviewed-fpm.parquet"
+
+
+def test_prediction_timing_rejects_fpm_path_for_op_level() -> None:
+    engine = _engine()
+    engine["workers"]["aggregated"] = {"timing": {"fpm_parquet_path": "/artifacts/reviewed-fpm.parquet"}}
+
+    with pytest.raises(ValidationError, match="fpm_parquet_path requires"):
+        CorePredictionConfig.model_validate({"engine": engine})
 
 
 @pytest.mark.parametrize(
@@ -972,35 +987,87 @@ def test_recommendation_lowers_forward_model_per_role() -> None:
     assert space.agg_forward_model == "op_level"
 
 
-def test_recommendation_candidate_yaml_round_trips_forward_model() -> None:
-    config = _fpm_recommendation()
-    smart = recommendation_to_sweeper(config)
-    assert smart.search_space.agg_forward_model == "fpm"
+@pytest.mark.parametrize("path", [None, "/artifacts/reviewed-fpm.parquet"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("resolved, canonical", [(False, False), (True, False), (True, True)])
+def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, resolved, canonical) -> None:
+    from dataclasses import replace
 
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+    from aisimulate.sweeper.replay import ForwardPassEstimatorSpec
+
+    raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
+    worker = raw["engine"]["workers"].pop("aggregated")
+    roles = {"aggregated": "agg"} if mode == "aggregated" else {"prefill": "prefill", "decode": "decode"}
+    raw["engine"]["mode"] = mode
+    for public_role in roles:
+        raw["engine"]["workers"][public_role] = {
+            **worker,
+            "timing": {
+                "type": "default",
+                "forward_model": "fpm",
+                "fpm_parquet_path": f"{path}.{public_role}" if path else None,
+            },
+        }
+        if canonical:
+            timing = raw["engine"]["workers"][public_role]["timing"]
+            timing.pop("forward_model")
+            timing["estimation_mode"] = "fpm_interpolation"
+            external_path = timing.pop("fpm_parquet_path")
+            if external_path:
+                timing["estimator_config"] = {"fpm_interpolation": {"fpm_parquet_path": external_path}}
+    config = CoreRecommendationConfig.model_validate(raw)
+    smart = recommendation_to_sweeper(config)
+    replica = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    selection = {"deployment_mode": "agg" if mode == "aggregated" else "disagg", "backend": "vllm"}
+    for role in roles.values():
+        selection[f"{role}_max_num_batched_tokens"] = 8192
+        selection[f"{role}_max_num_seqs"] = 256
     sample = unroll_sample(
         search_space=smart.search_space,
-        selection={
-            "deployment_mode": "agg",
-            "backend": "vllm",
-            "agg_max_num_batched_tokens": 8192,
-            "agg_max_num_seqs": 256,
-        },
-        parallel_config=ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1),
+        selection=selection,
+        parallel_config=replica if mode == "aggregated" else DisaggParallelConfig(replica, replica),
     )
-    assert sample["agg_forward_model"] == "fpm"
-    deployment = build_backend_deployment(sample, backend_version="test")
-    assert deployment.agg_engine_args["aic_forward_model"] == "fpm"
-
+    estimators = {}
+    if resolved:
+        resolver = ForwardPassEstimatorResolver(smart.search_space)
+        for public_role, role in roles.items():
+            estimators[role] = ForwardPassEstimatorSpec(
+                config=replace(resolver._request(sample, role), backend_version="test").to_dict()
+            )
+    deployment = build_backend_deployment(sample, backend_version="test", forward_pass_estimators=estimators)
     prediction = _candidate_prediction(
         config,
         sample,
         ReplaySpec(backend_deployment=deployment, workload={}, goal={}),
         adapter_sections={},
     )
-
-    assert prediction["engine"]["workers"]["aggregated"]["timing"]["estimation_mode"] == "fpm_interpolation"
-    assert prediction["engine"]["workers"]["aggregated"]["timing"]["fallback_policy"] == "deny"
-    CorePredictionConfig.model_validate(prediction)
+    for public_role, role in roles.items():
+        expected_path = f"{path}.{public_role}" if path else None
+        assert sample[f"{role}_fpm_parquet_path"] == (None if canonical else expected_path)
+        args = getattr(deployment, f"{role}_engine_args")
+        timing = prediction["engine"]["workers"][public_role]["timing"]
+        assert timing["estimation_mode"] == "fpm_interpolation"
+        assert timing["fallback_policy"] == "deny"
+        if resolved:
+            assert (
+                args["timing_model"]["config"]["estimator_config"].get("fpm_interpolation", {}).get("fpm_parquet_path")
+                == expected_path
+            )
+            assert timing["estimator_config"].get("fpm_interpolation", {}).get("fpm_parquet_path") == expected_path
+        else:
+            assert args["aic_forward_model"] == "fpm"
+            assert args.get("aic_fpm_parquet_path") == expected_path
+            assert deployment.performance_model_metadata[public_role]["config"].get("fpm_parquet_path") == expected_path
+            assert timing.get("fpm_parquet_path") == expected_path
+    reloaded = prediction_to_replay_spec(CorePredictionConfig.model_validate(prediction)).backend_deployment
+    for public_role, role in roles.items():
+        timing = getattr(reloaded, f"{role}_engine_args")["timing_model"]["config"]
+        assert timing["estimation_mode"] == "fpm_interpolation"
+        assert timing["estimator_config"].get("fpm_interpolation", {}).get("fpm_parquet_path") == (
+            f"{path}.{public_role}" if path else None
+        )
 
 
 @pytest.mark.parametrize("policy", [None, []])
@@ -1291,6 +1358,83 @@ def test_pd_predict_checks_effective_prefill_hardware_in_router_hook(router_hard
     else:
         with pytest.raises(ValueError, match="does not match effective prefill_hardware_sku"):
             prediction_to_replay_spec(config, adapter_specs={"dynamo.router": spec})
+
+
+@pytest.mark.parametrize("seed", [0, 42, 2**64 - 1])
+def test_agentic_snapshot_seed_compiles_for_prediction_and_recommendation(seed: int) -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+    from aisimulate.recommend import _recommendation_workload
+    from aisimulate.sweeper.config import Workload
+
+    traffic = {
+        "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+        "load": {"type": "trace_timestamps", "agentic_lanes": 2, "agentic_snapshot": {"seed": seed}},
+    }
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        assert schema.model_validate(traffic).load.agentic_snapshot.seed == seed
+    prediction = CorePredictionConfig.model_validate(
+        {"engine": _engine() | {"context_length": 1024}, "traffic": traffic}
+    )
+    workload = prediction_to_replay_spec(prediction).workload
+    assert workload["agentic_snapshot"] == {"seed": seed}
+    recommended = _recommendation_workload(traffic)
+    assert recommended["agentic_snapshot"] == {"seed": seed}
+    assert Workload.model_validate(recommended).model_dump()["agentic_snapshot"] == {"seed": seed}
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    [{}, {"seed": True}, {"seed": -1}, {"seed": 2**64}, {"seed": 1.0}, {"seed": "42"}, {"seed": 42, "fraction": 0.5}],
+)
+def test_agentic_snapshot_rejects_invalid_seed_options(snapshot: dict) -> None:
+    from aisimulate.config import TrafficPredictionConfig, TrafficRecommendationConfig
+
+    traffic = {
+        "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+        "load": {"type": "trace_timestamps", "agentic_lanes": 1, "agentic_snapshot": snapshot},
+    }
+    for schema in (TrafficPredictionConfig, TrafficRecommendationConfig):
+        with pytest.raises(ValidationError):
+            schema.model_validate(traffic)
+
+
+@pytest.mark.parametrize(
+    "load,source",
+    [
+        ({"type": "trace_timestamps"}, {"type": "trace", "format": "weka", "paths": ["corpus"]}),
+        (
+            {"type": "concurrency", "concurrency": 1, "agentic_lanes": 1},
+            {"type": "trace", "format": "dynamo", "paths": ["corpus"]},
+        ),
+        (
+            {"type": "trace_timestamps", "agentic_lanes": 1},
+            {"type": "trace", "format": "mooncake", "paths": ["corpus"]},
+        ),
+        ({"type": "poisson", "requests_per_second": 1.0, "agentic_lanes": 1}, {"type": "synthetic"}),
+    ],
+)
+def test_agentic_snapshot_requires_explicit_agentic_lanes_and_trace_timestamps(load: dict, source: dict) -> None:
+    from aisimulate.config import TrafficPredictionConfig
+
+    with pytest.raises(ValidationError):
+        TrafficPredictionConfig.model_validate({"source": source, "load": load | {"agentic_snapshot": {"seed": 1}}})
+
+
+def test_agentic_snapshot_is_opt_in() -> None:
+    from aisimulate.compiler import prediction_to_replay_spec
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": _engine() | {"context_length": 1024},
+            "traffic": {
+                "source": {"type": "trace", "format": "weka", "paths": ["corpus"]},
+                "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+            },
+        }
+    )
+    assert config.traffic.load.agentic_snapshot is None
+    assert "agentic_snapshot" not in prediction_to_replay_spec(config).workload
 
 
 def test_new_default_selection_survives_serialization_without_becoming_legacy_op_level():

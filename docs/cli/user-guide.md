@@ -59,6 +59,15 @@ For a specific task, jump to [Dynamo integration](#choose-an-execution-stack),
 [AgentX and other trace formats](#trace-format-compatibility), or [troubleshooting](#troubleshooting).
 Use the [configuration reference](#configuration-model) when you need individual fields.
 
+Seeded AgentX snapshots are optional under `traffic.load.agentic_snapshot`:
+`{seed: 42}` requires `trace_timestamps` load and positive `agentic_lanes`, with
+Weka, Agentic Mooncake v2, or agentic Dynamo input. The seed is an unsigned 64-bit
+integer. Omit this field for turn-zero replay. The existing `--set
+traffic.load.agentic_snapshot.seed=42` override selects it for prediction or
+recommendation. Snapshot evidence is retained in JSON results. This executes the
+remaining request suffix against a cold engine; primer execution and benchmark
+warmup are separate phase-orchestration work.
+
 <a id="commands"></a>
 
 ## 2. Commands
@@ -692,6 +701,7 @@ the current SA convention.
 | `traffic.load.fraction` | `null` | `-` | `-` | Positive finite number; `kv_capacity_fraction` only and may exceed `1`. |
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
+| `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |
@@ -1011,6 +1021,7 @@ engine:
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
+| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
 | `engine.workers.<role>.startup_seconds` | `0` | `x` | `-` | Nonnegative. |
 | `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
@@ -1099,13 +1110,12 @@ Backend-version-specific defaults are not selected automatically by this registr
 
 `timing.forward_model` selects the forward-pass model behind the default timing provider. `op_level`
 composes per-operator measurements; `fpm` replays whole-forward measurements from a collected FPM
-cell and requires an exact match on model, hardware, backend version, parallel shape and
+cell supplied through `timing.fpm_parquet_path` and requires an exact match on model, hardware, backend version, parallel shape and
 quantization. A candidate without a matching cell fails at replay and is recorded as a failed
 candidate (reason category `replay_runtime`) rather than silently falling back to `op_level`. In
 `fpm` mode with `capacity.type: default`, the KV capacity is also capped to the cell's collected
-decode-KV ceiling. The bundled FPM cells are collected at backend versions outside the queryable
-version slots; until FPM cells are slot-queryable, set the transitional escape hatch
-`AIC_ALLOW_UNLISTED_VERSIONS=1` to use them.
+decode-KV ceiling. FPM pairs are external runtime inputs. If a pair was collected at a backend
+version outside the queryable slots, set `AIC_ALLOW_UNLISTED_VERSIONS=1` explicitly.
 
 `kv_cache.capacity.type: fixed` requires `blocks`, so users can directly provide cache size. It rejects
 `memory_fraction` and nonzero `cuda_graph_reserved_bytes`. Conversely, `type: default` rejects `blocks`
