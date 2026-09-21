@@ -1384,8 +1384,9 @@ The target produces `deploy.sbatch` for persistent serving and `benchmark.sbatch
 for a complete deploy/health-check/AIPerf/cleanup run. On the cluster, run
 `bash submit.sh benchmark --test-only`, then `bash submit.sh benchmark` (or
 `bash submit.sh serve`). Submissions save a job receipt and prevent duplicate runs
-from the same bundle directory. V1 supports single-node NVIDIA agg/P-D topologies
-for vLLM, SGLang and TRT-LLM; the image must contain Dynamo, etcd/NATS and, for
-benchmarks, AIPerf. See the Slurm target section of the
+from the same bundle directory. V1 generates single-node NVIDIA agg/P-D topologies
+for vLLM, SGLang and TRT-LLM. Real Slurm runtime validation currently covers vLLM;
+SGLang and TRT-LLM have artifact-generation coverage only. The image must contain
+Dynamo, etcd/NATS and, for benchmarks, AIPerf. See the Slurm target section of the
 [generator overview](../../python/aisimulate/docs/generator_overview.md) for the
 complete input example, outputs and current scope.

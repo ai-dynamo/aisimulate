@@ -57,21 +57,28 @@ class Supervisor:
         temporary.write_text(json.dumps(self.result, indent=2) + "\n")
         temporary.replace(self.output / "result.json")
 
-    def port(self):
+    def port(self, count=1):
         # Dynamo 1.2's SYSTEM_PORT parser uses a signed 16-bit integer.
         # OS-assigned ephemeral ports commonly exceed that range.
+        if not 1 <= count <= 12000:
+            raise ValueError("Dynamo-compatible service port range must contain 1..12000 ports")
         for _ in range(1000):
-            port = 20000 + secrets.randbelow(12000)
-            if port in self.ports:
+            port = 20000 + secrets.randbelow(12001 - count)
+            ports = range(port, port + count)
+            if self.ports.intersection(ports):
                 continue
-            with socket.socket() as sock:
-                try:
-                    sock.bind(("0.0.0.0", port))
-                except OSError:
-                    continue
-            self.ports.add(port)
-            return port
-        raise RuntimeError("Could not find a free Dynamo-compatible service port")
+            for candidate in ports:
+                with socket.socket() as sock:
+                    try:
+                        sock.bind(("0.0.0.0", candidate))
+                    except OSError:
+                        break
+            else:
+                # Reserve only complete ranges. Probe sockets cannot prevent
+                # unrelated processes from taking ports before service startup.
+                self.ports.update(ports)
+                return port
+        raise RuntimeError(f"Could not find a free Dynamo-compatible service port range of size {count}")
 
     def start(self, name, argv, env=None):
         log = (self.output / f"{name}.log").open("w")
@@ -178,7 +185,11 @@ class Supervisor:
         self.start("frontend", self.spec["frontend"], {"DYN_SYSTEM_PORT": str(self.port())})
         health_ports = []
         for worker in self.spec["workers"]:
-            system_port, event_port, side_port, bootstrap_port = [self.port() for _ in range(4)]
+            system_port, event_port = self.port(), self.port()
+            # vLLM adds DP rank offsets (and TP rank offsets in older releases)
+            # to the NIXL base. TP * PP * DP GPUs conservatively bounds the range.
+            side_port = self.port(worker["gpu_count"] if self.spec["backend"] == "vllm" else 1)
+            bootstrap_port = self.port()
             health_ports.append(system_port)
             selected = devices[worker["gpu_offset"] : worker["gpu_offset"] + worker["gpu_count"]]
             worker_env = dict(worker["env"])
@@ -200,7 +211,9 @@ class Supervisor:
         self.wait_http(
             self.base_url + "/v1/models",
             deadline,
-            lambda data: any(item.get("id") == self.spec["model"] for item in data.get("data", [])),
+            lambda data: isinstance(data, dict)
+            and isinstance(data.get("data"), list)
+            and any(isinstance(item, dict) and item.get("id") == self.spec["model"] for item in data["data"]),
         )
         # P/D model discovery can precede frontend route registration. Require
         # real inference before either a persistent service or benchmark is ready.

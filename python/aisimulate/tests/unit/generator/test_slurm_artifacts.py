@@ -12,9 +12,11 @@ import subprocess
 import sys
 import time
 import urllib.error
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -70,6 +72,30 @@ def _params(backend="vllm", mode="agg"):
         },
         backend=backend,
     )
+
+
+def _emitted_supervisor(tmp_path, params, backend="vllm", version=None):
+    generate_backend_artifacts(
+        params, backend, backend_version=version, deployment_target="slurm", output_dir=str(tmp_path)
+    )
+    module_spec = importlib.util.spec_from_file_location("emitted_slurm_runtime", tmp_path / "slurm_runtime.py")
+    runtime = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(runtime)
+    return runtime, runtime.Supervisor(json.loads((tmp_path / "deployment.json").read_bytes()), tmp_path / "results")
+
+
+@pytest.fixture
+def free_service_ports():
+    for base in range(20000, 31960, 40):
+        try:
+            with ExitStack() as sockets:
+                for port in range(base, base + 40):
+                    sock = sockets.enter_context(socket.socket())
+                    sock.bind(("0.0.0.0", port))
+        except OSError:
+            continue
+        return base
+    pytest.fail("Could not find free control ports for the supervisor test")
 
 
 @pytest.mark.parametrize("backend,version", _BACKENDS)
@@ -354,6 +380,105 @@ def test_supervisor_preserves_assigned_gpu_ids(monkeypatch, tmp_path):
     assert all(0 < int(env["DYN_SYSTEM_PORT"]) <= 32767 for env in workers)
 
 
+@pytest.mark.parametrize(
+    "backend,version,nixl_offsets",
+    [
+        ("vllm", "0.11.0", (0, 1, 2, 3)),
+        ("vllm", "0.24.0", (0, 1)),
+        ("sglang", "0.5.11", (0,)),
+        ("trtllm", "1.3.0rc14", (0,)),
+    ],
+)
+def test_emitted_workers_have_noncolliding_service_ports(
+    monkeypatch, tmp_path, free_service_ports, backend, version, nixl_offsets
+):
+    base = free_service_ports
+    params = _params(backend, "disagg")
+    params["ServiceConfig"]["port"] = base + 39
+    if backend == "vllm":
+        for role in ("prefill", "decode"):
+            params["params"][role]["data_parallel_size"] = 2
+    runtime, supervisor = _emitted_supervisor(tmp_path, params, backend, version)
+    supervisor.env["CUDA_VISIBLE_DEVICES"] = ",".join(map(str, range(supervisor.spec["gpus"])))
+    candidates = iter(base + offset for offset in (0, 1, 2, 3, 4, 5, 6, 8, 7, 9, *range(10, 39)))
+    monkeypatch.setattr(runtime.secrets, "randbelow", lambda limit: next(candidates) - 20000)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name, **kwargs: f"/fake/{name}")
+    commands = {}
+    monkeypatch.setattr(supervisor, "start", lambda name, argv, env=None: commands.update({name: (argv, env)}))
+    monkeypatch.setattr(supervisor, "wait_http", lambda *args: None)
+    monkeypatch.setattr(supervisor, "wait_tcp", lambda *args: None)
+    monkeypatch.setattr(supervisor, "smoke_test", lambda *args: None)
+    supervisor.start_services()
+
+    # TP=2/DP=2 uses four NIXL listeners in v0.11, two in v0.12+.
+    # Bind after all launches are allocated to reproduce delayed rank startup.
+    # These are consumer port sets, not a copy of the upstream implementation.
+    ports = [base + i for i in (0, 1, 2, 3, 39)]  # etcd, NATS, frontend
+    for worker in supervisor.spec["workers"]:
+        argv, env = commands[worker["name"]]
+        system, event, side = [
+            int(env[key]) for key in ("DYN_SYSTEM_PORT", "DYN_VLLM_KV_EVENT_PORT", "VLLM_NIXL_SIDE_CHANNEL_PORT")
+        ]
+        ports.extend([system, event])
+        if backend == "vllm":
+            assert worker["gpu_count"] == 4
+            assert argv[argv.index("--tensor-parallel-size") + 1] == "2"
+            assert argv[argv.index("--data-parallel-size") + 1] == "2"
+        ports.extend(side + offset for offset in nixl_offsets)
+        if backend == "sglang" and "--disaggregation-bootstrap-port" in argv:
+            ports.append(int(argv[argv.index("--disaggregation-bootstrap-port") + 1]))
+    with ExitStack() as sockets:
+        for port in ports:
+            sock = sockets.enter_context(socket.socket())
+            sock.bind(("0.0.0.0", port))
+    assert len(ports) == len(set(ports))
+    # Other backends retain four single-port allocations per worker.
+    expected_reservations = 19 if backend == "vllm" else 13
+    assert len(supervisor.ports) == expected_reservations
+    assert all(20000 <= port < 32000 for port in supervisor.ports)
+
+
+@pytest.mark.parametrize("occupied", ["external", "reserved"])
+def test_emitted_port_range_skips_busy_interior_without_partial_reservation(
+    monkeypatch, tmp_path, free_service_ports, occupied
+):
+    runtime, supervisor = _emitted_supervisor(tmp_path, _params())
+    base = free_service_ports
+    candidates = iter([base, base + 10, base])
+    monkeypatch.setattr(runtime.secrets, "randbelow", lambda limit: next(candidates) - 20000)
+    with socket.socket() as busy:
+        if occupied == "external":
+            busy.bind(("0.0.0.0", base + 1))
+        else:
+            supervisor.ports.add(base + 1)
+        assert supervisor.port(4) == base + 10
+        expected = set(range(base + 10, base + 14))
+        if occupied == "reserved":
+            expected.add(base + 1)
+        assert supervisor.ports == expected
+        assert supervisor.port() == base
+
+
+def test_emitted_port_ranges_are_bounded(monkeypatch, tmp_path):
+    runtime, supervisor = _emitted_supervisor(tmp_path, _params())
+    draws = MagicMock(side_effect=lambda limit: limit - 1)
+    monkeypatch.setattr(runtime.secrets, "randbelow", draws)
+    # A deterministic socket substitute makes the upper-bound check independent
+    # of which ports happen to be occupied on the test host.
+    monkeypatch.setattr(runtime.socket, "socket", MagicMock())
+    assert supervisor.port(4) == 31996
+    assert supervisor.ports == {31996, 31997, 31998, 31999}
+    for count in (0, -1, 12001):
+        with pytest.raises(ValueError, match="port range"):
+            supervisor.port(count)
+    draws.reset_mock()
+    supervisor.ports = set(range(20000, 32000))
+    with pytest.raises(RuntimeError, match="Dynamo-compatible service port"):
+        supervisor.port(4)
+    assert draws.call_count == 1000
+    assert supervisor.ports == set(range(20000, 32000))
+
+
 def test_supervisor_detects_worker_exit_and_cleans_up(tmp_path):
     supervisor = Supervisor({"env": {}, "port": 8000}, tmp_path)
     healthy = supervisor.start("healthy", [sys.executable, "-c", "import time; time.sleep(60)"])
@@ -464,6 +589,110 @@ def test_supervisor_loopback_requests_bypass_inherited_proxies(monkeypatch, tmp_
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize(
+    "payload,outcome",
+    [
+        (b'{"data":[{"id":"test-model"}]}', "ready"),
+        (b'{"data":[{"id":"other-model"}]}', "ready"),
+        (b"", "ready"),
+        (b"not-json", "ready"),
+        (b"[]", "ready"),
+        (b"null", "ready"),
+        (b'"test-model"', "ready"),
+        (b"42", "ready"),
+        (b"{}", "ready"),
+        (b'{"data":null}', "ready"),
+        (b'{"data":{}}', "ready"),
+        (b'{"data":"test-model"}', "ready"),
+        (b'{"data":[null,"test-model",42,{}]}', "ready"),
+        (b'{"data":[{"id":"test-model-other"}]}', "ready"),
+        (b'{"data":null}', "timeout"),
+        (b'{"data":null}', "child-exit"),
+    ],
+)
+def test_emitted_model_readiness_retries_http_responses(monkeypatch, tmp_path, payload, outcome):
+    params = _params()
+    with socket.socket() as finder:
+        finder.bind(("127.0.0.1", 0))
+        params["ServiceConfig"]["port"] = finder.getsockname()[1]
+    params["SlurmConfig"]["startup_timeout"] = 2 if outcome == "timeout" else 5
+    runtime, supervisor = _emitted_supervisor(tmp_path, params)
+    supervisor.env["CUDA_VISIBLE_DEVICES"] = "GPU-a,GPU-b"
+    valid = b'{"data":[{"id":"test-model"}]}'
+    requests = []
+    server = None
+    thread = None
+    actual_start = supervisor.start
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            requests.append(self.path)
+            assert self.path == "/v1/models"
+            if outcome == "child-exit":
+                child = actual_start("failed-worker", [sys.executable, "-c", "raise SystemExit(7)"])
+                child.wait(timeout=5)
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(payload if len(requests) == 1 or outcome != "ready" else valid)
+
+        def do_POST(self):
+            requests.append(self.path)
+            assert self.path == "/v1/chat/completions"
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            assert body["model"] == "test-model"
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'{"choices":[{"message":{"content":"Hello"}}]}')
+
+    def start(name, argv, env=None):
+        nonlocal server, thread
+        if name == "frontend":
+            server = HTTPServer(("127.0.0.1", supervisor.spec["port"]), Handler)
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+    actual_wait_http = supervisor.wait_http
+
+    def wait_http(url, deadline, predicate=None):
+        if url.endswith("/v1/models"):
+            return actual_wait_http(url, deadline, predicate)
+        return b"healthy-synthetic-service"
+
+    # Infrastructure and GPU launches are simulated. The persisted model
+    # predicate, polling, HTTP requests, smoke test and child checks all run.
+    monkeypatch.setattr(supervisor, "start", start)
+    monkeypatch.setattr(supervisor, "wait_http", wait_http)
+    monkeypatch.setattr(supervisor, "wait_tcp", lambda *args: None)
+    monkeypatch.setattr(runtime.shutil, "which", lambda name, **kwargs: f"/fake/{name}")
+    try:
+        if outcome == "ready":
+            supervisor.start_services()
+            assert requests == ["/v1/models"] * (1 if payload == valid else 2) + ["/v1/chat/completions"]
+            result = json.loads((tmp_path / "results/result.json").read_text())
+            assert result["status"] == "ready"
+            assert result["smoke_response"]["choices"][0]["message"]["content"] == "Hello"
+        else:
+            error, message = (
+                (TimeoutError, "Readiness deadline exceeded.*v1/models")
+                if outcome == "timeout"
+                else (RuntimeError, "failed-worker exited with code 7")
+            )
+            with pytest.raises(error, match=message):
+                supervisor.start_services()
+            assert requests == ["/v1/models"] * (2 if outcome == "timeout" else 1)
+            assert supervisor.result["status"] == "starting"
+            assert "smoke_response" not in supervisor.result
+    finally:
+        supervisor.stop()
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+            thread.join()
 
 
 @pytest.mark.parametrize("status", [404, 503, 400])
