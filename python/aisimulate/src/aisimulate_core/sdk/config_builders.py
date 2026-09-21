@@ -39,11 +39,12 @@ def build_model_config(
     forward_model: str | None = None,
     enable_encoder_dp: bool = True,
     attention_backend: str | None = None,
-    moe_kernel_source: str | None = None,
     speculation=None,
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
+    *,
+    moe_kernel_source: str | None = None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
     validate_moe_controls(enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots)

@@ -405,6 +405,22 @@ def test_attention_backend_and_wideep_num_slots_reach_model_config():
     assert mc.wideep_num_slots == 288
 
 
+@pytest.mark.parametrize("source", ["", " ", "\t\n", "\u2003", 1, False, []])
+def test_task_rejects_invalid_moe_kernel_source(source):
+    with pytest.raises(ValueError, match="moe_kernel_source must be a non-empty string"):
+        Task(moe_kernel_source=source)
+
+
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe", " source_with_spaces "])
+def test_task_round_trip_preserves_exact_moe_kernel_source(source):
+    task = Task(moe_kernel_source=source)
+    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
+
+    assert task.moe_kernel_source == source
+    assert restored.moe_kernel_source == source
+    assert restored.build_model_config(role="agg").moe_kernel_source == source
+
+
 def test_moe_kernel_source_reaches_qwen38_compute_ops_and_compiled_spec():
     """A V2 Task pins only Qwen3.8's compute MoE lane, including the native spec."""
     from aisimulate.sdk import models

@@ -32,7 +32,7 @@ def normalize_kernel_source(value: str | None, field_name: str) -> str | None:
     """Validate an optional exact collected kernel-source label."""
     if value is None:
         return None
-    if not isinstance(value, str) or not value:
+    if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string or None, got {value!r}.")
     return value
 
