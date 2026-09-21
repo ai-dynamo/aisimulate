@@ -2658,6 +2658,10 @@ mod admission_validation_rollback {
     }
 
     impl crate::engine::TimingModel for FallibleTiming {
+        fn prefill_batch_validation_can_fail(&self) -> bool {
+            !self.fail_in_prediction
+        }
+
         fn validate_prefill_batch(&self, _: &[(usize, usize)]) -> anyhow::Result<()> {
             anyhow::ensure!(
                 self.fail_in_prediction || !self.fail.load(Ordering::Relaxed),
@@ -2697,6 +2701,150 @@ mod admission_validation_rollback {
             cache.protected_size,
             cache.num_nodes(),
         )
+    }
+
+    #[rstest::rstest]
+    fn overlength_rejections_survive_failed_prefill_passes(
+        #[values(false, true)] fail_in_prediction: bool,
+        #[values(false, true)] handoff: bool,
+    ) {
+        let mut args = test_args(32, 4, 32);
+        args.max_model_len = Some(8);
+        let mut core = SglangCore::new_with_kv_capture(args, 0);
+        let handoff_id = HandoffId::from(Uuid::from_u128(91_000));
+        let ids = [91_001, 91_002, 91_003].map(Uuid::from_u128);
+        let requests = [(0..8), (100..104), (200..209)]
+            .into_iter()
+            .zip(ids)
+            .map(|(tokens, uuid)| DirectRequest {
+                tokens: tokens.collect(),
+                max_output_tokens: 1,
+                uuid: Some(uuid),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let forecasts = requests
+            .iter()
+            .map(|request| {
+                (
+                    request.uuid.unwrap(),
+                    crate::engine::belady::input_sequence_hashes(&request.tokens, 4),
+                )
+            })
+            .collect::<Vec<_>>();
+        let oracle = BeladyOracle::new(forecasts.clone()).unwrap();
+        core.set_belady_oracle(oracle.clone());
+        for request in requests {
+            let command = if handoff && request.uuid == Some(ids[0]) {
+                SchedulerCommand::SubmitHandoffPrefill {
+                    handoff_id,
+                    request,
+                }
+            } else {
+                SchedulerCommand::Submit(request)
+            };
+            core.apply_command(command).unwrap();
+        }
+        let fail = Arc::new(AtomicBool::new(true));
+        install_timing(&mut core, &fail, fail_in_prediction);
+        let waiting_before = format!("{:?}", core.waiting);
+        let capacity_before = capacity(&core);
+        for now_ms in [1.0, 2.0] {
+            assert!(core.try_execute_hidden_pass(now_ms).is_err());
+            assert_eq!(format!("{:?}", core.waiting), waiting_before);
+            assert!(core.running.is_empty());
+            assert_eq!(capacity(&core), capacity_before);
+            assert!(core.drain_kv_events().is_empty());
+            assert_eq!(core.source_is_registered(handoff_id), handoff);
+            for (index, (_, hashes)) in forecasts.iter().enumerate() {
+                for hash in hashes {
+                    assert_eq!(oracle.next_use(*hash), index);
+                }
+            }
+        }
+
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_hidden_pass(3.0).unwrap();
+        assert_eq!(pass.admissions.len(), 1);
+        assert_eq!(pass.admissions[0].uuid, ids[1]);
+        assert_eq!(pass.output_signals.len(), 3);
+        for id in [ids[0], ids[2]] {
+            let signals = pass
+                .output_signals
+                .iter()
+                .filter(|signal| signal.uuid == id)
+                .collect::<Vec<_>>();
+            assert_eq!(signals.len(), 1);
+            assert!(signals[0].completed && signals[0].rejected);
+            assert_eq!(signals[0].token_id, None);
+        }
+        assert!(!core.source_is_registered(handoff_id));
+        for (_, hashes) in forecasts {
+            for hash in hashes {
+                assert_eq!(oracle.next_use(hash), usize::MAX);
+            }
+        }
+        assert!(core.is_empty());
+        assert!(
+            core.try_execute_hidden_pass(4.0)
+                .unwrap()
+                .output_signals
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn overlength_rejection_survives_failed_decode_prediction() {
+        struct FallibleDecode(Arc<AtomicBool>);
+
+        impl crate::engine::TimingModel for FallibleDecode {
+            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+                Ok(0.6)
+            }
+
+            fn predict_decode_ms(
+                &self,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<f64> {
+                anyhow::ensure!(!self.0.load(Ordering::Relaxed), "decode timing unavailable");
+                Ok(0.6)
+            }
+        }
+
+        let mut args = test_args(32, 4, 32);
+        args.max_model_len = Some(8);
+        let mut core = SglangCore::new(args);
+        let valid = core.receive(direct_request((100..104).collect(), 2));
+        core.try_execute_hidden_pass(0.0).unwrap();
+        let rejected = core.receive(direct_request((0..8).collect(), 1));
+        let fail = Arc::new(AtomicBool::new(true));
+        core.config.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(FallibleDecode(Arc::clone(&fail))),
+        }
+        .into();
+        assert!(core.try_execute_hidden_pass(1.0).is_err());
+        assert_eq!(core.waiting[0].uuid, rejected);
+        assert_eq!(core.running[0].uuid, valid);
+
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_hidden_pass(2.0).unwrap();
+        assert_eq!(pass.output_signals.len(), 2);
+        let signal = pass
+            .output_signals
+            .iter()
+            .find(|signal| signal.uuid == rejected)
+            .unwrap();
+        assert!(signal.completed && signal.rejected);
+        assert!(core.is_empty());
+        assert!(
+            core.try_execute_hidden_pass(3.0)
+                .unwrap()
+                .output_signals
+                .is_empty()
+        );
     }
 
     #[test]

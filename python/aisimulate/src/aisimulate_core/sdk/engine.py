@@ -162,6 +162,7 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             "phase": op._phase,
             "model_path": op._model_path,
             "match_identity": list(op._match_identity),
+            "original_fmha_quant_mode": op._original_fmha_quant_mode,
             "weight_bytes": op._weight_bytes,
             # Speculative verify width for the equivalent-AR decode mapping
             # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
@@ -292,6 +293,7 @@ def _engine_config_dict(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> dict:
     """Build the ``EngineConfig`` JSON (matches the Rust modularised struct).
 
@@ -319,7 +321,9 @@ def _engine_config_dict(
         # Always a literal version directory name, never a slot alias — the
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
+        "fpm_parquet_path": fpm_parquet_path,
         "kv_block_size": kv_block_size,
+        "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
         # ParallelMapping (flattened)
         "tp_size": int(cfg.tp_size or 1),
@@ -332,6 +336,7 @@ def _engine_config_dict(
         "weight_dtype": _rust_quant_to_dtype(getattr(cfg, "gemm_quant_mode", None)),
         "moe_dtype": _rust_moe_quant_to_dtype(getattr(cfg, "moe_quant_mode", None)),
         "activation_dtype": _rust_quant_to_dtype(getattr(cfg, "fmha_quant_mode", None)),
+        "fpm_fmha_dtype": _rust_quant_to_dtype(getattr(cfg, "fpm_fmha_quant_mode", None)),
         "kv_cache_dtype": _rust_quant_to_dtype(getattr(cfg, "kvcache_quant_mode", None)),
         # Shared-layer policy bits only (schema v13): the engine resolves
         # per-op sources itself (`perf_database/source_resolution.rs`), so the
@@ -417,6 +422,7 @@ def compile_engine(
     moe_quant_mode: str | None = None,
     kvcache_quant_mode: str | None = None,
     fmha_quant_mode: str | None = None,
+    fpm_fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
     moe_backend: str | None = None,
@@ -432,6 +438,7 @@ def compile_engine(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -448,6 +455,11 @@ def compile_engine(
             f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
         )
 
+    if fpm_parquet_path is not None:
+        if not fpm_parquet_path:
+            raise ValueError("fpm_parquet_path cannot be empty")
+        if forward_model != "fpm":
+            raise ValueError("fpm_parquet_path requires forward_model='fpm'")
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
     from aisimulate_core.sdk.speculation import SpeculationConfig
@@ -465,6 +477,7 @@ def compile_engine(
             gemm_quant_mode=gemm_quant_mode,
             kvcache_quant_mode=kvcache_quant_mode,
             fmha_quant_mode=fmha_quant_mode,
+            fpm_fmha_quant_mode=fpm_fmha_quant_mode,
             moe_quant_mode=moe_quant_mode,
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,
@@ -485,7 +498,10 @@ def compile_engine(
         if not check_is_moe(model_path):
             raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
     model_config.decoder_replay = decoder_replay
-    resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
+    try:
+        resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InvalidEngineConfigurationError(str(exc)) from exc
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the
@@ -522,6 +538,7 @@ def compile_engine(
         shared_layer=shared_layer,
         transfer_policy=transfer_policy,
         strict_provenance=strict_provenance,
+        fpm_parquet_path=fpm_parquet_path,
     )
 
     return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
@@ -599,6 +616,7 @@ def build_engine_spec_json(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> str:
     """Walk a built model's op lists into an ``EngineSpec`` JSON string.
 
@@ -646,6 +664,7 @@ def build_engine_spec_json(
             shared_layer=shared_layer,
             transfer_policy=transfer_policy,
             strict_provenance=strict_provenance,
+            fpm_parquet_path=fpm_parquet_path,
         ),
         "context_ops": context_ops,
         "generation_ops": generation_ops,

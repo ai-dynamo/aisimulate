@@ -331,13 +331,14 @@ def test_default_companion_model_consumes_fixed_timing_without_aic_lookup():
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
 @pytest.mark.parametrize("forward_model", ["fpm", "op_level", None])
-def test_aic_companion_preserves_requested_forward_model(phase, companion_role, forward_model):
+@pytest.mark.parametrize("field", ["forward_model", "aic_forward_model"])
+def test_aic_companion_preserves_requested_forward_model(phase, companion_role, forward_model, field):
     spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
     engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
     engine_args.pop("timing_model")
     engine_args.update(aic_model_path="test-model", aic_system="test-system")
     if forward_model is not None:
-        engine_args["aic_forward_model"] = forward_model
+        engine_args[field] = forward_model
     calls = []
 
     def estimator(model, hardware, **kwargs):
@@ -357,17 +358,102 @@ def test_aic_companion_preserves_requested_forward_model(phase, companion_role, 
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
 @pytest.mark.parametrize("forward_model", ["unsupported", "", None, False, {}])
-def test_aic_companion_rejects_invalid_forward_model_before_estimation(phase, companion_role, forward_model):
+@pytest.mark.parametrize("field", ["forward_model", "aic_forward_model"])
+def test_aic_companion_rejects_invalid_forward_model_before_estimation(phase, companion_role, forward_model, field):
     spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
     engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
     engine_args.pop("timing_model")
-    engine_args.update(aic_model_path="test-model", aic_system="test-system", aic_forward_model=forward_model)
+    engine_args.update(aic_model_path="test-model", aic_system="test-system")
+    engine_args[field] = forward_model
 
     def estimator(*args, **kwargs):
         pytest.fail("an invalid forward model must not reach estimation")
 
-    with pytest.raises(ValueError, match=f"{companion_role}.*aic_forward_model.*fpm.*op_level"):
+    with pytest.raises(ValueError, match=f"{companion_role}.*forward_model"):
         AICAFDCompanionPerformanceModel(estimator).measure(spec)
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("field", ["forward_model", "fpm_parquet_path"])
+def test_aic_companion_rejects_duplicate_selection_aliases(phase, companion_role, field):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system")
+    value = "fpm" if field == "forward_model" else "/data/reviewed-fpm.parquet"
+    engine_args.update({field: value, f"aic_{field}": value})
+
+    def estimator(*args, **kwargs):
+        pytest.fail("duplicate selection aliases must not reach estimation")
+
+    with pytest.raises(ValueError, match=f"{companion_role}.*duplicates AIC field {field}"):
+        AICAFDCompanionPerformanceModel(estimator).measure(spec)
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("external_fpm", [False, True])
+@pytest.mark.parametrize(
+    ("field", "value", "canonical_field"),
+    [
+        ("backend_version", "other-version", "backend_version"),
+        ("aic_backend_version", "other-version", "backend_version"),
+        ("aic_pp_size", 2, "pp"),
+        ("moe_tp_size", 2, "moe_tp_size"),
+        ("aic_moe_tp_size", 2, "moe_tp_size"),
+        ("moe_ep_size", 2, "moe_ep_size"),
+        ("aic_moe_ep_size", 2, "moe_ep_size"),
+    ],
+)
+def test_aic_companion_rejects_conflicting_identity_before_estimation(
+    phase, companion_role, external_fpm, field, value, canonical_field, monkeypatch
+):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system")
+    engine_args[field] = value
+    if external_fpm:
+        engine_args.update(aic_forward_model="fpm", aic_fpm_parquet_path="/data/reviewed-fpm.parquet")
+
+    def unexpected_estimation(*args, **kwargs):
+        pytest.fail("conflicting identity must not reach estimation or external engine compilation")
+
+    monkeypatch.setattr("aisimulate.runner.RustForwardPassPerfModel.best_available", unexpected_estimation)
+    with pytest.raises(
+        ValueError, match=f"{companion_role} AFD companion {canonical_field}=.*conflicts with deployment"
+    ):
+        AICAFDCompanionPerformanceModel(unexpected_estimation).measure(spec)
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+@pytest.mark.parametrize("alias_prefix", ["", "aic_"])
+def test_aic_companion_accepts_matching_identity_fields(phase, companion_role, alias_prefix):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    spec.backend_deployment.parallel_config.update({f"{companion_role}_pp": 2, f"{companion_role}_moe_tp": 2})
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(aic_model_path="test-model", aic_system="test-system", aic_pp_size=2)
+    engine_args.update(
+        {
+            f"{alias_prefix}backend_version": "test",
+            f"{alias_prefix}moe_tp_size": 2,
+            f"{alias_prefix}moe_ep_size": 1,
+        }
+    )
+    calls = []
+
+    def estimator(model, hardware, **kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(raw={"ttft": 2.0, "tpot": 2.0})
+
+    timing = AICAFDCompanionPerformanceModel(estimator).measure(spec)
+
+    assert timing.latency_ms == 2.0
+    assert len(calls) == 1
+    assert calls[0]["backend_version"] == "test"
+    assert calls[0]["pp_size"] == 2
+    assert calls[0]["moe_tp_size"] == 2
+    assert calls[0]["moe_ep_size"] == 1
 
 
 @pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
@@ -393,6 +479,44 @@ def test_aic_companion_propagates_missing_fpm_data_without_fallback(phase, compa
     assert exc.value.__cause__ is failure
     assert len(calls) == 1
     assert calls[0]["forward_model"] == "fpm"
+
+
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+def test_aic_companion_routes_packaged_fpm_selector_through_canonical_model(phase, companion_role, monkeypatch):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(
+        aic_model_path="test-model",
+        aic_system="test-system",
+        aic_forward_model="fpm",
+        aic_fpm_fmha_dtype="fp8",
+    )
+    configs = []
+
+    class CanonicalModel:
+        def static_phase_latency(self, **_kwargs):
+            return 2.0
+
+        def close(self):
+            pass
+
+    def best_available(config):
+        configs.append(config)
+        return CanonicalModel()
+
+    monkeypatch.setattr("aisimulate.runner.RustForwardPassPerfModel.best_available", best_available)
+
+    def unexpected_legacy_estimation(*args, **kwargs):
+        pytest.fail("packaged FPM selector must not be dropped by the legacy estimator path")
+
+    timing = AICAFDCompanionPerformanceModel(unexpected_legacy_estimation).measure(spec)
+
+    assert timing.latency_ms == pytest.approx(2.0 if companion_role == "prefill" else 1.0)
+    assert len(configs) == 1
+    assert configs[0].estimation_mode == "fpm_interpolation"
+    assert configs[0].fpm_fmha_quant_mode == "fp8"
+    assert timing.provenance["fpm_fmha_dtype"] == "fp8"
 
 
 def test_afd_runner_rejects_unresolved_measurement_before_execution():

@@ -561,6 +561,15 @@ impl<Metadata: ReplayAdmissionMetadata> AdmissionQueue<Metadata> {
         driver.agentic_graph_identity()
     }
 
+    pub(crate) fn agentic_snapshot_evidence(
+        &self,
+    ) -> Option<Vec<crate::replay::loadgen::AgenticSnapshotEvidence>> {
+        let AdmissionSource::Workload { driver, .. } = &self.source else {
+            return None;
+        };
+        driver.agentic_snapshot_evidence().map(<[_]>::to_vec)
+    }
+
     pub(crate) fn agentic_lifecycle_transcript(
         &self,
     ) -> Option<crate::replay::loadgen::AgenticLifecycleTranscript> {

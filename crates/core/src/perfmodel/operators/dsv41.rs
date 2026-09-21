@@ -33,18 +33,42 @@ fn zero() -> PerformanceResult {
     PerformanceResult::sol(SolComponents::new(0.0, 0.0))
 }
 
-/// New V41 kernels have no measured lookup in the SOL release. HYBRID's
-/// analytic contribution is explicitly SOL, never an invented utilization or
-/// a V4 module hit. SILICON must fail until the V41 collector publishes it.
-fn analytic_mode(db: &PerfDatabase, name: &str) -> Result<(), AicError> {
-    match db.database_mode {
-        DatabaseMode::Silicon => Err(AicError::PerfDatabase(format!(
-            "DeepSeek-V4.1 {name} has no measured SILICON data"
+/// Measured V41 modules use an exact physical identity. HYBRID falls back
+/// only on absent coverage; a malformed table remains a hard error.
+fn query_leaf<T: Serialize>(
+    db: &PerfDatabase,
+    component: &str,
+    op: &T,
+    batch_size: u32,
+    prefix: u32,
+    x: u32,
+    sol: &dyn Fn(f64) -> Result<PerformanceResult, AicError>,
+) -> Result<PerformanceResult, AicError> {
+    if batch_size == 0 || x == 0 {
+        return Ok(zero());
+    }
+    if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+        return sol(f64::from(x));
+    }
+    if db.database_mode == DatabaseMode::Empirical {
+        return Err(AicError::EmpiricalNotImplemented(format!(
+            "DeepSeek-V4.1 {component} has no empirical calibration"
+        )));
+    }
+    match db
+        .dsv41
+        .query(component, op, batch_size, prefix, x, &|point| {
+            sol(point).map(|result| result.latency_ms)
+        })? {
+        Some(measured) => Ok(PerformanceResult::with_energy(
+            measured.latency,
+            measured.energy,
+            Source::Silicon,
+        )),
+        None if db.database_mode == DatabaseMode::Hybrid => sol(f64::from(x)),
+        None => Err(AicError::PerfDatabase(format!(
+            "DeepSeek-V4.1 {component} has no measured SILICON data for its geometry, batch={batch_size}, prefix={prefix}, x={x}"
         ))),
-        DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(format!(
-            "DeepSeek-V4.1 {name} has no empirical anchor"
-        ))),
-        _ => Ok(()),
     }
 }
 
@@ -165,6 +189,11 @@ impl Dsv41AttentionOp {
         if self.role == "full" && self.compress_ratio == 0 {
             return Err(AicError::ModelConfig(
                 "DeepSeek-V4.1 full attention requires a positive compress_ratio".into(),
+            ));
+        }
+        if self.window_size == 0 {
+            return Err(AicError::ModelConfig(
+                "DeepSeek-V4.1 attention requires a positive window_size".into(),
             ));
         }
         if batch <= 0.0 || s <= 0.0 {
@@ -329,12 +358,21 @@ impl Dsv41AttentionOp {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         self.validate_role()?;
-        analytic_mode(db, "CSA2 attention")?;
-        self.sol(
-            &db.system_spec,
-            ctx.batch_size as f64,
-            ctx.s as f64,
-            ctx.prefix as f64,
+        query_leaf(
+            db,
+            "attention",
+            self,
+            ctx.batch_size,
+            if self.is_context { ctx.prefix } else { 0 },
+            ctx.s,
+            &|x| {
+                self.sol(
+                    &db.system_spec,
+                    f64::from(ctx.batch_size),
+                    x,
+                    f64::from(ctx.prefix),
+                )
+            },
         )
     }
 }
@@ -379,8 +417,9 @@ impl Dsv41MhcOp {
         Ok(leaf(spec, ops, bytes, fp32))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytic_mode(db, "single-pass mHC")?;
-        self.sol(&db.system_spec, tokens as f64)
+        query_leaf(db, "mhc", self, 1, 0, tokens, &|x| {
+            self.sol(&db.system_spec, x)
+        })
     }
 }
 
@@ -432,8 +471,9 @@ impl Dsv41EngramOp {
         Ok(lookup.plus(projection).plus(gate))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytic_mode(db, "Engram")?;
-        self.sol(&db.system_spec, tokens as f64)
+        query_leaf(db, "engram", self, 1, 0, tokens, &|x| {
+            self.sol(&db.system_spec, x)
+        })
     }
 }
 
@@ -469,8 +509,9 @@ impl Dsv41LinearOp {
         ))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytic_mode(db, "32x32 dense projection")?;
-        self.sol(&db.system_spec, tokens as f64)
+        query_leaf(db, "linear", self, 1, 0, tokens, &|x| {
+            self.sol(&db.system_spec, x)
+        })
     }
 }
 
@@ -618,6 +659,24 @@ mod tests {
             let result = sliding_window.sol(&spec, 1.0, 128.0, 32.0).unwrap();
             assert!(result.latency_ms.is_finite());
             assert!(result.latency_ms > 0.0);
+        }
+    }
+
+    #[test]
+    fn serialized_attention_rejects_zero_window_in_both_phases() {
+        let spec = unit_spec();
+        for role in ["swa", "full", "reindex", "reuse"] {
+            for is_context in [true, false] {
+                let mut value = serde_json::to_value(attention(role, 2)).unwrap();
+                value["window_size"] = serde_json::json!(0);
+                value["is_context"] = serde_json::json!(is_context);
+                let malformed: Dsv41AttentionOp = serde_json::from_value(value).unwrap();
+                for (batch, sequence) in [(1.0, 128.0), (0.0, 128.0), (1.0, 0.0)] {
+                    let error = malformed.sol(&spec, batch, sequence, 32.0).unwrap_err();
+                    assert!(matches!(error, AicError::ModelConfig(ref message)
+                        if message.contains("positive window_size")));
+                }
+            }
         }
     }
 

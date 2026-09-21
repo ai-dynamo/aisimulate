@@ -59,6 +59,15 @@ For a specific task, jump to [Dynamo integration](#choose-an-execution-stack),
 [AgentX and other trace formats](#trace-format-compatibility), or [troubleshooting](#troubleshooting).
 Use the [configuration reference](#configuration-model) when you need individual fields.
 
+Seeded AgentX snapshots are optional under `traffic.load.agentic_snapshot`:
+`{seed: 42}` requires `trace_timestamps` load and positive `agentic_lanes`, with
+Weka, Agentic Mooncake v2, or agentic Dynamo input. The seed is an unsigned 64-bit
+integer. Omit this field for turn-zero replay. The existing `--set
+traffic.load.agentic_snapshot.seed=42` override selects it for prediction or
+recommendation. Snapshot evidence is retained in JSON results. This executes the
+remaining request suffix against a cold engine; primer execution and benchmark
+warmup are separate phase-orchestration work.
+
 <a id="commands"></a>
 
 ## 2. Commands
@@ -692,6 +701,7 @@ the current SA convention.
 | `traffic.load.fraction` | `null` | `-` | `-` | Positive finite number; `kv_capacity_fraction` only and may exceed `1`. |
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
+| `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |
@@ -1002,7 +1012,9 @@ engine:
 | `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
-| `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive and required for `fixed` capacity. |
+| `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
+| `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
+| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
 | `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
@@ -1011,6 +1023,7 @@ engine:
 | `engine.workers.<role>.timing.prefill_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
+| `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
 | `engine.workers.<role>.startup_seconds` | `0` | `x` | `-` | Nonnegative. |
 | `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
@@ -1099,18 +1112,20 @@ Backend-version-specific defaults are not selected automatically by this registr
 
 `timing.forward_model` selects the forward-pass model behind the default timing provider. `op_level`
 composes per-operator measurements; `fpm` replays whole-forward measurements from a collected FPM
-cell and requires an exact match on model, hardware, backend version, parallel shape and
+cell supplied through `timing.fpm_parquet_path` and requires an exact match on model, hardware, backend version, parallel shape and
 quantization. A candidate without a matching cell fails at replay and is recorded as a failed
 candidate (reason category `replay_runtime`) rather than silently falling back to `op_level`. In
 `fpm` mode with `capacity.type: default`, the KV capacity is also capped to the cell's collected
-decode-KV ceiling. The bundled FPM cells are collected at backend versions outside the queryable
-version slots; until FPM cells are slot-queryable, set the transitional escape hatch
-`AIC_ALLOW_UNLISTED_VERSIONS=1` to use them.
+decode-KV ceiling. FPM pairs are external runtime inputs. If a pair was collected at a backend
+version outside the queryable slots, set `AIC_ALLOW_UNLISTED_VERSIONS=1` explicitly.
 
-`kv_cache.capacity.type: fixed` requires `blocks`, so users can directly provide cache size. It rejects
-`memory_fraction` and nonzero `cuda_graph_reserved_bytes`. Conversely, `type: default` rejects `blocks`
-and derives block count from model, hardware, parallelism, block size, backend, memory fraction, and
-the caller-provided CUDA graph reservation.
+`kv_cache.capacity.type: fixed` requires `blocks`, or alternatively `bytes` in `predict`.
+Byte capacity requires explicit `block_size` and numeric `bytes_per_token`; the block count is
+`floor(bytes / (block_size * bytes_per_token))`. Specify exactly one of `blocks` and `bytes`.
+Fixed capacity rejects `memory_fraction` and nonzero `cuda_graph_reserved_bytes`.
+Conversely, `type: default` rejects `blocks` and `bytes` and derives block count from model,
+hardware, parallelism, block size, backend, memory fraction, and the caller-provided CUDA graph
+reservation.
 
 The physical GPU count of a worker role is:
 
@@ -1127,6 +1142,32 @@ only the prompt KV not already present at the selected decode worker. `kv_transf
 aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range is `x`, and
 `recommend` rejects domains on them. Transfer bytes per token describe the PD link payload and may
 differ from each worker role's physical `kv_cache.bytes_per_token`.
+
+<a id="manual-state-cache-sizing"></a>
+
+#### 12.1.1 Manual state-cache sizing
+
+For recurrent-state models, set `state_cache.bytes_per_request` under
+`engine.workers.aggregated.kv_cache`. It is disabled by default. Supply the total state size
+per request per simulated rank, including any padding, separately from token KV bytes:
+
+```yaml
+kv_cache:
+  block_size: 64
+  bytes_per_token: 16
+  capacity: {type: fixed, bytes: 8192}
+  state_cache: {bytes_per_request: 1500}
+```
+
+This gives eight 1024-byte blocks. Each request's state uses two blocks, rounded up, in
+addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator
+does not infer state size or adjust block size automatically.
+
+State caching currently supports `predict --stack engine` with aggregated vLLM and fixed G1 capacity.
+Other runner stacks must explicitly advertise state-cache support; unsupported stacks reject it before execution.
+It cannot be combined with host/G3 offload or disaggregated mode, and is not available in
+`recommend`. `block_size` must be explicitly set to at least two and `bytes_per_token`
+must be a positive integer, not `auto`.
 
 <a id="prompt-lookup-ngram-speculative-decoding"></a>
 

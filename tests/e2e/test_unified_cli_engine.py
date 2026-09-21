@@ -140,6 +140,63 @@ def test_engine_cli_case_matrix_is_complete() -> None:
     assert tuple(path.name for path in _RECOMMEND_CASES) == _EXPECTED_RECOMMEND_CASES
 
 
+@pytest.mark.parametrize("state_enabled,expected_duration_ms", [(False, 4.0), (True, 8.0)])
+def test_manual_state_cache_runs_through_native_engine(
+    tmp_path: Path, state_enabled: bool, expected_duration_ms: float
+) -> None:
+    config = tmp_path / "state-cache.yaml"
+    config.write_text(
+        """engine:
+  mode: aggregated
+  backend: vllm
+  model: manual-state-smoke
+  hardware: h200_sxm
+  context_length: 2048
+  workers:
+    aggregated:
+      scheduler: {max_batched_tokens: 256, max_sequences: 2}
+      kv_cache:
+        prefix_caching: false
+        block_size: 64
+        bytes_per_token: 16
+        capacity: {type: fixed, bytes: 6144}
+        state_cache:
+          bytes_per_request: 1500
+      timing: {type: fixed, prefill_ms: 1, decode_ms: 1}
+traffic:
+  source: {type: synthetic, input_tokens: 128, output_tokens: 1}
+  load: {type: concurrency, concurrency: 2}
+  stop: {requests: 4}
+""",
+        encoding="utf-8",
+    )
+    if not state_enabled:
+        payload = yaml.safe_load(config.read_text(encoding="utf-8"))
+        del payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"]
+        config.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    output = tmp_path / "state-cache"
+    result = _run_cli(
+        "predict",
+        "--stack",
+        "engine",
+        "--config",
+        str(config),
+        "--output-dir",
+        str(output),
+        "--capture-per-request",
+        "--format",
+        "json",
+        timeout=30.0,
+    )
+    summary = json.loads(result.stdout)
+    report = json.loads((output / "prediction.json").read_text(encoding="utf-8"))
+    assert summary["completed_requests"] == 4
+    assert report.get("summary", report)["completed_requests"] == 4
+    # Six blocks fit two token-only requests, but only one with its two state blocks.
+    assert summary["duration_ms"] == pytest.approx(expected_duration_ms)
+    assert report.get("summary", report)["duration_ms"] == pytest.approx(expected_duration_ms)
+
+
 @pytest.mark.parametrize("config_path", _PREDICT_CASES, ids=lambda path: path.stem)
 def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
     output = tmp_path / config_path.stem
@@ -180,7 +237,7 @@ def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("trace", ["weka-two-plays.jsonl", "weka-relative.json"])
-def test_agentx_m1_cli_matches_public_python(backend: str, trace: str, tmp_path: Path) -> None:
+def test_agentx_replay_cli_matches_public_python(backend: str, trace: str, tmp_path: Path) -> None:
     config = yaml.safe_load(
         (_REPO_ROOT / _CONFIG_ROOT / "predict/engine/12-trace-weka-jsonl-agentic-lane.yaml").read_text()
     )
@@ -220,11 +277,16 @@ def test_agentx_m1_cli_matches_public_python(backend: str, trace: str, tmp_path:
         ).metadata["native_report"]
     finally:
         runner.close()
-    for key in ("agentic_graph", "agentic_lifecycle_digest", "agentic_play_outcomes", "per_request"):
+    for key in (
+        "agentic_graph",
+        "agentic_lifecycle_digest",
+        "agentic_play_outcomes",
+        "per_request",
+    ):
         assert cli_report[key] == python_report[key], key
 
 
-def test_agentx_m1_cli_table_and_help_identify_qualification(tmp_path: Path) -> None:
+def test_agentx_replay_cli_table_and_help_identify_qualification(tmp_path: Path) -> None:
     result = _run_cli(
         "predict",
         "--config",
@@ -330,9 +392,6 @@ def test_engine_recommend_cli_cases_round_trip(config_path: Path, tmp_path: Path
         _check_documented_candidate_renderer(output, tmp_path)
 
 
-_FPM_CASE = _CONFIG_ROOT / "predict/fpm/01-minimax-m27-h200-tp4-fpm.yaml"
-
-
 @pytest.mark.parametrize("load_type", ["concurrency", "constant_rate", "poisson"])
 def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Path) -> None:
     data = yaml.safe_load((_REPO_ROOT / _CONFIG_ROOT / "recommend/engine/03-preset-off-ttft.yaml").read_text())
@@ -399,43 +458,67 @@ def test_min_gpus_real_engine_ranks_and_round_trips(load_type: str, tmp_path: Pa
     assert not list((no_result / "recommendations").glob("*.yaml"))
 
 
-def test_engine_predict_accepts_forward_model_from_yaml_and_set(tmp_path: Path) -> None:
-    # The bundled FPM cell is collected outside the queryable version slots.
-    env = {"AIC_ALLOW_UNLISTED_VERSIONS": "1"}
-    fpm = json.loads(
-        _run_cli(
-            "predict",
-            "--stack",
-            "engine",
-            "--config",
-            str(_FPM_CASE),
-            "--output-dir",
-            str(tmp_path / "fpm"),
-            "--format",
-            "json",
-            env=env,
-        ).stdout
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_agentic_snapshot_prediction_and_recommendation_keep_identical_evidence(tmp_path: Path, backend: str) -> None:
+    config_path = _REPO_ROOT / _CONFIG_ROOT / "predict/engine/12-trace-weka-jsonl-agentic-lane.yaml"
+    config = yaml.safe_load(config_path.read_text())
+    config["engine"]["backend"] = backend
+    config["traffic"]["load"]["agentic_snapshot"] = {"seed": 42}
+    runner = EngineReplayRunnerFactory().create(0)
+    try:
+        report = runner.run(
+            prediction_to_replay_spec(CorePredictionConfig.model_validate(config)),
+            output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+        ).metadata["native_report"]
+    finally:
+        runner.close()
+    output = tmp_path / "snapshot"
+    _run_cli(
+        "predict",
+        "--stack",
+        "engine",
+        "--config",
+        str(config_path),
+        "--set",
+        f"engine.backend={backend}",
+        "--set",
+        "traffic.load.agentic_snapshot.seed=42",
+        "--capture-per-request",
+        "--output-dir",
+        str(output),
+        "--format",
+        "json",
     )
-    op_level = json.loads(
-        _run_cli(
-            "predict",
-            "--stack",
-            "engine",
-            "--config",
-            str(_FPM_CASE),
-            "--set",
-            "engine.workers.aggregated.timing.forward_model=op_level",
-            "--output-dir",
-            str(tmp_path / "op-level"),
-            "--format",
-            "json",
-            env=env,
-        ).stdout
-    )
+    saved = json.loads((output / "prediction.json").read_text())
+    assert saved["agentic_snapshots"] == report["agentic_snapshots"]
+    records = [json.loads(line) for line in (output / "requests.jsonl").read_text().splitlines()]
+    assert records == report["per_request"]
 
-    # Both runs prove CLI plumbing only (the YAML field and the --set path are accepted and the
-    # replay completes). Whether the FPM data path is actually engaged is proven in-process by
-    # tests/test_unified_traffic_runtime.py (fail-closed on an uncovered identity); accuracy is a
-    # FPM-vs-silicon question and is not asserted anywhere in the test suite.
-    assert fpm["completed_requests"] == 8
-    assert op_level["completed_requests"] == 8
+    config["engine"]["workers"]["aggregated"]["parallelism"]["preset"] = False
+    config["optimization"] = {"target": "throughput", "constraints": {"max_candidate_gpus": 1}}
+    config["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1, "seed": 11}
+    recommendation_config = tmp_path / "recommend.yaml"
+    recommendation_config.write_text(yaml.safe_dump(config))
+    recommendation_output = tmp_path / "recommendation"
+    _run_cli(
+        "recommend",
+        "--stack",
+        "engine",
+        "--config",
+        str(recommendation_config),
+        "--output-dir",
+        str(recommendation_output),
+        "--format",
+        "json",
+    )
+    result = json.loads((recommendation_output / "recommendation.json").read_text())
+    [candidate] = result["candidates"]
+    assert candidate["status"] == "feasible", candidate.get("reason")
+    assert candidate["provenance"]["workload"]["agentic_snapshot"] == {"seed": 42}
+    evidence = candidate["provenance"]["runner_metadata"]["agentic_snapshots"]
+    assert evidence == report["agentic_snapshots"]
+    assert [snapshot["seed"] for snapshot in evidence] == [42]
+    assert candidate["metrics"]["completed_requests"] == report["completed_requests"]
+    [recommended_path] = (recommendation_output / "recommendations").glob("*.yaml")
+    recommended = yaml.safe_load(recommended_path.read_text())
+    assert recommended["traffic"]["load"]["agentic_snapshot"] == {"seed": 42}
