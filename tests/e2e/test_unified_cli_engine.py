@@ -146,6 +146,63 @@ def test_engine_cli_case_matrix_is_complete() -> None:
     assert tuple(path.name for path in _RECOMMEND_CASES) == _EXPECTED_RECOMMEND_CASES
 
 
+@pytest.mark.parametrize("state_enabled,expected_duration_ms", [(False, 4.0), (True, 8.0)])
+def test_manual_state_cache_runs_through_native_engine(
+    tmp_path: Path, state_enabled: bool, expected_duration_ms: float
+) -> None:
+    config = tmp_path / "state-cache.yaml"
+    config.write_text(
+        """engine:
+  mode: aggregated
+  backend: vllm
+  model: manual-state-smoke
+  hardware: h200_sxm
+  context_length: 2048
+  workers:
+    aggregated:
+      scheduler: {max_batched_tokens: 256, max_sequences: 2}
+      kv_cache:
+        prefix_caching: false
+        block_size: 64
+        bytes_per_token: 16
+        capacity: {type: fixed, bytes: 6144}
+        state_cache:
+          bytes_per_request: 1500
+      timing: {type: fixed, prefill_ms: 1, decode_ms: 1}
+traffic:
+  source: {type: synthetic, input_tokens: 128, output_tokens: 1}
+  load: {type: concurrency, concurrency: 2}
+  stop: {requests: 4}
+""",
+        encoding="utf-8",
+    )
+    if not state_enabled:
+        payload = yaml.safe_load(config.read_text(encoding="utf-8"))
+        del payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"]
+        config.write_text(yaml.safe_dump(payload), encoding="utf-8")
+    output = tmp_path / "state-cache"
+    result = _run_cli(
+        "predict",
+        "--stack",
+        "engine",
+        "--config",
+        str(config),
+        "--output-dir",
+        str(output),
+        "--capture-per-request",
+        "--format",
+        "json",
+        timeout=30.0,
+    )
+    summary = json.loads(result.stdout)
+    report = json.loads((output / "prediction.json").read_text(encoding="utf-8"))
+    assert summary["completed_requests"] == 4
+    assert report.get("summary", report)["completed_requests"] == 4
+    # Six blocks fit two token-only requests, but only one with its two state blocks.
+    assert summary["duration_ms"] == pytest.approx(expected_duration_ms)
+    assert report.get("summary", report)["duration_ms"] == pytest.approx(expected_duration_ms)
+
+
 @pytest.mark.parametrize("config_path", _PREDICT_CASES, ids=lambda path: path.stem)
 def test_engine_predict_cli_cases(config_path: Path, tmp_path: Path) -> None:
     output = tmp_path / config_path.stem
@@ -226,7 +283,12 @@ def test_agentx_replay_cli_matches_public_python(backend: str, trace: str, tmp_p
         ).metadata["native_report"]
     finally:
         runner.close()
-    for key in ("agentic_graph", "agentic_lifecycle_digest", "agentic_play_outcomes", "per_request"):
+    for key in (
+        "agentic_graph",
+        "agentic_lifecycle_digest",
+        "agentic_play_outcomes",
+        "per_request",
+    ):
         assert cli_report[key] == python_report[key], key
 
 
