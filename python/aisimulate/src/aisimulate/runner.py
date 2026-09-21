@@ -16,6 +16,8 @@ from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
+import numpy as np
+
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
 from .capacity import materialize_aic_num_gpu_blocks
@@ -426,6 +428,8 @@ class EngineReplayRunner:
         output_requirements = output_requirements or ReplayOutputRequirements()
         if output_requirements.capture_telemetry:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
+        if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
+            raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
         encoder = spec.backend_deployment.encoder
         if encoder is None and spec.workload.get("images") is not None:
@@ -1154,6 +1158,8 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
             raise TypeError("trace_path must be a non-empty string")
         if workload.get("random_range_ratio", 1.0) != 1.0 or workload.get("random_seed", 0) != 0:
             raise ValueError("random_range_ratio and random_seed only apply to synthetic replay")
+        if workload.get("length_sampler", "python_random") != "python_random":
+            raise ValueError("length_sampler only applies to synthetic replay")
         configured_trace_block_size = workload.get("trace_block_size")
         requests = materialize_configured_traffic(
             {
@@ -1213,7 +1219,15 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
 
     random_range_ratio = _random_range_ratio(workload.get("random_range_ratio", 1.0))
     random_seed = _random_seed(workload.get("random_seed", 0))
-    length_rng = random.Random(random_seed)
+    sampler = workload.get("length_sampler", "python_random")
+    if sampler == "numpy_random_state":
+        if random_seed > 0xFFFF_FFFF:
+            raise ValueError("numpy_random_state random_seed must be an unsigned 32-bit integer")
+        length_rng = np.random.RandomState(random_seed)
+    elif sampler == "python_random":
+        length_rng = random.Random(random_seed)
+    else:
+        raise ValueError(f"unsupported length_sampler: {sampler!r}")
     # Follow InferenceX's draw order: sample the complete ISL vector before OSL.
     input_lengths = _sample_synthetic_lengths(isl, request_count, random_range_ratio, length_rng)
     output_lengths = _sample_synthetic_lengths(osl, request_count, random_range_ratio, length_rng)
@@ -1736,13 +1750,15 @@ def _sample_synthetic_lengths(
     upper: int,
     count: int,
     random_range_ratio: float,
-    rng: random.Random,
+    rng: random.Random | np.random.RandomState,
 ) -> list[int]:
     if random_range_ratio == 1.0:
         return [upper] * count
     lower = int(upper * random_range_ratio)
     if lower == 0:
         raise ValueError(f"random_range_ratio={random_range_ratio} gives a zero-token lower bound for length {upper}")
+    if isinstance(rng, np.random.RandomState):
+        return rng.randint(lower, upper + 1, size=count).tolist()
     return [rng.randint(lower, upper) for _ in range(count)]
 
 
