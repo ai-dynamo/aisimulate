@@ -33,10 +33,18 @@ FPE_SPEC.loader.exec_module(FPE)
 NEW_SHA = "a" * 40
 OLD_SHA = "b" * 40
 REPOSITORY = "ai-dynamo/aisimulate"
+LEGACY_FPE_PREFIX = "python/aisimulate/src/aiconfigurator_core/systems/fpe_support_matrix/"
 
 
 def qualified_archive(
-    sha=NEW_SHA, *, report_updates=None, row_updates=None, missing=None, index_files=None, overrides=None
+    sha=NEW_SHA,
+    *,
+    report_updates=None,
+    row_updates=None,
+    missing=None,
+    index_files=None,
+    overrides=None,
+    data_prefix=FPE.DATA_PREFIX,
 ):
     report = {
         "schema_version": 1,
@@ -64,8 +72,8 @@ def qualified_archive(
     writer.writerow(row)
     files = {
         "fpe-qualification.json": json.dumps(report),
-        FPE.DATA_PREFIX + "index.json": json.dumps({"files": index_files or ["b200_sxm.csv"]}),
-        FPE.DATA_PREFIX + "b200_sxm.csv": csv_output.getvalue(),
+        data_prefix + "index.json": json.dumps({"files": index_files or ["b200_sxm.csv"]}),
+        data_prefix + "b200_sxm.csv": csv_output.getvalue(),
         "pages/fpe-support-matrix/index.html": "untrusted artifact HTML",
         "../../escape.py": "untrusted artifact code",
     }
@@ -157,6 +165,47 @@ class FpePagesTest(unittest.TestCase):
             {10: qualified_archive(), 20: qualified_archive(OLD_SHA)},
         )
         self.assertEqual(snapshot["artifact_id"], 10)
+
+    def test_legacy_package_artifact_is_published_at_the_current_url(self):
+        snapshot, output = self.prepare(
+            [artifact(1)], {1: run()}, {1: qualified_archive(data_prefix=LEGACY_FPE_PREFIX)}
+        )
+        self.assertEqual(snapshot["source_sha"], NEW_SHA)
+        with tempfile.TemporaryDirectory() as temporary:
+            site = Path(temporary) / "site"
+            PAGES.build_site(ROOT, site, fpe_data_dir=output)
+            self.assertEqual(
+                (site / "data/fpe-support-matrix/b200_sxm.csv").read_bytes(), (output / "b200_sxm.csv").read_bytes()
+            )
+            self.assertNotIn("untrusted artifact", (site / "fpe-support-matrix/index.html").read_text())
+
+    def test_legacy_artifact_preserves_qualification_and_row_checks(self):
+        for changes in (
+            {"report_updates": {"source_sha": OLD_SHA}},
+            {"report_updates": {"shard_count": 2}},
+            {"row_updates": {"SourceSHA": OLD_SHA}},
+            {"row_updates": {"Status": "UNKNOWN"}},
+        ):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                FPE.qualified_files(qualified_archive(data_prefix=LEGACY_FPE_PREFIX, **changes), NEW_SHA)
+
+    def test_missing_or_ambiguous_archive_layout_is_rejected(self):
+        for changes in (
+            {"missing": FPE.DATA_PREFIX + "index.json"},
+            {"overrides": {LEGACY_FPE_PREFIX + "index.json": '{"files": ["b200_sxm.csv"]}'}},
+        ):
+            with self.subTest(changes=changes), self.assertRaisesRegex(ValueError, "dataset layout"):
+                FPE.qualified_files(qualified_archive(**changes), NEW_SHA)
+
+    def test_csv_files_cannot_be_borrowed_from_another_archive_layout(self):
+        with self.assertRaises(KeyError):
+            FPE.qualified_files(
+                qualified_archive(
+                    missing=FPE.DATA_PREFIX + "b200_sxm.csv",
+                    overrides={LEGACY_FPE_PREFIX + "b200_sxm.csv": "untrusted alternate CSV"},
+                ),
+                NEW_SHA,
+            )
 
     def test_main_dispatch_publishes_the_qualified_target_commit(self):
         snapshot, output = self.prepare([artifact(1)], {1: run()}, {1: qualified_archive(OLD_SHA)})
