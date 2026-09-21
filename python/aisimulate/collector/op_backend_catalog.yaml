@@ -104,6 +104,11 @@ families:
   - family: mla_bmm
     op_files: [mla_bmm_perf]
 
+  # V4.1 combines attention, Engram, mHC and shared-linear component rows.
+  # Its typed keys and source policy use a distinct family in the Rust reader.
+  - family: dsv41
+    op_files: [dsv41_module_perf]
+
   - family: sparse_attention
     op_files:
       - dsa_context_module_perf

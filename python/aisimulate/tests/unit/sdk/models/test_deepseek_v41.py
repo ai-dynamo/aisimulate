@@ -253,7 +253,10 @@ def test_engine_cache_keeps_replay_profiles_separate(first_replay):
         rust_engine_step._engine_handle_cache_clear()
 
 
-def test_sglang_pure_tp_eager_shared_and_routed_costs_are_sequential():
+@pytest.mark.parametrize("backend", ["sglang", "vllm", "trtllm"])
+@pytest.mark.parametrize("ep", [1, 2, 4])
+@pytest.mark.parametrize("context", [False, True])
+def test_shared_and_routed_costs_are_sequential_until_overlap_is_qualified(backend, ep, context):
     import json
 
     import aisimulate_core._native as native
@@ -262,44 +265,34 @@ def test_sglang_pure_tp_eager_shared_and_routed_costs_are_sequential():
     from aisimulate_core.sdk.models import get_model
     from aisimulate_core.sdk.perf_database import get_database_view
 
-    model = get_model(MODEL_PATH, ModelConfig(tp_size=4, moe_tp_size=4, moe_ep_size=1), "sglang")
+    model = get_model(MODEL_PATH, ModelConfig(tp_size=4, moe_tp_size=4 // ep, moe_ep_size=ep), backend)
     stages = [
         json.loads(op._spec_json())["Dsv41Stage"]
-        for op in model.generation_ops
+        for op in (model.context_ops if context else model.generation_ops)
         if "Dsv41Stage" in json.loads(op._spec_json())
     ]
     assert len(stages) == 40
     assert all(not any("Overlap" in child for child in stage["children"]) for stage in stages)
     children = stages[0]["children"]
+    phase = "context" if context else "generation"
     shared = [child for child in children if "shared_" in next(iter(child.values())).get("name", "")]
     routed = [
         child
         for child in children
-        if next(iter(child.values())).get("name", "")
-        in ("generation_router_gemm", "generation_moe_pre_dispatch", "generation_moe")
+        if next(iter(child.values())).get("name", "") in (f"{phase}_router_gemm", f"{phase}_moe")
     ]
     assert len(shared) == 3 and len(routed) == 2
-    db = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode="SOL")
+    assert children[-6:-1] == shared + routed
+    assert next(iter(children[-1].values()))["name"] == f"{phase}_moe_post_dispatch"
+    db = get_database_view("gb300", backend, "current", allow_missing_data=True, database_mode="SOL")
 
     def cost(children):
         stage = stages[0] | {"children": children}
         op = native.op_from_spec_json(json.dumps({"Dsv41Stage": stage}))
-        return float(_evaluate_single_op(db, op, is_context=False, batch_size=2, s=129, prefix=0, x=2))
+        return float(_evaluate_single_op(db, op, is_context=context, batch_size=2, s=129, prefix=0, x=2))
 
     assert cost(shared + routed) == pytest.approx(cost(shared) + cost(routed))
     assert cost(shared + routed) > max(cost(shared), cost(routed))
-
-
-def test_unqualified_ep_generation_overlap_is_not_changed_by_tp_eager_fix():
-    import json
-
-    model = _build_model()
-    stages = [
-        json.loads(op._spec_json())["Dsv41Stage"]
-        for op in model.generation_ops
-        if "Dsv41Stage" in json.loads(op._spec_json())
-    ]
-    assert all(any("Overlap" in child for child in stage["children"]) for stage in stages)
 
 
 @pytest.mark.parametrize(
@@ -309,6 +302,7 @@ def test_unqualified_ep_generation_overlap_is_not_changed_by_tp_eager_fix():
         ({"compress_ratios": (3,) * 40}, "one backbone compression ratio"),
         ({"kv_source_layer_ids": (8, 2)}, "unique, ascending"),
         ({"index_source_layer_ids": (2, 8, 14)}, "must also own an indexer"),
+        ({"index_source_layer_ids": (0, 2, 8, 14, 20, 24, 28, 32, 36)}, "index owners require a positive"),
         ({"candidate_source_layer_id": 3}, "candidate source must own"),
         ({"engram_num_embeddings": (1,)}, "layer/table counts differ"),
         (
@@ -320,6 +314,14 @@ def test_unqualified_ep_generation_overlap_is_not_changed_by_tp_eager_fix():
 def test_descriptor_rejects_malformed_ownership(descriptor, changes, message):
     with pytest.raises(ValueError, match=message):
         replace(descriptor, **changes).validate()
+
+
+@pytest.mark.parametrize("layer", [3, 21])
+def test_descriptor_accepts_positive_compression_for_index_only_owners(descriptor, layer):
+    assert layer not in descriptor.kv_source_layer_ids
+    changed = replace(descriptor, index_source_layer_ids=tuple(sorted((*descriptor.index_source_layer_ids, layer))))
+    changed.validate()
+    assert changed.layer_role(layer) == "reindex"
 
 
 def test_descriptor_rejects_ownerless_and_incompatible_compression(descriptor):
@@ -397,9 +399,9 @@ def test_v41_actual_activation_memory_uses_moe_coefficient(backend_name, coeffic
     backend = get_backend(backend_name)
     db = get_database_view("gb300", backend_name, "current", allow_missing_data=True, database_mode="SOL")
     memory = backend._get_memory_usage(model, db, 1, 1, 8192, 1, num_tokens=8192)
-    # Generic MoE workspace plus the separately owned mHC/Engram buffers.
-    workspace_width = 5120 if backend_name == "sglang" else 64 * 512
-    workspace = 8192 * workspace_width * 384 * 6 / 4 / 128 * 4
+    # Routed tokens carry 5120 residual features, not 64 * 512 attention
+    # features, on every backend. mHC/Engram buffers are accounted separately.
+    workspace = 8192 * 5120 * 384 * 6 / 4 / 128 * 4
     expanded = model.get_additional_activation_bytes(8192)
     expected = (2 * 8192 * 64 * 512 * coefficient + workspace + expanded) * overhead
     assert memory["activations"] * (1 << 30) == pytest.approx(expected)
@@ -466,7 +468,8 @@ def test_afd_rejects_v41_before_search_or_session_construction(decoder_replay):
 
 @pytest.mark.parametrize("is_context", [False, True])
 @pytest.mark.parametrize("batch,seq", [(1, 4), (0, 4), (1, 0)])
-def test_native_attention_rejects_unknown_role_before_zero_work(is_context, batch, seq):
+@pytest.mark.parametrize("database_mode", ["SOL", "SILICON", "HYBRID", "EMPIRICAL"])
+def test_native_attention_rejects_unknown_role_before_zero_work(is_context, batch, seq, database_mode):
     import json
 
     import aisimulate_core._native as native
@@ -483,6 +486,6 @@ def test_native_attention_rejects_unknown_role_before_zero_work(is_context, batc
         if "Dsv41Attention" in child
     )
     op = native.op_from_spec_json(json.dumps({"Dsv41Attention": attention | {"role": "ful", "is_context": is_context}}))
-    db = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode="SOL")
+    db = get_database_view("gb300", "sglang", "current", allow_missing_data=True, database_mode=database_mode)
     with pytest.raises(ValueError, match="attention role must be"):
         _evaluate_single_op(db, op, is_context=is_context, batch_size=batch, s=seq, prefix=0, x=batch * seq)

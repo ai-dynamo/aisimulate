@@ -115,6 +115,8 @@ class DeepSeekV41Config:
             raise ValueError("DeepSeek-V4.1 KV owners must also own an indexer")
         if any(self.compress_ratios[i] <= 0 for i in self.kv_source_layer_ids):
             raise ValueError("DeepSeek-V4.1 KV owners require a positive compression ratio")
+        if any(self.compress_ratios[i] <= 0 for i in self.index_source_layer_ids):
+            raise ValueError("DeepSeek-V4.1 index owners require a positive compression ratio")
         if self.candidate_source_layer_id not in self.kv_source_layer_ids:
             raise ValueError("DeepSeek-V4.1 candidate source must own compressed KV")
         if len(self.engram_layer_ids) != len(self.engram_num_embeddings):
