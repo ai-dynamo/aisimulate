@@ -2176,7 +2176,11 @@ def collect_ops(
 
             get_func = getattr(get_module, collection["get_func"])
             run_func = getattr(run_module, collection["run_func"])
-            run_func = functools.partial(run_func, perf_filename=collection["perf_filename"])
+            perf_filename = collection["perf_filename"]
+            worker_filename = collection.get("worker_perf_filename")
+            if worker_filename is not None:
+                perf_filename = str(Path(perf_filename).with_name(worker_filename))
+            run_func = functools.partial(run_func, perf_filename=perf_filename)
 
             def get_func_with_limit(get_func=get_func, op=collection["type"]):
                 from collector.capabilities import filter_cases
@@ -3281,6 +3285,7 @@ def _validate_perf_transaction_document(
     tables = {publication.target.stem for publication in publications}
     seen_checkpoint_paths: set[Path] = set()
     seen_attempted: set[str] = set()
+    attempted_tables: set[str] = set()
     for checkpoint in checkpoint_records:
         expected_fields = {
             "path",
@@ -3319,12 +3324,18 @@ def _validate_perf_transaction_document(
             ):
                 raise RuntimeError(f"Invalid collector perf checkpoint {field} in {journal_path}")
         attempted = set(checkpoint["attempted"])
-        if not attempted or attempted & seen_attempted:
+        # A completed sibling can have no new work on resume. Keep its
+        # identity, ledgers, and file attestation in both transaction journals.
+        if attempted & seen_attempted or (not attempted and not (checkpoint["done"] or checkpoint["failed"])):
             raise RuntimeError(f"Invalid collector perf checkpoint attempts in {journal_path}")
+        if attempted:
+            attempted_tables.add(table)
         seen_checkpoint_paths.add(attestation.path)
         seen_attempted.update(attempted)
     if {checkpoint["table"] for checkpoint in checkpoint_records} != tables:
         raise RuntimeError(f"Collector perf transaction tables lack checkpoint owners in {journal_path}")
+    if attempted_tables != tables:
+        raise RuntimeError(f"Collector perf transaction tables lack attempted checkpoint case IDs in {journal_path}")
 
     previous_record = transaction["previous_sidecar"]
     previous_sidecar = (
@@ -5010,7 +5021,7 @@ def _recover_collector_provenance_transaction_locked(
         journal_path,
         phase=phase,
     )
-    participant_attestations = {checkpoint.path: checkpoint.attestation for checkpoint in tagged_participants}
+    participant_attestations = {checkpoint.path: checkpoint.attestation for checkpoint in validated_checkpoints}
     _revalidate_checkpoint_attestations(participant_attestations.values())
     _revalidate_journal_attestation(journal_attestation, locked_output_root)
 
@@ -5342,7 +5353,7 @@ def _commit_collector_provenance_transaction(
         expected_identity=staged_document_snapshot.identity,
         locked_output_root=locked_output_root,
     )
-    participant_attestations = {checkpoint.path: checkpoint.attestation for checkpoint in participants}
+    participant_attestations = {checkpoint.path: checkpoint.attestation for checkpoint in validated_checkpoints}
     _revalidate_checkpoint_attestations(participant_attestations.values())
     for checkpoint in participants:
         participant_attestations[checkpoint.path] = _tag_checkpoint_sidecar_transaction(

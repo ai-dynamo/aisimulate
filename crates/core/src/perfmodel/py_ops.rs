@@ -131,6 +131,8 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
     }
     match &op {
         Op::Gemm(_) => wrap!(PyGemm),
+        Op::SglangPrefillAttentionSequence(_) => wrap!(PySglangPrefillAttentionSequence),
+        Op::SglangPrefillCommNormBoundary(_) => wrap!(PySglangPrefillCommNormBoundary),
         Op::Embedding(_) => wrap!(PyEmbedding),
         Op::Elementwise(_) => wrap!(PyElementWise),
         Op::ContextAttention(_) => wrap!(PyContextAttention),
@@ -1755,7 +1757,7 @@ impl PyMoE {
     const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, hidden_size, inter_size, topk, num_experts, moe_tp_size, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, is_context=true, is_gated=true, *, moe_backend=None, enable_eplb=false, seq_split=1))]
+    #[pyo3(signature = (name, scale_factor, hidden_size, inter_size, topk, num_experts, moe_tp_size, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, is_context=true, is_gated=true, *, moe_backend=None, enable_eplb=false, seq_split=1, require_exact_workload_distribution=false))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1774,6 +1776,7 @@ impl PyMoE {
         moe_backend: Option<String>,
         enable_eplb: bool,
         seq_split: u32,
+        require_exact_workload_distribution: bool,
     ) -> PyResult<(Self, PyOperation)> {
         // The retired class was CP-aware but the MoE wire carries no
         // seq_split: models divide the token count at the construction site
@@ -1797,6 +1800,7 @@ impl PyMoE {
             attention_dp_size,
             quant_mode: moe_quant(quant_mode)?,
             workload_distribution,
+            require_exact_workload_distribution,
             is_gated,
             moe_backend,
             enable_eplb,
@@ -1829,6 +1833,10 @@ impl PyMoE {
         kwargs.set_item("is_gated", o.is_gated)?;
         kwargs.set_item("moe_backend", o.moe_backend.clone())?;
         kwargs.set_item("enable_eplb", o.enable_eplb)?;
+        kwargs.set_item(
+            "require_exact_workload_distribution",
+            o.require_exact_workload_distribution,
+        )?;
         Ok((args, kwargs))
     }
 
@@ -1879,6 +1887,11 @@ impl PyMoE {
     #[getter(_workload_distribution)]
     fn workload_distribution(slf: PyRef<'_, Self>) -> PyResult<String> {
         Ok(slf.as_super().moe()?.workload_distribution.clone())
+    }
+
+    #[getter(_require_exact_workload_distribution)]
+    fn require_exact_workload_distribution(slf: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(slf.as_super().moe()?.require_exact_workload_distribution)
     }
 
     #[getter(_is_context)]
@@ -4219,9 +4232,106 @@ impl PyFallbackOp {
     }
 }
 
+/// Fixed-scope attention sequence; weight bytes are the original DSA inventory.
+#[pyclass(extends = PyOperation, subclass, name = "SglangPrefillAttentionSequence", module = "aisimulate_core._native")]
+pub struct PySglangPrefillAttentionSequence;
+#[pymethods]
+impl PySglangPrefillAttentionSequence {
+    #[classattr]
+    #[allow(non_upper_case_globals)]
+    const _ENGINE_QUERY_SHAPE: &'static str = "context";
+
+    #[new]
+    fn new(name: String, profile_id: String, weight_bytes: f64) -> PyResult<(Self, PyOperation)> {
+        crate::perf_database::prefill_graph::validate_id(&profile_id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if !weight_bytes.is_finite() || weight_bytes <= 0.0 {
+            return Err(PyValueError::new_err(
+                "original full-model attention weight bytes must be positive and finite",
+            ));
+        }
+        Ok((
+            Self,
+            PyOperation {
+                inner: Op::SglangPrefillAttentionSequence(
+                    crate::operators::prefill_graph::SglangPrefillAttentionSequenceOp {
+                        name,
+                        profile_id,
+                        weight_bytes,
+                    },
+                ),
+            },
+        ))
+    }
+    fn __getnewargs_ex__<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
+        let Op::SglangPrefillAttentionSequence(op) = &slf.as_super().inner else {
+            unreachable!()
+        };
+        Ok((
+            (op.name.clone(), op.profile_id.clone(), op.weight_bytes).into_pyobject(py)?,
+            PyDict::new(py),
+        ))
+    }
+}
+
+/// Fixed-count TP reduction/residual/RMSNorm boundary (78 or 77).
+#[pyclass(extends = PyOperation, subclass, name = "SglangPrefillCommNormBoundary", module = "aisimulate_core._native")]
+pub struct PySglangPrefillCommNormBoundary;
+#[pymethods]
+impl PySglangPrefillCommNormBoundary {
+    #[classattr]
+    #[allow(non_upper_case_globals)]
+    const _ENGINE_QUERY_SHAPE: &'static str = "context";
+
+    #[new]
+    fn new(
+        name: String,
+        profile_id: String,
+        boundary_role: String,
+    ) -> PyResult<(Self, PyOperation)> {
+        crate::perf_database::prefill_graph::validate_id(&profile_id)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let op = crate::operators::prefill_graph::SglangPrefillCommNormBoundaryOp {
+            name,
+            profile_id,
+            boundary_role,
+        };
+        op.count()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        Ok((
+            Self,
+            PyOperation {
+                inner: Op::SglangPrefillCommNormBoundary(op),
+            },
+        ))
+    }
+    fn __getnewargs_ex__<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
+        let Op::SglangPrefillCommNormBoundary(op) = &slf.as_super().inner else {
+            unreachable!()
+        };
+        Ok((
+            (
+                op.name.clone(),
+                op.profile_id.clone(),
+                op.boundary_role.clone(),
+            )
+                .into_pyobject(py)?,
+            PyDict::new(py),
+        ))
+    }
+}
+
 /// Register every op class on the extension module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyOperation>()?;
+    m.add_class::<PySglangPrefillAttentionSequence>()?;
+    m.add_class::<PySglangPrefillCommNormBoundary>()?;
     m.add_class::<PyGemm>()?;
     m.add_class::<PyEmbedding>()?;
     m.add_class::<PyElementWise>()?;

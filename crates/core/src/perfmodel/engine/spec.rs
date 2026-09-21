@@ -317,6 +317,7 @@ mod tests {
             attention_dp_size: 1,
             quant_mode: MoeQuantMode::Fp8Block,
             workload_distribution: "power_law_1.2".into(),
+            require_exact_workload_distribution: false,
             is_gated: true,
             moe_backend: None,
             enable_eplb: false,
@@ -763,6 +764,20 @@ mod tests {
                 window_size: 128,
                 children: vec![OpSpec::Gemm(gemm())],
             }),
+            OpSpec::SglangPrefillAttentionSequence(
+                crate::operators::prefill_graph::SglangPrefillAttentionSequenceOp {
+                    name: "context_attention_sequence".into(),
+                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
+                    weight_bytes: 123456.0,
+                },
+            ),
+            OpSpec::SglangPrefillCommNormBoundary(
+                crate::operators::prefill_graph::SglangPrefillCommNormBoundaryOp {
+                    name: "context_post_attention_boundary".into(),
+                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
+                    boundary_role: "post_attention".into(),
+                },
+            ),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -809,7 +824,9 @@ mod tests {
                 | OpSpec::Dsv41Engram(_)
                 | OpSpec::Dsv41Stage(_)
                 | OpSpec::Dsv41Linear(_)
-                | OpSpec::TokenScale(_) => {}
+                | OpSpec::TokenScale(_)
+                | OpSpec::SglangPrefillAttentionSequence(_)
+                | OpSpec::SglangPrefillCommNormBoundary(_) => {}
             }
         }
         ops
@@ -825,6 +842,8 @@ mod tests {
             backend_version: Some("1.0.0rc3".into()),
             forward_model: None,
             decoder_replay: false,
+            prefill_graph_profile: None,
+            prefill_graph_profile_id: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -866,6 +885,8 @@ mod tests {
         const MOE_ALL_TO_ALL_INDEX: u32 = 33;
         const MOE_EXPERT_COMPUTE_INDEX: u32 = 34;
         const TOKEN_SCALE_INDEX: u32 = 35;
+        const PREFILL_ATTENTION_INDEX: u32 = 41;
+        const PREFILL_BOUNDARY_INDEX: u32 = 42;
 
         let index_of = |op: &OpSpec| -> u32 {
             let bytes = bincode::serialize(op).expect("serialize op");
@@ -897,11 +918,25 @@ mod tests {
             TOKEN_SCALE_INDEX,
             "TokenScale index moved"
         );
+        let variants = all_op_variants();
+        assert_eq!(
+            index_of(&variants[PREFILL_ATTENTION_INDEX as usize]),
+            PREFILL_ATTENTION_INDEX
+        );
+        assert_eq!(
+            index_of(&variants[PREFILL_BOUNDARY_INDEX as usize]),
+            PREFILL_BOUNDARY_INDEX
+        );
         // Appending is the only safe growth direction.
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
         // Keep the main-branch TokenScale index; V41 variants append after it.
-        let mut appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
+        let mut appended: Vec<_> = all_op_variants()
+            .iter()
+            .skip(36)
+            .take(5)
+            .map(index_of)
+            .collect();
         appended.sort();
         assert_eq!(
             appended,
@@ -909,7 +944,7 @@ mod tests {
             "V41 appended indices moved"
         );
         assert_eq!(
-            TOKEN_SCALE_INDEX as usize + 6,
+            PREFILL_BOUNDARY_INDEX as usize + 1,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
@@ -1107,11 +1142,11 @@ mod tests {
             Err(AicError::UnsupportedSchemaVersion {
                 kind: "EngineSpec",
                 got: 18,
-                expected: 19
+                expected: ENGINE_SPEC_SCHEMA_VERSION
             })
         ));
-        // A false schema19 stamp cannot silently use the JSON-only default.
-        bytes[..4].copy_from_slice(&19u32.to_le_bytes());
+        // A false current-schema stamp cannot silently use the JSON-only default.
+        bytes[..4].copy_from_slice(&ENGINE_SPEC_SCHEMA_VERSION.to_le_bytes());
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
             Err(AicError::EngineSpec(_))

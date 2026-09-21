@@ -183,6 +183,38 @@ model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
 
+### Vera Rubin GLM-5.2 graph-prefill pilot
+
+The opt-in `sglang_glm52_nvfp4_vr200_tp4_graph_v1` profile uses the same canonical constructor and a latency-only direct method. It is qualified for seven homogeneous prefill shapes on the pinned SGLang runtime, TP4/EP1, NVFP4 experts, BF16 projections and FP8 KV. The profile preserves its immutable SHA-256 in `diagnostics()["provenance"]["config"]["estimator_config"]["op_level"]`; save that complete configuration when reproducing a prediction.
+
+```python
+from aisimulate_core.sdk import RustForwardPassPerfModel
+
+model = RustForwardPassPerfModel.best_available({
+    "model": "nvidia/GLM-5.2-NVFP4",
+    "system": "vr200_hecate",
+    "backend": "sglang",
+    "backend_version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+    "worker_type": "prefill",
+    "tp": 4, "pp": 1, "attention_dp": 1,
+    "moe_tp_size": 4, "moe_ep_size": 1,
+    "gemm_quant_mode": "bfloat16", "moe_quant_mode": "nvfp4",
+    "fmha_quant_mode": "bfloat16", "kvcache_quant_mode": "fp8",
+    "comm_quant_mode": "half",
+    "estimation_mode": "op_level", "fallback_policy": "deny",
+    "database_mode": "SILICON", "enable_shared_layer": False,
+    "estimator_config": {
+        "op_level": {"prefill_graph_profile": "sglang_glm52_nvfp4_vr200_tp4_graph_v1"},
+        "correction": {"enabled": False},
+    },
+})
+milliseconds = model.predict_prefill_latency(bs=1, isl=2048, prefix=1024)
+```
+
+`isl` is the total input length, including cached tokens. That call processes 1,024 new tokens after a 1,024-token prefix. The admitted `(batch, isl, prefix)` calls are `(1,1024,0)`, `(2,1024,0)`, `(1,2048,1024)`, `(1,8192,0)`, `(2,8192,0)`, `(1,16384,0)` and `(1,32768,16384)`. Arguments must be ordinary Python integers in the unsigned 32-bit range; the Rust API uses `u32`. Other shapes and batch-token products that overflow fail before lookup. The tables have exact keys and do not interpolate or inherit another profile's data.
+
+The independent forward-step comparison passes all seven shapes within 15%, with worst absolute relative error 5.2334%. This is a measured mean forward-time comparison for the exact runtime. Scheduler TTFT, decode, model quality and general Vera Rubin coverage remain unqualified. Aggregate telemetry cannot establish each request's exact new/past lengths, so this selected profile rejects `estimate_forward_pass_time_ms`, tuning, static energy/SOL diagnostics and replay-provider construction. Use the direct scalar method; no CLI scheduler selection is supported. Other profiles retain their existing behavior. See the [dedicated collector](../python/aisimulate/collector/sglang_rubin/README.md) and [packaged data provenance](../python/aisimulate/src/aisimulate_core/systems/data/vr200_hecate/README.md).
+
 ### Engine identity controls
 
 The canonical configuration also carries quantization overrides and

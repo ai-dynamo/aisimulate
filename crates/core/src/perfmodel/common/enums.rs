@@ -616,6 +616,8 @@ pub enum PerfDataFilename {
     Dsv4MegamoeModule,
     MoeA2a,
     MoeExpertCompute,
+    SglangPrefillAttentionSequence,
+    SglangPrefillCommNormBoundary,
 }
 
 impl PerfDataFilename {
@@ -657,6 +659,10 @@ impl PerfDataFilename {
             Self::Dsv4MegamoeModule => "dsv4_megamoe_module_perf.parquet",
             Self::MoeA2a => "moe_a2a_perf.parquet",
             Self::MoeExpertCompute => "moe_expert_compute_perf.parquet",
+            Self::SglangPrefillAttentionSequence => {
+                "sglang_prefill_attention_sequence_perf.parquet"
+            }
+            Self::SglangPrefillCommNormBoundary => "sglang_prefill_comm_norm_boundary_perf.parquet",
         }
     }
 }

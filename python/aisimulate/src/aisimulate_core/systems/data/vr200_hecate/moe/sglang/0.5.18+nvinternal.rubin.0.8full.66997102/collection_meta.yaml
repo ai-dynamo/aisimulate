@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 2
+runtime:
+  framework: sglang
+  version: 0.5.18+nvinternal.rubin.0.8full.66997102
+  image: gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci
+  image_digest: sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab
+tables:
+  moe_perf:
+    rows: 88
+    status: complete
+    collections:
+    - collector_ref: unknown
+      collector_hash: sha256:714de1d8cd8622ab7262471f39882012c94ec9cca676588ec26e0a5a43a690f4
+      case_plan_hash: sha256:5671a5e665ed4e6068615f1bd1efca6af63f728a6f6f70507adb2c424c387738
+      collected_at: '2026-09-18'
+      rows: 81
+      status: complete
+    - collector_ref: collector.sglang_rubin.publish_observed_moe
+      collector_hash: sha256:067ad7797474518eab028911d4f0d6f314e1dd0456b08be5bae45de267f3e332
+      case_plan_hash: sha256:dd11934097a3bc664e82c7081af5ceac3161666eb689e736b47765d7ea955cde
+      collected_at: '2026-09-18'
+      rows: 3
+      status: complete
+      source_campaign_rows: 864
+      source_campaign_status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.18+nvinternal.rubin.0.8full.66997102
+        image: gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci
+        image_digest: sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab
+    - collector_ref: collector.sglang_rubin.publish_observed_moe_v2
+      collector_hash: sha256:bbe3ebf2d450053f524d38b0a8ef97f0e55df000b6c6f61430b0207afc622eaf
+      case_plan_hash: sha256:8a1c8ca3136fcf2289ff49e7f07d1d95e3d23dea9301db0eafeb07436d529519
+      collected_at: '2026-09-19'
+      rows: 4
+      status: complete
+      source_campaign_rows: 1152
+      source_campaign_status: complete
+      runtime:
+        framework: sglang
+        version: 0.5.18+nvinternal.rubin.0.8full.66997102
+        image: gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci
+        image_digest: sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab

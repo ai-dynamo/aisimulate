@@ -43,6 +43,9 @@ def build_model_config(
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
+    *,
+    decode_workload_distribution: str | None = None,
+    prefill_graph_profile: str | None = None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
     validate_moe_controls(enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots)
@@ -64,6 +67,8 @@ def build_model_config(
         enable_eplb=enable_eplb,
         wideep_num_slots=wideep_num_slots,
         speculation=speculation,
+        decode_workload_distribution=decode_workload_distribution,
+        prefill_graph_profile=prefill_graph_profile,
     )
 
 

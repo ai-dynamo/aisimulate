@@ -83,7 +83,9 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
 //   separating physical backend KV payload from attention arithmetic precision.
 //   Its appended enum changes positional bincode layout; old JSON defaults only.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
+// - 20 (GLM-5.2 VR200 pilot): exact observed-MoE selector, prefill graph identity
+//   and two appended composite operators change positional bincode layouts.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 20;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -121,6 +123,11 @@ pub struct EngineConfig {
     /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
     #[serde(default)]
     pub decoder_replay: bool,
+    /// Explicit direct-prefill-only measured profile and its immutable identity.
+    #[serde(default)]
+    pub prefill_graph_profile: Option<String>,
+    #[serde(default)]
+    pub prefill_graph_profile_id: Option<String>,
 
     // KV
     pub kv_block_size: Option<u32>,

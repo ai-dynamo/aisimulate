@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+runtime:
+  framework: sglang
+  version: 0.5.18+nvinternal.rubin.0.8full.66997102
+  image: gitlab-master.nvidia.com:5005/dl/ai-dynamo/dynamo-ci
+  image_digest: sha256:53299500a280c8de34bd484507a45b2f83b4d5e7c999b77284fa31930f7e63ab
+  source_commit: 02c5a855aceb968c310e6fbc6632270e26edc84b
+tables:
+  gemm_perf:
+    collector_ref: unknown
+    collector_hash: sha256:714de1d8cd8622ab7262471f39882012c94ec9cca676588ec26e0a5a43a690f4
+    case_plan_hash: sha256:2db29ebcb29df86776dfba13ca8eaac8ed4d751127cd8258953fe2f8d25355ca
+    collected_at: '2026-09-18'
+    rows: 518
+    status: complete

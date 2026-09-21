@@ -829,6 +829,7 @@ mod tests {
             attention_dp_size: 1,
             quant_mode: MoeQuantMode::Nvfp4,
             workload_distribution: "uniform".into(),
+            require_exact_workload_distribution: false,
             is_gated: true,
             moe_backend: None,
             enable_eplb: false,

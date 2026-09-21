@@ -1345,6 +1345,8 @@ class PerfDataFilename(Enum):
     mla_context_module = "mla_context_module_perf.parquet"
     mla_generation_module = "mla_generation_module_perf.parquet"
     dsa_context_module = "dsa_context_module_perf.parquet"
+    sglang_prefill_attention_sequence = "sglang_prefill_attention_sequence_perf.parquet"
+    sglang_prefill_comm_norm_boundary = "sglang_prefill_comm_norm_boundary_perf.parquet"
     dsa_generation_module = "dsa_generation_module_perf.parquet"
     # NOTE: GLM-5.2 skip-indexer (reuse-layer) rows live in the SAME
     # dsa_*_module file, tagged by the op_name column; the loader splits them

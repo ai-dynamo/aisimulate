@@ -19,8 +19,18 @@ pub struct EstimatorConfig {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OpLevelConfig {}
+#[serde(default, deny_unknown_fields)]
+pub struct OpLevelConfig {
+    /// Existing measured generation-MoE distribution; context is unchanged.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode_workload_distribution: Option<String>,
+    /// Opt-in measured graph composition; only qualified direct prefill shapes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_graph_profile: Option<String>,
+    /// Resolved immutable publication identity, retained in saved configurations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_graph_profile_id: Option<String>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -508,6 +508,8 @@ mod tests {
                 backend_version: Some("test-version".to_string()),
                 forward_model: None,
                 decoder_replay: false,
+                prefill_graph_profile: None,
+                prefill_graph_profile_id: None,
                 kv_block_size: None,
                 parallel: ParallelMapping {
                     tp_size: 1,

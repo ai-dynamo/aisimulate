@@ -14,7 +14,9 @@ use thiserror::Error;
 /// All errors surfaced by the Rust core.
 #[derive(Debug, Error)]
 pub enum AicError {
-    #[error("unsupported schema version for {kind}: got {got}, expected {expected}")]
+    #[error(
+        "unsupported schema version for {kind}: got {got}, expected {expected}; recompile with this engine"
+    )]
     UnsupportedSchemaVersion {
         kind: &'static str,
         got: u32,
@@ -34,6 +36,12 @@ pub enum AicError {
     ModelConfig(String),
     #[error("perf database error: {0}")]
     PerfDatabase(String),
+    /// An explicit profile cannot be replaced by a generic perf-data fallback.
+    #[error("decode MoE profile error: {0}")]
+    DecodeMoeProfile(String),
+    /// Exact prefill profiles never fall back on unsupported input or missing data.
+    #[error("prefill graph profile error: {0}")]
+    PrefillGraphProfile(String),
     /// A quant mode's compute dtype has no `*_tc_flops` entry in the system
     /// YAML. Mirrors Python's `MissingSystemFlopsError`: the platform either
     /// lacks hardware for that dtype or the YAML is incomplete — never

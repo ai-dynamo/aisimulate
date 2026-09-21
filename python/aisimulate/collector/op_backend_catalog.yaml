@@ -121,6 +121,7 @@ families:
       - glm5_dsa_attn_module_perf
       - glm5_mqa_logits_module_perf
       - glm5_topk_module_perf
+      - sglang_prefill_attention_sequence_perf
 
   - family: moe
     op_files:
@@ -204,3 +205,4 @@ families:
       - trtllm_alltoall_perf
       - wideep_deepep_ll_perf
       - wideep_deepep_normal_perf
+      - sglang_prefill_comm_norm_boundary_perf

@@ -201,6 +201,7 @@ mod moe_index;
 pub mod msa;
 pub mod parquet_loader;
 pub mod perf_interp;
+pub mod prefill_graph;
 pub mod source_resolution;
 pub mod state_space;
 pub mod table_view;
@@ -253,6 +254,10 @@ pub struct PerfTables {
     pub wideep_mla: WideEpMlaTable,
     pub state_space: StateSpaceTable,
     pub fpm_forward: FpmForwardTable,
+    pub prefill_graph: prefill_graph::PrefillGraphTable,
+    /// Selected graph profiles read only their validated private copy. Keep it
+    /// alive with the tables, including every derived database view.
+    prefill_graph_snapshot: Option<tempfile::TempDir>,
     /// The load's source resolver, retained so the table views
     /// (`table_view.rs`) can resolve any basename on demand through the same
     /// channel logic the query tables used.
@@ -549,6 +554,8 @@ impl PerfDatabase {
             // Deliberately NOT shared-layer aware: FPM whole-model data is
             // valid only for its exact backend/version (fpm_forward.rs).
             fpm_forward: FpmForwardTable::new(data_root.clone(), system, backend, version),
+            prefill_graph: prefill_graph::PrefillGraphTable::new(systems_root),
+            prefill_graph_snapshot: None,
             system_spec: spec,
             // Kept for the table-view folds (`table_view.rs`), which resolve
             // every basename themselves — including the wideep/deepep files
@@ -557,6 +564,22 @@ impl PerfDatabase {
             data_root,
         };
         Ok(Self::from_tables(Arc::new(tables)))
+    }
+
+    /// Bind a selected profile to fresh tables over its validated input copy.
+    /// This bypasses both process-wide table sharing and future lazy reads from
+    /// the caller's mutable source tree; ordinary databases keep their cache.
+    pub(crate) fn snapshot_prefill_graph(&self) -> Result<Self, AicError> {
+        self.prefill_graph.validate_sources(self)?;
+        let snapshot = self.prefill_graph.snapshot()?;
+        let mut db = Self::load(snapshot.path(), &self.system, &self.backend, &self.version)
+            .map_err(prefill_graph::error)?
+            .with_mode(self.database_mode, self.transfer_policy);
+        db.prefill_graph.validate_sources(&db)?;
+        Arc::get_mut(&mut db.tables)
+            .expect("new snapshot tables are uniquely owned")
+            .prefill_graph_snapshot = Some(snapshot);
+        Ok(db)
     }
 
     /// Like [`PerfDatabase::load_with_sources`], but shares the loaded

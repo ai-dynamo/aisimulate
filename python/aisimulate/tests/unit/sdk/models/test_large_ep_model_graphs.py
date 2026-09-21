@@ -1,5 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+# SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
+# Dense-TP graph expectations adapt SGLang's layer communication behavior:
+# https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
 
 """Model-level op-graph goldens for the large-EP wiring (Task 6).
 
@@ -882,6 +886,11 @@ class TestFusedGraphsUnchanged:
             "context_add_norm_1",
             "context_attention",
             "context_add_norm_2",
+            "context_dense_attn_ar",
+            "context_dense_gate_up_gemm",
+            "context_dense_act_gate",
+            "context_dense_down_gemm",
+            "context_dense_ffn_ar",
             "context_shared_gate_up_gemm",
             "context_shared_act_gate",
             "context_shared_ffn2_gemm",
@@ -897,10 +906,20 @@ class TestFusedGraphsUnchanged:
             "generation_add_norm_1",
             "generation_attention",
             "generation_add_norm_2",
+            "generation_dense_attn_ar",
+            "generation_dense_gate_up_gemm",
+            "generation_dense_act_gate",
+            "generation_dense_down_gemm",
+            "generation_dense_ffn_ar",
             "generation_moe_overlap",
             "generation_logits_gemm",
             "generation_p2p",
         ]
+        # The ordinary SGLang TP graph now honors this checkpoint's three
+        # initial dense layers; the large-EP graphs above retain their legacy
+        # approximation until dense distribution is modeled for that regime.
+        assert _op(model.context_ops, "context_dense_gate_up_gemm")._scale_factor == 3
+        assert _op(model.context_ops, "context_moe")._scale_factor == 58
 
     def test_moe_family_fused(self):
         model = _moe_sglang()

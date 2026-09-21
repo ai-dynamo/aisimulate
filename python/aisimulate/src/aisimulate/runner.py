@@ -101,6 +101,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "database_mode": ("database_mode", "aic_database_mode"),
     "enable_shared_layer": ("enable_shared_layer", "shared_layer", "aic_enable_shared_layer"),
     "strict_provenance": ("strict_provenance", "aic_strict_provenance"),
+    "decode_workload_distribution": ("decode_workload_distribution", "aic_decode_workload_distribution"),
 }
 
 _AIC_FORWARD_MODELS = frozenset({"op_level", "fpm"})
@@ -1387,6 +1388,8 @@ def _materialize_engine_role(
         if not configured:
             continue
         value = rank.pop(configured[0])
+        if target == "decode_workload_distribution" and value is None:
+            continue
         if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
             value = _positive_int(value, f"engine provider {role} {target}")
         elif target in {"enable_eplb", "decoder_replay", "enable_shared_layer", "strict_provenance"}:

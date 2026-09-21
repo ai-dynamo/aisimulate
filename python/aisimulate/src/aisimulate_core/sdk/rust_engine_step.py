@@ -280,6 +280,15 @@ class RustForwardPassPerfModel:
             payload["estimator_config"] = {**estimator_config, "features": features}
         return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_json_dumps(payload)))
 
+    def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
+        """Return latency in ms for a qualified homogeneous graph-prefill shape.
+
+        ``isl`` is the total sequence length including ``prefix``. The selected
+        profile admits only its measured integer shapes; Rust owns validation
+        and prediction. This method returns no scheduler or energy estimate.
+        """
+        return self._inner.predict_prefill_latency(bs, isl, prefix)
+
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
 

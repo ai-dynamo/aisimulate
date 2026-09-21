@@ -202,6 +202,9 @@ pub struct MoeOp {
     pub attention_dp_size: u32,
     pub quant_mode: MoeQuantMode,
     pub workload_distribution: String,
+    /// Explicit decode profile: no distribution or estimation fallback.
+    #[serde(default)]
+    pub require_exact_workload_distribution: bool,
     /// Gated FFN (SwiGLU) when true; non-gated (Relu²) when false.
     /// Mirrors Python's `MoE._is_gated`. The TRT-LLM small-token
     /// `moe_torch_flow_min_latency` kernel is only valid for gated nvfp4
@@ -264,6 +267,7 @@ impl MoeOp {
             attention_dp_size: 1,
             quant_mode,
             workload_distribution: workload_distribution.into(),
+            require_exact_workload_distribution: false,
             is_gated: true,
             moe_backend: None,
             enable_eplb: false,
@@ -272,6 +276,9 @@ impl MoeOp {
     }
 
     pub fn query(&self, db: &PerfDatabase, num_tokens: u32) -> Result<PerformanceResult, AicError> {
+        if self.require_exact_workload_distribution {
+            self.validate_decode_profile(db)?;
+        }
         // Attention-dp scales up the total input tokens (all dp ranks
         // all-gather into one shared expert pool) -- mirrors Python
         // `MoE.query` (`x = x * attention_dp_size`). Applied exactly once,
@@ -351,6 +358,23 @@ impl MoeOp {
         let tc_flops = quant_tc_flops(&db.system_spec, self.quant_mode.mapping())?;
         let sol = |t: f64| self.sol_latency_ms(db, t.round() as u32, tc_flops);
 
+        if self.require_exact_workload_distribution {
+            let value = db.moe.query_decode_profile(
+                crate::perfmodel::observed_moe_profile::DecodeProfile::from_distribution(
+                    &self.workload_distribution,
+                )?,
+                num_tokens,
+                &sol,
+            )?;
+            return Ok(PerformanceResult::with_energy(
+                value.latency,
+                value.energy,
+                Source::Silicon,
+            )
+            .clamp_non_negative()
+            .scaled(self.scale_factor));
+        }
+
         // sglang deepep_moe compute retired — large-EP uses MoeExpertCompute (AIC-1601)
         if is_sglang && self.moe_backend.as_deref() == Some("deepep_moe") {
             return Err(AicError::PerfDatabase(format!(
@@ -408,6 +432,36 @@ impl MoeOp {
                 .clamp_non_negative()
                 .scaled(self.scale_factor),
         )
+    }
+
+    pub(crate) fn validate_decode_profile(&self, db: &PerfDatabase) -> Result<(), AicError> {
+        use crate::perfmodel::observed_moe_profile as profile;
+        let selected = profile::DecodeProfile::from_distribution(&self.workload_distribution)?;
+        profile::validate_runtime(
+            selected,
+            &db.system,
+            &db.backend,
+            &db.version,
+            db.database_mode,
+        )?;
+        if self.quant_mode != MoeQuantMode::Nvfp4
+            || (
+                self.hidden_size,
+                self.inter_size,
+                self.topk,
+                self.num_experts,
+            ) != (6144, 2048, 8, 256)
+            || (self.moe_tp_size, self.moe_ep_size, self.attention_dp_size) != (4, 1, 1)
+            || !self.is_gated
+            || self.enable_eplb
+            || self.moe_backend.is_some()
+        {
+            return Err(AicError::DecodeMoeProfile(format!(
+                "unsupported profile or MoE shape for {}: {}",
+                self.name, self.workload_distribution
+            )));
+        }
+        db.moe.validate_decode_profile(selected)
     }
 
     /// `SOL(query)/util` with the full transfer ladder. Mirrors Python
@@ -871,6 +925,7 @@ mod tests {
             moe_ep_size: 8,
             quant_mode: MoeQuantMode::Fp8Block,
             workload_distribution: "power_law_1.2".into(),
+            require_exact_workload_distribution: false,
             attention_dp_size,
             is_gated: true,
             moe_backend: None,
@@ -908,6 +963,7 @@ mod tests {
             moe_ep_size: 8,
             quant_mode: quant,
             workload_distribution: "power_law_1.2".into(),
+            require_exact_workload_distribution: false,
             attention_dp_size: 1,
             is_gated: true,
             moe_backend: None,
@@ -1124,6 +1180,7 @@ mod tests {
             moe_ep_size: 1,
             quant_mode: MoeQuantMode::Nvfp4Wo,
             workload_distribution: "power_law_1.2".into(),
+            require_exact_workload_distribution: false,
             attention_dp_size: 1,
             is_gated: true,
             moe_backend: None,
@@ -1153,6 +1210,7 @@ mod tests {
             moe_ep_size: 1,
             quant_mode: MoeQuantMode::Nvfp4,
             workload_distribution: "balanced".into(),
+            require_exact_workload_distribution: false,
             attention_dp_size: 1,
             is_gated: true,
             moe_backend: None,

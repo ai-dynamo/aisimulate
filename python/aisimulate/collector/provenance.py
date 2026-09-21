@@ -49,6 +49,7 @@ _MODEL_CASES_DIR = "collector/cases/models"
 STANDALONE_COLLECTOR_MODULES: frozenset[str] = frozenset(
     {
         "collector.sglang.collect_dsv4_megamoe",
+        "collector.sglang_rubin.collect_all_reduce",
         "collector.wideep.sglang.collect_moe_a2a",
         "collector.wideep.vllm.collect_moe_a2a",
         "collector.wideep.trtllm.collect_moe_a2a",
@@ -129,7 +130,11 @@ def enumerate_registry_modules() -> set[str]:
 
 def enumerate_provenance_modules() -> set[str]:
     """Return every registered or explicitly standalone provenance producer."""
-    return enumerate_registry_modules() | set(STANDALONE_COLLECTOR_MODULES)
+    # This image-specific registry intentionally does not participate in the
+    # default framework manifest/routing, but its datasets use this provenance.
+    from collector.sglang_rubin.registry import REGISTRY as RUBIN_REGISTRY
+
+    return enumerate_registry_modules() | set(STANDALONE_COLLECTOR_MODULES) | {entry.module for entry in RUBIN_REGISTRY}
 
 
 def load_closures(path: str | Path) -> dict[str, list[str]]:

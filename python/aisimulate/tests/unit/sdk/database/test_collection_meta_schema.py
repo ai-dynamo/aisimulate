@@ -106,6 +106,33 @@ def test_v2_event_runtime_rejects_unknown_fields(tmp_path):
         _load_collection_meta_yaml(str(path))
 
 
+def test_v2_retains_collector_runtime_source_and_abi_metadata(tmp_path):
+    runtime = {
+        "framework": "sglang",
+        "version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+        "source_commit": "02c5a855aceb968c310e6fbc6632270e26edc84b",
+        "abi": {"torch": "2.14.0a0", "cuda": "13.5"},
+        "live_abi": {"machine": "aarch64"},
+        "transport": {"world_size": 4},
+        "backend_capability": {"sm": 107},
+        "backend_abis": {"sglang": {"cuda": "13.5"}},
+        "backend_capabilities": {"sglang": {"sm": 107}},
+    }
+    document = _v2_document([_event(runtime=runtime)])
+    document["runtime"] = runtime
+    assert _load_collection_meta_yaml(str(_write_meta(tmp_path, document))) == document
+
+
+@pytest.mark.parametrize(
+    "key,value", [("source_commit", {}), ("source_commit", " "), ("abi", "13.5"), ("transport", [])]
+)
+def test_v2_runtime_source_and_abi_fields_validate_types(tmp_path, key, value):
+    runtime = {"framework": "sglang", "version": "0.5.18", key: value}
+    document = _v2_document([_event(runtime=runtime)])
+    with pytest.raises(ValueError, match=key):
+        _load_collection_meta_yaml(str(_write_meta(tmp_path, document)))
+
+
 def test_b300_gemm_healing_distinguishes_shipped_rows_from_attempted_neighbors():
     path = REPO_ROOT / "src/aisimulate_core/systems/data/b300_sxm/gemm/sglang/0.5.14/collection_meta.yaml"
 

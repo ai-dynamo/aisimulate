@@ -106,6 +106,16 @@ Apache-2.0 license text is reproduced in `LICENSE`. This section records
 cross-repository provenance for NVIDIA-authored predecessor code; it is not a
 claim that AIConfigurator is owned by an unaffiliated third party.
 
+## SGLang dense feed-forward composition and quantization exclusions
+
+The dense-prefix composition and exclusion resolver in `src/aisimulate_core/sdk/models/deepseek_v32.py` and their regression fixtures in `tests/unit/sdk/models/test_deepseek_v32_dense.py` and `tests/unit/sdk/models/test_large_ep_model_graphs.py` adapt and modify the tensor-parallel communication and packed-linear selection behavior from SGLang revision `02c5a855aceb968c310e6fbc6632270e26edc84b`. Original source paths are `python/sglang/srt/models/deepseek_v2.py`, `python/sglang/srt/layers/communicator.py`, `python/sglang/srt/layers/quantization/modelopt_quant.py`, and `python/sglang/srt/layers/quantization/utils.py`. The adaptation models operator composition and projection precision without importing the serving runtime or its GPU dependencies.
+
+Upstream source:
+https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+
+Copyright contributors to the vLLM project. Copyright 2023-2024 SGLang Team. These source files are licensed under the Apache License, Version 2.0. The upstream license is at:
+https://gitlab-master.nvidia.com/dl/sglang/sglang/-/blob/02c5a855aceb968c310e6fbc6632270e26edc84b/LICENSE
+
 ## vLLM
 
 The inference-mode scope and MSA query-position metadata integration in

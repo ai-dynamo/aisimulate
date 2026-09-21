@@ -56,6 +56,8 @@ _COMM_Q = _enum(common.CommQuantMode)
 # depth. Leaves are recognized by their "latency" field, exactly like the
 # baseline codec (never by depth).
 VIEW_KEY_LAYERS: dict[str, tuple[KeyConverter, ...]] = {
+    "_sglang_prefill_attention_sequence_data": (_int_tuple,),
+    "_sglang_prefill_comm_norm_boundary_data": (_int, _str),
     "_gemm_data": (_GEMM_Q, _int, _int, _int),
     "_compute_scale_data": (_GEMM_Q, _int, _int),
     "_scale_matrix_data": (_GEMM_Q, _int, _int),

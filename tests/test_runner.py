@@ -111,6 +111,32 @@ def _spec(*, deployment=None, workload=None, goal=None, concurrency=None, adapte
     )
 
 
+def test_native_replay_provider_rejects_direct_only_graph_profile_before_compilation():
+    from aisimulate import _runtime
+
+    # The model and system deliberately do not exist: the replay provider must
+    # reject this selector before constructing or extracting a native engine.
+    timing = {
+        "type": "external",
+        "provider": "aic",
+        "config": {
+            "model": "missing-graph-model",
+            "system": "missing-graph-system",
+            "backend": "sglang",
+            "estimator_config": {"op_level": {"prefill_graph_profile": "sglang_glm52_nvfp4_vr200_tp4_graph_v1"}},
+        },
+    }
+    args = {"worker_type": "aggregated", "block_size": 4, "num_gpu_blocks": 16, "timing_model": timing}
+    # Nested native rank configuration reaches the provider without Python's
+    # canonical capacity preflight, which independently rejects graph replay.
+    args = {"rank": args}
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg", backend="sglang", backend_version="test", agg_engine_args=args, num_workers=1
+    )
+    with pytest.raises(RuntimeError, match="replay/scheduler timing is unqualified"):
+        EngineReplayRunnerFactory(runtime=_runtime).create(0).run(_spec(deployment=deployment))
+
+
 def test_public_namespace_exports_engine_runner_contract():
     assert aisimulate.EngineReplayRunner is EngineReplayRunner
     assert aisimulate.EngineReplayRunnerFactory is EngineReplayRunnerFactory
@@ -1825,3 +1851,52 @@ def test_flat_active_controls_reject_fixed_timing():
                 )
             )
         )
+
+
+@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
+@pytest.mark.parametrize("selected", [None, "observed_glm52_nvfp4_decode_1ab2c747975e_v1"])
+def test_runner_threads_optional_decode_profile_alias(alias, selected):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args()
+    engine_args.pop("timing_model")
+    engine_args[alias] = selected
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    timing = runtime.execution_spec["engine"]["rank"]["timing_model"]["config"]
+    if selected is None:
+        assert "decode_workload_distribution" not in timing
+    else:
+        assert timing["decode_workload_distribution"] == selected
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [
+        {
+            "decode_workload_distribution": "",
+        },
+        {
+            "decode_workload_distribution": 7,
+        },
+        {"decode_workload_distribution": "one", "aic_decode_workload_distribution": "two"},
+    ],
+)
+def test_runner_rejects_invalid_or_duplicate_decode_profile_alias(extras):
+    engine_args = _engine_args()
+    engine_args.pop("timing_model")
+    engine_args.update(extras)
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    with pytest.raises(ValueError):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(_spec(deployment=deployment))
