@@ -132,6 +132,9 @@ class ForwardPassPerfModelConfig:
     attention_backend: str | None = None
     enable_shared_layer: bool | None = None
     strict_provenance: bool = False
+    moe_backend: str | None = None
+    enable_eplb: bool = False
+    wideep_num_slots: int | None = None
 
     @classmethod
     def from_legacy_engine_config(
@@ -156,7 +159,8 @@ class ForwardPassPerfModelConfig:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(self.transfer_policy)
-        payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
+        if self.estimation_mode != "fpm_regression" or self.systems_paths:
+            payload["systems_paths"] = _resolve_forward_pass_systems_paths(self.systems_paths)
         return payload
 
 
@@ -305,6 +309,17 @@ class RustForwardPassPerfModel:
         to one iteration.
         """
         self._inner.tune_with_fpms(_json_dumps(_normalize_tuning_iterations(iterations)))
+
+    def static_phase_diagnostics(
+        self, *, batch_size: int, context_length: int, prefill: bool, prefix: int = 0
+    ) -> list[dict[str, Any]]:
+        """Native op-level evidence for one static phase, before online correction.
+
+        Decode evaluates one step at ``context_length + 1``. SOL is an analytic
+        comparison and does not change timing. Unsupported SOL families carry
+        a reason; whole-model estimators reject operation decomposition.
+        """
+        return json.loads(self._inner.static_phase_diagnostics(batch_size, context_length, prefix, prefill))
 
     def diagnostics(self) -> dict[str, Any]:
         """API: ``model.diagnostics() -> dict[str, Any]``.

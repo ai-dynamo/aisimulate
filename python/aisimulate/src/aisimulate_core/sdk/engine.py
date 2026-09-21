@@ -45,6 +45,7 @@ from typing import Any
 
 import aisimulate_core
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
+from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
@@ -422,6 +423,9 @@ def compile_engine(
     fpm_fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
+    moe_backend: str | None = None,
+    enable_eplb: bool = False,
+    wideep_num_slots: int | None = None,
     nextn: int = 0,
     speculation: dict | None = None,
     kv_block_size: int | None = None,
@@ -441,6 +445,13 @@ def compile_engine(
     decomposed), ``context_ops`` and ``generation_ops`` into OpSpecs and returns
     the bytes produced by the Rust ``engine_spec_bincode_from_json`` pyfunction.
     """
+    if not isinstance(decoder_replay, bool):
+        raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
+    if decoder_replay and (model_path != DEEPSEEK_V41_MODEL_PATH or backend != "sglang"):
+        raise InvalidEngineConfigurationError(
+            f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
+        )
+
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
     from aisimulate_core.sdk.speculation import SpeculationConfig
@@ -463,6 +474,9 @@ def compile_engine(
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,
             attention_backend=attention_backend,
+            moe_backend=moe_backend,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
             speculation=resolved_speculation,
         )
         # Apply MTP BEFORE get_model so the walked op lists carry the
@@ -470,6 +484,11 @@ def compile_engine(
         apply_nextn(model_config, nextn)
     except (ValueError, TypeError, KeyError) as exc:
         raise InvalidEngineConfigurationError(str(exc)) from exc
+    if enable_eplb or wideep_num_slots is not None or moe_backend not in (None, "default"):
+        from aisimulate_core.sdk.models import check_is_moe
+
+        if not check_is_moe(model_path):
+            raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
     model_config.decoder_replay = decoder_replay
     resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
 

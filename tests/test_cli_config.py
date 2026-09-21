@@ -28,6 +28,61 @@ def _engine() -> dict:
     }
 
 
+@pytest.mark.parametrize(
+    "load",
+    [
+        {"type": "concurrency", "concurrency": 32},
+        {"type": "constant_rate", "requests_per_second": 10},
+        {"type": "poisson", "requests_per_second": 10, "seed": 17},
+    ],
+)
+@pytest.mark.parametrize("minimum", [9, 10])
+def test_min_gpus_lowers_fixed_traffic_and_load_constraint(load, minimum):
+    config = CoreRecommendationConfig.model_validate(
+        {
+            "engine": {**_engine(), "mode": "aggregated", "context_length": 4096},
+            "traffic": {"source": {"type": "synthetic"}, "load": load, "stop": {"requests": 100}},
+            "evaluation": {"sla": {"itl_ms": 30}},
+            "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": minimum}},
+        }
+    )
+    lowered = recommendation_to_sweeper(config)
+    assert lowered.goal.target.value == "min_gpus"
+    assert lowered.goal.requires_aggregate_sla
+    assert lowered.goal.min_goodput_rps == minimum
+    assert lowered.goal.sla.itl_ms == 30
+    assert lowered.workload.load_type == load["type"]
+    if load["type"] == "concurrency":
+        assert lowered.workload.concurrency == load["concurrency"]
+        assert lowered.workload.request_rate is None
+    else:
+        assert lowered.workload.request_rate == load["requests_per_second"]
+        assert lowered.workload.concurrency is None
+        if load["type"] == "poisson":
+            assert lowered.workload.arrival_seed == load["seed"]
+
+
+@pytest.mark.parametrize(
+    ("load", "minimum", "error"),
+    [
+        ({"type": "constant_rate", "requests_per_second": 10}, None, "requires constraints.min_goodput_rps"),
+        ({"type": "constant_rate", "requests_per_second": 10}, 11, "cannot exceed"),
+        ({"type": "concurrency", "concurrency": {"choices": [1, 32]}}, None, "fixed synthetic"),
+        ({"type": "kv_capacity_fraction", "fraction": 0.5}, None, "fixed synthetic"),
+    ],
+)
+def test_min_gpus_rejects_missing_capacity_target_or_variable_load(load, minimum, error):
+    with pytest.raises(ValidationError, match=error):
+        CoreRecommendationConfig.model_validate(
+            {
+                "engine": {**_engine(), "mode": "aggregated"},
+                "traffic": {"source": {"type": "synthetic"}, "load": load, "stop": {"requests": 100}},
+                "evaluation": {"sla": {"itl_ms": 30}},
+                "optimization": {"target": "min_gpus", "constraints": {"min_goodput_rps": minimum}},
+            }
+        )
+
+
 def test_prediction_uses_reviewed_default_traffic() -> None:
     config = CorePredictionConfig.model_validate({"engine": _engine()})
 
@@ -1304,3 +1359,51 @@ def test_role_systems_roots_reach_prediction_and_search_preflight(tmp_path, mode
     (branch,) = enumerate_branches(smart, max_seq_len=4096)
     assert branch.parallel_configs
     assert branch.deployment_mode == ("agg" if mode == "aggregated" else "disagg")
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"decoder_replay": True},
+        {"enable_shared_layer": True},
+        {"enable_shared_layer": False},
+        {"strict_provenance": True},
+        {"strict_provenance": False},
+    ],
+)
+@pytest.mark.parametrize(
+    "timing",
+    [{"type": "fixed", "prefill_ms": 1, "decode_ms": 1}, {"type": "polynomial"}],
+)
+def test_execution_options_reject_nondefault_timing(option, timing):
+    engine = _engine() | {"model": "deepseek-ai/DeepSeek-V4.1-Flash", "backend": "sglang"} | option
+    engine["workers"]["aggregated"] = {"timing": timing}
+    with pytest.raises(ValidationError, match="estimator policies require.*default timing"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"decoder_replay": True},
+        {"enable_shared_layer": False},
+        {"strict_provenance": True},
+    ],
+)
+def test_execution_options_accept_default_timing(option):
+    engine = _engine() | {"model": "deepseek-ai/DeepSeek-V4.1-Flash", "backend": "sglang"} | option
+    config = CorePredictionConfig.model_validate({"engine": engine})
+    for name, value in option.items():
+        assert getattr(config.engine, name) == value
+
+
+@pytest.mark.parametrize("custom_role", ["prefill", "decode"])
+def test_execution_options_reject_mixed_worker_timing(custom_role):
+    engine = _engine() | {
+        "mode": "disaggregated",
+        "strict_provenance": True,
+        "workers": {"prefill": {}, "decode": {}},
+    }
+    engine["workers"][custom_role] = {"timing": {"type": "polynomial"}}
+    with pytest.raises(ValidationError, match="default timing in every role"):
+        CorePredictionConfig.model_validate({"engine": engine})

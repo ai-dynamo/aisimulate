@@ -22,14 +22,14 @@ def test_real_kv_producer_lifecycle():
     environment = dict(os.environ)
     environment["AIC_FPM_DSV41_PRODUCER"] = str(runtime / "dsv41_scheduler.py")
     environment["AIC_FPM_NATIVE_ARTIFACT"] = str(root / "collector/fpm_forward/native_artifact.py")
-    subprocess.run(
+    completed = subprocess.run(
         [sys.executable, str(Path(__file__).with_name("fixtures") / "dsv41_producer_lifecycle.py")],
         env=environment,
-        check=True,
         timeout=30,
         capture_output=True,
         text=True,
     )
+    assert completed.returncode == 0, f"{completed.stdout}\n{completed.stderr}"
 
 
 @pytest.mark.parametrize("valid_source", [False, True])

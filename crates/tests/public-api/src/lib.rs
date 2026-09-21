@@ -120,7 +120,7 @@ mod tests {
         // v17: ContextAttentionOp gained apply_rope (Muse Glimmer review
         //     follow-up) — a positional bincode op-layout change.
         // v18: speculative attention width fields and FpmForward verify_width.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 19);
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 20);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
@@ -217,4 +217,9 @@ mod tests {
         assert_eq!(options.features.prefill_attention_pair_weight, 3.0);
         assert_eq!(options.features.ffn_token_weight, 4.0);
     }
+}
+
+/// Detailed phase evidence is reachable through the canonical model.
+pub fn operation_diagnostics(model: &ForwardPassPerfModel) -> Result<Vec<aisimulate_core::perfmodel::engine::diagnostics::StaticOperationDiagnostics>, AicError> {
+    model.static_phase_diagnostics(1, 128, 0, true)
 }

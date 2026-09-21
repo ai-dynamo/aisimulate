@@ -181,7 +181,7 @@ save. Each saved result also has completed_seed_tokens and same_request witnesse
 
 Input provenance includes the original UTF-8 text SHA, the SHA of compact JSON token
 IDs produced by the actual runtime tokenizer, tokenizer revision, token count and
-unique count. The producer also writes benchmark_results.token-streams.jsonl
+unique count. The producer also writes benchmark.token-streams.jsonl
 with actual prompt and sampled output token IDs for every completed point. Its
 SHA and record count are in input_provenance.token_stream_manifest; individual
 point witnesses include the stream SHA. Per request, offset is 131*request_index+17*benchmark_id, wrapping the

@@ -237,7 +237,13 @@ def test_pure_tp_requires_explicit_model_runtime_capability():
 def test_plan_contains_only_cell_matrix_and_native_point_contract(tmp_path, explicit):
     points_file = tmp_path / "points.json"
     points_file.write_text(
-        json.dumps({"schema_version": 3, "prefill": [{"batch_size": 1, "total_prefill_tokens": 128}], "decode": []})
+        json.dumps(
+            {
+                "schema_version": 3,
+                "prefill": [{"batch_size": 1, "total_prefill_tokens": 128, "total_kv_read_tokens": 0}],
+                "decode": [],
+            }
+        )
     )
     options = FPMCollectionOptions.from_args(
         _args(
@@ -2594,3 +2600,55 @@ def test_v41_native_grid_bounds_reach_both_runtime_phases(phase, smoke):
     assert args[args.index("--max-num-batched-tokens") + 1] == "64"
     assert args[args.index("--max-num-seqs") + 1] == "1"
     assert '--engram-config={"cpu_offload":false}' in args
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "results_missing",
+        "results_null",
+        "row_null",
+        "point_missing",
+        "point_null",
+        "groups_missing",
+        "provenance_missing",
+    ],
+)
+def test_v41_truncated_native_artifact_raises_actionable_value_error(tmp_path, corruption):
+    from dataclasses import replace
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+    cell = replace(cell, execution_identity=identity, input_text_sha256="a" * 64)
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        payload["execution_identity"] = dict(zip(EXECUTION_COLUMNS, identity, strict=True))
+        payload["execution_mode"] = "eager"
+        payload["input_provenance"] = {
+            "source": "tokenizer_text",
+            "text_sha256": "a" * 64,
+            "token_ids_sha256": "b" * 64,
+            "tokenizer_revision": "pinned",
+            "token_count": 100,
+            "unique_token_count": 20,
+        }
+        _write_v41_token_streams(payload, path)
+        if corruption == "results_missing":
+            del payload["results"]
+        elif corruption == "results_null":
+            payload["results"] = None
+        elif corruption == "row_null":
+            payload["results"][0] = None
+        elif corruption == "point_missing":
+            del payload["results"][0]["point"]
+        elif corruption == "point_null":
+            payload["results"][0]["point"] = None
+        elif corruption == "groups_missing":
+            del payload["iteration_groups"]
+        else:
+            del payload["input_provenance"]
+        path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="native"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")

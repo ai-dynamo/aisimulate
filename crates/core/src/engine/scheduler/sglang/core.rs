@@ -788,11 +788,11 @@ impl SglangCore {
         if let Some(oracle) = &self.belady {
             oracle.retire_requests(rejected.iter().map(|signal| signal.uuid));
         }
-        // Only providers with fallible geometry validation need to preserve the
-        // admission state. Normal polynomial and unrestricted AIC passes avoid
-        // copying radix metadata. Lease checkpoints never become independent owners.
+        // Preserve admission around validation, prediction and duration conversion.
+        // The built-in polynomial remains infallible; external providers may fail
+        // after accepting geometry. Lease checkpoints are not independent owners.
         let admission_checkpoint = (!self.waiting.is_empty()
-            && self.config.perf_model.prefill_batch_validation_can_fail())
+            && self.config.perf_model.prefill_pass_can_fail())
         .then(|| {
             let waiting = self
                 .waiting

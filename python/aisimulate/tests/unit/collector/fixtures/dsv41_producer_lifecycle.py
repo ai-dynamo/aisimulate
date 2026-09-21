@@ -17,6 +17,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock, patch
 
+from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
 
 def module(name, **values):
     obj = types.ModuleType(name)
@@ -212,6 +214,44 @@ class Driver:
 
 
 class RealKVTests(unittest.TestCase):
+    def test_initialization_uses_validated_top_level_engram(self):
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "config.json").write_text("{}")
+            config = SimpleNamespace(
+                model_config=SimpleNamespace(
+                    enforce_eager=True,
+                    model=directory,
+                    architecture="DeepseekV41ForCausalLM",
+                    hf_config=SimpleNamespace(model_type="deepseek_v41"),
+                ),
+                parallel_config=SimpleNamespace(
+                    tensor_parallel_size=4,
+                    pipeline_parallel_size=1,
+                    data_parallel_size=1,
+                    use_ubatching=False,
+                    prefill_context_parallel_size=1,
+                    decode_context_parallel_size=1,
+                    enable_expert_parallel=False,
+                ),
+                engram_config=SimpleNamespace(cpu_offload=False),
+                speculative_config=None,
+            )
+            obj = object.__new__(impl.DeepseekV41RealKVScheduler)
+            obj._bench_active = True
+            obj.connector = obj.ec_connector = None
+            obj._bench_explicit_points = [point("prefill")]
+            obj._bench_config = SimpleNamespace(warmup_iterations=0)
+            identity = ("c" * 64, "full", "hbm_tp_sharded", "text")
+            with (
+                patch.object(Base, "_bench_init", create=True),
+                patch("aisimulate_core.sdk.fpm_identity.execution_identity", return_value=identity) as identify,
+                patch.dict(os.environ, {"DYN_FPM_TOKENIZER_REVISION": "invalid"}),
+                self.assertRaisesRegex(ValueError, "tokenizer revision"),
+            ):
+                obj._bench_init(config)
+            identify.assert_called_once_with({}, engram_cpu_offload=False, input_modality="text")
+            self.assertEqual(obj._real_identity, dict(zip(EXECUTION_COLUMNS, identity, strict=True)))
+
     def test_decode_warms_actual_requests_then_pipelines_two_decode_steps(self):
         obj = scheduler(point("decode"))
         worker = Driver(obj)
@@ -432,7 +472,7 @@ class RealKVTests(unittest.TestCase):
         names = {"_validate_execution_provenance", "_validate_kvwarm_contract"}
         functions = [node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name in names]
         self.assertEqual(len(functions), 2)
-        columns = ("model_config_sha256", "execution_profile", "engram_residency", "input_modality")
+        columns = EXECUTION_COLUMNS
         scope = {
             "Path": Path,
             "Any": Any,

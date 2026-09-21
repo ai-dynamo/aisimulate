@@ -14,7 +14,7 @@ from aisimulate_core.sdk import (
     RustForwardPassPerfModel,
 )
 
-from .config import SearchSpace
+from .config import ENGINE_MODEL_CONTROL_FIELDS, SearchSpace
 from .deploy import _role_hardware_sku
 from .replay import ForwardPassEstimatorSpec
 
@@ -79,6 +79,7 @@ class ForwardPassEstimatorResolver:
             moe_tp_size=moe_tp if moe_tp * moe_ep > 1 else None,
             moe_ep_size=moe_ep if moe_tp * moe_ep > 1 else None,
             nextn=int(nextn or 0),
+            **{name: getattr(self._search_space, name) for name in ENGINE_MODEL_CONTROL_FIELDS},
             speculation=self._search_space.speculation.cost_config()
             if self._search_space.speculation is not None
             else None,
@@ -147,6 +148,7 @@ class ForwardPassEstimatorResolver:
             "speculation",
             "kv_block_size",
             "worker_type",
+            *ENGINE_MODEL_CONTROL_FIELDS,
         ):
             if resolved_config.get(field) != request_payload.get(field):
                 raise ForwardPassEstimatorResolutionError(

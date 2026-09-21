@@ -53,7 +53,7 @@ def _optional_size_list(values: list[int] | None) -> tuple[int, ...] | None:
 
 
 def _freeze_benchmark_points(path: str) -> tuple[str, str]:
-    """Freeze transport content; native Dynamo owns point/row admission."""
+    """Freeze validated coordinates; native Dynamo owns execution/row admission."""
 
     def unique_object(pairs):
         result = {}
@@ -71,6 +71,18 @@ def _freeze_benchmark_points(path: str) -> tuple[str, str]:
     for phase in ("prefill", "decode"):
         if not isinstance(payload[phase], list) or any(not isinstance(point, dict) for point in payload[phase]):
             raise ValueError(f"benchmark-points {phase} must be a list of point objects")
+        for point in payload[phase]:
+            required = {"batch_size": 1, "total_kv_read_tokens": 0}
+            if phase == "prefill":
+                required["total_prefill_tokens"] = 1
+            elif "total_prefill_tokens" in point:
+                required["total_prefill_tokens"] = 0
+            for field, minimum in required.items():
+                value = point.get(field)
+                if type(value) is not int or value < minimum:
+                    raise ValueError(f"benchmark-points {phase} {field} must be an integer >= {minimum}")
+            if phase == "decode" and point.get("total_prefill_tokens", 0) != 0:
+                raise ValueError("benchmark-points decode total_prefill_tokens must be zero")
     if not payload["prefill"] and not payload["decode"]:
         raise ValueError("benchmark-points manifest must contain at least one point")
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
@@ -656,6 +668,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_max_model_len",
         "fpm_max_decode_batch_size",
         "fpm_decoder_replay",
+        "fpm_enforce_eager",
+        "fpm_benchmark_points_file",
         "fpm_executor",
         "fpm_slurm_container_image",
         "fpm_slurm_container_mount",

@@ -232,3 +232,35 @@ def test_policy_cannot_hide_eager_identity(tmp_path, argument):
     cell = _cell(policy=BackendPolicy("conflict", {"params": {"agg": {"extra_cli_args": [argument]}}}, {}))
     with pytest.raises(ValueError, match="must be supplied through --fpm-enforce-eager"):
         _cell_generator_overrides(_plan(options), cell, {})
+
+
+@pytest.mark.parametrize(
+    "phase,field",
+    [
+        ("prefill", "batch_size"),
+        ("prefill", "total_prefill_tokens"),
+        ("prefill", "total_kv_read_tokens"),
+        ("decode", "batch_size"),
+        ("decode", "total_kv_read_tokens"),
+    ],
+)
+@pytest.mark.parametrize("value", [None, True, 1.5, "2", -1])
+def test_manifest_coordinates_fail_at_freeze(tmp_path, phase, field, value):
+    payload = _payload()
+    if value is None:
+        del payload[phase][0][field]
+    else:
+        payload[phase][0][field] = value
+    with pytest.raises(ValueError, match=f"benchmark-points {phase} {field}"):
+        _options(tmp_path, payload)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("fpm_enforce_eager", True), ("fpm_enforce_eager", False), ("fpm_benchmark_points_file", "points.json")],
+)
+def test_explicit_fpm_flags_are_rejected_for_operator_collection(field, value):
+    from collector.fpm_forward.config import reject_fpm_arguments_without_fpm
+
+    with pytest.raises(ValueError, match=field.replace("_", "-")):
+        reject_fpm_arguments_without_fpm(argparse.Namespace(ops=["gemm"], **{field: value}))

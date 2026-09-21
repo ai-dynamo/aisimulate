@@ -82,9 +82,11 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 //   TokenScale was appended to remap draft query widths before op lookup.
 // - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
 //   separating physical backend KV payload from attention arithmetic precision.
-//   FpmForwardOp also carries original_fmha_quant_mode for table-selection
-//   diagnostics. Both append positional fields; defaults support old JSON only.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 19;
+//   Its appended enum changes positional bincode layout; old JSON defaults only.
+// - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
+//   for selector diagnostics. This appends a positional field after the schema-19
+//   release; serde defaults support legacy JSON, not legacy bincode.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 20;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

@@ -140,6 +140,12 @@ pub struct ForwardPassPerfModelConfig {
     #[serde(default)]
     pub attention_backend: Option<String>,
     #[serde(default)]
+    pub moe_backend: Option<String>,
+    #[serde(default)]
+    pub enable_eplb: bool,
+    #[serde(default)]
+    pub wideep_num_slots: Option<u32>,
+    #[serde(default)]
     pub enable_shared_layer: Option<bool>,
     #[serde(default)]
     pub strict_provenance: bool,
@@ -180,6 +186,9 @@ impl ForwardPassPerfModelConfig {
             fallback_policy: ForwardPassFallbackPolicy::Deny,
             estimator_config: EstimatorConfig::default(),
             attention_backend: None,
+            moe_backend: None,
+            enable_eplb: false,
+            wideep_num_slots: None,
             enable_shared_layer: None,
             strict_provenance: false,
         }
@@ -243,6 +252,31 @@ impl ForwardPassPerfModelConfig {
                     "topology requires tp * attention_dp == moe_tp_size * moe_ep_size",
                 ));
             }
+        }
+        if self.wideep_num_slots == Some(0) {
+            return Err(invalid_config("wideep_num_slots must be positive"));
+        }
+        if let Some(backend) = &self.moe_backend {
+            if !matches!(backend.as_str(), "default" | "deepep_moe" | "megamoe") {
+                return Err(invalid_config("unsupported moe_backend"));
+            }
+            if backend != "default" && self.backend != BackendKind::Sglang {
+                return Err(invalid_config(
+                    "moe_backend override requires backend=sglang",
+                ));
+            }
+        }
+        if self.estimation_mode == EstimationMode::FpmInterpolation
+            && (self.enable_eplb
+                || self.wideep_num_slots.is_some()
+                || self
+                    .moe_backend
+                    .as_deref()
+                    .is_some_and(|value| value != "default"))
+        {
+            return Err(invalid_config(
+                "fpm_interpolation does not support EPLB, slots or moe_backend overrides",
+            ));
         }
         if self.nextn > 5 {
             return Err(invalid_config("nextn must be in 0..=5"));
@@ -348,6 +382,23 @@ mod tests {
             serde_json::json!({"estimation_mode": "fpm_interpolation", "fpm_fmha_quant_mode": "bogus"}),
         );
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn engine_controls_round_trip_with_identity_and_policy() {
+        let cfg = config(serde_json::json!({
+            "backend": "sglang", "enable_eplb": true, "wideep_num_slots": 256,
+            "moe_backend": "deepep_moe", "attention_backend": "fa3",
+            "gemm_quant_mode": "fp8", "kvcache_quant_mode": "fp8"
+        }));
+        cfg.validate().unwrap();
+        let decoded: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(decoded, cfg);
+        assert!(decoded.enable_eplb);
+        assert_eq!(decoded.wideep_num_slots, Some(256));
+        assert_eq!(decoded.moe_backend.as_deref(), Some("deepep_moe"));
+        assert_eq!(decoded.fallback_policy, ForwardPassFallbackPolicy::Deny);
     }
 
     #[test]

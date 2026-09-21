@@ -214,6 +214,7 @@ def test_v41_sol_default_accepts_automatic_moe_parallelism(total_gpus):
         ],
         capture_output=True,
         text=True,
+        timeout=900,
     )
     output = f"{completed.stdout}\n{completed.stderr}"
     assert completed.returncode == 0, output
@@ -223,5 +224,7 @@ def test_v41_sol_default_accepts_automatic_moe_parallelism(total_gpus):
     assert "Model: deepseek-ai/DeepSeek-V4.1-Flash (is_moe: True)" in output
     assert f"Total GPUs: {total_gpus}" in output
     assert "tp4pp1dp1etp1ep4" in output
+    # Rendered GPU accounting is total (used = replicas x GPUs per replica).
+    assert f"{total_gpus} ({total_gpus}={total_gpus // 4}x4)" in output
     assert "Parallelism width mismatch" not in output
     assert "No successful experiment runs" not in output

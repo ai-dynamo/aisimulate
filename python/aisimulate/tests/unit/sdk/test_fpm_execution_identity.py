@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from aisimulate_core.sdk.fpm_identity import LEGACY_EXECUTION_IDENTITY, execution_identity
+from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, execution_identity
 from aisimulate_core.sdk.utils import _attach_inferred_quant_fields, _get_model_config_path
 
 pytestmark = pytest.mark.unit
@@ -50,7 +50,7 @@ def test_native_v41_requires_measured_execution_and_text_evidence():
 
     identity = execution_identity(config(), engram_cpu_offload=False, input_modality="text")
     cell = SimpleNamespace(execution_identity=identity, input_text_sha256="a" * 64)
-    fields = ("model_config_sha256", "execution_profile", "engram_residency", "input_modality")
+    fields = EXECUTION_COLUMNS
     payload = {
         "execution_mode": "eager",
         "execution_identity": dict(zip(fields, identity, strict=True)),
@@ -181,7 +181,7 @@ def _synthetic_v41_fpm(tmp_path, *, replay=False):
     data.mkdir(parents=True)
     packaged_systems = Path(_get_model_config_path()).parent / "systems"
     shutil.copyfile(packaged_systems / "gb200.yaml", systems / "gb200.yaml")
-    fields = ("model_config_sha256", "execution_profile", "engram_residency", "input_modality")
+    fields = EXECUTION_COLUMNS
     identity = execution_identity(
         config(), decoder_replay=replay, backend=backend, engram_cpu_offload=False, input_modality="text"
     )
@@ -364,3 +364,79 @@ def test_v41_identity_rejects_missing_or_unverified_residency(offload):
 def test_v41_identity_rejects_missing_or_nontext_input(modality):
     with pytest.raises(ValueError, match="explicit input_modality='text'"):
         execution_identity(config(), engram_cpu_offload=False, input_modality=modality)
+
+
+@pytest.mark.parametrize("quant_config", [None, {}, {"expert_dtype": "fp4"}])
+def test_v41_null_or_native_quantization_config(monkeypatch, quant_config):
+    from aisimulate_core.sdk import common
+    from aisimulate_core.sdk.models import helpers
+
+    raw = {"quantization_config": quant_config}
+    architecture = "DeepseekV41ForCausalLM"
+    modes = helpers._infer_quant_modes_from_raw_config(raw, architecture)
+    monkeypatch.setattr(helpers, "_get_model_info", lambda _: {"architecture": architecture, "raw_config": raw})
+    native = quant_config == {"expert_dtype": "fp4"}
+    assert helpers._is_dsv4_fp4_expert_model("test/model") is native
+    if native:
+        assert modes["moe_quant_mode"] == common.MoEQuantMode.w4a8_mxfp4_mxfp8
+    else:
+        assert "moe_quant_mode" not in modes
+
+
+def test_v41_preserves_explicit_nvfp4_experts(monkeypatch):
+    from aisimulate_core.sdk import common
+    from aisimulate_core.sdk.models import helpers
+
+    raw = {
+        "quant_algo": "mixed_precision",
+        "quantization_config": {
+            "expert_dtype": "fp4",
+            "quantized_layers": {"model.layers.0.mlp.experts.0.gate_proj": {"quant_algo": "NVFP4"}},
+        },
+    }
+    architecture = "DeepseekV41ForCausalLM"
+    modes = helpers._infer_quant_modes_from_raw_config(raw, architecture)
+    assert modes["moe_quant_mode"] == common.MoEQuantMode.nvfp4
+    monkeypatch.setattr(helpers, "_get_model_info", lambda _: {"architecture": architecture, "raw_config": raw})
+    assert not helpers._is_dsv4_fp4_expert_model("test/model")
+
+
+@pytest.mark.parametrize("window", [0, -1])
+def test_v41_rejects_nonpositive_sliding_window(window):
+    from aisimulate_core.sdk.deepseek_v41 import DeepSeekV41Config
+
+    raw = config()["text_config"]
+    raw["sliding_window"] = window
+    with pytest.raises(ValueError, match="sliding_window must be positive"):
+        DeepSeekV41Config.from_text_config(raw)
+
+
+def test_model_config_builder_preserves_existing_positional_controls():
+    from aisimulate_core.sdk.common import FMHAQuantMode
+    from aisimulate_core.sdk.config_builders import build_model_config
+
+    result = build_model_config(
+        4,
+        1,
+        1,
+        4,
+        1,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        True,
+        None,
+        None,
+        "deepep_moe",
+        True,
+        64,
+        fpm_fmha_quant_mode="fp8",
+    )
+    assert result.speculation is None
+    assert result.moe_backend == "deepep_moe"
+    assert result.enable_eplb is True
+    assert result.wideep_num_slots == 64
+    assert result.fpm_fmha_quant_mode == FMHAQuantMode.fp8

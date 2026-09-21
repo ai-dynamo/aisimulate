@@ -1048,6 +1048,9 @@ struct EngineBuildRequest {
     fpm_fmha_quant_mode: Option<String>,
     comm_quant_mode: Option<String>,
     attention_backend: Option<String>,
+    moe_backend: Option<String>,
+    enable_eplb: bool,
+    wideep_num_slots: Option<u32>,
     nextn: u32,
     speculation: Option<crate::ForwardPassSpeculationConfig>,
     kv_block_size: Option<u32>,
@@ -1095,6 +1098,9 @@ impl AicEngineBuilder {
                 fpm_fmha_quant_mode: None,
                 comm_quant_mode: None,
                 attention_backend: None,
+                moe_backend: None,
+                enable_eplb: false,
+                wideep_num_slots: None,
                 nextn: 0,
                 speculation: None,
                 kv_block_size: None,
@@ -1419,6 +1425,9 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         )?;
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
+        kwargs.set_item("moe_backend", request.moe_backend.as_deref())?;
+        kwargs.set_item("enable_eplb", request.enable_eplb)?;
+        kwargs.set_item("wideep_num_slots", request.wideep_num_slots)?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
         kwargs.set_item("decoder_replay", request.decoder_replay)?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
@@ -1507,6 +1516,9 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         fpm_fmha_quant_mode: config.fpm_fmha_quant_mode.clone(),
         comm_quant_mode: config.comm_quant_mode.clone(),
         attention_backend: config.attention_backend.clone(),
+        moe_backend: config.moe_backend.clone(),
+        enable_eplb: config.enable_eplb,
+        wideep_num_slots: config.wideep_num_slots,
         nextn: config.nextn,
         speculation: config.speculation.clone(),
         kv_block_size: config.kv_block_size,
@@ -1574,6 +1586,9 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         comm_quant_mode: None,
         // Attention backend is not carried on EngineConfig; let Python resolve it.
         attention_backend: None,
+        moe_backend: None,
+        enable_eplb: false,
+        wideep_num_slots: None,
         nextn,
         speculation: None,
         kv_block_size: config.kv_block_size,
@@ -1775,6 +1790,9 @@ impl PyForwardPassPerfModel {
             },
             estimator_config: crate::EstimatorConfig::from_legacy(options).map_err(aic_to_py)?,
             attention_backend: request.attention_backend,
+            moe_backend: request.moe_backend,
+            enable_eplb: request.enable_eplb,
+            wideep_num_slots: request.wideep_num_slots,
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
         };
@@ -1802,6 +1820,24 @@ impl PyForwardPassPerfModel {
             .map_err(|e| PyValueError::new_err(format!("invalid tuning iterations JSON: {e}")))?;
         py.allow_threads(|| self.inner.tune_with_fpms(&iterations))
             .map_err(aic_to_py)
+    }
+
+    /// Static operation evidence from the canonical model, as JSON.
+    fn static_phase_diagnostics(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        context_length: u32,
+        prefix: u32,
+        prefill: bool,
+    ) -> PyResult<String> {
+        let result = py
+            .allow_threads(|| {
+                self.inner
+                    .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+            })
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&result).map_err(|error| PyValueError::new_err(error.to_string()))
     }
 
     /// Diagnostics (source / readiness / retained count / warning) as JSON.
