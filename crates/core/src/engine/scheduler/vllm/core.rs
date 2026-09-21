@@ -19,7 +19,7 @@ use crate::engine::common::speculative::{
 use crate::engine::common::utils::{
     compute_prefill_handoff_delay_ms, prefill_handoff_transfer_timing,
 };
-use crate::engine::kv_manager::G1Manager;
+use crate::engine::kv_manager::{AllocationRequirement, G1Manager};
 use crate::engine::kv_manager::{DestinationReservation, G1Acquire, NativeAllocation};
 use crate::engine::scheduler::vllm::host_offload::{
     CompletedLoad, HostLookup, StartLoad, VllmHostOffloadAdapter, VllmHostRequestState,
@@ -171,16 +171,14 @@ enum ScheduleOutcome {
     CurrentPreempted,
 }
 
-/// Host source-reuse dependencies can outlive the allocation attempt that
-/// acquired their capacity, so an enabled host profile must re-enter the G1
-/// manager even when this pass does not grow the lease. Ordinary scheduling
-/// retains the original no-growth fast path.
+/// Revisit owned capacity for transfer fences or write preparation requested
+/// by the cache manager. Ordinary append-only caches retain the no-growth path.
 pub(super) const fn requires_native_allocation(
-    host_offload_enabled: bool,
+    recheck_owned_capacity: bool,
     allocation_target: usize,
     allocated_tokens: usize,
 ) -> bool {
-    host_offload_enabled || allocation_target > allocated_tokens
+    recheck_owned_capacity || allocation_target > allocated_tokens
 }
 
 impl SchedulerState {
@@ -730,6 +728,11 @@ impl VllmCore {
                 kv_event_publishers,
                 dp_rank,
                 args.enable_prefix_caching,
+            )
+            .with_state_cache(
+                args.state_cache,
+                args.kv_cache_bytes_per_token,
+                args.aic_nextn.is_some(),
             ),
             belady_oracle: None,
             args,
@@ -1610,6 +1613,7 @@ impl VllmCore {
         #[cfg(test)]
         let requests_before = self.state.requests.len();
         let g3_epoch_before = self.native_host_offload.as_ref().and_then(|a| a.g3_epoch());
+        self.kv_manager.begin_step();
         self.state.compact_running();
         let mut token_budget = self.args.max_num_batched_tokens.unwrap_or(usize::MAX);
         let cadence_step = self.wave_step.is_multiple_of(
@@ -1645,10 +1649,26 @@ impl VllmCore {
         let mut batch_total_prefix = 0usize;
         let mut admissions = Vec::with_capacity(waiting_capacity_hint);
         let mut preempted_any = false;
+        let mut rejected_uuids: Vec<Uuid> = Vec::new();
 
         let mut req_index = 0usize;
         while req_index < self.state.running.len() && token_budget > 0 {
             let uuid = self.state.running[req_index];
+            if self.kv_manager.requires_write_preparation()
+                && self.state.requests.get(&uuid).is_some_and(|request| {
+                    !self.kv_manager.can_compute(
+                        &request.sequence.lease,
+                        request.sequence.len(),
+                        request.sequence.len(),
+                    )
+                })
+            {
+                tracing::warn!(%uuid, "request exceeds the cache allocation limit");
+                rejected_uuids.push(uuid);
+                self.drop_request_at(uuid, Some(now_ms), Some(now_ms));
+                self.state.compact_running();
+                continue;
+            }
             if defer_prefills
                 && self
                     .state
@@ -1692,7 +1712,6 @@ impl VllmCore {
         let max_num_running = self.args.max_num_seqs.unwrap_or(usize::MAX);
         let scheduling_policy = self.args.scheduling_policy();
         let admission = AdmissionInvariant::new(self.pending_destinations.has_pending());
-        let mut rejected_uuids: Vec<Uuid> = Vec::new();
         let mut host_step_skipped = Vec::new();
         // Agent-style workloads can keep many requests in both collections.
         // Scan once, then update only the selected request's contribution as
@@ -1737,25 +1756,28 @@ impl VllmCore {
                 .as_ref()
                 .map(|_| self.request_prefill_reservation_blocks(uuid))
                 .unwrap_or_default();
-            let (reject_for_model_len, admission_stage) = {
+            let (reject_before_admission, admission_stage) = {
                 let request = self
                     .state
                     .requests
                     .get(&uuid)
                     .expect("waiting request missing from state");
                 (
-                    policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len),
+                    policy::should_reject_for_model_len(&request.sequence, self.args.max_model_len)
+                        || !self
+                            .kv_manager
+                            .accepts_sequence_length(request.sequence.len()),
                     admission.stage_for(request.prompt_is_prebuilt()),
                 )
             };
-            if !reject_for_model_len
+            if !reject_before_admission
                 && matches!(admission_stage, AdmissionStage::PendingDestinationHead)
             {
                 break;
             }
 
             let mut host_hit = None;
-            let raw_prefill_cost = if !reject_for_model_len
+            let raw_prefill_cost = if !reject_before_admission
                 && matches!(admission_stage, AdmissionStage::FreshKv)
             {
                 let request = self
@@ -1808,7 +1830,7 @@ impl VllmCore {
                     .iter()
                     .filter_map(|running_uuid| self.state.requests.get(running_uuid))
                     .map(|request| &request.sequence);
-                if reject_for_model_len {
+                if reject_before_admission {
                     AdmissionDecision::Reject
                 } else {
                     match admission_stage {
@@ -2340,15 +2362,19 @@ impl VllmCore {
             prefill_cost
                 .map(|cost| cost.cached_tokens)
                 .unwrap_or_else(|| {
-                    policy::apply_prefix_recompute(
-                        self.args.scheduling_policy(),
-                        request.sequence.len(),
-                        self.args.block_size,
-                        self.args.aic_nextn.is_some(),
-                        !policy::generation_complete(&request.sequence, self.args.max_model_len),
-                        request.sequence.prefill_cost(&self.kv_manager),
-                    )
-                    .cached_tokens
+                    let cost = request.sequence.prefill_cost(&self.kv_manager);
+                    self.kv_manager
+                        .resolve_prefill_cost(
+                            self.args.scheduling_policy(),
+                            request.sequence.len(),
+                            self.args.aic_nextn.is_some(),
+                            !policy::generation_complete(
+                                &request.sequence,
+                                self.args.max_model_len,
+                            ),
+                            cost,
+                        )
+                        .cached_tokens
                 })
         } else {
             0
@@ -2386,7 +2412,7 @@ impl VllmCore {
                 let allocation_target = desired_computed_after;
                 let allocated_tokens = request.sequence.num_allocated_tokens();
                 if requires_native_allocation(
-                    host_offload_enabled,
+                    host_offload_enabled || kv_manager.requires_write_preparation(),
                     allocation_target,
                     allocated_tokens,
                 ) {
@@ -2734,23 +2760,50 @@ impl VllmCore {
                 .expect("speculative sampler requires nextn")
                 + 1
         };
+        let mut rejected_signals = Vec::new();
         let mut running_changed = false;
         let mut reservation = loop {
+            let mut impossible = Vec::new();
             let required_blocks = ready
                 .iter()
-                .filter_map(|uuid| self.state.requests.get(uuid))
-                .map(|request| {
-                    let remaining = policy::remaining_generation_tokens(
+                .filter_map(|uuid| self.state.requests.get(uuid).map(|r| (*uuid, r)))
+                .map(|(uuid, request)| {
+                    let burst = max_burst.min(policy::remaining_generation_tokens(
                         &request.sequence,
                         self.args.max_model_len,
-                    );
-                    let burst = max_burst.min(remaining);
-                    let current_blocks = request.sequence.len().div_ceil(self.args.block_size);
-                    let target_blocks =
-                        (request.sequence.len() + burst).div_ceil(self.args.block_size);
-                    target_blocks.saturating_sub(current_blocks)
+                    ));
+                    match self.kv_manager.decode_requirement(
+                        &request.sequence.lease,
+                        request.sequence.len(),
+                        burst,
+                    ) {
+                        AllocationRequirement::Blocks(count) => count,
+                        AllocationRequirement::Impossible => {
+                            impossible.push(uuid);
+                            0
+                        }
+                    }
                 })
                 .sum();
+            if !impossible.is_empty() {
+                for uuid in impossible {
+                    tracing::warn!(%uuid, "lookahead exceeds the cache allocation limit");
+                    self.drop_request_at(uuid, Some(pressure_at_ms), Some(pressure_at_ms));
+                    rejected_signals.push(OutputSignal {
+                        uuid,
+                        token_id: None,
+                        completed: true,
+                        rejected: true,
+                        handoff_delay_ms: None,
+                        cached_tokens: None,
+                    });
+                }
+                ready.retain(|uuid| self.state.requests.contains_key(uuid));
+                self.state.compact_running();
+            }
+            if ready.is_empty() {
+                return Ok((Duration::ZERO, rejected_signals));
+            }
 
             match self.kv_manager.reserve_decode_blocks(required_blocks) {
                 G1Acquire::Ready(reservation) => break reservation,
@@ -2761,7 +2814,7 @@ impl VllmCore {
                 if running_changed {
                     self.state.compact_running();
                 }
-                return Ok((Duration::ZERO, Vec::new()));
+                return Ok((Duration::ZERO, rejected_signals));
             };
             running_changed = true;
 
@@ -2778,7 +2831,7 @@ impl VllmCore {
             }
             if ready.is_empty() {
                 self.state.compact_running();
-                return Ok((Duration::ZERO, Vec::new()));
+                return Ok((Duration::ZERO, rejected_signals));
             }
         };
 
@@ -2847,7 +2900,7 @@ impl VllmCore {
             Vec::with_capacity(sampled_bursts.iter().map(|(_, burst)| *burst).sum());
         for (uuid, burst) in sampled_bursts {
             let mut completed = false;
-            for _ in 0..burst {
+            for index in 0..burst {
                 let (token_id, is_complete) = {
                     let kv_manager = &mut self.kv_manager;
                     let request = self
@@ -2855,13 +2908,12 @@ impl VllmCore {
                         .requests
                         .get_mut(&uuid)
                         .expect("sampled request must remain active");
-                    let len = request.sequence.sequence.len();
-                    kv_manager.finalize_native_computed_prefix(
+                    kv_manager.finalize_speculative_prefix(
                         uuid,
-                        len.saturating_sub(1),
-                        len,
                         &mut request.sequence.sequence,
                         &mut request.sequence.lease,
+                        &mut reservation,
+                        index + 1 == burst,
                     );
                     let token_id = request.sequence.generate_token();
                     let is_complete =
@@ -2945,6 +2997,7 @@ impl VllmCore {
         if running_changed {
             self.state.compact_running();
         }
+        output_signals.extend(rejected_signals);
         Ok((decode_time, output_signals))
     }
 }
@@ -3272,6 +3325,323 @@ mod waiting_queue_tests {
             core.state.wake_connector_deadline_waiters();
             assert_eq!(core.state.next_waiting_uuid(false, true), Some(p));
             defer(&mut core, p);
+        }
+    }
+}
+
+#[cfg(test)]
+mod state_cache_tests {
+    use super::*;
+    use crate::engine::StateCacheConfig;
+
+    fn args(capacity: usize, prefix_caching: bool, nextn: Option<usize>) -> MockEngineArgs {
+        MockEngineArgs::builder()
+            .num_gpu_blocks(capacity)
+            .block_size(4)
+            .max_num_batched_tokens(Some(1024))
+            .max_num_seqs(Some(16))
+            .enable_prefix_caching(prefix_caching)
+            .speedup_ratio(0.0)
+            .aic_nextn(nextn)
+            .kv_cache_bytes_per_token(Some(16))
+            .state_cache(Some(StateCacheConfig {
+                bytes_per_request: 64,
+            }))
+            .build()
+            .unwrap()
+    }
+
+    fn submit(core: &mut VllmCore, id: u128, tokens: usize, output: usize) -> Uuid {
+        core.receive(DirectRequest {
+            uuid: Some(Uuid::from_u128(id)),
+            tokens: (0..tokens as u32).collect(),
+            max_output_tokens: output,
+            ..Default::default()
+        })
+    }
+
+    fn step(core: &mut VllmCore) -> EnginePassResult {
+        core.try_execute_hidden_pass(0.0).unwrap()
+    }
+
+    #[test]
+    fn state_capacity_limits_admission_and_releases_working_blocks() {
+        let mut config = args(8, false, None);
+        config.block_size = 64;
+        config.state_cache = Some(StateCacheConfig {
+            bytes_per_request: 1500,
+        });
+        let mut core = VllmCore::new(config);
+        let ids = (0..3)
+            .map(|id| submit(&mut core, 91_000 + id, 128, 2))
+            .collect::<Vec<_>>();
+        let first = step(&mut core);
+        assert_eq!(first.admissions.len(), 2);
+        assert_eq!(core.kv_manager.num_active_blocks(), 8);
+        assert!(core.state.waiting_members.contains(&ids[2]));
+        assert!(!first.output_signals.iter().any(|signal| signal.rejected));
+
+        let mut completed = std::collections::HashSet::new();
+        for _ in 0..32 {
+            if core.state.requests.is_empty() {
+                break;
+            }
+            let pass = step(&mut core);
+            assert!(core.kv_manager.num_active_blocks() <= 8);
+            for signal in pass.output_signals {
+                assert!(!signal.rejected);
+                if signal.completed {
+                    completed.insert(signal.uuid);
+                }
+            }
+        }
+        assert!(
+            core.state.requests.is_empty(),
+            "pressure workload did not finish"
+        );
+        assert_eq!(completed.len(), 3);
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
+    }
+
+    #[test]
+    fn oversized_state_request_is_rejected_even_when_requeued() {
+        for preempted in [false, true] {
+            let mut core = VllmCore::new(args(4, false, None));
+            let id = submit(&mut core, 91_100, 16, 2);
+            if preempted {
+                core.state.requests.get_mut(&id).unwrap().status = RequestStatus::Preempted;
+            }
+            let pass = step(&mut core);
+            assert_eq!(pass.output_signals.len(), 1);
+            assert!(pass.output_signals[0].rejected);
+            assert!(pass.output_signals[0].completed);
+            assert!(pass.admissions.is_empty());
+            assert!(core.state.requests.is_empty());
+            assert_eq!(core.kv_manager.num_active_blocks(), 0);
+        }
+    }
+
+    #[test]
+    fn decode_exceeding_token_plus_state_capacity_terminates_without_livelock() {
+        let mut core = VllmCore::new(args(3, false, None));
+        let id = submit(&mut core, 91_200, 8, 8);
+        let first = step(&mut core);
+        assert_eq!(first.output_signals.len(), 1);
+        assert!(!first.output_signals[0].rejected);
+        assert_eq!(core.kv_manager.num_active_blocks(), 3);
+        let second = step(&mut core);
+        assert!(
+            second
+                .output_signals
+                .iter()
+                .any(|signal| signal.uuid == id && signal.rejected && signal.completed)
+        );
+        assert!(core.state.requests.is_empty());
+        assert_eq!(core.state.preemptions_total, 0);
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
+    }
+
+    #[test]
+    fn speculative_reservation_that_cannot_fit_is_rejected_before_sampling() {
+        let mut config = args(4, false, Some(5));
+        config.aic_nextn_accept_rates = Some("0.5,0.5,0.5,0.5,0.5".to_owned());
+        let mut core = VllmCore::new(config);
+        let id = submit(&mut core, 91_300, 8, 8);
+        let pass = step(&mut core);
+        assert_eq!(pass.admissions.len(), 1, "current tokens plus state fit");
+        assert_eq!(pass.output_signals.len(), 1);
+        assert!(pass.output_signals[0].uuid == id && pass.output_signals[0].rejected);
+        assert!(pass.output_signals[0].token_id.is_none());
+        assert!(core.state.requests.is_empty());
+        assert_eq!(core.state.preemptions_total, 0);
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
+    }
+
+    #[test]
+    fn state_rollover_pressure_preempts_and_requests_eventually_complete() {
+        for nextn in [None, Some(1)] {
+            let mut config = args(8, true, nextn);
+            config.aic_nextn_accept_rates = nextn.map(|_| "1".into());
+            let mut core = VllmCore::new(config);
+            submit(&mut core, 92_000, 8, 4);
+            submit(&mut core, 92_001, 8, 4);
+            assert_eq!(step(&mut core).admissions.len(), 2);
+            let mut completed = 0;
+            for _ in 0..24 {
+                let pass = step(&mut core);
+                assert!(pass.output_signals.iter().all(|signal| !signal.rejected));
+                completed += pass
+                    .output_signals
+                    .iter()
+                    .filter(|signal| signal.completed)
+                    .count();
+                assert!(core.kv_manager.num_active_blocks() <= 8);
+                if core.state.requests.is_empty() {
+                    break;
+                }
+            }
+            assert_eq!(completed, 2);
+            assert!(core.state.preemptions_total > 0);
+            assert!(core.state.requests.is_empty());
+            assert_eq!(core.kv_manager.num_active_blocks(), 0);
+        }
+    }
+
+    #[test]
+    fn impossible_restore_peak_is_not_silently_changed_to_cold_prefill() {
+        let mut core = VllmCore::new(args(4, true, None));
+        submit(&mut core, 92_200, 4, 0);
+        step(&mut core);
+        let id = submit(&mut core, 92_201, 9, 1);
+        let pass = step(&mut core);
+        assert!(pass.admissions.is_empty());
+        assert!(
+            pass.output_signals
+                .iter()
+                .any(|signal| signal.uuid == id && signal.rejected)
+        );
+        assert!(core.state.requests.is_empty());
+        assert_eq!(core.kv_manager.num_active_blocks(), 0);
+    }
+
+    #[test]
+    fn impossible_state_transition_is_rejected_without_retry_loop() {
+        for nextn in [None, Some(1)] {
+            let mut config = args(4, true, nextn);
+            config.aic_nextn_accept_rates = nextn.map(|_| "1".into());
+            let mut core = VllmCore::new(config);
+            submit(&mut core, 92_100, 8, 4);
+            let mut rejected = false;
+            for _ in 0..4 {
+                let pass = step(&mut core);
+                rejected |= pass.output_signals.iter().any(|signal| signal.rejected);
+                if core.state.requests.is_empty() {
+                    break;
+                }
+            }
+            assert!(rejected);
+            assert!(core.state.requests.is_empty());
+            assert_eq!(core.state.preemptions_total, 0);
+            assert_eq!(core.kv_manager.num_active_blocks(), 0);
+        }
+    }
+
+    #[test]
+    fn newly_computed_state_is_visible_only_on_the_next_pass() {
+        let mut core = VllmCore::new(args(32, true, None));
+        submit(&mut core, 91_350, 8, 1);
+        let second = submit(&mut core, 91_351, 12, 1);
+        let pass = step(&mut core);
+        let admission = pass
+            .admissions
+            .iter()
+            .find(|item| item.uuid == second)
+            .unwrap();
+        assert_eq!(
+            admission.reused_input_tokens, 0,
+            "same-batch state is not ready"
+        );
+        let third = submit(&mut core, 91_352, 16, 1);
+        let pass = step(&mut core);
+        let admission = pass
+            .admissions
+            .iter()
+            .find(|item| item.uuid == third)
+            .unwrap();
+        assert_eq!(admission.reused_input_tokens, 12);
+    }
+
+    #[test]
+    fn state_checkpoint_hit_is_not_rewound_twice_for_mtp() {
+        let mut core = VllmCore::new(args(32, true, Some(1)));
+        for (id, length) in [(91_400, 4), (91_401, 8), (91_402, 12)] {
+            submit(&mut core, id, length, 0);
+            let pass = step(&mut core);
+            assert!(!pass.output_signals.iter().any(|signal| signal.rejected));
+            assert!(core.state.requests.is_empty());
+        }
+        let id = submit(&mut core, 91_403, 16, 1);
+        let pass = step(&mut core);
+        let admission = pass
+            .admissions
+            .iter()
+            .find(|admission| admission.uuid == id)
+            .unwrap();
+        assert_eq!(admission.reused_input_tokens, 8);
+        assert!(!pass.output_signals.iter().any(|signal| signal.rejected));
+    }
+
+    #[test]
+    fn fallback_state_lookup_preserves_the_selected_checkpoint() {
+        let mut core = VllmCore::new(args(32, true, Some(1)));
+        for (id, length) in [(91_500, 4), (91_501, 8), (91_502, 12)] {
+            submit(&mut core, id, length, 0);
+            step(&mut core);
+        }
+        let id = submit(&mut core, 91_503, 16, 1);
+        core.state.transition_to_running(id);
+        core.kv_manager.begin_step();
+        let mut budget = 1;
+        let mut scheduled = FxHashMap::default();
+        let (mut count, mut isl, mut prefix) = (0, 0, 0);
+        let mut preempted = false;
+        let outcome = core.schedule_request(
+            id,
+            false,
+            None,
+            &mut budget,
+            &mut scheduled,
+            &mut count,
+            &mut isl,
+            &mut prefix,
+            &mut preempted,
+            0.0,
+        );
+        assert!(matches!(outcome, ScheduleOutcome::Scheduled { .. }));
+        assert_eq!(core.state.requests[&id].num_computed_tokens, 9);
+        assert_eq!(prefix, 8);
+        assert!(!preempted);
+    }
+
+    #[test]
+    fn partial_mtp_acceptance_commits_only_processed_accepted_tokens() {
+        let mut config = args(32, true, Some(3));
+        config.aic_nextn_accept_rates = Some("1,0,0".into());
+        let mut core = VllmCore::new(config);
+        let id = submit(&mut core, 91_800, 6, 8);
+        for _ in 0..3 {
+            let pass = step(&mut core);
+            assert_eq!(pass.output_signals.len(), 2);
+            assert!(pass.output_signals.iter().all(|signal| !signal.rejected));
+            let request = &core.state.requests[&id];
+            // One draft accepted + one sampled token. The sampled tail has
+            // not been processed; rejected lookahead never advances state.
+            assert_eq!(
+                request.sequence.lease.computed_state_tokens(),
+                Some(request.sequence.len() - 1)
+            );
+            assert_eq!(request.num_computed_tokens, request.sequence.len() - 1);
+        }
+    }
+
+    #[test]
+    fn empty_native_prompts_are_rejected_before_state_or_speculative_generation() {
+        for nextn in [None, Some(3)] {
+            let mut core = VllmCore::new(args(16, true, nextn));
+            let id = submit(&mut core, 91_900, 0, 4);
+            let pass = step(&mut core);
+            assert!(
+                pass.output_signals
+                    .iter()
+                    .any(|signal| signal.uuid == id && signal.rejected)
+            );
+            assert!(
+                pass.output_signals
+                    .iter()
+                    .all(|signal| signal.token_id.is_none())
+            );
+            assert!(core.state.requests.is_empty());
+            assert_eq!(core.kv_manager.num_active_blocks(), 0);
         }
     }
 }
