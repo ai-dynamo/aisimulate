@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-deployment.json: |
+deployment.json: |-
   {
     "backend": "sglang",
     "mode": "disagg",
@@ -43,7 +43,10 @@ deployment.json: |
           "--disaggregation-bootstrap-port",
           "@BOOTSTRAP_PORT@"
         ],
-        "env": {},
+        "env": {
+          "DYN_SGL_DISAGG_CONFIG": "",
+          "DYN_SGL_DISAGG_CONFIG_KEY": ""
+        },
         "gpu_offset": 0,
         "gpu_count": 2
       },
@@ -132,7 +135,10 @@ deployment.json: |
           "--disaggregation-bootstrap-port",
           "@BOOTSTRAP_PORT@"
         ],
-        "env": {},
+        "env": {
+          "DYN_SGL_DISAGG_CONFIG": "",
+          "DYN_SGL_DISAGG_CONFIG_KEY": ""
+        },
         "gpu_offset": 2,
         "gpu_count": 2
       }

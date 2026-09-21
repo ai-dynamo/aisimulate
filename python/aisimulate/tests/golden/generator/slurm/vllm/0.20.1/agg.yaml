@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-deployment.json: |
+deployment.json: |-
   {
     "backend": "vllm",
     "mode": "agg",
@@ -39,7 +39,13 @@ deployment.json: |
           "--max-num-batched-tokens",
           "2140"
         ],
-        "env": {},
+        "env": {
+          "VLLM_DP_SIZE": "1",
+          "VLLM_DP_RANK": "0",
+          "VLLM_DP_RANK_LOCAL": "0",
+          "VLLM_DP_MASTER_IP": "127.0.0.1",
+          "VLLM_DP_MASTER_PORT": "0"
+        },
         "gpu_offset": 0,
         "gpu_count": 2
       }

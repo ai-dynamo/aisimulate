@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-deployment.json: |
+deployment.json: |-
   {
     "backend": "sglang",
     "mode": "agg",
@@ -96,7 +96,10 @@ deployment.json: |
           "15",
           "16"
         ],
-        "env": {},
+        "env": {
+          "DYN_SGL_DISAGG_CONFIG": "",
+          "DYN_SGL_DISAGG_CONFIG_KEY": ""
+        },
         "gpu_offset": 0,
         "gpu_count": 2
       }

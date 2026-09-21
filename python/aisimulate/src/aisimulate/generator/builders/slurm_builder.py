@@ -35,6 +35,16 @@ _OWNED_ENV = {
     "DYN_REQUEST_PLANE",
     "DYN_TRTLLM_OVERRIDE_ENGINE_ARGS",
 }
+_TOPOLOGY_ENV = {
+    "vllm": {
+        "VLLM_DP_SIZE": "1",
+        "VLLM_DP_RANK": "0",
+        "VLLM_DP_RANK_LOCAL": "0",
+        "VLLM_DP_MASTER_IP": "127.0.0.1",
+        "VLLM_DP_MASTER_PORT": "0",
+    },
+    "sglang": {"DYN_SGL_DISAGG_CONFIG": "", "DYN_SGL_DISAGG_CONFIG_KEY": ""},
+}
 _TOPOLOGY_OPTIONS = {
     "vllm": {
         "-tp",
@@ -45,6 +55,8 @@ _TOPOLOGY_OPTIONS = {
         "-dpr",
         "-dph",
         "-dpe",
+        "-dpb",
+        "-dpm",
         "-dcp",
         "-pcp",
         "-ep",
@@ -56,6 +68,9 @@ _TOPOLOGY_OPTIONS = {
         "--data-parallel-start-rank",
         "--data-parallel-hybrid-lb",
         "--data-parallel-external-lb",
+        "--data-parallel-backend",
+        "--data-parallel-multi-port-external-lb",
+        "--device-ids",
         "--decode-context-parallel-size",
         "--prefill-context-parallel-size",
         "--enable-expert-parallel",
@@ -79,6 +94,16 @@ _TOPOLOGY_OPTIONS = {
         "--enable-dp-attention",
         "--base-gpu-id",
         "--gpu-id-step",
+        "--decode-context-parallel-size",
+        "--dcp-size",
+        "--elastic-ep-backend",
+        "--elastic-ep-join-mode",
+        "--elastic-ep-join-rank-offset",
+        "--elastic-ep-initial-size",
+        "--max-ep-size",
+        "--elastic-ep-rejoin",
+        "--disagg-config",
+        "--disagg-config-key",
     },
     "trtllm": {
         "--expert-parallel-size",
@@ -121,6 +146,9 @@ def _worker_command(context: dict, params: dict, backend: str, role: str) -> tup
         for item in kvbm_env_from_dyn_config(dyn if role != "decode" else {}, backend=backend)
     }
     kvbm = bool(worker_env)
+    # Backend environment fallbacks must not replace the structured topology.
+    # vLLM consults these DP defaults only when engine args do not request DP > 1.
+    worker_env.update(_TOPOLOGY_ENV.get(backend, {}))
     if backend == "trtllm":
         command.extend(["--extra-engine-args", f"{role}_config.yaml", "--gpus-per-node", str(context[f"{role}_gpu"])])
         # An inherited Dynamo override must not replace the generated topology.
@@ -231,7 +259,7 @@ def build_slurm_artifacts(
         for k, v in extra_env.items()
     ):
         raise ValueError("SlurmConfig.env must map environment variable names to strings")
-    if _OWNED_ENV.intersection(extra_env):
+    if _OWNED_ENV.union(_TOPOLOGY_ENV.get(backend, {})).intersection(extra_env):
         raise ValueError("SlurmConfig.env must not override allocation, discovery or service-port variables")
     concurrencies = cfg.get("benchmark_concurrency")
     if not isinstance(concurrencies, list) or not concurrencies:

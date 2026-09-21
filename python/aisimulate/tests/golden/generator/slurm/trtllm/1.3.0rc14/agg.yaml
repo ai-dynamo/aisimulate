@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-deployment.json: |
+deployment.json: |-
   {
     "backend": "trtllm",
     "mode": "agg",
@@ -57,31 +57,78 @@ deployment.json: |
     ],
     "benchmark_rounds": 20
   }
-agg_config.yaml: |+
+agg_config.yaml: |
   backend: pytorch
-
-
   tensor_parallel_size: 2
   pipeline_parallel_size: 1
-  enable_attention_dp: False
-  enable_chunked_prefill: False
-
-
+  enable_attention_dp: false
+  enable_chunked_prefill: false
   max_batch_size: 8
   max_num_tokens: 640
-
   kv_cache_config:
-    free_gpu_memory_fraction: 0.80  # Fraction of GPU memory usable for KV-cache
+    free_gpu_memory_fraction: 0.8
     dtype: auto
     tokens_per_block: 32
-    enable_block_reuse: False
-
-
+    enable_block_reuse: false
   cuda_graph_config:
-    enable_padding: True # Pad CUDA graph
-    batch_sizes: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,16,20,24,28,32,32,40,48,56,64,64,80,96,112,128,128,160,192,224,256,256,320,384,448,512,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]
-
-  disable_overlap_scheduler: False
-  print_iter_log: False
-
-...
+    enable_padding: true
+    batch_sizes:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 16
+    - 20
+    - 24
+    - 28
+    - 32
+    - 32
+    - 40
+    - 48
+    - 56
+    - 64
+    - 64
+    - 80
+    - 96
+    - 112
+    - 128
+    - 128
+    - 160
+    - 192
+    - 224
+    - 256
+    - 256
+    - 320
+    - 384
+    - 448
+    - 512
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+  disable_overlap_scheduler: false
+  print_iter_log: false

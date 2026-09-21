@@ -60,6 +60,14 @@ def _params(backend, extra, role="agg"):
         ("vllm", ["-r1"]),
         ("vllm", ["--distributed-executor-backend", "external_launcher"]),
         ("vllm", ["--config", "/models/engine.yaml"]),
+        ("vllm", ["--device-ids", "GPU-outside-allocation"]),
+        ("vllm", ["--device_i=GPU-outside-allocation"]),
+        ("vllm", ["--data-parallel-backend", "ray"]),
+        ("vllm", ["--data_parallel_b=ray"]),
+        ("vllm", ["-dpb", "ray"]),
+        ("vllm", ["--data-parallel-multi-port-external-lb"]),
+        ("vllm", ["--data_parallel_multi"]),
+        ("vllm", ["-dpm"]),
         ("sglang", ["--tensor-parallel-size", "16"]),
         ("sglang", ["--tp-size=16"]),
         ("sglang", ["--pp", "16"]),
@@ -74,6 +82,17 @@ def _params(backend, extra, role="agg"):
         ("sglang", ["--nnodes", "2"]),
         ("sglang", ["--node-rank", "1"]),
         ("sglang", ["--config=/models/engine.yaml"]),
+        ("sglang", ["--decode-context-parallel-size", "2"]),
+        ("sglang", ["--dcp-size=2"]),
+        ("sglang", ["--elastic-ep-backend", "mooncake"]),
+        ("sglang", ["--elastic-ep-join-mode", "scale"]),
+        ("sglang", ["--elastic-ep-join-rank-offset=8"]),
+        ("sglang", ["--elastic-ep-initial-size", "8"]),
+        ("sglang", ["--max-ep-size", "16"]),
+        ("sglang", ["--elastic-ep-rejoin"]),
+        ("sglang", ["--disagg-config", "/models/engine.yaml"]),
+        ("sglang", ["--disagg-config-key=decode"]),
+        ("sglang", ["--disagg-config-k=decode"]),
         ("trtllm", ["--tensor-parallel-size", "16"]),
         ("trtllm", ["--pipeline-parallel-s=16"]),
         ("trtllm", ["--expert-parallel-size", "4"]),
@@ -160,6 +179,78 @@ def test_trtllm_worker_clears_inherited_engine_overlay(monkeypatch, tmp_path):
     finally:
         supervisor.stop()
     assert (tmp_path / "env-probe.log").read_text().strip() == "''"
+
+
+_WORKER_ENV_DEFAULTS = {
+    "vllm": {
+        "VLLM_DP_SIZE": "1",
+        "VLLM_DP_RANK": "0",
+        "VLLM_DP_RANK_LOCAL": "0",
+        "VLLM_DP_MASTER_IP": "127.0.0.1",
+        "VLLM_DP_MASTER_PORT": "0",
+    },
+    "sglang": {"DYN_SGL_DISAGG_CONFIG": "", "DYN_SGL_DISAGG_CONFIG_KEY": ""},
+}
+
+
+@pytest.mark.parametrize(
+    "backend,key", [(backend, key) for backend, defaults in _WORKER_ENV_DEFAULTS.items() for key in defaults]
+)
+def test_slurm_rejects_environment_topology_overrides_before_emission(backend, key, tmp_path):
+    params = _params(backend, [])
+    params["SlurmConfig"]["env"] = {key: "16"}
+    with pytest.raises(ValueError, match=r"SlurmConfig\.env must not override"):
+        generate_backend_artifacts(params, backend, deployment_target="slurm", output_dir=str(tmp_path))
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize("backend,data_parallel_size", [("vllm", 1), ("vllm", 2), ("sglang", 1)])
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_worker_neutralizes_inherited_topology_environment(backend, mode, data_parallel_size, monkeypatch, tmp_path):
+    expected = _WORKER_ENV_DEFAULTS[backend]
+    for key in expected:
+        monkeypatch.setenv(key, "16")
+    monkeypatch.setenv("SLURM_TEST_TUNING", "preserved")
+    params = _params(backend, [], "agg" if mode == "agg" else "prefill")
+    if data_parallel_size > 1:
+        params["ModelConfig"] = {"is_moe": True}
+        for role in ["agg"] if mode == "agg" else ["prefill", "decode"]:
+            params["params"][role].update(
+                data_parallel_size=data_parallel_size,
+                moe_tensor_parallel_size=2,
+                moe_expert_parallel_size=2,
+            )
+    artifacts = generate_backend_artifacts(
+        params,
+        backend,
+        backend_version={"vllm": "0.24.0", "sglang": "0.5.16"}[backend],
+        deployment_target="slurm",
+    )
+    deployment = json.loads(artifacts["deployment.json"])
+    supervisor = Supervisor(deployment, tmp_path)
+    try:
+        for worker in deployment["workers"]:
+            argv = worker["argv"]
+            actual_dp = int(argv[argv.index("--data-parallel-size") + 1]) if "--data-parallel-size" in argv else 1
+            assert actual_dp == data_parallel_size
+            process = supervisor.start(
+                worker["name"],
+                [
+                    sys.executable,
+                    "-c",
+                    "import json, os, sys; print(json.dumps({key: os.environ[key] for key in sys.argv[1:]}))",
+                    *expected,
+                    "SLURM_TEST_TUNING",
+                ],
+                worker["env"],
+            )
+            assert process.wait(timeout=5) == 0
+            assert json.loads((tmp_path / f"{worker['name']}.log").read_text()) == {
+                **expected,
+                "SLURM_TEST_TUNING": "preserved",
+            }
+    finally:
+        supervisor.stop()
 
 
 @pytest.mark.parametrize("mode", ["agg", "disagg"])

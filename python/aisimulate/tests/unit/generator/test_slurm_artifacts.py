@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import json
 import os
 import socket
@@ -87,15 +88,22 @@ def test_all_backends_render_standalone_slurm_bundle(backend, version, mode, tmp
         for name, body in yaml.safe_load(path.read_text()).items()
     }
     assert artifacts.keys() == expected.keys()
-    for name, body in artifacts.items():
-        assert body == expected[name], name
+    assert {str(path.relative_to(tmp_path)) for path in tmp_path.rglob("*") if path.is_file()} == expected.keys()
+    for name, body in expected.items():
+        emitted = (tmp_path / name).read_bytes()
+        assert emitted == body.encode(), name
+        if name.endswith(".json"):
+            assert json.loads(artifacts[name]) == json.loads(emitted), name
+        elif name.endswith(".yaml"):
+            assert yaml.safe_load(artifacts[name]) == yaml.safe_load(emitted), name
+        else:
+            assert artifacts[name].encode() == emitted, name
     assert not {"k8s_deploy.yaml", "k8s_bench.yaml", "sflow.yaml", "run_0.sh"}.intersection(artifacts)
-    for name, body in artifacts.items():
-        assert (tmp_path / name).is_file()
+    for name in expected:
         if name.endswith((".sh", ".sbatch")):
-            subprocess.run(["bash", "-n"], input=body, text=True, check=True, capture_output=True)
-    compile(artifacts["slurm_runtime.py"], "slurm_runtime.py", "exec")
-    spec = json.loads(artifacts["deployment.json"])
+            subprocess.run(["bash", "-n", str(tmp_path / name)], check=True, capture_output=True)
+    compile((tmp_path / "slurm_runtime.py").read_bytes(), "slurm_runtime.py", "exec")
+    spec = json.loads((tmp_path / "deployment.json").read_bytes())
     assert spec["gpus"] == (2 if mode == "agg" else 4)
     assert f"#SBATCH --gres=gpu:{spec['gpus']}" in artifacts["benchmark.sbatch"]
     for worker in spec["workers"]:
@@ -405,6 +413,53 @@ def test_health_accepts_plain_http_response(tmp_path):
     try:
         supervisor = Supervisor({"env": {}, "port": 8000}, tmp_path)
         assert supervisor.wait_http(f"http://127.0.0.1:{server.server_port}/health", time.monotonic() + 2) == b"ready"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def test_supervisor_loopback_requests_bypass_inherited_proxies(monkeypatch, tmp_path):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ready")
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({"choices": [{"message": {"content": "Hello"}}]}).encode())
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with socket.socket() as unavailable_proxy:
+            unavailable_proxy.bind(("127.0.0.1", 0))
+            proxy = f"http://127.0.0.1:{unavailable_proxy.getsockname()[1]}"
+            for key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+                monkeypatch.setenv(key, proxy)
+            for key in ("NO_PROXY", "no_proxy"):
+                monkeypatch.setenv(key, "")
+            # Other HTTP users retain their configured proxy behavior.
+            environment = os.environ.copy()
+            params = _params()
+            params["ServiceConfig"]["port"] = server.server_port
+            params["SlurmConfig"]["env"] = {"NO_PROXY": "127.0.0.1,localhost", "no_proxy": "127.0.0.1,localhost"}
+            generate_backend_artifacts(params, "vllm", deployment_target="slurm", output_dir=str(tmp_path))
+            module_spec = importlib.util.spec_from_file_location("slurm_probe_runtime", tmp_path / "slurm_runtime.py")
+            runtime = importlib.util.module_from_spec(module_spec)
+            module_spec.loader.exec_module(runtime)
+            supervisor = runtime.Supervisor(
+                json.loads((tmp_path / "deployment.json").read_bytes()), tmp_path / "results"
+            )
+            assert supervisor.wait_http(f"{supervisor.base_url}/health", time.monotonic() + 2) == b"ready"
+            supervisor.smoke_test(time.monotonic() + 2)
+            assert supervisor.result["smoke_response"]["choices"][0]["message"]["content"] == "Hello"
+            assert os.environ == environment
+            assert supervisor.env["HTTP_PROXY"] == proxy
     finally:
         server.shutdown()
         server.server_close()

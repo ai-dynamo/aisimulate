@@ -53,6 +53,8 @@ slurm_runtime.py: |
           )
           self.env.update(spec["env"])
           self.base_url = f"http://127.0.0.1:{spec['port']}"
+          # All supervisor HTTP probes target local services, never an external proxy.
+          self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
       def save(self):
           temporary = self.output / "result.json.tmp"
@@ -91,11 +93,10 @@ slurm_runtime.py: |
               if process is not ignore and process.poll() is not None:
                   raise RuntimeError(f"{name} exited with code {process.returncode}; see {name}.log")
 
-      @staticmethod
-      def request(url, body=None, timeout=5, decode_json=True):
+      def request(self, url, body=None, timeout=5, decode_json=True):
           data = json.dumps(body).encode() if body is not None else None
           req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-          with urllib.request.urlopen(req, timeout=timeout) as response:
+          with self.http.open(req, timeout=timeout) as response:
               payload = response.read()
           return json.loads(payload) if payload and decode_json else payload
 

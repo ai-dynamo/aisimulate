@@ -326,10 +326,14 @@ Set worker topology and engine configuration through the structured generator
 configuration. For Slurm, `Workers.<role>.extra_cli_args` cannot override parallel
 sizes, GPU placement, or launch options, including their backend aliases and
 abbreviations. Config-file and engine-overlay arguments (`--config`,
-`--extra-engine-args`, `--override-engine-args`, and `--trtllm.*`) are also reserved
+`--disagg-config`, `--extra-engine-args`, `--override-engine-args`, and `--trtllm.*`) are also reserved
 so they cannot change the GPU requirements after allocation. Ordinary tuning
-arguments remain available. `DYN_TRTLLM_OVERRIDE_ENGINE_ARGS` is rejected in
-`SlurmConfig.env` and cleared for TRT-LLM workers if inherited from the environment.
+arguments remain available. Backend topology environment overrides are rejected in
+`SlurmConfig.env`: `DYN_TRTLLM_OVERRIDE_ENGINE_ARGS` for TRT-LLM;
+`DYN_SGL_DISAGG_CONFIG` and `DYN_SGL_DISAGG_CONFIG_KEY` for SGLang; and
+`VLLM_DP_SIZE`, `VLLM_DP_RANK`, `VLLM_DP_RANK_LOCAL`, `VLLM_DP_MASTER_IP`, and
+`VLLM_DP_MASTER_PORT` for vLLM. Workers neutralize inherited values for these
+variables without changing other environment settings or structured DP configurations.
 
 The bundle contains:
 
