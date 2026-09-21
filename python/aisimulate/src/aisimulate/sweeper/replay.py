@@ -255,6 +255,7 @@ class RunnerCapabilities:
     supports_agentic_host_offload: bool = True
     supports_agentic_speculative_decoding: bool = True
     supports_agentic_snapshots: bool = False
+    supports_agentic_warmup: bool = False
     supports_cached_prefix_tokens: bool = False
     supported_engine_model_controls: tuple[str, ...] = ()
     supports_mtp_expected_acceptance: bool = False
@@ -385,6 +386,14 @@ class RunnerCapabilities:
             if not self.supports_agentic_lanes:
                 raise ValueError("runner does not support agentic_lanes")
         agentic_snapshot = spec.workload.get("agentic_snapshot")
+        agentic_warmup = spec.workload.get("agentic_warmup", False)
+        if type(agentic_warmup) is not bool:
+            raise ValueError("agentic_warmup must be a boolean")
+        if agentic_warmup:
+            if agentic_snapshot is None:
+                raise ValueError("agentic_warmup requires agentic_snapshot")
+            if not self.supports_agentic_warmup:
+                raise ValueError("runner does not support agentic warmup")
         if agentic_snapshot is not None:
             if (
                 not isinstance(agentic_snapshot, Mapping)
