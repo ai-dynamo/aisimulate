@@ -15,6 +15,11 @@ Use a source checkout containing [PR #235](https://github.com/ai-dynamo/aisimula
 Run the commands below from the repository root. This path is experimental and
 qualified for functional behavior, not hardware performance accuracy.
 
+To keep lanes occupied for a fixed admission duration, add
+`traffic.load.agentic_profile: {duration_seconds: 3600}`. See
+[continuous agentic profiles](agentic-profile.md) for idle guards, response
+grace periods, and the distinction between admission and observation duration.
+
 ## 1. Install from source
 
 You need Python 3.11–3.13, `uv`, Rust/Cargo, and a C/C++ compiler and linker.

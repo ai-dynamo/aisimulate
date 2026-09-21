@@ -218,6 +218,7 @@ pub(crate) struct AdmissionEvent {
 
 #[derive(Debug, Clone)]
 pub(crate) struct EnginePassResult {
+    pub(crate) committed_requests: Vec<Uuid>,
     pub(crate) end_ms: f64,
     /// Scheduler-owned same-timestamp convergence status. This is not an
     /// externally observable effect or ordinary progress.

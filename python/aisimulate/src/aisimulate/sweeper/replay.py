@@ -16,6 +16,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel
 
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
+from ..config.traffic import AgenticProfileOptions
 from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
@@ -256,6 +257,7 @@ class RunnerCapabilities:
     supports_agentic_speculative_decoding: bool = True
     supports_agentic_snapshots: bool = False
     supports_agentic_warmup: bool = False
+    supports_agentic_profile: bool = False
     supports_cached_prefix_tokens: bool = False
     supported_engine_model_controls: tuple[str, ...] = ()
     supports_mtp_expected_acceptance: bool = False
@@ -376,6 +378,15 @@ class RunnerCapabilities:
             if not self.supports_agentic_lanes:
                 raise ValueError("runner does not support agentic_lanes")
         agentic_snapshot = spec.workload.get("agentic_snapshot")
+        agentic_profile = spec.workload.get("agentic_profile")
+        if agentic_profile is not None:
+            AgenticProfileOptions.model_validate(agentic_profile)
+            if agentic_snapshot is None:
+                raise ValueError("agentic_profile requires agentic_snapshot")
+            if spec.workload.get("max_sim_time_ms") is not None:
+                raise ValueError("agentic_profile cannot be combined with max_sim_time_ms")
+            if not self.supports_agentic_profile:
+                raise ValueError("runner does not support agentic profile")
         agentic_warmup = spec.workload.get("agentic_warmup", False)
         if type(agentic_warmup) is not bool:
             raise ValueError("agentic_warmup must be a boolean")

@@ -364,6 +364,14 @@ mod tests {
         .unwrap();
         assert_eq!(driver.total_turns(), 2);
         assert_eq!(driver.next_ready_time_ms(), Some(0.0));
+        driver
+            .enable_agentic_profile(aisimulate_core::replay::loadgen::AgenticProfileOptions {
+                duration_seconds: 1.0,
+                response_grace_seconds: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(driver.agentic_profile_report().is_some());
     }
 }
 
@@ -394,6 +402,7 @@ pub fn rebuild_replay_report_literals(
             agentic_graph: report.agentic_graph,
             agentic_snapshots: report.agentic_snapshots,
             agentic_phases: None,
+            agentic_profile: report.agentic_profile,
             agentic_lifecycle: report.agentic_lifecycle,
             agentic_play_outcomes: report.agentic_play_outcomes,
             goodput: report.goodput,

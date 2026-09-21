@@ -29,8 +29,9 @@ use crate::replay::telemetry::{ReplaySchedulerIntervalMetrics, ReplaySchedulerMe
 // 600 decay steps while still bounding a broken scheduler's same-time retry.
 const MAX_CONSECUTIVE_SAME_TIMESTAMP_RETRIES: usize = 1024;
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct PendingPass {
+    committed_requests: BTreeSet<Uuid>,
     pass_id: PassId,
     started_at_ms: f64,
     end_ms: f64,
@@ -754,6 +755,19 @@ where
             .is_some())
     }
 
+    pub(crate) fn request_has_committed_pass(
+        &self,
+        scheduler_id: usize,
+        request_id: Uuid,
+    ) -> Result<bool> {
+        let owner = self.scheduler_owner(scheduler_id)?;
+        Ok(self
+            .required_worker(owner.worker_id)?
+            .pending_pass
+            .as_ref()
+            .is_some_and(|pass| pass.committed_requests.contains(&request_id)))
+    }
+
     pub(crate) fn drive_ready(
         &mut self,
         now_ms: f64,
@@ -787,7 +801,8 @@ where
             };
 
             let same_timestamp_retry = started.same_timestamp_retry;
-            let pending = PendingPass {
+            let mut pending = PendingPass {
+                committed_requests: BTreeSet::new(),
                 pass_id: started.pass_id,
                 started_at_ms: started.started_at_ms,
                 end_ms: started.end_ms,
@@ -795,6 +810,9 @@ where
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
             for rank in started.by_rank {
+                pending
+                    .committed_requests
+                    .extend(rank.effects.committed_requests);
                 effects
                     .admissions
                     .extend(rank.effects.admissions.into_iter().map(|admission| {
@@ -1262,6 +1280,97 @@ mod tests {
             startup_time_ms,
         )
         .unwrap()
+    }
+
+    #[rstest::rstest]
+    #[case(Backend::Vllm)]
+    #[case(Backend::Sglang)]
+    fn committed_request_membership_excludes_queued_work_during_chunked_prefill(
+        #[case] backend: Backend,
+    ) {
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                backend,
+                num_gpu_blocks: 32,
+                block_size: 4,
+                max_num_batched_tokens: 4,
+                max_num_seqs: 1,
+                enable_chunked_prefill: true,
+                enable_prefix_caching: false,
+                sglang: SglangConfig {
+                    chunked_prefill_size: 4,
+                    ..Default::default()
+                },
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 10.0,
+                    decode_ms: 1.0,
+                },
+                ..EngineConfig::for_backend(backend)
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            1,
+            None,
+        )
+        .unwrap();
+        let committed = Uuid::from_u128(80_001);
+        let queued = Uuid::from_u128(80_002);
+        for (uuid, token) in [(committed, 1), (queued, 2)] {
+            component
+                .dispatch(
+                    0,
+                    DirectRequest {
+                        tokens: vec![token; 12],
+                        max_output_tokens: 2,
+                        uuid: Some(uuid),
+                        ..Default::default()
+                    },
+                    0.0,
+                )
+                .unwrap();
+        }
+        let mut started = component.drive_ready(0.0, None).unwrap();
+        let scheduled = started.scheduled_completion.take().unwrap();
+        assert_eq!(scheduled.at_ms, 10.0);
+        assert!(component.request_has_committed_pass(0, committed).unwrap());
+        assert!(!component.request_has_committed_pass(0, queued).unwrap());
+        // The selected request has not produced output: its first prompt chunk
+        // still owns the committed pass, while the scheduler queue does not.
+        for uuid in [queued, committed] {
+            component
+                .apply_command(
+                    0,
+                    Command::CancelRequest {
+                        request_id: uuid,
+                        discard_pending_output: true,
+                    },
+                    1.0,
+                )
+                .unwrap();
+        }
+        assert_eq!(component.in_flight(), 0);
+        assert!(component.request_has_committed_pass(0, committed).unwrap());
+        assert!(!component.request_has_committed_pass(0, queued).unwrap());
+        let completed = component
+            .on_scheduled_completion(scheduled.completion, scheduled.at_ms)
+            .unwrap();
+        assert!(completed.iter().all(|pass| pass.output_signals.is_empty()));
+        assert_eq!(
+            completed
+                .iter()
+                .map(|pass| pass.fpm.as_ref().unwrap().sum_prefill_tokens)
+                .sum::<u64>(),
+            4
+        );
+        assert!(!component.request_has_committed_pass(0, committed).unwrap());
+        assert!(component.is_drained());
     }
 
     #[test]

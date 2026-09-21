@@ -103,6 +103,9 @@ where
     drive_started: bool,
     drive_finalized: bool,
     profile_observers_started: bool,
+    profile_cancel_started: bool,
+    profile_canceled_requests: usize,
+    profile_unsettled_requests: usize,
 }
 
 impl<PlacementPolicyImpl, Observation, Metadata>
@@ -168,6 +171,9 @@ where
             drive_started: false,
             drive_finalized: false,
             profile_observers_started: false,
+            profile_cancel_started: false,
+            profile_canceled_requests: 0,
+            profile_unsettled_requests: 0,
         })
     }
 
@@ -404,6 +410,9 @@ where
     /// events carry no work and do not
     /// keep the run alive — otherwise a recurring tick would never let `run()` exit.
     fn is_done(&self) -> bool {
+        if self.admission.agentic_profile_client_complete(self.now_ms) {
+            return true;
+        }
         self.only_idle_events_remain()
             && self.cluster_in_flight() == 0
             && CoreAdmissionSource::is_drained(&self.admission)
@@ -449,7 +458,21 @@ where
         if self.drive_pending {
             return (Some(self.now_ms), Some(self.now_ms));
         }
-        let next_arrival_ms = CoreAdmissionSource::next_ready_time_ms(&mut self.admission);
+        let profile_deadline =
+            self.admission
+                .agentic_profile_deadlines()
+                .and_then(|(_, grace, cancel)| {
+                    let deadline = if self.profile_cancel_started {
+                        cancel
+                    } else {
+                        grace
+                    };
+                    (deadline > self.now_ms).then_some(deadline)
+                });
+        let next_arrival_ms = choose_next_timestamp(
+            CoreAdmissionSource::next_ready_time_ms(&mut self.admission),
+            profile_deadline,
+        );
         let next_event_ms = self.events.peek().map(|event| event.at_ms);
         let next_canonical_event_ms = if self.telemetry.is_some() {
             next_non_telemetry_event_ms(&mut self.events)
@@ -863,6 +886,12 @@ where
             changed |= self.apply_worker_ready_events()?;
             changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
             changed |= self.finish_agentic_preparation()?;
+            changed |= self.admission.advance_agentic_profile(self.now_ms)?;
+            changed |= self.cancel_expired_agentic_profile()?;
+            changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
+            if self.admission.agentic_profile_client_complete(self.now_ms) {
+                return Ok(());
+            }
             changed |= self.release_ready_arrivals()?;
             if self.defer_drive && self.step_freed_slot {
                 self.drive_pending = true;
@@ -993,6 +1022,66 @@ where
             self.profile_observers_started = true;
         }
         Ok(())
+    }
+
+    /// The client cancellation boundary is separate from a committed engine
+    /// batch's completion. Native cancellation suppresses future delivery but
+    /// does not rewind the already executed batch or claim server quiescence.
+    fn cancel_expired_agentic_profile(&mut self) -> anyhow::Result<bool> {
+        let Some((_, grace, _)) = self.admission.agentic_profile_deadlines() else {
+            return Ok(false);
+        };
+        if self.profile_cancel_started || self.now_ms < grace {
+            return Ok(false);
+        }
+        self.profile_cancel_started = true;
+        let requests = self.admission.agentic_profile_pending_request_ids();
+        for uuid in requests {
+            let state = self
+                .requests
+                .get(&uuid)
+                .context("profile cancellation lost request state")?;
+            let scheduler_id = state.scheduler_id();
+            let busy = if let Some(scheduler_id) = scheduler_id {
+                self.engine.request_has_committed_pass(scheduler_id, uuid)?
+            } else {
+                false
+            };
+            if let Some(scheduler_id) = scheduler_id {
+                let effects = self.engine.apply_command(
+                    scheduler_id,
+                    Command::CancelRequest {
+                        request_id: uuid,
+                        discard_pending_output: true,
+                    },
+                    self.now_ms,
+                )?;
+                self.apply_engine_observations(
+                    effects.engine_events,
+                    KvIngestBoundary::SchedulerCommand,
+                )?;
+            } else if !self.placement.cancel_pending(uuid) {
+                bail!("profile queued request {uuid} was absent from its router");
+            }
+            self.collector
+                .on_terminal(uuid, self.now_ms, ReplayTerminalStatus::Canceled);
+            self.admission.defer_causal_terminal(
+                uuid,
+                self.now_ms,
+                ReplayTerminalStatus::Canceled,
+            )?;
+            if busy {
+                self.profile_unsettled_requests += 1;
+            } else {
+                self.admission.defer_quiescent(uuid, self.now_ms)?;
+            }
+            self.requests.remove(&uuid);
+            self.profile_canceled_requests += 1;
+            self.progress.inc_completed();
+            let placements = self.placement.request_terminal(uuid, self.now_ms)?;
+            self.dispatch_placements(placements)?;
+        }
+        Ok(true)
     }
 
     fn finish_agentic_preparation(&mut self) -> anyhow::Result<bool> {
@@ -1382,6 +1471,9 @@ where
         if self.drive_started {
             return Ok(false);
         }
+        if self.max_sim_time_ms.is_some() && self.admission.agentic_profile_report().is_some() {
+            bail!("agentic_profile cannot be combined with max_sim_time_ms");
+        }
         if let Some(cap_ms) = self.max_sim_time_ms
             && (!cap_ms.is_finite() || cap_ms < 0.0)
         {
@@ -1497,6 +1589,13 @@ where
         }
         if let Some(phases) = self.admission.agentic_phase_evidence() {
             self.collector.set_agentic_phases(phases);
+        }
+        if let Some(mut profile) = self.admission.agentic_profile_report() {
+            profile.finished_at_ms = Some(self.now_ms);
+            profile.canceled_requests = self.profile_canceled_requests;
+            profile.unsettled_server_requests =
+                self.profile_unsettled_requests + self.requests.len();
+            self.collector.set_agentic_profile(profile);
         }
         if let Some(transcript) = self.admission.agentic_lifecycle_transcript() {
             self.collector.set_agentic_lifecycle(transcript);
@@ -1635,6 +1734,95 @@ mod agentic_warmup_tests {
         )
         .unwrap()
         .with_per_request_records(true)
+    }
+
+    #[test]
+    fn profile_recycles_lanes_and_stops_new_arrivals_at_cutoff() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            let mut replay = runtime(backend, 1024, 3.0);
+            replay
+                .admission
+                .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                    duration_seconds: 0.25,
+                    response_grace_seconds: 0.03,
+                    ..Default::default()
+                })
+                .unwrap();
+            let report = replay.run().unwrap().0.finish();
+            let profile = report.agentic_profile.as_ref().unwrap();
+            let origin = profile.profile_start_ms.unwrap();
+            let cutoff = profile.admission_cutoff_ms.unwrap();
+            assert!(profile.plays_started >= 3, "{backend:?}: {profile:?}");
+            assert!(profile.client_completed_plays >= 2);
+            assert_eq!(cutoff - origin, 250.0);
+            assert!(
+                report
+                    .per_request
+                    .iter()
+                    .all(|request| request.arrival_time_ms + origin < cutoff)
+            );
+            assert_eq!(profile.client_in_flight_requests, 0);
+            assert!(profile.admission_closed);
+        }
+    }
+
+    #[test]
+    fn profile_grace_includes_return_and_zero_grace_cancels_busy_pass() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            for grace in [0.0, 0.03] {
+                let mut replay = runtime(backend, 1024, 20.0);
+                replay
+                    .admission
+                    .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                        duration_seconds: 0.051,
+                        response_grace_seconds: grace,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                let report = replay.run().unwrap().0.finish();
+                let profile = report.agentic_profile.as_ref().unwrap();
+                assert_eq!(report.per_request.len(), 1);
+                if grace == 0.0 {
+                    assert_eq!(
+                        report.per_request[0].terminal_status,
+                        ReplayTerminalStatus::Canceled
+                    );
+                    assert_eq!(profile.canceled_requests, 1);
+                    assert_eq!(profile.unsettled_server_requests, 1);
+                    assert_eq!(profile.finished_at_ms, profile.admission_cutoff_ms);
+                } else {
+                    assert_eq!(
+                        report.per_request[0].terminal_status,
+                        ReplayTerminalStatus::Completed
+                    );
+                    assert!(profile.finished_at_ms.unwrap() > profile.admission_cutoff_ms.unwrap());
+                    assert_eq!(profile.observation_duration_ms, Some(20.0));
+                    assert_eq!(profile.canceled_requests, 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn profile_summary_and_detailed_metrics_match_including_grace() {
+        for backend in [Backend::Vllm, Backend::Sglang] {
+            let run = |capture| {
+                let mut replay = runtime(backend, 1024, 20.0).with_per_request_records(capture);
+                replay
+                    .admission
+                    .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                        duration_seconds: 0.051,
+                        response_grace_seconds: 0.03,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                replay.run().unwrap().0.finish()
+            };
+            assert_eq!(
+                serde_json::to_value(run(false)).unwrap(),
+                serde_json::to_value(run(true)).unwrap()
+            );
+        }
     }
 
     #[derive(Default)]

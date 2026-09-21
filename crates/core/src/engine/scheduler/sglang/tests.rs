@@ -469,6 +469,46 @@ fn retraction_ratio_is_estimated_from_survivors_before_the_forward() {
 }
 
 #[test]
+fn committed_decode_membership_excludes_retracted_requests() {
+    let mut core = SglangCore::new(test_args(2, 4, 16));
+    let completed = Uuid::from_u128(90_012);
+    let retracted = Uuid::from_u128(90_013);
+    // Both requests fill a page and need one more slot. The request without
+    // output is retracted; its page lets the surviving request finish.
+    for (uuid, tokens, prompt_len, max_output_tokens) in [
+        (completed, vec![1, 2, 3, 10], 3, 2),
+        (retracted, vec![5, 6, 7, 8], 4, 5),
+    ] {
+        let allocation = core.kv_manager.allocate_for_request(&tokens).unwrap();
+        core.running.push(SglangRequest {
+            uuid,
+            sequence_tokens: tokens,
+            prompt_len,
+            max_output_tokens,
+            planned_output_ids: None,
+            kv_lease: allocation.lease,
+            materialized_tokens: 4,
+            allocated_tokens: 4,
+        });
+    }
+    let pass = core.execute_hidden_pass(0.0);
+    assert_eq!(pass.committed_requests, vec![completed]);
+    assert!(
+        pass.output_signals
+            .iter()
+            .any(|signal| signal.uuid == completed && signal.completed)
+    );
+    assert!(
+        !pass
+            .output_signals
+            .iter()
+            .any(|signal| signal.uuid == retracted)
+    );
+    assert_eq!(core.waiting.front().unwrap().uuid, retracted);
+    assert!(core.running.is_empty());
+}
+
+#[test]
 fn fresh_prefill_tracks_cache_owned_prefix_pages_and_pressure_event() {
     let args = test_args(8, 4, 16);
     let config = SglangConfig::from_args(&args);

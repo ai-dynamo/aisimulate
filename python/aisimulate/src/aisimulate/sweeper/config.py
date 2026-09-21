@@ -27,7 +27,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
-from aisimulate.config.traffic import AgenticSnapshotOptions
+from aisimulate.config.traffic import AgenticProfileOptions, AgenticSnapshotOptions
 
 from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
 from ..config.engine import NgramSpeculationConfig
@@ -275,6 +275,7 @@ class Workload(BaseModel):
     agentic_lanes: int | None = Field(default=None, strict=True, gt=0)
     agentic_snapshot: AgenticSnapshotOptions | None = None
     agentic_warmup: bool = Field(default=False, strict=True)
+    agentic_profile: AgenticProfileOptions | None = None
     # Closed-loop replay over a *trace*: cap in-flight requests at this many (the
     # trace's timestamps are ignored; a new request starts as one finishes). For a
     # *synthetic* closed-loop workload use ``concurrency`` or ``kv_load_ratio`` instead.
@@ -384,6 +385,11 @@ class Workload(BaseModel):
 
     @model_validator(mode="after")
     def _validate_workload(self) -> Workload:
+        if self.agentic_profile is not None:
+            if self.agentic_snapshot is None:
+                raise ValueError("agentic_profile requires agentic_snapshot")
+            if self.max_sim_time_ms is not None:
+                raise ValueError("agentic_profile cannot be combined with max_sim_time_ms")
         if self.weka_nested_timestamp_basis is not None and (
             self.trace_path is None or self.source_type != "trace" or self.trace_format != "weka"
         ):
