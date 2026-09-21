@@ -200,9 +200,9 @@ impl BoundedSummary {
             total_input_tokens: self.input,
             total_output_tokens: self.output,
         };
-        let seconds = (self.duration_ms / 1000.0).max(1e-9);
+        // The base collector already subtracts the profile epoch origin.
         let throughput = &mut report.throughput;
-        throughput.duration_ms = self.duration_ms;
+        let seconds = (throughput.duration_ms / 1000.0).max(1e-9);
         throughput.request_throughput_rps = self.completed as f64 / seconds;
         throughput.input_throughput_tok_s = self.input as f64 / seconds;
         throughput.output_throughput_tok_s = self.output as f64 / seconds;
