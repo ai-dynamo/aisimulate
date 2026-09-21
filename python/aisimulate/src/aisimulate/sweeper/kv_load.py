@@ -46,6 +46,7 @@ def _per_rank_capacity_tokens(
     memory_fraction: float,
     nextn: int,
     fpm_profile_json: str | None = None,
+    context_length: int | None = None,
     model_controls: tuple[tuple[str, str | int | bool], ...] = (),
 ) -> int:
     tokens = estimate_kv_tokens(
@@ -59,6 +60,7 @@ def _per_rank_capacity_tokens(
         max_batch_size=max_batch_size,
         memory_fraction=memory_fraction,
         nextn=nextn,
+        **({"context_length": context_length} if context_length is not None else {}),
         **({"fpm_profile": json.loads(fpm_profile_json)} if fpm_profile_json is not None else {}),
         **({"model_controls": dict(model_controls)} if model_controls else {}),
     )
@@ -111,6 +113,7 @@ def _role_capacity_tokens(
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),
             fpm_profile_json=json.dumps(profile, sort_keys=True) if profile is not None else None,
+            context_length=sample.get("context_length"),
             nextn=int(resolved.get("nextn", sample.get("aic_nextn")) or 0),
             model_controls=tuple(
                 (name, resolved.get(name, sample.get(name)))
@@ -132,7 +135,7 @@ def _role_grouped_capacity(
     role: str,
     config: ReplicaParallelConfig,
     backend_version: str,
-    context_length: int,
+    request_occupancy_tokens: int,
 ) -> tuple[int, int, int] | None:
     resolved = sample.get("forward_pass_estimators", {}).get(role, {}).get("config")
     if resolved is None:
@@ -176,13 +179,6 @@ def _role_grouped_capacity(
         if resolved.get(name, sample.get(name)) is not None
         and not (name == "enable_eplb" and resolved.get(name, sample.get(name)) is False)
     }
-    # Validate the actual scheduler envelope before using a one-token forward
-    # for steady-decode occupancy. Fixed non-KV bounds do not change with this
-    # footprint query; only the per-request cache peak changes.
-    deployment.resources.validate_envelope(
-        max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
-        max_batch_size=int(sample[f"{role}_max_num_seqs"]),
-    )
     try:
         budget = estimate_grouped_cache_budget(
             shape,
@@ -191,8 +187,9 @@ def _role_grouped_capacity(
             backend=identity["backend"],
             backend_version=identity["backend_version"],
             fpm_profile=profile,
-            context_length=context_length,
-            max_num_tokens=1,
+            context_length=sample.get("context_length"),
+            request_occupancy_tokens=request_occupancy_tokens,
+            max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(
                 sample[f"{role}_gpu_memory_utilization"]
@@ -208,7 +205,7 @@ def _role_grouped_capacity(
             raise InfeasibleKVCapacity(str(exc)) from exc
         raise
     per_rank_bytes = budget["total_kv_size_bytes"]
-    per_request_bytes = budget["request_peak_cache_bytes"]
+    per_request_bytes = budget["request_occupancy_cache_bytes"]
     ranks = shape.dp * config.replicas
     return per_rank_bytes * ranks, per_request_bytes, (per_rank_bytes // per_request_bytes) * ranks
 
@@ -257,7 +254,7 @@ def resolve_kv_load(
             role=role,
             config=config,
             backend_version=backend_version,
-            context_length=expected_tokens_per_request,
+            request_occupancy_tokens=expected_tokens_per_request,
         )
         if grouped is not None:
             capacity_bytes[role], request_bytes[role], request_capacities[role] = grouped

@@ -93,6 +93,10 @@ def materialize_aic_num_gpu_blocks(
                         raise ValueError(f"{name} conflicts with canonical timing configuration")
                     memory_fields[name] = lowered[name]
             request = {key: value for key, value in authored.items() if key not in memory_fields}
+            if request.get("fpm_profile") is not None:
+                from aisimulate_core.sdk.fpm_profile import _require_forward_pass_profile_memory
+
+                _require_forward_pass_profile_memory(RustForwardPassPerfModel.normalize_config(request))
             model = RustForwardPassPerfModel.best_available(request)
             try:
                 diagnostics = model.diagnostics()
@@ -224,6 +228,7 @@ def materialize_aic_num_gpu_blocks(
         systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
         **({"fpm_profile": lowered["aic_fpm_profile"]} if lowered.get("aic_fpm_profile") is not None else {}),
+        **({"context_length": lowered.get("max_model_len")} if lowered.get("aic_fpm_profile") is not None else {}),
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)
@@ -249,6 +254,9 @@ def _materialize_profile_cache_groups(raw: dict[str, Any], diagnostics: dict[str
         "moe_ep_size": raw.get("aic_moe_ep_size"),
     }
     deployment = load_fpm_profile(profile).select(**identity)
+    deployment.resources.require_memory()
+    if deployment.resources.runtime_memory is not None and raw.get("num_gpu_blocks") is not None:
+        raise ValueError("runtime FPM memory cannot use fixed num_gpu_blocks; use the recorded cache allocation")
     if deployment.resources.cache_layout != "grouped":
         return False
     if raw.get("num_gpu_blocks") is not None:
@@ -324,6 +332,7 @@ def estimate_num_gpu_blocks(
     cuda_graph_reserved_bytes: int = 0,
     diagnostics: dict[str, Any] | None = None,
     fpm_profile: dict[str, Any] | None = None,
+    context_length: int | None = None,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -401,6 +410,7 @@ def estimate_num_gpu_blocks(
             systems_path=systems_path,
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
             **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
+            **({"context_length": context_length} if context_length is not None else {}),
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
     )

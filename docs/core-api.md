@@ -159,6 +159,35 @@ list and no scalar token rate. Existing linear profiles keep their serialized
 shape. Python exports `FpmCacheGroup` from `aisimulate.fpm_profile` and
 `aisimulate_core.fpm_profile`; Rust exports it from `aisimulate_core::perfmodel`.
 
+Memory can be pending, declared, or observed at runtime. The four legacy fields
+`weights_bytes`, `activations_bytes`, `runtime_overhead_bytes`, and
+`comm_overhead_bytes` are optional. A complete set retains the existing non-KV
+budget calculation. A partial set is planning evidence only: missing values are
+not zero, and cache sizing or replay fails with an instruction to finalize
+runtime memory. Schema validation, collection planning, and direct timing queries
+can use a pending profile. Omitted fields remain absent from serialized output.
+
+Alternatively, `resources.runtime_memory` records the selected deployment's
+initialized cache allocation:
+
+```json
+{
+  "kv_cache_bytes": 1073741824,
+  "gpu_memory_utilization": 0.9,
+  "max_model_len": 32768,
+  "provenance": "Verified collection worker initialization; see saved evidence."
+}
+```
+
+The byte count is a positive integer no greater than `2**53`; utilization is
+finite and in `(0, 1]`; context and provenance are required. Runtime memory
+cannot coexist with any of the four legacy non-KV fields. Python exposes
+`FpmRuntimeMemoryProfile` and resource properties `memory_source`
+(`pending`, `declared`, or `runtime`) and `memory_ready`; `require_memory()`
+rejects pending resources. Rust exposes `FpmRuntimeMemoryConfig` and
+`FpmResourceConfig::require_memory()`. Rust callers using resource struct literals
+must wrap legacy byte values in `Some(...)` and supply `runtime_memory: None`.
+
 Each group has a unique `name`, `kind` (`attention` or `convolution`), positive
 `num_layers`, `block_size_tokens`, and `page_size_bytes`, and an optional positive
 `sliding_window`. An omitted or null window retains full history; convolution
@@ -181,9 +210,10 @@ requires the native extension; it does not require GPU access or measured data.
 | --- | --- |
 | `total_gpu_capacity_bytes` | Positive rank-local GPU capacity. |
 | `memory_fraction_kind`, `memory_fraction_value` | `of_total` and the fraction of GPU memory available to the worker. |
-| `max_num_tokens`, `max_batch_size` | Positive rank-local scheduler limits within the profile's declared envelope. |
-| `context_length` | Optional positive request bound, at most the profile context; defaults to that profile context. |
-| `cuda_graph_reserved_bytes` | Separate nonnegative rank-local reservation; defaults to zero. |
+| `max_num_tokens`, `max_batch_size` | Positive rank-local scheduler limits within a declared envelope; exact recorded values for runtime memory. |
+| `context_length` | Optional positive request bound, at most the profile context and runtime `max_model_len` when present; defaults to the profile context. |
+| `request_occupancy_tokens` | Optional positive logical request length within the selected context, for a separate steady decode footprint with one new token per forward pass. |
+| `cuda_graph_reserved_bytes` | Separate nonnegative reservation for declared memory; must be zero for runtime memory. |
 | `tolerance_fraction` | Optional fraction in `[0, 1)` deducted from the resulting cache byte budget. |
 
 The result includes `total_kv_size_bytes`, `memory_breakdown`,
@@ -196,10 +226,29 @@ the reduced byte budget. For grouped caches, `kv_size_per_token_bytes`,
 `total_kv_size_tokens`, and the adjusted token capacity are null (`None` in Python).
 There is no equivalent scalar token capacity.
 
+When `request_occupancy_tokens` is supplied, the result also includes
+`request_occupancy_cache_bytes`. KV-relative synthetic loads use this native
+footprint while retaining the actual scheduler settings and context for resource
+admission. Observed linear pools retain their recorded capacity even when timing
+coverage is smaller; uncovered queries report timing errors.
+
+Runtime memory uses `kv_cache_bytes` directly and returns
+`memory_breakdown: null` (`Option::None` in Rust). It does not invent activation
+or other non-KV components. The requested memory fraction must exactly match the
+recorded utilization; the device budget must contain the observed cache pool.
+A different device capacity argument never rescales the pool or qualifies a new
+deployment. Changed scheduler settings require new runtime evidence. Explicit
+scalar cache-capacity overrides are rejected for runtime profiles in prediction,
+recommendation and replay; use the recorded allocation. A tolerance margin may
+reduce it through the canonical budget API.
+
 Python `estimate_kv_cache(..., fpm_profile=..., context_length=...)` delegates
-grouped profiles to this native budget method. `estimate_num_gpu_blocks` and the
+grouped and runtime-memory profiles to this native budget method.
+`estimate_num_gpu_blocks` also accepts `context_length` for runtime validation;
+it and the
 legacy Rust scalar `KvCacheEstimate` transport reject grouped profiles; use the
-groups and shared byte budget instead. Existing linear estimation is unchanged.
+groups and shared byte budget instead. Existing complete linear declarations
+keep their budget calculation and serialized shape.
 
 Grouped native execution supports cold aggregated vLLM, PP1/CP1, HBM-only cache,
 non-speculative decoding and `prefix_caching: false`. Prefix reuse, host/G3
@@ -339,7 +388,7 @@ nested paths. The supported namespaces are:
 
 The top-level `fpm_profile` contains the complete profile dictionary: pinned
 model revision, architecture, context length, expert count, deployment precision
-and topology, conservative resource bounds, and provenance. A profile requires
+and topology, cache geometry, memory evidence, and provenance. A profile requires
 an explicit literal `backend_version` that matches its selected deployment;
 slot aliases and omitted versions are rejected. Profile/schema and precision
 conflicts fail before estimator fallback. Omitted precision fields are filled
@@ -495,7 +544,7 @@ The supported `aisimulate_core::perfmodel` Rust surface is grouped as follows:
   `KvCacheEstimateOptions`, `KvCacheMemoryFraction`, and estimate/result/error
   types;
 - FPM profile cache resources: `FpmCacheGroup`, `FpmCacheKind`, `FpmCacheLayout`,
-  `FpmResourceConfig`, `FpmCacheBudgetRequest`, `FpmCacheBudget`, and
+  `FpmResourceConfig`, `FpmRuntimeMemoryConfig`, `FpmCacheBudgetRequest`, `FpmCacheBudget`, and
   `FpmCacheBudgetAdjusted`, through the canonical model/config budget method;
 - wire identity: `EngineConfig`, `ParallelMapping`, `QuantizationConfig`,
   `SpeculativeConfig`, `BackendKind`, `DatabaseMode`, and `DataType`;

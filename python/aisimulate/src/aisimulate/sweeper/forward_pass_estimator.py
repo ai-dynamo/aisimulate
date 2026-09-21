@@ -97,6 +97,10 @@ class ForwardPassEstimatorResolver:
         model: RustForwardPassPerfModel | None = None
         try:
             request_payload = RustForwardPassPerfModel.normalize_config(request)
+            if request_payload.get("fpm_profile") is not None:
+                from aisimulate_core.sdk.fpm_profile import _require_forward_pass_profile_memory
+
+                _require_forward_pass_profile_memory(request_payload)
             cache_key = json.dumps(request_payload, sort_keys=True)
             cached = self._resolved.get(cache_key)
             if cached is not None:

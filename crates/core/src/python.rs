@@ -694,6 +694,9 @@ fn aic_capacity_kwargs<'py>(
     kwargs.set_item("scheduler_block_size", role.rank.block_size)?;
     kwargs.set_item("max_num_tokens", role.rank.max_num_batched_tokens)?;
     kwargs.set_item("max_batch_size", role.rank.max_num_seqs)?;
+    if config.fpm_profile.is_some() {
+        kwargs.set_item("context_length", role.rank.max_model_len)?;
+    }
     kwargs.set_item("memory_fraction_kind", memory_fraction_kind)?;
     kwargs.set_item("memory_fraction_value", memory_fraction_value)?;
     kwargs.set_item("tp_size", config.tp)?;
@@ -820,6 +823,13 @@ fn materialize_aic_capacity(
                 .unwrap_or(ForwardPassWorkerType::Aggregated),
         )?
         .fpm_resources()?;
+    if let Some(resources) = &resources {
+        resources.require_memory()?;
+        ensure!(
+            resources.runtime_memory.is_none() || !capacity_is_explicit,
+            "runtime FPM memory cannot use fixed num_gpu_blocks; use the recorded cache allocation"
+        );
+    }
     if resources.as_ref().is_some_and(|resources| {
         resources.cache_layout == crate::perfmodel::fpm::FpmCacheLayout::Grouped
     }) {
@@ -862,7 +872,7 @@ fn materialize_aic_capacity(
 fn cap_role_capacity_to_fpm_decode_domain(
     role: &mut ReplayRoleConfig,
     decode_kv_ceiling: Option<u32>,
-    capacity_is_explicit: bool,
+    capacity_is_recorded: bool,
 ) -> Result<()> {
     // A timing-table token ceiling is not a physical grouped-cache budget.
     // Queries retain their logical contexts and report uncovered points normally.
@@ -872,7 +882,7 @@ fn cap_role_capacity_to_fpm_decode_domain(
     let Some(decode_kv_ceiling) = decode_kv_ceiling else {
         return Ok(());
     };
-    if capacity_is_explicit {
+    if capacity_is_recorded {
         return Ok(());
     }
     let covered_blocks = decode_kv_ceiling as usize / role.rank.block_size;
@@ -921,6 +931,10 @@ fn resolve_role_timing(
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
+    let resources = config.estimator_request(worker_type)?.fpm_resources()?;
+    if let Some(resources) = &resources {
+        resources.require_memory()?;
+    }
     let mut timing = AicTimingModel::build(&mut config, worker_type)?;
     if let Some(model) = &timing.fpm_model
         && model.fpm_query_coverage()?.is_some()
@@ -939,7 +953,10 @@ fn resolve_role_timing(
     cap_role_capacity_to_fpm_decode_domain(
         role,
         timing.fpm_decode_kv_ceiling,
-        capacity_is_explicit,
+        capacity_is_explicit
+            || resources
+                .as_ref()
+                .is_some_and(|resources| resources.runtime_memory.is_some()),
     )?;
     let mut resolved = serde_json::to_value(config.estimator_request(worker_type)?)?;
     if let Some(object) = resolved.as_object_mut() {

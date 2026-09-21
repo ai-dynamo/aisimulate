@@ -102,7 +102,7 @@ def _configs(
 
 
 def _commands(request: SupportRequest, root: Path, recommendation_names: list[str]) -> dict[str, Any]:
-    return {
+    commands = {
         "fpm_plan_local": fpm_cli_args(request, output_dir=root, plan_only=True),
         "fpm_run_local": [
             "aisimulate",
@@ -140,6 +140,19 @@ def _commands(request: SupportRequest, root: Path, recommendation_names: list[st
             for name in recommendation_names
         ],
     }
+    if request.fpm_profile is not None and not request.profile_deployment().resources.memory_ready:
+        commands["finalize"] = [
+            "aisimulate",
+            "onboard",
+            "finalize",
+            "--config",
+            str(root / "request.yaml"),
+            "--output-dir",
+            str(root),
+            "--resolved-output-dir",
+            str(root.with_name(root.name + "-resolved")),
+        ]
+    return commands
 
 
 def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any], dict[Path, bytes]]:
@@ -233,28 +246,35 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
 
         deployment = request.profile_deployment()
         scheduler = prediction["engine"]["workers"]["aggregated"]["scheduler"]
-        estimate = estimate_kv_cache(
-            request.identity.model,
-            request.identity.gpu,
-            request.identity.framework,
-            backend_version=request.identity.framework_version,
-            max_num_tokens=scheduler["max_batched_tokens"],
-            max_batch_size=scheduler["max_sequences"],
-            memory_fraction_kind="of_total",
-            memory_fraction_value=request.collection.memory_fraction,
-            tp_size=deployment.tp,
-            pp_size=deployment.pp,
-            attention_dp_size=deployment.dp,
-            moe_tp_size=deployment.moe_tp,
-            moe_ep_size=deployment.moe_ep,
-            fpm_profile=request.fpm_profile,
-            **(
-                {"context_length": request.search.context_length}
-                if deployment.resources.cache_layout == "grouped"
-                else {}
-            ),
+        estimate = (
+            estimate_kv_cache(
+                request.identity.model,
+                request.identity.gpu,
+                request.identity.framework,
+                backend_version=request.identity.framework_version,
+                max_num_tokens=scheduler["max_batched_tokens"],
+                max_batch_size=scheduler["max_sequences"],
+                memory_fraction_kind="of_total",
+                memory_fraction_value=request.collection.memory_fraction,
+                tp_size=deployment.tp,
+                pp_size=deployment.pp,
+                attention_dp_size=deployment.dp,
+                moe_tp_size=deployment.moe_tp,
+                moe_ep_size=deployment.moe_ep,
+                fpm_profile=request.fpm_profile,
+                context_length=request.search.context_length,
+            )
+            if deployment.resources.memory_ready
+            else {"memory_source": "pending", "simulation_ready": False}
         )
-        if deployment.resources.cache_layout == "grouped":
+        if not deployment.resources.memory_ready:
+            plan["fpm"]["scheduling_policy"] = (
+                "Synchronous scheduling in both phases; current collector prefill benchmarking requires it. "
+                "This is a collection policy, not the default for arbitrary vLLM serving."
+                if request.identity.framework_version == "0.27.0"
+                else "Native timing collection policy; runtime memory observation is unavailable for this vLLM version."
+            )
+        elif deployment.resources.cache_layout == "grouped":
             if estimate["request_peak_cache_bytes"] > estimate["total_kv_size_bytes"]:
                 raise ValueError(
                     "declared FPM resources leave insufficient rank-local bytes for grouped cache peak allocation"
@@ -284,6 +304,31 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             "Collect matching prefill/decode timings into the local systems tree before prediction or recommendation. "
             "The profile resource estimate does not establish timing coverage or measured accuracy."
         )
+        if not deployment.resources.memory_ready:
+            plan["search"]["baseline_rule"] = (
+                "Selected profile deployment; memory remains pending runtime initialization. "
+                "Collection is permitted; prediction, recommendation and replay require finalized memory."
+            )
+            plan["prerequisites"][0].update(
+                status="runtime_memory_pending",
+                detail=(
+                    "Identity, precision, topology and cache geometry are declared. Runtime memory is collected "
+                    "during worker initialization for supported vLLM 0.27.0 layouts; other versions can collect "
+                    "timings but leave memory unresolved. No activation or non-KV byte declaration is required. "
+                    "Run onboard finalize after successful collection, then review the resolved profile."
+                ),
+            )
+        elif deployment.resources.memory_source == "runtime":
+            plan["search"]["baseline_rule"] = (
+                "Selected deployment uses observed cache capacity for the exact recorded runtime settings. "
+                "Timing coverage and silicon accuracy require separate validation."
+            )
+            plan["prerequisites"][0].update(
+                status="runtime_memory_resolved",
+                detail=(
+                    "Observed cache capacity and grouped geometry are bound to this deployment and runtime envelope."
+                ),
+            )
         plan["outputs"]["fpm_model_profile"] = str(root / "fpm-model-profile.json")
     yaml_documents = {
         Path("request.yaml"): request.model_dump(mode="json", exclude_none=True),
@@ -295,6 +340,11 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
         documents[Path("fpm-model-profile.json")] = (
             json.dumps(request.fpm_profile.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
         ).encode()
+        from .finalization import finalization_manifest
+
+        manifest = finalization_manifest(request)
+        if manifest is not None:
+            documents[Path("finalization.json")] = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
     documents[Path("systems") / source_spec.name] = source_spec.read_bytes()
     documents[Path("commands.json")] = (json.dumps(commands, indent=2, sort_keys=True) + "\n").encode()
     plan["generated_files_sha256"] = {
@@ -388,6 +438,9 @@ def check_plan(request: SupportRequest, root: Path, *, allow_missing: bool = Fal
             raise ValueError(
                 f"generated plan input {destination} was modified or missing; choose a new output directory"
             )
+    from .finalization import verify_finalized_data
+
+    verify_finalized_data(saved, root)
 
 
 def create_plan(request: SupportRequest, output_dir: str | Path, *, overwrite: bool = False) -> dict[str, Any]:

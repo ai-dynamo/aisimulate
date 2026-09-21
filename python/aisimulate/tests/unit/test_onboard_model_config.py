@@ -134,7 +134,8 @@ def test_guided_collection_edit_reestimates_resources_before_acceptance(tmp_path
     assert request.search.context_length == 8192
     assert request.collection.max_num_tokens == profile.resources.max_num_tokens == 4096
     assert request.collection.max_prefill_cudagraph_size == 512
-    assert profile.resources.activations_bytes == 2 * 4096 * 4096 * 11
+    assert profile.resources.memory_source == "pending"
+    assert json.loads(profile.resources.provenance)["fields"]["activations_bytes"]["value"] == 2 * 4096 * 4096 * 11
     assert request.scheduler_limits() == {"max_batched_tokens": 4096, "max_sequences": 256}
     assert not any("Input tokens" in prompt or "Concurrent requests" in prompt for prompt in prompts)
     command = fpm_cli_args(request, output_dir=tmp_path / "plan", plan_only=True)
@@ -588,7 +589,7 @@ def test_guided_review_requires_explicit_accept_before_creating_output(tmp_path,
     review = transcript.split("Review FPM profile before saving:", 1)[1]
     assert "Text decoder only" in review
     assert "encoders, projectors, preprocessing" in review
-    assert "Full multimodal deployment memory and latency are not modeled" in review
+    assert "full multimodal latency is not modeled" in review
     assert "weights_bytes: 2147483648" in transcript
     assert "source: user override" in transcript
     assert "per rank" in transcript
@@ -691,7 +692,8 @@ def test_guided_review_recomputes_inferred_kv_and_activation_bounds(tmp_path, mo
     deployment = request.profile_deployment()
     assert deployment.parallel_tuple == (4, 1, 1, 1, 1, 1)
     assert deployment.resources.kv_bytes_per_token == 16384  # 2 K/V * 32 layers * 2 local heads * 128 * 1 byte
-    assert deployment.resources.activations_bytes == 167772160  # 2 bytes * 4096 tokens * 4096 width * 5
+    assert deployment.resources.activations_bytes is None
+    assert json.loads(deployment.resources.provenance)["fields"]["activations_bytes"]["value"] == 167772160
     assert deployment.resources.max_num_tokens == 4096
     assert deployment.resources.max_batch_size == 8
     provenance = json.loads(request.fpm_profile.provenance)["fields"]
@@ -735,13 +737,13 @@ def test_guided_review_rejects_inconsistent_edits_and_retains_complete_prior_req
     assert "Previous profile values retained" in transcript
 
 
-def test_guided_review_collects_new_dependency_then_reviews_it_before_accepting(tmp_path, monkeypatch, capsys):
+def test_guided_review_keeps_unavailable_activation_memory_pending(tmp_path, monkeypatch, capsys):
     source, resources = _files(
         tmp_path, overrides={name: value for name, value in _OVERRIDES.items() if name != "activations_bytes"}
     )
     output = tmp_path / "new" / "request.yaml"
     prompts = []
-    answers = iter(["edit", "fmha_quant_mode", "fp8", "2 GiB", "accept"])
+    answers = iter(["edit", "fmha_quant_mode", "fp8", "accept"])
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
 
     def respond(prompt):
@@ -753,15 +755,16 @@ def test_guided_review_collects_new_dependency_then_reviews_it_before_accepting(
 
     assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
 
-    assert len(prompts) == 5
-    assert prompts[3].startswith("activations_bytes")
+    assert len(prompts) == 4
+    assert not any(prompt.startswith("activations_bytes") for prompt in prompts)
     assert prompts[-1] == "Review action (accept/edit/cancel): "
     deployment = SupportRequest.from_yaml(output).profile_deployment()
     assert deployment.fmha_quant_mode == "fp8"
-    assert deployment.resources.activations_bytes == 2 * 1024**3
+    assert deployment.resources.activations_bytes is None
+    assert deployment.resources.memory_source == "pending"
     review = capsys.readouterr().out.rsplit("Review FPM profile before saving:", 1)[1]
     assert "fmha_quant_mode: fp8" in review
-    assert "activations_bytes: 2147483648 (source: user override" in review
+    assert "No activation or non-KV byte estimate is required" in review
 
 
 def test_guided_review_rolls_back_edit_and_new_dependency_together_when_invalid(tmp_path, monkeypatch, capsys):
@@ -773,7 +776,7 @@ def test_guided_review_rolls_back_edit_and_new_dependency_together_when_invalid(
     baseline = tmp_path / "baseline.yaml"
     assert cli.main(_args(baseline, source, resources)) == 0
     output = tmp_path / "request.yaml"
-    _terminal(monkeypatch, ["edit", "fmha_quant_mode", "fp8", "3 GiB", "accept"])
+    _terminal(monkeypatch, ["edit", "activations_bytes", "3 GiB", "accept"])
 
     assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
 
@@ -861,8 +864,6 @@ def test_scripted_profile_failure_lists_every_unresolved_field_without_input(tmp
     for field in (
         "context_length",
         "num_experts",
-        "weights_bytes",
-        "activations_bytes",
         "kv_bytes_per_token",
         "gemm_quant_mode",
         "moe_quant_mode",
@@ -987,7 +988,7 @@ def test_real_cli_multimodal_intake_preserves_text_scope_and_original_source(tmp
     assert result.returncode == 0, result.stderr
     assert "Text decoder only" in result.stdout
     assert "encoders, projectors, preprocessing" in result.stdout
-    assert "Full multimodal deployment memory and latency are not modeled" in result.stdout
+    assert "full multimodal latency is not modeled" in result.stdout
     assert "Review action" not in result.stdout
     request = SupportRequest.from_yaml(output)
     assert request.identity.model == "example/multimodal-checkpoint"
@@ -1013,7 +1014,7 @@ def test_real_cli_unknown_multimodal_decoder_lists_missing_resource_bounds_witho
     )
     assert result.returncode == 2, result.stderr
     assert "Text decoder only" in result.stdout
-    for field in ("weights_bytes", "activations_bytes", "kv_bytes_per_token", "cache_layout"):
+    for field in ("kv_bytes_per_token", "cache_layout"):
         assert field in result.stderr
     assert "--resource-overrides" in result.stderr
     assert "unsupported encoder, multimodal" not in result.stderr
@@ -1128,12 +1129,12 @@ def test_guided_memory_accepts_exact_units_and_reprompts_invalid_quantities(tmp_
     overrides = {key: value for key, value in _OVERRIDES.items() if key != "weights_bytes"}
     source, resources = _files(tmp_path, config=config, overrides=overrides)
     output = tmp_path / "request.yaml"
-    prompts = _terminal(monkeypatch, ["many", "0.1 B", "-1", "2 GiB", "accept"])
+    prompts = _terminal(monkeypatch, ["edit", "weights_bytes", "many", "0.1 B", "-1", "2 GiB", "accept"])
 
     assert cli.main(_args(output, source, resources) + ["--interactive"]) == 0
 
-    assert len(prompts) == 5
-    assert all("weights_bytes" in prompt and "per rank" in prompt for prompt in prompts[:-1])
+    assert len(prompts) == 7
+    assert all("weights_bytes" in prompt and "per rank" in prompt for prompt in prompts[2:-1])
     assert SupportRequest.from_yaml(output).profile_deployment().resources.weights_bytes == 2 * 1024**3
     assert "whole number of bytes" in capsys.readouterr().out
 

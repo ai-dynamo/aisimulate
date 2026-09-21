@@ -337,6 +337,15 @@ class SupportRequest(StrictModel):
             settings["sources"]["gpu_memory_utilization"] = (
                 "reviewed fraction of total GPU memory; initial policy is 0.90; runtime fit remains unverified"
             )
+        deployment = self.profile_deployment()
+        runtime = deployment.resources.runtime_memory if deployment is not None else None
+        if runtime is not None:
+            settings["sources"]["context_length"] = (
+                f"reviewed context within the observed runtime memory limit of {runtime.max_model_len} tokens"
+            )
+            settings["sources"]["gpu_memory_utilization"] = (
+                f"recorded runtime memory fraction {runtime.gpu_memory_utilization}; reused without scaling capacity"
+            )
         return settings
 
     @model_validator(mode="after")

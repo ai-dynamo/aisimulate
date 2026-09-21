@@ -246,10 +246,15 @@ def _assess(
     known = sum(resolved[field] for field in _NON_KV_BYTES if field in resolved)
     grouped = resolved.get("cache_layout") == "grouped"
     no_grouped_cache_budget = grouped and known >= hardware.memory_budget_bytes
-    if grouped and draft.profile is not None and known < hardware.memory_budget_bytes:
+    complete_memory_estimate = resolved.keys() >= set(_NON_KV_BYTES)
+    if grouped and draft.profile is not None and complete_memory_estimate and known < hardware.memory_budget_bytes:
         try:
             from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
+            # This temporary complete estimate is used only for the shortlist.
+            # The saved profile keeps memory pending until runtime observation.
+            estimate_profile = draft.profile.model_dump(mode="json")
+            estimate_profile["deployments"][0]["resources"].update({name: resolved[name] for name in _NON_KV_BYTES})
             estimate = RustForwardPassPerfModel.estimate_cache_budget(
                 {
                     "model": selected.identity.model,
@@ -262,7 +267,7 @@ def _assess(
                     "attention_dp": sizes[1],
                     "moe_tp_size": sizes[2],
                     "moe_ep_size": sizes[3],
-                    "fpm_profile": draft.profile.model_dump(mode="json"),
+                    "fpm_profile": estimate_profile,
                 },
                 {
                     "total_gpu_capacity_bytes": hardware.per_gpu_bytes,
@@ -280,7 +285,9 @@ def _assess(
         known += estimate["request_peak_cache_bytes"]
     elif "kv_bytes_per_token" in resolved:
         known += resolved["kv_bytes_per_token"] * (request.search.context_length + 1)
-    complete_resources = draft.profile is not None if grouped else resolved.keys() >= _RANK_BYTES
+    complete_resources = (
+        draft.profile is not None and complete_memory_estimate if grouped else resolved.keys() >= _RANK_BYTES
+    )
     estimated = known if complete_resources else None
     if known > hardware.memory_budget_bytes or no_grouped_cache_budget:
         status = "rejected"
@@ -294,7 +301,8 @@ def _assess(
     elif draft.missing or not complete_resources:
         status = "needs_inputs"
         reasons = (
-            "Known geometry checks passed; resource/precision inputs are incomplete. "
+            "Known geometry checks passed; precision or planning estimates are incomplete. "
+            "Memory will be observed during collection; users need not supply non-KV byte estimates. "
             "A known byte lower bound below the budget does not establish fit.",
         )
     else:

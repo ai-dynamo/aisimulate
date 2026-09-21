@@ -1,12 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Explicit identity and resource bounds for decoder-only FPM simulation.
+"""Explicit identity, cache geometry and memory evidence for FPM simulation.
 
 Profiles describe every rank of a deployment without constructing operations.
-Resource values are declarations supplied by the caller, not GPU measurements
-or automatically inferred checkpoint metadata. Their provenance must say how
-they were obtained; CUDA graph reservations are supplied separately at runtime.
+Memory may remain pending during collection or use complete declared non-KV
+bytes or a runtime cache allocation. Provenance records how values were obtained.
 """
 
 from __future__ import annotations
@@ -49,18 +48,33 @@ class FpmCacheGroup(_ProfileModel):
         return self
 
 
-class FpmResourceProfile(_ProfileModel):
-    """Conservative rank-local bounds at a declared scheduler envelope.
+class FpmRuntimeMemoryProfile(_ProfileModel):
+    """Observed rank-local cache capacity for the exact runtime configuration.
 
-    ``max_num_tokens`` and ``max_batch_size`` apply to each attention-DP rank,
-    not the summed worker iteration used to query FPM timings. Overheads must
-    exclude the separately configured CUDA graph reservation.
+    This capacity already accounts for runtime graph and workspace reservations.
+    It is not a non-KV memory limit and must not be rescaled to another setting.
     """
 
-    weights_bytes: _Bytes
-    activations_bytes: _Bytes
-    runtime_overhead_bytes: _Bytes
-    comm_overhead_bytes: _Bytes
+    kv_cache_bytes: Annotated[int, Field(gt=0, le=2**53)]
+    gpu_memory_utilization: Annotated[float, Field(gt=0, le=1, allow_inf_nan=False)]
+    max_model_len: Annotated[int, Field(gt=0, le=2**64 - 1)]
+    provenance: _Nonempty
+
+
+class FpmResourceProfile(_ProfileModel):
+    """Rank-local cache geometry and optional memory evidence.
+
+    ``max_num_tokens`` and ``max_batch_size`` apply to each attention-DP rank,
+    not the summed worker iteration used to query FPM timings. Complete declared
+    non-KV bytes establish conservative bounds and exclude separate CUDA graph
+    reservations. Runtime capacity instead requires the exact recorded settings.
+    """
+
+    weights_bytes: _Bytes | None = None
+    activations_bytes: _Bytes | None = None
+    runtime_overhead_bytes: _Bytes | None = None
+    comm_overhead_bytes: _Bytes | None = None
+    runtime_memory: FpmRuntimeMemoryProfile | None = None
     kv_bytes_per_token: Annotated[int, Field(gt=0, le=2**53)] | None = None
     cache_layout: Literal["linear", "grouped"]
     cache_groups: list[FpmCacheGroup] = Field(default_factory=list)
@@ -70,8 +84,11 @@ class FpmResourceProfile(_ProfileModel):
 
     @model_validator(mode="after")
     def _exact_total(self) -> FpmResourceProfile:
-        if self.non_kv_bytes > 2**53:
+        declared = self._declared_bytes()
+        if sum(value for value in declared if value is not None) > 2**53:
             raise ValueError("total non-KV resource bytes must not exceed 2**53")
+        if self.runtime_memory is not None and any(value is not None for value in declared):
+            raise ValueError("runtime_memory cannot be combined with declared non-KV resource bytes")
         if self.cache_layout == "linear":
             if self.kv_bytes_per_token is None or self.cache_groups:
                 raise ValueError("linear cache requires kv_bytes_per_token and no cache_groups")
@@ -89,17 +106,54 @@ class FpmResourceProfile(_ProfileModel):
             result.pop("cache_groups", None)
         if self.kv_bytes_per_token is None:
             result.pop("kv_bytes_per_token", None)
+        for name in (
+            "weights_bytes",
+            "activations_bytes",
+            "runtime_overhead_bytes",
+            "comm_overhead_bytes",
+            "runtime_memory",
+        ):
+            if getattr(self, name) is None:
+                result.pop(name, None)
         return result
+
+    def _declared_bytes(self) -> tuple[int | None, ...]:
+        return self.weights_bytes, self.activations_bytes, self.runtime_overhead_bytes, self.comm_overhead_bytes
+
+    @property
+    def memory_source(self) -> Literal["pending", "declared", "runtime"]:
+        if self.runtime_memory is not None:
+            return "runtime"
+        return "declared" if all(value is not None for value in self._declared_bytes()) else "pending"
+
+    @property
+    def memory_ready(self) -> bool:
+        return self.memory_source != "pending"
+
+    def require_memory(self) -> None:
+        if not self.memory_ready:
+            raise ValueError(
+                "FPM memory is pending runtime profiling; collect and finalize runtime memory or provide "
+                "all four declared non-KV resource values before simulation"
+            )
 
     @property
     def non_kv_bytes(self) -> int:
-        return self.weights_bytes + self.activations_bytes + self.runtime_overhead_bytes + self.comm_overhead_bytes
+        self.require_memory()
+        if self.runtime_memory is not None:
+            raise ValueError("runtime memory records cache capacity, not a non-KV byte breakdown")
+        return sum(value for value in self._declared_bytes() if value is not None)
 
     def validate_envelope(self, *, max_num_tokens: int, max_batch_size: int) -> None:
         for name, requested in (("max_num_tokens", max_num_tokens), ("max_batch_size", max_batch_size)):
             if isinstance(requested, bool) or not isinstance(requested, int) or requested <= 0:
                 raise ValueError(f"{name} must be a positive integer, got {requested!r}")
             limit = getattr(self, name)
+            if self.runtime_memory is not None and requested != limit:
+                raise ValueError(
+                    f"runtime memory requires the exact recorded rank-local {name}={limit}; "
+                    "collect new runtime memory for changed scheduler settings"
+                )
             if requested > limit:
                 raise ValueError(
                     f"FPM resource envelope exceeded: requested rank-local {name}={requested}, "

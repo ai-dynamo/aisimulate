@@ -152,6 +152,26 @@ def test_fpm_exec_starts_leader_etcd_before_preflight():
     assert "time.monotonic() + 120" in script
 
 
+@pytest.mark.parametrize("pending_memory", [False, True])
+@pytest.mark.parametrize("existing", [None, "", "/other/modules"])
+def test_memory_observer_pythonpath_is_available_before_engine_launch(tmp_path, pending_memory, existing):
+    staged = _stage(tmp_path, run_script="#!/bin/bash\n")
+    if pending_memory:
+        (staged.workdir / "fpm_memory_worker.py").write_text("# staged observer\n")
+    script = staged.script.read_text().split('etcd_endpoint="http://')[0]
+    script += '\nprintf "%s" "${PYTHONPATH:-}"\n'
+    env = dict(staged.env)
+    if existing is None:
+        env.pop("PYTHONPATH", None)
+    else:
+        env["PYTHONPATH"] = existing
+    result = subprocess.run(["bash", "-c", script], env=env, text=True, capture_output=True, check=True)
+    expected = existing or ""
+    if pending_memory:
+        expected = str(staged.workdir) + (":" + expected if expected else "")
+    assert result.stdout == expected
+
+
 def test_fpm_exec_leader_starts_etcd_and_cleanup_stops_it(tmp_path):
     output_path = tmp_path / "results" / "benchmark.json"
     staged = _stage(

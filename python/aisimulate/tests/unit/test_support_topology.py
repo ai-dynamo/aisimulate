@@ -219,7 +219,9 @@ def test_moe_families_have_exact_tuples_and_deduplicate_width_one(tmp_path):
         assert item.apply(_request("moe")).worker_gpus == item.required_gpus
         if item.family in {"dep", "tep"}:
             assert item.status == "needs_inputs"
-            assert set(item.missing) == {"comm_overhead_bytes"}
+            assert not item.missing
+            assert "comm_overhead_bytes" not in item.draft.resolved
+            assert item.draft.profile.deployments[0].resources.memory_source == "pending"
             assert item.estimated_required_bytes is None
 
 
@@ -255,8 +257,8 @@ def test_declared_high_speed_rack_domain_is_not_limited_to_physical_node(tmp_pat
     assert report.candidates[-1].required_gpus == 64
     assert all(item.status == "needs_inputs" for item in report.candidates)
     assert report.default is None
-    assert "activations_bytes" in report.candidates[-1].missing
-    assert "comm_overhead_bytes" in report.candidates[-1].missing
+    assert "activations_bytes" not in report.candidates[-1].draft.resolved
+    assert "comm_overhead_bytes" not in report.candidates[-1].draft.resolved
 
 
 def test_slower_rack_connectivity_keeps_node_domain(tmp_path, monkeypatch):
@@ -308,7 +310,14 @@ def test_missing_precision_weight_or_cache_inputs_never_fabricate_fit(tmp_path, 
     assert report.candidates
     for candidate in report.candidates:
         assert candidate.status == "needs_inputs"
-        assert missing <= candidate.missing.keys()
+        assert (
+            missing - {"weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"}
+            <= candidate.missing.keys()
+        )
+        assert (
+            not {"weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"}
+            & candidate.missing.keys()
+        )
         assert candidate.estimated_required_bytes is None
         assert candidate.known_required_bytes > 0
 
@@ -317,9 +326,7 @@ def test_unknown_layout_preserves_unchecked_status(tmp_path):
     config = _config(tmp_path, architectures=["CustomDecoderForCausalLM"], model_type="custom", num_experts=0)
     report = suggest_topologies(config, _request(), _runtime())
     assert report.default is None
-    assert {"weights_bytes", "activations_bytes", "kv_bytes_per_token", "cache_layout"} <= report.candidates[
-        0
-    ].missing.keys()
+    assert {"kv_bytes_per_token", "cache_layout"} <= report.candidates[0].missing.keys()
     assert any("Unknown architecture constraints" in reason for reason in report.assumptions)
 
 
@@ -347,9 +354,6 @@ def test_known_weight_lower_bound_can_reject_without_precision_cache_or_overhead
     assert rejected.known_required_bytes > rejected.memory_budget_bytes
     assert {
         "kv_bytes_per_token",
-        "activations_bytes",
-        "runtime_overhead_bytes",
-        "comm_overhead_bytes",
     } <= rejected.missing.keys()
 
 
@@ -412,7 +416,17 @@ def test_full_context_boundary_matches_existing_plan_admission(tmp_path, monkeyp
     config, request = _config(tmp_path), _request(concurrency=1)
     report = suggest_topologies(config, request, _runtime())
     payload = request.model_dump()
-    payload["fpm_profile"] = derive_profile(config, request, _runtime()).profile
+    payload["fpm_profile"] = derive_profile(
+        config,
+        request,
+        {
+            **_runtime(),
+            "weights_bytes": 13472,
+            "activations_bytes": 70 * 1024**2,
+            "runtime_overhead_bytes": 0,
+            "comm_overhead_bytes": 0,
+        },
+    ).profile
     exact = SupportRequest.model_validate(payload)
     if extra_token:
         assert report.default.required_gpus == 1
@@ -439,7 +453,17 @@ def test_flat_per_rank_byte_overrides_require_explicit_topology(tmp_path, field)
 def test_attached_exact_profile_is_not_silently_replaced(tmp_path):
     config, request = _config(tmp_path), _request()
     payload = request.model_dump()
-    payload["fpm_profile"] = derive_profile(config, request, _runtime()).profile
+    payload["fpm_profile"] = derive_profile(
+        config,
+        request,
+        {
+            **_runtime(),
+            "weights_bytes": 13472,
+            "activations_bytes": 70 * 1024**2,
+            "runtime_overhead_bytes": 0,
+            "comm_overhead_bytes": 0,
+        },
+    ).profile
     request = SupportRequest.model_validate(payload)
     with pytest.raises(ValueError, match="attached FPM profile.*exact topology"):
         suggest_topologies(config, request, _runtime())

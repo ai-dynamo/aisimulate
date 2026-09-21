@@ -126,6 +126,8 @@ def run_validation(args: argparse.Namespace) -> int:
             raise ValueError(f"validation output must not contain the input file {source}")
     with plan_lock(plan):
         check_plan(request, plan)
+        if request.fpm_profile is not None:
+            request.profile_deployment().resources.require_memory()
         prediction = _prediction_config(request, plan, trace)
         collection = json.loads((plan / "support-plan.json").read_text(encoding="utf-8"))
     for relative in ("predict.yaml", "validation.json", "prediction"):

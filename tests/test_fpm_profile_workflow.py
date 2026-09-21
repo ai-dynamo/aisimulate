@@ -204,6 +204,174 @@ def test_prediction_materializes_rank_local_capacity_without_a_model(profile, ti
     assert reserved["num_gpu_blocks"] < lowered["num_gpu_blocks"]
 
 
+@pytest.mark.parametrize("memory_state", ["pending", "runtime"])
+def test_profile_memory_cannot_be_bypassed_by_explicit_blocks(profile, timing_systems, memory_state):
+    config = CorePredictionConfig.model_validate({"engine": {**_engine(profile), "systems_paths": [timing_systems]}})
+    args = deepcopy(prediction_to_replay_spec(config).backend_deployment.agg_engine_args)
+    resources = args["timing_model"]["config"]["fpm_profile"]["deployments"][0]["resources"]
+    for field in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+        resources.pop(field)
+    if memory_state == "runtime":
+        resources["runtime_memory"] = {
+            "kv_cache_bytes": 1024**3,
+            "gpu_memory_utilization": 0.9,
+            "max_model_len": 4096,
+            "provenance": "Synthetic initialized worker; no silicon qualification.",
+        }
+    args["num_gpu_blocks"] = 1
+    with pytest.raises(ValueError, match="pending runtime profiling|runtime FPM memory cannot use fixed"):
+        materialize_aic_num_gpu_blocks(args)
+
+
+@pytest.mark.parametrize("memory_state,missing_timings", [("pending", False), ("runtime", False), ("pending", True)])
+def test_native_profile_memory_rejects_explicit_capacity_bypass(profile, timing_systems, memory_state, missing_timings):
+    from aisimulate import _runtime
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": {**_engine(profile), "systems_paths": [timing_systems]},
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 1, "output_tokens": 1},
+                "load": {"type": "concurrency", "concurrency": 1},
+                "stop": {"requests": 1},
+            },
+        }
+    )
+    spec = prediction_to_replay_spec(config)
+
+    class ChangedNativeInput:
+        def run_replay_json(self, serialized):
+            payload = json.loads(serialized)
+            engine = payload.get("spec", payload)["engine"]
+            engine["num_gpu_blocks_is_explicit"] = True
+            rank = engine["rank"]
+            if missing_timings:
+                rank["timing_model"]["config"]["systems_paths"] = [str(Path(timing_systems) / "missing")]
+            resources = rank["timing_model"]["config"]["fpm_profile"]["deployments"][0]["resources"]
+            for field in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+                resources.pop(field)
+            if memory_state == "runtime":
+                resources["runtime_memory"] = {
+                    "kv_cache_bytes": 1024**3,
+                    "gpu_memory_utilization": 0.9,
+                    "max_model_len": 4096,
+                    "provenance": "Synthetic initialized worker; no silicon qualification.",
+                }
+            return _runtime.run_replay_json(json.dumps(payload))
+
+    with pytest.raises(RuntimeError, match="pending runtime profiling|runtime FPM memory cannot use fixed"):
+        EngineReplayRunnerFactory(runtime=ChangedNativeInput()).create(0).run(spec)
+
+
+@pytest.mark.parametrize("memory_state", ["pending", "runtime"])
+def test_recommendation_cannot_bypass_profile_memory_with_fixed_tokens(profile, memory_state):
+    for deployment in profile["deployments"]:
+        resources = deployment["resources"]
+        for field in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+            resources.pop(field)
+        if memory_state == "runtime":
+            resources["runtime_memory"] = {
+                "kv_cache_bytes": 1024**3,
+                "gpu_memory_utilization": 0.9,
+                "max_model_len": 4096,
+                "provenance": "Synthetic initialized worker; no silicon qualification.",
+            }
+    with pytest.raises(ValueError, match="pending runtime profiling|runtime FPM memory cannot use a fixed"):
+        parallel_configs_for(
+            profile["model"],
+            "h200_sxm",
+            backend="vllm",
+            backend_version="0.25.1",
+            deployment_mode="agg",
+            gpu_budget=2,
+            fpm_profile=profile,
+            role_runtime={"agg": (8192, 8, 0.9, 1_000_000)},
+        )
+
+
+def test_runtime_recommendation_propagates_selected_context(profile):
+    for deployment in profile["deployments"]:
+        resources = deployment["resources"]
+        for field in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+            resources.pop(field)
+        resources["runtime_memory"] = {
+            "kv_cache_bytes": 1024**3,
+            "gpu_memory_utilization": 0.9,
+            "max_model_len": 2048,
+            "provenance": "Synthetic initialized worker; no silicon qualification.",
+        }
+    assert parallel_configs_for(
+        profile["model"],
+        "h200_sxm",
+        backend="vllm",
+        backend_version="0.25.1",
+        deployment_mode="agg",
+        gpu_budget=2,
+        fpm_profile=profile,
+        max_seq_len=1024,
+        max_batch_size=8,
+    )
+    with pytest.raises(ValueError, match="max_model_len"):
+        parallel_configs_for(
+            profile["model"],
+            "h200_sxm",
+            backend="vllm",
+            backend_version="0.25.1",
+            deployment_mode="agg",
+            gpu_budget=2,
+            fpm_profile=profile,
+            max_seq_len=2049,
+            max_batch_size=8,
+        )
+
+
+@pytest.mark.parametrize("command", ["predict", "recommend"])
+def test_public_commands_report_pending_memory_before_missing_timings(profile, tmp_path, monkeypatch, capsys, command):
+    import aisimulate.main as cli
+    import aisimulate_core
+    from aisimulate.recommend import _run_recommendation
+
+    for deployment in profile["deployments"]:
+        for field in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+            deployment["resources"].pop(field)
+    root = tmp_path / "empty-systems"
+    root.mkdir()
+    packaged = Path(aisimulate_core.__file__).parent / "systems/h200_sxm.yaml"
+    (root / packaged.name).write_bytes(packaged.read_bytes())
+    engine = {**_engine(profile), "mode": "aggregated", "systems_paths": [str(root)]}
+    raw = {
+        "engine": engine,
+        "traffic": {
+            "source": {"type": "synthetic", "input_tokens": 1, "output_tokens": 1},
+            "load": {"type": "concurrency", "concurrency": 1},
+            "stop": {"requests": 1},
+        },
+    }
+    if command == "recommend":
+        engine["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
+        raw["optimization"] = {"constraints": {"max_candidate_gpus": 2}}
+        raw["optimizer"] = {"algorithm": "random", "max_trials": 1, "parallelism": 1}
+        monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+        CoreRecommendationConfig.model_validate(raw)  # Pending templates remain schema-valid.
+    else:
+        CorePredictionConfig.model_validate(raw)
+    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
+    path = tmp_path / f"{command}.json"
+    path.write_text(json.dumps(raw))
+    try:
+        status = cli.main(
+            [command, "--config", str(path), "--output-dir", str(tmp_path / "output"), "--format", "json"]
+        )
+    except SystemExit as exc:
+        status = exc.code
+    assert status in {1, 2}
+    message = capsys.readouterr().err
+    assert "pending runtime profiling" in message
+    assert "finalize runtime memory" in message
+    assert "perf data directory not found" not in message
+
+
 def test_disaggregated_transfer_uses_profile_cache_geometry(profile):
     engine = _engine(profile)
     engine.update(
@@ -577,6 +745,134 @@ def test_profile_recommendation_cli_accepts_version_mapping_and_exports_literal(
     exported = yaml.safe_load((output / "recommendations/0001.yaml").read_text())
     assert exported["engine"]["backend_version"] == "0.25.1"
     assert CorePredictionConfig.model_validate(exported).engine.fpm_profile.model == profile["model"]
+
+
+def _observed_profile(profile, *, context=2048, fraction=0.9):
+    for deployment in profile["deployments"]:
+        resources = deployment["resources"]
+        for name in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+            resources.pop(name)
+        resources.update(max_num_tokens=1024, max_batch_size=4)
+        resources["runtime_memory"] = {
+            "kv_cache_bytes": 1024**3,
+            "max_model_len": context,
+            "gpu_memory_utilization": fraction,
+            "provenance": "Synthetic initialized cache pool; no GPU qualification.",
+        }
+
+
+def test_public_linear_runtime_kv_load_preserves_selected_context(profile, timing_systems, tmp_path, monkeypatch):
+    import aisimulate.main as cli
+    from aisimulate.recommend import _run_recommendation
+
+    _observed_profile(profile)
+    for deployment in profile["deployments"]:
+        deployment["resources"]["runtime_memory"]["kv_cache_bytes"] = 1024**2
+    engine = _engine(profile)
+    engine.update(mode="aggregated", systems_paths=[timing_systems], context_length=1024)
+    engine["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
+    engine["workers"]["aggregated"]["kv_cache"] = {
+        "prefix_caching": False,
+        "block_size": 64,
+        "capacity": {"type": "default", "memory_fraction": 0.9},
+    }
+    path = tmp_path / "recommend.json"
+    path.write_text(
+        json.dumps(
+            {
+                "engine": engine,
+                "traffic": {
+                    "source": {"type": "synthetic", "input_tokens": 1, "output_tokens": 1},
+                    "load": {"type": "kv_capacity_fraction", "fraction": 0.0001},
+                    "stop": {"requests": 1},
+                },
+                "optimization": {"constraints": {"max_candidate_gpus": 2}},
+                "optimizer": {"algorithm": "random", "max_trials": 1, "parallelism": 1},
+            }
+        )
+    )
+    monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
+    output = tmp_path / "recommendation"
+    assert cli.main(["recommend", "--config", str(path), "--output-dir", str(output)]) == 0
+    exported = CorePredictionConfig.from_yaml(output / "recommendations/0001.yaml")
+    assert exported.engine.context_length == 1024
+    assert all(item.resources.runtime_memory.max_model_len == 2048 for item in exported.engine.fpm_profile.deployments)
+
+
+def test_observed_linear_pool_exposes_missing_batch_timing(profile, timing_systems):
+    from aisimulate.runner import EngineReplayRunnerFactory
+
+    _observed_profile(profile, context=4096)
+    engine = {**_engine(profile), "systems_paths": [timing_systems]}
+    engine["workers"]["aggregated"]["kv_cache"] = {"prefix_caching": False}
+    config = CorePredictionConfig.model_validate(
+        {
+            "engine": engine,
+            "traffic": {
+                "source": {"type": "synthetic", "input_tokens": 1, "output_tokens": 1},
+                "load": {"type": "concurrency", "concurrency": 2},
+                "stop": {"requests": 2},
+            },
+        }
+    )
+    spec = prediction_to_replay_spec(config)
+    # 1 GiB / 512 bytes per token / 64 tokens per block = 32768 blocks.
+    assert materialize_aic_num_gpu_blocks(spec.backend_deployment.agg_engine_args)["num_gpu_blocks"] == 32768
+    # The physical pool admits both requests. The table only measured batch=1,
+    # so strict lookup must fail instead of serializing through a clamped pool.
+    with pytest.raises(RuntimeError, match="direct.*lookup|uncovered|not.*found|unsupported"):
+        EngineReplayRunnerFactory().create(0).run(spec)
+
+
+@pytest.mark.parametrize("override", [(), ("--context-length", "256"), ("--gpu-memory-utilization", "0.9")])
+def test_runtime_profile_reinitialization_reuses_observed_defaults(profile, tmp_path, override):
+    import aisimulate.main as cli
+
+    _observed_profile(profile, context=128, fraction=0.8)
+    source, target = tmp_path / "profile.json", tmp_path / "request.yaml"
+    source.write_text(json.dumps(profile))
+    command = [
+        "onboard",
+        "init",
+        "--model",
+        profile["model"],
+        "--model-revision",
+        profile["model_revision"],
+        "--model-kind",
+        "moe",
+        "--framework-version",
+        "0.25.1",
+        "--gpu",
+        "h200_sxm",
+        "--interconnect",
+        "NVLink",
+        "--fpm-profile",
+        str(source),
+        "--tensor-parallel",
+        "2",
+        "--input-tokens",
+        "1",
+        "--output-tokens",
+        "1",
+        "--output",
+        str(target),
+        *override,
+    ]
+    if override:
+        with pytest.raises(SystemExit) as error:
+            cli.main(command)
+        assert error.value.code == 2
+        assert not target.exists()
+    else:
+        assert cli.main(command) == 0
+        request = SupportRequest.from_yaml(target)
+        assert request.search.context_length == 128
+        assert request.collection.gpu_memory_utilization == 0.8
+        assert "observed runtime" in request.collection_settings()["sources"]["context_length"]
+        assert (
+            "recorded runtime memory fraction 0.8" in request.collection_settings()["sources"]["gpu_memory_utilization"]
+        )
+        assert cli.main(["onboard", "plan", "--config", str(target), "--output-dir", str(tmp_path / "plan")]) == 0
 
 
 @pytest.mark.parametrize(

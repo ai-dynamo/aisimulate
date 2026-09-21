@@ -120,14 +120,51 @@ pub enum FpmCacheLayout {
     Grouped,
 }
 
+/// Cache capacity observed for the exact deployment and scheduler settings.
+/// This includes the runtime's graph/workspace reservations; it is not a
+/// non-KV memory limit or a capacity that can be scaled to another setting.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FpmRuntimeMemoryConfig {
+    pub kv_cache_bytes: u64,
+    pub gpu_memory_utilization: f64,
+    pub max_model_len: u64,
+    pub provenance: String,
+}
+
+impl FpmRuntimeMemoryConfig {
+    pub fn validate(&self) -> Result<(), AicError> {
+        if self.kv_cache_bytes == 0
+            || self.kv_cache_bytes > MAX_EXACT_BYTES
+            || !self.gpu_memory_utilization.is_finite()
+            || self.gpu_memory_utilization <= 0.0
+            || self.gpu_memory_utilization > 1.0
+            || self.max_model_len == 0
+            || self.provenance.trim().is_empty()
+        {
+            return Err(invalid(
+                "runtime memory requires positive kv_cache_bytes <= 2**53, finite gpu_memory_utilization in (0, 1], positive max_model_len and provenance",
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// The typed resource section of the existing profile wire schema.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Missing non-KV components leave memory pending until runtime observation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FpmResourceConfig {
-    pub weights_bytes: u64,
-    pub activations_bytes: u64,
-    pub runtime_overhead_bytes: u64,
-    pub comm_overhead_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weights_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activations_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_overhead_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comm_overhead_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_memory: Option<FpmRuntimeMemoryConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kv_bytes_per_token: Option<u64>,
     pub cache_layout: FpmCacheLayout,
@@ -146,7 +183,21 @@ impl FpmResourceConfig {
                 "FPM resources require positive scheduler bounds and provenance",
             ));
         }
-        self.non_kv_bytes()?;
+        let declared = self.declared_bytes();
+        declared
+            .iter()
+            .flatten()
+            .try_fold(0u64, |total, value| total.checked_add(*value))
+            .filter(|bytes| *bytes <= MAX_EXACT_BYTES)
+            .ok_or_else(|| invalid("total non-KV resource bytes must not exceed 2**53"))?;
+        if let Some(runtime) = &self.runtime_memory {
+            runtime.validate()?;
+            if declared.iter().any(Option::is_some) {
+                return Err(invalid(
+                    "runtime_memory cannot be combined with declared non-KV resource bytes",
+                ));
+            }
+        }
         match self.cache_layout {
             FpmCacheLayout::Linear
                 if self.cache_groups.is_empty()
@@ -173,17 +224,37 @@ impl FpmResourceConfig {
         Ok(())
     }
 
-    fn non_kv_bytes(&self) -> Result<u64, AicError> {
+    fn declared_bytes(&self) -> [Option<u64>; 4] {
         [
             self.weights_bytes,
             self.activations_bytes,
             self.runtime_overhead_bytes,
             self.comm_overhead_bytes,
         ]
-        .into_iter()
-        .try_fold(0u64, |total, value| total.checked_add(value))
-        .filter(|bytes| *bytes <= MAX_EXACT_BYTES)
-        .ok_or_else(|| invalid("total non-KV resource bytes must not exceed 2**53"))
+    }
+
+    fn non_kv_bytes(&self) -> Result<u64, AicError> {
+        if self.runtime_memory.is_some() {
+            return Err(invalid(
+                "runtime memory records cache capacity, not a non-KV byte breakdown",
+            ));
+        }
+        self.require_memory()?;
+        self.declared_bytes()
+            .into_iter()
+            .flatten()
+            .try_fold(0u64, |total, value| total.checked_add(value))
+            .filter(|bytes| *bytes <= MAX_EXACT_BYTES)
+            .ok_or_else(|| invalid("total non-KV resource bytes must not exceed 2**53"))
+    }
+
+    pub fn require_memory(&self) -> Result<(), AicError> {
+        if self.runtime_memory.is_none() && self.declared_bytes().iter().any(Option::is_none) {
+            return Err(invalid(
+                "FPM memory is pending runtime profiling; collect and finalize runtime memory or provide all four declared non-KV resource values before simulation",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -197,6 +268,10 @@ pub struct FpmCacheBudgetRequest {
     pub max_batch_size: u32,
     #[serde(default)]
     pub context_length: Option<u64>,
+    /// Optional logical request length for steady, one-token decode occupancy.
+    /// Scheduler limits and context_length still control resource admission.
+    #[serde(default)]
+    pub request_occupancy_tokens: Option<u64>,
     #[serde(default)]
     pub cuda_graph_reserved_bytes: u64,
     #[serde(default)]
@@ -217,7 +292,7 @@ pub struct FpmCacheBudget {
     pub kv_size_per_token_bytes: Option<u64>,
     pub total_kv_size_tokens: Option<u64>,
     pub source: String,
-    pub memory_breakdown: MemoryBreakdown,
+    pub memory_breakdown: Option<MemoryBreakdown>,
     pub tolerance_adjusted: Option<FpmCacheBudgetAdjusted>,
     pub resource_provenance: String,
     pub cache_layout: FpmCacheLayout,
@@ -225,6 +300,8 @@ pub struct FpmCacheBudget {
     /// Per-request upper bound, including window block alignment and the
     /// configured prefill chunk. This is not an aggregate token capacity.
     pub request_peak_cache_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_occupancy_cache_bytes: Option<u64>,
 }
 
 impl ForwardPassPerfModelConfig {
@@ -354,48 +431,95 @@ impl FpmResourceConfig {
                 "FPM resource envelope exceeded: provide bounds for the requested positive rank-local scheduler envelope",
             ));
         }
-        let non_kv = self
-            .non_kv_bytes()?
-            .checked_add(request.cuda_graph_reserved_bytes)
-            .filter(|bytes| *bytes <= MAX_EXACT_BYTES)
-            .ok_or_else(|| {
-                invalid("total FPM non-KV bytes including CUDA graphs must not exceed 2**53")
-            })?;
-        let available =
-            (request.total_gpu_capacity_bytes as f64 * fraction - non_kv as f64).floor();
-        if available < 1.0 {
-            return Err(invalid(
-                "no KV budget after non-KV resources and CUDA graphs",
-            ));
-        }
-        let total = available as u64;
-        let token_count = |bytes| self.kv_bytes_per_token.map(|rate| bytes / rate);
-        let request_peak_cache_bytes = if self.cache_layout == FpmCacheLayout::Linear {
-            context.checked_mul(self.kv_bytes_per_token.unwrap())
+        let (total, memory_breakdown) = if let Some(runtime) = &self.runtime_memory {
+            if request.max_num_tokens != self.max_num_tokens
+                || request.max_batch_size != self.max_batch_size
+            {
+                return Err(invalid(
+                    "runtime memory requires the exact recorded rank-local scheduler settings; collect new runtime memory for changed settings",
+                ));
+            }
+            if context > runtime.max_model_len {
+                return Err(invalid(
+                    "context_length exceeds runtime memory max_model_len",
+                ));
+            }
+            if fraction != runtime.gpu_memory_utilization {
+                return Err(invalid(
+                    "memory_fraction_value must match runtime memory gpu_memory_utilization",
+                ));
+            }
+            if request.cuda_graph_reserved_bytes != 0 {
+                return Err(invalid(
+                    "runtime memory already includes graph reservations; cuda_graph_reserved_bytes must be 0",
+                ));
+            }
+            if (request.total_gpu_capacity_bytes as f64 * fraction).floor()
+                < runtime.kv_cache_bytes as f64
+            {
+                return Err(invalid(
+                    "GPU memory budget is smaller than the recorded runtime KV cache allocation",
+                ));
+            }
+            (runtime.kv_cache_bytes, None)
         } else {
-            self.cache_groups.iter().try_fold(0u64, |sum, group| {
-                sum.checked_add(
-                    group
-                        .peak_request_bytes(context, request.max_num_tokens)
-                        .ok()?,
-                )
+            let non_kv = self
+                .non_kv_bytes()?
+                .checked_add(request.cuda_graph_reserved_bytes)
+                .filter(|bytes| *bytes <= MAX_EXACT_BYTES)
+                .ok_or_else(|| {
+                    invalid("total FPM non-KV bytes including CUDA graphs must not exceed 2**53")
+                })?;
+            let available =
+                (request.total_gpu_capacity_bytes as f64 * fraction - non_kv as f64).floor();
+            if available < 1.0 {
+                return Err(invalid(
+                    "no KV budget after non-KV resources and CUDA graphs",
+                ));
+            }
+            (
+                available as u64,
+                Some(MemoryBreakdown {
+                    weights_bytes: self.weights_bytes.unwrap(),
+                    activations_bytes: self.activations_bytes.unwrap(),
+                    runtime_overhead_bytes: self.runtime_overhead_bytes.unwrap(),
+                    comm_overhead_bytes: self.comm_overhead_bytes.unwrap(),
+                    cuda_graph_reserved_bytes: request.cuda_graph_reserved_bytes,
+                }),
+            )
+        };
+        let token_count = |bytes| self.kv_bytes_per_token.map(|rate| bytes / rate);
+        let footprint = |tokens: u64, chunk: u32| {
+            let bytes = if self.cache_layout == FpmCacheLayout::Linear {
+                tokens.checked_mul(self.kv_bytes_per_token.unwrap())
+            } else {
+                self.cache_groups.iter().try_fold(0u64, |sum, group| {
+                    sum.checked_add(group.peak_request_bytes(tokens, chunk).ok()?)
+                })
+            };
+            bytes
+                .filter(|bytes| *bytes <= MAX_EXACT_BYTES)
+                .ok_or_else(|| invalid("cache request allocation exceeds 2**53 bytes"))
+        };
+        let request_peak_cache_bytes = footprint(context, request.max_num_tokens)?;
+        let request_occupancy_cache_bytes = request
+            .request_occupancy_tokens
+            .map(|tokens| {
+                if tokens == 0 || tokens > context {
+                    return Err(invalid(
+                        "request_occupancy_tokens must be positive and within context_length",
+                    ));
+                }
+                footprint(tokens, 1)
             })
-        }
-        .filter(|bytes| *bytes <= MAX_EXACT_BYTES)
-        .ok_or_else(|| invalid("cache request allocation exceeds 2**53 bytes"))?;
+            .transpose()?;
         Ok(FpmCacheBudget {
             total_gpu_capacity_bytes: request.total_gpu_capacity_bytes,
             total_kv_size_bytes: total,
             kv_size_per_token_bytes: self.kv_bytes_per_token,
             total_kv_size_tokens: token_count(total),
             source: "profile".into(),
-            memory_breakdown: MemoryBreakdown {
-                weights_bytes: self.weights_bytes,
-                activations_bytes: self.activations_bytes,
-                runtime_overhead_bytes: self.runtime_overhead_bytes,
-                comm_overhead_bytes: self.comm_overhead_bytes,
-                cuda_graph_reserved_bytes: request.cuda_graph_reserved_bytes,
-            },
+            memory_breakdown,
             tolerance_adjusted: request.tolerance_fraction.map(|tolerance| {
                 let bytes = (total as f64 * (1.0 - tolerance)).floor() as u64;
                 FpmCacheBudgetAdjusted {
@@ -408,6 +532,7 @@ impl FpmResourceConfig {
             cache_layout: self.cache_layout,
             cache_groups: self.cache_groups.clone(),
             request_peak_cache_bytes,
+            request_occupancy_cache_bytes,
         })
     }
 }
@@ -441,10 +566,11 @@ mod tests {
 
     fn resources() -> FpmResourceConfig {
         FpmResourceConfig {
-            weights_bytes: 100,
-            activations_bytes: 20,
-            runtime_overhead_bytes: 30,
-            comm_overhead_bytes: 50,
+            weights_bytes: Some(100),
+            activations_bytes: Some(20),
+            runtime_overhead_bytes: Some(30),
+            comm_overhead_bytes: Some(50),
+            runtime_memory: None,
             kv_bytes_per_token: None,
             cache_layout: FpmCacheLayout::Grouped,
             cache_groups: vec![group(Some(32))],
@@ -462,9 +588,156 @@ mod tests {
             max_num_tokens: 128,
             max_batch_size: 8,
             context_length: None,
+            request_occupancy_tokens: None,
             cuda_graph_reserved_bytes: 20,
             tolerance_fraction: Some(0.1),
         }
+    }
+
+    fn runtime_resources() -> FpmResourceConfig {
+        FpmResourceConfig {
+            weights_bytes: None,
+            activations_bytes: None,
+            runtime_overhead_bytes: None,
+            comm_overhead_bytes: None,
+            runtime_memory: Some(FpmRuntimeMemoryConfig {
+                kv_cache_bytes: 600,
+                gpu_memory_utilization: 0.8,
+                max_model_len: 4096,
+                provenance: "Synthetic initialized-worker cache allocation".into(),
+            }),
+            ..resources()
+        }
+    }
+
+    #[test]
+    fn pending_memory_validates_but_cannot_produce_a_cache_budget() {
+        let mut pending = resources();
+        pending.activations_bytes = None;
+        pending.validate().unwrap();
+        let saved = serde_json::to_value(&pending).unwrap();
+        assert!(saved.get("activations_bytes").is_none());
+        assert!(saved.get("runtime_memory").is_none());
+        assert_eq!(saved["weights_bytes"], 100);
+        assert_eq!(
+            serde_json::from_value::<FpmResourceConfig>(saved).unwrap(),
+            pending
+        );
+        assert!(
+            pending
+                .estimate_budget(&request(), 4096)
+                .unwrap_err()
+                .to_string()
+                .contains("pending runtime profiling")
+        );
+    }
+
+    #[test]
+    fn runtime_memory_preserves_observed_capacity_without_a_breakdown() {
+        let mut runtime = runtime_resources();
+        runtime.validate().unwrap();
+        let mut q = request();
+        q.cuda_graph_reserved_bytes = 0;
+        let grouped = runtime.estimate_budget(&q, 4096).unwrap();
+        assert_eq!(grouped.total_kv_size_bytes, 600);
+        assert_eq!(grouped.total_kv_size_tokens, None);
+        assert_eq!(grouped.memory_breakdown, None);
+        assert_eq!(grouped.request_peak_cache_bytes, 1760);
+
+        runtime.cache_layout = FpmCacheLayout::Linear;
+        runtime.cache_groups.clear();
+        runtime.kv_bytes_per_token = Some(10);
+        q.total_gpu_capacity_bytes = 2000;
+        let linear = runtime.estimate_budget(&q, 4096).unwrap();
+        // Runtime recorded 600 bytes: a larger device does not double capacity.
+        // Ten bytes/token gives 60 raw tokens and 54 with a 10% margin.
+        assert_eq!(linear.total_kv_size_bytes, 600);
+        assert_eq!(linear.total_kv_size_tokens, Some(60));
+        let adjusted = linear.tolerance_adjusted.unwrap();
+        assert_eq!(adjusted.total_kv_size_bytes, 540);
+        assert_eq!(adjusted.total_kv_size_tokens, Some(54));
+        assert_eq!(linear.memory_breakdown, None);
+        let saved = serde_json::to_value(&runtime).unwrap();
+        assert!(saved.get("weights_bytes").is_none());
+        assert_eq!(
+            serde_json::from_value::<FpmResourceConfig>(saved).unwrap(),
+            runtime
+        );
+    }
+
+    #[test]
+    fn steady_occupancy_keeps_runtime_scheduler_and_context_admission() {
+        let runtime = runtime_resources();
+        let mut q = request();
+        q.cuda_graph_reserved_bytes = 0;
+        q.request_occupancy_tokens = Some(1152);
+        let budget = runtime.estimate_budget(&q, 4096).unwrap();
+        // A 32-token retained window can straddle three 16-token pages.
+        // A 128-token prefill chunk needs eleven pages. Each page is 160 bytes.
+        assert_eq!(budget.request_occupancy_cache_bytes, Some(480));
+        assert_eq!(budget.request_peak_cache_bytes, 1760);
+        q.max_num_tokens = 1;
+        assert!(runtime.estimate_budget(&q, 4096).is_err());
+        q.max_num_tokens = 128;
+        assert!(runtime.estimate_budget(&q, 8192).is_err());
+        q.request_occupancy_tokens = Some(4097);
+        assert!(runtime.estimate_budget(&q, 4096).is_err());
+    }
+
+    #[test]
+    fn runtime_memory_rejects_changed_settings_and_invalid_evidence() {
+        let runtime = runtime_resources();
+        let mut q = request();
+        q.cuda_graph_reserved_bytes = 0;
+        for changed in [
+            FpmCacheBudgetRequest {
+                max_num_tokens: 64,
+                ..q.clone()
+            },
+            FpmCacheBudgetRequest {
+                max_batch_size: 4,
+                ..q.clone()
+            },
+            FpmCacheBudgetRequest {
+                memory_fraction_value: 0.9,
+                ..q.clone()
+            },
+            FpmCacheBudgetRequest {
+                cuda_graph_reserved_bytes: 1,
+                ..q.clone()
+            },
+            FpmCacheBudgetRequest {
+                total_gpu_capacity_bytes: 599,
+                ..q.clone()
+            },
+            FpmCacheBudgetRequest {
+                total_gpu_capacity_bytes: 749,
+                ..q.clone()
+            },
+        ] {
+            assert!(runtime.estimate_budget(&changed, 4096).is_err());
+        }
+        assert!(runtime.estimate_budget(&q, 4097).is_err());
+        let mut mixed = runtime.clone();
+        mixed.weights_bytes = Some(0);
+        assert!(mixed.validate().is_err());
+        let mut invalid = runtime.runtime_memory.clone().unwrap();
+        for bytes in [0, MAX_EXACT_BYTES + 1] {
+            invalid.kv_cache_bytes = bytes;
+            assert!(invalid.validate().is_err());
+        }
+        invalid.kv_cache_bytes = MAX_EXACT_BYTES;
+        invalid.validate().unwrap();
+        for fraction in [0.0, -0.1, 1.1, f64::NAN, f64::INFINITY] {
+            invalid.gpu_memory_utilization = fraction;
+            assert!(invalid.validate().is_err());
+        }
+        invalid.gpu_memory_utilization = 1.0;
+        invalid.max_model_len = 0;
+        assert!(invalid.validate().is_err());
+        invalid.max_model_len = 1;
+        invalid.provenance = " ".into();
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
@@ -504,7 +777,10 @@ mod tests {
         );
         // At most 11 aligned pages cover 31 history + 128 scheduled tokens.
         assert_eq!(result.request_peak_cache_bytes, 1760);
-        assert_eq!(result.memory_breakdown.cuda_graph_reserved_bytes, 20);
+        assert_eq!(
+            result.memory_breakdown.unwrap().cuda_graph_reserved_bytes,
+            20
+        );
     }
 
     #[test]
@@ -524,7 +800,7 @@ mod tests {
         bad = original.clone();
         bad.cache_groups[0].page_size_bytes = MAX_EXACT_BYTES;
         assert!(bad.cache_groups[0].bytes_for_forward(0, 17).is_err());
-        bad.weights_bytes = u64::MAX;
+        bad.weights_bytes = Some(u64::MAX);
         assert!(bad.validate().is_err());
         let mut unknown = serde_json::to_value(original).unwrap();
         unknown["cache_groups"][0]["unknown_page_semantics"] = true.into();

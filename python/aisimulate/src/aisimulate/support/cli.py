@@ -211,9 +211,11 @@ def add_support_parser(subparsers: Any) -> None:
     deployment.add_argument("--model-cache", metavar="NAME[:MOUNT[:SUBPATH]]", help="Model-cache PVC and mount.")
     deployment.add_argument("--transport", choices=("nvlink", "ib", "efa"))
     deployment.add_argument("--image-pull-secret", help="Kubernetes secret for pulling the collector image.")
+    from .finalization import add_finalization_parser
     from .validation import add_validation_parser
 
     add_validation_parser(actions)
+    add_finalization_parser(actions)
 
 
 def _values(args: argparse.Namespace, model: Any) -> dict[str, Any]:
@@ -225,16 +227,26 @@ def _request_from_args(args: argparse.Namespace) -> SupportRequest:
     collection.setdefault(
         "prefill_cudagraph_policy", "explicit" if "max_prefill_cudagraph_size" in collection else "runtime"
     )
-    collection.setdefault("gpu_memory_utilization", 0.9)
-    return SupportRequest.model_validate(
-        {
-            "identity": _values(args, SupportIdentity),
-            "workload": {**_values(args, WorkloadSpec), "slo": _values(args, SloSpec)},
-            "search": _values(args, SearchProfile),
-            "collection": collection,
-            **({"fpm_profile": load_yaml(args.fpm_profile)} if getattr(args, "fpm_profile", None) else {}),
-        }
-    )
+    payload = {
+        "identity": _values(args, SupportIdentity),
+        "workload": {**_values(args, WorkloadSpec), "slo": _values(args, SloSpec)},
+        "search": _values(args, SearchProfile),
+        "collection": collection,
+        **({"fpm_profile": load_yaml(args.fpm_profile)} if getattr(args, "fpm_profile", None) else {}),
+    }
+    request = SupportRequest.model_validate(payload)
+    deployment = request.profile_deployment()
+    runtime = deployment.resources.runtime_memory if deployment is not None else None
+    if runtime is not None:
+        payload["search"].setdefault("context_length", min(request.search.context_length, runtime.max_model_len))
+        collection.setdefault("gpu_memory_utilization", runtime.gpu_memory_utilization)
+        if payload["search"]["context_length"] > runtime.max_model_len:
+            raise ValueError("context_length exceeds the observed runtime memory max_model_len")
+        if collection["gpu_memory_utilization"] != runtime.gpu_memory_utilization:
+            raise ValueError("gpu_memory_utilization must match the observed runtime memory")
+    else:
+        collection.setdefault("gpu_memory_utilization", 0.9)
+    return SupportRequest.model_validate(payload)
 
 
 def _request_target(path: str | Path, *, overwrite: bool) -> Path:
@@ -536,6 +548,19 @@ def _review_config_profile(
             )
             print("  Logical context determines FPM timing queries; retained cache length is only memory accounting.")
         print("  max_num_tokens/max_batch_size are per-rank scheduler limits. Estimates require runtime verification.")
+        memory = request.profile_deployment().resources
+        print(f"  Memory source: {memory.memory_source}.")
+        if not memory.memory_ready:
+            print("  No activation or non-KV byte estimate is required.")
+            print("  Displayed byte estimates are planning evidence. Finalize the collected memory before simulation.")
+            if request.identity.framework_version == "0.27.0":
+                print("  Memory is observed during initialized vLLM 0.27.0 collection.")
+                print(
+                    "  Collection policy: synchronous scheduling in both phases, "
+                    "matching supported prefill benchmarking."
+                )
+            else:
+                print("  Memory observation currently supports vLLM 0.27.0; this version can collect timings only.")
         for name, value in draft.resolved.items():
             print(f"  {name}: {value} (source: {draft.sources[name]})")
         if draft.resolved.get("comm_quant_mode") != "half":
@@ -750,7 +775,7 @@ def _select_topologies(
             "No fully assessed topology default is available.\n"
             + summary
             + "\nSupply shared precision/layout inputs with --resource-overrides or use --interactive. "
-            "For rank-local byte bounds, select an exact topology with the displayed flags first. "
+            "When planning estimates are unavailable, select an exact topology with the displayed flags. "
             "Explicit topology may be outside the automatic shortlist."
         )
     print(summary)
@@ -758,7 +783,7 @@ def _select_topologies(
     if args.interactive:
         default = suggestions.candidates.index(selected[0]) + 1 if selected else None
         if default is None:
-            print("Memory fit is unresolved; select a candidate explicitly, then provide its missing per-rank bounds.")
+            print("Memory fit is unresolved; select a candidate explicitly. Memory will be observed during collection.")
         while True:
             answer = input(
                 f"Choose {'topologies' if multiple else 'topology'} 1-{len(suggestions.candidates)}"
@@ -1073,7 +1098,7 @@ def _init(args: argparse.Namespace) -> int:
     print(f"Collection GPUs required: {request.worker_gpus} for one selected worker; availability is unchecked.")
     if args.model_config:
         print(
-            "Request saved with the complete FPM profile and declared or estimated resources. "
+            f"Request saved with FPM metadata; memory source: {request.profile_deployment().resources.memory_source}. "
             "Runtime compatibility and FPM data are unchecked; accuracy is not assessed. "
             "Setup has not launched GPU work."
         )
@@ -1104,7 +1129,11 @@ def _plan(args: argparse.Namespace) -> int:
             "plan": str(root / "support-plan.json"),
             "commands": plan["outputs"]["commands"],
             "prerequisites": "runtime_and_fpm_data_unchecked" if request.fpm_profile is not None else "unchecked",
-            **({"resources": "estimated_from_declared_profile"} if request.fpm_profile is not None else {}),
+            **(
+                {"resources": request.profile_deployment().resources.memory_source}
+                if request.fpm_profile is not None
+                else {}
+            ),
             "accuracy": "not assessed",
             "next": shlex.join(
                 [
@@ -1124,6 +1153,10 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def run_support_command(args: argparse.Namespace) -> int:
+    if args.support_action == "finalize":
+        from .finalization import run_finalization
+
+        return run_finalization(args)
     if args.support_action in {"checkpoint", "resume"}:
         from .checkpoint import run_checkpoint_command
 

@@ -186,7 +186,8 @@ def test_real_cli_preview_exposes_architecture_domain_and_moe_alternatives(tmp_p
     for candidate in report["candidates"]:
         if candidate["family"] in {"dep", "tep"}:
             assert candidate["status"] == "needs_inputs"
-            assert "comm_overhead_bytes" in candidate["missing"]
+            assert "comm_overhead_bytes" not in candidate["missing"]
+            assert "memory" in " ".join(candidate["reasons"]).lower()
     assert not output.parent.exists()
 
 
@@ -194,7 +195,6 @@ def test_real_cli_preview_exposes_architecture_domain_and_moe_alternatives(tmp_p
     "config,resources,missing",
     [
         (_SMALL, False, "fmha_quant_mode"),
-        ({**_SMALL, "quantization_config": {"quant_method": "fp8"}}, True, "weights_bytes"),
     ],
 )
 def test_real_cli_missing_facts_preview_has_no_default_and_normal_init_fails_before_write(
@@ -233,7 +233,10 @@ def test_flat_rank_bounds_require_an_explicit_topology_without_transferring_byte
     assert explicit.returncode == 0, explicit.stderr
     request = SupportRequest.from_yaml(output)
     assert request.worker_gpus == 2
-    assert request.profile_deployment().resources.weights_bytes == 9 * 1024**3
+    assert request.profile_deployment().resources.weights_bytes is None
+    assert (
+        json.loads(request.profile_deployment().resources.provenance)["fields"]["weights_bytes"]["value"] == 9 * 1024**3
+    )
     assert "Suggested worker topologies" not in explicit.stdout
 
 
@@ -245,7 +248,9 @@ def test_any_explicit_topology_option_preserves_existing_route(tmp_path, option)
     output = tmp_path / "request.yaml"
     result = _real_cli(_args(source, resources, output) + [option, "1"])
     assert result.returncode == 0, result.stderr
-    assert SupportRequest.from_yaml(output).profile_deployment().resources.weights_bytes == 2 * 1024**3
+    profile = SupportRequest.from_yaml(output).profile_deployment().resources
+    assert profile.memory_source == "pending"
+    assert json.loads(profile.provenance)["fields"]["weights_bytes"]["value"] == 2 * 1024**3
     assert "Suggested worker topologies" not in result.stdout
 
 
@@ -260,7 +265,11 @@ def test_explicit_topology_may_exceed_automatic_hardware_domain(tmp_path):
     assert result.returncode == 0, result.stderr
     request = SupportRequest.from_yaml(output)
     assert request.worker_gpus == request.profile_deployment().tp == 16
-    assert request.profile_deployment().resources.comm_overhead_bytes == 256 * 1024**2
+    assert request.profile_deployment().resources.comm_overhead_bytes is None
+    assert (
+        json.loads(request.profile_deployment().resources.provenance)["fields"]["comm_overhead_bytes"]["value"]
+        == 256 * 1024**2
+    )
     assert "Suggested worker topologies" not in result.stdout
 
 
@@ -356,16 +365,15 @@ def test_selected_moe_tuple_reaches_plan_collector_and_ordinary_runtime_configs(
 ):
     source, resources = _inputs(tmp_path, _MOE)
     output = tmp_path / "new" / "request.yaml"
-    answers = [choice, *(["16 MiB"] if preset != "pure_tp" else []), "accept"]
+    answers = [choice, "accept"]
     prompts = _terminal(monkeypatch, output, answers)
     assert cli.main(_args(source, resources, output) + ["--interactive"]) == 0
     request = SupportRequest.from_yaml(output)
     assert request.profile_deployment().parallel_tuple == parallel
     assert request.parallel_preset == preset
     assert prompts[0].startswith("Choose topology")
-    if preset != "pure_tp":
-        assert prompts[1].startswith("comm_overhead_bytes")
-        assert request.profile_deployment().resources.comm_overhead_bytes == 16 * 1024**2
+    assert not any("overhead_bytes" in prompt for prompt in prompts)
+    assert request.profile_deployment().resources.memory_source == "pending"
     source.unlink()
     resources.unlink()
     plan_root = tmp_path / "plan"
@@ -396,16 +404,17 @@ def test_selected_moe_tuple_reaches_plan_collector_and_ordinary_runtime_configs(
     assert not list((plan_root / "systems/data").glob("**/*.parquet"))
 
 
-def test_guided_no_default_requires_number_then_bounds_for_that_tuple(monkeypatch, tmp_path, capsys):
+def test_guided_no_default_requires_number_then_keeps_memory_pending(monkeypatch, tmp_path, capsys):
     source, resources = _inputs(tmp_path, {**_SMALL, "quantization_config": {"quant_method": "fp8"}})
     output = tmp_path / "new" / "request.yaml"
-    prompts = _terminal(monkeypatch, output, ["", "0", "2", "2 GiB", "accept"])
+    prompts = _terminal(monkeypatch, output, ["", "0", "2", "accept"])
     assert cli.main(_args(source, resources, output) + ["--interactive"]) == 0
     assert prompts[:3] == ["Choose topology 1-2 (or cancel): "] * 3
-    assert prompts[3].startswith("weights_bytes")
+    assert prompts[3].startswith("Review action")
     request = SupportRequest.from_yaml(output)
     assert request.worker_gpus == 2
-    assert request.profile_deployment().resources.weights_bytes == 2 * 1024**3
+    assert request.profile_deployment().resources.weights_bytes is None
+    assert request.profile_deployment().resources.memory_source == "pending"
     assert "Memory fit is unresolved" in capsys.readouterr().out
 
 
@@ -427,10 +436,10 @@ def test_guided_selection_cancel_and_interrupt_preserve_output(monkeypatch, tmp_
 
 
 def test_selected_topology_survives_late_identity_correction(monkeypatch, tmp_path):
-    # Missing weights defer strict profile identity validation until after selection.
+    # Unknown framework versions are corrected before the selected profile is accepted.
     source, resources = _inputs(tmp_path, {**_SMALL, "quantization_config": {"quant_method": "fp8"}})
     output = tmp_path / "new" / "request.yaml"
-    _terminal(monkeypatch, output, ["2", "2 GiB", _OPTIONS["framework_version"], "accept"])
+    _terminal(monkeypatch, output, [_OPTIONS["framework_version"], "2", "accept"])
     assert cli.main(_args(source, resources, output, framework_version="unknown") + ["--interactive"]) == 0
     request = SupportRequest.from_yaml(output)
     assert request.worker_gpus == request.profile_deployment().tp == 2
@@ -578,9 +587,7 @@ def test_guided_multiple_tp_dep_tep_profiles_reach_independent_consumers(monkeyp
             "2,,3",
             "2, 3,5",
             "accept",
-            "16 MiB",
             "accept",
-            "32 MiB",
             "accept",
         ],
     )
@@ -597,8 +604,8 @@ def test_guided_multiple_tp_dep_tep_profiles_reach_independent_consumers(monkeyp
         (1, 1, 2, 1, 2, 1),
         (2, 1, 1, 1, 2, 1),
     ]
-    assert requests[1].profile_deployment().resources.comm_overhead_bytes == 16 * 1024**2
-    assert requests[2].profile_deployment().resources.comm_overhead_bytes == 32 * 1024**2
+    assert all(request.profile_deployment().resources.memory_source == "pending" for request in requests)
+    assert not any("overhead_bytes" in prompt for prompt in prompts)
     assert (
         requests[0].profile_deployment().resources.kv_bytes_per_token
         < requests[1].profile_deployment().resources.kv_bytes_per_token
@@ -638,11 +645,11 @@ def test_parallel_configuration_file_preserves_rank_bounds_and_precision(tmp_pat
     resources.unlink()
     choices.unlink()
     requests = _consume_configurations(root)
-    assert [request.profile_deployment().resources.weights_bytes for request in requests] == [
-        1024**3,
-        2 * 1024**3,
-        3 * 1024**3,
-    ]
+    assert all(request.profile_deployment().resources.memory_source == "pending" for request in requests)
+    assert [
+        json.loads(request.profile_deployment().resources.provenance)["fields"]["weights_bytes"]["value"]
+        for request in requests
+    ] == [1024**3, 2 * 1024**3, 3 * 1024**3]
     assert [request.profile_deployment().kv_cache_dtype for request in requests] == ["bfloat16", "bfloat16", "fp8"]
 
 
@@ -796,7 +803,7 @@ def test_parallel_profiles_reach_real_collector_plan_only_without_gpu_work(tmp_p
         assert collected_plan["fpm_profile"] == request.fpm_profile.model_dump(mode="json")
         assert collected_plan["counts"]["topologies"] == 1
         assert {cell["parallel_strategy"] for cell in collected_plan["cells"]} == {request.parallel_preset}
-        assert {item["source"] for item in collected_plan["topology_memory_admission"]} == {"fpm_profile_declared"}
+        assert {item["source"] for item in collected_plan["topology_memory_admission"]} == {"fpm_profile_pending"}
         collector_ids.add(collected_plan["sha256"])
         assert not (plan_root / "fpm-checkpoint").exists()
         assert not (plan_root / "fpm-artifacts").exists()
@@ -837,15 +844,15 @@ def test_directory_singleton_preserves_default_or_explicit_topology(monkeypatch,
     assert sum(prompt.startswith("Choose topologies") for prompt in prompts) == (0 if explicit else 1)
 
 
-def test_guided_directory_without_default_requires_selection_and_separate_bounds(monkeypatch, tmp_path):
+def test_guided_directory_without_default_requires_selection_and_preserves_pending_memory(monkeypatch, tmp_path):
     source, resources = _inputs(tmp_path, {**_SMALL, "quantization_config": {"quant_method": "fp8"}})
     root = tmp_path / "profiles"
-    prompts = _directory_terminal(monkeypatch, root, ["", "1,2", "1 GiB", "accept", "2 GiB", "accept"])
+    prompts = _directory_terminal(monkeypatch, root, ["", "1,2", "accept", "accept"])
     assert cli.main(_directory_args(source, resources, root) + ["--interactive"]) == 0
     assert sum(prompt.startswith("Choose topologies") for prompt in prompts) == 2
-    assert sum(prompt.startswith("weights_bytes") for prompt in prompts) == 2
+    assert not any(prompt.startswith("weights_bytes") for prompt in prompts)
     _, requests = _saved_configurations(root)
-    assert [request.profile_deployment().resources.weights_bytes for request in requests] == [1024**3, 2 * 1024**3]
+    assert all(request.profile_deployment().resources.memory_source == "pending" for request in requests)
 
 
 def test_parallel_file_accepts_explicit_topology_outside_shortlist(tmp_path):
@@ -968,12 +975,12 @@ def test_later_profile_cancellation_publishes_nothing(monkeypatch, tmp_path, int
         assert not root.parent.exists()
 
 
-def test_late_identity_corrections_and_rank_bounds_are_independent(monkeypatch, tmp_path):
+def test_late_identity_corrections_and_pending_profiles_are_independent(monkeypatch, tmp_path):
     source, resources = _inputs(tmp_path, {**_SMALL, "quantization_config": {"quant_method": "fp8"}})
     choices = tmp_path / "parallel.json"
     choices.write_text(json.dumps([{"tensor_parallel": 1}, {"tensor_parallel": 2}]))
     root = tmp_path / "profiles"
-    prompts = _directory_terminal(monkeypatch, root, ["1 GiB", "0.25.1", "accept", "2 GiB", "0.25.2", "accept"])
+    prompts = _directory_terminal(monkeypatch, root, ["0.25.1", "accept", "0.25.2", "accept"])
     assert (
         cli.main(
             _directory_args(source, resources, root, framework_version="unknown")
@@ -984,7 +991,7 @@ def test_late_identity_corrections_and_rank_bounds_are_independent(monkeypatch, 
     _, requests = _saved_configurations(root)
     assert [request.worker_gpus for request in requests] == [1, 2]
     assert [request.identity.framework_version for request in requests] == ["0.25.1", "0.25.2"]
-    assert [request.profile_deployment().resources.weights_bytes for request in requests] == [1024**3, 2 * 1024**3]
+    assert all(request.profile_deployment().resources.memory_source == "pending" for request in requests)
     assert sum(prompt.startswith("Pinned vLLM version") for prompt in prompts) == 2
 
 
@@ -1030,10 +1037,6 @@ def test_topology_correction_cannot_publish_duplicate_configurations(monkeypatch
             "duplicate resolved",
         ),
         ([{"tensor_parallel": 2, "attention_data_parallel": 2}], "complete TP, DEP, or TEP"),
-        (
-            [{"tensor_parallel": 2}, {"tensor_parallel": 1, "attention_data_parallel": 2, "moe_expert_parallel": 2}],
-            "comm_overhead_bytes",
-        ),
         ([{"tensor_parallel": 1, 7: "invalid", "unknown": 3}], "field names must be strings"),
     ],
 )

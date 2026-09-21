@@ -24,10 +24,28 @@ from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile, FpmModelProfil
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
 from .config import FPM_MAX_PREFILL_ISL, PARALLEL_AXES, VLLM_AUTO_FIT_MAX_MODEL_LEN, FPMCollectionOptions
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
+from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
 from .topology import enumerate_fpm_topologies, topology_strategy
 from .types import ParallelTopology
 
 logger = logging.getLogger(__name__)
+
+
+def _runtime_memory_policy(profile: FpmModelProfile | None, backend_version: str) -> dict[str, object] | None:
+    if profile is None or not any(
+        deployment.resources.memory_source == "pending" for deployment in profile.deployments
+    ):
+        return None
+    available = backend_version == MEMORY_OBSERVER_VERSION
+    return {
+        "source": "vllm_initialization",
+        "supported_vllm_version": MEMORY_OBSERVER_VERSION,
+        "selected_vllm_version": backend_version,
+        "observation": "enabled" if available else "unavailable_for_runtime",
+        "evidence_schema_version": 1,
+        "async_scheduling": False if available else None,
+    }
+
 
 _INSTALLED_DISTRIBUTION = "aisimulate"
 _INSTALLED_PAYLOAD_ROOTS = frozenset(("aisimulate_core", "aisimulate", "collector"))
@@ -38,6 +56,9 @@ _REQUIRED_INSTALLED_FPM_PAYLOAD = frozenset(
         PurePosixPath("collector/fpm_forward/runner.py"),
         PurePosixPath("collector/fpm_forward/runtime/fpm_exec.sh"),
         PurePosixPath("collector/fpm_forward/runtime/preflight.py"),
+        PurePosixPath("collector/fpm_forward/runtime/fpm_memory_observer.py"),
+        PurePosixPath("collector/fpm_forward/runtime/fpm_memory_worker.py"),
+        PurePosixPath("collector/fpm_forward/runtime/fpm_memory_scheduler.py"),
     )
 )
 
@@ -563,6 +584,9 @@ class FPMCollectionPlan:
         }
         if self._fpm_profile_json is not None:
             payload["fpm_profile"] = json.loads(self._fpm_profile_json)
+        memory_policy = _runtime_memory_policy(self.fpm_profile, self.capability.aic_database_version)
+        if memory_policy is not None:
+            payload["runtime_memory_policy"] = memory_policy
         return payload
 
 
@@ -773,6 +797,9 @@ def build_collection_plan(
     if profile is not None:
         canonical["fpm_profile"] = profile.model_dump(mode="json")
         profile_json = json.dumps(canonical["fpm_profile"], sort_keys=True, separators=(",", ":"))
+    memory_policy = _runtime_memory_policy(profile, capability.aic_database_version)
+    if memory_policy is not None:
+        canonical["runtime_memory_policy"] = memory_policy
     return FPMCollectionPlan(
         backend=backend,
         model_path=model_path,

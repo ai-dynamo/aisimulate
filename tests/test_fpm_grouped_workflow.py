@@ -472,11 +472,26 @@ def test_public_predict_does_not_clamp_logical_context_to_window(grouped_case, t
 
 
 @pytest.mark.parametrize("relative_load", [False, True])
-def test_grouped_recommendation_exports_a_runnable_prediction(grouped_case, tmp_path, monkeypatch, relative_load):
+@pytest.mark.parametrize("observed_memory", [False, True])
+def test_grouped_recommendation_exports_a_runnable_prediction(
+    grouped_case, tmp_path, monkeypatch, relative_load, observed_memory
+):
     from aisimulate.recommend import _run_recommendation
 
     monkeypatch.setattr("aisimulate.recommend.run_recommendation", _run_recommendation)
     profile, root = grouped_case
+    if observed_memory:
+        for deployment in profile["deployments"]:
+            resources = deployment["resources"]
+            for name in ("weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes"):
+                resources.pop(name)
+            resources["max_batch_size"] = 4
+            resources["runtime_memory"] = {
+                "kv_cache_bytes": 3486,
+                "max_model_len": 2048,
+                "gpu_memory_utilization": 0.9,
+                "provenance": "Synthetic initialized cache pool; no GPU qualification.",
+            }
     raw = _prediction(profile, root)
     raw["engine"]["workers"]["aggregated"]["parallelism"] = {"preset": "default"}
     raw["optimization"] = {"constraints": {"max_candidate_gpus": 2}}

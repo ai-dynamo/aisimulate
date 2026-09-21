@@ -230,7 +230,10 @@ def parallel_configs_for(
                     moe_tp_size=shape.moe_tp,
                     moe_ep_size=shape.moe_ep,
                 )
+                deployment.resources.require_memory()
                 deployment.resources.validate_envelope(max_num_tokens=role_tokens, max_batch_size=role_batch)
+                if deployment.resources.runtime_memory is not None and fixed_tokens is not None:
+                    raise ValueError("runtime FPM memory cannot use a fixed scalar token capacity")
                 if deployment.resources.cache_layout == "grouped":
                     grouped_shapes.add(shape)
         grouped_feasible = set()

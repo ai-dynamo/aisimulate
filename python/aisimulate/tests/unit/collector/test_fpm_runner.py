@@ -1293,9 +1293,15 @@ def test_runtime_summaries_use_native_rank_artifacts_and_skip_merged(tmp_path):
     }
 
 
-def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatch, tmp_path):
+@pytest.mark.parametrize("pending_memory", [False, True])
+def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pending_memory):
     cell = _cell()
     plan = _plan(cell)
+    if pending_memory:
+        plan.fpm_profile = True
+        plan.deployment_profile = lambda _cell: SimpleNamespace(
+            backend_version="0.27.0", resources=SimpleNamespace(memory_source="pending")
+        )
     events = []
     staged_names = []
 
@@ -1364,7 +1370,10 @@ def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatc
     assert events.index("cleanup") < events.index("apply")
     # Contract: the staged set is exactly the two rendered runtime artifacts
     # plus the collector's own in-pod runtime and preflight.
-    assert set(staged_names) == {"run.sh", "fpm_env.sh", "fpm_exec.sh", "preflight.py"}
+    expected_files = {"run.sh", "fpm_env.sh", "fpm_exec.sh", "preflight.py"}
+    if pending_memory:
+        expected_files.update({"fpm_memory_observer.py", "fpm_memory_worker.py", "fpm_memory_scheduler.py"})
+    assert set(staged_names) == expected_files
     assert "cases.json" not in staged_names
     assert "fpm_scheduler.py" not in staged_names
     assert "run_with_etcd.sh" not in staged_names

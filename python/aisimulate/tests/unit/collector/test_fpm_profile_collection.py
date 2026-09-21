@@ -257,7 +257,8 @@ def test_config_onboarding_architecture_matches_multimodal_collection(
     assert plan.capability.attention_kind == "dense_gqa"
     assert len(plan.cells) == 2
     assert "Text decoder only" in plan.fpm_profile.provenance
-    assert {decision["source"] for decision in plan.to_dict()["topology_memory_admission"]} == {"fpm_profile_declared"}
+    assert {decision["source"] for decision in plan.to_dict()["topology_memory_admission"]} == {"fpm_profile_pending"}
+    assert all(decision.disposition == "unknown" for decision in plan.topology_memory_admission)
     parsed = plan.capability.model_config.parsed_payload()
     assert parsed["hidden_size"] == 128
     assert parsed["num_experts"] == 0

@@ -52,5 +52,5 @@ pub use model::{
 pub use options::ForwardPassPerfOptions;
 pub use resources::{
     FpmCacheBudget, FpmCacheBudgetAdjusted, FpmCacheBudgetRequest, FpmCacheGroup, FpmCacheKind,
-    FpmCacheLayout, FpmResourceConfig,
+    FpmCacheLayout, FpmResourceConfig, FpmRuntimeMemoryConfig,
 };

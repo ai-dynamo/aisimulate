@@ -17,6 +17,13 @@ workdir=/tmp/fpm-bench
 # the same status before any resource is started.
 source "${workdir}/fpm_env.sh"
 
+if [[ -f "${workdir}/fpm_memory_worker.py" ]]; then
+  # The wrappers are staged alongside this script and delegate all execution
+  # to the image's installed vLLM/Dynamo classes. Only pending-memory cells
+  # stage them into the newly created pod. Avoid an empty path entry.
+  export PYTHONPATH="${workdir}${PYTHONPATH:+:${PYTHONPATH}}"
+fi
+
 etcd_endpoint="http://${FPM_MASTER_ADDR}:2379"
 engine_pid=""
 etcd_pid=""

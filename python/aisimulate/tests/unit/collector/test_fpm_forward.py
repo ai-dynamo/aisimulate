@@ -48,6 +48,9 @@ _REQUIRED_INSTALLED_FPM_PAYLOAD = {
     "collector/fpm_forward/runner.py": b"runner-content",
     "collector/fpm_forward/runtime/fpm_exec.sh": b"runtime-content",
     "collector/fpm_forward/runtime/preflight.py": b"preflight-content",
+    "collector/fpm_forward/runtime/fpm_memory_observer.py": b"memory-observer-content",
+    "collector/fpm_forward/runtime/fpm_memory_worker.py": b"memory-worker-content",
+    "collector/fpm_forward/runtime/fpm_memory_scheduler.py": b"memory-scheduler-content",
 }
 
 

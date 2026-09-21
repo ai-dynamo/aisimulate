@@ -46,6 +46,7 @@ from aisimulate.fpm_contract import (
 
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan
+from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
 from .types import KVWARM_STRATEGIES
 
 logger = logging.getLogger(__name__)
@@ -115,6 +116,18 @@ _FPM_VLLM_DECODE_FAKE_KV_ARGS = ("--no-enable-prefix-caching",)
 REMOTE_EXIT_MARKER = "__FPM_REMOTE_EXIT_CODE__="
 REMOTE_FILES_MARKER = "__FPM_REMOTE_FILES__="
 REMOTE_WORKDIR = "/tmp/fpm-bench"
+_MEMORY_OBSERVER_FILES = ("fpm_memory_observer.py", "fpm_memory_worker.py", "fpm_memory_scheduler.py")
+
+
+def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
+    if getattr(plan, "fpm_profile", None) is None:
+        return False
+    deployment = plan.deployment_profile(cell)
+    return (
+        deployment is not None
+        and deployment.resources.memory_source == "pending"
+        and deployment.backend_version == MEMORY_OBSERVER_VERSION
+    )
 
 
 def _utc_now() -> str:
@@ -1009,6 +1022,21 @@ def _cell_generator_overrides(
         {"name": FPM_ENGINE_BENCHMARK_OUTPUT_ENV, "value": f"{FPM_RESULTS_DIR}/benchmark.json"},
         {"name": FPM_RUN_ID_ENV, "value": cell.cell_id},
     ]
+    observe_memory = _observe_runtime_memory(plan, cell)
+    if observe_memory:
+        if cell.workload_kind == "decode":
+            # Use the prefill collection requirement for both phases when
+            # deriving one serving memory profile. Existing declared profiles
+            # retain their established phase-specific scheduling policies.
+            model_args.append("--no-async-scheduling")
+        model_args.extend(
+            [
+                "--worker-cls",
+                "fpm_memory_worker.FpmResourceWorker",
+                "--scheduler-cls",
+                "fpm_memory_scheduler.FpmResourceInstrumentedScheduler",
+            ]
+        )
     total_gpus = cell.topology.total_gpus
     generated = {
         "ServiceConfig": service,
@@ -1069,6 +1097,16 @@ def _cell_generator_overrides(
     merged.setdefault("K8sConfig", {})["extra_env"] = list(resolved_env.values())
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
+    if observe_memory and any(
+        str(argument).split("=", 1)[0].split(" ", 1)[0]
+        in {"--worker-cls", "--scheduler-cls", "--kv-cache-memory-bytes", "--num-gpu-blocks-override"}
+        for argument in policy_args
+    ):
+        raise ValueError("backend policy cannot replace runtime memory observer classes or automatic cache sizing")
+    if observe_memory and any(
+        str(argument).split("=", 1)[0].split(" ", 1)[0] == "--async-scheduling" for argument in policy_args
+    ):
+        raise ValueError("runtime memory collection requires synchronous scheduling in both phases")
     if gpu_memory_utilization is not None and any(
         str(argument).split("=", 1)[0].split(" ", 1)[0] == "--gpu-memory-utilization" for argument in policy_args
     ):
@@ -1702,6 +1740,11 @@ def _run_collection_impl(
                     env_script,
                     runtime_exec,
                     runtime_preflight,
+                    *(
+                        [runtime_exec.parent / filename for filename in _MEMORY_OBSERVER_FILES]
+                        if _observe_runtime_memory(plan, cell)
+                        else []
+                    ),
                 ],
             )
             profile_version = (

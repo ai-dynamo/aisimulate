@@ -138,6 +138,17 @@ def _estimate_dtype(
                 of_free=False,
             )
         )
+        if resources.memory_source != "declared":
+            return DTypeMemoryEstimate(
+                kv_cache_dtype=kv_cache_dtype,
+                disposition="unknown",
+                estimated_non_kv_bytes=None,
+                gpu_capacity_bytes=capacity,
+                reason="memory capacity is determined by this collection worker's runtime initialization; "
+                "no non-KV byte declaration is required",
+                provenance=resources.provenance,
+                gpu_memory_budget_bytes=budget if gpu_memory_utilization is not None else None,
+            )
         rejected = resources.non_kv_bytes >= budget
         capacity_label = "configured GPU memory budget" if gpu_memory_utilization is not None else "GPU capacity"
         return DTypeMemoryEstimate(
@@ -320,7 +331,11 @@ def filter_memory_infeasible_topologies(
                 max_new_tokens=max_new_tokens,
                 estimates=estimates,
                 reason=reason,
-                source="fpm_profile_declared" if fpm_profile is not None else "aic_native_configured_max_new_tokens",
+                source=(
+                    f"fpm_profile_{resources.memory_source}"
+                    if resources is not None
+                    else "aic_native_configured_max_new_tokens"
+                ),
                 max_batch_size=resources.max_batch_size if resources is not None else 1,
                 profile_max_num_tokens=resources.max_num_tokens if resources is not None else None,
             )

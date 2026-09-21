@@ -1034,13 +1034,14 @@ def estimate_kv_cache(
     fpm_profile: dict | str | FpmModelProfile | None = None,
     cp_size: int = 1,
     context_length: int | None = None,
+    request_occupancy_tokens: int | None = None,
 ) -> dict[str, Any]:
     """Compute the KV-cache memory estimate (raw + optional tolerance margin).
 
     This function validates inputs and implements scalar native/naive budget
-    math and tolerance margins. Grouped FPM profiles delegate budget and peak
-    footprint arithmetic to ``RustForwardPassPerfModel.estimate_cache_budget``.
-    Their token-capacity and bytes-per-token fields are ``None``. The legacy Rust
+    math and tolerance margins. Grouped and runtime-memory FPM profiles delegate
+    budget arithmetic to ``RustForwardPassPerfModel.estimate_cache_budget``.
+    Grouped token-capacity and bytes-per-token fields are ``None``. The legacy Rust
     ``aisimulate_core::memory::estimate_kv_cache`` transport calls this function
     and rebuilds scalar results; it rejects grouped results.
 
@@ -1073,21 +1074,25 @@ def estimate_kv_cache(
             model build is unsupported (default off -> the error propagates).
         allow_hf_config_download: allow the naive fallback to download a
             ``config.json`` from HuggingFace when it is not local / pre-cached.
-        fpm_profile: explicit FPM identity and conservative rank-local resource
-            bounds. This route reads only hardware specifications, requires the
-            requested scheduler envelope to fit the profile, and never builds
-            a model or falls back to naive estimation. CUDA graph bytes remain
-            a separate reservation in addition to declared profile overheads.
+        fpm_profile: explicit FPM identity and rank-local memory evidence. Pending
+            memory fails before estimation. Complete declared bytes require the
+            requested scheduler envelope to fit the profile; runtime capacity
+            requires its exact scheduler settings and memory fraction. This
+            route never constructs an analytical model or uses naive fallback.
+            Separate CUDA graph bytes apply only to declared profile overheads.
         cp_size: profile context-parallel identity; currently only CP1 is supported.
         context_length: optional context bound for a grouped profile's per-request
-            cache peak. Defaults to the profile's declared context. This does not
-            alter the fixed resource bounds or the available byte budget.
+            cache peak, also checked against runtime memory's ``max_model_len``.
+            Defaults to the profile context and does not change its byte budget.
+        request_occupancy_tokens: optional logical request length for a separate
+            native one-token decode occupancy estimate. Requires an FPM profile;
+            context and scheduler admission still use their original settings.
 
     Returns:
         A flat dict with ``total_gpu_capacity_bytes``, ``total_kv_size_bytes``,
         ``kv_size_per_token_bytes``, ``total_kv_size_tokens``, ``source``
         (``"native"`` | ``"naive_fallback"`` | ``"profile"``), ``memory_breakdown`` (dict on the
-        native path, ``None`` on the fallback), and ``tolerance_adjusted`` (a dict
+        native/declared paths, ``None`` for runtime capacity or naive fallback), and ``tolerance_adjusted`` (a dict
         when ``tolerance_fraction`` is set, else ``None``).
 
     Raises:
@@ -1106,6 +1111,8 @@ def estimate_kv_cache(
 
     # Validate the compute-side MTP depth before any fallback path.
     validate_nextn(nextn)
+    if request_occupancy_tokens is not None and fpm_profile is None:
+        raise ValueError("request_occupancy_tokens requires an FPM profile")
     if fpm_profile is not None:
         if nextn:
             raise ValueError("FPM profile resources support plain autoregressive execution; nextn must be 0")
@@ -1136,13 +1143,21 @@ def estimate_kv_cache(
             wideep_num_slots=wideep_num_slots,
         )
         resources = deployment.resources
+        resources.require_memory()
         resources.validate_envelope(max_num_tokens=max_num_tokens, max_batch_size=max_batch_size)
-        if resources.non_kv_bytes + cuda_graph_reserved_bytes > _MAX_EXACT_BYTE_COUNT:
+        if (
+            resources.runtime_memory is None
+            and resources.non_kv_bytes + cuda_graph_reserved_bytes > _MAX_EXACT_BYTE_COUNT
+        ):
             raise ValueError("total FPM non-KV bytes including CUDA graphs must not exceed 2**53")
         capacity = gpu_memory_capacity_bytes_override
         if capacity is None:
             capacity = perf_database.load_system_spec(system, systems_paths=systems_path)["gpu"]["mem_capacity"]
-        if resources.cache_layout == "grouped":
+        if (
+            resources.cache_layout == "grouped"
+            or resources.runtime_memory is not None
+            or request_occupancy_tokens is not None
+        ):
             from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
             return RustForwardPassPerfModel.estimate_cache_budget(
@@ -1166,6 +1181,7 @@ def estimate_kv_cache(
                     "max_num_tokens": max_num_tokens,
                     "max_batch_size": max_batch_size,
                     "context_length": context_length,
+                    "request_occupancy_tokens": request_occupancy_tokens,
                     "cuda_graph_reserved_bytes": cuda_graph_reserved_bytes,
                     "tolerance_fraction": tolerance_fraction,
                 },
@@ -1298,6 +1314,7 @@ def estimate_num_gpu_blocks(
     diagnostics: dict[str, Any] | None = None,
     fpm_profile: dict | str | FpmModelProfile | None = None,
     cp_size: int = 1,
+    context_length: int | None = None,
 ) -> int:
     """Convert the KV-cache token capacity to a scheduler block count.
 
@@ -1361,6 +1378,7 @@ def estimate_num_gpu_blocks(
         allow_hf_config_download=allow_hf_config_download,
         fpm_profile=fpm_profile,
         cp_size=cp_size,
+        context_length=context_length,
     )
 
     if estimate.get("cache_layout") == "grouped":

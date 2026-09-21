@@ -63,6 +63,7 @@ _NONNEGATIVE_FIELDS = frozenset(
     ("num_experts", "weights_bytes", "activations_bytes", "runtime_overhead_bytes", "comm_overhead_bytes")
 )
 _BYTE_FIELDS = frozenset(field for field in INTEGER_FIELDS if "bytes" in field)
+_NON_KV_FIELDS = _BYTE_FIELDS - {"kv_bytes_per_token"}
 _CACHE_GROUP_NAMES = frozenset(("full_attention", "sliding_attention", "full_convolution", "sliding_convolution"))
 _INKLING_ARCHITECTURE = "InklingForConditionalGeneration"
 _INKLING_CACHE_SOURCE = (
@@ -423,7 +424,8 @@ def load_model_config(path: str | Path) -> ModelConfig:
     notes = {
         "modeling_scope": (
             "Text decoder only. FPM excludes multimodal encoders, projectors, preprocessing and other non-text "
-            "components and their resource costs. Full multimodal deployment memory and latency are not modeled."
+            "components from timing and config-derived planning estimates. Observed runtime cache capacity accounts "
+            "for all components actually loaded by the worker; full multimodal latency is not modeled."
         )
     }
     if "text_config" in document:
@@ -913,18 +915,25 @@ def _activation_estimate(
     values: dict[str, Any], geometry: dict[str, int], request: SupportRequest | None, architecture: str | None
 ) -> tuple[int | None, str]:
     if architecture not in _FULL_ATTENTION or request is None:
-        return None, "activation/workspace estimate unavailable for this layout or topology; provide activations_bytes"
+        return (
+            None,
+            "activation/workspace estimate unavailable for this layout or topology; "
+            "memory remains pending runtime observation",
+        )
     if values.get("fmha_quant_mode") not in {"bfloat16", "float16"}:
-        return None, "activation estimate requires an explicit 16-bit FMHA mode, otherwise provide activations_bytes"
+        return (
+            None,
+            "activation estimate requires an explicit 16-bit FMHA mode; memory remains pending runtime observation",
+        )
     if "num_attention_heads" not in geometry or "head_dim" not in geometry:
-        return None, "attention width missing; provide activations_bytes"
+        return None, "attention width missing; memory remains pending runtime observation"
     tp = request.search.tensor_parallel
     # AISimulate's local vLLM backend shares the TRT-LLM activation estimate.
     # Keep this narrow subset independent of backend/model imports and do not
     # extrapolate the coefficient table to other TP sizes or DSA workspaces.
     coefficients = {1: 22, 2: 13, 4: 10, 8: 10} if architecture not in _DENSE else {1: 11, 2: 6.5, 4: 5, 8: 5}
     if tp not in coefficients:
-        return None, f"no activation coefficient for TP={tp}; provide activations_bytes"
+        return None, f"no activation coefficient for TP={tp}; memory remains pending runtime observation"
     tokens = values["max_num_tokens"]
     width = geometry["num_attention_heads"] * geometry["head_dim"]
     result = max(70 * 1024 * 1024, tokens * width * int(2 * coefficients[tp]))
@@ -1056,10 +1065,6 @@ def derive_profile(
             "provide rank-local bytes per cached token for all persistent cache tensors; "
             "MLA/DSA and unknown layouts need explicit accounting"
         ),
-        "runtime_overhead_bytes": "provide rank-local runtime reservation excluding separately configured CUDA graphs",
-        "comm_overhead_bytes": (
-            "provide rank-local communication reservation for this topology; no exact TP/DEP/TEP hardware entry"
-        ),
     }
     grouped_cache = (
         _uses_grouped_cache(config.raw, architecture)
@@ -1112,9 +1117,7 @@ def derive_profile(
             if key == "weights_bytes"
             else estimate(values, geometry, request, architecture)
         )
-        if value is None:
-            missing[key] = source
-        else:
+        if value is not None:
             values[key], sources[key] = value, source
     missing = {key: value for key, value in missing.items() if key not in values}
     for key in _BYTE_FIELDS & values.keys():
@@ -1123,12 +1126,17 @@ def derive_profile(
         raise ValueError("total non-KV resource bytes must not exceed 2**53")
     if missing or request is None:
         return ProfileDraft(None, values, missing, sources)
+    declared_memory = supplied.keys() >= _NON_KV_FIELDS
     provenance = json.dumps(
         {
             "config_sha256": config.sha256,
-            "method": (
-                "local config facts and declared/estimated per-rank resources; no checkpoint inspection or measurements"
-            ),
+            "method": ("local config facts; byte estimates are planning evidence, not runtime limits or measurements"),
+            "memory_source": "declared" if declared_memory else "pending",
+            "planning_estimates": {
+                key: {"value": values[key], "source": sources[key]}
+                for key in sorted(_NON_KV_FIELDS & values.keys())
+                if key not in supplied
+            },
             "config_notes": config.notes,
             "fields": {key: {"value": values[key], "source": sources[key]} for key in sorted(values)},
             "deployment_identity": request.identity.model_dump(mode="json"),
@@ -1155,7 +1163,11 @@ def derive_profile(
                     "moe_ep": parallel["moe_expert"],
                     **{key: values[key] for key in _DEPLOYMENT_FIELDS},
                     "resources": {
-                        **{key: values[key] for key in _RESOURCE_FIELDS if key in values},
+                        **{
+                            key: values[key]
+                            for key in _RESOURCE_FIELDS
+                            if key in values and (key not in _NON_KV_FIELDS or declared_memory)
+                        },
                         "provenance": provenance,
                     },
                 }

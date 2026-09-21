@@ -121,7 +121,7 @@ def test_nested_text_geometry_and_architecture_are_independent_of_wrapper_and_en
     assert "text_config" in notes["decoder_config"]
     assert f"decoder architecture={architecture}" in notes["decoder_architecture"]
     assert "Text decoder only" in notes["modeling_scope"]
-    assert "Full multimodal deployment memory and latency are not modeled" in notes["modeling_scope"]
+    assert "full multimodal latency is not modeled" in notes["modeling_scope"]
     assert json.loads(draft.profile.deployments[0].resources.provenance)["config_notes"] == notes
 
 
@@ -166,7 +166,8 @@ def test_nested_precision_metadata_takes_precedence_as_a_group(tmp_path):
 def test_shared_unrecognized_quantization_prevents_bfloat16_storage_assumptions(tmp_path, metadata):
     config = _config(tmp_path, text_config=_config(tmp_path).raw, **metadata)
     draft = derive_profile(config, _request())
-    assert {"gemm_quant_mode", "moe_quant_mode", "weights_bytes"} <= draft.missing.keys()
+    assert {"gemm_quant_mode", "moe_quant_mode"} <= draft.missing.keys()
+    assert {"weights_bytes"}.isdisjoint(draft.resolved)
     for key, value in metadata.items():
         assert config.raw[key] == value
         assert key in config.notes["shared_metadata"]
@@ -180,7 +181,8 @@ def test_nested_unrecognized_quantization_is_not_replaced_by_shared_metadata(tmp
         quantization_config={"quant_method": "fp8"},
     )
     draft = derive_profile(config, _request())
-    assert {"gemm_quant_mode", "moe_quant_mode", "weights_bytes"} <= draft.missing.keys()
+    assert {"gemm_quant_mode", "moe_quant_mode"} <= draft.missing.keys()
+    assert {"weights_bytes"}.isdisjoint(draft.resolved)
     assert "quantization_config" not in config.raw
 
 
@@ -202,7 +204,8 @@ def test_unknown_nested_decoder_retains_wrapper_identity_and_requires_resource_b
     assert draft.resolved["architecture"] == "ExampleMultimodalForConditionalGeneration"
     assert draft.resolved["context_length"] == 4096
     assert draft.resolved["num_experts"] == 4
-    assert {"weights_bytes", "activations_bytes", "cache_block_sizes"} <= draft.missing.keys()
+    assert {"cache_block_sizes"} <= draft.missing.keys()
+    assert {"weights_bytes", "activations_bytes"}.isdisjoint(draft.resolved)
     assert draft.resolved["cache_layout"] == "grouped"
     assert "wrapper architecture" in draft.sources["architecture"]
     assert "assumption" in draft.sources["gemm_quant_mode"]
@@ -224,9 +227,10 @@ def test_unknown_nested_decoder_retains_wrapper_identity_and_requires_resource_b
 def test_missing_text_geometry_does_not_fall_back_to_wrapper_dimensions(tmp_path):
     config = _config(tmp_path, text_config={"model_type": "llama", "model_max_length": 2048})
     draft = derive_profile(config, _request(), _runtime())
-    assert {"weights_bytes", "activations_bytes", "kv_bytes_per_token"} <= draft.missing.keys()
+    assert {"kv_bytes_per_token"} <= draft.missing.keys()
+    assert {"weights_bytes", "activations_bytes"}.isdisjoint(draft.resolved)
     assert "hidden_size" not in config.raw
-    assert "hidden_size" in draft.missing["weights_bytes"]
+    assert "weights_bytes" not in draft.missing
 
 
 def test_known_wrapper_does_not_establish_unknown_nested_decoder_resource_layout(tmp_path):
@@ -235,9 +239,8 @@ def test_known_wrapper_does_not_establish_unknown_nested_decoder_resource_layout
     draft = derive_profile(config, _request(), _runtime())
     assert draft.resolved["architecture"] == "LlamaForCausalLM"
     assert config.decoder_architecture is None
-    assert {"num_experts", "weights_bytes", "activations_bytes", "kv_bytes_per_token", "cache_layout"} <= (
-        draft.missing.keys()
-    )
+    assert {"num_experts", "kv_bytes_per_token", "cache_layout"} <= draft.missing.keys()
+    assert {"weights_bytes", "activations_bytes"}.isdisjoint(draft.resolved)
 
 
 @pytest.mark.parametrize("text", [None, {}, [], "decoder", [{"hidden_size": 16}], {"text_config": {"hidden_size": 16}}])
@@ -271,7 +274,8 @@ def test_dense_tensor_counts_include_replicated_norms_and_kv_heads(tmp_path, tp,
     draft = derive_profile(_config(tmp_path), _request(tensor_parallel=tp), _runtime())
     assert draft.missing == {}
     resources = draft.profile.deployments[0].resources
-    assert resources.weights_bytes == weights
+    assert resources.weights_bytes is None
+    assert draft.resolved["weights_bytes"] == weights
     assert resources.kv_bytes_per_token == kv
     assert resources.max_num_tokens == 8192
     assert resources.max_batch_size == 256
@@ -325,9 +329,12 @@ def test_moe_resources_are_rank_local_for_tp_dep_and_tep(tmp_path, topology, wei
     assert draft.missing == {}
     deployment = draft.profile.deployments[0]
     assert deployment.parallel_tuple == parallel
-    assert deployment.resources.weights_bytes == weights
+    assert deployment.resources.weights_bytes is None
+    assert draft.resolved["weights_bytes"] == weights
     assert deployment.resources.kv_bytes_per_token == kv
-    assert deployment.resources.comm_overhead_bytes == 321
+    assert deployment.resources.comm_overhead_bytes is None
+    assert draft.resolved["comm_overhead_bytes"] == 321
+    assert deployment.resources.memory_source == "pending"
 
 
 def test_activation_estimate_uses_declared_scheduler_envelope(tmp_path):
@@ -343,8 +350,9 @@ def test_activation_estimate_uses_declared_scheduler_envelope(tmp_path):
 def test_mha_and_weight_padding_have_separate_supported_domains(tmp_path):
     draft = derive_profile(_config(tmp_path, num_key_value_heads=4, vocab_size=65), _request(), _runtime())
     assert draft.resolved["kv_bytes_per_token"] == 128
-    assert "weights_bytes" in draft.missing
-    assert "padding" in draft.missing["weights_bytes"]
+    assert "weights_bytes" not in draft.resolved
+    assert "weights_bytes" not in draft.missing
+    assert draft.profile.deployments[0].resources.memory_source == "pending"
 
 
 @pytest.mark.parametrize("field", ["gemm_quant_mode", "kv_cache_dtype", "weights_bytes", "activations_bytes"])
@@ -359,7 +367,8 @@ def test_hardware_defaults_do_not_reuse_tp_communication_for_dep(tmp_path):
     config = _config(tmp_path, architectures=["MixtralForCausalLM"], model_type="mixtral", num_local_experts=4)
     request = _request("moe", attention_data_parallel=2, moe_tensor_parallel=1, moe_expert_parallel=2)
     draft = derive_profile(config, request, _runtime())
-    assert "comm_overhead_bytes" in draft.missing
+    assert "comm_overhead_bytes" not in draft.resolved
+    assert "comm_overhead_bytes" not in draft.missing
     assert draft.resolved["runtime_overhead_bytes"] == 3758096384
 
 
@@ -367,7 +376,7 @@ def test_unknown_hardware_has_no_fallback_reservations(tmp_path):
     request = _request()
     request.identity.gpu = "custom_gpu"
     draft = derive_profile(_config(tmp_path), request, _runtime())
-    assert {"comm_overhead_bytes", "runtime_overhead_bytes"} <= set(draft.missing)
+    assert {"comm_overhead_bytes", "runtime_overhead_bytes"}.isdisjoint(draft.resolved)
 
 
 def test_dynamic_kv_scales_need_explicit_accounting(tmp_path):
@@ -417,11 +426,12 @@ def test_weight_quantization_does_not_select_runtime_attention_or_kv_dtype(tmp_p
     draft = derive_profile(config, _request())
     assert draft.resolved["gemm_quant_mode"] == "fp8_block"
     assert draft.resolved["moe_quant_mode"] == "fp8_block"
-    assert {"fmha_quant_mode", "kv_cache_dtype", "weights_bytes"} <= draft.missing.keys()
+    assert {"fmha_quant_mode", "kv_cache_dtype"} <= draft.missing.keys()
+    assert {"weights_bytes"}.isdisjoint(draft.resolved)
     assert draft.resolved["comm_quant_mode"] == "half"
     assert "collector FPM identity default" in draft.sources["comm_quant_mode"]
     assert draft.profile is None
-    assert "quantized" in draft.missing["weights_bytes"]
+    assert "weights_bytes" not in draft.missing
 
 
 @pytest.mark.parametrize(
@@ -466,16 +476,16 @@ def test_config_quantization_uses_existing_fpm_checkpoint_identity(tmp_path, qua
 def test_unknown_quantization_never_falls_back_to_residual_bfloat16(tmp_path):
     config = _config(tmp_path, quantization_config={"quant_method": "custom", "quant_algo": "custom"})
     draft = derive_profile(config, _request())
-    assert {"gemm_quant_mode", "moe_quant_mode", "weights_bytes"} <= set(draft.missing)
+    assert {"gemm_quant_mode", "moe_quant_mode"} <= set(draft.missing)
+    assert {"weights_bytes"}.isdisjoint(draft.resolved)
 
 
 def test_missing_fields_are_complete_and_unknown_layout_can_use_explicit_resources(tmp_path):
     config = _config(tmp_path, architectures=["NewDecoderForCausalLM"], model_type="new_decoder")
     assert "num_experts" not in config.suggestions
     draft = derive_profile(config, _request())
-    assert {"num_experts", "weights_bytes", "activations_bytes", "kv_bytes_per_token", "cache_layout"} <= set(
-        draft.missing
-    )
+    assert {"num_experts", "kv_bytes_per_token", "cache_layout"} <= set(draft.missing)
+    assert {"weights_bytes", "activations_bytes"}.isdisjoint(draft.resolved)
     complete = derive_profile(
         config,
         _request(),
@@ -648,7 +658,8 @@ def test_bundled_modelopt_string_kv_scheme_preserves_usable_geometry():
     assert draft.resolved["gemm_quant_mode"] == "fp8_static"
     assert draft.resolved["moe_quant_mode"] == draft.resolved["kv_cache_dtype"] == "fp8"
     assert draft.resolved["kv_bytes_per_token"] == 2 * 64 * 2 * 128
-    assert {"weights_bytes", "activations_bytes", "fmha_quant_mode"} <= draft.missing.keys()
+    assert {"fmha_quant_mode"} <= draft.missing.keys()
+    assert {"weights_bytes", "activations_bytes"}.isdisjoint(draft.resolved)
 
 
 def test_bundled_custom_layout_keeps_null_geometry_unresolved():
@@ -662,7 +673,8 @@ def test_bundled_custom_layout_keeps_null_geometry_unresolved():
     assert config.suggestions["context_length"] == 131072
     assert config.raw["intermediate_size"] is None
     assert "intermediate_size" not in config.notes
-    assert {"weights_bytes", "activations_bytes", "kv_bytes_per_token", "num_experts"} <= draft.missing.keys()
+    assert {"kv_bytes_per_token", "num_experts"} <= draft.missing.keys()
+    assert {"weights_bytes", "activations_bytes"}.isdisjoint(draft.resolved)
 
 
 def test_selected_topology_and_context_must_match_structural_config(tmp_path):
@@ -697,7 +709,8 @@ def test_real_minimax_and_glm_extract_independent_facts_without_naive_storage_ru
     assert draft.resolved["gemm_quant_mode"] == quant
     assert draft.resolved.get("kv_cache_dtype") == kv
     assert "fmha_quant_mode" in draft.missing
-    assert "weights_bytes" in draft.missing
+    assert "weights_bytes" not in draft.resolved
+    assert "weights_bytes" not in draft.missing
     if architecture == "GlmMoeDsaForCausalLM":
         assert "kv_bytes_per_token" in draft.missing
         assert "DSA" in draft.missing["kv_bytes_per_token"]

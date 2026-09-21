@@ -21,7 +21,7 @@ handoff. Use the returned revision for subsequent updates; on a stale-writer
 error, reload and reconcile instead of overwriting newer work.
 Follow its six stages: inspect the model and target; choose the worker and
 review runtime/collection limits; derive, review and save the profile; plan
-collection; collect and verify data; validate replay and run ordinary
+collection; collect, verify and finalize memory; validate replay and run ordinary
 prediction/recommendation. Start by asking only for a missing
 Hugging Face model ID (`organization/model-name`) and target GPU platform. Accept
 an already supplied local config, profile or checkpoint path instead of requiring
@@ -56,8 +56,8 @@ and explain that other communication identities are rejected by the current
 collector for new collection. Resolve weight, FMHA and KV precision separately;
 do not infer unknown FMHA or KV precision from a checkpoint name or weight
 quantization. Ask only for shared precision/layout facts that remain unresolved
-after inspection. Only a complete declared/estimated byte budget can establish
-an `estimated_fit` default;
+after inspection. Only a complete planning estimate can establish
+an `estimated_fit` default. It never completes the saved runtime memory profile;
 the shortlist is not a performance ranking or runtime qualification. Present the
 default and alternatives, help select one or more configurations, and preserve
 explicit topology choices. Each generated profile and collection plan still
@@ -67,8 +67,8 @@ selection. Headless setup uses `--model-config PATH --parallel-configs CONFIGS
 --output-dir ROOT` for a JSON/YAML list of explicit topology fields and optional
 per-entry `resource_overrides`. Retain `--output FILE` for a single request.
 If no default exists, explain the missing inputs and select candidates before
-collecting their rank-local bounds. Read shared metadata once, then derive and
-review each profile independently. Per-rank byte bounds and `cache_groups`
+observing their runtime memory during collection. Read shared metadata once,
+then derive and review each profile independently. Per-rank byte bounds and `cache_groups`
 belong to the exact tuple; never transfer them between configurations or place
 them in shared overrides for multiple choices. Shared precision/layout and
 `cache_block_sizes` may be reused only when valid for the same runtime, backend
@@ -113,7 +113,9 @@ optimization GPU budgets belong to ordinary predict/recommend configurations.
 Review context, scheduler and prefill capture limits independently of validation
 traffic. Fresh config/profile defaults use the smaller of the declared context
 and 256,000 tokens, profile scheduler bounds or 8,192 tokens/256 sequences, and
-0.90 GPU memory utilization. New initialization uses
+0.90 GPU memory utilization. Reused observed profiles retain their recorded memory
+utilization and additionally limit context to their observed `max_model_len`.
+New initialization uses
 `--prefill-cudagraph-policy runtime`, leaving graph mode/capture sizes and the
 exact sample grid unresolved until engine initialization. Show these as proposed
 settings, explain their sources, and allow edits; they establish neither capacity
@@ -149,7 +151,32 @@ from replay's cross-request prefix reuse; preserve the collector's phase-specifi
 protocol and inspect skipped/fallback evidence instead of copying replay cache
 flags into benchmark launches.
 
-After verifying the formal data pair, use `aisimulate onboard validate-fpm`
+Do not ask users for activation, runtime, communication or aggregate non-KV
+memory bounds. Fresh config-derived profiles keep memory pending, even when
+planning estimates exist. Only an explicitly supplied complete four-field
+non-KV declaration uses the legacy declared-memory path. Collection accepts
+pending memory and observes cache allocation during normal initialization.
+For audited vLLM 0.27.0, explain the fixed synchronous-scheduling policy for both
+phases in this route: it matches supported prefill benchmarking and is not a vLLM default.
+
+Prediction, recommendation and replay require resolved memory. The initial
+observer supports audited vLLM 0.27.0 full/sliding cache interfaces and supported
+convolution storage. Other versions retain native timing collection without
+enabling the observer; unknown layouts report unresolved memory. Do not replace
+that diagnostic with guessed bytes.
+After complete formal collection, run `aisimulate onboard finalize --config
+ORIGINAL/request.yaml --output-dir ORIGINAL --resolved-output-dir FRESH`.
+It verifies native timing/resource evidence and formal data, then writes a new
+profile and simulation plan with the verified pair. It preserves source artifacts,
+uses the minimum compatible observed capacity, and rejects different cache layouts
+or memory-relevant launch settings, including incompatible phase graph settings.
+Review and accept this exact resolved profile separately; finalization never
+accepts it automatically in the session checkpoint. Record the fresh request,
+profile, data and provenance references while retaining the original collection.
+Use the resolved directory for simulation. Observed capacity includes all resident
+worker components even when timing models only text-decoder execution.
+
+After verifying the formal data pair and resolving memory, use `aisimulate onboard validate-fpm`
 with a local Weka trace and a separate validation output directory. Follow the
 guide's pinned AgentX reference and current cold aggregated, one-lane, HBM-only,
 non-speculative scope. Preserve target model projection and strict direct FPM
@@ -171,11 +198,12 @@ disaggregation and scalar capacity overrides are unsupported for grouped caches.
 
 Do not reject a checkpoint solely because it is multimodal. Read its unambiguous
 `text_config`, or its flat text-decoder fields, and explain that FPM models only
-the text decoder. Multimodal encoders, projectors, preprocessing and other
-non-text components and their resource costs are excluded; full multimodal
-deployment memory and latency are not modeled. Preserve this scope in the
-reviewed profile's provenance and require explicit bounds for unknown decoder
-resources. Keep validation of incompatible decoder/cache semantics intact.
+the text decoder. Config-derived estimates exclude multimodal encoders,
+projectors, preprocessing and other non-text components. Observed runtime cache
+capacity accounts for all components actually loaded by the worker, while timing
+describes the text decoder only. Preserve this scope in the reviewed profile's
+provenance. Do not subtract guessed encoder memory from an observation. Keep
+validation of incompatible decoder/cache semantics intact.
 
 For directory output, read `onboarding.json` and run each configuration's
 `plan_command` for its own `collection/` directory. Inspect

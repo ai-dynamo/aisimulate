@@ -673,7 +673,9 @@ def _direct_fpm_spec_json(
                 "phase": phase,
                 "model_path": profile.model,
                 "match_identity": deployment.match_identity(),
-                "weight_bytes": deployment.resources.weights_bytes,
+                # Direct interpolation ignores this legacy operation field.
+                # Zero here is not an inferred resource or memory bound.
+                "weight_bytes": deployment.resources.weights_bytes or 0,
                 "verify_width": 1,
                 "sol_ops": [],
                 "interpolation": "direct",
