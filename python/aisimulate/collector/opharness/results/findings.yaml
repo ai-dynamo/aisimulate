@@ -454,7 +454,7 @@ findings:
       rows without touching measurement semantics. ADDENDA: (2+3) upgraded to selector-verified — serving itself
       routes fp8-kv+head512 to FlashInferBackend whose SM90 JIT cannot run it (prefill fa2 no-fp8 assert, decode
       module compiles SM100+ only); a vllm selector availability-check gap, upstream-worthy. (4a) localized to
-      the framework's own q-padding in _fp8_flash_mla_kernel (pad to 64/128 heads -> (1,T,128,576) new_zeros,
+      the framework''s own q-padding in _fp8_flash_mla_kernel (pad to 64/128 heads -> (1,T,128,576) new_zeros,
       batch stride breaks int32 at T>~29k); serving reachable only with a per-step token budget above ~29k.
       (1) msa kernel limit converted to an invocation-site guard raising a classified error with the framework
       citation (commit c0f7f035). dsv4 full-grid rerun on the merged lane: generation 3088/3088 PASS (was 100%
