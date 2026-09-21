@@ -23,6 +23,7 @@ import pytest
 
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common, config
+from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.blocks.moe import MoEBlockShape, build_moe_block_ops
 
@@ -61,7 +62,7 @@ def _dispatches(op_list):
 class TestGpusPerNodeGuard:
     def test_large_ep_rejects_an_explicit_moe_kernel_source(self):
         cfg = _cfg(moe_comm_backend={"context": "deepep_ht"}, moe_kernel_source="pinned_source")
-        with pytest.raises(ValueError, match="moe_kernel_source.*large-EP"):
+        with pytest.raises(InvalidEngineConfigurationError, match="moe_kernel_source.*large-EP"):
             _build(cfg, gpus_per_node=8)
 
     def test_large_ep_without_gpus_per_node_raises(self):

@@ -310,7 +310,11 @@ class KVCacheEstimator:
         resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
         resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
         validate_moe_controls(
-            model_path=model_path, enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots, moe_backend=moe_backend
+            model_path=model_path,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
+            moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
         )
         model_config = build_model_config(
             tp_size=tp_size,
@@ -1092,7 +1096,11 @@ def estimate_kv_cache(
     # Validate the compute-side MTP depth before any fallback path.
     validate_nextn(nextn)
     validate_moe_controls(
-        model_path=model_path, enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots, moe_backend=moe_backend
+        model_path=model_path,
+        enable_eplb=enable_eplb,
+        wideep_num_slots=wideep_num_slots,
+        moe_backend=moe_backend,
+        moe_kernel_source=moe_kernel_source,
     )
 
     try:

@@ -124,7 +124,7 @@ def test_compile_engine_propagates_moe_kernel_source_to_model_config(monkeypatch
     monkeypatch.setattr(engine.aisimulate_core, "engine_spec_bincode_from_json", lambda s: b"")
 
     engine.compile_engine(
-        "Qwen/Qwen3-32B",
+        "Qwen/Qwen3-30B-A3B",
         "h200_sxm",
         "trtllm",
         moe_kernel_source="sglang_flashinfer_trtllm_moe",

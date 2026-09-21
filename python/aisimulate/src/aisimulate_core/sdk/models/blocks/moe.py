@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
+from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
 from aisimulate_core.sdk.models.helpers import check_is_moe
 from aisimulate_core.sdk.operations.moe_comm import MOE_A2A_BACKENDS, communication_dtype_for, nodes_for
 
@@ -297,7 +298,9 @@ def _default_moe_block_ops(
     comm_backend = (getattr(cfg, "moe_comm_backend", None) or {}).get(inference_phase)
     if comm_backend:
         if getattr(cfg, "moe_kernel_source", None) is not None:
-            raise ValueError("moe_kernel_source is unsupported when moe_comm_backend selects the large-EP MoE graph")
+            raise InvalidEngineConfigurationError(
+                "moe_kernel_source is unsupported when moe_comm_backend selects the large-EP MoE graph"
+            )
         return _large_ep_block_ops(
             comm_backend,
             prefix=prefix,

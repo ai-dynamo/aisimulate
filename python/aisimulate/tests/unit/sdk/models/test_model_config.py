@@ -17,6 +17,7 @@ import pytest
 import aisimulate.sdk.operations as ops
 from aisimulate.sdk import common, config, models
 from aisimulate.sdk.config_builders import build_model_config
+from aisimulate.sdk.errors import InvalidEngineConfigurationError
 from aisimulate.sdk.models import (
     LLAMAModel,
     Qwen3VLModel,
@@ -101,6 +102,39 @@ def test_build_model_config_preserves_exact_kernel_source_keyword(source):
 def test_model_config_rejects_invalid_kernel_source(source):
     with pytest.raises(ValueError, match="moe_kernel_source must be a non-empty string"):
         config.ModelConfig(moe_kernel_source=source)
+
+
+@pytest.mark.parametrize(
+    ("model_path", "moe_backend", "message"),
+    [
+        ("Qwen/Qwen3-32B", None, "require an MoE model"),
+        ("deepseek-ai/DeepSeek-V4-Pro", "megamoe", "MegaMoE"),
+    ],
+)
+def test_model_graph_rejects_moe_kernel_source_without_a_compatible_operator(model_path, moe_backend, message):
+    model_config = config.ModelConfig(
+        tp_size=1,
+        attention_dp_size=8,
+        moe_tp_size=1,
+        moe_ep_size=8,
+        moe_backend=moe_backend,
+        moe_kernel_source="missing_source",
+    )
+
+    with pytest.raises(InvalidEngineConfigurationError, match=message):
+        get_model(model_path, model_config, "sglang")
+
+
+def test_model_graph_rejects_source_when_layer_override_removes_all_moe_operators():
+    # Kimi-K3 has a dense first layer; its checkpoint metadata still declares MoE.
+    model_path = "moonshotai/Kimi-K3"
+    assert check_is_moe(model_path)
+    model_config = config.ModelConfig(
+        overwrite_num_layers=1, moe_tp_size=1, moe_ep_size=1, moe_kernel_source="missing_source"
+    )
+
+    with pytest.raises(InvalidEngineConfigurationError, match="moe_kernel_source.*no compatible MoE"):
+        get_model(model_path, model_config, "sglang")
 
 
 class TestSupportedModels:

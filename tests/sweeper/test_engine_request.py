@@ -22,6 +22,7 @@ CONTROLS = {
     "enable_eplb": True,
     "wideep_num_slots": 256,
     "moe_backend": "deepep_moe",
+    "moe_kernel_source": "sglang_flashinfer_trtllm_moe",
     "attention_backend": "fa3",
     "gemm_quant_mode": "fp8",
     "moe_quant_mode": "fp8",
