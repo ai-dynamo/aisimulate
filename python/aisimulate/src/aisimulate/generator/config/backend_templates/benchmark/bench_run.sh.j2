@@ -96,7 +96,9 @@ for concurrency in "${concurrency_array[@]}"; do
     "${input_file_args[@]}" \
 {% endif %}
     --extra-inputs ignore_eos:true \
+{% if bench_legacy_nvext_ignore_eos | default(true) %}
     --extra-inputs "{\"nvext\":{\"ignore_eos\":true}}" \
+{% endif %}
     --concurrency ${concurrency} \
     --num-requests $(($concurrency*${BENCH_MULTI_ROUND})) \
     --warmup-request-count $(($concurrency*2)) \
