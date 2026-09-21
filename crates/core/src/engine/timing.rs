@@ -487,6 +487,19 @@ pub trait TimingModel: Send + Sync {
     fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
         None
     }
+
+    /// Start a new measurement epoch without changing timing predictions or
+    /// provider caches. Called only after preparation work has settled.
+    ///
+    /// Latency-only providers need no reset. Evidence-producing providers must
+    /// override this method so preparation cannot leak into profile evidence.
+    fn reset_evidence(&self) -> Result<()> {
+        ensure!(
+            self.evidence_summary().is_none(),
+            "timing provider exposes evidence but does not support resetting its measurement epoch"
+        );
+        Ok(())
+    }
 }
 
 struct PolynomialTimingModel;
@@ -1033,5 +1046,7 @@ mod tests {
 
         assert_eq!(fixed.evidence_summary(), None);
         assert_eq!(polynomial.evidence_summary(), None);
+        fixed.reset_evidence().unwrap();
+        polynomial.reset_evidence().unwrap();
     }
 }
