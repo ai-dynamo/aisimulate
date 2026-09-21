@@ -998,9 +998,9 @@ engine:
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | `predict` only. Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
 | `engine.workers.<role>.scheduler.max_prefill_tokens` | `null` | `x` | `-` | Positive; SGLang only. Token budget of one EXTEND batch across requests. |
-| `engine.workers.aggregated.host` | Unset | `x` | `-` | SGLang scheduler-thread cost tables (`receive`, `select`, `prepare_extend`, `launch_extend`, `prepare_vision`, `launch_vision`, `launch_decode`, `result`, `tp_sync_ms`, `decode_launch_syncs_previous_gpu`); aggregated SGLang only. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
-| `engine.workers.aggregated.frontend` | Unset | `x` | `-` | Frontend worker pools (`io_workers`, `processor_workers`, `mm_workers`) and ordered `stages`; requires `host`. |
-| `engine.workers.aggregated.host_profile` | Unset | `x` | `-` | `{path, frontend, on_missing}`: take `host` and `frontend` from a measured profile; exclusive with explicit tables. |
+| `engine.workers.aggregated.host_loop` | `false` | `x` | `-` | Model each pass as one SGLang overlap-scheduler iteration (requests received at iteration boundaries, outputs visible one iteration later); aggregated SGLang only. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
+| `engine.workers.aggregated.frontend` | Unset | `x` | `-` | Ordered frontend `stages` (`resource: pool | tm_loop`, `workers`, `cost`, `concurrency_scale`); requires `host_loop`. |
+| `engine.workers.aggregated.host_profile` | Unset | `x` | `-` | `{path, frontend}`: take the frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; implies `host_loop`; exclusive with explicit `frontend`. |
 | `engine.workers.aggregated.vision.cache_mib` | `100` | `x` | `-` | Positive MiB; SGLang multimodal embedding cache for image workloads encoded on the language worker. |
 | `engine.workers.aggregated.vision.encoder_parallel` | `tp` | `x` | `-` | `tp` (SGLang default: the tower is sharded over the tensor-parallel group) or `dp` (`--mm-enable-dp-encoder`); sets encoder timing, collectives, and per-rank tower weights. |
 | `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. Defaults are backend-specific, not version-specific. |
@@ -1374,7 +1374,7 @@ engine:
     aggregated:
       parallelism: {replicas: 1, tensor: 1}
       scheduler: {max_batched_tokens: 8192, max_sequences: 64}
-      host_profile: {path: ./host-profile.json, frontend: python}
+      host_profile: {path: ./host-costs.json, frontend: python}
       vision: {cache_mib: 100, encoder_parallel: tp}
 ```
 
@@ -1382,11 +1382,14 @@ engine:
 aisimulate predict --stack engine --config vl-prediction.yaml --capture-per-request
 ```
 
-Cost tables are measured data: write them explicitly under `host` and `frontend`,
-or point `host_profile` at a profile produced by `python -m aisimulate.vl.calibrate`
-on a serving host. A profile that was measured for another model, frontend, image
-shape, count or encoding, text length, or SGLang revision is rejected, as is one
-that lacks a cost the deployment needs. The summary adds the mean time to first
+Frontend costs are measured data: run `python -m aisimulate.vl.collect --table
+host-costs.json --model <model> --frontend python|rust --images HxWxN --encoding
+png|jpeg --text-tokens N --sglang-python <serving venv python>` once per
+workload shape on the serving host (no GPU needed), then reuse the table from
+`host_profile` in every prediction and recommendation. A shape, model,
+frontend, or SGLang revision the table has no row for fails closed and prints
+the `collect` command that adds it. Explicit `frontend.stages` may be written
+by hand instead. The summary adds the mean time to first
 token split by milestone, `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
 `mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, and `mean_result_observation_delay_ms`
 (server-internal, ending at scheduler observation);
