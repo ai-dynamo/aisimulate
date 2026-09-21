@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+import os
 import sys
 
 import pytest
@@ -118,6 +120,34 @@ def test_slurm_rejects_topology_and_config_overrides_before_emission(backend, ex
 def test_slurm_checks_topology_overrides_in_each_disaggregated_pool(role):
     with pytest.raises(ValueError, match=rf"Workers\.{role}\.extra_cli_args.*Slurm-owned"):
         generate_backend_artifacts(_params("vllm", ["-tp", "16"], role), "vllm", deployment_target="slurm")
+
+
+@pytest.mark.parametrize(
+    "backend,option",
+    [
+        ("vllm", "--is-prefill-worker"),
+        ("vllm", "--is-decode-worker"),
+        ("vllm", "--no-is-prefill-worker"),
+        ("vllm", "--no-is-decode-worker"),
+        ("vllm", "--is_prefill_worker"),
+        ("vllm", "--is_decode"),
+        ("vllm", "--is-prefill"),
+        ("vllm", "--multimodal-encode-worker"),
+        ("vllm", "--multimodal-decode-worker"),
+        ("vllm", "--no-multimodal-encode-worker"),
+        ("vllm", "--no-multimodal-decode-worker"),
+        ("sglang", "--multimodal-encode-worker"),
+        ("sglang", "--multimodal-encode"),
+        ("sglang", "--no-multimodal-encode-worker"),
+    ],
+)
+@pytest.mark.parametrize("role", ["agg", "prefill", "decode"])
+def test_slurm_rejects_legacy_role_overrides_before_emission(backend, option, role, tmp_path):
+    with pytest.raises(ValueError, match=rf"Workers\.{role}\.extra_cli_args.*Slurm-owned"):
+        generate_backend_artifacts(
+            _params(backend, [option], role), backend, deployment_target="slurm", output_dir=str(tmp_path)
+        )
+    assert not list(tmp_path.iterdir())
 
 
 @pytest.mark.parametrize(
@@ -271,3 +301,103 @@ def test_trtllm_pins_local_gpu_count_to_each_worker_allocation(mode):
         argv = worker["argv"]
         assert argv[argv.index("--gpus-per-node") + 1] == str(worker["gpu_count"])
     assert deployment["gpus"] == sum(count for _, count in expected)
+
+
+_ROLE_ENV = {
+    "vllm": {
+        "DYN_VLLM_DISAGGREGATION_MODE": "prefill",
+        "DYN_VLLM_IS_PREFILL_WORKER": "true",
+        "DYN_VLLM_IS_DECODE_WORKER": "true",
+        "DYN_VLLM_MULTIMODAL_ENCODE_WORKER": "true",
+        "DYN_VLLM_MULTIMODAL_DECODE_WORKER": "true",
+    },
+    "sglang": {"DYN_SGL_MULTIMODAL_ENCODE_WORKER": "true"},
+    "trtllm": {"DYN_TRTLLM_DISAGGREGATION_MODE": "prefill"},
+}
+
+
+@pytest.mark.parametrize("backend,key", [(backend, key) for backend, values in _ROLE_ENV.items() for key in values])
+def test_slurm_rejects_environment_role_overrides_before_emission(backend, key, tmp_path):
+    params = _params(backend, [])
+    params["SlurmConfig"]["env"] = {key: _ROLE_ENV[backend][key]}
+    with pytest.raises(ValueError, match=r"SlurmConfig\.env must not override.*worker-role"):
+        generate_backend_artifacts(params, backend, deployment_target="slurm", output_dir=str(tmp_path))
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.parametrize(
+    "backend,version", [("vllm", "0.9.0"), ("vllm", "1.3.0"), ("sglang", "1.3.0"), ("trtllm", "1.3.0")]
+)
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+def test_emitted_workers_remove_inherited_role_defaults(backend, version, mode, monkeypatch, tmp_path):
+    inherited = _ROLE_ENV[backend]
+    for key, value in inherited.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("SLURM_TEST_TUNING", "preserved")
+    original_env = dict(os.environ)
+    params = _params(backend, [], "agg" if mode == "agg" else "prefill")
+    params["generator_dynamo_version"] = version
+    generate_backend_artifacts(params, backend, deployment_target="slurm", output_dir=str(tmp_path))
+    deployment = json.loads((tmp_path / "deployment.json").read_text())
+    module_spec = importlib.util.spec_from_file_location("emitted_slurm_runtime", tmp_path / "slurm_runtime.py")
+    runtime = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(runtime)
+    supervisor = runtime.Supervisor(deployment, tmp_path / "logs")
+    probe = [
+        sys.executable,
+        "-c",
+        "import json, os, sys; print(json.dumps({key: os.environ.get(key) for key in sys.argv[1:]}))",
+        *inherited,
+        "SLURM_TEST_TUNING",
+    ]
+    try:
+        for worker in deployment["workers"]:
+            role = worker["name"].rsplit("-", 1)[0]
+            argv = worker["argv"]
+            if role != "agg":
+                if backend == "vllm" and version == "0.9.0":
+                    assert f"--is-{role}-worker" in argv
+                    assert "--disaggregation-mode" not in argv
+                else:
+                    assert argv[argv.index("--disaggregation-mode") + 1] == role
+            process = supervisor.start(worker["name"], probe, worker["env"])
+            assert process.wait(timeout=5) == 0
+            assert json.loads((tmp_path / "logs" / f"{worker['name']}.log").read_text()) == {
+                **dict.fromkeys(inherited),
+                "SLURM_TEST_TUNING": "preserved",
+            }
+        process = supervisor.start("service-probe", probe)
+        assert process.wait(timeout=5) == 0
+        assert json.loads((tmp_path / "logs/service-probe.log").read_text()) == {
+            **inherited,
+            "SLURM_TEST_TUNING": "preserved",
+        }
+    finally:
+        supervisor.stop()
+    assert dict(os.environ) == original_env
+
+
+@pytest.mark.parametrize("backend", ["vllm", "trtllm"])
+@pytest.mark.parametrize("mode", ["agg", "disagg"])
+@pytest.mark.parametrize("kvbm", [False, True])
+def test_role_environment_does_not_enable_or_disable_kvbm(backend, mode, kvbm):
+    params = _params(backend, [], "agg" if mode == "agg" else "prefill")
+    if kvbm:
+        params["DynConfig"]["kvbm_config"] = {"cpu_cache_gb": 1}
+    artifacts = generate_backend_artifacts(params, backend, deployment_target="slurm")
+    for worker in json.loads(artifacts["deployment.json"])["workers"]:
+        role = worker["name"].rsplit("-", 1)[0]
+        uses_kvbm = kvbm and role != "decode"
+        assert ("DYN_KVBM_CPU_CACHE_GB" in worker["env"]) == uses_kvbm
+        argv = worker["argv"]
+        if backend == "trtllm":
+            assert ("--connector" in argv) == uses_kvbm
+            if uses_kvbm:
+                assert argv[argv.index("--connector") + 1] == "kvbm"
+        elif uses_kvbm or role != "agg":
+            connector = json.loads(argv[argv.index("--kv-transfer-config") + 1])["kv_connector"]
+            assert connector == (
+                "DynamoConnector" if role == "agg" else "PdConnector" if uses_kvbm else "NixlConnector"
+            )
+        else:
+            assert "--kv-transfer-config" not in argv

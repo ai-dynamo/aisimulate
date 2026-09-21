@@ -81,7 +81,11 @@ slurm_runtime.py: |
           log = (self.output / f"{name}.log").open("w")
           self.logs.append(log)
           child_env = self.env.copy()
-          child_env.update(env or {})
+          for key, value in (env or {}).items():
+              if value is None:
+                  child_env.pop(key, None)
+              else:
+                  child_env[key] = value
           process = subprocess.Popen(argv, env=child_env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
           self.children.append((name, process))
           self.result["commands"][name] = argv

@@ -335,6 +335,17 @@ arguments remain available. Backend topology environment overrides are rejected 
 `VLLM_DP_MASTER_PORT` for vLLM. Workers neutralize inherited values for these
 variables without changing other environment settings or structured DP configurations.
 
+Worker roles are also reserved, including vLLM's legacy `--is-prefill-worker`,
+`--is-decode-worker`, `--multimodal-encode-worker`, and `--multimodal-decode-worker`
+flags and SGLang's `--multimodal-encode-worker` flag. Their negated forms cannot
+override generated roles either. `SlurmConfig.env` rejects
+`DYN_VLLM_DISAGGREGATION_MODE`, `DYN_VLLM_IS_PREFILL_WORKER`,
+`DYN_VLLM_IS_DECODE_WORKER`, `DYN_VLLM_MULTIMODAL_ENCODE_WORKER`,
+`DYN_VLLM_MULTIMODAL_DECODE_WORKER`, `DYN_TRTLLM_DISAGGREGATION_MODE`, and
+`DYN_SGL_MULTIMODAL_ENCODE_WORKER` for their corresponding backends. Workers remove
+these inherited role defaults so the generated agg/prefill/decode role remains
+authoritative, including the legacy vLLM role syntax used before Dynamo 1.0.
+
 The bundle contains:
 
 - `deploy.sbatch`: load the model, verify inference, then keep the Dynamo service

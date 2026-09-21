@@ -40,6 +40,7 @@ deployment.json: |-
           "2"
         ],
         "env": {
+          "DYN_TRTLLM_DISAGGREGATION_MODE": null,
           "DYN_TRTLLM_OVERRIDE_ENGINE_ARGS": ""
         },
         "gpu_offset": 0,

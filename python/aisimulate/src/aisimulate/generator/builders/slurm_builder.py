@@ -42,8 +42,18 @@ _TOPOLOGY_ENV = {
         "VLLM_DP_RANK_LOCAL": "0",
         "VLLM_DP_MASTER_IP": "127.0.0.1",
         "VLLM_DP_MASTER_PORT": "0",
+        "DYN_VLLM_DISAGGREGATION_MODE": None,
+        "DYN_VLLM_IS_PREFILL_WORKER": None,
+        "DYN_VLLM_IS_DECODE_WORKER": None,
+        "DYN_VLLM_MULTIMODAL_ENCODE_WORKER": None,
+        "DYN_VLLM_MULTIMODAL_DECODE_WORKER": None,
     },
-    "sglang": {"DYN_SGL_DISAGG_CONFIG": "", "DYN_SGL_DISAGG_CONFIG_KEY": ""},
+    "sglang": {
+        "DYN_SGL_DISAGG_CONFIG": "",
+        "DYN_SGL_DISAGG_CONFIG_KEY": "",
+        "DYN_SGL_MULTIMODAL_ENCODE_WORKER": None,
+    },
+    "trtllm": {"DYN_TRTLLM_DISAGGREGATION_MODE": None},
 }
 _TOPOLOGY_OPTIONS = {
     "vllm": {
@@ -77,6 +87,14 @@ _TOPOLOGY_OPTIONS = {
         "--no-enable-expert-parallel",
         "--enable-elastic-ep",
         "--distributed-executor-backend",
+        "--is-prefill-worker",
+        "--no-is-prefill-worker",
+        "--is-decode-worker",
+        "--no-is-decode-worker",
+        "--multimodal-encode-worker",
+        "--no-multimodal-encode-worker",
+        "--multimodal-decode-worker",
+        "--no-multimodal-decode-worker",
     },
     "sglang": {
         "--tp-size",
@@ -104,6 +122,8 @@ _TOPOLOGY_OPTIONS = {
         "--elastic-ep-rejoin",
         "--disagg-config",
         "--disagg-config-key",
+        "--multimodal-encode-worker",
+        "--no-multimodal-encode-worker",
     },
     "trtllm": {
         "--expert-parallel-size",
@@ -148,6 +168,8 @@ def _worker_command(context: dict, params: dict, backend: str, role: str) -> tup
     kvbm = bool(worker_env)
     # Backend environment fallbacks must not replace the structured topology.
     # vLLM consults these DP defaults only when engine args do not request DP > 1.
+    # None removes role defaults in the child: empty modes are invalid, and an
+    # explicit mode conflicts with the legacy vLLM role flags.
     worker_env.update(_TOPOLOGY_ENV.get(backend, {}))
     if backend == "trtllm":
         command.extend(["--extra-engine-args", f"{role}_config.yaml", "--gpus-per-node", str(context[f"{role}_gpu"])])
@@ -260,7 +282,9 @@ def build_slurm_artifacts(
     ):
         raise ValueError("SlurmConfig.env must map environment variable names to strings")
     if _OWNED_ENV.union(_TOPOLOGY_ENV.get(backend, {})).intersection(extra_env):
-        raise ValueError("SlurmConfig.env must not override allocation, discovery or service-port variables")
+        raise ValueError(
+            "SlurmConfig.env must not override allocation, worker-role, discovery or service-port variables"
+        )
     concurrencies = cfg.get("benchmark_concurrency")
     if not isinstance(concurrencies, list) or not concurrencies:
         raise ValueError("SlurmConfig.benchmark_concurrency must be a nonempty list")

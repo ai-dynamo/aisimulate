@@ -42,6 +42,7 @@ deployment.json: |-
           "prefill"
         ],
         "env": {
+          "DYN_TRTLLM_DISAGGREGATION_MODE": null,
           "DYN_TRTLLM_OVERRIDE_ENGINE_ARGS": ""
         },
         "gpu_offset": 0,
@@ -73,6 +74,7 @@ deployment.json: |-
           "decode"
         ],
         "env": {
+          "DYN_TRTLLM_DISAGGREGATION_MODE": null,
           "DYN_TRTLLM_OVERRIDE_ENGINE_ARGS": ""
         },
         "gpu_offset": 2,

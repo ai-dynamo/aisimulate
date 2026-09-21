@@ -45,7 +45,8 @@ deployment.json: |-
         ],
         "env": {
           "DYN_SGL_DISAGG_CONFIG": "",
-          "DYN_SGL_DISAGG_CONFIG_KEY": ""
+          "DYN_SGL_DISAGG_CONFIG_KEY": "",
+          "DYN_SGL_MULTIMODAL_ENCODE_WORKER": null
         },
         "gpu_offset": 0,
         "gpu_count": 2
@@ -137,7 +138,8 @@ deployment.json: |-
         ],
         "env": {
           "DYN_SGL_DISAGG_CONFIG": "",
-          "DYN_SGL_DISAGG_CONFIG_KEY": ""
+          "DYN_SGL_DISAGG_CONFIG_KEY": "",
+          "DYN_SGL_MULTIMODAL_ENCODE_WORKER": null
         },
         "gpu_offset": 2,
         "gpu_count": 2

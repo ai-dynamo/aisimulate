@@ -44,7 +44,12 @@ deployment.json: |-
           "VLLM_DP_RANK": "0",
           "VLLM_DP_RANK_LOCAL": "0",
           "VLLM_DP_MASTER_IP": "127.0.0.1",
-          "VLLM_DP_MASTER_PORT": "0"
+          "VLLM_DP_MASTER_PORT": "0",
+          "DYN_VLLM_DISAGGREGATION_MODE": null,
+          "DYN_VLLM_IS_PREFILL_WORKER": null,
+          "DYN_VLLM_IS_DECODE_WORKER": null,
+          "DYN_VLLM_MULTIMODAL_ENCODE_WORKER": null,
+          "DYN_VLLM_MULTIMODAL_DECODE_WORKER": null
         },
         "gpu_offset": 0,
         "gpu_count": 2
