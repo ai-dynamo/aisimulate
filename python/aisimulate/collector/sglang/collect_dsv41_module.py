@@ -115,11 +115,31 @@ def aggregate_baseline_records(paths: list[Path], tp_size: int) -> dict[str, lis
     }
     groups = defaultdict(list)
     for path in paths:
+        humming_qualification = None
         for line in path.read_text().splitlines():
             row = json.loads(line)
             kind = row["kind"]
             if kind not in columns or not math.isfinite(row["latency"]) or row["latency"] <= 0:
                 raise ValueError("invalid native baseline observation")
+            if kind == "moe" and row["moe_dtype"] == "w4a16_mxfp4_humming":
+                from collector.sglang.dsv41_humming import validate_humming_observations
+
+                if humming_qualification is None:
+                    receipt = path.parent / f"humming-qualification-rank-{row['tp_rank']}.json"
+                    if not receipt.is_file():
+                        raise ValueError("missing actual native Humming qualification")
+                    humming_qualification = json.loads(receipt.read_text())
+                if (
+                    humming_qualification.get("state") != "actual_bf16_native_humming_calls_verified"
+                    or humming_qualification.get("tp_rank") != row["tp_rank"]
+                    or row["kernel_source"] != "sglang_mxfp4_humming_moe"
+                    or any(
+                        humming_qualification.get("provenance", {}).get(key) != row[key]
+                        for key in ("source_sha256", "config_sha256", "runtime_digest", "execution_profile")
+                    )
+                ):
+                    raise ValueError("native Humming qualification provenance differs")
+                validate_humming_observations(humming_qualification["calls"], humming_qualification["configs"])
             key = (kind, *(row[c] for c in columns[kind]))
             groups[key].append(row)
     result = defaultdict(list)

@@ -20,9 +20,11 @@ from types import SimpleNamespace
 
 if __package__:
     from .dsv41_contract import validate_attention_manifest
+    from .dsv41_humming import loaded_humming_geometry, qualify_native_humming
     from .dsv41_workloads import baseline_tokens, coordinates, freeze_workloads
 else:
     from dsv41_contract import validate_attention_manifest
+    from dsv41_humming import loaded_humming_geometry, qualify_native_humming
     from dsv41_workloads import baseline_tokens, coordinates, freeze_workloads
 
 
@@ -211,6 +213,7 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
     ):
         raise RuntimeError("native baseline GEMM physical padding differs from model TP graph")
     quant_method = experts.quant_method
+    humming_geometry = None
     # SGLang@1aa0e962 fp8.py:421-434 selects CUTLASS on SM90 and
     # TRTLLM on SM100. Inspect the loaded method, not the intended device.
     # mxfp4_flashinfer_cutlass_moe.py:39-45,214-222 distinguishes native
@@ -229,8 +232,12 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
             raise RuntimeError("native baseline CUTLASS MoE requires loaded SM90 W4A16 dispatch")
         moe_dtype = "w4a16_mxfp4_cutlass"
         moe_kernel_source = "sglang_flashinfer_cutlass_moe"
+    elif type(quant_method).__name__ == "Mxfp4HummingMoEMethod":
+        humming_geometry = loaded_humming_geometry(experts)
+        moe_dtype = "w4a16_mxfp4_humming"
+        moe_kernel_source = "sglang_mxfp4_humming_moe"
     else:
-        raise RuntimeError("native baseline MoE requires verified MXFP4 TRTLLM or SM90 CUTLASS dispatch")
+        raise RuntimeError("native baseline MoE requires verified MXFP4 TRTLLM, SM90 CUTLASS, or BF16 Humming dispatch")
     if getattr(experts, "reduce_results", False):
         raise RuntimeError("native expert kernel unexpectedly owns a collective")
     recorder_path = Path(options.output) / f"baseline-rank-{tp_rank}.jsonl"
@@ -314,12 +321,25 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
                                     "used_cuda_graph": False,
                                     "routing_seed": 20260910,
                                     "routing_histogram": routing_histogram if kind == "moe" else None,
-                                    "physical_local_intermediate": int(experts.w2_weight.shape[-1]) * 2,
+                                    "physical_local_intermediate": (
+                                        humming_geometry["w2"]["shape_k"]
+                                        if humming_geometry is not None
+                                        else int(experts.w2_weight.shape[-1]) * 2
+                                    ),
                                     **provenance,
                                 }
                             )
                             + "\n"
                         )
+    if humming_geometry is not None:
+        # The fused path creates a temporary native runner, so inspecting the
+        # persistent runner's empty tuning cache cannot qualify its operands.
+        # Observe one additional forward after the unchanged timing loops.
+        qualification = qualify_native_humming(experts, hidden, topk)
+        qualification.update(tp_rank=tp_rank, provenance=provenance)
+        with (Path(options.output) / f"humming-qualification-rank-{tp_rank}.json").open("x") as stream:
+            json.dump(qualification, stream, indent=2, sort_keys=True)
+            stream.write("\n")
 
 
 def run_workload(runner, recorder, bench, token_ids, case, execute, *, decode_steps=0):

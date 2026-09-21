@@ -1348,6 +1348,7 @@ def _moe_quant_to_dtype(value: Any) -> str | None:
         "w4a8_mxfp4_mxfp8",
         "w4a8_mxfp4_mxfp8_trtllm",
         "w4a16_mxfp4_cutlass",
+        "w4a16_mxfp4_humming",
     }:
         return name
     return _quant_to_dtype(value)

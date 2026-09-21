@@ -1694,6 +1694,7 @@ fn moe_quant_name(dtype: Option<&DataType>) -> Option<&'static str> {
         DataType::Int4 => Some("int4_wo"),
         DataType::W4afp8 => Some("w4afp8"),
         DataType::W4a16Mxfp4 => Some("w4a16_mxfp4"),
+        DataType::W4a16Mxfp4Humming => Some("w4a16_mxfp4_humming"),
         DataType::W4a8Mxfp4Mxfp8 => Some("w4a8_mxfp4_mxfp8"),
         DataType::W4a16Nvfp4 => Some("w4a16_nvfp4"),
         _ => None,

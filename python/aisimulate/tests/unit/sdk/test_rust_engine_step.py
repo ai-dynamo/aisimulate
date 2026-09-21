@@ -772,6 +772,31 @@ def test_engine_config_json_preserves_w4a16_nvfp4_weight_and_moe_profiles() -> N
     assert config["moe_dtype"] == "w4a16_nvfp4"
 
 
+def test_engine_config_preserves_distinct_humming_moe_identity():
+    model = SimpleNamespace(
+        model_path="deepseek-ai/DeepSeek-V4.1-Flash",
+        architecture="DeepseekV41ForCausalLM",
+        config=ModelConfig(
+            tp_size=4,
+            pp_size=1,
+            attention_dp_size=1,
+            moe_tp_size=4,
+            moe_ep_size=1,
+            gemm_quant_mode=common.GEMMQuantMode.fp8_block,
+            moe_quant_mode=common.MoEQuantMode.w4a16_mxfp4_humming,
+            kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+            fmha_quant_mode=common.FMHAQuantMode.fp8,
+        ),
+    )
+    database = SimpleNamespace(system="h100_sxm", backend="sglang", version="dev1aa0e962")
+    humming = json.loads(rust_engine_step._engine_config_json(model, database))
+    model.config.moe_quant_mode = common.MoEQuantMode.w4a16_mxfp4_cutlass
+    cutlass = json.loads(rust_engine_step._engine_config_json(model, database))
+    assert humming["moe_dtype"] == "w4a16_mxfp4_humming"
+    assert cutlass["moe_dtype"] == "w4a16_mxfp4_cutlass"
+    assert humming != cutlass
+
+
 def test_configure_data_roots_passes_systems_path_through(tmp_path, monkeypatch) -> None:
     """Rust reads parquet directly, so the wrapper just hands its
     ``AICONFIGURATOR_SYSTEMS_PATH`` through unchanged to the Rust crate."""

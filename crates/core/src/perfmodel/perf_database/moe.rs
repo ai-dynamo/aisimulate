@@ -407,6 +407,7 @@ pub(crate) fn moe_kernel_quant_rewrite(raw_quant: String, kernel_source: &str) -
             "w4a8_mxfp4_mxfp8_trtllm".to_string()
         }
         ("w4a16_mxfp4", "sglang_flashinfer_cutlass_moe") => "w4a16_mxfp4_cutlass".to_string(),
+        ("w4a16_mxfp4", "sglang_mxfp4_humming_moe") => "w4a16_mxfp4_humming".to_string(),
         _ => raw_quant,
     }
 }
@@ -529,6 +530,48 @@ mod tests {
         PathBuf::from(REPO_ROOT_HINT)
             .join("../..")
             .join("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/vllm/0.19.0")
+    }
+
+    #[test]
+    fn humming_rows_remain_distinct_from_triton_and_cutlass() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        let tmp = tempfile::tempdir().unwrap();
+        // Distinct fixture values are row-selection witnesses, not performance
+        // predictions: all three implementations share the physical shape.
+        write_parquet(
+            &tmp.path().join("moe_perf.parquet"),
+            &[
+                Col::Str("moe_dtype", vec!["w4a16_mxfp4"; 3]),
+                Col::I64("num_tokens", vec![1; 3]),
+                Col::I64("hidden_size", vec![5120; 3]),
+                Col::I64("inter_size", vec![2304; 3]),
+                Col::I64("topk", vec![6; 3]),
+                Col::I64("num_experts", vec![384; 3]),
+                Col::I64("moe_tp_size", vec![4; 3]),
+                Col::I64("moe_ep_size", vec![1; 3]),
+                Col::Str("distribution", vec!["uniform"; 3]),
+                Col::Str(
+                    "kernel_source",
+                    vec![
+                        "sglang_triton_kernels_moe",
+                        "sglang_flashinfer_cutlass_moe",
+                        "sglang_mxfp4_humming_moe",
+                    ],
+                ),
+                Col::F64("latency", vec![1.0, 2.0, 3.0]),
+            ],
+        );
+        let table = MoeTable::new(tmp.path().to_path_buf());
+        for (mode, expected) in [
+            (MoeQuantMode::W4a16Mxfp4, 1.0),
+            (MoeQuantMode::W4a16Mxfp4Cutlass, 2.0),
+            (MoeQuantMode::W4a16Mxfp4Humming, 3.0),
+        ] {
+            let value = table
+                .query(1, 5120, 2304, 6, 384, 4, 1, mode, "uniform", &proxy_sol)
+                .unwrap();
+            assert_eq!(value.latency, expected);
+        }
     }
 
     #[test]
