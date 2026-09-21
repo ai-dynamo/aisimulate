@@ -210,7 +210,7 @@ pub struct MoeOp {
     pub moe_backend: Option<String>,
     /// Exact collected MoE kernel-source lane. `None` preserves the
     /// framework/default lookup; `Some` selects only rows carrying this exact
-    /// `kernel_source` value and fails on a missing lane.
+    /// `kernel_source` value and fails on a missing or ineligible lane.
     #[serde(default)]
     pub moe_kernel_source: Option<String>,
     /// EPLB enabled (Python `MoE._enable_eplb`). On the sglang branch the
@@ -317,6 +317,21 @@ impl MoeOp {
         }
     }
 
+    fn validate_kernel_source(&self, num_tokens: u32) -> Result<(), AicError> {
+        if self.moe_kernel_source.as_deref() == Some("moe_torch_flow_min_latency")
+            && (!self.is_gated || self.quant_mode != MoeQuantMode::Nvfp4 || num_tokens > 128)
+        {
+            return Err(AicError::InvalidEngineConfig(format!(
+                "MoE kernel source moe_torch_flow_min_latency requires gated nvfp4 with at most \
+                 128 tokens; op {} has is_gated={}, quant={}, num_tokens={num_tokens}",
+                self.name,
+                self.is_gated,
+                self.quant_mode.name(),
+            )));
+        }
+        Ok(())
+    }
+
     /// SILICON resolution (retired-deepep gate + low-latency probe + the default
     /// grid, scale/clamp applied per branch — the audit-PR body, unchanged).
     pub(crate) fn silicon_pr(
@@ -324,6 +339,7 @@ impl MoeOp {
         db: &PerfDatabase,
         num_tokens: u32,
     ) -> Result<PerformanceResult, AicError> {
+        self.validate_kernel_source(num_tokens)?;
         let is_sglang = db.backend == "sglang";
         // SGLang EPLB prefill correction — INSIDE get_silicon only (Python
         // operations/moe.py:684, sglang branch: `num_tokens_corrected =
@@ -437,6 +453,7 @@ impl MoeOp {
     /// `MoE._query_moe_table::get_empirical` (`operations/moe.py:327-572`):
     /// own-shape grid → xshape → xquant → xprofile → typed empirical miss.
     fn empirical_latency(&self, db: &PerfDatabase, num_tokens: u32) -> Result<f64, AicError> {
+        self.validate_kernel_source(num_tokens)?;
         let spec = &db.system_spec;
         let quant = self.quant_mode;
         let num_gemms: u64 = if self.is_gated { 3 } else { 2 };
@@ -1006,6 +1023,161 @@ mod tests {
             result.latency_ms
         );
         assert_eq!(result.source, source, "{label}: wrong source");
+    }
+
+    fn exact_source_fixture(mode: DatabaseMode) -> (tempfile::TempDir, PerfDatabase, MoeOp) {
+        use crate::perf_database::energy_test_fixtures::{
+            Col, write_energy_systems_root, write_parquet,
+        };
+
+        // Synthetic values distinguish the restricted NVFP4 lane from the
+        // unrestricted FlashInfer FP8 lane; these are not measured timings.
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let data = write_energy_systems_root(tmp.path());
+        write_parquet(
+            &data.join("moe_perf.parquet"),
+            &[
+                Col::Str(
+                    "moe_dtype",
+                    vec!["nvfp4", "nvfp4", "fp8_block", "fp8_block"],
+                ),
+                Col::I64("num_tokens", vec![64, 128, 64, 256]),
+                Col::I64("hidden_size", vec![4096; 4]),
+                Col::I64("inter_size", vec![2048; 4]),
+                Col::I64("topk", vec![2; 4]),
+                Col::I64("num_experts", vec![8; 4]),
+                Col::I64("moe_tp_size", vec![1; 4]),
+                Col::I64("moe_ep_size", vec![1; 4]),
+                Col::Str("distribution", vec!["uniform"; 4]),
+                Col::Str(
+                    "kernel_source",
+                    vec![
+                        "moe_torch_flow_min_latency",
+                        "moe_torch_flow_min_latency",
+                        "sglang_flashinfer_trtllm_moe",
+                        "sglang_flashinfer_trtllm_moe",
+                    ],
+                ),
+                Col::F64("latency", vec![1.0, 2.0, 3.0, 6.0]),
+            ],
+        );
+        let db = PerfDatabase::load(tmp.path(), "testsys", "vllm", "1.0")
+            .expect("synthetic database")
+            .with_mode(mode, TransferPolicy::ALL);
+        let mut op = MoeOp::new(
+            "moe",
+            4096,
+            2048,
+            2,
+            8,
+            1,
+            1,
+            MoeQuantMode::Nvfp4,
+            "uniform",
+        );
+        op.moe_kernel_source = Some("moe_torch_flow_min_latency".into());
+        (tmp, db, op)
+    }
+
+    fn assert_explicit_low_latency_rejects_ineligible_queries(mode: DatabaseMode) {
+        let (_tmp, db, op) = exact_source_fixture(mode);
+        for (is_gated, quant, tokens, attention_dp_size) in [
+            (false, MoeQuantMode::Nvfp4, 64, 1),
+            (true, MoeQuantMode::Nvfp4, 129, 1),
+            (true, MoeQuantMode::Fp8Block, 64, 1),
+            (true, MoeQuantMode::Nvfp4Wo, 64, 1),
+            (true, MoeQuantMode::Nvfp4, 65, 2),
+        ] {
+            let mut invalid = op.clone();
+            invalid.is_gated = is_gated;
+            invalid.quant_mode = quant;
+            invalid.attention_dp_size = attention_dp_size;
+            let result = invalid.query(&db, tokens);
+            assert!(
+                matches!(&result, Err(AicError::InvalidEngineConfig(message))
+                    if message.contains("moe_torch_flow_min_latency")
+                        && message.contains("gated nvfp4")
+                        && message.contains("128")),
+                "ineligible exact lane must fail before lookup or transfer: {mode:?}, \
+                 gated={is_gated}, quant={quant:?}, tokens={tokens}, \
+                 attention_dp={attention_dp_size}, got {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn moe_explicit_low_latency_rejects_ineligible_silicon_queries() {
+        assert_explicit_low_latency_rejects_ineligible_queries(DatabaseMode::Silicon);
+    }
+
+    #[test]
+    fn moe_explicit_low_latency_rejects_ineligible_empirical_queries() {
+        assert_explicit_low_latency_rejects_ineligible_queries(DatabaseMode::Empirical);
+    }
+
+    #[test]
+    fn moe_explicit_low_latency_rejects_ineligible_hybrid_queries() {
+        assert_explicit_low_latency_rejects_ineligible_queries(DatabaseMode::Hybrid);
+    }
+
+    #[test]
+    fn moe_explicit_low_latency_accepts_gated_nvfp4_through_128_tokens() {
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Empirical,
+            DatabaseMode::Hybrid,
+        ] {
+            let (_tmp, db, mut op) = exact_source_fixture(mode);
+            let source = if mode == DatabaseMode::Empirical {
+                Source::Empirical
+            } else {
+                Source::Silicon
+            };
+            // Endpoints are the synthetic rows. Linear interpolation at 127
+            // is 1 + 63/64 of the 1 ms interval: 1.984375 ms.
+            for (tokens, expected_ms) in [(64, 1.0), (127, 1.984375), (128, 2.0)] {
+                let result = op.query(&db, tokens).expect("eligible exact lane");
+                assert_routing(&result, source, "low latency");
+                if source == Source::Silicon {
+                    assert_eq!(result.latency_ms, expected_ms);
+                }
+            }
+            op.attention_dp_size = 2;
+            let result = op.query(&db, 64).expect("128 gathered tokens");
+            assert_routing(&result, source, "low latency with dp");
+            if source == Source::Silicon {
+                assert_eq!(result.latency_ms, 2.0);
+            }
+        }
+    }
+
+    #[test]
+    fn moe_other_exact_sources_allow_non_gated_fp8_above_128_tokens() {
+        for mode in [
+            DatabaseMode::Silicon,
+            DatabaseMode::Empirical,
+            DatabaseMode::Hybrid,
+        ] {
+            let (_tmp, db, mut op) = exact_source_fixture(mode);
+            op.moe_kernel_source = Some("sglang_flashinfer_trtllm_moe".into());
+            op.is_gated = false;
+            op.quant_mode = MoeQuantMode::Fp8Block;
+            let result = op
+                .query(&db, 256)
+                .expect("other source is not low-latency restricted");
+            assert_routing(
+                &result,
+                if mode == DatabaseMode::Empirical {
+                    Source::Empirical
+                } else {
+                    Source::Silicon
+                },
+                "other exact source",
+            );
+            if result.source == Source::Silicon {
+                assert_eq!(result.latency_ms, 6.0); // exact synthetic FlashInfer row
+            }
+        }
     }
 
     /// Oracle values generated from the Python reference on the same data
