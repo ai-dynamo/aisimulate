@@ -1503,3 +1503,51 @@ def test_role_systems_roots_reach_prediction_and_search_preflight(tmp_path, mode
     (branch,) = enumerate_branches(smart, max_seq_len=4096)
     assert branch.parallel_configs
     assert branch.deployment_mode == ("agg" if mode == "aggregated" else "disagg")
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"decoder_replay": True},
+        {"enable_shared_layer": True},
+        {"enable_shared_layer": False},
+        {"strict_provenance": True},
+        {"strict_provenance": False},
+    ],
+)
+@pytest.mark.parametrize(
+    "timing",
+    [{"type": "fixed", "prefill_ms": 1, "decode_ms": 1}, {"type": "polynomial"}],
+)
+def test_execution_options_reject_nondefault_timing(option, timing):
+    engine = _engine() | {"model": "deepseek-ai/DeepSeek-V4.1-Flash", "backend": "sglang"} | option
+    engine["workers"]["aggregated"] = {"timing": timing}
+    with pytest.raises(ValidationError, match="estimator policies require.*default timing"):
+        CorePredictionConfig.model_validate({"engine": engine})
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        {"decoder_replay": True},
+        {"enable_shared_layer": False},
+        {"strict_provenance": True},
+    ],
+)
+def test_execution_options_accept_default_timing(option):
+    engine = _engine() | {"model": "deepseek-ai/DeepSeek-V4.1-Flash", "backend": "sglang"} | option
+    config = CorePredictionConfig.model_validate({"engine": engine})
+    for name, value in option.items():
+        assert getattr(config.engine, name) == value
+
+
+@pytest.mark.parametrize("custom_role", ["prefill", "decode"])
+def test_execution_options_reject_mixed_worker_timing(custom_role):
+    engine = _engine() | {
+        "mode": "disaggregated",
+        "strict_provenance": True,
+        "workers": {"prefill": {}, "decode": {}},
+    }
+    engine["workers"][custom_role] = {"timing": {"type": "polynomial"}}
+    with pytest.raises(ValidationError, match="default timing in every role"):
+        CorePredictionConfig.model_validate({"engine": engine})

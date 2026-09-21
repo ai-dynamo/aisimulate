@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 _AUDIT_PATH = Path("/results/runtime-preflight.json")
@@ -44,7 +45,18 @@ def main() -> None:
     # produce it before this process fails the pod.
     try:
         from dynamo.vllm.instrumented_scheduler import BenchmarkPoint, InstrumentedScheduler
-    except ImportError as error:
+
+        if os.environ.get("DYN_FPM_DSV41_REAL_KV") == "1":
+            from dsv41_scheduler import DeepseekV41RealKVScheduler
+
+            if InstrumentedScheduler is not DeepseekV41RealKVScheduler:
+                raise RuntimeError("V4.1 source-checked scheduler activation did not occur")
+            # Include the shared native SDK import in the rejected-image audit.
+            from aisimulate_core.sdk.fpm_identity import execution_identity
+
+            if not callable(execution_identity):
+                raise RuntimeError("V4.1 runtime lacks the shared AISimulate identity helper")
+    except Exception as error:
         _write_audit(
             {
                 "schema_version": 1,
@@ -58,7 +70,7 @@ def main() -> None:
         )
         raise RuntimeError(
             "Dynamo runtime lacks the required native FPM/KV-warm contract; "
-            f"importing dynamo.vllm.instrumented_scheduler failed: {error}. "
+            f"runtime activation or identity preflight failed: {error}. "
             "Provide a compatible Dynamo image."
         ) from error
 

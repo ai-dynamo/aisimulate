@@ -2658,6 +2658,10 @@ mod admission_validation_rollback {
     }
 
     impl crate::engine::TimingModel for FallibleTiming {
+        fn prefill_batch_validation_can_fail(&self) -> bool {
+            !self.fail_in_prediction
+        }
+
         fn validate_prefill_batch(&self, _: &[(usize, usize)]) -> anyhow::Result<()> {
             anyhow::ensure!(
                 self.fail_in_prediction || !self.fail.load(Ordering::Relaxed),
