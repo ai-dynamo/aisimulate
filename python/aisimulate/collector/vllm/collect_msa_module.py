@@ -407,6 +407,25 @@ def _create_msa_attention_module(
     # (nvidia/model.py:769-781).
     sparse_cfg = dict(hf_config.sparse_attention_config)
     sparse_cfg["sparse_num_index_heads"] = num_kv_heads
+
+    # KERNEL LIMIT GUARD (verified on the 0.29 full-grid sweep, 2026-09-21):
+    # the M3 indexer/attend Triton kernels tile BLOCK_SIZE_HQ =
+    # num_idx_heads * BLOCK_SIZE_Q through tl.arange, whose range must be a
+    # power of 2 (models/minimax_m3/common/ops/sparse_attn.py — the sweep's
+    # heads 48/96 shard to idx_heads 3/6 and fail compilation
+    # deterministically, 1616/1616 across two shards). Serving cannot reach
+    # these points either: real tp in {1,2,4,8} on the native 4 index heads
+    # yields idx_heads in {4,2,1}, always a power of 2. Raise the classified
+    # error up front instead of burning a Triton compile per case.
+    _idx_heads = int(sparse_cfg["sparse_num_index_heads"])
+    if _idx_heads & (_idx_heads - 1):
+        raise ValueError(
+            f"kernel-limit: num_idx_heads={_idx_heads} (from num_heads={num_heads}) "
+            "is not a power of 2; MiniMax-M3 sparse Triton kernels require "
+            "power-of-2 tl.arange tiles (models/minimax_m3/common/ops/"
+            "sparse_attn.py@0.29.0) and serving tp shards can never produce "
+            "this count"
+        )
     hf_config.sparse_attention_config = sparse_cfg
 
     # Reserved top-k indices buffer shared by the indexer and the attend —
