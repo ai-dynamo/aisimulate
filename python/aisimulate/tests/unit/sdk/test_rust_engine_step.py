@@ -947,6 +947,52 @@ def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
     assert pinned.to_dict()["moe_kernel_source"] == "sglang_flashinfer_trtllm_moe"
 
 
+def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: Path) -> None:
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    # Positional order frozen from main at e8828036e3d3, before moe_kernel_source was added.
+    legacy_fields = {
+        "model": "Qwen/Qwen3-30B-A3B",
+        "system": "b200_sxm",
+        "backend": "sglang",
+        "worker_type": "decode",
+        "backend_version": "0.5.17",
+        "tp": 4,
+        "pp": 2,
+        "attention_dp": 2,
+        "moe_tp_size": 1,
+        "moe_ep_size": 4,
+        "gemm_quant_mode": "fp8",
+        "moe_quant_mode": "fp8_block",
+        "fmha_quant_mode": "bfloat16",
+        "kvcache_quant_mode": "fp8",
+        "comm_quant_mode": "half",
+        "nextn": 2,
+        "speculation": {"kind": "mtp", "params": {"depth": 2}},
+        "kv_block_size": 64,
+        "decoder_replay": True,
+        "estimation_mode": "fpm_regression",
+        "database_mode": "EMPIRICAL",
+        "transfer_policy": ("gemm", "moe"),
+        "systems_paths": (str(tmp_path),),
+        "fallback_policy": "allow",
+        "estimator_config": {"correction": {"enabled": False}},
+        "attention_backend": "fa3",
+        "enable_shared_layer": False,
+        "strict_provenance": True,
+        "moe_backend": "megamoe",
+        "enable_eplb": True,
+        "wideep_num_slots": 64,
+    }
+    config = ForwardPassPerfModelConfig(*legacy_fields.values())
+    assert vars(config) == {**legacy_fields, "moe_kernel_source": None}
+
+    source = " source_with_spaces "
+    pinned = ForwardPassPerfModelConfig(*legacy_fields.values(), moe_kernel_source=source)
+    assert vars(pinned) == {**legacy_fields, "moe_kernel_source": source}
+    assert json.loads(json.dumps(pinned.to_dict()))["moe_kernel_source"] == source
+
+
 def _supported_fpm_config() -> dict[str, object]:
     return {
         "schema_version": 1,

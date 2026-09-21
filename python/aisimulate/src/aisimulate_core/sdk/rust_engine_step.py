@@ -129,7 +129,7 @@ class ForwardPassPerfModelConfig:
     fallback_policy: str = "deny"
     estimator_config: dict[str, Any] = dataclass_field(default_factory=dict)
     attention_backend: str | None = None
-    moe_kernel_source: str | None = None
+    moe_kernel_source: str | None = dataclass_field(default=None, kw_only=True)
     enable_shared_layer: bool | None = None
     strict_provenance: bool = False
     moe_backend: str | None = None
