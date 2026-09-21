@@ -292,6 +292,7 @@ def _engine_config_dict(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> dict:
     """Build the ``EngineConfig`` JSON (matches the Rust modularised struct).
 
@@ -319,6 +320,7 @@ def _engine_config_dict(
         # Always a literal version directory name, never a slot alias — the
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
+        "fpm_parquet_path": fpm_parquet_path,
         "kv_block_size": kv_block_size,
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
         # ParallelMapping (flattened)
@@ -432,6 +434,7 @@ def compile_engine(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -448,6 +451,11 @@ def compile_engine(
             f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
         )
 
+    if fpm_parquet_path is not None:
+        if not fpm_parquet_path:
+            raise ValueError("fpm_parquet_path cannot be empty")
+        if forward_model != "fpm":
+            raise ValueError("fpm_parquet_path requires forward_model='fpm'")
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
     from aisimulate_core.sdk.speculation import SpeculationConfig
@@ -522,6 +530,7 @@ def compile_engine(
         shared_layer=shared_layer,
         transfer_policy=transfer_policy,
         strict_provenance=strict_provenance,
+        fpm_parquet_path=fpm_parquet_path,
     )
 
     return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
@@ -599,6 +608,7 @@ def build_engine_spec_json(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> str:
     """Walk a built model's op lists into an ``EngineSpec`` JSON string.
 
@@ -646,6 +656,7 @@ def build_engine_spec_json(
             shared_layer=shared_layer,
             transfer_policy=transfer_policy,
             strict_provenance=strict_provenance,
+            fpm_parquet_path=fpm_parquet_path,
         ),
         "context_ops": context_ops,
         "generation_ops": generation_ops,

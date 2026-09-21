@@ -444,6 +444,7 @@ def _role_search_space(
             result[f"{legacy_role}_forward_model"] = (
                 "fpm" if timing["estimation_mode"] == "fpm_interpolation" else "op_level"
             )
+        result[f"{legacy_role}_fpm_parquet_path"] = timing.get("fpm_parquet_path")
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
     # Remove empty internal maps so legacy serialization remains concise.
     if not result["engine_float_ranges"]:
@@ -860,6 +861,8 @@ def _candidate_prediction(
             timing = deepcopy(timing_model)
         else:
             timing = {"type": "default", "forward_model": sample.get(f"{role}_forward_model") or "op_level"}
+            if sample.get(f"{role}_fpm_parquet_path") is not None:
+                timing["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
         estimator = deployment.forward_pass_estimators.get(role)
         if estimator is not None:
             resolved = estimator.config

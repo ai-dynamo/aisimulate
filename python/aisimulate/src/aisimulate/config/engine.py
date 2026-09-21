@@ -166,6 +166,7 @@ class NgramSpeculationConfig(StrictModel):
 class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
+    fpm_parquet_path: str | None = None
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
@@ -209,6 +210,11 @@ class TimingConfig(StrictModel):
                 f"{self.type} timing rejects forward_model={self.forward_model!r}; "
                 "forward_model applies to default timing only"
             )
+        if self.fpm_parquet_path is not None:
+            if not self.fpm_parquet_path:
+                raise ValueError("fpm_parquet_path cannot be empty")
+            if self.type != "default" or self.forward_model != "fpm":
+                raise ValueError("fpm_parquet_path requires default timing with forward_model='fpm'")
         return self
 
 
