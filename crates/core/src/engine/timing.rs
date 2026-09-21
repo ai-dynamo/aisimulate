@@ -337,8 +337,10 @@ impl TimingEvidenceAccumulator {
             &mut self.summary.decode
         };
         let incoming = incoming.as_phase();
-        // Only operation-backed totals are already reconciled. Keep empty and
-        // phase-only accumulated states on the checked path, including -0.0.
+        // Private provider inputs are empty or built from operations, so stored
+        // operation-backed totals are already reconciled. This shortcut relies
+        // on that input contract. Keep empty and phase-only accumulated states
+        // on the checked path, including -0.0.
         if !phase.operations.is_empty()
             && incoming.operations.is_empty()
             && incoming.latency_ms == 0.0

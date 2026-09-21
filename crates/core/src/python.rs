@@ -2526,6 +2526,25 @@ mod tests {
         use crate::operators::{FpmForwardOp, FpmPhase, op::Op, util_empirical::ProvenanceTier};
         use crate::perfmodel::engine::spec::EngineSpec;
 
+        let required = std::env::var_os("AIC_REQUIRE_EMBEDDED_ROUND_TRIP").is_some();
+        if let Err(error) =
+            Python::with_gil(|py| py.import("aisimulate_core.sdk.engine").map(|_| ()))
+        {
+            assert!(
+                !required,
+                "native_phase_evidence_matches_python_bridge: \
+                 AIC_REQUIRE_EMBEDDED_ROUND_TRIP is set but \
+                 `aisimulate_core.sdk.engine` is not importable: {error}. \
+                 Install the Python SDK and set PYTHONPATH for the embedded interpreter."
+            );
+            eprintln!(
+                "native_phase_evidence_matches_python_bridge: SKIP — \
+                 `aisimulate_core.sdk.engine` is not importable: {error}. \
+                 Set AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1 + PYTHONPATH to enforce."
+            );
+            return;
+        }
+
         let mut config = aic_config();
         config.model = "Qwen/Qwen3.8-2.4T-A95B-FP8".into();
         config.system = "gb300".into();
