@@ -183,6 +183,223 @@ fn mismatched_placement_does_not_retain_arrival_or_offered_traffic() {
     );
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum DispatchHookRecord {
+    Selected(Uuid, f64),
+    Clock(f64),
+    Released(Uuid, f64),
+    Committed(Uuid, f64),
+    Aborted(Uuid, f64),
+    Terminal(Uuid, f64),
+}
+
+type DispatchHookRecords = std::sync::Arc<std::sync::Mutex<Vec<DispatchHookRecord>>>;
+
+struct RecordingDispatchPlacement {
+    records: DispatchHookRecords,
+    release_at_ms: Option<f64>,
+    pending: Option<Uuid>,
+}
+
+impl RecordingDispatchPlacement {
+    fn placement(request_id: Uuid) -> Placement {
+        Placement {
+            request_id,
+            scheduler_id: 0,
+            reported_overlap_tokens: 0,
+            cache_sample: None,
+            placement_replica_id: None,
+        }
+    }
+
+    fn record(&self, event: DispatchHookRecord) {
+        self.records.lock().unwrap().push(event);
+    }
+}
+
+impl PlacementPolicy<ReplayRequestPayload> for RecordingDispatchPlacement {
+    type Metadata = NoReplayMetadata;
+    type Observation = ();
+
+    fn place(
+        &mut self,
+        request: &ReplayRequestPayload,
+        _: (),
+        _: Option<String>,
+        now_ms: f64,
+    ) -> anyhow::Result<crate::replay::PlacementEffects> {
+        let uuid = request.metadata().uuid.unwrap();
+        self.record(DispatchHookRecord::Selected(uuid, now_ms));
+        let decision = if self.release_at_ms.is_some() {
+            self.pending = Some(uuid);
+            PlacementDecision::Queued
+        } else {
+            PlacementDecision::Immediate(Self::placement(uuid))
+        };
+        Ok(crate::replay::PlacementEffects {
+            decision,
+            released: Vec::new(),
+        })
+    }
+    fn observe(&mut self, _: (), _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn dispatch_committed(&mut self, uuid: Uuid, now_ms: f64) -> anyhow::Result<()> {
+        self.record(DispatchHookRecord::Committed(uuid, now_ms));
+        Ok(())
+    }
+    fn dispatch_aborted(&mut self, uuid: Uuid, now_ms: f64) -> anyhow::Result<()> {
+        self.record(DispatchHookRecord::Aborted(uuid, now_ms));
+        Ok(())
+    }
+    fn advance_clock(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        self.record(DispatchHookRecord::Clock(now_ms));
+        if self.release_at_ms.is_some_and(|at| at <= now_ms)
+            && let Some(uuid) = self.pending.take()
+        {
+            self.release_at_ms = None;
+            self.record(DispatchHookRecord::Released(uuid, now_ms));
+            return Ok(vec![Self::placement(uuid)]);
+        }
+        Ok(Vec::new())
+    }
+    fn next_wakeup_ms(&self) -> Option<f64> {
+        self.pending.and(self.release_at_ms)
+    }
+    fn cancel_pending(&mut self, uuid: Uuid) -> bool {
+        if self.pending == Some(uuid) {
+            self.pending = None;
+            true
+        } else {
+            false
+        }
+    }
+    fn request_terminal(&mut self, uuid: Uuid, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+        self.record(DispatchHookRecord::Terminal(uuid, now_ms));
+        Ok(Vec::new())
+    }
+    fn prefill_completed(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn pending_count(&self) -> usize {
+        usize::from(self.pending.is_some())
+    }
+    fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+    fn topology_settled(&mut self, _: f64) -> anyhow::Result<Vec<Placement>> {
+        Ok(Vec::new())
+    }
+}
+
+fn dispatch_hook_runtime(
+    backend: crate::engine::Backend,
+    release_at_ms: Option<f64>,
+    records: DispatchHookRecords,
+) -> AggRuntimeImpl<RecordingDispatchPlacement, NoEngineEvents, NoReplayMetadata> {
+    let config = ReplayEngineConfig {
+        rank: EngineConfig {
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            ..EngineConfig::for_backend(backend)
+        },
+        ..ReplayEngineConfig::default()
+    };
+    let factory = ReplayEngineFactory::new()
+        .role_factory(&config, WorkerStage::Aggregated, false)
+        .unwrap();
+    AggRuntimeImpl::new_composed(
+        factory,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 0.0)]), ReplayMode::Trace),
+        1,
+        None,
+        |_, _| {
+            Ok(RecordingDispatchPlacement {
+                records,
+                release_at_ms,
+                pending: None,
+            })
+        },
+    )
+    .unwrap()
+    .with_per_request_records(true)
+}
+
+#[rstest::rstest]
+#[case(crate::engine::Backend::Vllm)]
+#[case(crate::engine::Backend::Sglang)]
+fn placement_dispatch_hooks_commit_after_clock_releases_a_queued_request(
+    #[case] backend: crate::engine::Backend,
+) {
+    let records = DispatchHookRecords::default();
+    let report = dispatch_hook_runtime(backend, Some(7.0), records.clone())
+        .run()
+        .unwrap()
+        .0
+        .finish();
+    assert_eq!(report.per_request[0].arrival_time_ms, 0.0);
+    assert_eq!(report.per_request[0].first_admit_ms, Some(7.0));
+    let terminal_ms = report.per_request[0].terminal_time_ms;
+    assert!(terminal_ms > 7.0);
+    let records = records.lock().unwrap();
+    let semantic = records
+        .iter()
+        .filter(|event| !matches!(event, DispatchHookRecord::Clock(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let uuid = Uuid::from_u128(1);
+    assert_eq!(
+        semantic,
+        vec![
+            DispatchHookRecord::Selected(uuid, 0.0),
+            DispatchHookRecord::Released(uuid, 7.0),
+            DispatchHookRecord::Committed(uuid, 7.0),
+            DispatchHookRecord::Terminal(uuid, terminal_ms)
+        ]
+    );
+    assert!(records.contains(&DispatchHookRecord::Clock(7.0)));
+}
+
+#[rstest::rstest]
+#[case(crate::engine::Backend::Vllm)]
+#[case(crate::engine::Backend::Sglang)]
+fn placement_dispatch_hooks_abort_when_native_engine_rejects_ownership(
+    #[case] backend: crate::engine::Backend,
+) {
+    let records = DispatchHookRecords::default();
+    let mut runtime = dispatch_hook_runtime(backend, None, records.clone());
+    // The engine already owns this UUID; the policy's new tentative selection
+    // must abort when Submit rejects it, without recording a successful commit.
+    runtime.engine.dispatch(0, request(1, 0.0), 0.0).unwrap();
+    let error = runtime
+        .run()
+        .err()
+        .expect("native duplicate UUID must fail");
+    assert!(format!("{error:#}").contains("already active"), "{error:#}");
+    let records = records.lock().unwrap();
+    let semantic = records
+        .iter()
+        .filter(|event| !matches!(event, DispatchHookRecord::Clock(_)))
+        .cloned()
+        .collect::<Vec<_>>();
+    let uuid = Uuid::from_u128(1);
+    assert_eq!(
+        semantic,
+        vec![
+            DispatchHookRecord::Selected(uuid, 0.0),
+            DispatchHookRecord::Aborted(uuid, 0.0)
+        ]
+    );
+}
+
 // G3 fixtures independently adapt vLLM behavioral contracts (Apache-2.0).
 // Upstream: https://github.com/vllm-project/vllm/tree/6e448d0ea9bf3d88d898b65449ca6dc2aec170ac
 // Paths: vllm/v1/core/sched/{scheduler,request_queue}.py and
