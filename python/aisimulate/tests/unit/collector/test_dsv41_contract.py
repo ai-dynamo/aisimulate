@@ -143,7 +143,8 @@ def row():
     }
 
 
-def test_manifest_matches_native_graph_and_profiles():
+def test_manifest_matches_native_graph_and_profiles(monkeypatch):
+    monkeypatch.delenv("DSV41_EXECUTION_PROFILE", raising=False)
     full, replay = build_manifest(4, False), build_manifest(4, True)
     assert full["config_sha256"] == replay["config_sha256"]
     assert full["config_sha256"] == "d7637228d27528f6bd259781b5a27258068f50bf637c9c83aab784d81579669d"
@@ -160,6 +161,20 @@ def test_manifest_matches_native_graph_and_profiles():
                     assert geometry["fmha_quant_mode"] == "fp8"
     assert operation_geometry({"name": "display", "n": 32, "k": 64}) == '{"k":64,"n":32}'
     assert len(get_dsv41_module_test_cases()) == 8
+
+
+@pytest.mark.parametrize("profile", ["full", "decoder_bounded"])
+def test_case_selection_includes_only_requested_execution_profile(monkeypatch, profile):
+    monkeypatch.setenv("DSV41_EXECUTION_PROFILE", profile)
+    cases = get_dsv41_module_test_cases()
+    assert len(cases) == 4
+    assert {case["params"][2] for case in cases} == {profile}
+
+
+def test_case_selection_rejects_unknown_execution_profile(monkeypatch):
+    monkeypatch.setenv("DSV41_EXECUTION_PROFILE", "unqualified")
+    with pytest.raises(ValueError, match="DSV41_EXECUTION_PROFILE"):
+        get_dsv41_module_test_cases()
 
 
 @pytest.mark.parametrize(
@@ -188,6 +203,8 @@ def test_parquet_contract_rejects_duplicate_and_mixed_provenance(tmp_path):
         write_parquet([row(), row()], target)
     with pytest.raises(ValueError, match="one immutable"):
         write_parquet([row(), row() | {"x": 130, "source_sha256": "c" * 64}], target)
+    with pytest.raises(ValueError, match="one immutable"):
+        write_parquet([row(), row() | {"x": 130, "execution_profile": "decoder_bounded"}], target)
 
 
 def test_bounded_context_requires_actual_tail_and_real_prefix():
@@ -263,7 +280,9 @@ def test_writer_to_native_silicon_query_requires_exact_measured_identity(tmp_pat
     assert result.source == "silicon"
 
 
-def test_baseline_rank_admission_converts_nccl_bytes_to_elements(tmp_path):
+@pytest.mark.parametrize("dtype", ["half", "bfloat16", "float32", "float8"])
+@pytest.mark.parametrize("message_size", [10240, 10241])
+def test_baseline_rank_admission_converts_nccl_bytes_to_elements(tmp_path, dtype, message_size):
     from collector.sglang.collect_dsv41_module import aggregate_baseline_records
 
     paths = []
@@ -271,10 +290,10 @@ def test_baseline_rank_admission_converts_nccl_bytes_to_elements(tmp_path):
         path = tmp_path / f"baseline-rank-{rank}.jsonl"
         point = {
             "kind": "nccl",
-            "nccl_dtype": "half",
+            "nccl_dtype": dtype,
             "num_gpus": 2,
             "op_name": "all_reduce",
-            "message_size": 10240,
+            "message_size": message_size,
             "latency": rank + 1.0,
             "sample": 2,
             "tp_rank": rank,
@@ -287,6 +306,14 @@ def test_baseline_rank_admission_converts_nccl_bytes_to_elements(tmp_path):
         }
         path.write_text(json.dumps(point) + "\n")
         paths.append(path)
+    if dtype not in ("half", "bfloat16"):
+        with pytest.raises(ValueError, match="supported 16-bit dtype"):
+            aggregate_baseline_records(paths, 2)
+        return
+    if message_size % 2:
+        with pytest.raises(ValueError, match="whole elements"):
+            aggregate_baseline_records(paths, 2)
+        return
     result = aggregate_baseline_records(paths, 2)["nccl"][0]
     assert result["message_size"] == 5120
     assert result["wire_dtype"] == "bfloat16"

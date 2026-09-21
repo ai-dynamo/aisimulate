@@ -158,6 +158,8 @@ def aggregate_baseline_records(paths: list[Path], tp_size: int) -> dict[str, lis
         if key[0] == "nccl":
             # Native raw evidence records physical bytes. NcclOp and the
             # existing nccl-tests collector key their table by ELEMENTS.
+            if measured["nccl_dtype"] not in ("half", "bfloat16"):
+                raise ValueError("NCCL baseline requires a supported 16-bit dtype: half or bfloat16")
             if measured["message_size"] % 2:
                 raise ValueError("16-bit NCCL payload must contain whole elements")
             measured["message_size"] //= 2

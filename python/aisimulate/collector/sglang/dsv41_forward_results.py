@@ -20,6 +20,8 @@ IDENTITY = ("source_sha256", "config_sha256", "runtime_digest", "execution_profi
 
 def aggregate_forward_results(attempt: Path, *, tp_size: int = 4) -> dict:
     """Require the complete frozen plan, then retain rank maxima per repetition."""
+    if tp_size < 1:
+        raise ValueError("tp_size must be positive")
     if not (attempt / "COMPLETE").is_file():
         raise ValueError("native forward attempt has no completion receipt")
     if list(attempt.glob("rank-*.jsonl")) or list(attempt.glob("baseline-rank-*.jsonl")):
@@ -152,21 +154,31 @@ def aggregate_forward_results(attempt: Path, *, tp_size: int = 4) -> dict:
     }
 
 
-def forward_admission_report(attempt: Path) -> dict:
+def forward_admission_report(attempt: Path, *, tp_size: int = 4) -> dict:
     """Preserve rejected-attempt evidence; never turn partial rows into completion."""
     try:
-        return {"status": "accepted", **aggregate_forward_results(attempt)}
+        return {"status": "accepted", **aggregate_forward_results(attempt, tp_size=tp_size)}
     except (ValueError, KeyError, IndexError, OSError, json.JSONDecodeError) as error:
         failures = []
-        for path in sorted(attempt.glob("workloads-rank-*.jsonl")):
-            for line in path.read_text().splitlines():
+        try:
+            for path in sorted(attempt.glob("workloads-rank-*.jsonl")):
                 try:
-                    row = json.loads(line)
-                except json.JSONDecodeError:
-                    failures.append({"file": path.name, "status": "malformed_progress_record"})
+                    lines = path.read_text().splitlines()
+                except OSError as inventory_error:
+                    failures.append(
+                        {"file": path.name, "status": "unreadable_progress_record", "error": str(inventory_error)}
+                    )
                     continue
-                if row.get("status") != "passed":
-                    failures.append(row)
+                for line in lines:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        failures.append({"file": path.name, "status": "malformed_progress_record"})
+                        continue
+                    if row.get("status") != "passed":
+                        failures.append(row)
+        except OSError as inventory_error:
+            failures.append({"status": "unreadable_progress_inventory", "error": str(inventory_error)})
         missing_observations = []
         try:
             plan = json.loads((attempt / "workload-plan.json").read_text())
@@ -180,7 +192,7 @@ def forward_admission_report(attempt: Path) -> dict:
             for case in plan["cases"]:
                 geometry = tuple(case[k] for k in ("phase", "batch_size", "query", "prefix"))
                 for sample in range(contract["warmup"], contract["warmup"] + contract["iterations"]):
-                    missing = sorted(set(range(4)) - observed[(*geometry, sample)])
+                    missing = sorted(set(range(tp_size)) - observed[(*geometry, sample)])
                     if missing:
                         missing_observations.append(
                             {"case_id": case["case_id"], "sample": sample, "missing_ranks": missing}
@@ -194,7 +206,7 @@ def forward_admission_report(attempt: Path) -> dict:
             "admission_error": str(error),
             "missing_rank_files": [
                 f"forward-rank-{rank}.jsonl"
-                for rank in range(4)
+                for rank in range(tp_size)
                 if not (attempt / f"forward-rank-{rank}.jsonl").is_file()
             ],
             "failed_workloads": failures,
@@ -206,8 +218,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("attempt", type=Path)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--tp-size", type=int, default=4)
     args = parser.parse_args()
-    report = forward_admission_report(args.attempt)
+    report = forward_admission_report(args.attempt, tp_size=args.tp_size)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     if report["status"] != "accepted":
         raise SystemExit(1)

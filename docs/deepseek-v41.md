@@ -76,6 +76,11 @@ redundant pre-MLP dispatch under the required DP=CP=1 topology. Shared
 the folded TP reduce-scatter plus DP all-gather, and its unqualified TRT-LLM
 path retains the previously documented collective behavior.
 
+Shared and routed expert compute are modeled sequentially, followed by the
+post-expert reduction, for every backend and EP configuration. Concurrent
+execution requires a qualified runtime contract before overlap can be priced;
+the measured SGLang EP1 eager path remains sequential.
+
 SGLang's pinned CUDA FlashMLA layout stores 584 bytes per main/SWA entry
 (FP8 NoPE, BF16 RoPE, scales/padding), and its low-ratio index stores 68 bytes.
 Three half-rate owners and one full-rate owner give a 1,630-byte global slope.

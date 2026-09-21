@@ -1300,7 +1300,8 @@ def test_runner_rejects_unknown_forward_model(value):
 
 
 @pytest.mark.parametrize("replay", [False, True])
-def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeypatch):
+@pytest.mark.parametrize("worker_policy", [None, "SILICON", "SOL"])
+def test_public_replay_keeps_decoder_profile_and_database_policy(replay, worker_policy, monkeypatch):
     from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
     class ReadyEstimator:
@@ -1326,7 +1327,12 @@ def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeyp
                 "database_mode": "SILICON",
                 "enable_shared_layer": False,
                 "strict_provenance": True,
-                "workers": {"aggregated": {"kv_cache": {"capacity": {"type": "fixed", "blocks": 128}}}},
+                "workers": {
+                    "aggregated": {
+                        "kv_cache": {"capacity": {"type": "fixed", "blocks": 128}},
+                        "timing": {"database_mode": worker_policy},
+                    }
+                },
             }
         }
     )
@@ -1335,12 +1341,12 @@ def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeyp
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
     config = runtime.execution_spec["spec"]["engine"]["rank"]["timing_model"]["config"]
     assert config.get("decoder_replay", False) is replay
-    assert config["database_mode"] == "SILICON"
+    assert config["database_mode"] == (worker_policy or "SILICON")
     assert config["enable_shared_layer"] is False
     assert config["strict_provenance"] is True
     metadata = spec.backend_deployment.performance_model_metadata["aggregated"]["config"]
     assert metadata.get("decoder_replay", False) is replay
-    assert metadata["database_mode"] == "SILICON"
+    assert metadata["database_mode"] == config["database_mode"]
 
 
 @pytest.mark.parametrize(

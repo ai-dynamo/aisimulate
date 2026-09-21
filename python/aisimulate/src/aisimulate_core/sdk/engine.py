@@ -493,7 +493,10 @@ def compile_engine(
         if not check_is_moe(model_path):
             raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
     model_config.decoder_replay = decoder_replay
-    resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
+    try:
+        resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InvalidEngineConfigurationError(str(exc)) from exc
 
     # Slot policy FIRST, tolerance second: resolve the requested version to a
     # literal (raising on unlisted versions / unpopulated aliases) before the

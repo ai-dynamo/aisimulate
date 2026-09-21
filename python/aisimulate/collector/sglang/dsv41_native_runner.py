@@ -630,8 +630,6 @@ def main():
         or any(output.glob("rank-*.jsonl"))
     ):
         raise RuntimeError("output has prior raw records; use a fresh attempt directory")
-    if options.workload_plan is not None:
-        (output / "workload-plan.json").write_text(json.dumps(options.workload_plan, sort_keys=True) + "\n")
     native = argparse.ArgumentParser()
     bench.ServerArgs.add_cli_args(native)
     bench.BenchArgs.add_cli_args(native)
@@ -657,6 +655,8 @@ def main():
             f"enable_decoder_swa_bounded_replay={expected_bounded}, "
             f"got {server_args.enable_decoder_swa_bounded_replay}"
         )
+    if options.workload_plan is not None:
+        (output / "workload-plan.json").write_text(json.dumps(options.workload_plan, sort_keys=True) + "\n")
     (output / "execution-contract.json").write_text(
         json.dumps(
             {

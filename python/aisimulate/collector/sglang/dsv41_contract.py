@@ -207,7 +207,12 @@ def write_parquet(rows: list[dict], path) -> None:
         if key in keys:
             raise ValueError(f"duplicate physical V4.1 key: {key}")
         keys.add(key)
-        provenance.add(tuple(row[k] for k in ("source_sha256", "config_sha256", "runtime_digest", "used_cuda_graph")))
+        provenance.add(
+            tuple(
+                row[k]
+                for k in ("source_sha256", "config_sha256", "runtime_digest", "used_cuda_graph", "execution_profile")
+            )
+        )
     if len(provenance) != 1:
         raise ValueError("a table needs one immutable runtime/config/source/measurement method")
     fields = [

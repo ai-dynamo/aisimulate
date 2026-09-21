@@ -64,7 +64,7 @@ def test_duplicate_configurations_are_not_silently_deduplicated():
         freeze_workloads(payload)
 
 
-def _lifecycle(case):
+def _lifecycle(case, *, decode_steps=0):
     events, measured = [], []
     requests = [object() for _ in range(case["batch_size"])]
     batch = object()
@@ -102,7 +102,7 @@ def _lifecycle(case):
         prepare_synthetic_inputs_for_latency_test=prepare, prepare_extend_inputs_for_correctness_test=suffix
     )
     recorder = SimpleNamespace(active=True, phase="generation")
-    run_workload(runner, recorder, bench, list(range(4096)), case, execute)
+    run_workload(runner, recorder, bench, list(range(4096)), case, execute, decode_steps=decode_steps)
     return events, measured
 
 
@@ -126,6 +126,18 @@ def test_decode_seeds_exact_past_k_and_measures_one_inclusive_generation():
     assert events == [("clear",), ("prepare", 2, 2048, 2048), ("extend",), ("decode",), ("cleanup", True)]
     assert measured == [("generation", 2, 1, 2048, True)]
     assert coordinates("attention", {}, "generation", 2, 1, 2048) == (2, 0, 2049)
+
+
+@pytest.mark.parametrize("decode_steps", [0, 2])
+def test_context_decode_steps_advance_prefix(decode_steps):
+    case = freeze_workloads(_payload())["cases"][0]
+    events, measured = _lifecycle(case, decode_steps=decode_steps)
+    expected = [("context", 2, 3, 128, True)]
+    if decode_steps:
+        expected += [("generation", 2, 1, 131, True), ("generation", 2, 1, 132, True)]
+    assert measured == expected
+    assert events.count(("decode",)) == decode_steps
+    assert events[-1] == ("cleanup", True)
 
 
 def test_bounded_coordinate_preserves_long_prefix_and_short_actual_extension():
@@ -183,11 +195,20 @@ def test_native_benchmark_wall_boundary_synchronizes_before_and_after(monkeypatc
     assert events == ["sync", "native-call", "sync"]
 
 
-@pytest.mark.parametrize("forward_only", [False, True])
+@pytest.mark.parametrize(
+    ("forward_only", "missing_flag"),
+    [
+        (False, None),
+        (True, None),
+        (True, "--disable-custom-all-reduce"),
+        (True, "--enforce-disable-flashinfer-allreduce-fusion"),
+        (True, "--disable-shared-experts-fusion"),
+    ],
+)
 @pytest.mark.parametrize("profile", ["full", "decoder_bounded"])
 @pytest.mark.parametrize("native_bounded", [False, True])
 def test_native_cli_binds_decoder_profile_before_execution(
-    tmp_path, monkeypatch, forward_only, profile, native_bounded
+    tmp_path, monkeypatch, forward_only, missing_flag, profile, native_bounded
 ):
     import sys
 
@@ -231,8 +252,7 @@ def test_native_cli_binds_decoder_profile_before_execution(
         executed.append(server_args)
         assert bench_args.dsv41_options.forward_only is forward_only
         assert bench_args.dsv41_options.workload_plan == plan
-        assert server_args.enable_decoder_swa_bounded_replay is native_bounded
-        assert native_bounded == (profile == "decoder_bounded")
+        assert server_args.enable_decoder_swa_bounded_replay is (profile == "decoder_bounded")
         (output / "COMPLETE").write_text("fixture completes transport only")
 
     bench = SimpleNamespace(ServerArgs=ServerArgs, BenchArgs=BenchArgs, main=execute)
@@ -255,17 +275,27 @@ def test_native_cli_binds_decoder_profile_before_execution(
             str(plan_path),
             *(["--forward-only"] if forward_only else []),
             *(["--enable-decoder-swa-bounded-replay"] if native_bounded else []),
-            *flags,
+            *(flag for flag in flags if flag != missing_flag),
         ],
     )
+    if missing_flag:
+        with pytest.raises(ValueError, match="forward-only requires unfused"):
+            native.main()
+        assert executed == []
+        assert list(output.iterdir()) == []
+        monkeypatch.setattr(sys, "argv", [*sys.argv, missing_flag])
     if native_bounded != (profile == "decoder_bounded"):
         with pytest.raises(ValueError, match="manifest execution_profile=.*requires enable_decoder_swa_bounded_replay"):
             native.main()
         assert executed == []
         assert not (output / "COMPLETE").exists()
+        assert not (output / "workload-plan.json").exists()
         assert not (output / "execution-contract.json").exists()
         assert not list(output.glob("*.jsonl"))
-        return
+        corrected = [arg for arg in sys.argv if arg != "--enable-decoder-swa-bounded-replay"]
+        if profile == "decoder_bounded":
+            corrected.append("--enable-decoder-swa-bounded-replay")
+        monkeypatch.setattr(sys, "argv", corrected)
     native.main()
     assert len(executed) == 1
     assert json.loads((output / "workload-plan.json").read_text()) == plan

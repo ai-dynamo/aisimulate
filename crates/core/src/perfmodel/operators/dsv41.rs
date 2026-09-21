@@ -191,6 +191,11 @@ impl Dsv41AttentionOp {
                 "DeepSeek-V4.1 full attention requires a positive compress_ratio".into(),
             ));
         }
+        if self.window_size == 0 {
+            return Err(AicError::ModelConfig(
+                "DeepSeek-V4.1 attention requires a positive window_size".into(),
+            ));
+        }
         if batch <= 0.0 || s <= 0.0 {
             return Ok(zero());
         }
@@ -654,6 +659,24 @@ mod tests {
             let result = sliding_window.sol(&spec, 1.0, 128.0, 32.0).unwrap();
             assert!(result.latency_ms.is_finite());
             assert!(result.latency_ms > 0.0);
+        }
+    }
+
+    #[test]
+    fn serialized_attention_rejects_zero_window_in_both_phases() {
+        let spec = unit_spec();
+        for role in ["swa", "full", "reindex", "reuse"] {
+            for is_context in [true, false] {
+                let mut value = serde_json::to_value(attention(role, 2)).unwrap();
+                value["window_size"] = serde_json::json!(0);
+                value["is_context"] = serde_json::json!(is_context);
+                let malformed: Dsv41AttentionOp = serde_json::from_value(value).unwrap();
+                for (batch, sequence) in [(1.0, 128.0), (0.0, 128.0), (1.0, 0.0)] {
+                    let error = malformed.sol(&spec, batch, sequence, 32.0).unwrap_err();
+                    assert!(matches!(error, AicError::ModelConfig(ref message)
+                        if message.contains("positive window_size")));
+                }
+            }
         }
     }
 
