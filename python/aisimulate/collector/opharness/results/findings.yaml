@@ -443,10 +443,22 @@ findings:
       collector heads 48/96, unreachable in serving (real tp gives 4/2/1); (2+3) attention fp8-KV 1625x = HISTORICAL
       blank: 0.24/0.25 baselines contain zero fp8 rows (100% bfloat16), the grid always swept an unsupported region,
       only the error text changed; (4a) dsa ctx fp8-KV 776x = flashmla int64_stride_to_int input constraint on the
-      NEW fp8 collection key — FIXME(kernel-limit) class; (4b) dsa gen IMA ~4% = BISECT-EXONERATED from the
-      block-table zero-pad fix (same 300 cases: 22 fails with fix, 19 without), highly shape-correlated (16/18
-      overlap with the full-run set) with worker-reuse history sensitivity — an independent 0.29 sparse-MLA decode
-      issue, recorded+classified per failure_handling; escalation needs serving-parity audit + compute-sanitizer.
+      NEW fp8 collection key — FIXME(kernel-limit) class; (4b) dsa gen IMA ~4% = RACE, audit complete
+      2026-09-22: bisect exonerated the block-table fix (22 vs 19 fails on identical 300 cases) AND cudagraph
+      (eager 21/300) AND the topk buffer (allocation parity with serving — both torch.empty; poison prefill 2e9
+      and -1 both pass); CUDA_LAUNCH_BLOCKING pins the faulting kernel to vllm-flash-attn Hopper flash_fwd
+      (flash_fwd_launch_template.h:205); compute-sanitizer memcheck serializes and the fault VANISHES (8/8, 0
+      errors) — a timing race in the 0.29 FA3 sparse-MLA decode chain, worth reporting upstream. Recovery is
+      operational: failures are stochastic with ~75%/round retry recovery, geometric to near-zero
+      (GLM gen 300->70->17->5->2 of 8832; DeepSeek 346->106->28->8) — --resume-retry-failed sweeps recover the
+      rows without touching measurement semantics. ADDENDA: (2+3) upgraded to selector-verified — serving itself
+      routes fp8-kv+head512 to FlashInferBackend whose SM90 JIT cannot run it (prefill fa2 no-fp8 assert, decode
+      module compiles SM100+ only); a vllm selector availability-check gap, upstream-worthy. (4a) localized to
+      the framework's own q-padding in _fp8_flash_mla_kernel (pad to 64/128 heads -> (1,T,128,576) new_zeros,
+      batch stride breaks int32 at T>~29k); serving reachable only with a per-step token budget above ~29k.
+      (1) msa kernel limit converted to an invocation-site guard raising a classified error with the framework
+      citation (commit c0f7f035). dsv4 full-grid rerun on the merged lane: generation 3088/3088 PASS (was 100%
+      dead); context retry in flight at ~0.2% errors.
       Harness lessons banked: PerfFile.SCALE_MATRIX enum gap (fixed), measurement containers must never share host
       network (setup_distributed port collisions), collection images need deps pre-baked, executor ignores --ops
       CLI order, sharding is manual via --case-filter.'
