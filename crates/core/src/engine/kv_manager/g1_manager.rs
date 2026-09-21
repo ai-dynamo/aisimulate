@@ -18,7 +18,7 @@ use super::vllm_backend::{
     StoreSourceSnapshot as VllmStoreSourceSnapshot, VllmAcquire, VllmKvManager,
 };
 pub(crate) use super::vllm_backend::{NativeAllocation, SourceReuseDependency};
-use super::{DestinationReservationMode, G1Acquire};
+use super::{AllocationRequirement, DestinationReservationMode, G1Acquire};
 
 fn into_g1_acquire<T>(outcome: VllmAcquire<T>) -> G1Acquire<T> {
     match outcome {
@@ -99,6 +99,92 @@ impl G1Manager {
                 dp_rank,
             ),
         }
+    }
+
+    pub(crate) fn with_state_cache(
+        mut self,
+        config: Option<crate::engine::StateCacheConfig>,
+        bytes_per_token: Option<usize>,
+        mtp_enabled: bool,
+    ) -> Self {
+        self.inner
+            .configure_state_cache(config, bytes_per_token, mtp_enabled);
+        self
+    }
+
+    pub(crate) fn requires_write_preparation(&self) -> bool {
+        self.inner.requires_write_preparation()
+    }
+
+    pub(crate) fn begin_step(&mut self) {
+        self.inner.begin_step();
+    }
+
+    pub(crate) fn accepts_sequence_length(&self, tokens: usize) -> bool {
+        self.inner.accepts_sequence_length(tokens)
+    }
+
+    pub(crate) fn can_compute(
+        &self,
+        lease: &BlockRequestLease,
+        computed_tokens: usize,
+        slot_tokens: usize,
+    ) -> bool {
+        self.inner.can_compute(lease, computed_tokens, slot_tokens)
+    }
+
+    pub(crate) fn decode_requirement(
+        &self,
+        lease: &BlockRequestLease,
+        known_tokens: usize,
+        max_burst: usize,
+    ) -> AllocationRequirement {
+        self.inner
+            .decode_requirement(lease, known_tokens, max_burst)
+    }
+
+    pub(crate) fn admission_requirement(
+        &self,
+        lease: &BlockRequestLease,
+        known_tokens: usize,
+        cost: &PrefillCost,
+        reserved_blocks: usize,
+    ) -> AllocationRequirement {
+        self.inner
+            .admission_requirement(lease, known_tokens, cost, reserved_blocks)
+    }
+
+    pub(crate) fn resolve_prefill_cost(
+        &self,
+        policy: crate::engine::common::protocols::SchedulingPolicy,
+        known_tokens: usize,
+        mtp_enabled: bool,
+        requires_logits: bool,
+        cost: PrefillCost,
+    ) -> PrefillCost {
+        self.inner
+            .resolve_prefill_cost(policy, known_tokens, mtp_enabled, requires_logits, cost)
+    }
+
+    pub(crate) fn finalize_speculative_prefix(
+        &mut self,
+        owner: Uuid,
+        sequence: &mut RequestSequence,
+        lease: &mut BlockRequestLease,
+        reservation: &mut DecodeBlockReservation,
+        end_of_burst: bool,
+    ) {
+        let len = sequence.len();
+        self.inner
+            .prepare_decode_state(lease, len, &mut reservation.inner);
+        self.inner.finalize_computed_prefix(
+            owner,
+            sequence,
+            lease,
+            len.saturating_sub(1),
+            len,
+            end_of_burst,
+        );
     }
 
     pub(crate) fn allocate_native(
