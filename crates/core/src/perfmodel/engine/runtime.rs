@@ -1,4 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+// SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 // SPDX-License-Identifier: Apache-2.0
 // Includes changes adapted from:
 // https://github.com/ai-dynamo/aiconfigurator/blob/6290c161a354da5250c391bd43372b2e9c6f4a51/aic-core/rust/aiconfigurator-core/src/engine/runtime.rs
@@ -2513,6 +2515,116 @@ mod tests {
             isl,
             osl,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn glm52_rubin_decode_outer_terms_match_source_inventory_oracle() {
+        use crate::DataType;
+        use crate::operators::CustomAllReduceOp;
+
+        // Modified analytical inventory derived from SGLang's embedding reduce,
+        // post-join routed/shared add and terminal residual RMSNorm at:
+        // https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
+        // Exact paths and the deferred-finalize=0 scope are in THIRD_PARTY_NOTICES.md.
+        let mut config = fixture_engine_config(None);
+        config.model_name = "nvidia/GLM-5.2-NVFP4".into();
+        config.system_name = "vr200_hecate".into();
+        config.backend = BackendKind::Sglang;
+        config.backend_version = Some("0.5.18+nvinternal.rubin.0.8full.66997102".into());
+        config.parallel = ParallelMapping {
+            tp_size: 4,
+            pp_size: 1,
+            attention_dp_size: Some(1),
+            moe_tp_size: Some(4),
+            moe_ep_size: Some(1),
+            cp_size: Some(1),
+        };
+        config.quantization = QuantizationConfig {
+            weight_dtype: Some(DataType::Bfloat16),
+            moe_dtype: Some(DataType::Nvfp4),
+            activation_dtype: Some(DataType::Bfloat16),
+            kv_cache_dtype: Some(DataType::Fp8),
+        };
+        config.enable_shared_layer = Some(false);
+        config.strict_provenance = true;
+        let db = Arc::new(
+            PerfDatabase::load_resolved(
+                &systems_root(),
+                "vr200_hecate",
+                "sglang",
+                config.backend_version.as_deref().unwrap(),
+                false,
+                true,
+                false,
+            )
+            .unwrap(),
+        );
+        let mut add = ElementwiseOp::new("generation_routed_shared_add", 36_864.0);
+        add.scale_factor = 75.0;
+        let mut spec = EngineSpec::new(
+            config,
+            vec![],
+            vec![
+                Op::CustomAllReduce(CustomAllReduceOp::new(
+                    "generation_embedding_ar",
+                    1.0,
+                    6144,
+                    4,
+                )),
+                Op::Elementwise(add),
+                Op::Elementwise(ElementwiseOp::new("generation_final_add_norm", 49_152.0)),
+            ],
+        );
+        // Independent decimal calculation from vr200_hecate.yaml: bandwidth
+        // 19160064000000 B/s, efficiency 0.5227797525079052 and constant
+        // 1.6518125736605135e-6 s. BF16 add moves 3*6144*2 bytes per token;
+        // norm follows the existing 4*6144*2-byte analytical convention.
+        // AR: exact half/TP4/message6144 row = 0.005369920134544372 ms.
+        // B3 linearly interpolates 2/7 towards the message49152 row at
+        // 0.004964160025119782 ms in this version's custom_all_reduce table.
+        // These are existing estimates, not measurements of the native terms.
+        for _ in 0..3 {
+            let engine = Engine::build(spec.clone(), db.clone()).unwrap();
+            for (batch, expected) in [
+                (
+                    1,
+                    [
+                        0.005369920134544372,
+                        0.12416196776269622,
+                        0.0016567196801166505,
+                    ],
+                ),
+                (
+                    3,
+                    [
+                        0.005253988674708775,
+                        0.12471401723901163,
+                        0.0016665338930289244,
+                    ],
+                ),
+            ] {
+                let (context, generation) = engine
+                    .run_static_per_op(
+                        &runtime(batch, 1024, 2),
+                        StaticMode::Generation,
+                        DEFAULT_STATIC_STRIDE,
+                    )
+                    .unwrap();
+                assert!(context.is_empty());
+                assert_eq!(generation.len(), 3);
+                for (value, expected) in generation.iter().zip(expected) {
+                    assert!(
+                        (value.1 - expected).abs() < 1e-12,
+                        "{}: {} != {expected}",
+                        value.0,
+                        value.1
+                    );
+                }
+                let total = engine.predict_decode_latency(batch, 1024, 2).unwrap();
+                assert!((total - expected.iter().sum::<f64>()).abs() < 1e-12);
+            }
+            spec = EngineSpec::from_bincode(&spec.to_bincode().unwrap()).unwrap();
         }
     }
 

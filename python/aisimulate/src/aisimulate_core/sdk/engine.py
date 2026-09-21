@@ -48,6 +48,7 @@ from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
+from aisimulate_core.sdk.models.deepseek_v32 import _generation_ops_for_engine
 from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch, resolve_sglang_mla_compute
 from aisimulate_core.sdk.operations import FPMForwardOp
 from aisimulate_core.sdk.operations.base import Operation
@@ -681,27 +682,28 @@ def build_engine_spec_json(
     # query them unconditionally (with wrong shapes), diverging from the Python
     # reference for VL models. Vision modeling in the compiled path is deferred
     # until runtime image config is threaded through compile_engine (#1567).
+    identity = _engine_config_dict(
+        model=model,
+        model_path=model_path,
+        system=system,
+        backend=backend,
+        backend_version=backend_version,
+        kv_block_size=kv_block_size,
+        systems_path=systems_path,
+        nextn=nextn,
+        database=database,
+        database_mode=database_mode,
+        shared_layer=shared_layer,
+        transfer_policy=transfer_policy,
+        strict_provenance=strict_provenance,
+        fpm_parquet_path=fpm_parquet_path,
+    )
     context_ops = json.loads(_ops_json(model.context_ops))
-    generation_ops = json.loads(_ops_json(model.generation_ops))
+    generation_ops = json.loads(_ops_json(_generation_ops_for_engine(model, identity)))
 
     spec = {
         "schema_version": ENGINE_SPEC_SCHEMA_VERSION,
-        "engine": _engine_config_dict(
-            model=model,
-            model_path=model_path,
-            system=system,
-            backend=backend,
-            backend_version=backend_version,
-            kv_block_size=kv_block_size,
-            systems_path=systems_path,
-            nextn=nextn,
-            database=database,
-            database_mode=database_mode,
-            shared_layer=shared_layer,
-            transfer_policy=transfer_policy,
-            strict_provenance=strict_provenance,
-            fpm_parquet_path=fpm_parquet_path,
-        ),
+        "engine": identity,
         "context_ops": context_ops,
         "generation_ops": generation_ops,
     }

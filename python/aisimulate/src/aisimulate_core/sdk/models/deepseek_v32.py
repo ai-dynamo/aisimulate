@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 # SPDX-FileCopyrightText: Copyright 2023-2024 SGLang Team
 # SPDX-License-Identifier: Apache-2.0
-# Dense composition and exclusion matching adapt (with modifications) SGLang:
+# Dense/decode composition and exclusion matching adapt (with modifications) SGLang:
 # https://gitlab-master.nvidia.com/dl/sglang/sglang/-/tree/02c5a855aceb968c310e6fbc6632270e26edc84b/python/sglang/srt
 
 from __future__ import annotations
@@ -156,6 +156,78 @@ def _dense_mlp_groups(raw_config: dict, num_layers: int, fallback: common.GEMMQu
     for layer in range(count):
         groups[(quant_mode(layer, "gate_up_proj"), quant_mode(layer, "down_proj"))] += 1
     return [(count, gate, down) for (gate, down), count in groups.items()]
+
+
+def _generation_ops_for_engine(model: BaseModel, identity: dict) -> list:
+    """Add outer decode terms for the established GLM-5.2 Rubin runtime.
+
+    The source-linked runtime in collector/sglang_rubin/runtime.py requires
+    SGLANG_ENABLE_MOE_DEFERRED_FINALIZE=0 (the image default is true), with
+    embedding replication and shared-expert-TP1 inactive. These terms describe
+    that serving regime, not every deployment of the image. They use existing
+    Rust operators: analytical BF16 memory traffic and the plain all-reduce
+    table, not measured fused norms or logits gather. Routing distribution
+    does not change these outer operations. The prefill-only profile retains
+    its original graph and generation remains unsupported.
+
+    Return a fresh list: get_model caches shape graphs without system/version.
+    """
+    generation = list(model.generation_ops)
+    if not isinstance(model, DeepSeekV32Model):
+        return generation
+    expected = {
+        "model_name": "nvidia/GLM-5.2-NVFP4",
+        "system_name": "vr200_hecate",
+        "backend": "sglang",
+        "backend_version": "0.5.18+nvinternal.rubin.0.8full.66997102",
+        "tp_size": 4,
+        "moe_tp_size": 4,
+        "moe_ep_size": 1,
+        "pp_size": 1,
+        "attention_dp_size": 1,
+        "cp_size": 1,
+        "weight_dtype": "bfloat16",
+        "moe_dtype": "nvfp4",
+        "activation_dtype": "bfloat16",
+        "kv_cache_dtype": "fp8",
+    }
+    cfg = model.config
+    if (
+        any(identity.get(key) != value for key, value in expected.items())
+        or model.model_path != expected["model_name"]
+        or model._backend_name != expected["backend"]
+        or (model._num_layers, model._num_moe_layers, model._hidden_size) != (78, 75, 6144)
+        or cfg.comm_quant_mode != common.CommQuantMode.half
+        or cfg.nextn != 0
+        or identity.get("nextn", 0) != 0
+        or cfg.speculation is not None
+        or cfg.overwrite_num_layers != 0
+        or cfg.decoder_replay
+        or cfg.enable_eplb
+        or cfg.wideep_num_slots is not None
+        or cfg.moe_comm_backend
+        or cfg.moe_backend is not None
+        or cfg.attention_backend is not None
+        or cfg.forward_model != "op_level"
+        or model.forward_model != "op_level"
+        or cfg.prefill_graph_profile is not None
+    ):
+        return generation
+
+    result = []
+    for op in generation:
+        if op._name == "generation_logits_gemm":
+            # deepseek_v2.py:2906-2910: terminal residual RMSNorm.
+            result.append(ops.ElementWise("generation_final_add_norm", 1, 2 * 6144, 2 * 6144))
+        result.append(op)
+        if op._name == "generation_embedding":
+            # vocab_parallel_embedding.py:566-579: reduce TP embedding shards.
+            result.append(ops.CustomAllReduce("generation_embedding_ar", 1, 6144, 4))
+        elif op._name == "generation_moe_overlap":
+            # deepseek_v2.py:1009-1030, mxfp4_flashinfer_trtllm_moe.py:374-406:
+            # finalized routed and shared BF16 outputs add after the stream join.
+            result.append(ops.ElementWise("generation_routed_shared_add", 75, 2 * 6144, 6144))
+    return result
 
 
 @register_model("DEEPSEEKV32")
