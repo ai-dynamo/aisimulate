@@ -134,7 +134,12 @@ base, the two lists are added at runtime inside the engine process by
    installs the hooks in the launcher and in every spawned interpreter. Alternatively
    `python -m aisimulate_core.fpm_hooks dynamo.sglang -- <args>` sets this up and
    execs the module.
-6. **Failure mode.** The hooks depend on private engine internals (the two method
+6. **Consumers must not re-type the payload.** The relay sink writes the raw msgpack
+   as JSON and keeps the two keys. Any consumer that decodes with the stock typed
+   `ForwardPassMetrics` struct drops them (msgspec ignores unknown keys), which looks
+   like a capture without hooks. A ZMQ subscriber of ours did exactly that during the
+   vLLM captures; the relay files recorded in parallel were complete.
+7. **Failure mode.** The hooks depend on private engine internals (the two method
    names and the batch attributes). If a target does not look as expected the installer
    logs and skips, and the engine keeps emitting aggregate-only FPM; the learned model
    then refuses `sglang18` inference with a message pointing here rather than

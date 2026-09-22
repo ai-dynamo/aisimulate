@@ -105,6 +105,15 @@ The hook is a no-op when a producer already carries the fields, and logs and
 skips (aggregate-only FPM) when the engine internals it wraps are missing.
 Streams recorded without the hooks train with `--features v1` only.
 
+Record the stream with Dynamo's own relay sink (`DYN_FPM_TRACE=1
+DYN_FPM_OUTPUT_PATH=...`, files `fpm-relay*.jsonl.gz`), which writes the raw
+payload. A consumer that decodes the msgpack with the *stock* typed
+`ForwardPassMetrics` struct silently drops the two extra keys: a custom ZMQ
+subscriber written that way produced aggregate-only files while the relay
+files next to it carried the lists, and a model trained on those files landed
+at 12–19% decode error instead of 2–3%. Check one record for `extend_lengths`
+before training.
+
 ## 2. Train
 
 Where each step runs: collection happens inside the engine container (the
