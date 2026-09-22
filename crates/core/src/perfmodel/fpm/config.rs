@@ -149,6 +149,10 @@ pub struct ForwardPassPerfModelConfig {
     pub enable_shared_layer: Option<bool>,
     #[serde(default)]
     pub strict_provenance: bool,
+    #[serde(default)]
+    pub fastafd_profile_path: Option<PathBuf>,
+    #[serde(default)]
+    pub fastafd_moe_backend: Option<String>,
 }
 
 impl ForwardPassPerfModelConfig {
@@ -191,6 +195,8 @@ impl ForwardPassPerfModelConfig {
             wideep_num_slots: None,
             enable_shared_layer: None,
             strict_provenance: false,
+            fastafd_profile_path: None,
+            fastafd_moe_backend: None,
         }
     }
 
@@ -280,6 +286,43 @@ impl ForwardPassPerfModelConfig {
         }
         if self.nextn > 5 {
             return Err(invalid_config("nextn must be in 0..=5"));
+        }
+        if self.fastafd_profile_path.is_some() != self.fastafd_moe_backend.is_some() {
+            return Err(invalid_config(
+                "fastafd_profile_path and fastafd_moe_backend must be configured together",
+            ));
+        }
+        if let Some(path) = &self.fastafd_profile_path {
+            if path.as_os_str().is_empty() {
+                return Err(invalid_config("fastafd_profile_path cannot be empty"));
+            }
+            if self.estimation_mode != EstimationMode::OpLevel {
+                return Err(invalid_config(
+                    "FastAFD MoE profiles require estimation_mode='op_level'",
+                ));
+            }
+            if self.worker_type != ForwardPassWorkerType::Aggregated {
+                return Err(invalid_config(
+                    "FastAFD AGG profiles require worker_type='aggregated'",
+                ));
+            }
+            if self.backend != BackendKind::Sglang {
+                return Err(invalid_config("FastAFD MoE profiles require backend=sglang"));
+            }
+            if self.pp != 1 {
+                return Err(invalid_config("FastAFD MoE profiles require pp=1"));
+            }
+            if self.moe_tp_size != Some(1) {
+                return Err(invalid_config("FastAFD MoE profiles require moe_tp_size=1"));
+            }
+            if !matches!(
+                self.fastafd_moe_backend.as_deref(),
+                Some("megamoe" | "deepep_deepgemm")
+            ) {
+                return Err(invalid_config(
+                    "fastafd_moe_backend must be megamoe or deepep_deepgemm",
+                ));
+            }
         }
         if let Some(speculation) = &self.speculation {
             if self.nextn != 0 {

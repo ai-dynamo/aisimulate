@@ -135,6 +135,8 @@ class ForwardPassPerfModelConfig:
     moe_backend: str | None = None
     enable_eplb: bool = False
     wideep_num_slots: int | None = None
+    fastafd_profile_path: str | None = None
+    fastafd_moe_backend: str | None = None
 
     @classmethod
     def from_legacy_engine_config(
