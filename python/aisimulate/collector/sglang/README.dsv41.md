@@ -315,7 +315,7 @@ See the repository's canonical third-party notices for attribution.
 
 ## Collected H100/H200/B200/GB200 TP2 and TP4 profiles
 
-The collected `full` execution profiles use SGLang
+The collected `full` and `decoder_bounded` execution profiles use SGLang
 `dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc`. Select these MoE kernels explicitly:
 
 | System | TP2 | TP4 |
@@ -324,6 +324,8 @@ The collected `full` execution profiles use SGLang
 | `b200_sxm`, `gb200` | `w4a8_mxfp4_mxfp8_trtllm` | `w4a8_mxfp4_mxfp8_trtllm` |
 
 Set GEMM to `fp8_block`, FMHA to `fp8`, MoE TP equal to model TP, and MoE EP to 1.
+Set `ModelConfig(decoder_replay=True)` for `decoder_bounded` predictions; the
+default `False` selects full execution. Both profiles use the same admitted tables.
 Profiles measure native serving modules with synthetic weights/hidden states and real
 native token/KV metadata. GB200 TP4 attention was measured in the whole model with the
 immutable checkpoint. All primitive families use the isolated collector. TP2 supplies
@@ -366,24 +368,34 @@ aiconfigurator cli estimate --estimate-mode static \
   --fmha-quant-mode fp8 --isl 128 --osl 2 --batch-size 1
 ```
 
-All eight hardware/TP full-profile cells pass strict prediction checks for the frozen
-145 calibration geometries (108 prefill and 37 decode, batches 1/2/3) and 38 independent
-heldout geometries (28 prefill and 10 decode). This is the explicit case grid, not every
-Cartesian combination or arbitrary batch/length coverage. Primitive token counts are 1,
-2, 4, 8, 16, 32, 64, 128, 129, 256, 512, 1024, 2048, 4096, and 8192. Successful heldout
-geometry prediction is coverage unless a separate whole-model truth run is reported.
-Whole-model memory feasibility must be evaluated separately from isolated operator
-coverage. No extrapolated H100 or TP2 whole-model accuracy is reported. The
-`decoder_bounded` raw collection retains eight colliding physical-key groups and is
-excluded from these admitted tables pending native-equivalence validation.
+All eight hardware/TP cells pass strict prediction checks for both profiles: full
+covers 145 calibration geometries (108 prefill and 37 decode, batches 1/2/3), and bounded
+covers those geometries plus nine supplemental prefill geometries. Each profile also
+covers 38 independent heldout geometries (28 prefill and 10 decode). These 3,000 checks
+cover the explicit grids, not every Cartesian combination or arbitrary batch/length.
+Primitive token counts are 1, 2, 4, 8, 16, 32, 64, 128, 129, 256, 512, 1024, 2048, 4096,
+and 8192. Successful heldout geometry prediction is coverage unless a separate
+whole-model truth run is reported. Whole-model memory feasibility remains separate
+from isolated operator coverage. No H100 or TP2 whole-model accuracy is reported.
+
+Each system's module table preserves its 1,875 full rows unchanged and adds 260 bounded
+attention keys per TP: 224 late-layer bounded keys and 36 early-layer supplemental keys
+whose native branch still processes the full query. The 654 overlapping attention keys
+per TP retain the full measurements. Additions retain their original execution profile,
+source and collection event. The eight audited owner collisions use the explicit
+per-owner reduction and equal-owner mean described above; this empirical policy does
+not assert tensor-content, allocator-locality or timing equivalence. The separate GEMM,
+MoE and communication tables are unchanged. All 1,464 original full predictions remain
+unchanged after this joint export and the native Hopper analytical dispatch correction.
 
 Independent full-checkpoint validation used 38 cases, five repetitions and four ranks
-for each of these full-profile cells:
+for each reported cell:
 
-| System / TP | Overall MAPE | Prefill (28 cases) | Decode (10 cases) |
+| System / TP / profile | Overall MAPE | Prefill (28 cases) | Decode (10 cases) |
 | --- | --- | --- | --- |
-| GB200 / TP4 | 6.96% | 4.52% | 13.78% |
-| H200 / TP4, native Humming | 12.68% | 7.47% | 27.27% |
+| GB200 / TP4 / full | 6.96% | 4.52% | 13.78% |
+| GB200 / TP4 / decoder_bounded | 10.00% | 8.15% | 15.19% |
+| H200 / TP4 / full, native Humming | 12.68% | 7.47% | 27.27% |
 
 Ground truth uses each repetition's maximum rank wall time, then the median across
 five repetitions. Its native synchronized wall boundary includes preparation.

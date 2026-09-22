@@ -17,7 +17,7 @@ runtime:
       + dladdr; one provider observed
 tables:
   dsv41_module_perf:
-    rows: 1875
+    rows: 2395
     status: partial
     collections:
     - collector_ref: f9973d7eafc62db899caa3d46996afef45afbb96
@@ -80,6 +80,44 @@ tables:
       status: partial
       source_campaign_rows: 985
       source_campaign_status: complete
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: import-candidate-v2-800cc9ad.sqsh
+        image_digest: sha256:800cc9adea5be1e18f48185451220c4bc487c545b7095c720d2ccc9ba9bb3b5d
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi:
+          image_squashfs_sha256: 812827d707add462a16b53f783282a20752f2c16c89a896a988278ca739b3f26
+          torch: 2.13.0+cu130
+    - collector_ref: 9706d22ce965c6f95fc544da1bf156a87fba9751
+      collector_hash: sha256:072d4812dacd6388c5c0062c2d5e4a95ccb500709a866237dc152c6732ba01c8
+      case_plan_hash: sha256:2b98a802c1ef0315e9db8d8836ff8a2f9e2b99ba93cacea4a967a48f929ff843
+      collected_at: '2026-09-22'
+      rows: 260
+      status: partial
+      source_campaign_rows: 914
+      source_campaign_status: partial
+      runtime:
+        framework: sglang
+        version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        image: import-candidate-v3-800cc9ad.sqsh
+        image_digest: sha256:800cc9adea5be1e18f48185451220c4bc487c545b7095c720d2ccc9ba9bb3b5d
+        source_commit: 1aa0e962b206102b7c439a4a0c4981cfec6e87bc
+        abi:
+          torch: 2.13.0+cu130
+          nccl: 2.30.7
+          image_squashfs_sha256: 695e354946cd5b7ade477aaf08c47512a758cc4bf7706cdbd76f5e39110c7a39
+          nccl_identity_evidence: same native rank post-measurement mapped provider
+            ncclGetVersion + dladdr; one provider observed
+          input_method: seeded_bf16_hidden_native_rmsnorm_per_layer_real_native_kv_v1
+    - collector_ref: d66ea9a2d734a80f18f36352d6f10d6e35a6571f
+      collector_hash: sha256:0fb26e63c45c3861a244abfb768912a7bdca5f7fe677c65cc18dcc7f5ed52bce
+      case_plan_hash: sha256:5d3c3ce58f197b38c034aa36d25c6fffdd5ca0eb08025231f2d16b147d99afcc
+      collected_at: '2026-09-22'
+      rows: 260
+      status: partial
+      source_campaign_rows: 914
+      source_campaign_status: partial
       runtime:
         framework: sglang
         version: dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc
