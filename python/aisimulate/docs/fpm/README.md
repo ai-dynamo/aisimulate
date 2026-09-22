@@ -16,11 +16,12 @@ There are two distinct workflows:
 | --- | --- | --- |
 | Offline whole-forward FPM | Collector-produced `fpm_forward_perf.parquet` and its metadata sidecar | `forward_model="fpm"`: lookup, interpolation, and supported SOL transfer |
 | Online regression | Observed per-iteration, per-rank telemetry | A role-bound model updated with `tune_with_fpms` |
-| Learned forward-pass model | The same FPM telemetry recorded from a real deployment, trained offline | `RustForwardPassPerfModel.from_learned`: tree-ensemble artifact, see [learned-forward-pass-model.md](learned-forward-pass-model.md) |
 
 Offline FPM does not require an additional regression-training step. Predicting
 request-level TTFT, ITL/TPOT, and throughput also requires scheduler and traffic
 simulation; a forward-pass latency alone is not an end-to-end serving metric.
+The published parquet and same-stem metadata sidecar may live outside the
+AISimulate checkout; pass its path as `estimator_config.fpm_interpolation.fpm_parquet_path` in the canonical model configuration, or use the legacy `timing.fpm_parquet_path` YAML field with `timing.forward_model: fpm`.
 
 ## References
 
