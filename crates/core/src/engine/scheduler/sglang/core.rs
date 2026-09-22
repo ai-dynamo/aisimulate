@@ -879,9 +879,16 @@ impl SglangCore {
             }
         }
 
-        // Retain committed chunk ownership even when no token is emitted.
-        let mut committed_requests: Vec<_> =
-            admit.can_run.iter().map(|request| request.uuid).collect();
+        // Retain chunks that computed input even when no output token is emitted.
+        // Cache-only completions do not share a cold sibling's in-flight work.
+        debug_assert_eq!(admit.can_run.len(), admit.prefill_fpm.len());
+        let mut committed_requests: Vec<_> = admit
+            .can_run
+            .iter()
+            .zip(&admit.prefill_fpm)
+            .filter(|(_, work)| work.tokens_computed > 0)
+            .map(|(request, _)| request.uuid)
+            .collect();
         // Capture per-request prefill FPM data before dispersing can_run.
         let prefill_fpm = admit.prefill_fpm;
 
