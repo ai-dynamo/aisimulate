@@ -992,44 +992,30 @@ fn recording_timing_spec() -> ReplaySpec {
 }
 
 #[test]
-fn vllm_first_token_uses_the_final_prefill_forward_once() {
+fn vllm_prefill_batch_uses_the_final_prefill_forward_once() {
     for output_tokens in [0, 1, 2] {
         let timing = Arc::new(RecordingTiming::default());
         let mut replay = recording_timing_spec();
-        replay.requests = vec![request("request", 0.0, 4, output_tokens)];
+        replay.requests = vec![
+            request_with_tokens("first", 0.0, vec![1, 2, 3, 4], output_tokens),
+            request_with_tokens("second", 0.0, vec![5, 6, 7, 8], output_tokens),
+        ];
         let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
-        let record = &report.per_request[0];
-        assert_eq!(record.output_length, output_tokens);
-        assert_eq!(record.first_token_ms, (output_tokens > 0).then_some(10.0));
-        assert_eq!(
-            record.terminal_time_ms,
-            if output_tokens == 2 { 12.0 } else { 10.0 }
-        );
-        let mut expected = vec![TimingCall::Prefill(1, 4, 0)];
+        assert_eq!(report.per_request.len(), 2);
+        for record in &report.per_request {
+            assert_eq!(record.output_length, output_tokens);
+            assert_eq!(record.first_token_ms, (output_tokens > 0).then_some(10.0));
+            assert_eq!(
+                record.terminal_time_ms,
+                if output_tokens == 2 { 12.0 } else { 10.0 }
+            );
+        }
+        let mut expected = vec![TimingCall::Prefill(2, 4, 0)];
         if output_tokens == 2 {
-            expected.push(TimingCall::Decode(1, 5, 5));
+            expected.push(TimingCall::Decode(2, 10, 5));
         }
         assert_eq!(*timing.calls.lock().unwrap(), expected);
     }
-}
-
-#[test]
-fn vllm_prefill_batch_samples_all_first_tokens_without_a_decode_query() {
-    let timing = Arc::new(RecordingTiming::default());
-    let mut replay = recording_timing_spec();
-    replay.requests = vec![
-        request_with_tokens("first", 0.0, vec![1, 2, 3, 4], 1),
-        request_with_tokens("second", 0.0, vec![5, 6, 7, 8], 1),
-    ];
-    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
-    assert_eq!(report.request_counts.completed_requests, 2);
-    assert!(report.per_request.iter().all(|row| {
-        row.output_length == 1 && row.first_token_ms == Some(10.0) && row.terminal_time_ms == 10.0
-    }));
-    assert_eq!(
-        *timing.calls.lock().unwrap(),
-        vec![TimingCall::Prefill(2, 4, 0)]
-    );
 }
 
 #[test]
@@ -1113,31 +1099,26 @@ fn vllm_chunked_prefill_waits_for_the_final_chunk_before_sampling() {
 }
 
 #[test]
-fn vllm_cached_prefill_recomputes_logits_without_an_extra_decode_forward() {
-    for prompt in [
-        vec![1, 2, 3, 4, 5, 6, 7, 8],
-        vec![1, 2, 3, 4, 9, 10, 11, 12],
-    ] {
-        let timing = Arc::new(RecordingTiming::default());
-        let mut replay = recording_timing_spec();
-        replay.requests = vec![
-            request_with_tokens("seed", 0.0, (1..9).collect(), 0),
-            request_with_tokens("reuse", 20.0, prompt, 1),
-        ];
-        let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
-        let reuse = report
-            .per_request
-            .iter()
-            .find(|row| row.request_id.as_deref() == Some("reuse"))
-            .unwrap();
-        assert_eq!(reuse.reused_input_tokens, 4);
-        assert_eq!(reuse.first_token_ms, Some(30.0));
-        assert_eq!(reuse.terminal_time_ms, 30.0);
-        assert_eq!(
-            *timing.calls.lock().unwrap(),
-            vec![TimingCall::Prefill(1, 8, 0), TimingCall::Prefill(1, 8, 4),]
-        );
-    }
+fn vllm_full_prefix_hit_recomputes_logits_without_an_extra_decode_forward() {
+    let timing = Arc::new(RecordingTiming::default());
+    let mut replay = recording_timing_spec();
+    replay.requests = vec![
+        request_with_tokens("seed", 0.0, (1..9).collect(), 0),
+        request_with_tokens("reuse", 20.0, (1..9).collect(), 1),
+    ];
+    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+    let reuse = report
+        .per_request
+        .iter()
+        .find(|row| row.request_id.as_deref() == Some("reuse"))
+        .unwrap();
+    assert_eq!(reuse.reused_input_tokens, 4);
+    assert_eq!(reuse.first_token_ms, Some(30.0));
+    assert_eq!(reuse.terminal_time_ms, 30.0);
+    assert_eq!(
+        *timing.calls.lock().unwrap(),
+        vec![TimingCall::Prefill(1, 8, 0), TimingCall::Prefill(1, 8, 4),]
+    );
 }
 
 #[test]
