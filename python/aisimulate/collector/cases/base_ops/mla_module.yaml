@@ -462,7 +462,7 @@ common_case_values:
       # num_heads<32) stays under the int32 limit (overflow at bs*isl>~58k;
       # the 776 dsa_context fp8 failures, 2026-09-22). MLA/MSA are unaffected:
       # only the collector's DSA branch sweeps prefix.
-      dsa_chunk_prefill_size: 8192
+      dsa_chunk_prefill_size: 16384
       dsa_max_full_sequence_length: 1048576
       dsa_prefix_lengths:
         - 0
