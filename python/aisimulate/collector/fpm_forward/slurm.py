@@ -163,7 +163,8 @@ class SlurmCellRunner:
                 f"--container-mounts={','.join(mounts)}",
                 "--container-writable",
                 "--container-workdir=/tmp/fpm-bench",
-                "env",
+                # Avoid Slurm resolving a bare entrypoint through inaccessible PATH entries.
+                "/usr/bin/env",
                 f"FPM_NODE_RANK={rank}",
                 f"FPM_MASTER_ADDR={self.hosts[0]}",
                 *command,

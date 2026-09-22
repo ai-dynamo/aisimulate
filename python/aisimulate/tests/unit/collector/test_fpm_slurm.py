@@ -67,6 +67,35 @@ def test_slurm_stage_and_argv_keep_shared_result_unit_identity(runner, monkeypat
     assert f"{runner.cell_dir}/raw/node0000:/results" in next(a for a in argv if a.startswith("--container-mounts="))
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX container entrypoint")
+def test_slurm_container_entrypoint_ignores_shadowed_env_on_caller_path(runner, monkeypatch):
+    host_bin = runner.cell_dir / "host-bin"
+    host_bin.mkdir()
+    shadowed_env = host_bin / "env"
+    shadowed_env.write_text("#!/bin/sh\nexit 13\n")
+    shadowed_env.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{host_bin}:{os.environ['PATH']}")
+    runner.hosts = ["test-node"]
+
+    def command(args, *, timeout):
+        # Execute the emitted payload after the Slurm options so PATH lookup
+        # and environment injection remain real.
+        executable_index = next(index for index, arg in enumerate(args[1:], 1) if not arg.startswith("--"))
+        return subprocess.run(args[executable_index:], check=True, capture_output=True, text=True, timeout=timeout)
+
+    monkeypatch.setattr(runner, "_command", command)
+    result = runner._exec(
+        "node0000",
+        [
+            sys.executable,
+            "-c",
+            "import json, os; print(json.dumps([os.environ['FPM_NODE_RANK'], os.environ['FPM_MASTER_ADDR']]))",
+        ],
+        timeout=10,
+    )
+    assert json.loads(result.stdout) == ["0", "test-node"]
+
+
 def test_slurm_cleanup_cancels_only_receipted_steps_and_verifies_exit(runner, monkeypatch):
     runner.owner_path.parent.mkdir(parents=True, exist_ok=True)
     runner.owner_path.write_text(json.dumps({"job_id": "1233", "step_name": runner.step_name}))
@@ -604,7 +633,7 @@ def test_profile_campaign_observes_slurm_version_before_native_collection(tmp_pa
                 next(value.removesuffix(":/results") for value in mounts.split(",") if value.endswith(":/results"))
             )
             assert raw.name == "node0000"
-            program = args[args.index("env") + 3 :]
+            program = args[args.index("/usr/bin/env") + 3 :]
             if program[:2] == ["python3", "-c"]:
                 # Execute the emitted program with the container's result mount mapped to disk.
                 with monkeypatch.context() as patch:

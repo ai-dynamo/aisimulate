@@ -148,7 +148,7 @@ class _SyntheticSlurm:
             rank = int(next(value.split("=", 1)[1] for value in args if value.startswith("FPM_NODE_RANK=")))
             assert raw.name == f"node{rank:04d}"
             assert "FPM_MASTER_ADDR=node-a" in args
-            command = args[args.index("env") + 3 :]
+            command = args[args.index("/usr/bin/env") + 3 :]
             if command[:2] == ["python3", "-c"]:
                 # Interpret the actual preparation program with the Pyxis /results mount mapped locally.
                 with self.patch.context() as patch:
