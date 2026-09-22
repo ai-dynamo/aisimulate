@@ -34,6 +34,28 @@ pub(super) fn next_timestamp(
     }
 }
 
+/// A same-time wakeup is allowed while draining immediate policy work, but
+/// must be consumed before the timestamp is settled. Check each policy before
+/// merging deadlines: `f64::min` can otherwise hide a NaN behind a valid event.
+pub(super) fn validate_policy_wakeup(
+    wakeup_ms: Option<f64>,
+    now_ms: f64,
+    role: &str,
+    settled: bool,
+) -> anyhow::Result<()> {
+    if let Some(wakeup_ms) = wakeup_ms {
+        anyhow::ensure!(
+            wakeup_ms.is_finite() && wakeup_ms >= now_ms,
+            "{role} placement policy wakeup must be finite and not precede replay time {now_ms}ms; got {wakeup_ms}ms"
+        );
+        anyhow::ensure!(
+            !settled || wakeup_ms > now_ms,
+            "{role} placement policy wakeup at {wakeup_ms}ms made no progress at replay time {now_ms}ms; a settled wakeup must be strictly in the future"
+        );
+    }
+    Ok(())
+}
+
 /// Return the earliest scheduled event that can advance replay semantics.
 ///
 /// At most one telemetry heartbeat is armed at a time. Temporarily removing
@@ -437,5 +459,114 @@ mod tests {
             pop_ready_transfer_complete(&mut events, 10.0),
             Some(HandoffId::new(Uuid::from_u128(2)))
         );
+    }
+}
+
+// Minimal queued placement used to exercise scheduler wakeups through both engines.
+#[cfg(test)]
+pub(super) mod wakeup_test_policy {
+    use super::super::core::{
+        Placement, PlacementDecision, PlacementEffects, PlacementPolicy, WorkerTopology,
+    };
+    use super::super::loadgen::ReplayRequestPayload;
+    use uuid::Uuid;
+
+    pub(crate) struct WakeupPlacement {
+        delay_ms: Option<f64>,
+        wakeup_ms: Option<f64>,
+        consume_wakeup: bool,
+        pending: Vec<Uuid>,
+    }
+
+    impl WakeupPlacement {
+        pub(crate) fn new(wakeup_ms: Option<f64>, consume_wakeup: bool) -> Self {
+            Self {
+                delay_ms: wakeup_ms,
+                wakeup_ms: None,
+                consume_wakeup,
+                pending: Vec::new(),
+            }
+        }
+        fn placement(request_id: Uuid) -> Placement {
+            Placement {
+                request_id,
+                scheduler_id: 0,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+                placement_replica_id: None,
+            }
+        }
+    }
+
+    impl PlacementPolicy<ReplayRequestPayload> for WakeupPlacement {
+        type Metadata = ();
+        type Observation = ();
+        fn place(
+            &mut self,
+            request: &ReplayRequestPayload,
+            _: (),
+            _: Option<String>,
+            now_ms: f64,
+        ) -> anyhow::Result<PlacementEffects> {
+            let id = request.metadata().uuid.unwrap();
+            let decision = if let Some(delay_ms) = self.delay_ms {
+                self.wakeup_ms = Some(now_ms + delay_ms);
+                self.pending.push(id);
+                PlacementDecision::Queued
+            } else {
+                PlacementDecision::Immediate(Self::placement(id))
+            };
+            Ok(PlacementEffects {
+                decision,
+                released: Vec::new(),
+            })
+        }
+        fn next_wakeup_ms(&self) -> Option<f64> {
+            if self.pending.is_empty() {
+                None
+            } else {
+                self.wakeup_ms
+            }
+        }
+        fn advance_clock(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+            if self.consume_wakeup
+                && self.wakeup_ms.is_some_and(|wake| wake <= now_ms)
+                && !self.pending.is_empty()
+            {
+                self.wakeup_ms = None;
+                self.delay_ms = None;
+                return Ok(self.pending.drain(..).map(Self::placement).collect());
+            }
+            Ok(Vec::new())
+        }
+        fn observe(&mut self, _: (), _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn cancel_pending(&mut self, id: Uuid) -> bool {
+            let before = self.pending.len();
+            self.pending.retain(|pending| *pending != id);
+            self.pending.len() != before
+        }
+        fn request_terminal(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn prefill_completed(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn pending_count(&self) -> usize {
+            self.pending.len()
+        }
+        fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn topology_settled(&mut self, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
     }
 }

@@ -35,7 +35,7 @@ use super::runtime_utils::{
     ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
     pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_transfer_complete,
     pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
-    push_transfer_complete, push_worker_completions, push_worker_ready,
+    push_transfer_complete, push_worker_completions, push_worker_ready, validate_policy_wakeup,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 #[cfg(test)]
@@ -2537,6 +2537,18 @@ where
         }
         loop {
             let mut changed = self.prune_stale_transfer_events();
+            validate_policy_wakeup(
+                self.prefill_placement.next_wakeup_ms(),
+                self.now_ms,
+                "prefill",
+                false,
+            )?;
+            validate_policy_wakeup(
+                self.decode_placement.next_wakeup_ms(),
+                self.now_ms,
+                "decode",
+                false,
+            )?;
             let prefill = self.prefill_placement.advance_clock(self.now_ms)?;
             let decode = self.decode_placement.advance_clock(self.now_ms)?;
             changed |= !prefill.is_empty() || !decode.is_empty();
@@ -2658,6 +2670,18 @@ where
                 changed |= self.apply_scaling_ticks()?;
             }
 
+            validate_policy_wakeup(
+                self.prefill_placement.next_wakeup_ms(),
+                self.now_ms,
+                "prefill",
+                !changed,
+            )?;
+            validate_policy_wakeup(
+                self.decode_placement.next_wakeup_ms(),
+                self.now_ms,
+                "decode",
+                !changed,
+            )?;
             if !changed {
                 break;
             }

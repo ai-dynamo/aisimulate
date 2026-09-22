@@ -3691,3 +3691,87 @@ mod agentic_pd_qualification {
         }
     }
 }
+
+#[rstest::rstest]
+#[case(f64::NAN)]
+#[case(f64::INFINITY)]
+#[case(f64::NEG_INFINITY)]
+#[case(-1.0)]
+#[case(0.0)]
+fn disagg_rejects_invalid_policy_wakeup_before_advancing_clock(
+    #[case] wakeup_ms: f64,
+    #[values(true, false)] invalid_prefill: bool,
+) {
+    use crate::replay::runtime_utils::wakeup_test_policy::WakeupPlacement;
+    let config = disagg_config().runtime_config(false).unwrap();
+    let mut runtime = DisaggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, _, _, _| {
+            Ok((
+                WakeupPlacement::new(invalid_prefill.then_some(wakeup_ms), false),
+                WakeupPlacement::new((!invalid_prefill).then_some(wakeup_ms), false),
+            ))
+        },
+    )
+    .unwrap();
+    // Decode selection happens after prefill. Bound the number of semantic
+    // steps so a broken same-time wakeup fails the test without hanging it.
+    let mut failure = None;
+    let mut previous_ms = 0.0;
+    for _ in 0..8 {
+        match runtime.step() {
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+            Ok(ReplayStepOutcome::Settled { now_ms }) => {
+                assert!(now_ms.is_finite() && now_ms >= previous_ms);
+                previous_ms = now_ms;
+            }
+            Ok(_) => break,
+        }
+    }
+    let error = failure.expect("invalid or unconsumed wakeup must fail while settling");
+    let role = if invalid_prefill { "prefill" } else { "decode" };
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("{role} placement policy wakeup")),
+        "{error:#}"
+    );
+    assert!(
+        runtime.now_ms.is_finite() && runtime.now_ms >= previous_ms,
+        "invalid policy must not corrupt replay time"
+    );
+}
+
+#[rstest::rstest]
+#[case(0.0)]
+#[case(7.0)]
+fn disagg_consumes_same_now_and_future_policy_wakeups(
+    #[case] wakeup_ms: f64,
+    #[values(true, false)] queued_prefill: bool,
+) {
+    use crate::replay::runtime_utils::wakeup_test_policy::WakeupPlacement;
+    let config = disagg_config().runtime_config(false).unwrap();
+    let (collector, _) = DisaggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, _, _, _| {
+            Ok((
+                WakeupPlacement::new(queued_prefill.then_some(wakeup_ms), true),
+                WakeupPlacement::new((!queued_prefill).then_some(wakeup_ms), true),
+            ))
+        },
+    )
+    .unwrap()
+    .with_per_request_records(true)
+    .run()
+    .unwrap();
+    let report = collector.finish();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert!(report.per_request[0].terminal_time_ms >= wakeup_ms);
+}

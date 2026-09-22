@@ -119,8 +119,14 @@ pub trait PlacementPolicy<Request> {
     fn advance_clock(&mut self, _now_ms: f64) -> Result<Vec<Placement>> {
         Ok(Vec::new())
     }
-    /// A concrete future wakeup for policy-owned work; idle housekeeping that
-    /// cannot release work should be performed lazily in `advance_clock`.
+    /// A concrete wakeup for policy-owned work, finite and no earlier than the
+    /// current replay time. A same-time wakeup is allowed while immediate work
+    /// is draining (for example, after `dispatch_committed`); `advance_clock`
+    /// must consume it or release work so the drain makes progress. Once the
+    /// timestamp is settled, any remaining wakeup must be strictly in the future.
+    /// Invalid or unconsumed same-time wakeups fail replay rather than advancing
+    /// its clock. Idle housekeeping that cannot release work should be performed
+    /// lazily in `advance_clock`.
     fn next_wakeup_ms(&self) -> Option<f64> {
         None
     }

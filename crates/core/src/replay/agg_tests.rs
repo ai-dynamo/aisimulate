@@ -1013,3 +1013,52 @@ fn agg_first_step_settles_initial_scaling_and_zero_delay_worker_startup() {
     assert!(stepped.events.iter().all(|event| event.at_ms > 0.0));
     assert!(stepped.next_timestamps().1.unwrap() > 0.0);
 }
+
+#[rstest::rstest]
+#[case(f64::NAN)]
+#[case(f64::INFINITY)]
+#[case(f64::NEG_INFINITY)]
+#[case(-1.0)]
+#[case(0.0)]
+fn agg_rejects_invalid_policy_wakeup_before_advancing_clock(#[case] wakeup_ms: f64) {
+    use crate::replay::runtime_utils::wakeup_test_policy::WakeupPlacement;
+    let config = ReplayEngineConfig::default();
+    let factory = ReplayEngineFactory::new()
+        .role_factory(&config, WorkerStage::Aggregated, false)
+        .unwrap();
+    let mut runtime = AggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        factory,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 0.0)]), ReplayMode::Trace),
+        1,
+        None,
+        |_, _| Ok(WakeupPlacement::new(Some(wakeup_ms), false)),
+    )
+    .unwrap();
+    let error = runtime
+        .step()
+        .expect_err("invalid or unconsumed wakeup must fail while settling");
+    assert!(
+        error
+            .to_string()
+            .contains("aggregated placement policy wakeup"),
+        "{error:#}"
+    );
+    assert_eq!(
+        runtime.now_ms, 0.0,
+        "invalid policy must not corrupt replay time"
+    );
+}
+
+#[rstest::rstest]
+#[case(0.0)]
+#[case(7.0)]
+fn agg_consumes_same_now_and_future_policy_wakeups(#[case] wakeup_ms: f64) {
+    let records = DispatchHookRecords::default();
+    let report = dispatch_hook_runtime(crate::engine::Backend::Vllm, Some(wakeup_ms), records)
+        .run()
+        .unwrap()
+        .0
+        .finish();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert_eq!(report.per_request[0].first_admit_ms, Some(wakeup_ms));
+}

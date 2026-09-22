@@ -17,7 +17,7 @@ use super::runtime_utils::{
     ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
     pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_worker_completions,
     pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_worker_completions,
-    push_worker_ready,
+    push_worker_ready, validate_policy_wakeup,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::telemetry::{
@@ -881,6 +881,12 @@ where
         let mut consecutive_internal_steps = 0usize;
         loop {
             let mut changed = false;
+            validate_policy_wakeup(
+                self.placement.next_wakeup_ms(),
+                self.now_ms,
+                "aggregated",
+                false,
+            )?;
             let placements = self.placement.advance_clock(self.now_ms)?;
             changed |= !placements.is_empty();
             self.dispatch_placements(placements)?;
@@ -967,6 +973,12 @@ where
                 changed |= self.apply_scaling_ticks()?;
             }
 
+            validate_policy_wakeup(
+                self.placement.next_wakeup_ms(),
+                self.now_ms,
+                "aggregated",
+                !changed,
+            )?;
             if !changed {
                 break;
             }

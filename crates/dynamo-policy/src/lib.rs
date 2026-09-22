@@ -271,6 +271,8 @@ pub struct NativePlacement {
     binding_prune_interval: Duration,
     next_binding_prune: Option<Duration>,
     now: Duration,
+    // Preserve the replay instant for same-time wakeups; Duration quantizes it.
+    replay_now_ms: f64,
     role: &'static str,
     evidence: SharedEvidence,
 }
@@ -368,6 +370,7 @@ impl NativePlacement {
             binding_prune_interval,
             next_binding_prune: Some(binding_prune_interval),
             now: Duration::ZERO,
+            replay_now_ms: 0.0,
             role,
             evidence,
         };
@@ -378,6 +381,10 @@ impl NativePlacement {
     }
     fn advance(&mut self, now_ms: f64) -> Result<()> {
         ensure!(now_ms.is_finite() && now_ms >= 0.0, "invalid replay clock");
+        ensure!(
+            now_ms >= self.replay_now_ms,
+            "Dynamo replay clock moved backwards"
+        );
         let next = Duration::try_from_secs_f64(now_ms / 1000.0).context("replay clock overflow")?;
         ensure!(next >= self.now, "Dynamo replay clock moved backwards");
         let delta = next - self.now;
@@ -385,6 +392,7 @@ impl NativePlacement {
             self.runtime.block_on(tokio::time::advance(delta));
             self.now = next;
         }
+        self.replay_now_ms = now_ms;
         if self
             .next_binding_prune
             .is_some_and(|deadline| self.now >= deadline)
@@ -519,7 +527,7 @@ impl NativePlacement {
                 &pending.request,
                 pending.metadata,
                 pending.session_id,
-                self.now.as_secs_f64() * 1000.0,
+                self.replay_now_ms,
             )?;
             if let PlacementDecision::Immediate(placement) = effects.decision {
                 released.push(placement);
@@ -770,7 +778,7 @@ impl PlacementPolicy<ReplayRequestPayload> for NativePlacement {
         }
     }
     fn next_wakeup_ms(&self) -> Option<f64> {
-        (self.pending_ready && !self.pending.is_empty()).then_some(self.now.as_secs_f64() * 1000.0)
+        (self.pending_ready && !self.pending.is_empty()).then_some(self.replay_now_ms)
     }
     fn cancel_pending(&mut self, id: Uuid) -> bool {
         let before = self.pending.len();
@@ -938,6 +946,40 @@ mod tests {
             PlacementDecision::Queued => panic!("unexpected queue"),
         }
     }
+    #[test]
+    fn same_time_waiter_wakeup_preserves_replay_clock_precision() {
+        // Duration rounds this instant down to a nanosecond. Returning that
+        // rounded instant to replay would violate its nondecreasing clock.
+        let now_ms = 0.1234561;
+        let rounded_ms = Duration::try_from_secs_f64(now_ms / 1000.0)
+            .unwrap()
+            .as_secs_f64()
+            * 1000.0;
+        assert!(rounded_ms < now_ms);
+        let mut policy = placement("sibling_group");
+        let first = request("first", Some("root"));
+        let sibling = request("sibling", Some("root"));
+        let selected = choose(&mut policy, &first, now_ms);
+        assert!(matches!(
+            policy
+                .place(&sibling, Metadata(None, None), None, now_ms)
+                .unwrap()
+                .decision,
+            PlacementDecision::Queued
+        ));
+        policy
+            .dispatch_committed(selected.request_id, now_ms)
+            .unwrap();
+        assert_eq!(policy.next_wakeup_ms(), Some(now_ms));
+        let released = policy.advance_clock(now_ms).unwrap();
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].scheduler_id, selected.scheduler_id);
+        policy
+            .dispatch_committed(released[0].request_id, now_ms)
+            .unwrap();
+        assert_eq!(policy.next_wakeup_ms(), None);
+    }
+
     #[test]
     fn native_sibling_binding_idle_ttl_and_abort_are_virtual() {
         let mut policy = placement("sibling_group");
