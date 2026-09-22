@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from aisimulate.fastafd_profile import (
+from aisimulate_core.sdk.fastafd_profile import (
     FASTAFD_PROFILE_SCHEMA,
     FastAFDMoEStageKey,
     FastAFDMoEStageProfile,

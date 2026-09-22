@@ -970,7 +970,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 - Source: https://github.com/liz-badada/FastAFD
 - Revision: `0b9bce2bdbee04ace2673cfc3118572fec484fe4`.
 - Original path: `scripts/experiments/afd/summarize_megamoe_model_results.py`.
-- Derived file: `src/aisimulate/fastafd_profile.py`.
+- Derived file: `python/aisimulate/src/aisimulate_core/sdk/fastafd_profile.py`.
 - Copyright: Copyright (c) 2026 sgl-project.
 - License: MIT.
 - Modified: adapted the exported profile fields into AISimulate's validated,
