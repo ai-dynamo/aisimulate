@@ -85,8 +85,8 @@ class NativeEncoderTiming:
     The forward itself is priced at replay time by the canonical timing model
     (`timing_model`, a prefill-shaped rank at the pool's tensor width whose model
     compiles the vision tower). `preprocess_ms_per_image` extrapolates the tokenizer
-    manager's measured `process` stage (`preprocess_source`) until the encoder's own
-    batch preprocessing is measured.
+    manager's measured `process` stage per image, the origin `preprocess_source`
+    records; the encoder servers run the same image processor.
     """
 
     preprocess_ms_per_image: float

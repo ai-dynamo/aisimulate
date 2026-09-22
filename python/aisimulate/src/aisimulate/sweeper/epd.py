@@ -157,9 +157,8 @@ def _native_encoder_rows(encoder, *, model_name, system, backend, version, datab
     The forward is priced at replay time by the canonical timing model at the pool's
     tensor width, the oracle a language rank uses for its vision tower; memory and
     power come from the analytical candidate helper at the cap. The CPU preprocessing
-    extrapolates the tokenizer manager's measured `process` stage per image (the
-    encoder servers run the same image processor on the whole batch) until the
-    encoder's own batch preprocessing is measured.
+    extrapolates the tokenizer manager's measured `process` stage per image: the
+    encoder servers run the same image processor over the whole batch.
     """
     from aisimulate.sdk.errors import InsufficientMemoryError, NoFeasibleConfigError
     from aisimulate.sdk.sweep import _get_encoder_worker_candidates
