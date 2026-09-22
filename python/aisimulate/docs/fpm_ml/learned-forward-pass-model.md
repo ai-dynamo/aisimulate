@@ -21,7 +21,7 @@ The learned mode does not use the anchor-library collector or a kvwarm
 self-benchmark. Its only input is the telemetry the engine already produces.
 
 Design rationale, model details, evaluation method and the full result tables are in
-[`docs/learned-fpm-design.md`](../../../../docs/learned-fpm-design.md).
+[`design.md`](design.md).
 
 ## 1. Collect the FPM stream
 
