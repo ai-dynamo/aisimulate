@@ -700,6 +700,64 @@ def _handle_from_spec_json(spec_json: str) -> engine.EngineHandle:
     return engine.EngineHandle(bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json)))
 
 
+_FASTAFD_PARITY_CASE_ID = "minimax-m25-b200-sglang-isl1024-osl2"
+
+
+def _build_fastafd_stage_handle() -> engine.EngineHandle:
+    case = _SUBSET_BY_ID[_FASTAFD_PARITY_CASE_ID].values[0]
+    model, _backend, database = _build_python_model(case)
+    spec = json.loads(
+        _quiet(
+            engine.build_engine_spec_json,
+            model,
+            model_path=case.model_path,
+            system=case.system_name,
+            backend=case.backend_name,
+            backend_version=case.backend_version,
+            kv_block_size=None,
+            systems_path=None,
+            nextn=0,
+            database=database,
+        )
+    )
+    spec["context_ops"] = []
+    spec["generation_ops"] = [
+        {
+            "FastAfdMoeStage": {
+                "name": "generation_fastafd_moe_stage",
+                "points": [
+                    {"num_tokens": 8, "latency_ms": 5.25},
+                    {"num_tokens": 16, "latency_ms": 6.75},
+                ],
+                "profile_sha256": "a" * 64,
+                "weight_bytes": 18_396_217_344.0,
+            }
+        }
+    ]
+    return _handle_from_spec_json(json.dumps(spec))
+
+
+class TestFastAfdStageParity:
+    @pytest.mark.parametrize("tokens", [8, 16])
+    def test_exact_stage_matches_pinned_value(self, tokens: int) -> None:
+        handle = _build_fastafd_stage_handle()
+        actual = handle.decode_step_latency(tokens, 1024, 2)
+        _assert_within(
+            f"fastafd_stage_decode_{tokens}",
+            _golden_reference(f"fastafd_stage::decode_{tokens}"),
+            actual,
+            backend="sglang",
+        )
+
+    def test_per_op_source_and_missing_point(self) -> None:
+        handle = _build_fastafd_stage_handle()
+        context, generation = handle.run_static_per_op(batch_size=8, isl=1024, osl=2, prefix=0, stride=1)
+        assert not context
+        assert generation == [("generation_fastafd_moe_stage", 5.25, 0.0, "silicon")]
+        with pytest.raises(ValueError, match="no exact FastAFD MoE stage measurement for 7 tokens"):
+            handle.decode_step_latency(7, 1024, 2)
+
+
 class TestWideEpDeepEpParity:
     """H200 SGLang DeepEP HT/LL end-to-end numerical parity.
 
