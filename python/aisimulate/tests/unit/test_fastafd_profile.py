@@ -93,3 +93,11 @@ def test_rejects_unqualified_measurements(tmp_path, change, match):
 def test_rejects_duplicate_exact_keys(tmp_path):
     with pytest.raises(ValueError, match="duplicate"):
         FastAFDMoEStageProfile.load(_write(tmp_path, [_entry(), _entry()]))
+
+
+def test_rejects_duplicate_json_object_keys(tmp_path):
+    path = _write(tmp_path, [_entry()])
+    path.write_text(path.read_text().replace('"stable": true', '"stable": true, "stable": false'))
+
+    with pytest.raises(ValueError, match="duplicate JSON object key: 'stable'"):
+        FastAFDMoEStageProfile.load(path)
