@@ -2408,6 +2408,90 @@ mod tests {
         }
     }
 
+    /// A vision tower of DB-free `Elementwise` ops over the fixture DB, laid out
+    /// over two tensor-parallel ranks.
+    fn vision_engine(encoder_parallel: EncoderParallel) -> Engine {
+        let db = PerfDatabase::load_resolved(
+            &systems_root(),
+            "b200_sxm",
+            "vllm",
+            "0.24.0",
+            true,
+            false,
+            false,
+        )
+        .unwrap();
+        let elementwise = |name: &str| {
+            Op::Elementwise(ElementwiseOp {
+                name: name.into(),
+                scale_factor: 1.0,
+                bytes_per_token: 8192.0,
+                scale_num_tokens: 1,
+                seq_split: 1,
+            })
+        };
+        let mut engine = fixture_engine_config(None);
+        engine.parallel.tp_size = 2;
+        let mut spec = EngineSpec::new(engine, context_ops(), generation_ops());
+        spec.vision = Some(VisionSpec {
+            encoder_parallel,
+            patch_ops: vec![elementwise("patch_embed")],
+            transformer_ops: vec![elementwise("vit_norm")],
+            output_ops: vec![elementwise("merger")],
+        });
+        Engine::build(spec, Arc::new(db)).unwrap()
+    }
+
+    fn vision_ms(engine: &Engine, images: u32, patch_tokens: u32) -> f64 {
+        engine
+            .evaluate_vision(&[EncoderImageShape {
+                sequences: 1,
+                patch_tokens,
+                transformer_tokens: 16,
+                output_tokens: 4,
+                images,
+            }])
+            .unwrap()
+            .iter()
+            .map(|(_, latency_ms, _, _)| *latency_ms)
+            .sum()
+    }
+
+    #[test]
+    fn vision_dp_charges_the_busiest_rank_its_ceil_share_of_the_images() {
+        // Independent expectation from SGLang `--mm-enable-dp-encoder`: two ranks split
+        // the images, so three images cost the busiest rank what two images cost on a
+        // TP tower, which encodes every image on every rank; one image costs the same
+        // under both layouts.
+        let tp = vision_engine(EncoderParallel::Tp);
+        let dp = vision_engine(EncoderParallel::Dp);
+        assert!(vision_ms(&tp, 1, 16) > 0.0);
+        assert_eq!(vision_ms(&dp, 3, 16), vision_ms(&tp, 2, 16));
+        assert_eq!(vision_ms(&dp, 1, 16), vision_ms(&tp, 1, 16));
+        assert!(vision_ms(&tp, 3, 16) > vision_ms(&dp, 3, 16));
+    }
+
+    #[test]
+    fn vision_skips_token_classes_and_images_that_are_absent() {
+        let tp = vision_engine(EncoderParallel::Tp);
+        let no_patches = tp
+            .evaluate_vision(&[EncoderImageShape {
+                sequences: 1,
+                patch_tokens: 0,
+                transformer_tokens: 16,
+                output_tokens: 4,
+                images: 1,
+            }])
+            .unwrap();
+        let names = no_patches
+            .iter()
+            .map(|(name, ..)| name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["vit_norm", "merger"]);
+        assert!(tp.evaluate_vision(&[]).unwrap().is_empty());
+        assert!(vision_ms(&tp, 0, 16) == 0.0);
+    }
+
     /// Build an `Engine` from the hand-built op lists over the real fixture DB.
     fn build_engine(nextn: Option<u32>) -> Engine {
         // Match SILICON's shared-layer default and honor the declared reuse

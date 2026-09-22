@@ -3361,6 +3361,89 @@ mod host_loop_passes {
     }
 
     #[test]
+    fn a_retracted_request_neither_receives_nor_keeps_the_token_of_the_forward_in_flight() {
+        // Tight KV (56 tokens) as in the legacy retraction test, under the host loop:
+        // two requests grow until a decode step retracts one. SGLang marks it
+        // `is_retracted` before the previous forward's result is processed, and
+        // `process_batch_result_decode` then skips it, so that token is neither
+        // delivered nor part of the prompt it re-prefills.
+        let args = MockEngineArgs::builder()
+            .engine_type(EngineType::Sglang)
+            .block_size(4)
+            .num_gpu_blocks(14)
+            .max_num_batched_tokens(Some(32))
+            .max_num_seqs(Some(4))
+            .speedup_ratio(0.0)
+            .sglang(Some(SglangArgs {
+                page_size: Some(4),
+                chunked_prefill_size: Some(32),
+                schedule_conservativeness: Some(0.3),
+                host_loop: true,
+                ..Default::default()
+            }))
+            .build()
+            .unwrap();
+        let mut core = SglangCore::new(args);
+        for (uuid, tokens) in [(1u128, 0u32..4), (2, 100..104)] {
+            core.receive(DirectRequest {
+                uuid: Some(Uuid::from_u128(uuid)),
+                ..direct_request(tokens.collect(), 30)
+            });
+        }
+        let mut delivered = std::collections::HashMap::<Uuid, usize>::new();
+        let mut now_ms = 0.0;
+        for _ in 0..60 {
+            let pass = core.execute_hidden_pass(now_ms);
+            now_ms = pass.end_ms + 1.0;
+            let retracted = core
+                .waiting
+                .iter()
+                .find(|request| request.output_len() > 0)
+                .map(|request| (request.uuid, request.output_len()));
+            for signal in pass
+                .output_signals
+                .iter()
+                .filter(|signal| signal.token_id.is_some())
+            {
+                *delivered.entry(signal.uuid).or_default() += 1;
+            }
+            if let Some((uuid, output_len)) = retracted {
+                assert!(
+                    !pass.output_signals.iter().any(|signal| signal.uuid == uuid),
+                    "the forward in flight delivered a token to the retracted request"
+                );
+                assert_eq!(
+                    output_len, delivered[&uuid],
+                    "the retracted request keeps exactly the tokens the scheduler observed"
+                );
+                return;
+            }
+        }
+        panic!("test setup: no retraction happened");
+    }
+
+    #[test]
+    fn a_completed_request_caches_only_the_kv_its_forwards_computed() {
+        // 7 prompt tokens and one output token on 4-token pages. The only output
+        // token finishes the request right after the prefill that sampled it and
+        // never gets a KV slot (SGLang `cache_finished_req` caches `fill_ids[:-1]`),
+        // so 7 tokens are materialized: one full page is cached, not two.
+        let mut args = test_args(128, 4, 8192);
+        args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(FixedTiming {
+                prefill_ms: 20.0,
+                decode_ms: 4.0,
+            }),
+        }
+        .into();
+        let mut core = SglangCore::new(args);
+        core.receive(direct_request((0..7).collect(), 1));
+        token_times(&mut core);
+        assert!(core.is_drained());
+        assert_eq!(core.kv_manager.cache().evictable_size, 4);
+    }
+
+    #[test]
     fn a_zero_output_request_completes_when_its_forward_is_observed() {
         let mut core = core(true);
         let uuid = core.receive(direct_request((0..16).collect(), 0));
@@ -3503,7 +3586,7 @@ mod vision_batches {
 
 mod frontend_pools {
     use super::*;
-    use crate::engine::{CostFn, FrontendConfig, FrontendResource, FrontendStage, TtftMilestone};
+    use crate::engine::{FrontendConfig, FrontendStage, TtftMilestone};
 
     /// One pool worker charging 4 ms per request ahead of the host loop.
     fn core() -> SglangCore {
@@ -3512,12 +3595,8 @@ mod frontend_pools {
         sglang.host_loop = true;
         sglang.frontend = Some(FrontendConfig {
             stages: vec![FrontendStage {
-                resource: FrontendResource::Pool,
                 workers: 1,
-                cost: CostFn {
-                    const_ms: 4.0,
-                    ..CostFn::default()
-                },
+                service_ms: 4.0,
                 concurrency_scale: Vec::new(),
             }],
         });

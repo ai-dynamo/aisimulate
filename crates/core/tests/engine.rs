@@ -8,9 +8,9 @@ use std::sync::Arc;
 
 use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
-    Backend, Command, CostFn, Engine, EngineConfig, EngineFactory, FrontendConfig,
-    FrontendResource, FrontendStage, NativeHostOffloadConfig, PassCompletionEffects, Request,
-    SglangConfig, TimingModel, TimingModelConfig,
+    Backend, Command, Engine, EngineConfig, EngineFactory, FrontendConfig, FrontendStage,
+    NativeHostOffloadConfig, PassCompletionEffects, Request, SglangConfig, TimingModel,
+    TimingModelConfig,
 };
 use aisimulate_core::replay::{
     AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
@@ -1684,6 +1684,28 @@ fn native_trtllm_disaggregated_replay_completes() {
 }
 
 #[test]
+fn sglang_host_loop_reports_the_forward_duration_to_fpm_telemetry() {
+    // Under the host loop a pass ends when the scheduler thread returns to its loop,
+    // which is not when its forward ends; the forward-pass telemetry must carry the
+    // forward's own device time, or the 7 ms prefill would be recorded as 0 and the
+    // following 2 ms decode as 7.
+    let mut config = sglang_interval_config(0);
+    config.sglang.host_loop = true;
+    let mut engine = sglang_interval_engine(config, 1);
+    let mut now_ms = 0.0;
+    submit_interval_request(&mut engine, 0, 1, 4, 2, now_ms);
+    let prefill = step_interval_engine(&mut engine, &mut now_ms);
+    assert_eq!(prefill.duration_ms, 0.0, "the free loop returns at once");
+    assert_eq!(prefill.ranks[0].forward_pass_metrics.duration_ms, 7.0);
+    let decode = step_interval_engine(&mut engine, &mut now_ms);
+    assert_eq!(
+        decode.duration_ms, 7.0,
+        "the loop returns when the prefill is observed"
+    );
+    assert_eq!(decode.ranks[0].forward_pass_metrics.duration_ms, 2.0);
+}
+
+#[test]
 fn sglang_host_loop_reports_scheduler_stage_timestamps_per_request() {
     let mut config = engine_config(TimingModelConfig::Fixed {
         prefill_ms: 20.0,
@@ -1723,12 +1745,8 @@ fn sglang_frontend_pools_delay_scheduler_receipt() {
     };
     config.rank.frontend = Some(FrontendConfig {
         stages: vec![FrontendStage {
-            resource: FrontendResource::Pool,
             workers: 1,
-            cost: CostFn {
-                const_ms: 4.0,
-                ..CostFn::default()
-            },
+            service_ms: 4.0,
             concurrency_scale: Vec::new(),
         }],
     });

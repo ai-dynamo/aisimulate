@@ -298,6 +298,15 @@ impl EngineCore {
         matches!(self, Self::Sglang(core) if core.model_work_in_pass())
     }
 
+    /// Device time of the forward the last pass launched, when the SGLang host
+    /// loop separates it from the pass end.
+    pub(crate) fn last_forward_ms(&self) -> Option<f64> {
+        match self {
+            Self::Sglang(core) => core.last_forward_ms(),
+            Self::Vllm(_) => None,
+        }
+    }
+
     pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
         if let Self::Sglang(core) = self {
             core.finish_group_pass(any_rank_prefilled, any_rank_ran_model);

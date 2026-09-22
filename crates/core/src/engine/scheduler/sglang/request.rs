@@ -151,6 +151,15 @@ impl SglangRequest {
         self.sequence_tokens.push(token);
     }
 
+    /// Drop the last `count` output tokens: a forward sampled them, but the
+    /// scheduler will not process that result for this request (`is_retracted`).
+    pub(super) fn discard_output_tokens(&mut self, count: usize, block_size: usize) {
+        debug_assert!(count <= self.output_len());
+        let kept = self.sequence_tokens.len() - count;
+        self.sequence_tokens.truncate(kept);
+        self.kv_lease.truncate_page_hashes(kept / block_size);
+    }
+
     pub(super) fn debug_assert_invariants(&self, _block_size: usize) {
         #[cfg(debug_assertions)]
         {

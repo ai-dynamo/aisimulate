@@ -1130,6 +1130,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vision_section_round_trips_through_bincode() {
+        let ops = all_op_variants();
+        let mut spec = EngineSpec::new(sample_engine_config(), vec![], vec![]);
+        spec.vision = Some(VisionSpec {
+            encoder_parallel: EncoderParallel::Dp,
+            patch_ops: vec![ops[0].clone()],
+            transformer_ops: Vec::new(),
+            output_ops: vec![ops[1].clone()],
+        });
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+    }
+
     /// The backend layout is positional even though legacy JSON has a default.
     #[test]
     fn dsv41_layout_round_trip_and_stale_v18_payload_rejection() {

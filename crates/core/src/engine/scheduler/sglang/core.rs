@@ -37,7 +37,7 @@ use super::decode::{
     simulate_decode_step_with_sampler, simulate_prefill_first_tokens,
 };
 use super::frontend::FrontendRuntime;
-use super::host_loop::{ForwardOutputs, HostLoop, LaunchKind};
+use super::host_loop::{ForwardOutputs, HostLoop};
 use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
@@ -74,6 +74,8 @@ pub(crate) struct SglangCore {
     host: Option<HostLoop>,
     /// Worker pools a request crosses before it reaches the scheduler inbox.
     frontend: Option<FrontendRuntime>,
+    /// Device time of the forward the last pass launched under the host loop.
+    last_forward_ms: Option<f64>,
     /// Encoder outputs retained across prefill batches.
     vision_cache: VisionCache,
     prefill_rounds_remaining: usize,
@@ -192,6 +194,7 @@ impl SglangCore {
             lifecycle_events: Vec::new(),
             host,
             frontend,
+            last_forward_ms: None,
             vision_cache,
         }
     }
@@ -717,6 +720,12 @@ impl SglangCore {
         self.interval_idle_in_pass = false;
     }
 
+    /// Device time of the forward this pass launched under the host loop; `None`
+    /// when a pass ends with its own forward.
+    pub(crate) fn last_forward_ms(&self) -> Option<f64> {
+        self.last_forward_ms
+    }
+
     pub(crate) fn prefill_in_pass(&self) -> bool {
         self.prefill_in_pass
     }
@@ -1028,16 +1037,8 @@ impl SglangCore {
             }
         };
 
-        let launch = self.host.as_ref().and_then(|_| {
-            if batch_size > 0 {
-                Some(LaunchKind::Extend)
-            } else if self.running.is_empty() {
-                None
-            } else {
-                // Ghost members still form a batch: `filter_batch` has not seen them finish.
-                Some(LaunchKind::Decode)
-            }
-        });
+        // Ghost members still form a batch: `filter_batch` has not seen them finish.
+        let forward = self.host.is_some() && (batch_size > 0 || !self.running.is_empty());
         let selected_ms = now_ms;
 
         admissions.append(&mut admit.admissions);
@@ -1105,7 +1106,7 @@ impl SglangCore {
         self.interval_idle_in_pass = defer_prefill && scheduled_decode_lens.is_empty();
 
         let decode_start_ms = selected_ms + vision_ms + prefill_time.as_secs_f64() * 1000.0;
-        let mut decode = if prefill_pass {
+        let decode = if prefill_pass {
             simulate_prefill_first_tokens(
                 &mut self.running,
                 &mut self.kv_manager,
@@ -1131,6 +1132,15 @@ impl SglangCore {
                 return Err(error);
             }
         };
+        if let Some(host) = &mut self.host {
+            // `retract_decode` marks a request before the previous forward's result is
+            // processed, and `process_batch_result` then skips it (`is_retracted`): the
+            // token that forward sampled for it is neither delivered nor kept.
+            for request in &mut decode.requests {
+                let dropped = host.discard_request(request.uuid);
+                request.discard_output_tokens(dropped, self.config.block_size);
+            }
+        }
         self.model_work_in_pass = self.prefill_in_pass
             || (!prefill_pass && decode.output_signals.iter().any(|s| s.token_id.is_some()));
         if !stalled.is_empty() {
@@ -1142,17 +1152,27 @@ impl SglangCore {
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);
         }
+        self.last_forward_ms = None;
         let (end_ms, mut output_signals) = match &mut self.host {
             Some(host) => {
+                debug_assert!(
+                    forward || decode.output_signals.is_empty(),
+                    "an iteration without a batch launches no forward"
+                );
+                let forward_ms = forward.then(|| decode.end_ms - selected_ms);
                 let (timing, observed) = host.plan(
                     selected_ms,
-                    launch,
-                    decode.end_ms - selected_ms,
-                    ForwardOutputs {
-                        output_signals: std::mem::take(&mut decode.output_signals),
-                        cache_commits: std::mem::take(&mut decode.cache_commits),
-                    },
+                    forward_ms.map(|forward_ms| {
+                        (
+                            forward_ms,
+                            ForwardOutputs {
+                                output_signals: std::mem::take(&mut decode.output_signals),
+                                cache_commits: std::mem::take(&mut decode.cache_commits),
+                            },
+                        )
+                    }),
                 );
+                self.last_forward_ms = Some(forward_ms.unwrap_or(0.0));
                 debug_assert!(
                     observed.is_some() || observed_terminals.is_empty(),
                     "ghost members imply a batch in flight"

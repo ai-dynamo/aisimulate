@@ -144,6 +144,9 @@ pub(super) struct BoundedSummary {
     ttst: Samples,
     tpot: Samples,
     e2e: Samples,
+    /// Per-stage TTFT sums of host-aware engines, as in the per-request path.
+    ttft_stage_sums: [f64; 5],
+    ttft_stage_samples: usize,
 }
 
 impl BoundedSummary {
@@ -180,6 +183,15 @@ impl BoundedSummary {
         let e2e = (last - stats.arrival_time_ms).max(0.0);
         self.ttft.push(ttft)?;
         self.e2e.push(e2e)?;
+        if let Some(spans) = stats
+            .ttft_milestones
+            .stage_spans(stats.arrival_time_ms, first)
+        {
+            for (sum, value) in self.ttft_stage_sums.iter_mut().zip(spans) {
+                *sum += value;
+            }
+            self.ttft_stage_samples += 1;
+        }
         if let Some(value) = stats.ttst_ms() {
             self.ttst.push(value)?;
         }
@@ -229,6 +241,8 @@ impl BoundedSummary {
         report.latency.ttst = self.ttst.finish()?;
         report.latency.tpot = self.tpot.finish()?;
         report.latency.e2e = self.e2e.finish()?;
+        report.latency.ttft_milestones =
+            TraceTtftStageStats::from_sums(&self.ttft_stage_sums, self.ttft_stage_samples);
         Ok(report)
     }
 }

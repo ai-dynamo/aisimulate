@@ -295,6 +295,22 @@ pub struct TraceTtftStageStats {
     pub mean_result_observation_delay_ms: f64,
 }
 
+impl TraceTtftStageStats {
+    /// Means over `samples` requests of the per-stage sums, `None` without samples.
+    fn from_sums(sums: &[f64; 5], samples: usize) -> Option<Self> {
+        (samples > 0).then(|| {
+            let mean = |index: usize| sums[index] / samples as f64;
+            Self {
+                mean_frontend_ms: mean(0),
+                mean_scheduler_inbox_wait_ms: mean(1),
+                mean_receive_to_admit_ms: mean(2),
+                mean_prefill_elapsed_ms: mean(3),
+                mean_result_observation_delay_ms: mean(4),
+            }
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TraceTrajectoryStats {
     pub total: usize,
@@ -652,6 +668,27 @@ struct TtftMilestoneTimes {
     scheduler_received_ms: Option<f64>,
     selected_ms: Option<f64>,
     prefill_complete_ms: Option<f64>,
+}
+
+impl TtftMilestoneTimes {
+    /// Time spent in each stage on the way to the first token, in the order of
+    /// [`TraceTtftStageStats`]; `None` until every scheduler stage was reached.
+    fn stage_spans(&self, arrival_ms: f64, first_token_ms: f64) -> Option<[f64; 5]> {
+        let received = self.scheduler_received_ms?;
+        let selected = self.selected_ms?;
+        let prefill_complete = self.prefill_complete_ms?;
+        let frontend_exit = self.frontend_ready_ms.unwrap_or(arrival_ms);
+        Some(
+            [
+                frontend_exit - arrival_ms,
+                received - frontend_exit,
+                selected - received,
+                prefill_complete - selected,
+                first_token_ms - prefill_complete,
+            ]
+            .map(|span| span.max(0.0)),
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -1920,21 +1957,12 @@ impl TraceCollector {
             let e2e_ms = (last_token_ms - stats.arrival_time_ms).max(0.0);
             ttfts.push(ttft_ms);
             e2e_latencies.push(e2e_ms);
-            let stages = stats.ttft_milestones;
-            if let (Some(received), Some(selected), Some(prefill_complete)) = (
-                stages.scheduler_received_ms,
-                stages.selected_ms,
-                stages.prefill_complete_ms,
-            ) {
-                let frontend_exit = stages.frontend_ready_ms.unwrap_or(stats.arrival_time_ms);
-                for (sum, value) in ttft_stage_sums.iter_mut().zip([
-                    frontend_exit - stats.arrival_time_ms,
-                    received - frontend_exit,
-                    selected - received,
-                    prefill_complete - selected,
-                    first_token_ms - prefill_complete,
-                ]) {
-                    *sum += value.max(0.0);
+            if let Some(spans) = stats
+                .ttft_milestones
+                .stage_spans(stats.arrival_time_ms, first_token_ms)
+            {
+                for (sum, value) in ttft_stage_sums.iter_mut().zip(spans) {
+                    *sum += value;
                 }
                 ttft_stage_samples += 1;
             }
@@ -2028,16 +2056,10 @@ impl TraceCollector {
                 },
                 e2e: build_distribution_stats(e2e_latencies),
                 output_token_throughput_per_user,
-                ttft_milestones: (ttft_stage_samples > 0).then(|| {
-                    let mean = |index: usize| ttft_stage_sums[index] / ttft_stage_samples as f64;
-                    TraceTtftStageStats {
-                        mean_frontend_ms: mean(0),
-                        mean_scheduler_inbox_wait_ms: mean(1),
-                        mean_receive_to_admit_ms: mean(2),
-                        mean_prefill_elapsed_ms: mean(3),
-                        mean_result_observation_delay_ms: mean(4),
-                    }
-                }),
+                ttft_milestones: TraceTtftStageStats::from_sums(
+                    &ttft_stage_sums,
+                    ttft_stage_samples,
+                ),
             },
             trajectories,
             agentic_graph,

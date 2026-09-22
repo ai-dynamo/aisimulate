@@ -140,72 +140,17 @@ pub enum SglangSchedulePolicy {
     Lpm,
 }
 
-/// Affine host-side service cost in milliseconds.
-///
-/// [`Self::eval`] charges `const_ms` once plus one term per unit of the work it
-/// is applied to. The all-zero function models a free operation. Coefficients
-/// come from measured frontend service times lowered by the Python configuration layer.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub struct CostFn {
-    pub const_ms: f64,
-    pub per_request_ms: f64,
-    pub per_image_ms: f64,
-    pub per_ktoken_ms: f64,
-    pub per_mib_ms: f64,
-}
-
-impl CostFn {
-    /// Cost of one application to `requests`, `images`, `tokens`, and `bytes` of work.
-    pub fn eval(&self, requests: usize, images: usize, tokens: usize, bytes: u64) -> f64 {
-        self.const_ms
-            + self.per_request_ms * requests as f64
-            + self.per_image_ms * images as f64
-            + self.per_ktoken_ms * tokens as f64 / 1_000.0
-            + self.per_mib_ms * bytes as f64 / (1024.0 * 1024.0)
-    }
-
-    fn validate(&self, name: &str) -> Result<()> {
-        for (field, value) in [
-            ("const_ms", self.const_ms),
-            ("per_request_ms", self.per_request_ms),
-            ("per_image_ms", self.per_image_ms),
-            ("per_ktoken_ms", self.per_ktoken_ms),
-            ("per_mib_ms", self.per_mib_ms),
-        ] {
-            ensure!(
-                value.is_finite() && value >= 0.0,
-                "{name}.{field} must be finite and non-negative"
-            );
-        }
-        Ok(())
-    }
-}
-
-/// Host resource a frontend stage occupies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FrontendResource {
-    /// The single-threaded tokenizer-manager event loop; synchronous jobs on it
-    /// also stall the dispatch of arrivals and stage continuations. Every loop
-    /// stage shares that one thread.
-    TmLoop,
-    /// A worker pool private to the stage, `workers` wide.
-    Pool,
-}
-
-/// One frontend processing stage: a request-level service on one resource.
+/// One frontend processing stage: a request-level black box served by a pool
+/// of `workers`. Measured frontend service times are lowered into it by the
+/// Python configuration layer.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrontendStage {
-    pub resource: FrontendResource,
-    /// Workers of a `pool` stage; a loop stage always has one.
     #[serde(default = "one_worker")]
     pub workers: usize,
-    /// Service cost of one request at a concurrency scale of one, charged its
-    /// image count, prompt tokens, and total feature bytes.
-    pub cost: CostFn,
-    /// Entry `c - 1` scales the service time while `c` jobs share the resource;
+    /// Service time of one request running alone on the pool, in milliseconds.
+    pub service_ms: f64,
+    /// Entry `c - 1` scales the service time while `c` jobs share the pool;
     /// empty keeps the service time independent of sharing.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub concurrency_scale: Vec<f64>,
@@ -223,33 +168,25 @@ const fn one_worker() -> usize {
 }
 
 impl FrontendConfig {
-    /// Workers serving stage `index`; the tokenizer-manager loop is one thread.
-    pub fn capacity(&self, index: usize) -> usize {
-        match self.stages[index].resource {
-            FrontendResource::TmLoop => 1,
-            FrontendResource::Pool => self.stages[index].workers,
-        }
-    }
-
     fn validate(&self) -> Result<()> {
         ensure!(
             !self.stages.is_empty(),
             "frontend requires at least one stage"
         );
         for (index, stage) in self.stages.iter().enumerate() {
-            stage.cost.validate(&format!("frontend.stages[{index}]"))?;
             ensure!(
                 stage.workers > 0,
                 "frontend.stages[{index}].workers must be positive"
             );
             ensure!(
-                stage.resource == FrontendResource::Pool || stage.workers == 1,
-                "frontend.stages[{index}] runs on the tokenizer-manager loop, which has one worker"
+                stage.service_ms.is_finite() && stage.service_ms >= 0.0,
+                "frontend.stages[{index}].service_ms must be finite and non-negative"
             );
-            let capacity = self.capacity(index);
             ensure!(
-                stage.concurrency_scale.is_empty() || stage.concurrency_scale.len() == capacity,
-                "frontend.stages[{index}].concurrency_scale needs one entry per worker ({capacity})"
+                stage.concurrency_scale.is_empty()
+                    || stage.concurrency_scale.len() == stage.workers,
+                "frontend.stages[{index}].concurrency_scale needs one entry per worker ({})",
+                stage.workers
             );
             ensure!(
                 stage
