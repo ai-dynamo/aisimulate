@@ -201,6 +201,10 @@ pub struct ReplayRoleFactory {
 }
 
 impl ReplayRoleFactory {
+    pub(crate) fn can_have_internal_deadlines(&self) -> bool {
+        self.factory.can_have_internal_deadlines()
+    }
+
     pub(crate) fn reset_timing_evidence(&self) -> anyhow::Result<()> {
         self.factory.reset_timing_evidence()
     }
