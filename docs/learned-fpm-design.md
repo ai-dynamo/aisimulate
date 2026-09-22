@@ -66,16 +66,89 @@ One record = one FPM event from one engine worker:
   predicts overlap-on decode steps to within a near-constant 5.5% offset; overlap-on
   prefill records are not usable as truth.
 
-The per-request lists are validated on load: both absent, or both of length
-`num_prefill + num_decode`. The learned feature path additionally requires
-`sum(past) <= sum_prefill_kv + sum_decode_kv + sum_prefill_tokens + num_decode`
-(one token of slack per decode request for producers that read lengths after the
-step) and treats lists that violate it as absent. Extends are not bounded, so
-speculative decoding (extend `1 + k` on a decode request) is legal.
-
 A **capture run** is one fresh deployment on its own nodes, one aiperf seed, every
 concurrency tier run once (20 min each). Runs are the unit of independence: steps
 inside a run share machine state, warm-up and request sequence.
+
+## 2a. Per-request fields and the runtime hooks that add them
+
+### What stock FPM carries and what is missing
+
+Stock Dynamo `ForwardPassMetrics` v1 describes a step by seven aggregates (counts,
+token sums and variances for the prefill and decode sides). Two batches with identical
+aggregates can differ a lot in cost: a decode batch of 8 requests all at 100k context
+and one with seven at 10k plus one at 730k have the same `sum_decode_kv_tokens`; a
+prefill step with one 16k chunk on 200k past and one with two 8k chunks on 0 past have
+the same `sum_prefill_tokens`. The attention work Σ eᵢ·pᵢ, the extremes and the spread
+are not recoverable from sums and variances. The learned model therefore needs, per
+scheduled request, the pair
+
+- `extend_lengths[i]`: tokens computed for request *i* in this step (chunk size for a
+  prefill request, 1 for a plain decode request, `1 + k` with speculative drafts);
+- `past_kv_lengths[i]`: KV tokens already present for request *i* before this step
+  (prefix-cache hit plus earlier chunks for prefill; the context so far for decode).
+
+Neither field exists in Dynamo main or SGLang main. Instead of patching either code
+base, the two lists are added at runtime inside the engine process by
+`aisimulate_core.fpm_hooks`. The producer patches under
+`python/aisimulate/docs/fpm/patches/` are the same change proposed upstream.
+
+### How the hooks work
+
+1. **Post-import patching.** `fpm_hooks.install()` registers a `sys.meta_path` finder
+   for two module names, `sglang.srt.managers.scheduler_components.metrics_reporter`
+   and `dynamo.vllm.instrumented_scheduler`. When the engine imports one of them the
+   finder delegates to the real loader and runs the corresponding patch function right
+   after `exec_module`. Modules that never get imported are never touched; nothing is
+   imported eagerly.
+2. **Extended `ScheduledRequestMetrics`.** FPM is a `msgspec` struct serialized to
+   msgpack. The hook creates a frozen subclass of the producer's
+   `ScheduledRequestMetrics` with two extra `list[int]` fields (`_struct.extend_struct`),
+   keeps the class name and module, and copies the original instance into it
+   (`_struct.with_pairs`). The msgpack payload keeps FPM `version` 1; aggregate-only
+   consumers ignore the two extra keys, the Dynamo runtime decodes the event
+   unchanged and the Rust trace sink writes them out. If the producer's struct already
+   has both fields (a patched image), the hook is a no-op.
+3. **SGLang** (`fpm_hooks/sglang.py`). The class that defines
+   `_build_scheduled_request_metrics` is found by method name (it is
+   `SchedulerMetricsReporter` in the V4.1 runtime, a mixin in other versions). Its
+   method is wrapped: the wrapper calls the original, then derives one `(extend, past)`
+   pair per request of the `ScheduleBatch` it received:
+   - prefill (extend) batches: `batch.extend_lens[i]` and `batch.prefix_lens[i]`, the
+     schedule-time values aligned with `batch.reqs` (the per-request attributes are
+     reset after the step, so they cannot be used);
+   - decode batches: `(1, batch.seq_lens_cpu[i])`, the same source the aggregate
+     `sum_decode_kv_tokens` is computed from (`req.seqlen` is already incremented when
+     the metrics are built and would be one token high).
+4. **Dynamo vLLM** (`fpm_hooks/dynamo_vllm.py`). `InstrumentedScheduler._extract_scheduled`
+   is wrapped; the pairs come from the `SchedulerOutput` the scheduler just produced:
+   `num_scheduled_tokens[req_id]` is the extend, the request's `num_computed_tokens`
+   the past (for newly scheduled requests from the request object, for cached
+   requests from `scheduled_cached_reqs.num_computed_tokens`).
+5. **Reaching every process.** Engines fork scheduler subprocesses that do not run the
+   parent's Python code. `fpm_hooks/sitecustomize.py` calls `install()` at interpreter
+   start, so putting the package directory on `PYTHONPATH`
+   (`export PYTHONPATH=$(python -c 'import aisimulate_core.fpm_hooks as h; print(h.hook_path())'):$PYTHONPATH`)
+   installs the hooks in the launcher and in every spawned interpreter. Alternatively
+   `python -m aisimulate_core.fpm_hooks dynamo.sglang -- <args>` sets this up and
+   execs the module.
+6. **Failure mode.** The hooks depend on private engine internals (the two method
+   names and the batch attributes). If a target does not look as expected the installer
+   logs and skips, and the engine keeps emitting aggregate-only FPM; the learned model
+   then refuses `sglang18` inference with a message pointing here rather than
+   predicting from NaN features. During the V4.1 captures a class-name change (mixin →
+   `SchedulerMetricsReporter`) was caught exactly this way and fixed by the
+   method-name lookup.
+
+### Validation of the recorded lists
+
+On load, both lists must be absent or both of length
+`num_prefill_requests + num_decode_requests` (a spec-decode extend of `1 + k` is
+allowed). In the learned feature path, `sum(past)` must not exceed
+`sum_prefill_kv + sum_decode_kv + sum_prefill_tokens + num_decode`; lists that do are
+treated as absent for that step. On the V4.1 captures the per-request sums matched the
+aggregates on 100% of decode steps and on all but a handful of prefill steps (page
+padding makes `sum_prefill_tokens` slightly larger than Σ extend).
 
 ## 3. Features
 
