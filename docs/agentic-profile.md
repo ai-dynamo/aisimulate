@@ -91,8 +91,13 @@ trajectory during warmup. Initial snapshot sampling also retains AISimulate's
 existing deterministic algorithm. These differences remain explicit; this is
 functional qualification of profile control, not complete AgentX parity or
 hardware performance accuracy. Long profiles retain lifecycle evidence and can
-use more host memory than a finite corpus replay; runtime resource supervision
-remains applicable.
+use more host memory than a finite corpus replay. Resource admission still checks
+the initial trace, but does not use its finite size as a peak-memory estimate for
+the full profile. The CLI and guarded recommendation/Sweeper paths admit one
+profiled candidate at a time under live host-memory supervision. Low-level
+runner/native callers remain responsible for resource supervision. A run can stop
+with `resource_limited` if it exhausts the host budget; choosing a duration does
+not reserve enough memory to guarantee completion.
 
 ## Reproducible smoke example
 

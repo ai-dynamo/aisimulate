@@ -210,6 +210,7 @@ def workload_bounds(config: Any) -> dict[str, Any]:
             "trace_format": source["format"],
             "trace_block_size": source.get("block_size", 512),
             "agentic_lanes": load.get("agentic_lanes", 1),
+            **({"agentic_profile": load["agentic_profile"]} if "agentic_profile" in load else {}),
         }
     session = source["type"] == "synthetic-session"
     count = stop.get("sessions" if session else "requests")
@@ -335,6 +336,29 @@ def _estimate_trace(
     cumulative = count if format_name in {"mooncake-delta", "applied_compute_agentic"} else 1
     lanes = int(workload.get("agentic_lanes") or 1)
     peak = WORKER_BASELINE_BYTES + 128 * total_bytes + lanes * (32 * tokens * cumulative + 65536 * count)
+    if workload.get("agentic_profile") is not None:
+        # Retired plays release their large payloads, but retain identities and
+        # lifecycle rows. Their count depends on simulated completion times, so
+        # neither the finite corpus nor duration alone bounds the full profile.
+        # Keep the initial-materialization refusal before admitting unknown peaks.
+        if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
+            return ResourceEstimate(
+                "agentic-profile-materialization-v1",
+                None,
+                0,
+                0,
+                peak,
+                "initial profile trace materialization estimate exceeds live headroom",
+            )
+        return ResourceEstimate(
+            "agentic-profile-unqualified-v1",
+            None,
+            0,
+            0,
+            None,
+            "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
+            "and requires supervised serial execution",
+        )
     return ResourceEstimate(
         "trace-json-metadata-v1",
         None,
