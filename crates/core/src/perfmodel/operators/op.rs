@@ -22,7 +22,8 @@ use crate::common::error::AicError;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
     ElementwiseOp, EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp,
-    GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp,
+    GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MeasuredStageOp, MhcModuleOp, MlaBmmOp,
+    MlaModuleOp,
     MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp,
     PerformanceResult, Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
 };
@@ -177,6 +178,11 @@ pub enum Op {
     /// ratio changes query dimensions before lookup, never the result.
     /// Appended as part of the speculative-decoding schema-18 migration.
     TokenScale(TokenScaleOp),
+    /// An exact externally measured stage. This is not a packaged silicon
+    /// table lookup and does not imply a hardware-transfer policy.
+    ///
+    /// APPENDED to preserve bincode enum indices of existing variants.
+    MeasuredStage(MeasuredStageOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -312,7 +318,8 @@ impl Op {
             | Op::Kda(_)
             | Op::WideEpContextMla(_)
             | Op::WideEpGenerationMla(_)
-            | Op::MoeAllToAll(_) => 0.0,
+            | Op::MoeAllToAll(_)
+            | Op::MeasuredStage(_) => 0.0,
         }
     }
 
@@ -357,6 +364,7 @@ impl Op {
             Op::Kda(o) => &o.name,
             Op::MoeAllToAll(o) => &o.name,
             Op::MoeExpertCompute(o) => &o.name,
+            Op::MeasuredStage(o) => &o.name,
         }
     }
 
@@ -401,6 +409,7 @@ impl Op {
             Op::Kda(o) => o.name = name,
             Op::MoeAllToAll(o) => o.name = name,
             Op::MoeExpertCompute(o) => o.name = name,
+            Op::MeasuredStage(o) => o.name = name,
         }
     }
 
@@ -443,6 +452,7 @@ impl Op {
             Op::Kda(o) => o.scale_factor = scale_factor,
             Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
             Op::MoeExpertCompute(o) => o.scale_factor = scale_factor,
+            Op::MeasuredStage(_) => {}
         }
     }
 
@@ -648,6 +658,7 @@ impl Op {
             // each `query`, exactly where Python does it.
             Op::MoeAllToAll(op) => op.query(db, ctx.num_tokens),
             Op::MoeExpertCompute(op) => op.query(db, ctx.num_tokens),
+            Op::MeasuredStage(op) => op.query(),
         }
     }
 }
@@ -788,6 +799,29 @@ mod tests {
         let r = op.query(&db, &ctx()).expect("query");
         assert!((r.latency_ms - 1.0).abs() < 1e-12);
         assert_eq!(r.source, Source::Silicon);
+    }
+
+    #[test]
+    fn measured_stages_keep_overlap_max_and_external_source() {
+        let (_tmp, db) = one_row_gemm_db();
+        let op = Op::Overlap(OverlapOp::new(
+            "generation_moe_overlap",
+            vec![Op::MeasuredStage(MeasuredStageOp {
+                name: "generation_measured_routed_moe".into(),
+                latency_ms: 2.0,
+            })],
+            vec![Op::MeasuredStage(MeasuredStageOp {
+                name: "generation_shared_experts".into(),
+                latency_ms: 4.0,
+            })],
+        ));
+        let result = op.query(&db, &ctx()).expect("query");
+
+        assert_eq!(result.latency_ms, 4.0);
+        assert_eq!(result.energy_wms, 0.0);
+        assert_eq!(result.source, Source::External);
+        let bytes = bincode::serialize(&op).expect("serialize");
+        assert_eq!(bincode::deserialize::<Op>(&bytes).expect("deserialize"), op);
     }
 
     #[test]

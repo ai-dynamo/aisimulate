@@ -149,6 +149,7 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         Op::MoeAllToAll(_) => wrap!(PyMoEAllToAll),
         Op::MoeExpertCompute(_) => wrap!(PyMoEExpertCompute),
         Op::Dsv4MegaMoe(_) => wrap!(PyDeepSeekV4MegaMoEModule),
+        Op::MeasuredStage(_) => wrap!(PyMeasuredStage),
         Op::DsaContext(_) => wrap!(PyContextDSAModule),
         Op::DsaGeneration(_) => wrap!(PyGenerationDSAModule),
         Op::MsaContext(_) => wrap!(PyContextMSAModule),
@@ -2634,6 +2635,56 @@ impl PyDeepSeekV4MegaMoEModule {
     }
 }
 
+/// A complete latency stage measured outside AIC's packaged perf-data corpus.
+/// The caller is responsible for exact workload, topology, and provenance
+/// matching before constructing this op.
+#[pyclass(extends = PyOperation, subclass, name = "MeasuredStage", module = "aiconfigurator_core._aiconfigurator_core")]
+pub struct PyMeasuredStage;
+
+impl PyOperation {
+    fn measured_stage(&self) -> PyResult<&crate::operators::MeasuredStageOp> {
+        match &self.inner {
+            Op::MeasuredStage(o) => Ok(o),
+            _ => Err(PyTypeError::new_err("not a MeasuredStage op")),
+        }
+    }
+}
+
+#[pymethods]
+impl PyMeasuredStage {
+    #[classattr]
+    #[allow(non_upper_case_globals)]
+    const _CP_AWARE: bool = false;
+
+    #[classattr]
+    #[allow(non_upper_case_globals)]
+    const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
+
+    #[new]
+    fn new(name: String, latency_ms: f64) -> PyResult<(Self, PyOperation)> {
+        if !latency_ms.is_finite() || latency_ms <= 0.0 {
+            return Err(PyValueError::new_err(format!(
+                "MeasuredStage latency_ms must be finite and positive, got {latency_ms}"
+            )));
+        }
+        let inner = Op::MeasuredStage(crate::operators::MeasuredStageOp { name, latency_ms });
+        Ok((PyMeasuredStage, PyOperation { inner }))
+    }
+
+    fn __getnewargs_ex__<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
+        let o = slf.as_super().measured_stage()?;
+        Ok(((o.name.clone(), o.latency_ms).into_pyobject(py)?, PyDict::new(py)))
+    }
+
+    #[getter(_latency_ms)]
+    fn latency_ms(slf: PyRef<'_, Self>) -> PyResult<f64> {
+        Ok(slf.as_super().measured_stage()?.latency_ms)
+    }
+}
+
 inner_accessor!(moe, moe_mut, Moe, crate::operators::MoeOp, "MoE");
 
 // ---------------------------------------------------------------------------
@@ -4239,6 +4290,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMoEAllToAll>()?;
     m.add_class::<PyMoEExpertCompute>()?;
     m.add_class::<PyDeepSeekV4MegaMoEModule>()?;
+    m.add_class::<PyMeasuredStage>()?;
     m.add_class::<PyDeepSeekV4MHCModule>()?;
     m.add_class::<PyContextDSAModule>()?;
     m.add_class::<PyGenerationDSAModule>()?;

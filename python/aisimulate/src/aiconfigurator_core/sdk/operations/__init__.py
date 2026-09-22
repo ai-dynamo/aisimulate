@@ -44,6 +44,7 @@ from aiconfigurator_core.sdk.operations.embedding import Embedding
 from aiconfigurator_core.sdk.operations.fpm_forward import FPMForwardOp
 from aiconfigurator_core.sdk.operations.gemm import GEMM
 from aiconfigurator_core.sdk.operations.mamba import GDNKernel, KDAKernel, Mamba2Kernel
+from aiconfigurator_core.sdk.operations.measured import MeasuredStage
 from aiconfigurator_core.sdk.operations.mla import (
     ContextMLA,
     GenerationMLA,
@@ -93,6 +94,7 @@ __all__ = [
     "MLABmm",
     "MLAModule",
     "Mamba2Kernel",
+    "MeasuredStage",
     "MoE",
     "MoEAllToAll",
     "MoEDispatch",

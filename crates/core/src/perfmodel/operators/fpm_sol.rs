@@ -123,6 +123,9 @@ pub(crate) fn op_sol_latency_ms(
         Op::CustomAllReduce(o) => Ok(custom_allreduce_op_sol(o, spec, x)),
         Op::Nccl(o) => Ok(nccl_op_sol(o, spec, x)),
         Op::P2P(o) => Ok(p2p_sol(o, spec, x)),
+        // External measurements intentionally override a roofline query: the
+        // caller already supplied the full-stage observed latency.
+        Op::MeasuredStage(o) => Ok(o.query()?.latency_ms),
         // Python `OverlapOp.query` under SOL: each group summed, max of the
         // two totals.
         Op::Overlap(o) => {

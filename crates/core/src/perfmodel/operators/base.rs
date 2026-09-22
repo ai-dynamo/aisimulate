@@ -19,14 +19,16 @@
 /// Mirrors Python's `result.source` string field. `Silicon` is used for
 /// values derived from real collected data (incl. interpolation /
 /// extrapolation); `Empirical` for SOL-anchored formula fallbacks;
-/// `Sol` for pure speed-of-light estimates; `Mixed` when combining
-/// values from different sources within one operator.
+/// `Sol` for pure speed-of-light estimates; `External` for a complete stage
+/// measured outside the packaged corpus; `Mixed` when combining values from
+/// different sources within one operator.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Source {
     #[default]
     Silicon,
     Empirical,
     Sol,
+    External,
     /// Composed from measured pieces plus modeled deltas (Python's
     /// `source="estimated"`, e.g. the DSA CP prefill composition).
     Estimated,
@@ -39,6 +41,7 @@ impl Source {
             Self::Silicon => "silicon",
             Self::Empirical => "empirical",
             Self::Sol => "sol",
+            Self::External => "external",
             Self::Estimated => "estimated",
             Self::Mixed => "mixed",
         }
