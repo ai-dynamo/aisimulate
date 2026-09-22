@@ -165,6 +165,84 @@ Slot zero belongs to this initialized isolated history fixture; native
 The recipe measures only the native hasher/module contract, not scheduler
 allocation, prefix-cache behavior, attention, or model hidden-state quality.
 
+## Attention without whole-model residency
+
+`dsv41_attention_runner` is a separate attention-only producer. It constructs
+all 40 native `MQALayer` modules from the unchanged configuration so compressor,
+indexer, borrowed-KV and bounded-tail ownership remain native. It omits the
+embedding, MoE, Engram, mHC and LM head. Native dummy initialization supplies
+random weights; normalization weights are explicitly set to one. Each layer
+receives the same seeded synthetic BF16 hidden tensor through native RMSNorm,
+outside the attention interval. These are declared operator inputs, not hidden
+states from an executed DeepSeek model. A zero-logit stub serves only the native
+request lifecycle; no logits, forward latency, FPM or model accuracy are admitted.
+
+The native `_TorchBenchRunner` and existing `run_workload` create actual requests,
+allocate KV, seed positive prefixes and extend the same request with its actual
+pool slot. Decode seeds exactly the declared past KV before the native inclusive
+decode. The native backend selects bounded tail rows and positions after the
+last source layer. No collector builds cache metadata or substitutes a guessed
+request slot. Each TP needs its own `build_manifest(tp, bounded)` result; both
+phase manifests are checked against loaded native dimensions before wrapping.
+
+The recorder reuses `ComponentRecorder.finish` and the existing native MQA
+interval. It requires pure TP and executes the real output all-reduce after the
+CUDA end event. Normalization, RNG, validation, output writing and collectives
+are outside that interval. Timed forwards have no per-layer host sync or output
+validation kernels. Each case first executes a separate untimed native replay;
+all 40 actual attention outputs, including prefix seed forwards, must be finite
+and nonzero. Checking the logits stub cannot satisfy this gate.
+
+Freeze an attention plan with schema `dsv41.attention-collection.v1`, purpose
+`smoke`, `calibration` or `heldout`, and the identity fields described above for
+isolated operators. Replace `components`/`token_counts` with `input_method`,
+`workloads_sha256` and `prompt_sha256`; use the module's explicit
+`WEIGHT_INITIALIZER` and `INPUT_METHOD`. The declared limits are
+`context_length=8192`, `max_total_tokens=8192`, `max_requests=4`, with at least
+two warmups and five measured repetitions. Freeze workload bytes produced by
+`freeze_workloads`, all required `ATTENTION_SOURCES` pins, original config and
+tokenizer bytes, immutable image/archive identities and the actual producer
+revision. The recorded source digest includes the entire installed SGLang Python
+tree, using the same algorithm as the whole-model producer.
+
+Prepare a three-case smoke with uncached prefill, batch-two cached prefill whose
+query exceeds the 128-token tail, and batch-two real-KV decode, for each TP and
+both profiles. Qualify this producer on the target allocation before a separate
+calibration run. Capability evidence from a different adapter is not timing
+acceptance. With the same private cache and verified-image setup as above:
+
+```bash
+python -m torch.distributed.run --standalone --nproc-per-node=2 \
+  -m collector.sglang.dsv41_attention_runner \
+  --plan /campaign/attention-plan.json --manifest /campaign/manifest-tp2.json \
+  --workloads /campaign/workloads.json --model-path /campaign/checkpoint-metadata \
+  --prompt-file /campaign/token-corpus.txt --output /campaign/attention-raw \
+  --runtime-digest "$VERIFIED_IMAGE_DIGEST"
+```
+
+All requested cases and rank samples are retained. `aggregate_attention_records`
+checks exact plan, actual-output qualification and per-case/rank/sample coverage;
+it rejects smoke/heldout promotion and whole-model rows mixed into its raw stream.
+Different invocations sharing a physical key are reported with every owner and
+remain a publication gate pending a source equivalence audit. They are never
+silently dropped or merged, even for canonical bounded-tail collisions. Full
+and bounded outputs remain separate. `--admit NEW_TABLE` writes only a fresh
+destination after those gates; it refuses to overwrite an existing whole-model
+or isolated table. The ordinary consumer contract and provenance checks still
+apply before publishing any measured profile.
+
+Native tensor population references at the pinned SGLang commit:
+
+| Contract | Native source under `python/sglang/` |
+| --- | --- |
+| Native attention geometry, compressor/indexer ownership | `srt/models/deepseek_v4.py:957-1090` |
+| Random weights and native post-load order | `srt/model_loader/weight_utils.py:1647-1682`; `srt/model_loader/loader.py:1592-1621` |
+| Normalization immediately before MQA | `srt/models/deepseek_v4.py:2743-2764` |
+| Actual prefix request slot and native extension | `benchmark/one_batch.py:428-472` |
+| Native schedule/forward batch and decode state | `benchmark/one_batch.py:493-543,563-583` |
+| Pure-TP output reduction boundary | `srt/models/deepseek_v4.py:781-793,2078-2082` |
+| Native bounded tail rows/positions and source KV | `srt/models/deepseek_v4.py:3542-3563`; `srt/layers/attention/deepseek_v4_backend.py:1647-1704`; `srt/mem_cache/deepseek_v4_memory_pool.py:1141-1171` |
+
 ## Data contract
 
 `dsv41_module_perf.parquet` keys component, canonical native geometry excluding
