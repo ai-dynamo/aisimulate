@@ -3,10 +3,11 @@
 import hashlib
 import io
 import json
+import shutil
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.sglang import dsv41_attention_runner as producer
 from collector.sglang.dsv41_contract import build_manifest, canonical_json, write_parquet
 from collector.sglang.dsv41_workloads import freeze_workloads
@@ -260,6 +261,22 @@ def write_fixture(tmp_path):
             input_method=producer.INPUT_METHOD,
             purpose="calibration",
             source_hashes=plan["source_pins"],
+            runtime_digest=plan["runtime_digest"],
+            image_sha256=plan["image_sha256"],
+            framework_version="dev-" + producer.FRAMEWORK_COMMIT,
+            collector_revision=plan["collector_revision"],
+            weight_initializer=producer.WEIGHT_INITIALIZER,
+            allocated_device_witness=dict(returncode=0, sm=90, name="NVIDIA H100 80GB HBM3"),
+            native_pool=dict(
+                type="DeepSeekV4TokenToKVPool", backend="DeepseekV4AttnBackend", max_tokens=8192, low_ratios=[1, 2]
+            ),
+            input_provenance=dict(
+                text_sha256=plan["prompt_sha256"],
+                seed=plan["seed"],
+                token_count=9408,
+                unique_tokens=201,
+                token_ids_sha256="9" * 64,
+            ),
             qualifications=[
                 dict(case_id=case["case_id"], observations=observations() + observations())
                 for case in workloads["cases"]
@@ -328,3 +345,49 @@ def test_admission_rejects_missing_samples_mixed_producers_and_fake_output(tmp_p
         path.write_text(json.dumps(receipt))
     with pytest.raises((ValueError, RuntimeError)):
         producer.aggregate_attention_records(tmp_path, *paths)
+
+
+@pytest.mark.parametrize("field", ["runtime_digest", "image_sha256", "collector_revision", "device", "pool", "corpus"])
+def test_admission_binds_actual_runtime_device_pool_and_inputs(tmp_path, field):
+    paths = write_fixture(tmp_path)
+    path = tmp_path / "attention-rank-1.json"
+    receipt = json.loads(path.read_text())
+    if field == "device":
+        receipt["allocated_device_witness"]["name"] = "NVIDIA H200"
+    elif field == "pool":
+        receipt["native_pool"]["max_tokens"] = 4096
+    elif field == "corpus":
+        receipt["input_provenance"]["token_ids_sha256"] = "8" * 64
+    else:
+        receipt[field] = "different"
+    path.write_text(json.dumps(receipt))
+    with pytest.raises(ValueError):
+        producer.aggregate_attention_records(tmp_path, *paths)
+
+
+def test_attention_hash_closure_tracks_native_boundaries_and_reader(tmp_path):
+    from collector import provenance
+
+    root = Path(__file__).resolve().parents[3]
+    module = "collector.sglang.dsv41_attention_runner"
+    closures = provenance.load_closures(root / "collector/hash_closures.yaml")
+    assert module in provenance.enumerate_provenance_modules()
+    dependencies = {module.replace(".", "/") + ".py", *provenance.SHARED_CORE}
+    dependencies.update(provenance._expand_closure_files(root, closures[module]))
+    for relative in dependencies:
+        target = tmp_path / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(root / relative, target)
+    original_hash = provenance.collector_hash(module, tmp_path, closures)
+    for relative in (
+        "collector/sglang/dsv41_native_runner.py",
+        "collector/sglang/dsv41_isolated_runner.py",
+        "collector/sglang/dsv41_workloads.py",
+        "collector/sglang/collect_dsv41_module.py",
+        "src/aisimulate_core/sdk/models/deepseek_v41.py",
+    ):
+        target = tmp_path / relative
+        original = target.read_bytes()
+        target.write_bytes(original + b"\n ")
+        assert provenance.collector_hash(module, tmp_path, closures) != original_hash, relative
+        target.write_bytes(original)

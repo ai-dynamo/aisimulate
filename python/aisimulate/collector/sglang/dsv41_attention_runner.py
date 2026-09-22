@@ -402,7 +402,7 @@ def aggregate_attention_records(output, plan_path, manifest_path, workloads_path
     validate_plan(plan, manifest, workloads)
     if plan["purpose"] != "calibration" or sha(workloads_path) != plan["workloads_sha256"]:
         raise ValueError("only the unchanged declared calibration plan may be admitted")
-    common_sources = None
+    common_sources, common_inputs = None, None
     for rank in range(plan["tp_size"]):
         receipt = json.loads((output / f"attention-rank-{rank}.json").read_text())
         expected_receipt = dict(
@@ -415,9 +415,41 @@ def aggregate_attention_records(output, plan_path, manifest_path, workloads_path
             checkpoint_weights_loaded=False,
             input_method=INPUT_METHOD,
             purpose="calibration",
+            runtime_digest=plan["runtime_digest"],
+            image_sha256=plan["image_sha256"],
+            framework_version="dev-" + FRAMEWORK_COMMIT,
+            collector_revision=plan["collector_revision"],
+            weight_initializer=WEIGHT_INITIALIZER,
         )
         if any(receipt.get(key) != value for key, value in expected_receipt.items()):
             raise ValueError("attention receipt differs from frozen calibration")
+        device = receipt["allocated_device_witness"]
+        if (
+            device["returncode"] != 0
+            or device["sm"] != plan["expected_sm"]
+            or re.search(r"\b" + re.escape(plan["expected_gpu"]) + r"\b", device["name"], re.IGNORECASE) is None
+        ):
+            raise ValueError("attention allocated GPU differs from calibration plan")
+        pool = receipt["native_pool"]
+        if (
+            pool["type"] != "DeepSeekV4TokenToKVPool"
+            or pool["backend"] != "DeepseekV4AttnBackend"
+            or pool["max_tokens"] < plan["max_total_tokens"]
+            or pool["low_ratios"] != [1, 2]
+        ):
+            raise ValueError("attention native KV capacity differs from calibration plan")
+        inputs = receipt["input_provenance"]
+        if (
+            inputs["text_sha256"] != plan["prompt_sha256"]
+            or inputs["seed"] != plan["seed"]
+            or inputs["token_count"] < max(c["query"] + c["prefix"] for c in workloads["cases"])
+            or inputs["unique_tokens"] < 100
+            or re.fullmatch(r"[a-f0-9]{64}", inputs["token_ids_sha256"]) is None
+        ):
+            raise ValueError("attention native inputs differ from frozen corpus")
+        if common_inputs is not None and inputs != common_inputs:
+            raise ValueError("attention native tokenizer inputs differ between ranks")
+        common_inputs = inputs
         sources = receipt["source_hashes"]
         if any(sources.get(path) != digest for path, digest in plan["source_pins"].items()):
             raise ValueError("native source receipt differs from plan")
