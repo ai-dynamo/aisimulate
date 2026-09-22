@@ -248,65 +248,64 @@ constant offset that the online correction grid absorbs. The overlap-on
 prefill records themselves are unusable as truth because of the accumulator
 merge, so no prefill cross-mode number is quoted.
 
-### Workload coverage: AgentX and ShareGPT (chatbot) on DeepSeek-V4.1-Flash
+### Workload coverage: AgentX, ShareGPT and LongBench on DeepSeek-V4.1-Flash
 
-Same V4.1-Flash SGLang deployment, overlap off, `sglang18` features, four
-AgentX capture runs (seeds 42/7/11/23; tiers c16/32/64/128 or c24/48/96) and four
-ShareGPT chatbot capture runs (aiperf `--public-dataset sharegpt`, seeds 42/7/11/23;
-tiers c32/64/128/256 or c48/96/192), 2026-09-19 to 09-21, dlcluster GB300.
+Three workloads on the same deployment (DeepSeek-V4.1-Flash, Dynamo SGLang runtime, one 4×GB300 node per role, TP4/EP4, `--disable-overlap-schedule`, per-request lists via `aisimulate_core.fpm_hooks`):
 
-The two workloads occupy different parts of the input space. Per scheduler
-step, from the FPM per-request lists of one capture run each (p5 / p50 / p95 / max):
+- **AgentX**: aiperf `inferencex-agentx-mvp`, SemiAnalysis CC traces (agent sessions, 262k context).
+- **ShareGPT**: aiperf `--public-dataset sharegpt` (chatbot conversations).
+- **LongBench**: single-turn long-document QA built from LongBench-v2 (503 real documents, 8k–2M words). Each prompt = a unique preamble line (so no cross-request prefix-cache hit is possible) + a document window of 8k–200k tokens on a fixed grid + the question and choices; `max_tokens` 1024; 4000 prompts in 8 files, one file per concurrency tier so no prompt is ever sent twice.
 
-| Quantity | AgentX | ShareGPT |
-| --- | --- | --- |
-| prefill batch size (requests / step) | 1 / 1 / 2 / 11 | 1 / 3 / 9 / 63 |
-| prefill extend per request (tokens, 16k chunking) | 333 / 3,743 / 16,384 / 16,384 | 40 / 326 / 796 / 1,934 |
-| prefill past KV per request (prefix hit + earlier chunks) | 0 / 70,144 / 194,816 / 252,672 | 0 / 0 / 1,280 / 1,792 |
-| request ISL (past + extend at the last chunk) | 6,656 / 82,949 / 213,369 / 254,199 | 40 / 531 / 1,642 / 2,134 |
-| prefix-cache hit at admission (engine log) | 54% of requests hit; hit size p50 31k, p95 176k | almost none (past is the earlier chunks of the same request) |
-| decode batch size (requests / step) | 1 / 7 / 30 / 43 | 26 / 58 / 243 / 256 |
-| decode context per request | 36,268 / 115,407 / 233,765 / 254,469 | 122 / 779 / 1,879 / 2,886 |
+A *capture run* is one fresh deployment on its own nodes with one aiperf seed, every concurrency tier run once for 1200 s. Input distributions as the engine saw them, from the FPM per-request lists of one capture run each (p5 / p50 / p95 / max):
 
-AgentX prefill is long-context with heavy prefix reuse and its decode batch
-never exceeds 64 (requests are long, so few are in flight); ShareGPT prefill
-is short with essentially no prefix hits, and its decode batch equals the
-concurrency.
+**Prefill**
 
-Pooled 60/40 split with no shared step: every (capture run, tier) window is cut
-into five consecutive time blocks, blocks 1/2/4 train and 3/5 test, so both
-sides see every capture run and tier. Step-weighted MAPE (median / p95):
+| Quantity | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| requests per step | 1 / 1 / 2 / 11 | 1 / 3 / 9 / 63 | 1 / 1 / 2 / 3 |
+| new tokens per request this step (extend, 16k chunking) | 333 / 3,743 / 16,384 / 16,384 | 40 / 326 / 796 / 1,934 | 1,719 / 16,384 / 16,384 / 16,384 |
+| KV already present per request (past) | 0 / 70,144 / 194,816 / 252,672 | 0 / 0 / 1,280 / 1,792 | 0 / 19,200 / 125,952 / 200,192 |
+| request ISL | 6,656 / 82,949 / 213,369 / 254,199 | 40 / 531 / 1,642 / 2,134 | 1,536 / 14,336 / 128,151 / 200,624 |
+| cross-request prefix-cache hit | 54% of requests; hit size p50 31k, p95 176k | ~none | none (by construction) |
 
-| Training data | Test data | decode steps | decode | prefill steps | prefill |
-| --- | --- | --- | --- | --- | --- |
-| AgentX only (4 capture runs) | AgentX 40% | 460k | 2.34% (1.74% / 6.4%) | 8.4k | 2.24% (1.50% / 6.4%) |
-| ShareGPT only (4 capture runs) | ShareGPT 40% | 208k | 2.26% (1.57% / 6.7%) | 15.3k | 2.55% (1.81% / 6.2%) |
-| AgentX + ShareGPT (8 capture runs) | both, 40% | 668k | 2.21% (1.63% / 6.3%) | 23.6k | 2.45% (1.73% / 6.3%) |
-| AgentX + ShareGPT, equal steps per workload | both, 40% | 438k | 2.20% (1.61% / 6.3%) | 16.0k | 2.43% (1.72% / 6.4%) |
+**Decode**
 
-Pooling costs neither workload anything against its own single-workload
-model. Holding out whole capture runs instead of time blocks (3 of 8 runs, 49% of
-the decode steps) gives 2.14% decode / 2.29% prefill for the pooled model.
-The first two capture runs of each workload alone (one seed pair, 2026-09-20) land
-at 1.69% / 2.45% pooled; the extra runs add run-to-run variation (one
-AgentX run shows a 10–12% decode p95 against the others' 4–6%), which
-is what the numbers above include.
+| Quantity | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| requests per step (batch) | 1 / 7 / 30 / 43 | 26 / 58 / 243 / 256 | 2 / 5 / 10 / 26 |
+| context per request | 36,268 / 115,407 / 233,765 / 254,469 | 122 / 779 / 1,879 / 2,886 | 8,682 / 32,496 / 160,469 / 201,648 |
+| KV tokens per step | 129k / 909k / 3.8M / 4.9M | 17k / 49k / 215k / 270k | 128k / 288k / 400k / 511k |
+| output length | model-terminated (hundreds to thousands) | model-terminated (tens to hundreds) | capped at 1024 |
 
-Training on one workload and testing on all four capture runs of the other:
+**Data volume**
 
-| Train → test | decode | prefill |
-| --- | --- | --- |
-| AgentX → ShareGPT | 14.1% overall; c32 2–3%, c64 5–7%, c128 24–26%, c256 41–43% | 3.5% (2.5–4.9% per tier) |
-| ShareGPT → AgentX | 3.9% (3.1–5.9% per tier) | 26.2%; c16–c64 20–25%, c96/c128 36–46% |
+| Workload | capture runs (seeds) | prefill steps | decode steps |
+| --- | --- | --- | --- |
+| AgentX | 4 (42 / 7 / 11 / 23) | 20.9k | 1,150k |
+| ShareGPT | 4 (42 / 7 / 11 / 23) | 38.2k | 520k |
+| LongBench | 2 (42 / 7) | 20.2k | 1,062k |
 
-The decode error grows monotonically with batch sizes the AgentX model
-never saw; the prefill error is the ShareGPT model extrapolating to prefix
-and extend lengths it never saw (its longest request is ~2k tokens). Each
-direction is fine where the training data covers the test inputs
-(AgentX → ShareGPT prefill 3.5%, ShareGPT → AgentX decode 3.9%). A release
-artifact should therefore be trained on the union of the workloads it is
-expected to simulate, and the pooled numbers above are what to expect
-from it.
+Accuracy, step-weighted MAPE per raw iteration, rows = training data, columns = test set. Same-workload cells (diagonal and the pooled row): the workload's runs are cut into five consecutive time blocks per run and tier, blocks 1/2/4 train, 3/5 test, no shared step, so the test set is 40% of that workload. Cross-workload cells: trained on all runs of the row workload, tested on all runs of the column workload.
+
+**Decode**
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.34% | 14.14% | 3.03% |
+| ShareGPT only | 3.88% | 2.26% | 3.43% |
+| LongBench only | 2.91% | 22.45% | 1.84% |
+| all three pooled | 2.21% | 2.10% | 1.84% |
+
+**Prefill**
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.24% | 3.49% | 0.88% |
+| ShareGPT only | 26.23% | 2.55% | 43.17% |
+| LongBench only | 6.52% | 29.42% | 0.62% |
+| all three pooled | 2.28% | 2.56% | 0.57% |
+
+Each workload lacks a region another one has (ShareGPT never sees 16k chunks or large past; AgentX and LongBench never see decode batches above ~40; LongBench has no short requests and no prefix hits), so any single-workload model extrapolates badly on at least one other workload. The pooled model matches or beats every single-workload model on its own workload. None of the three covers large decode batches at long context; that region remains untested.
 
 ## Limitations
 
