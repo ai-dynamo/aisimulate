@@ -1037,6 +1037,8 @@ engine:
 | `engine.workers.<role>.timing.decode_ms` | `null` | `x` | `-` | Nonnegative and required for `fixed` timing. |
 | `engine.workers.<role>.timing.forward_model` | `op_level` | `x` | `-` | `op_level` or `fpm`; `default` timing only. `fpm` replays whole-forward (FPM) latency measured for the role's exact model, hardware, backend version, parallel shape and quantization, and fails closed when no such cell exists. |
 | `engine.workers.<role>.timing.fpm_parquet_path` | `null` | `x` | `-` | External FPM parquet for `forward_model: fpm`; the adjacent same-stem `.metadata.json` sidecar is required. Relative paths are anchored to the working directory when the engine is constructed. Preserved per role in recommendations, candidate YAML, and regular prefill/decode companions in AFD+PD. |
+| `engine.workers.aggregated.timing.fastafd_profile_path` | `null` | `x` | `-` | Exact FastAFD MoE-stage JSON measurements for aggregated SGLang `op_level` timing. The profile model, hardware, EP topology, MTP degree, top-k, precision, and runtime token count must match. |
+| `engine.workers.aggregated.timing.fastafd_moe_backend` | `null` | `x` | `-` | Required with `fastafd_profile_path`; `megamoe` or `deepep_deepgemm`. |
 | `engine.workers.<role>.startup_seconds` | `0` | `x` | `-` | Nonnegative. |
 | `engine.kv_transfer.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. Independent from worker KV-cache geometry; `auto` resolves from the prefill/source role's TP/PP/MoE shape. |
 | `engine.kv_transfer.bandwidth_gb_per_second` | `null` | `x` | `-` | Positive when set; `null` disables transfer delay. |
@@ -1131,6 +1133,30 @@ candidate (reason category `replay_runtime`) rather than silently falling back t
 `fpm` mode with `capacity.type: default`, the KV capacity is also capped to the cell's collected
 decode-KV ceiling. FPM pairs are external runtime inputs. If a pair was collected at a backend
 version outside the queryable slots, set `AIC_ALLOW_UNLISTED_VERSIONS=1` explicitly.
+
+FastAFD profile timing replaces the decode routed-expert, shared-expert, dispatch, and combine span
+with the matching measured AGG stage while retaining the router and all non-MoE operations. It is
+available only for an aggregated SGLang worker with `pipeline: 1`, `moe_tensor: 1`, and exact profile
+coverage. Lookup is exact-only: unsupported systems, topologies, backends, or runtime token counts
+fail instead of interpolating or projecting measurements across hardware generations. The engine
+spec records the profile path and SHA-256 digest for reproducibility. Set `engine.moe_quant_mode`
+when the model's default does not match the profile's `moe_precision`; a mismatch fails closed.
+
+```yaml
+engine:
+  mode: aggregated
+  model: deepseek-ai/DeepSeek-V4-Flash
+  hardware: b200_sxm
+  backend: sglang
+  workers:
+    aggregated:
+      parallelism: {tensor: 1, pipeline: 1, attention_data: 8, moe_tensor: 1, moe_expert: 8}
+      timing:
+        type: default
+        estimation_mode: op_level
+        fastafd_profile_path: /data/afd_moe_stage_profile.json
+        fastafd_moe_backend: megamoe
+```
 
 `kv_cache.capacity.type: fixed` requires `blocks`, or alternatively `bytes` in `predict`.
 Byte capacity requires explicit `block_size` and numeric `bytes_per_token`; the block count is
