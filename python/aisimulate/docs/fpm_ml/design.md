@@ -519,6 +519,14 @@ At the Python boundary the two cost the same: the wrapper serialises the FPM dic
 and Rust parses it on every call, and that dominates both. The estimator arithmetic itself
 is 2–5× smaller for the GBDT; measuring that difference would need a Rust-side loop.
 
+What the native model evaluates per step, and how the two compare on real steps:
+
+![Native op-level model: decode step per-operator breakdown vs batch size and context](figs/native_decode_op_breakdown.png)
+
+![Native op-level model: prefill step per-operator breakdown vs scheduled tokens](figs/native_prefill_op_breakdown.png)
+
+![Predicted vs observed step time, native vs GBDT, decode and prefill workers](figs/pred_vs_observed_scatter.png)
+
 The native prefill error on this deployment is a systematic under-estimate, not noise:
 the vLLM prefill worker's `wall_time` sits on a 180–250 ms floor regardless of scheduled
 tokens (a 5-token chunk takes 200–650 ms, a 4096-token chunk ~190 ms), while the analytic
