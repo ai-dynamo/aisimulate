@@ -192,20 +192,67 @@ class PolicyPackagingTests(unittest.TestCase):
                 self.source_tree()
                 relative = "python/aisimulate-dynamo-policy/pyproject.toml"
                 self.replace(relative, '"aisimulate==0.13.0"', replacement)
-                result = subprocess.run(
-                    [
-                        sys.executable,
-                        str(ROOT / "scripts/apply_dev_version.py"),
-                        ".dev202609220000001234",
-                        str(self.root),
-                    ],
-                    text=True,
-                    capture_output=True,
+                self.assert_stamp_rejected_unchanged(
+                    f"expected one exact aisimulate pin in {self.root / relative}, found {count}"
                 )
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn(f"expected one exact aisimulate pin in {self.root / relative}", result.stderr)
-                self.assertIn(f"found {count}", result.stderr)
-                self.assertNotIn('"aisimulate==0.13.0.dev', (self.root / relative).read_text())
+
+    def test_stamp_rejects_invalid_native_base_pins_without_writes(self) -> None:
+        relative = "crates/dynamo-policy/Cargo.toml"
+        for replacement in ("", 'version = ">=0.13.0", '):
+            with self.subTest(replacement=replacement):
+                self.source_tree()
+                self.replace(relative, 'version = "=0.13.0", ', replacement)
+                self.assert_stamp_rejected_unchanged(
+                    f"expected one exact aisimulate-core pin in {self.root / relative}"
+                )
+        self.source_tree()
+        native = self.root / relative
+        with native.open("a") as handle:
+            handle.write('\naisimulate-core = { version = "=0.13.0" }\n')
+        self.assert_stamp_rejected_unchanged(f"expected one exact aisimulate-core pin in {native}")
+
+    def test_stamp_rejects_invalid_local_lock_records_without_writes(self) -> None:
+        for relative, name in (
+            ("Cargo.lock", "aisimulate-core"),
+            ("crates/dynamo-policy/Cargo.lock", "aisimulate-core"),
+            ("crates/dynamo-policy/Cargo.lock", "aisimulate-dynamo-policy"),
+        ):
+            record = f'[[package]]\nname = "{name}"\nversion = "0.13.0"\n'
+            for replacement, count in ((record.replace(name, "unrelated"), 0), (record + record, 2)):
+                with self.subTest(relative=relative, name=name, count=count):
+                    self.source_tree()
+                    self.replace(relative, record, replacement)
+                    self.assert_stamp_rejected_unchanged(
+                        f"expected one local {name} package in {self.root / relative}, found {count}"
+                    )
+
+    def test_stamp_rejects_missing_manifest_versions_without_writes(self) -> None:
+        for relative in (
+            "Cargo.toml",
+            "crates/core/Cargo.toml",
+            "python/aisimulate/pyproject.toml",
+            "crates/dynamo-policy/Cargo.toml",
+            "python/aisimulate-dynamo-policy/pyproject.toml",
+        ):
+            with self.subTest(relative=relative):
+                self.source_tree()
+                self.replace(relative, 'version = "0.13.0"', "# missing package version")
+                self.assert_stamp_rejected_unchanged(f"no version line found in {self.root / relative}")
+
+    def assert_stamp_rejected_unchanged(self, expected_error: str) -> None:
+        before = {path: path.read_bytes() for pattern in ("*.toml", "Cargo.lock") for path in self.root.rglob(pattern)}
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts/apply_dev_version.py"), ".dev202609220000001234", str(self.root)],
+            text=True,
+            capture_output=True,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn(expected_error, result.stderr)
+        self.assertEqual(
+            [str(path.relative_to(self.root)) for path, content in before.items() if path.read_bytes() != content],
+            [],
+            "failed stamping must leave every manifest and lockfile byte-identical",
+        )
 
     def foreign_packages(self) -> dict[str, list[dict]]:
         return {
