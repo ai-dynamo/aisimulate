@@ -37,8 +37,8 @@ from aisimulate.sdk import config as sdk_config
 from aisimulate.sdk.backends.factory import get_backend
 from aisimulate.sdk.operations import FPMForwardOp
 from aisimulate.sdk.perf_database import PerfDatabase
-from aisimulate.sweeper import AFDLayerTimes
-from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplayOutputRequirements, ReplaySpec
+from aisimulate.sweeper import AFDLayerTimes, AFDTopology, BackendDeploymentSpec, ReplaySpec
+from aisimulate.sweeper.replay import ReplayOutputRequirements
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
 from aisimulate_core.sdk.errors import DecodeMoeProfileError
@@ -409,6 +409,11 @@ def fpm_session(tmp_path):
         _row("decode", 8, 0, 1026, 6.5, model_path=model.model_path, identity=identity),
         _row("decode", 8, 0, 16400, 9.5, model_path=model.model_path, identity=identity),
     ]
+    # Separate selector lane makes swapped warning values observable.
+    rows += [
+        dict(row, fmha_quant_mode="fp8", cell_id=row["cell_id"] + "-fp8", latency_ms=row["latency_ms"] + 1.0)
+        for row in rows
+    ]
     # data_dir comes from the system yaml ("data/h200_sxm").
     data_dir = os.path.join(systems_root, "data", SYSTEM, BACKEND, VERSION)
     _write_pair(data_dir, rows)
@@ -416,6 +421,54 @@ def fpm_session(tmp_path):
     database = PerfDatabase(SYSTEM, BACKEND, VERSION, systems_root=str(systems_root))
     backend = get_backend(BACKEND)
     return model, database, backend, isl, osl
+
+
+def test_afd_companion_packaged_fpm_selector_reaches_native_loader(fpm_session):
+    _, database, _, isl, osl = fpm_session
+    topology = AFDTopology(
+        n_a_nodes=1,
+        n_f_nodes=1,
+        gpus_per_node=1,
+        tp_a=1,
+        a_batch_size=1,
+        num_microbatches=1,
+        phase="decode",
+        combined_with_pd=True,
+    )
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode=topology.adapter_topology,
+            backend=BACKEND,
+            backend_version=VERSION,
+            parallel_config={
+                "prefill_tp": 1,
+                "prefill_pp": 1,
+                "prefill_attention_dp": 1,
+                "prefill_moe_tp": 1,
+                "prefill_moe_ep": 1,
+            },
+            prefill_engine_args={
+                "max_num_batched_tokens": isl,
+                "max_num_seqs": 1,
+                "aic_model_path": "Qwen/Qwen3-0.6B",
+                "aic_system": SYSTEM,
+                "aic_forward_model": "fpm",
+                "aic_fpm_fmha_dtype": "fp8",
+                "systems_path": database.systems_root,
+            },
+            num_prefill_workers=1,
+        ),
+        workload={"isl": isl, "osl": osl},
+        goal={"target": "throughput", "sla": None},
+        concurrency=1,
+    )
+
+    timing = AICAFDCompanionPerformanceModel().measure(spec)
+
+    # The data tree has a separate fp8 selector row with latency 22.0 + 1.0.
+    assert timing.latency_ms == pytest.approx(23.0)
+    assert timing.provenance["source"] == "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
+    assert timing.provenance["fpm_fmha_dtype"] == "fp8"
 
 
 class TestFPMStaticAndMixed:
@@ -640,6 +693,33 @@ class TestFPMStaticAndMixed:
         )
         assert per_op["fpm_forward_decode"] == pytest.approx(7.0)
         assert total == pytest.approx(7.0)
+
+
+def test_explicit_selector_emits_matched_cell_warning_once(fpm_session, capfd):
+    from aisimulate_core.sdk.rust_engine_step import _cached_engine_handle
+
+    baseline, database, _backend, _isl, _osl = fpm_session
+    selected = models.get_model(
+        baseline.model_path,
+        _model_config(forward_model="fpm", fpm_fmha_quant_mode=common.FMHAQuantMode.fp8),
+        BACKEND,
+    )
+    original = baseline.config.fmha_quant_mode.name
+    selector = common.FMHAQuantMode.fp8.name
+    assert original != selector
+    capfd.readouterr()
+    handle = _cached_engine_handle(selected, database)
+    first = handle.evaluate_context_ops([0], batch_size=1, s=512)
+    warning = capfd.readouterr().err
+    assert first[0][1] == 23.0
+    assert "WARNING: FPM table FMHA selector" in warning
+    assert f'original_model_mode="{original}"' in warning
+    assert f'selector="{selector}"' in warning
+    assert "matched_cell_ids=" in warning
+    assert "fpm-test-prefill-fp8" in warning and "fpm-test-decode-fp8" in warning
+    assert "does not independently verify runtime attention precision" in warning
+    assert handle.evaluate_context_ops([0], batch_size=1, s=512) == first
+    assert "FPM table FMHA selector" not in capfd.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -887,6 +967,7 @@ def test_external_fpm_pair_drives_afd_companion_replay(
                 gemm_quant_mode=common.GEMMQuantMode.fp8,
                 moe_quant_mode=common.MoEQuantMode.fp8,
                 fmha_quant_mode=common.FMHAQuantMode.fp8,
+                fpm_fmha_quant_mode=common.FMHAQuantMode.bfloat16,
                 kvcache_quant_mode=common.KVCacheQuantMode.fp8,
                 comm_quant_mode=common.CommQuantMode.fp8,
             ),
@@ -911,6 +992,7 @@ def test_external_fpm_pair_drives_afd_companion_replay(
         args.update(aic_system=custom_system, systems_path=str(systems_root), aic_fpm_parquet_path=expected_path)
         prefix = "aic_" if identity_fields == "prefixed" else ""
         args.update({f"{prefix}{field}_dtype": "fp8" for field in ("gemm", "moe", "fmha", "kv_cache", "comm")})
+        args[f"{prefix}fpm_fmha_dtype"] = "bfloat16"
         args.update(
             {
                 "aic_pp_size": 1,
@@ -1016,3 +1098,51 @@ def test_fpm_detail_distinguishes_memory_budget_from_runtime_capacity(external_f
     assert sections["source"]["status"] == "unavailable"
     assert "whole-model FPM" in sections["source"]["unavailable_reason"]
     assert sections["time"]["serving_metrics"]["mean_ttft_ms"] > 0
+
+
+def test_fpm_selector_allows_fallback_to_untrained_regression(tmp_path):
+    systems = tmp_path / "systems"
+    systems.mkdir()
+    shutil.copy(Path(_CORE_SYSTEMS) / f"{SYSTEM}.yaml", systems / f"{SYSTEM}.yaml")
+    model = RustForwardPassPerfModel.best_available(
+        ForwardPassPerfModelConfig(
+            model="Qwen/Qwen3-0.6B",
+            system=SYSTEM,
+            backend=BACKEND,
+            backend_version=VERSION,
+            worker_type="aggregated",
+            systems_paths=(str(systems),),
+            estimation_mode="fpm_interpolation",
+            fallback_policy="allow",
+            fpm_fmha_quant_mode="fp8",
+        )
+    )
+    diagnostics = model.diagnostics()
+    assert diagnostics["provenance"]["selected_estimation_mode"] == "fpm_regression"
+    model.close()
+
+
+def test_canonical_config_preserves_positional_quantization_fields():
+    config = ForwardPassPerfModelConfig(
+        "model",
+        "system",
+        "sglang",
+        "aggregated",
+        "version",
+        4,
+        1,
+        1,
+        4,
+        1,
+        "fp8",
+        "fp8",
+        "bfloat16",
+        "fp8",
+        "bfloat16",
+        0,
+        fpm_fmha_quant_mode="fp8",
+    )
+    assert config.kvcache_quant_mode == "fp8"
+    assert config.comm_quant_mode == "bfloat16"
+    assert config.nextn == 0
+    assert config.fpm_fmha_quant_mode == "fp8"

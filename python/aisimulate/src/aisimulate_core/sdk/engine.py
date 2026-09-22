@@ -135,7 +135,9 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 19 (DeepSeek-V4.1 review): `Dsv41AttentionOp` gained `kv_cache_layout`,
 #   separating physical backend KV payload from attention arithmetic precision.
 #   Its appended enum changes positional bincode layout; old JSON defaults only.
-# - 20 (GLM-5.2 VR200 pilot): exact observed-MoE selector, prefill graph identity
+# - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
+#   for selector diagnostics; legacy JSON defaults do not cover bincode.
+# - 21 (GLM-5.2 VR200 pilot; renumbered from concurrent v20): exact observed-MoE selector, prefill graph identity
 #   and two appended composite operators change positional bincode layouts.
 #   Default JSON includes false for the MoE selector; default model/latency
 #   behavior is unchanged.
@@ -170,6 +172,7 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             "phase": op._phase,
             "model_path": op._model_path,
             "match_identity": list(op._match_identity),
+            "original_fmha_quant_mode": op._original_fmha_quant_mode,
             "weight_bytes": op._weight_bytes,
             # Speculative verify width for the equivalent-AR decode mapping
             # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
@@ -330,6 +333,7 @@ def _engine_config_dict(
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
         "fpm_parquet_path": fpm_parquet_path,
         "kv_block_size": kv_block_size,
+        "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
         # ParallelMapping (flattened)
         "tp_size": int(cfg.tp_size or 1),
@@ -342,6 +346,7 @@ def _engine_config_dict(
         "weight_dtype": _rust_quant_to_dtype(getattr(cfg, "gemm_quant_mode", None)),
         "moe_dtype": _rust_moe_quant_to_dtype(getattr(cfg, "moe_quant_mode", None)),
         "activation_dtype": _rust_quant_to_dtype(getattr(cfg, "fmha_quant_mode", None)),
+        "fpm_fmha_dtype": _rust_quant_to_dtype(getattr(cfg, "fpm_fmha_quant_mode", None)),
         "kv_cache_dtype": _rust_quant_to_dtype(getattr(cfg, "kvcache_quant_mode", None)),
         # Shared-layer policy bits only (schema v13): the engine resolves
         # per-op sources itself (`perf_database/source_resolution.rs`), so the
@@ -440,6 +445,7 @@ def compile_engine(
     moe_quant_mode: str | None = None,
     kvcache_quant_mode: str | None = None,
     fmha_quant_mode: str | None = None,
+    fpm_fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
     moe_backend: str | None = None,
@@ -474,7 +480,7 @@ def compile_engine(
     logical batches are exploratory and queries outside 1..32 fail. Missing or
     mismatched approved profile data raises ``DecodeMoeProfileError``.
 
-    Engine schema 20 persists the exact-profile policy on MoE operators. Default
+    Engine schema 21 persists the exact-profile policy on MoE operators. Default
     OpSpec JSON includes that new false field, and older binary specs require
     recompilation; default representations are therefore not byte-identical.
     """
@@ -513,6 +519,7 @@ def compile_engine(
             gemm_quant_mode=gemm_quant_mode,
             kvcache_quant_mode=kvcache_quant_mode,
             fmha_quant_mode=fmha_quant_mode,
+            fpm_fmha_quant_mode=fpm_fmha_quant_mode,
             moe_quant_mode=moe_quant_mode,
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,

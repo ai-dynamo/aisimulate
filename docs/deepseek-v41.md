@@ -94,7 +94,7 @@ The `logical_fp4` layout (288-byte compressed main, 68-byte index, FP8 window,
 890-byte global slope) remains the explicit theoretical estimate for vLLM and
 TRT-LLM; their runtime storage is unqualified. Both inventories exclude allocator
 page padding and spare pages. See [source proof and limits](deepseek-v41-storage.md)
-for full-context scoring, cache read/write accounting, and schema 19 compatibility.
+for full-context scoring, cache read/write accounting, and schema 21 compatibility.
 
 Engram's two GPU-resident hash tables include FP8 block scales and TP row
 sharding. Their full resident size is independent of tokens accessed. Lookup
@@ -127,3 +127,7 @@ The [historical SOL validation bundle](https://github.com/ai-dynamo/aisimulate/t
 preserves observed inputs, source identities, replay tools, and result coverage
 at that commit. Its results remain specific to the recorded source and runtime
 identities.
+
+FPM selector diagnostics append a positional field to `FpmForwardOp`, so this
+branch uses EngineSpec schema 21 after integration with the Rubin pilot. Schema-20 and earlier bincode inputs are rejected
+before decoding; legacy JSON may still use the documented field defaults.

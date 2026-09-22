@@ -67,6 +67,19 @@ This material is licensed under the Apache License 2.0. The upstream license
 at the identified revision is available at:
 https://github.com/ai-dynamo/aiconfigurator/blob/915f590680d8a79fe9c39f6f3a9ff13bc267fcce/LICENSE
 
+## Dynamo V4.1 FPM collection adapter
+
+`collector/fpm_forward/runtime/dsv41/dsv41_scheduler.py` is modified code
+adapted from `components/src/dynamo/vllm/instrumented_scheduler.py` in
+https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9.
+It adds bounded same-request real-KV collection while preserving the native
+benchmark and FPM contracts. Copyright (c) 2025-2026 NVIDIA CORPORATION &
+AFFILIATES. All rights reserved. Licensed under Apache-2.0; the upstream
+license is preserved in the adapter's adjacent `LICENSE`. The adjacent README
+records the inspected vLLM API revision and immutable runtime image/source
+hashes. vLLM implementation files are not vendored. The text fixture and
+lifecycle tests are original work for this change, with no external corpus.
+
 ## NVIDIA AIConfigurator speculative decoding
 
 The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
@@ -487,6 +500,20 @@ timings and documented source-audited indexer metadata correction. The
 B300 TP4 and TP2 tables are new native measurements with loaded-module dimension
 validation; they do not inherit that historical correction.
 
+The FPM table execution identities, geometry, collection sidecars and accompanying
+README under `src/aisimulate_core/systems/profiles/dsv41_fpm/`, including
+B300 TP2/TP4 and GB300 TP2 full/bounded measurements, are modified AISimulate
+adaptations of the SGLang serving-contract paths and immutable commit
+listed above (Copyright 2023-2024 SGLang Team and SGLang contributors,
+Apache-2.0), and of `config.json`, `inference/model.py` and
+`DeepSeek_V41_Tech_Report.pdf` from
+`deepseek-ai/DeepSeek-V4.1-Flash@fb2764a5cf321eaa5070ca8f9e892818f477c16d`
+(Copyright (c) 2023 DeepSeek, MIT; source and license below). The latencies are
+new AISimulate measurements; these files contain no upstream model execution
+code. The SGLang source revision identifies the serving-contract reference,
+not the entire measured runtime image; the immutable image and captured source
+identities remain collection provenance.
+
 Source: https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc
 Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
 reproduced in the repository `LICENSE`. These are analytical adaptations,
@@ -547,7 +574,7 @@ SOFTWARE.
 
 ## Meta Muse Glimmer model configuration
 
-`src/aiconfigurator_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
+`src/aisimulate_core/model_configs/meta-models--Muse-Glimmer-30B_config.json`
 is an unmodified copy of `config.json` from the Meta Muse Glimmer model
 repository at immutable revision
 `f84ecc3a0ea984a4c04542a84269e3d065350a6e`:
@@ -569,8 +596,8 @@ named Qwen model repositories at the immutable revisions shown:
 
 | Packaged file | Upstream revision |
 | --- | --- |
-| `aiconfigurator_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json` | `Qwen/Qwen3.8-2.4T-A95B@207bd685a7e3696cfaff12ded7c6a7ea0f88c996` |
-| `aiconfigurator_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json` | `Qwen/Qwen3.8-2.4T-A95B-FP8@d2dc35658bcf77e66643428cb52e774cc3b5bd29` |
+| `aisimulate_core/model_configs/Qwen--Qwen3.8-2.4T-A95B_config.json` | `Qwen/Qwen3.8-2.4T-A95B@207bd685a7e3696cfaff12ded7c6a7ea0f88c996` |
+| `aisimulate_core/model_configs/Qwen--Qwen3.8-2.4T-A95B-FP8_config.json` | `Qwen/Qwen3.8-2.4T-A95B-FP8@d2dc35658bcf77e66643428cb52e774cc3b5bd29` |
 
 Upstream repositories:
 https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B and
@@ -604,10 +631,10 @@ For any questions regarding this license, please contact model-business@notice.q
 The following bundled model configs are modified copies of Meta Llama 4
 checkpoint configuration files:
 
-- `src/aiconfigurator_core/model_configs/meta-llama--Llama-4-Scout-17B-16E-Instruct_config.json`
+- `src/aisimulate_core/model_configs/meta-llama--Llama-4-Scout-17B-16E-Instruct_config.json`
   from revision `92f3b1597a195b523d8d9e5700e57e4fbb8f20d3`:
   https://huggingface.co/meta-llama/Llama-4-Scout-17B-16E-Instruct/blob/92f3b1597a195b523d8d9e5700e57e4fbb8f20d3/config.json
-- `src/aiconfigurator_core/model_configs/meta-llama--Llama-4-Maverick-17B-128E-Instruct_config.json`
+- `src/aisimulate_core/model_configs/meta-llama--Llama-4-Maverick-17B-128E-Instruct_config.json`
   from revision `73d14711bcc77c16df3470856949c3764056b617`:
   https://huggingface.co/meta-llama/Llama-4-Maverick-17B-128E-Instruct/blob/73d14711bcc77c16df3470856949c3764056b617/config.json
 

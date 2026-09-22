@@ -385,9 +385,10 @@ def test_profile_and_retained_identities_cannot_change(tmp_path, mutation):
         handle(root=root)
 
 
-def test_previous_binary_schema_requires_recompilation():
+@pytest.mark.parametrize("schema_version", [19, 20])
+def test_previous_binary_schema_requires_recompilation(schema_version):
     encoded = bytearray(core.engine_spec_bincode_from_json(spec_json()))
-    encoded[:4] = (19).to_bytes(4, "little")
+    encoded[:4] = schema_version.to_bytes(4, "little")
     with pytest.raises(ValueError, match="recompile"):
         EngineHandle(encoded)
 

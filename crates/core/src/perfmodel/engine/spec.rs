@@ -643,6 +643,7 @@ mod tests {
             weight_bytes: 1.5e10,
             // Non-default on purpose: the round-trip must preserve the field.
             verify_width: 8,
+            original_fmha_quant_mode: Some("fp8".into()),
             sol_ops: vec![
                 OpSpec::Gemm(gemm()),
                 OpSpec::ContextAttention(context_attention()),
@@ -750,12 +751,6 @@ mod tests {
                 hc_mult: 4,
                 tp_size: 4,
             }),
-            OpSpec::Dsv41Linear(Dsv41LinearOp {
-                name: "v41_linear".into(),
-                n: 1152,
-                k: 5120,
-                quant_mode: GemmQuantMode::Fp8Block,
-            }),
             OpSpec::Dsv41Stage(Dsv41StageOp {
                 name: "v41_stage".into(),
                 is_context: true,
@@ -763,6 +758,12 @@ mod tests {
                 bounded: true,
                 window_size: 128,
                 children: vec![OpSpec::Gemm(gemm())],
+            }),
+            OpSpec::Dsv41Linear(Dsv41LinearOp {
+                name: "v41_linear".into(),
+                n: 1152,
+                k: 5120,
+                quant_mode: GemmQuantMode::Fp8Block,
             }),
             OpSpec::SglangPrefillAttentionSequence(
                 crate::operators::prefill_graph::SglangPrefillAttentionSequenceOp {
@@ -858,6 +859,7 @@ mod tests {
                 weight_dtype: Some(DataType::Fp8),
                 moe_dtype: Some(DataType::Fp8),
                 activation_dtype: Some(DataType::Fp8),
+                fpm_fmha_dtype: None,
                 kv_cache_dtype: Some(DataType::Fp8),
             },
             speculative: Some(SpeculativeConfig { nextn: Some(1) }),
@@ -932,13 +934,12 @@ mod tests {
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
         // Keep the main-branch TokenScale index; V41 variants append after it.
-        let mut appended: Vec<_> = all_op_variants()
+        let appended: Vec<_> = all_op_variants()
             .iter()
             .skip(36)
             .take(5)
             .map(index_of)
             .collect();
-        appended.sort();
         assert_eq!(
             appended,
             vec![36, 37, 38, 39, 40],
@@ -1300,6 +1301,75 @@ mod tests {
             Err(AicError::UnsupportedSchemaVersion {
                 got: 17,
                 expected: ENGINE_SPEC_SCHEMA_VERSION,
+                ..
+            })
+        ));
+    }
+    #[test]
+    fn merged_schema_preserves_fpm_selectors_and_pilot_payloads() {
+        let mut fpm_config = sample_engine_config();
+        fpm_config.forward_model = Some("fpm".into());
+        fpm_config.quantization.fpm_fmha_dtype = Some(DataType::Fp8);
+        let fpm_spec = EngineSpec::new(fpm_config, vec![OpSpec::FpmForward(fpm_forward())], vec![]);
+
+        let mut pilot_config = sample_engine_config();
+        pilot_config.prefill_graph_profile =
+            Some(crate::perf_database::prefill_graph::PROFILE_NAME.into());
+        pilot_config.prefill_graph_profile_id =
+            Some(crate::perf_database::prefill_graph::PROFILE_ID.into());
+        let mut observed_moe = moe();
+        observed_moe.require_exact_workload_distribution = true;
+        let pilot_ops = all_op_variants()
+            .into_iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    OpSpec::SglangPrefillAttentionSequence(_)
+                        | OpSpec::SglangPrefillCommNormBoundary(_)
+                )
+            })
+            .collect();
+        let pilot_spec = EngineSpec::new(pilot_config, pilot_ops, vec![OpSpec::Moe(observed_moe)]);
+
+        for spec in [fpm_spec, pilot_spec] {
+            let bytes = spec.to_bincode().unwrap();
+            assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+            let mut stale = bytes;
+            stale[..4].copy_from_slice(&20u32.to_le_bytes());
+            // Both branches used v20 for incompatible layouts. Reject their
+            // version before attempting to decode even a missing op payload.
+            for input in [stale.as_slice(), &stale[..4]] {
+                assert!(matches!(
+                    EngineSpec::from_bincode(input),
+                    Err(AicError::UnsupportedSchemaVersion {
+                        kind: "EngineSpec",
+                        got: 20,
+                        expected: 21,
+                    })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn fpm_selector_json_default_and_schema19_rejection() {
+        let selected = fpm_forward();
+        assert_eq!(selected.original_fmha_quant_mode.as_deref(), Some("fp8"));
+        let mut json = serde_json::to_value(selected).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("original_fmha_quant_mode");
+        let legacy: crate::operators::FpmForwardOp = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.original_fmha_quant_mode, None);
+        let mut bytes = handshake_spec().to_bincode().unwrap();
+        bytes[..4].copy_from_slice(&19u32.to_le_bytes());
+        bytes.truncate(4);
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                got: 19,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+
                 ..
             })
         ));

@@ -55,6 +55,10 @@ impl EngineFactory {
         self
     }
 
+    pub(crate) fn reset_timing_evidence(&self) -> Result<()> {
+        self.timing.reset_evidence()
+    }
+
     /// Build one scheduler/KV/timing rank with an explicit identity.
     pub fn build_rank(&self, identity: RankIdentity) -> Result<SchedulerRank> {
         let seed_offset = engine_seed_offset(identity)?;
