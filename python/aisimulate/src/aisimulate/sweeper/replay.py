@@ -257,11 +257,11 @@ class RunnerCapabilities:
     supports_agentic_speculative_decoding: bool = True
     supports_agentic_snapshots: bool = False
     supports_agentic_warmup: bool = False
-    supports_agentic_profile: bool = False
     supports_cached_prefix_tokens: bool = False
     supported_engine_model_controls: tuple[str, ...] = ()
     supports_mtp_expected_acceptance: bool = False
     supports_state_cache: bool = False
+    supports_agentic_profile: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.

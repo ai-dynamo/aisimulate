@@ -706,7 +706,20 @@ impl AgenticState {
             .emitted_in_flight
             .checked_sub(1)
             .context("agentic play settlement count underflow")?;
-        if !play.quiescent && play.client_finished && play.emitted_in_flight == 0 {
+        self.finish_play_if_quiescent(play_index, now_ms);
+        Ok(())
+    }
+
+    // Client retirement can follow the final server cleanup when a profile
+    // cutoff censors delayed work. Check both transitions, recording settlement
+    // only once and only after every emitted request has released server state.
+    fn finish_play_if_quiescent(&mut self, play_index: usize, now_ms: f64) {
+        let play = &mut self.plays[play_index];
+        if !play.quiescent
+            && play.client_finished
+            && play.pending_terminals == 0
+            && play.emitted_in_flight == 0
+        {
             play.quiescent = true;
             play.quiescent_at_ms = Some(now_ms);
             self.record_lifecycle(
@@ -717,7 +730,6 @@ impl AgenticState {
                 None,
             );
         }
-        Ok(())
     }
 
     fn release_lane(
@@ -946,9 +958,10 @@ impl WorkloadDriver {
                     censored += 1;
                 }
             }
-            for play in &mut state.plays {
-                if play.pending_terminals == 0 {
-                    play.client_finished = true
+            for play_index in 0..state.plays.len() {
+                if state.plays[play_index].pending_terminals == 0 {
+                    state.plays[play_index].client_finished = true;
+                    state.finish_play_if_quiescent(play_index, now_ms);
                 }
             }
             self.ready_sessions.clear();
@@ -2581,6 +2594,7 @@ impl WorkloadDriver {
                 profile.tree_idle_since_ms[play_index] = Some(now_ms);
                 if profile.cutoff {
                     state.plays[play_index].client_finished = true;
+                    state.finish_play_if_quiescent(play_index, now_ms);
                 }
             }
             if self.in_flight.is_empty() {
@@ -4938,6 +4952,104 @@ mod tests {
         assert_eq!(report.plays_started, 1);
         assert!(driver.agentic_profile_client_complete(25.0));
     }
+
+    #[rstest::rstest]
+    #[case::cleanup_before_cutoff(1.0, 1.0)]
+    #[case::cleanup_at_cutoff(10.0, 10.0)]
+    #[case::cleanup_after_cutoff(1.0, 11.0)]
+    #[case::terminal_after_cutoff(11.0, 12.0)]
+    fn profile_censored_play_settles_after_both_client_retirement_and_cleanup(
+        #[case] terminal_at_ms: f64,
+        #[case] cleanup_at_ms: f64,
+    ) {
+        let mut child = profile_row("child", "a", 0.0);
+        child.dependencies = vec![dependency(
+            "root",
+            AgenticDependencyTrigger::Completion,
+            100.0,
+            AgenticDependencyRelation::Sequence,
+        )];
+        let mut driver = profile_driver(
+            vec![profile_row("root", "a", 0.0), child],
+            1,
+            AgenticProfileOptions {
+                duration_seconds: 0.010,
+                ..Default::default()
+            },
+        );
+        let root = driver.pop_ready(0.0, 1).pop().unwrap();
+        if terminal_at_ms > 10.0 {
+            driver.advance_agentic_profile(10.0).unwrap();
+            let report = driver.agentic_profile_report().unwrap();
+            assert_eq!(report.retired_plays, 0);
+            assert_eq!(report.server_quiescent_plays, 0);
+            assert_eq!(report.server_unsettled_requests, 1);
+        }
+        driver
+            .on_causal_terminal(
+                root.request_uuid,
+                terminal_at_ms,
+                ReplayTerminalStatus::Completed,
+            )
+            .unwrap();
+        if cleanup_at_ms <= 10.0 {
+            driver
+                .on_quiescent(root.request_uuid, cleanup_at_ms)
+                .unwrap();
+            // The root is settled, but the authored child still owns client work.
+            assert_eq!(
+                driver
+                    .agentic_profile_report()
+                    .unwrap()
+                    .server_quiescent_plays,
+                0
+            );
+        }
+        if terminal_at_ms <= 10.0 {
+            driver.advance_agentic_profile(10.0).unwrap();
+        }
+        if cleanup_at_ms > 10.0 {
+            let report = driver.agentic_profile_report().unwrap();
+            assert_eq!(report.retired_plays, 1);
+            assert_eq!(report.server_quiescent_plays, 0);
+            assert_eq!(report.server_unsettled_requests, 1);
+            assert_eq!(
+                driver.agentic_play_outcomes().unwrap()[0].settled_at_ms,
+                None
+            );
+            driver
+                .on_quiescent(root.request_uuid, cleanup_at_ms)
+                .unwrap();
+        }
+
+        let settled_at_ms = cleanup_at_ms.max(10.0);
+        assert!(!driver.advance_agentic_profile(settled_at_ms).unwrap());
+        assert!(driver.is_drained());
+        assert!(driver.pop_ready(200.0, usize::MAX).is_empty());
+        let report = driver.agentic_profile_report().unwrap();
+        assert_eq!(report.retired_plays, 1);
+        assert_eq!(report.server_quiescent_plays, 1);
+        assert_eq!(report.server_unsettled_requests, 0);
+        assert_eq!(report.never_issued_requests, 1);
+        let outcome = &driver.agentic_play_outcomes().unwrap()[0];
+        assert_eq!(outcome.status, AgenticPlayStatus::Incomplete);
+        assert_eq!(outcome.settled_at_ms, Some(settled_at_ms));
+        let transcript = driver.agentic_lifecycle_transcript().unwrap();
+        let settled = transcript
+            .events
+            .iter()
+            .filter(|event| event.event == AgenticLifecycleEventKind::PlayQuiescent)
+            .collect::<Vec<_>>();
+        assert_eq!(settled.len(), 1);
+        assert_eq!(settled[0].at_ms, settled_at_ms);
+        assert!(
+            transcript
+                .events
+                .windows(2)
+                .all(|events| events[0].ordinal + 1 == events[1].ordinal)
+        );
+    }
+
     #[test]
     fn profile_global_idle_shift_preserves_pending_timer_spacing() {
         let root = profile_row("root", "a", 0.0);
