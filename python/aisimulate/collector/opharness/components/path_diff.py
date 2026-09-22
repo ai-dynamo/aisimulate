@@ -87,8 +87,15 @@ def _load_labeler():
     return label_kernels, normalize_kernel
 
 
+def _kv_equiv(a, b):
+    # auto resolves to the model dtype (bf16 for these models); treat the
+    # unquantized aliases as one class, fp8 as its own.
+    norm = lambda x: "fp8" if (x or "").startswith("fp8") else "unquant"
+    return norm(a) == norm(b)
+
+
 def diff(capture_file: str, repo: str, framework: str, version: str,
-         op_hint: str | None, save: str | None = None) -> int:
+         op_hint: str | None, save: str | None = None, kv_dtype: str | None = None) -> int:
     label_kernels, normalize_kernel = _load_labeler()
     cap = json.loads(Path(capture_file).read_text())
     # custom-op LAUNCHERS shadow their kernels under a second name
@@ -104,12 +111,16 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
     serving = None
     for line in (ROOT / "archive" / "records.jsonl").open():
         r = json.loads(line)
-        if (r["target"].get("repo") == repo and r["runtime"]["backend"] == framework
+        if not (r["target"].get("repo") == repo and r["runtime"]["backend"] == framework
                 and r["runtime"].get("version") == version
                 and (r.get("outcome") or {}).get("status") == "ok"):
-            serving = r
+            continue
+        if kv_dtype is not None and not _kv_equiv(r["runtime"].get("kv_cache_dtype"), kv_dtype):
+            continue
+        serving = r
     if serving is None:
-        print(f"[no-serving-record] {repo} {framework}-{version} — probe first")
+        _hint = f" kv={kv_dtype}" if kv_dtype else ""
+        print(f"[no-serving-record] {repo} {framework}-{version}{_hint} — probe that config first")
         return 2
     srv_backends: set = set()
     srv_kernels: set = set()
@@ -186,6 +197,9 @@ def main() -> int:
                     help="persist the verdict json (the workflow gate reads these)")
     ap.add_argument("--op-hint", default=None,
                     help="regex over serving op labels/kernels to scope the comparison")
+    ap.add_argument("--kv-dtype", default=None,
+                    help="select the serving record whose kv-cache dtype matches this "
+                         "capture (fp8|auto|bf16); auto and bf16 are treated as equivalent")
     ap.add_argument("cmd", nargs="*", help="capture mode: script + args (after --)")
     args = ap.parse_args()
     if args.capture:
@@ -195,7 +209,7 @@ def main() -> int:
         return capture(cmd, args.out)
     if args.diff:
         return diff(args.capture_file, args.repo, args.framework, args.version,
-                    args.op_hint, args.save_verdict)
+                    args.op_hint, args.save_verdict, args.kv_dtype)
     ap.error("pass --capture or --diff")
 
 

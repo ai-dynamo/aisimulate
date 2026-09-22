@@ -119,6 +119,13 @@ def main() -> None:
     # both eras stays distinguishable. Coverage is a parameter, never a
     # per-model special case.
     ap.add_argument("--isl", type=int, default=int(os.environ.get("AIS_PROBE_ISL") or os.environ.get("AIC_PROBE_ISL") or "4096"))
+    # Sweep the collector-relevant serving config. kv-cache-dtype is the
+    # typical one (fp8 is a common deployment); the collector sweeps it
+    # universally, so the probe must too or path_diff can never compare the
+    # fp8 path (the Gemma-4 fp8+head512 backend divergence went uncaught for
+    # exactly this reason, 2026-09-22). Overrides the rendered run.sh value.
+    ap.add_argument("--kv-cache-dtype", default=None,
+                    help="override serving --kv-cache-dtype (e.g. fp8) to probe that config")
     args = ap.parse_args()
 
     rec: dict = {"run_sh": args.run_sh, "errors": {}, "probe_isl": None}
@@ -136,6 +143,12 @@ def main() -> None:
     if args.model_override:
         i = argv.index("--model")
         argv[i + 1] = args.model_override
+    if args.kv_cache_dtype:
+        if "--kv-cache-dtype" in argv:
+            argv[argv.index("--kv-cache-dtype") + 1] = args.kv_cache_dtype
+        else:
+            argv += ["--kv-cache-dtype", args.kv_cache_dtype]
+    rec["probe_kv_cache_dtype"] = args.kv_cache_dtype
     rec["engine_argv"] = argv
 
     import vllm

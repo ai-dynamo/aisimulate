@@ -223,21 +223,24 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                         continue
                     for version in versions:
                         for topo in topos:
-                            rid = hashlib.sha1(
-                                f"{ck['repo']}|{variant}|{backend}|{version}|{ck['profile']}|tp{topo['tp']}".encode()
-                            ).hexdigest()[:12]
-                            plat = targets.get("platform") or {"name": "h20_sm90", "sm": 90, "system": "h200_sxm"}
-                            runs.append({
-                                "id": rid, "family": fam_name, "repo": ck["repo"], "profile": ck["profile"],
-                                "platform": plat["name"], "sm": plat["sm"], "system": plat["system"],
-                                "variant": variant, "backend": backend, "version": version,
-                                "image": be["images"][version], "tp": topo["tp"],
-                                "model_dir": f"{WORK}/{vdir.relative_to(ROOT)}",
-                                "aic_registered": ck.get("aic_registered", False),
-                                "cli_extra_args": (list(be.get("cli_extra_args") or [])
-                                                   + _cea((ck.get("cli_extra_args") or {}).get(backend)
-                                                          or (fam.get("cli_extra_args") or {}).get(backend))),
-                            })
+                            kv_variants = [None, "fp8"] if backend == "vllm" else [None]
+                            for kv in kv_variants:
+                                rid = hashlib.sha1(
+                                    f"{ck['repo']}|{variant}|{backend}|{version}|{ck['profile']}|tp{topo['tp']}|kv{kv or 'rendered'}".encode()
+                                ).hexdigest()[:12]
+                                plat = targets.get("platform") or {"name": "h20_sm90", "sm": 90, "system": "h200_sxm"}
+                                runs.append({
+                                    "id": rid, "family": fam_name, "repo": ck["repo"], "profile": ck["profile"],
+                                    "platform": plat["name"], "sm": plat["sm"], "system": plat["system"],
+                                    "variant": variant, "backend": backend, "version": version,
+                                    "image": be["images"][version], "tp": topo["tp"],
+                                    "kv_dtype": kv,
+                                    "model_dir": f"{WORK}/{vdir.relative_to(ROOT)}",
+                                    "aic_registered": ck.get("aic_registered", False),
+                                    "cli_extra_args": (list(be.get("cli_extra_args") or [])
+                                                       + _cea((ck.get("cli_extra_args") or {}).get(backend)
+                                                              or (fam.get("cli_extra_args") or {}).get(backend))),
+                                })
     return runs
 
 
@@ -305,8 +308,9 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             run["run_sh"] = str(rsh)
             run["engine_args_fidelity"] = "cli-golden"
             run["golden_dir"] = str(art)
+            _kv = f" --kv-cache-dtype {run['kv_dtype']}" if run.get("kv_dtype") else ""
             cmd = (head + f"--entrypoint python3 {run['image']} {WORK}/probe/probe_vllm.py "
-                   f"--run-sh {WORK}/archive/run_sh/{run['id']}.sh --model-override {run['model_dir']} "
+                   f"--run-sh {WORK}/archive/run_sh/{run['id']}.sh --model-override {run['model_dir']}{_kv} "
                    f"--trace --out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}")
         else:  # trtllm: golden extra_engine_args (agg_config.yaml), consumed verbatim
             art = render_golden(run)
@@ -579,6 +583,15 @@ def build_records() -> None:
                             "unknown_args": f.get("engine_cli_unknown_args") or None,
                             "platform": run.get("platform", "h20_sm90"),
                             "sm_measured": f.get("device_capability"),
+                            # kv-cache dtype is a first-class serving-config
+                            # dimension: the collector sweeps fp8-KV, so
+                            # path_diff must compare captures against the
+                            # SAME-kv serving record (owner 2026-09-23).
+                            "kv_cache_dtype": (
+                                f.get("probe_kv_cache_dtype")
+                                or sa.get("kv_cache_dtype")
+                                or (f.get("kv_cache_resolved") or {}).get("attn_kv_cache_dtype")
+                                or "auto"),
                             "evidence": "real"},
                 "resolved": {k: v for k, v in sa.items() if v is not None},
                 # generator-rendered flags that differ from the framework's own
