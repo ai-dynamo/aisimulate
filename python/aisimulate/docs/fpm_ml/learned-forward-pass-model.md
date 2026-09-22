@@ -116,6 +116,31 @@ only here; a login node or laptop is fine: 2.7M decode steps fit in ~25 s on
 a plain JSON artifact that the simulator loads through the Rust model with no
 Python ML dependency.
 
+Training environment, pick one:
+
+- **Plain Python on the host** (login node, workstation, laptop):
+  `pip install "aisimulate[learned]"` or, from a checkout,
+  `uv sync --project python/aisimulate --extra learned`. This is what the
+  numbers in §4 were produced with (a venv on a cluster login node).
+- **A container, when the site only allows containerised jobs** (Slurm with
+  pyxis/enroot, Kubernetes): the Dynamo runtime images do **not** ship
+  scikit-learn (only numpy/scipy), so either `pip install scikit-learn` inside
+  the capture image, or use the NGC PyTorch image, which includes
+  scikit-learn:
+
+  ```bash
+  srun -N1 --container-image=nvcr.io#nvidia/pytorch:25.08-py3 \
+       --container-mounts=/path/to/traces:/traces,/path/to/aisimulate:/aisimulate \
+       bash -c 'pip install -q /aisimulate/python/aisimulate[learned] && \
+                python -m aisimulate_core.sdk.fpm_learned train --fpm /traces/decode/*.jsonl.gz \
+                  --worker-type decode --join-ranks counter --out /traces/decode_learned.json'
+  ```
+
+  No GPU is used; request a CPU partition if the site has one.
+- **Inside the capture container right after collection**: the same
+  `pip install scikit-learn` + `train` command, so collection and training can
+  be one Slurm job. The artifact is a small JSON file either way.
+
 ```bash
 uv sync --project python/aisimulate --extra learned   # installs scikit-learn
 # or: pip install "aisimulate[learned]"
