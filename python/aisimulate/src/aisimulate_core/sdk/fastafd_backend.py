@@ -103,8 +103,6 @@ def _replace_generation_moe(
     measured_layers: int,
 ) -> None:
     generation_ops = list(model.generation_ops)
-    residual_layers = model._num_layers - measured_layers
-    measured_ratio = measured_layers / model._num_layers
 
     def stage(weight_bytes: float) -> Any:
         return ops.FastAfdMoeStage(
@@ -127,17 +125,17 @@ def _replace_generation_moe(
         routers = [op for op in overlap._group_a if op._name == "generation_router_gemm"]
         if len(routers) != 1:
             raise ValueError("FastAFD requires one generation router outside the measured stage")
+        measured_ratio, residual_ratio = _layer_ratios(routers[0], measured_layers)
         routed = [op for op in overlap._group_a if op._name != "generation_router_gemm"]
         shared = list(overlap._group_b)
         replaced_weight_bytes = sum(op.get_weights() for op in routed + shared)
         replacement = [routers[0], stage(replaced_weight_bytes * measured_ratio)]
-        if residual_layers:
-            ratio = residual_layers / model._num_layers
-            routed = _scaled_ops(routed, ratio)
-            shared = _scaled_ops(shared, ratio)
+        if residual_ratio:
+            routed = _scaled_ops(routed, residual_ratio)
+            shared = _scaled_ops(shared, residual_ratio)
             replacement.append(
                 ops.OverlapOp(
-                    "generation_dense_ffn_approximation",
+                    "generation_unmeasured_moe_approximation",
                     group_a=routed,
                     group_b=shared,
                 )
@@ -154,11 +152,20 @@ def _replace_generation_moe(
         end += 1
     if end == router_index + 1:
         raise ValueError("FastAFD could not identify the generation MoE span")
+    measured_ratio, residual_ratio = _layer_ratios(generation_ops[router_index], measured_layers)
     replaced = generation_ops[router_index + 1 : end]
     replacement = [stage(sum(op.get_weights() for op in replaced) * measured_ratio)]
-    if residual_layers:
-        replacement.extend(_scaled_ops(replaced, residual_layers / model._num_layers))
+    if residual_ratio:
+        replacement.extend(_scaled_ops(replaced, residual_ratio))
     model.generation_ops = generation_ops[: router_index + 1] + replacement + generation_ops[end:]
+
+
+def _layer_ratios(router: Any, measured_layers: int) -> tuple[float, float]:
+    modeled_layers = float(router._scale_factor)
+    if modeled_layers <= 0 or measured_layers > modeled_layers:
+        raise ValueError("FastAFD moe_layers exceeds the modeled generation MoE layers")
+    measured_ratio = measured_layers / modeled_layers
+    return measured_ratio, 1.0 - measured_ratio
 
 
 def _scaled_ops(items: list[Any], ratio: float) -> list[Any]:

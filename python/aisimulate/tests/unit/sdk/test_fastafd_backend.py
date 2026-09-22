@@ -18,7 +18,7 @@ from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch
 pytestmark = pytest.mark.unit
 
 
-def _profile(tmp_path, *, system="b200_sxm", latency_ms=5.25):
+def _profile(tmp_path, *, system="b200_sxm", latency_ms=5.25, mtp_nextn=0):
     entry = {
         "model_path": "deepseek-ai/DeepSeek-V4-Flash",
         "model_profile": "deepseek_v4_flash_fp4",
@@ -26,7 +26,7 @@ def _profile(tmp_path, *, system="b200_sxm", latency_ms=5.25):
         "stage": "agg",
         "topology": "ep8",
         "logical_batch_per_source_rank": 8,
-        "mtp_nextn": 0,
+        "mtp_nextn": mtp_nextn,
         "microbatches": 1,
         "moe_layers": 43,
         "routed_topk": 6,
@@ -45,7 +45,7 @@ def _profile(tmp_path, *, system="b200_sxm", latency_ms=5.25):
     return path
 
 
-def _compile(profile):
+def _compile(profile, *, nextn=0):
     return compile_engine(
         "deepseek-ai/DeepSeek-V4-Flash",
         "b200_sxm",
@@ -54,6 +54,7 @@ def _compile(profile):
         attention_dp_size=8,
         moe_tp_size=1,
         moe_ep_size=8,
+        nextn=nextn,
         forward_model="op_level",
         fastafd_profile_path=str(profile),
         fastafd_moe_backend="megamoe",
@@ -78,6 +79,17 @@ def test_fastafd_stage_runs_end_to_end_and_matches_composition(tmp_path):
 def test_fastafd_profile_rejects_cross_system_use(tmp_path):
     with pytest.raises(InvalidEngineConfigurationError, match="no FastAFD AGG measurements match"):
         _compile(_profile(tmp_path, system="gb200"))
+
+
+def test_fastafd_mtp_keeps_unmeasured_layer(tmp_path):
+    engine = aisimulate_core.AicEngine.from_spec(_compile(_profile(tmp_path, latency_ms=6.5, mtp_nextn=1), nextn=1))
+
+    rows = engine.decode_step_per_op(8, 1024, 2)
+    by_name = {name: latency for name, latency, *_ in rows}
+
+    assert by_name["generation_fastafd_moe_stage"] == pytest.approx(6.5)
+    assert "generation_unmeasured_moe_approximation" in by_name
+    assert engine.decode_step_latency(8, 1024, 2) == pytest.approx(sum(row[1] for row in rows))
 
 
 def test_fastafd_stage_preserves_generation_weights(tmp_path):
