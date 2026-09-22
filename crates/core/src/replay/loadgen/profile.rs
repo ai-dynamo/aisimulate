@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 pub struct AgenticProfileOptions {
     pub duration_seconds: f64,
     pub response_grace_seconds: f64,
+    /// Upper bound for client cancellation acknowledgements, not server cleanup.
+    /// Supported offline runtimes acknowledge cancellation synchronously.
     pub cancel_drain_seconds: f64,
     pub tree_idle_cap_seconds: f64,
     pub global_idle_cap_seconds: f64,
@@ -84,6 +86,8 @@ pub struct AgenticProfileReport {
     pub cancel_drain_deadline_ms: Option<f64>,
     pub admission_closed: bool,
     pub finished_at_ms: Option<f64>,
+    /// Whether client cancellation acknowledgement exceeded its budget.
+    /// False for synchronous offline cancellation, even with unsettled server work.
     pub cancel_drain_timed_out: bool,
     pub unsettled_server_requests: usize,
     pub plays_started: usize,

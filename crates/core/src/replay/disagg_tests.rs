@@ -3154,8 +3154,10 @@ mod agentic_pd_qualification {
         }
     }
 
-    #[test]
-    fn duration_profile_cancel_does_not_wait_for_server_quiescence() {
+    #[rstest::rstest]
+    fn duration_profile_cancel_does_not_wait_for_server_quiescence(
+        #[values(0.0, 10.0)] cancel_drain_seconds: f64,
+    ) {
         for backend in [EngineType::Vllm, EngineType::Sglang] {
             let mut replay = runtime(
                 &config(backend, true),
@@ -3169,6 +3171,7 @@ mod agentic_pd_qualification {
                 .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
                     duration_seconds: 0.051,
                     response_grace_seconds: 0.0,
+                    cancel_drain_seconds,
                     ..Default::default()
                 })
                 .unwrap();
@@ -3176,6 +3179,13 @@ mod agentic_pd_qualification {
             let profile = report.agentic_profile.as_ref().unwrap();
             assert_eq!(profile.finished_at_ms, profile.admission_cutoff_ms);
             assert_eq!(profile.canceled_requests, 1);
+            assert!(!profile.cancel_drain_timed_out);
+            assert_eq!(
+                profile.cancel_drain_deadline_ms,
+                profile
+                    .response_grace_deadline_ms
+                    .map(|at| at + cancel_drain_seconds * 1000.0)
+            );
             assert_eq!(profile.client_in_flight_requests, 0);
             assert!(profile.unsettled_server_requests > 0);
             assert_eq!(

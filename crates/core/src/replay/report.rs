@@ -1163,12 +1163,10 @@ impl TraceCollector {
                 crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
             })?;
         }
-        let static_worker_count = self.static_worker_count;
         let base = std::mem::take(self).finish_at(Some(summary.duration_ms()));
-        self.prepared_report =
-            Some(summary.finish(base, static_worker_count).map_err(|error| {
-                crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
-            })?);
+        self.prepared_report = Some(summary.finish(base).map_err(|error| {
+            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+        })?);
         Ok(())
     }
 
@@ -1817,7 +1815,16 @@ impl TraceCollector {
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
+        // The profile's terminal boundary includes canceled requests and idle
+        // time, which must still count toward provisioned worker accounting.
         let mut duration_ms = report_end_ms
+            .into_iter()
+            .chain(
+                agentic_profile
+                    .as_ref()
+                    .and_then(|profile| profile.finished_at_ms),
+            )
+            .reduce(f64::max)
             .map(|end_ms| (end_ms - report_start_ms).max(0.0))
             .unwrap_or(0.0);
         let mut total_input_tokens = 0usize;
@@ -1888,6 +1895,7 @@ impl TraceCollector {
             }
         }
 
+        let reporting_duration_s = (duration_ms / 1000.0).max(1e-9);
         if let Some(profile) = &mut agentic_profile {
             // Admission duration is a workload control, while throughput uses
             // the observed successful-request cohort, including grace returns.
@@ -1906,7 +1914,10 @@ impl TraceCollector {
         // Provisioned worker-seconds: static count × duration for an externally
         // clocked runtime, else the runtime-integrated accumulator.
         let (prefill_worker_seconds, decode_worker_seconds) = match static_worker_count {
-            Some((prefill, decode)) => (prefill as f64 * duration_s, decode as f64 * duration_s),
+            Some((prefill, decode)) => (
+                prefill as f64 * reporting_duration_s,
+                decode as f64 * reporting_duration_s,
+            ),
             None => (
                 accumulated_prefill_worker_seconds,
                 accumulated_decode_worker_seconds,
@@ -2493,6 +2504,8 @@ mod tests {
     #[rstest::rstest]
     fn profile_bounded_summary_preserves_worker_accounting(
         #[values(false, true)] static_workers: bool,
+        #[values(false, true)] successful_request: bool,
+        #[values(0.0, 1000.0)] epoch_start_ms: f64,
     ) {
         use crate::replay::loadgen::{AgenticProfileOptions, AgenticProfileReport};
         let profile = AgenticProfileReport {
@@ -2502,26 +2515,26 @@ mod tests {
                 response_grace_seconds: 0.07,
                 ..Default::default()
             },
-            profile_start_ms: Some(0.0),
-            admission_cutoff_ms: Some(30.0),
-            response_grace_deadline_ms: Some(100.0),
-            cancel_drain_deadline_ms: Some(10_100.0),
+            profile_start_ms: Some(epoch_start_ms),
+            admission_cutoff_ms: Some(epoch_start_ms + 30.0),
+            response_grace_deadline_ms: Some(epoch_start_ms + 100.0),
+            cancel_drain_deadline_ms: Some(epoch_start_ms + 10_100.0),
             admission_closed: true,
-            finished_at_ms: Some(100.0),
+            finished_at_ms: Some(epoch_start_ms + 100.0),
             cancel_drain_timed_out: false,
             unsettled_server_requests: 0,
             plays_started: 1,
             client_completed_plays: 1,
             retired_plays: 1,
             server_quiescent_plays: 1,
-            issued_requests: 2,
-            successful_responses: 1,
+            issued_requests: 1 + usize::from(successful_request),
+            successful_responses: usize::from(successful_request),
             canceled_requests: 1,
             never_issued_requests: 0,
             client_in_flight_requests: 0,
             server_unsettled_requests: 0,
-            first_request_ms: Some(0.0),
-            last_successful_response_ms: Some(50.0),
+            first_request_ms: Some(epoch_start_ms),
+            last_successful_response_ms: successful_request.then_some(epoch_start_ms + 50.0),
             observation_duration_ms: None,
             successful_request_throughput: None,
             corpus_cursor: 1,
@@ -2529,6 +2542,7 @@ mod tests {
         };
         let run = |capture| {
             let mut collector = TraceCollector::default();
+            collector.take_report(epoch_start_ms);
             collector.set_capture_per_request(capture);
             collector.begin_batch_reporting();
             collector.set_gpus_per_worker(4, 8);
@@ -2540,29 +2554,49 @@ mod tests {
             // A canceled request starts earlier and finishes later than the
             // successful cohort; neither endpoint extends observation time.
             let canceled = Uuid::from_u128(1);
-            collector.try_on_arrival(canceled, 0.0, 32, 1).unwrap();
-            collector.on_admit(canceled, 1.0, 0);
-            let completed = Uuid::from_u128(2);
-            collector.try_on_arrival(completed, 10.0, 32, 1).unwrap();
-            collector.on_admit(completed, 11.0, 0);
-            collector.on_token(completed, 50.0);
-            collector.on_terminal(completed, 50.0, ReplayTerminalStatus::Completed);
-            collector.on_terminal(canceled, 100.0, ReplayTerminalStatus::Canceled);
+            collector
+                .try_on_arrival(canceled, epoch_start_ms, 32, 1)
+                .unwrap();
+            collector.on_admit(canceled, epoch_start_ms + 1.0, 0);
+            if successful_request {
+                let completed = Uuid::from_u128(2);
+                collector
+                    .try_on_arrival(completed, epoch_start_ms + 10.0, 32, 1)
+                    .unwrap();
+                collector.on_admit(completed, epoch_start_ms + 11.0, 0);
+                collector.on_token(completed, epoch_start_ms + 50.0);
+                collector.on_terminal(
+                    completed,
+                    epoch_start_ms + 50.0,
+                    ReplayTerminalStatus::Completed,
+                );
+            }
+            collector.on_terminal(
+                canceled,
+                epoch_start_ms + 100.0,
+                ReplayTerminalStatus::Canceled,
+            );
             collector.set_agentic_profile(profile.clone());
             collector.prepare_batch_report().unwrap();
             collector.finish()
         };
         let detailed = run(true);
         let summary = run(false);
-        assert_eq!(summary.throughput.duration_ms, 40.0);
-        assert_eq!(summary.throughput.request_throughput_rps, 25.0);
+        assert_eq!(
+            summary.throughput.duration_ms,
+            if successful_request { 40.0 } else { 0.0 }
+        );
+        assert_eq!(
+            summary.throughput.request_throughput_rps,
+            if successful_request { 25.0 } else { 0.0 }
+        );
         let (prefill, decode) = if static_workers {
-            (0.08, 0.12)
+            (0.2, 0.3)
         } else {
             (1.2, 2.3)
         };
-        assert_eq!(summary.throughput.prefill_worker_seconds, prefill);
-        assert_eq!(summary.throughput.decode_worker_seconds, decode);
+        assert!((summary.throughput.prefill_worker_seconds - prefill).abs() < 1e-12);
+        assert!((summary.throughput.decode_worker_seconds - decode).abs() < 1e-12);
         assert!(
             (summary.throughput.gpu_hours - (prefill * 4.0 + decode * 8.0) / 3600.0).abs() < 1e-12
         );

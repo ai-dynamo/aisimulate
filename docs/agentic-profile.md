@@ -61,6 +61,10 @@ acknowledgements have a separate bounded drain period, which ends early once
 client requests are terminal. Already committed engine work retains its actual
 timestamps; the report records any server work still unsettled at client
 completion. The cancellation budget is not a GPU cleanup guarantee.
+The supported offline runtimes acknowledge cancellation synchronously, so their
+client drain ends immediately and `cancel_drain_timed_out` is false even when
+the report records unsettled server work. The configured drain deadline is an
+upper bound, not a minimum run duration.
 
 ## Results and limits
 
@@ -71,8 +75,8 @@ absolute runtime clock. Warmed per-request records use the existing
 barrier-relative convention described in [agentic warmup](agentic-warmup.md).
 
 Successful responses received during grace participate in the measured request
-cohort. The observation interval starts with the earliest request that completes
-successfully and ends with the latest successful response. It may differ from
+cohort. The observation interval starts with the earliest arrival among those
+successful requests and ends with the latest successful response. It may differ from
 the configured admission duration. Throughput uses the observed request interval.
 The report keeps the admission cutoff separately. A configured one-hour run can
 have a request observation interval shorter or longer than one hour.
@@ -88,7 +92,14 @@ remains applicable.
 
 ## Reproducible smoke example
 
-From the repository root, run:
+From the repository root, first install the current source as described in
+[Use current source](installation.md#use-current-source):
+
+```bash
+uv sync --project python/aisimulate --extra dev
+```
+
+Then run:
 
 ```bash
 python/aisimulate/.venv/bin/aisimulate predict \
