@@ -1330,6 +1330,88 @@ class TestEnumerateTTFTTPOTConstraints:
         assert derived_pair[1] == pytest.approx((1000 - 950) / (50 - 1))
 
 
+class TestKVCacheQuantInference:
+    @pytest.mark.parametrize("source", ["quantization_config", "hf_quant_config"])
+    @pytest.mark.parametrize("kv_algo", ["none", " NONE "])
+    @pytest.mark.parametrize(
+        "weight_algo,gemm,moe",
+        [("NVFP4", "nvfp4", "nvfp4"), ("FP8", "fp8_static", "fp8"), (None, None, None)],
+    )
+    def test_explicit_none_is_distinct_from_missing_metadata(self, source, kv_algo, weight_algo, gemm, moe):
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
+
+        quant = {"quant_algo": weight_algo, "kv_cache_quant_algo": kv_algo}
+        raw = {source: {"quantization": quant} if source == "hf_quant_config" else quant}
+        _attach_inferred_quant_fields(raw)
+        modes = _infer_quant_modes_from_raw_config(raw)
+
+        assert raw["kv_cache_quant_algo"] == "none"
+        assert quant["kv_cache_quant_algo"] == kv_algo
+        assert modes["kvcache_quant_mode"] == common.KVCacheQuantMode.bfloat16
+        assert modes["fmha_quant_mode"] == common.FMHAQuantMode.bfloat16
+        assert modes.get("gemm_quant_mode") == (common.GEMMQuantMode[gemm] if gemm else None)
+        assert modes.get("moe_quant_mode") == (common.MoEQuantMode[moe] if moe else None)
+
+    @pytest.mark.parametrize("weight_algo", [None, "NVFP4"])
+    @pytest.mark.parametrize(
+        "kv_fields,normalized_kv",
+        [
+            ({}, None),
+            ({"kv_cache_quant_algo": None}, None),
+            ({"kv_cache_quant_algo": "FP8"}, "fp8"),
+            ({"kv_cache_quant_algo": "E4M3"}, "fp8"),
+            ({"kv_cache_quant_algo": "bfloat16"}, "bfloat16"),
+            ({"kv_cache_quant_algo": "FP16"}, "bfloat16"),
+        ],
+    )
+    def test_legacy_defaults_and_supported_algorithms_are_unchanged(self, weight_algo, kv_fields, normalized_kv):
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
+
+        raw = _attach_inferred_quant_fields({"quantization_config": {"quant_algo": weight_algo, **kv_fields}})
+        modes = _infer_quant_modes_from_raw_config(raw)
+
+        assert raw.get("kv_cache_quant_algo") == normalized_kv
+        if weight_algo:
+            assert modes["kvcache_quant_mode"] == common.KVCacheQuantMode.fp8
+            assert modes["fmha_quant_mode"] == common.FMHAQuantMode.fp8
+        else:
+            assert modes.get("kvcache_quant_mode") == (
+                common.KVCacheQuantMode[normalized_kv] if normalized_kv else None
+            )
+            assert "fmha_quant_mode" not in modes
+
+    @pytest.mark.parametrize("kv_algo", ["not-an-algorithm", "null", ["none"], {"algorithm": "none"}, True])
+    @pytest.mark.parametrize("source", ["quantization_config", "hf_quant_config"])
+    def test_unknown_or_malformed_kv_algorithms_still_fail(self, kv_algo, source):
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
+
+        quant = {"quant_algo": "NVFP4", "kv_cache_quant_algo": kv_algo}
+        raw = _attach_inferred_quant_fields({source: {"quantization": quant} if source == "hf_quant_config" else quant})
+        with pytest.raises(ValueError, match="Unsupported kv cache algorithm"):
+            _infer_quant_modes_from_raw_config(raw)
+
+    @pytest.mark.parametrize("architecture", ["DeepseekV4ForCausalLM", "DeepseekV41ForCausalLM"])
+    @pytest.mark.parametrize("weight_algo", [None, "NVFP4"])
+    @pytest.mark.parametrize("kv_algo", [None, "none", "FP8", "bfloat16"])
+    def test_deepseek_native_cache_requirement_is_preserved(self, architecture, weight_algo, kv_algo):
+        from aisimulate.sdk.models import _infer_quant_modes_from_raw_config
+        from aisimulate.sdk.utils import _attach_inferred_quant_fields
+
+        raw = _attach_inferred_quant_fields(
+            {"quantization_config": {"quant_algo": weight_algo, "kv_cache_quant_algo": kv_algo}}
+        )
+        modes = _infer_quant_modes_from_raw_config(raw, architecture)
+
+        assert modes["kvcache_quant_mode"] == common.KVCacheQuantMode.fp8
+        if weight_algo:
+            assert modes["fmha_quant_mode"] == common.FMHAQuantMode.fp8
+        else:
+            assert "fmha_quant_mode" not in modes
+
+
 class TestParseCompressedTensorsQuant:
     """Tests for parse_compressed_tensors_quant and its _categorize_ignore_pattern helper."""
 

@@ -188,6 +188,79 @@ def _multimodal_config():
     }
 
 
+@pytest.mark.parametrize("requested_kv_dtype", ["auto", "bfloat16"])
+def test_explicit_none_kv_sidecar_preserves_unquantized_capability(
+    tmp_path, no_models_or_timing_data, requested_kv_dtype
+):
+    # Original synthetic metadata exercises the sentinel found in this checkpoint:
+    # https://huggingface.co/thinkingmachines/Inkling-NVFP4/blob/42a75a99a40eb2ba1e0717db6357a0bf15205044/hf_quant_config.json
+    document = _multimodal_config()
+    del document["text_config"]["architectures"]
+    document["text_config"].update(n_routed_experts=8, num_experts_per_tok=2)
+    quantization = {"quantization": {"quant_algo": "NVFP4", "kv_cache_quant_algo": "none"}}
+    config_path = tmp_path / "config.json"
+    quant_path = tmp_path / "hf_quant_config.json"
+    config_path.write_text(json.dumps(document))
+    quant_path.write_text(json.dumps(quantization))
+    source_bytes = (config_path.read_bytes(), quant_path.read_bytes())
+    frozen = load_model_config("example/multimodal-checkpoint", explicit_config_path=str(config_path))
+
+    capability = capabilities.resolve_model_capability(
+        backend="vllm",
+        model_path="example/multimodal-checkpoint",
+        model_architecture=document["architectures"][0],
+        selected_ops=set(),
+        has_model_cases=False,
+        system="gb300",
+        requested_weight_quantizations=("nvfp4",),
+        requested_kv_cache_dtypes=(requested_kv_dtype,),
+        model_config_path=str(config_path),
+        database_version="0.27.0",
+        checkpoint_native_dtypes=True,
+    )
+
+    assert capability.support_level == "bootstrap_template"
+    assert capability.is_moe is True
+    assert capability.dtype.gemm_quant_mode == "nvfp4"
+    assert capability.dtype.moe_quant_mode == "nvfp4"
+    assert capability.dtype.native_kv_cache_dtype == "bfloat16"
+    assert capability.dtype.kv_cache_dtypes == ("bfloat16",)
+    assert capability.dtype.fmha_quant_mode == "bfloat16"
+    assert capability.dtype.fmha_by_kv_dtype == {"bfloat16": "bfloat16"}
+    assert capability.dtype.fmha_resolution == "checkpoint_native"
+    assert capability.model_config.payload == frozen.payload
+    assert capability.model_config.sha256 == frozen.sha256
+    assert capability.model_config.payload["hf_quant_config"] == quantization
+    assert (config_path.read_bytes(), quant_path.read_bytes()) == source_bytes
+
+    profile = _profile()
+    profile.update(model="example/multimodal-checkpoint", architecture=document["architectures"][0], num_experts=8)
+    for deployment in profile["deployments"]:
+        deployment.update(
+            system="gb300", backend_version="0.27.0", kv_cache_dtype="bfloat16", fmha_quant_mode="bfloat16"
+        )
+    options = replace(
+        FPMCollectionOptions.from_args(cli._parser().parse_args(_argv(profile))),
+        weight_quantizations=("nvfp4",),
+        kv_cache_dtypes=(requested_kv_dtype,),
+    )
+    plan = _plan(
+        profile,
+        system="gb300",
+        model_config_path=str(config_path),
+        selected_ops=set(),
+        has_model_cases=False,
+        options=options,
+    )
+    serialized = json.loads(json.dumps(plan.to_dict()))
+    assert serialized["dtype_profile"] == capability.dtype.to_dict()
+    assert serialized["capability"]["model_config"] == frozen.to_dict()
+    assert len(serialized["cells"]) == 4
+    assert {cell["kv_cache_dtype"] for cell in serialized["cells"]} == {"bfloat16"}
+    assert {cell["resolved_dtypes"]["fmha_quant_mode"] for cell in serialized["cells"]} == {"bfloat16"}
+    assert (config_path.read_bytes(), quant_path.read_bytes()) == source_bytes
+
+
 def _onboard_collection_plan(tmp_path, document, overrides=None):
     from aisimulate.support.config_profile import derive_profile
     from aisimulate.support.config_profile import load_model_config as load_onboarding_config
