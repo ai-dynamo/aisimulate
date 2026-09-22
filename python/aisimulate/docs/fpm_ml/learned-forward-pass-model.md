@@ -107,8 +107,18 @@ Streams recorded without the hooks train with `--features v1` only.
 
 ## 2. Train
 
+Where each step runs: collection happens inside the engine container (the
+Dynamo `sglang-runtime` / `vllm-runtime` image, nothing extra installed) and
+only writes FPM `jsonl.gz` files. Training reads those files on any CPU
+machine with the `aisimulate[learned]` extra installed (scikit-learn is used
+only here; a login node or laptop is fine: 2.7M decode steps fit in ~25 s on
+16 threads, loading the gzip stream takes longer than the fit). The output is
+a plain JSON artifact that the simulator loads through the Rust model with no
+Python ML dependency.
+
 ```bash
 uv sync --project python/aisimulate --extra learned   # installs scikit-learn
+# or: pip install "aisimulate[learned]"
 python -m aisimulate_core.sdk.fpm_learned train \
   --fpm decode_worker/*.jsonl.gz \
   --worker-type decode \
@@ -149,10 +159,13 @@ python -m aisimulate_core.sdk.fpm_learned train \
   rows with a hidden 10 % validation split); `metadata.trees_fitted` records
   the trees per store.
 
-The command prints the train-set fit and the holdout accuracy per store
+The command prints the train-set fit and a random-holdout report per store
 (MAPE, median and p95 APE), scored through the compiled Rust model, which is
-the only prediction path. `evaluate --model ... --fpm ...` scores an artifact
-against any other FPM files.
+the only prediction path. The random holdout is a smoke check only:
+consecutive steps are correlated, so for a real accuracy number train on one
+set of files and score another with `evaluate --model ... --fpm ...` (for
+example a capture run with a different seed and different concurrency tiers,
+as in §4).
 
 ## 3. Use it
 
