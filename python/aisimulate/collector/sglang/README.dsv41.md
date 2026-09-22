@@ -188,8 +188,9 @@ phase manifests are checked against loaded native dimensions before wrapping.
 The recorder reuses `ComponentRecorder.finish` and the existing native MQA
 interval. It requires pure TP and executes the real output all-reduce after the
 CUDA end event. Normalization, RNG, validation, output writing and collectives
-are outside that interval. Timed forwards have no per-layer host sync or output
-validation kernels. Each case first executes a separate untimed native replay;
+are outside that interval. The collector adds no per-layer host synchronization
+or output validation to timed forwards. Each case first executes a separate
+untimed native replay;
 all 40 actual attention outputs, including prefix seed forwards, must be finite
 and nonzero. Checking the logits stub cannot satisfy this gate.
 

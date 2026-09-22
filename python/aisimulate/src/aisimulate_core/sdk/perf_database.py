@@ -670,7 +670,23 @@ _COLLECTION_EVENT_REQUIRED_KEYS = (
 )
 _COLLECTION_EVENT_OPTIONAL_KEYS = ("source_campaign_rows", "source_campaign_status", "runtime")
 _COLLECTION_STATUSES = frozenset({"complete", "partial"})
-_COLLECTION_RUNTIME_KEYS = ("framework", "version", "image", "image_variant", "image_digest")
+# Mirror the authored collection_meta runtime contract in collector.provenance
+# without making the installed core depend on the GPU collector package.
+_COLLECTION_RUNTIME_STRING_KEYS = ("image", "image_variant", "image_digest", "source_commit")
+_COLLECTION_RUNTIME_MAPPING_KEYS = (
+    "abi",
+    "live_abi",
+    "transport",
+    "backend_capability",
+    "backend_abis",
+    "backend_capabilities",
+)
+_COLLECTION_RUNTIME_KEYS = (
+    "framework",
+    "version",
+    *_COLLECTION_RUNTIME_STRING_KEYS,
+    *_COLLECTION_RUNTIME_MAPPING_KEYS,
+)
 
 
 def _validate_non_negative_row_count(value: object, *, field: str, path: str) -> None:
@@ -687,9 +703,12 @@ def _validate_collection_runtime(runtime: object, *, field: str, path: str) -> N
     for key in ("framework", "version"):
         if not isinstance(runtime.get(key), str) or not runtime[key].strip():
             raise ValueError(f"{path}: {field}.{key} must be a non-empty string")
-    for key in _COLLECTION_RUNTIME_KEYS[2:]:
+    for key in _COLLECTION_RUNTIME_STRING_KEYS:
         if key in runtime and (not isinstance(runtime[key], str) or not runtime[key].strip()):
             raise ValueError(f"{path}: {field}.{key} must be a non-empty string when provided")
+    for key in _COLLECTION_RUNTIME_MAPPING_KEYS:
+        if key in runtime and not isinstance(runtime[key], dict):
+            raise ValueError(f"{path}: {field}.{key} must be a mapping when provided")
 
 
 def _validate_collection_event(event: object, *, table: str, index: int, path: str) -> None:

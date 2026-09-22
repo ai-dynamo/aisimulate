@@ -3,6 +3,7 @@
 
 """Versioned ``collection_meta.yaml`` parser contract."""
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -103,6 +104,92 @@ def test_v2_event_runtime_rejects_unknown_fields(tmp_path):
     path = _write_meta(tmp_path, _v2_document([event]))
 
     with pytest.raises(ValueError, match=r"collections\[0\]\.runtime has unsupported key.*upstream_image"):
+        _load_collection_meta_yaml(str(path))
+
+
+def test_v2_writer_runtime_metadata_reaches_strict_database(tmp_path):
+    """Synthetic rows witness metadata admission, not measured performance."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from aisimulate_core.sdk.perf_database import get_database
+    from collector.provenance import append_collection_event, write_collection_meta
+
+    shutil.copy(REPO_ROOT / "src/aisimulate_core/systems/h100_sxm.yaml", tmp_path / "h100_sxm.yaml")
+    version = "dev-runtime-metadata"
+    directory = tmp_path / "data" / "h100_sxm" / "gemm" / "sglang" / version
+    directory.mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                dict(gemm_dtype="bfloat16", m=tokens, n=384, k=5120, latency=0.01, kernel_source="test.fixture")
+                for tokens in (1, 2)
+            ]
+        ),
+        directory / "gemm_perf.parquet",
+    )
+    runtime = {
+        "framework": "sglang",
+        "version": version,
+        "image": "test-image",
+        "image_variant": "test-variant",
+        "image_digest": "sha256:" + "d" * 64,
+        "source_commit": "e" * 40,
+        "abi": {"torch": "test", "nccl": "test"},
+        "live_abi": {"provider_sha256": "f" * 64},
+        "transport": {"backend": "nccl", "devices": ["test"]},
+        "backend_capability": {"graph": False},
+        "backend_abis": {"sglang": {"torch": "test"}},
+        "backend_capabilities": {"sglang": {"graph": False}},
+    }
+    tables = {
+        "gemm_perf": append_collection_event(
+            _event(rows=1, runtime=runtime),
+            _event(rows=1, runtime=runtime, case_plan_hash="sha256:" + "1" * 64),
+            table="gemm_perf",
+            merged_rows=2,
+        )
+    }
+    path = write_collection_meta(directory, runtime, tables, provenance_tier="collected")
+
+    document = _load_collection_meta_yaml(str(path))
+    assert document["runtime"] == runtime
+    assert all(event["runtime"] == runtime for event in document["tables"]["gemm_perf"]["collections"])
+    database = get_database(
+        "h100_sxm",
+        "sglang",
+        version,
+        systems_paths=[str(tmp_path)],
+        database_mode="SILICON",
+        shared_layer=False,
+        strict_provenance=True,
+    )
+    assert "bfloat16" in database.supported_quant_mode["gemm"]
+
+
+@pytest.mark.parametrize("scope", ["root", "event"])
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("source_commit", " ", "non-empty string"),
+        ("source_commit", 123, "non-empty string"),
+        ("abi", [], "mapping"),
+        ("live_abi", "test", "mapping"),
+        ("transport", None, "mapping"),
+        ("backend_capability", False, "mapping"),
+        ("backend_abis", [], "mapping"),
+        ("backend_capabilities", 1, "mapping"),
+        ("unknown_runtime_field", {}, "unsupported key"),
+    ],
+)
+def test_v2_runtime_extensions_reject_invalid_metadata(tmp_path, scope, field, value, message):
+    runtime = {"framework": "sglang", "version": "test", field: value}
+    document = _v2_document([_event(runtime=runtime)] if scope == "event" else [_event()])
+    if scope == "root":
+        document["runtime"] = runtime
+    path = _write_meta(tmp_path, document)
+
+    with pytest.raises(ValueError, match=message):
         _load_collection_meta_yaml(str(path))
 
 
