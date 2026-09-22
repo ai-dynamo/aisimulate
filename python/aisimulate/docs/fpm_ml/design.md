@@ -504,6 +504,29 @@ run of a million steps therefore spends well under a minute in the perf model.
 
 Loading and featurizing the FPM stream (gzip JSON lines) dominates: 204 s for the 2.7M decode records against 25 s of fitting; both are one-off offline costs. scikit-learn's own batched `predict` runs at 2.5 µs per row on the same machine, the Rust single-step path above is what the simulator uses. Artifacts are 100–450 KB of JSON.
 
+### 8.1 Cost against the native op-level model
+
+Same steps, same process, both estimators called once per step through the PyO3 binding
+(DeepSeek-V4-Flash, GB300, vLLM 0.24.0 tables, TP4/EP4, single thread; 463,717 decode and
+24,965 prefill steps of one AgentX capture run):
+
+| Estimator | µs / step decode | µs / step prefill | work per step | build time | MAPE decode | MAPE prefill |
+| --- | --- | --- | --- | --- | --- | --- |
+| native op-level (`estimation_mode=op_level`) | 15.5 | 14.8 | 16 operator evaluations (10 top-level ops, layer count folded in as a scale factor: embedding, mHC pre/post, norms, two compressed-attention variants, MoE + shared-expert overlap, logits); each is 1–2 perf-table lookups with nested grid interpolation over 2–3 axes, on the order of 300–1000 scalar operations plus map/vector work, i.e. roughly 5–15 k operations per step | 2.1 s (loads the perf database) | 6.7% | 46% |
+| learned GBDT (400 trees) | 15.8 | 19.0 | 400 trees × mean leaf depth 6.9 ≈ 2.8 k comparisons + 400 additions + the 18-feature build (~10 operations per request), about 3.3 k operations per step | 5 ms | 4.0% | 5.1% |
+
+At the Python boundary the two cost the same: the wrapper serialises the FPM dict to JSON
+and Rust parses it on every call, and that dominates both. The estimator arithmetic itself
+is 2–5× smaller for the GBDT; measuring that difference would need a Rust-side loop.
+
+The native prefill error on this deployment is a systematic under-estimate, not noise:
+the vLLM prefill worker's `wall_time` sits on a 180–250 ms floor regardless of scheduled
+tokens (a 5-token chunk takes 200–650 ms, a 4096-token chunk ~190 ms), while the analytic
+compute estimate is 24–110 ms. The floor is disaggregation overhead (KV hand-off) inside
+the measured step, which the GBDT learns from the data and the op-level model does not
+represent. It also means the vLLM prefill numbers in §7.3 are step times including that
+overhead, not pure forward time.
+
 ## 9. Limitations and follow-ups
 
 - **Coverage.** No workload in the set has decode batches above ~43 at contexts above
