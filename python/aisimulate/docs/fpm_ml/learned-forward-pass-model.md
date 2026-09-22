@@ -380,6 +380,27 @@ overhead; AgentX decode 3.8% vs 2.3% on SGLang), and its 4k prefill chunks make
 each prefill step shorter (LongBench prefill 2.4% vs 0.6%). The pooled model
 again matches every single-workload model on its own workload.
 
+## 5. Training and inference time
+
+Measured with this branch on a 16-core CPU node (`OMP_NUM_THREADS=16`), DeepSeek-V4.1-Flash
+SGLang AgentX captures: the seed-42 run trains, the seed-7 run is predicted. Inference
+does not use scikit-learn; it is the Rust tree walk in `learned.rs`, called here once per
+step through the PyO3 binding, which is how the simulator uses it.
+
+| Step | Data | Time |
+| --- | --- | --- |
+| load + featurize (gzip JSON lines) | 302,603 decode steps | 4.4 s |
+| train decode model (scikit-learn HGB, 400 trees, early stopping off) | 302,603 steps | 54 s |
+| train prefill model (same settings) | 5,245 steps | 20 s |
+| predict decode, Rust, one call per step | 196,585 steps | 3.78 s (19 µs / step, mean batch 10, max 35) |
+| predict prefill, Rust, one call per step | 3,803 steps | 0.08 s (22 µs / step, mean batch 1.2) |
+
+Per-step inference grows linearly with the number of requests in the step (the feature
+vector walks the per-request lists): 12 / 23 / 58 µs at decode batch 8 / 64 / 256. The
+400-tree walk itself is a few microseconds. Training the pooled ten-run set (2.7M decode
+steps) took 25 s on another 16-thread machine; loading the compressed stream (204 s)
+dominates there. Artifacts are 100–450 KB of JSON.
+
 ## Limitations
 
 - Learned mode is SDK-only in this release: `best_available(config)` and
