@@ -13,11 +13,69 @@ const source = workflow.match(/          script: \|\n((?:(?:            .*)?\n)+
 assert.match(source, /core\.setOutput\('matrix', JSON\.stringify\(\{include: entries\}\)\);\s*$/);
 const sha = "a".repeat(40);
 const nightlyWorkflow = readFileSync(new URL("../.github/workflows/nightly-ci.yml", import.meta.url), "utf8");
-function nightlyScript(id) {
-  const step = nightlyWorkflow.split("\n      - ").find(step => step.includes(`\n        id: ${id}\n`));
-  assert.ok(step, `Missing nightly step: ${id}`);
-  return step.match(/          script: \|\n((?:(?:            .*)?\n)+)/)[1];
+function nightlyScript(id, workflow = nightlyWorkflow) {
+  const step = workflow.split(`        id: ${id}\n`)[1]?.split(/\n      - /)[0];
+  assert.ok(step, `missing nightly step ${id}`);
+  const script = step.match(/          script: \|\n((?:(?:            .*)?\n)+)/);
+  assert.ok(script, `missing script for nightly step ${id}`);
+  return script[1];
 }
+
+test("nightly script lookup rejects missing IDs", () => {
+  assert.throws(() => nightlyScript("unknown-step"), /missing nightly step unknown-step/);
+});
+
+test("nightly script lookup cannot borrow a later step's script", () => {
+  const fixture = `      - name: Missing script
+        id: missing
+        run: echo fixture
+      - name: Different step
+        id: different
+        with:
+          script: |
+            throw new Error('wrong step');
+`;
+  assert.throws(() => nightlyScript("missing", fixture), /missing script for nightly step missing/);
+});
+
+async function nightlyVersion(created, number, event = "schedule", attempt = 1) {
+  const outputs = {};
+  const sandbox = vm.createContext({
+    context: { repo: { owner: "ai-dynamo", repo: "aisimulate" }, runId: 123,
+      eventName: event, runAttempt: attempt },
+    core: { setOutput: (name, value) => { outputs[name] = value; } },
+    github: { rest: { actions: { getWorkflowRun: async args => {
+      assert.equal(args.owner, "ai-dynamo");
+      assert.equal(args.repo, "aisimulate");
+      assert.equal(args.run_id, 123);
+      return { data: { created_at: created, run_number: number } };
+    } } } },
+  });
+  await vm.runInContext(`(async () => { ${nightlyScript("version")} })()`, sandbox);
+  return outputs;
+}
+
+test("nightly versions are unique, date ordered, and stable across retries", async () => {
+  for (const event of ["schedule", "workflow_dispatch"]) {
+    for (const [created, number, expected] of [
+      ["2026-09-17T23:59:59Z", 1234, "202609170000001234"],
+      ["2026-09-17T23:59:59Z", 1235, "202609170000001235"],
+      ["2026-09-18T00:00:00Z", 1236, "202609180000001236"],
+    ]) {
+      const outputs = await nightlyVersion(created, number, event);
+      assert.deepEqual(outputs, { "dev-date": created.slice(0, 10).replaceAll("-", ""),
+        "dev-version": expected });
+      assert.deepEqual(await nightlyVersion(created, number, event, 2), outputs);
+    }
+  }
+});
+
+test("nightly versions reject invalid run metadata", async () => {
+  for (const number of [0, -1, 10000000000, "invalid"]) {
+    await assert.rejects(nightlyVersion("2026-09-17T00:00:00Z", number), /invalid nightly/);
+  }
+  await assert.rejects(nightlyVersion("invalid", 1234), /invalid nightly/);
+});
 
 async function nightlyTarget({ event = "workflow_dispatch", ref = "refs/heads/main", requested = sha,
   branches = ["main", "release/0.12.0", "feature/test"], statuses = { main: "ahead" }, apiError } = {}) {
