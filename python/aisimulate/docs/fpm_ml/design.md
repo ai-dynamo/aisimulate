@@ -405,6 +405,63 @@ workload, so a release artifact should be trained on the union of the workloads 
 meant to simulate. Step balancing between workloads changes the pooled numbers by at
 most 0.1 pp.
 
+### 7.3 The same three workloads on the vLLM backend (DeepSeek-V4-Flash)
+
+Same GB300 nodes and load generator, Dynamo vLLM runtime `vllm-runtime:1.4.0`,
+DeepSeek-V4-Flash (V4.1 is not in a vLLM release yet), TP4/EP4, 262k context, FP8 KV,
+`max-num-batched-tokens` 4096 on the prefill worker, full CUDA graphs on decode
+(`VLLM_USE_BREAKABLE_CUDAGRAPH` disables the torch.compile pipeline), NIXL KV transfer,
+prefix caching on; per-request lists from the `_dynamo_vllm` hook. Two capture runs per
+workload (seeds 42 and 7; the ShareGPT seed-42 c256 tier was re-captured on another
+GB300 node after an NVLink hardware fault). vLLM `wall_time` is the host clock between
+two `schedule()` calls, so scheduler overhead is part of what is learned.
+
+Input distributions differ from the SGLang runs mainly in chunking (4k instead of 16k
+prefill chunks, so 2–4× more prefill steps per request) and in vLLM keeping more
+requests in decode at once on ShareGPT (batch p50 56 / p95 161 vs. 58 / 243) and fewer on
+AgentX (p50 3 / max 23 vs. 7 / 43):
+
+| Quantity (p5 / p50 / p95 / max) | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| prefill requests per step | 1 / 1 / 2 / 7 | 1 / 4 / 12 / 83 | 1 / 1 / 2 / 2 |
+| prefill extend per request (4k chunking) | 872 / 4,096 / 4,096 / 4,096 | 14 / 309 / 764 / 1,908 | 1,376 / 4,096 / 4,096 / 4,096 |
+| prefill past per request | 2,210 / 61,288 / 180,377 / 253,731 | 0 / 0 / 1,280 / 1,959 | 0 / 29,173 / 132,060 / 200,150 |
+| decode batch | 1 / 3 / 14 / 23 | 25 / 56 / 161 / 253 | 1 / 3 / 5 / 14 |
+| decode context per request | 34k / 115k / 230k / 254k | 96 / 759 / 1,861 / 2,860 | 8.6k / 32k / 160k / 201k |
+| prefill / decode steps (both runs) | 61.6k / 1,089k | 45.1k / 697k | 56.9k / 1,341k |
+
+Decode, step-weighted MAPE (same layout as §7.2):
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 3.78% | 19.05% | 1.85% |
+| ShareGPT only | 4.20% | 1.52% | 2.44% |
+| LongBench only | 3.95% | 28.86% | 1.71% |
+| all three pooled | 3.40% | 1.54% | 1.70% |
+
+Prefill:
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 3.11% | 7.99% | 5.85% |
+| ShareGPT only | 19.22% | 2.99% | 24.03% |
+| LongBench only | 5.06% | 7.46% | 2.43% |
+| all three pooled | 3.34% | 3.01% | 3.31% |
+
+Same structure as SGLang: pooling costs nothing, and the same off-diagonal cells fail
+for the same reasons (decode batch sizes only ShareGPT reaches; prefix/extend lengths
+only AgentX and LongBench have). Two backend differences: AgentX decode is 3.8% on vLLM
+against 2.3% on SGLang (median 1.0%, p95 7%: the host-clock `wall_time` adds a
+scheduler-side tail that the CUDA-event timing of SGLang does not have), and LongBench
+prefill is 2.4% against 0.6% (4k chunks are shorter steps, so the same absolute jitter
+is a larger share).
+
+One capture-side lesson from this set: the vLLM capture script also ran an extra ZMQ
+subscriber that re-decoded the FPM payload with the stock typed struct; its files lacked
+the per-request lists and a model trained on them landed at 12–19% decode error. The
+Dynamo relay files recorded in parallel were complete and are the only source used. See
+§2a item 6.
+
 ## 8. Speed
 
 **Inference** (Rust tree walk through the PyO3 binding, one prediction = one

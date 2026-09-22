@@ -351,6 +351,35 @@ Accuracy, step-weighted MAPE per raw iteration, rows = training data, columns = 
 
 Each workload lacks a region another one has (ShareGPT never sees 16k chunks or large past; AgentX and LongBench never see decode batches above ~40; LongBench has no short requests and no prefix hits), so any single-workload model extrapolates badly on at least one other workload. The pooled model matches or beats every single-workload model on its own workload. None of the three covers large decode batches at long context; that region remains untested.
 
+### The same workloads on the vLLM backend
+
+DeepSeek-V4-Flash on `vllm-runtime:1.4.0` (V4.1 has no vLLM release yet), same GB300
+nodes, two capture runs per workload, per-request lists from the `_dynamo_vllm` hook,
+recorded with the Dynamo relay sink. Step-weighted MAPE, same layout as above:
+
+Decode
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 3.78% | 19.05% | 1.85% |
+| ShareGPT only | 4.20% | 1.52% | 2.44% |
+| LongBench only | 3.95% | 28.86% | 1.71% |
+| all three pooled | 3.40% | 1.54% | 1.70% |
+
+Prefill
+
+| Training data \ test set | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 3.11% | 7.99% | 5.85% |
+| ShareGPT only | 19.22% | 2.99% | 24.03% |
+| LongBench only | 5.06% | 7.46% | 2.43% |
+| all three pooled | 3.34% | 3.01% | 3.31% |
+
+vLLM `wall_time` is host time between `schedule()` calls (includes scheduler
+overhead; AgentX decode 3.8% vs 2.3% on SGLang), and its 4k prefill chunks make
+each prefill step shorter (LongBench prefill 2.4% vs 0.6%). The pooled model
+again matches every single-workload model on its own workload.
+
 ## Limitations
 
 - Learned mode is SDK-only in this release: `best_available(config)` and
