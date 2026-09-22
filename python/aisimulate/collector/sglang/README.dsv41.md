@@ -112,10 +112,15 @@ On an owned allocation with the matching visible GPU count, bind the actual
 HOME cache and `/root/.cache` to the same allocation-private `home-cache`
 directory, set `DSV41_PRIVATE_CACHE` to its parent, and set
 `SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE=env://` before native imports. Verify
-the container's SHA-256 before setting `DSV41_LAUNCH_IMAGE_SHA256`. Launch with
-the pinned framework installed:
+the container's SHA-256 before setting `DSV41_LAUNCH_IMAGE_SHA256`. Run these
+OP collectors from the full checkout's `python/aisimulate` directory inside the
+pinned framework container; they are not included in the prediction wheel.
+Starting at the checkout root:
 
 ```bash
+cd python/aisimulate
+export SGLANG_DSV4_FP4_EXPERTS=1
+export SGLANG_ENABLE_DSV41_ENGRAM_HOST_TABLE=0
 python -m torch.distributed.run --standalone --nproc-per-node=2 \
   -m collector.sglang.dsv41_isolated_runner \
   --plan /campaign/plan.json --manifest /campaign/manifest.json \
@@ -210,7 +215,8 @@ Prepare a three-case smoke with uncached prefill, batch-two cached prefill whose
 query exceeds the 128-token tail, and batch-two real-KV decode, for each TP and
 both profiles. Qualify this producer on the target allocation before a separate
 calibration run. Capability evidence from a different adapter is not timing
-acceptance. With the same private cache and verified-image setup as above:
+acceptance. Use the same checkout directory, native environment variables, private
+cache and verified-image setup as above:
 
 ```bash
 python -m torch.distributed.run --standalone --nproc-per-node=2 \
