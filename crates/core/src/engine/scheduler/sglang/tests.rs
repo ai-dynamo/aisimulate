@@ -298,6 +298,7 @@ fn zero_output_request_completes_after_prefill() {
 
     assert!(core.is_empty());
     assert_eq!(pass.completed_requests, 1);
+    assert_eq!(pass.committed_requests, vec![uuid]);
     let fpm = pass.fpm.as_ref().unwrap();
     assert_eq!(fpm.num_decode_requests, 0);
     assert_eq!(fpm.sum_decode_kv_tokens, 0);
@@ -1945,6 +1946,7 @@ mod forward_pass_metrics {
         });
         let seed_pass = core.execute_pass(&mut collector, 0.0);
         assert_eq!(seed_pass.completed_requests, 1);
+        assert_eq!(seed_pass.committed_requests, vec![Uuid::from_u128(90_004)]);
 
         let uuid = core.receive(DirectRequest {
             tokens,
@@ -1955,6 +1957,7 @@ mod forward_pass_metrics {
         let pass = core.execute_pass(&mut collector, seed_pass.end_ms);
 
         assert_eq!(pass.completed_requests, 1);
+        assert!(pass.committed_requests.is_empty());
         assert_eq!(pass.mocker_metrics.sglang_cache_hit_tokens, 8);
         assert_eq!(pass.mocker_metrics.sglang_cache_total_tokens, 8);
         let fpm = pass.fpm.as_ref().unwrap();
@@ -1972,6 +1975,40 @@ mod forward_pass_metrics {
                 ..
             }] if *signal_uuid == uuid
         ));
+    }
+
+    #[test]
+    fn fully_cached_zero_output_request_is_not_committed_with_cold_sibling() {
+        let mut core = SglangCore::new(fpm_args());
+        let tokens = (0..8).collect::<Vec<_>>();
+        let mut collector = crate::engine::trace::TraceCollector::default();
+
+        core.receive(direct_request(tokens.clone(), 0));
+        let seed_pass = core.execute_pass(&mut collector, 0.0);
+        assert_eq!(seed_pass.completed_requests, 1);
+
+        let cached = core.receive(direct_request(tokens, 0));
+        let cold = core.receive(direct_request((100..108).collect(), 0));
+        let pass = core.execute_pass(&mut collector, seed_pass.end_ms);
+
+        assert_eq!(pass.completed_requests, 2);
+        assert_eq!(pass.committed_requests, vec![cold]);
+        assert!(pass.end_ms > seed_pass.end_ms);
+        assert_eq!(pass.mocker_metrics.sglang_cache_hit_tokens, 8);
+        assert_eq!(pass.mocker_metrics.sglang_cache_total_tokens, 16);
+        let fpm = pass.fpm.as_ref().unwrap();
+        assert_eq!(fpm.num_prefill_requests, 1);
+        assert_eq!(fpm.sum_prefill_tokens, 8);
+        assert_eq!(fpm.num_decode_requests, 0);
+        for uuid in [cached, cold] {
+            assert!(pass.output_signals.iter().any(|signal| {
+                signal.uuid == uuid
+                    && signal.token_id.is_none()
+                    && signal.completed
+                    && !signal.rejected
+            }));
+        }
+        assert!(core.is_empty());
     }
 
     #[test]

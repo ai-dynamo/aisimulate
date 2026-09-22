@@ -1814,6 +1814,106 @@ mod agentic_warmup_tests {
         }
     }
 
+    #[rstest::rstest]
+    #[case::vllm(Backend::Vllm)]
+    #[case::sglang(Backend::Sglang)]
+    fn profile_cancel_counts_only_real_work_in_mixed_cache_only_batch(#[case] backend: Backend) {
+        let row = |id: &str, start, hashes| AgenticMooncakeRow {
+            request_id: id.into(),
+            play_id: "mixed-cache".into(),
+            session_id: id.into(),
+            model: "model".into(),
+            input_length: Some(128),
+            output_length: Some(0),
+            hash_ids: Some(hashes),
+            not_before_ms: start,
+            recorded_api_time_ms: Some(20.0),
+            ..Default::default()
+        };
+        let seed = row("seed", 0.0, vec![10, 20]);
+        let mut cached = row("cached", 30.0, vec![10, 20]);
+        let mut cold = row("cold", 30.0, vec![30, 40]);
+        for child in [&mut cached, &mut cold] {
+            child.dependencies = vec![AgenticDependency {
+                request_id: "seed".into(),
+                trigger: AgenticDependencyTrigger::Completion,
+                relation: AgenticDependencyRelation::Spawn,
+                delay_ms: 10.0,
+            }];
+        }
+        let graph = ValidatedAgenticGraph::from_agentic_mooncake_rows(
+            AgenticMooncakeHeader {
+                schema: AGENTIC_MOONCAKE_SCHEMA.into(),
+                version: AGENTIC_MOONCAKE_VERSION,
+                block_size: 64,
+                hash_id_scope: AgenticHashIdScope::Local,
+                source: AgenticSourceProvenance {
+                    format: "self-authored".into(),
+                    digest: "mixed-cache-cancellation".into(),
+                },
+            },
+            vec![seed, cached, cold],
+        )
+        .unwrap();
+        let prepared = graph
+            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 42 })
+            .unwrap();
+        let play = prepared.context().prepare_play_from_start(0, 0).unwrap();
+        let driver = WorkloadDriver::new_agentic_snapshots(
+            PreparedAgenticSnapshots::from_plays(vec![play]).unwrap(),
+            64,
+            true,
+            1.0,
+        )
+        .unwrap();
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                block_size: 64,
+                num_gpu_blocks: 64,
+                enable_prefix_caching: true,
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 20.0,
+                    decode_ms: 0.0,
+                },
+                ..EngineConfig::for_backend(backend)
+            },
+            ..Default::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut replay = Runtime::new_composed(
+            factory,
+            AdmissionQueue::new_workload(driver, ReplayMode::Trace),
+            1,
+            None,
+            |dp, topology| Ok(AggregatedRoundRobinPlacement::new(dp, topology)),
+        )
+        .unwrap()
+        .with_per_request_records(true);
+        replay
+            .admission
+            .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                duration_seconds: 0.035,
+                response_grace_seconds: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+        let report = replay.run().unwrap().0.finish();
+        let profile = report.agentic_profile.as_ref().unwrap();
+        assert_eq!(profile.finished_at_ms, Some(35.0));
+        assert_eq!(profile.canceled_requests, 2);
+        assert_eq!(profile.client_in_flight_requests, 0);
+        assert_eq!(profile.unsettled_server_requests, 1);
+        assert_eq!(profile.server_unsettled_requests, 1);
+        let cached = report
+            .per_request
+            .iter()
+            .find(|record| record.request_id.as_deref() == Some("cached"))
+            .unwrap();
+        assert_eq!(cached.terminal_status, ReplayTerminalStatus::Canceled);
+    }
+
     #[test]
     fn profile_summary_and_detailed_metrics_match_including_grace() {
         for backend in [Backend::Vllm, Backend::Sglang] {
