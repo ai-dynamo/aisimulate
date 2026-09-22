@@ -515,7 +515,7 @@ JSON and parses it in Rust on every call.
 
 ![Estimator latency, native vs GBDT, Rust layer and Python layer](figs/estimator_latency_native_vs_gbdt.png)
 
-| | native: ops per estimate¹ | native, Rust µs | GBDT: ops per estimate² | GBDT, Rust µs | native, Python µs | GBDT, Python µs |
+| | **op-level model** (native analytic): ops per estimate¹ | **op-level model**, Rust µs | **learned GBDT**: ops per estimate² | **learned GBDT**, Rust µs | op-level model, Python µs | learned GBDT, Python µs |
 | --- | --- | --- | --- | --- | --- | --- |
 | decode bs 1, context 32k | ~0.5–1.5 k | 1.4 | 1,682 (1,239 comparisons + 400 adds + ~42 feature ops) | 3.3 | 9.1 | 11.1 |
 | decode bs 16, context 32k | ~0.5–1.5 k | 1.4 | 2,072 (1,449 + 400 + ~222) | 4.3 | 12.0 | 15.0 |
@@ -525,13 +525,13 @@ JSON and parses it in Rust on every call.
 | prefill 4096 tokens, prefix 64k | ~1.5–4 k | 3.5 | 1,948 (1,505 + 400 + ~42) | 4.5 | 11.4 | 12.2 |
 | model construction | | 2.1 s (decode), 0.9 s (prefill) | | 5–8 ms | | |
 
-¹ Estimated from the interpolation code, not instrumented: 16 operator evaluations, each 1–2
+¹ Op-level (native analytic) model, estimated from the interpolation code, not instrumented: 16 operator evaluations, each 1–2
 perf-table lookups; an exact-key hit is a map lookup (~10 operations), a miss recurses over
 the 2–3 table axes (binary search of ~6 comparisons per visited node, 2 neighbours per axis,
 4–8 leaves, one linear blend of ~4 operations per internal node), i.e. roughly 30–120
 arithmetic operations per lookup, plus the attention/MoE modules' closed-form SOL terms.
 The two plateaus in the measured time (1.4 µs vs 3.5 µs) match the hit-vs-miss split.
-² Exact, counted by walking the trained artifact on the same synthetic inputs: internal
+² Learned GBDT, exact, counted by walking the trained artifact on the same synthetic inputs: internal
 nodes visited across the 400 trees (comparisons; mean leaf depth 3.1–5.8 for these inputs),
 400 leaf additions, plus the 18-feature build (~12 operations per request + ~30).
 
