@@ -32,9 +32,9 @@ architecture and topology; a system YAML is not a live allocation receipt.
 | System | Capacity per GPU in system YAML | TP2, both profiles | TP4, both profiles |
 | --- | ---: | --- | --- |
 | `h100_sxm` | 80 GiB | Weights exceed capacity | Weights exceed capacity |
-| `h200_sxm` | 141 GiB | Weights exceed capacity | Native Humming required; static fraction 0.9 is insufficient |
-| `b200_sxm` | 180 GiB | Weights exceed capacity | Runtime qualification required |
-| `gb200` | 185.03 GiB | Weights exceed capacity | Runtime qualification required |
+| `h200_sxm` | 141 GiB | Weights exceed capacity | Native Humming full smoke passed at static fraction 0.98; bounded qualification pending |
+| `b200_sxm` | 180 GiB | Weights exceed capacity | Full smoke observed; accepted FPM profiles pending |
+| `gb200` | 185.03 GiB | Weights exceed capacity | Full smoke and all ten fixed geometry suites passed; accepted FPM profiles pending |
 
 Capacity rejection is not a failed GPU experiment and must not be reported as
 an observed OOM. A bounded decoder profile does not cure weight residency.
@@ -54,8 +54,20 @@ weights, and shared RoPE buffers give a TP4 residency lower bound of 126.94 GiB.
 On the observed H200 allocation, CUDA reports 139.84 GiB total; a static memory
 fraction of 0.9 permits at most 125.86 GiB before other runtime allocations.
 That budget cannot fit the lower bound. It does not prove that the model exceeds
-physical H200 memory. A higher declared budget requires a separate native load
-diagnostic and real-KV canary; it is not collection admission.
+physical H200 memory. A separate native load diagnostic at fraction 0.98 observed
+127.18 GiB of unique resident tensor storage per rank. The subsequent full
+ordinary-serving qualification proved a physical 5120-token KV pool on all four
+ranks, prefix reuse and clean client, frontend and worker exits. This establishes
+that this configuration can run; calibration and independent held-out accuracy
+remain separate requirements.
+
+For that H200 qualification, untimed startup requests used the same live serving
+worker and exact token content as the ordinary canary, with distinct request
+identities. The original 90-second canary deadline was unchanged, and all startup
+and canary FPM records remained in the lifetime audit. Earlier independent-engine
+startup attempts and failed canaries remain failed evidence. Humming profiles
+require their distinct `w4a16_mxfp4_humming` consumer identity; they must not be
+loaded as Blackwell TRTLLM profiles.
 
 These dimensions follow SGLang
 [`1aa0e962b206102b7c439a4a0c4981cfec6e87bc`](https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc):
