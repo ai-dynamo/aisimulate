@@ -14,10 +14,10 @@ use super::evidence::{
 };
 use super::progress::ReplayProgress;
 use super::runtime_utils::{
-    ReplayStepOutcome, next_non_telemetry_event_ms, next_timestamp as choose_next_timestamp,
-    pop_ready_scaling_tick, pop_ready_telemetry_tick, pop_ready_worker_completions,
-    pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick, push_worker_completions,
-    push_worker_ready, validate_policy_wakeup,
+    DispatchFailure, ReplayStepOutcome, next_non_telemetry_event_ms,
+    next_timestamp as choose_next_timestamp, pop_ready_scaling_tick, pop_ready_telemetry_tick,
+    pop_ready_worker_completions, pop_ready_worker_ready, push_scaling_tick, push_telemetry_tick,
+    push_worker_completions, push_worker_ready, validate_policy_wakeup,
 };
 use super::scaling::{LatestFpmBuffer, ReplayScalingPolicy, ReplayScalingSnapshot};
 use super::telemetry::{
@@ -57,6 +57,7 @@ where
     PlacementPolicyImpl: PlacementPolicy<ReplayRequestPayload, Metadata = Metadata, Observation = Observation::Batch>,
 {
     now_ms: f64,
+    dispatch_failure: DispatchFailure,
     dp_size: u32,
     next_event_seq: u64,
     next_scaling_tick_ordinal: u64,
@@ -144,6 +145,7 @@ where
 
         Ok(Self {
             now_ms: 0.0,
+            dispatch_failure: DispatchFailure::default(),
             dp_size,
             next_event_seq: 0,
             next_scaling_tick_ordinal: 0,
@@ -274,10 +276,26 @@ where
         worker_idx: usize,
     ) -> anyhow::Result<()> {
         if let Err(error) = self.engine.dispatch(worker_idx, request, self.now_ms) {
-            self.placement.dispatch_aborted(uuid, self.now_ms)?;
-            return Err(error);
+            // A rejected duplicate still belongs to the original submission;
+            // only an accepted dispatch may be rolled back here.
+            let abort = self.placement.dispatch_aborted(uuid, self.now_ms);
+            self.requests.remove(&uuid);
+            return Err(self.dispatch_failure.record(error, Ok(()), abort));
         }
-        self.placement.dispatch_committed(uuid, self.now_ms)?;
+        if let Err(error) = self.placement.dispatch_committed(uuid, self.now_ms) {
+            let rollback = self.engine.rollback_dispatch(
+                worker_idx,
+                uuid,
+                Command::CancelRequest {
+                    request_id: uuid,
+                    discard_pending_output: true,
+                },
+                self.now_ms,
+            );
+            let abort = self.placement.dispatch_aborted(uuid, self.now_ms);
+            self.requests.remove(&uuid);
+            return Err(self.dispatch_failure.record(error, rollback, abort));
+        }
         // Aggregated replay uses a single pool. Treat the assignment as the
         // decode_worker_idx so per-request records consistently carry the
         // worker that served the request; prefill_worker_idx stays None,
@@ -874,6 +892,7 @@ where
 
     /// Repeatedly process all work that becomes possible without advancing logical time.
     fn drain_current_timestamp(&mut self) -> anyhow::Result<()> {
+        self.dispatch_failure.ensure_healthy()?;
         #[cfg(test)]
         {
             self.stats.semantic_drain_count += 1;
@@ -1490,6 +1509,7 @@ where
     }
 
     fn ensure_drive_started(&mut self) -> anyhow::Result<bool> {
+        self.dispatch_failure.ensure_healthy()?;
         if self.drive_started {
             return Ok(false);
         }
@@ -2632,8 +2652,11 @@ where
     }
 
     /// Admit `request` at the current simulated time. The returned id
-    /// correlates the request with later measurements.
+    /// correlates the request with later measurements. A dispatch failure
+    /// poisons this runtime: its policy/collector may have changed even after
+    /// engine rollback. Construct a new runtime instead of retrying submission.
     pub(crate) fn submit_dynamic(&mut self, request: DirectRequest) -> anyhow::Result<Uuid> {
+        self.dispatch_failure.ensure_healthy()?;
         let arrival_time_ms = self.now_ms;
         let uuid = self.assign_request(
             ReplayRequestPayload::materialized(request),
@@ -2653,6 +2676,7 @@ where
         &mut self,
         uuid: Uuid,
     ) -> anyhow::Result<Option<ReplayTerminalStatus>> {
+        self.dispatch_failure.ensure_healthy()?;
         let Some((phase, scheduler_id)) = self
             .requests
             .get(&uuid)
@@ -2761,6 +2785,7 @@ where
     /// bypasses the terminal would break the invariant silently instead of
     /// failing a test.
     pub(crate) fn step_dynamic_until(&mut self, until_ms: f64) -> anyhow::Result<f64> {
+        self.dispatch_failure.ensure_healthy()?;
         if until_ms.is_nan() || until_ms < self.now_ms {
             bail!(
                 "aggregated step deadline {until_ms}ms precedes runtime time {}ms",
@@ -2809,6 +2834,7 @@ where
         &mut self,
         wall_ms: f64,
     ) -> anyhow::Result<crate::replay::ReplayReport> {
+        self.dispatch_failure.ensure_healthy()?;
         anyhow::ensure!(wall_ms.is_finite(), "replay report wall_ms must be finite");
         anyhow::ensure!(
             self.is_workload_done(),

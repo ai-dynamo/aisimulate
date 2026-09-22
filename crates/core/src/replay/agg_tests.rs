@@ -1062,3 +1062,140 @@ fn agg_consumes_same_now_and_future_policy_wakeups(#[case] wakeup_ms: f64) {
     assert_eq!(report.request_counts.completed_requests, 1);
     assert_eq!(report.per_request[0].first_admit_ms, Some(wakeup_ms));
 }
+
+fn failing_dispatch_runtime(
+    backend: crate::engine::Backend,
+    fail_commit: bool,
+    fail_abort: bool,
+) -> AggRuntimeImpl<
+    crate::replay::runtime_utils::dispatch_failure_test_policy::FailingDispatchPlacement,
+    NoEngineEvents,
+    NoReplayMetadata,
+> {
+    use crate::replay::runtime_utils::dispatch_failure_test_policy::FailingDispatchPlacement;
+    let config = ReplayEngineConfig {
+        rank: EngineConfig {
+            timing_model: TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            },
+            ..EngineConfig::for_backend(backend)
+        },
+        ..ReplayEngineConfig::default()
+    };
+    let factory = ReplayEngineFactory::new()
+        .role_factory(&config, WorkerStage::Aggregated, false)
+        .unwrap();
+    AggRuntimeImpl::new_composed(
+        factory,
+        AdmissionQueue::new_requests(VecDeque::new(), ReplayMode::Trace),
+        1,
+        None,
+        |_, _| {
+            Ok(FailingDispatchPlacement {
+                fail_commit,
+                fail_abort,
+                ..Default::default()
+            })
+        },
+    )
+    .unwrap()
+    .into_steppable()
+}
+
+#[rstest::rstest]
+fn dispatch_commit_failure_rolls_back_and_prevents_runtime_reuse(
+    #[values(crate::engine::Backend::Vllm, crate::engine::Backend::Sglang)]
+    backend: crate::engine::Backend,
+    #[values(false, true)] fail_abort: bool,
+) {
+    let mut runtime = failing_dispatch_runtime(backend, true, fail_abort);
+    let error = runtime.submit_dynamic(request(1, 0.0)).unwrap_err();
+    assert_eq!(
+        runtime.engine.in_flight(),
+        0,
+        "failed submission retained engine ownership"
+    );
+    assert!(!runtime.engine.has_runnable_worker());
+    assert!(runtime.requests.is_empty());
+    assert_eq!(
+        *runtime.placement.calls.lock().unwrap(),
+        ["commit", "abort"]
+    );
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string() == "injected commit failure")
+    );
+    assert!(
+        error.to_string().contains("injected commit failure"),
+        "{error:#}"
+    );
+    assert_eq!(
+        format!("{error:#}").contains("injected abort failure"),
+        fail_abort
+    );
+    runtime.placement.fail_commit = false;
+    runtime.placement.fail_abort = false;
+    for retry_id in [1, 2] {
+        assert!(
+            runtime
+                .submit_dynamic(request(retry_id, 0.0))
+                .unwrap_err()
+                .to_string()
+                .contains("poisoned")
+        );
+    }
+    assert!(
+        runtime
+            .step_dynamic_until(10.0)
+            .unwrap_err()
+            .to_string()
+            .contains("poisoned")
+    );
+    assert!(runtime.step().unwrap_err().to_string().contains("poisoned"));
+    assert!(
+        runtime
+            .take_report_dynamic(0.0)
+            .unwrap_err()
+            .to_string()
+            .contains("poisoned")
+    );
+    assert!(
+        runtime
+            .run()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("poisoned")
+    );
+}
+
+#[rstest::rstest]
+fn dispatch_abort_failure_preserves_native_error_and_existing_ownership(
+    #[values(crate::engine::Backend::Vllm, crate::engine::Backend::Sglang)]
+    backend: crate::engine::Backend,
+) {
+    let mut runtime = failing_dispatch_runtime(backend, false, true);
+    runtime.engine.dispatch(0, request(1, 0.0), 0.0).unwrap();
+    let error = runtime.submit_dynamic(request(1, 0.0)).unwrap_err();
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains("already active")),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("already active"), "{error:#}");
+    assert!(format!("{error:#}").contains("injected abort failure"));
+    // A rejected duplicate must never cancel the engine's original request.
+    assert_eq!(runtime.engine.in_flight(), 1);
+    assert!(runtime.requests.is_empty());
+    assert_eq!(*runtime.placement.calls.lock().unwrap(), ["abort"]);
+    assert!(
+        runtime
+            .step_dynamic_until(10.0)
+            .unwrap_err()
+            .to_string()
+            .contains("poisoned")
+    );
+}

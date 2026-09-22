@@ -107,10 +107,17 @@ pub trait PlacementPolicy<Request> {
     fn observe(&mut self, observation: Self::Observation, now_ms: f64) -> Result<Vec<Placement>>;
     /// The selected engine accepted ownership (destination reservation for P/D
     /// decode). Policies may commit a tentative binding only at this boundary.
+    /// If this fails, replay attempts to cancel the accepted engine request and
+    /// calls `dispatch_aborted`, then permanently fails the runtime. Callbacks
+    /// need not be transactional; replay cannot safely resume or report after a
+    /// potentially partial policy commit, even when engine cleanup succeeds.
     fn dispatch_committed(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
         Ok(())
     }
-    /// The selected engine rejected ownership. Discard tentative policy state.
+    /// The selected engine rejected ownership, or rollback was attempted after
+    /// `dispatch_committed` failed. Discard tentative policy
+    /// state; tolerate partial commits. An abort error is reported together with
+    /// the original dispatch error and permanently fails the runtime.
     fn dispatch_aborted(&mut self, _request_id: Uuid, _now_ms: f64) -> Result<()> {
         Ok(())
     }

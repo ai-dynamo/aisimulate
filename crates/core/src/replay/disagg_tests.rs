@@ -3785,3 +3785,159 @@ fn disagg_consumes_same_now_and_future_policy_wakeups(
     assert_eq!(report.request_counts.completed_requests, 1);
     assert!(report.per_request[0].terminal_time_ms >= wakeup_ms);
 }
+
+#[rstest::rstest]
+fn disagg_dispatch_commit_failure_rolls_back_and_prevents_runtime_reuse(
+    #[values(EngineType::Vllm, EngineType::Sglang)] backend: EngineType,
+    #[values(false, true)] fail_prefill: bool,
+    #[values(false, true)] fail_abort: bool,
+) {
+    use crate::replay::runtime_utils::dispatch_failure_test_policy::FailingDispatchPlacement;
+    let config = match backend {
+        EngineType::Vllm => disagg_config(),
+        EngineType::Sglang => sglang_disagg_config(),
+        _ => unreachable!(),
+    }
+    .runtime_config(false)
+    .unwrap();
+    let mut runtime = DisaggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, _, _, _| {
+            Ok((
+                FailingDispatchPlacement {
+                    fail_commit: fail_prefill,
+                    fail_abort: fail_prefill && fail_abort,
+                    ..Default::default()
+                },
+                FailingDispatchPlacement {
+                    fail_commit: !fail_prefill,
+                    fail_abort: !fail_prefill && fail_abort,
+                    ..Default::default()
+                },
+            ))
+        },
+    )
+    .unwrap();
+    let error = loop {
+        match runtime.step() {
+            Err(error) => break error,
+            Ok(ReplayStepOutcome::Settled { .. }) => {}
+            Ok(other) => panic!("failure was not surfaced: {other:?}"),
+        }
+    };
+    let (engine, policy) = if fail_prefill {
+        (&runtime.prefill_engine, &runtime.prefill_placement)
+    } else {
+        (&runtime.decode_engine, &runtime.decode_placement)
+    };
+    assert_eq!(
+        engine.in_flight(),
+        0,
+        "failed dispatch retained engine ownership"
+    );
+    assert!(!engine.has_runnable_worker());
+    assert_eq!(*policy.calls.lock().unwrap(), ["commit", "abort"]);
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string() == "injected commit failure"),
+        "{error:#}"
+    );
+    assert!(
+        error.to_string().contains("injected commit failure"),
+        "{error:#}"
+    );
+    assert_eq!(
+        format!("{error:#}").contains("injected abort failure"),
+        fail_abort
+    );
+    assert!(runtime.step().unwrap_err().to_string().contains("poisoned"));
+    assert!(
+        runtime
+            .run()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("poisoned")
+    );
+}
+
+#[rstest::rstest]
+fn disagg_dispatch_abort_failure_preserves_native_rejection(
+    #[values(EngineType::Vllm, EngineType::Sglang)] backend: EngineType,
+    #[values(false, true)] fail_prefill: bool,
+) {
+    use crate::replay::runtime_utils::dispatch_failure_test_policy::FailingDispatchPlacement;
+    let config = match backend {
+        EngineType::Vllm => disagg_config(),
+        EngineType::Sglang => sglang_disagg_config(),
+        _ => unreachable!(),
+    }
+    .runtime_config(false)
+    .unwrap();
+    let mut runtime = DisaggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, _, _, _| {
+            Ok((
+                FailingDispatchPlacement {
+                    fail_abort: fail_prefill,
+                    ..Default::default()
+                },
+                FailingDispatchPlacement {
+                    fail_abort: !fail_prefill,
+                    ..Default::default()
+                },
+            ))
+        },
+    )
+    .unwrap();
+    let engine = if fail_prefill {
+        &mut runtime.prefill_engine
+    } else {
+        &mut runtime.decode_engine
+    };
+    if fail_prefill {
+        engine.dispatch(0, request(1, 64, 2, 0.0), 0.0).unwrap();
+    } else {
+        // Keep the duplicate destination parked: an ordinary decode submit
+        // would execute before the coordinator attempts its reservation.
+        engine
+            .apply_command(
+                0,
+                Command::ReserveDestination {
+                    handoff_id: HandoffId::new(Uuid::from_u128(999)),
+                    request: direct_to_native(request(1, 64, 2, 0.0)).unwrap(),
+                },
+                0.0,
+            )
+            .unwrap();
+    }
+    let error = loop {
+        match runtime.step() {
+            Err(error) => break error,
+            Ok(ReplayStepOutcome::Settled { .. }) => {}
+            Ok(other) => panic!("failure was not surfaced: {other:?}"),
+        }
+    };
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains("already active")),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("already active"), "{error:#}");
+    assert!(format!("{error:#}").contains("injected abort failure"));
+    assert!(runtime.step().unwrap_err().to_string().contains("poisoned"));
+    assert!(
+        runtime
+            .run()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("poisoned")
+    );
+}

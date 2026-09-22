@@ -673,6 +673,30 @@ where
         Ok(())
     }
 
+    /// Undo an accepted dispatch before abandoning a failed runtime. Effects
+    /// are deliberately not fed back into a policy whose callback already
+    /// failed; the caller must poison replay and forbid subsequent reporting.
+    pub(crate) fn rollback_dispatch(
+        &mut self,
+        scheduler_id: usize,
+        request_id: Uuid,
+        cancel: Command,
+        now_ms: f64,
+    ) -> Result<()> {
+        let effects = self.apply_command(scheduler_id, cancel, now_ms)?;
+        anyhow::ensure!(
+            matches!(effects.result, CommandResult::Applied | CommandResult::Noop),
+            "native engine returned an unexpected dispatch rollback result"
+        );
+        let owner = self.scheduler_owner(scheduler_id)?;
+        anyhow::ensure!(
+            !self.required_worker(owner.worker_id)?.in_flight_by_rank[owner.dp_rank as usize]
+                .contains(&request_id),
+            "native engine retained request {request_id} after dispatch rollback"
+        );
+        Ok(())
+    }
+
     pub(crate) fn apply_command(
         &mut self,
         scheduler_id: usize,
