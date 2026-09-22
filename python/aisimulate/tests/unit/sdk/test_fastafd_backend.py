@@ -50,7 +50,6 @@ def _compile(profile):
         attention_dp_size=8,
         moe_tp_size=1,
         moe_ep_size=8,
-        moe_quant_mode="w4a8_mxfp4_mxfp8",
         forward_model="op_level",
         fastafd_profile_path=str(profile),
         fastafd_moe_backend="megamoe",

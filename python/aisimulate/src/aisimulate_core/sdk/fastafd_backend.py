@@ -11,6 +11,10 @@ from typing import Any
 import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk.fastafd_profile import FastAFDMoEStageProfile
 
+_PROFILE_PRECISION_ALIASES = {
+    "w4a8_mxfp4_mxfp8_trtllm": "w4a8_mxfp4_mxfp8",
+}
+
 
 def apply_fastafd_moe_profile(
     model: Any,
@@ -36,7 +40,10 @@ def apply_fastafd_moe_profile(
 
     profile = FastAFDMoEStageProfile.load(profile_path)
     topology = f"ep{config.moe_ep_size}"
-    moe_precision = config.moe_quant_mode.value.name
+    moe_precision = _PROFILE_PRECISION_ALIASES.get(
+        config.moe_quant_mode.value.name,
+        config.moe_quant_mode.value.name,
+    )
     common = {
         "model_path": model_path,
         "system": system,
