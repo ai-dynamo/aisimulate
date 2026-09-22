@@ -93,7 +93,7 @@ class FastAFDMoEStageProfile:
         source = Path(path).expanduser().resolve()
         try:
             raw = source.read_bytes()
-            payload = json.loads(raw)
+            payload = json.loads(raw, object_pairs_hook=_unique_object)
         except json.JSONDecodeError as exc:
             raise ValueError(f"FastAFD profile is not valid JSON: {source}: {exc}") from exc
         if not isinstance(payload, dict):
@@ -119,6 +119,15 @@ class FastAFDMoEStageProfile:
         if measurement is None:
             raise KeyError(f"no exact FastAFD MoE stage measurement for {key}")
         return measurement
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON object key: {key!r}")
+        result[key] = value
+    return result
 
 
 def _parse_entry(raw: Any, index: int) -> FastAFDMoEStageMeasurement:
