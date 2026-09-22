@@ -7,8 +7,8 @@ of `ForwardPassPerfModel` next to the native analytic model and the regression s
 and is exposed today through the SDK (`aisimulate_core.sdk.fpm_learned` for training,
 `RustForwardPassPerfModel.from_learned` for inference).
 
-Companion documents in this directory: [`learned-forward-pass-model.md`](learned-forward-pass-model.md)
-(how to collect, train and use) and [`patches/`](patches/README.md) (proposed producer patches).
+Companion document in this directory: [`learned-forward-pass-model.md`](learned-forward-pass-model.md)
+(how to collect, train and use).
 The existing FPM documentation under `../fpm/` is unchanged; everything about the learned model lives here.
 
 ## 1. Problem and design goals
@@ -90,8 +90,7 @@ scheduled request, the pair
 
 Neither field exists in Dynamo main or SGLang main. Instead of patching either code
 base, the two lists are added at runtime inside the engine process by
-`aisimulate_core.fpm_hooks`. The producer patches under
-`python/aisimulate/docs/fpm_ml/patches/` are the same change proposed upstream.
+`aisimulate_core.fpm_hooks`; no engine source is changed.
 
 ### How the hooks work
 
@@ -422,8 +421,9 @@ Loading and featurizing the FPM stream (gzip JSON lines) dominates: 204 s for th
   30k. A prefix-reuse long-context workload with many concurrent sessions (AgentX at
   higher concurrency with more prefill capacity, or a synthetic shape sweep, flagged as
   such) is needed before the model is trusted there.
-- **Per-request fields upstream.** The lists come from runtime hooks; the producer
-  patches under `docs/fpm_ml/patches/` are proposals, not merged in Dynamo or SGLang.
+- **Per-request fields upstream.** The lists come from runtime hooks that wrap private
+  engine internals; a native upstream field in Dynamo / SGLang FPM would remove that
+  dependency.
 - **Simulator wiring.** `best_available(config)` and `EstimationMode` have no learned
   option yet; the model is reachable through the SDK only.
 - **Speculative decoding.** Extends of `1 + k` are accepted, but no training data with

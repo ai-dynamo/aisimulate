@@ -77,13 +77,10 @@ presets (`sglang18`, `hisim`) need two additive, aligned lists in
 "past_kv_lengths": [32768, 7100, 950]  // KV tokens already present before the step
 ```
 
-Neither producer emits them natively yet. Two ways to add them without
-touching the engine code bases:
-
-**Runtime hooks (recommended, ships with this package).**
-`aisimulate_core.fpm_hooks` patches the producers in memory when their
-modules are imported inside the engine process, including SGLang's spawned
-scheduler subprocesses:
+Neither producer emits them natively yet. `aisimulate_core.fpm_hooks` adds
+them at runtime, in memory, when the producer modules are imported inside the
+engine process (including SGLang's spawned scheduler subprocesses); no engine
+source is modified and any stock Dynamo image produces the fields:
 
 ```bash
 # in the engine container (both backends), before launching the worker
@@ -93,25 +90,19 @@ python -m dynamo.sglang ...        # or: python -m dynamo.vllm ...
 python -m aisimulate_core.fpm_hooks dynamo.sglang -- ...
 ```
 
+What the hooks add (FPM `version` stays 1, the two fields are additive and
+ignored by aggregate-only consumers):
+
+- vLLM path: `InstrumentedScheduler._extract_scheduled` fills the lists from the
+  `SchedulerOutput` (`num_scheduled_tokens` → extend, `num_computed_tokens` → past).
+- SGLang: `_build_scheduled_request_metrics` fills them from the schedule-time
+  `batch.extend_lens` / `batch.prefix_lens` for prefill batches and from
+  `batch.seq_lens_cpu` for decode batches (the per-request attributes are already
+  reset when metrics are emitted).
+
 The hook is a no-op when a producer already carries the fields, and logs and
 skips (aggregate-only FPM) when the engine internals it wraps are missing.
-
-**Source patches (upstream proposals).** The same change as unified diffs
-against ai-dynamo/dynamo and sgl-project/sglang, see
-[`patches/`](patches/README.md). What they add (version stays 1, additive
-fields):
-
-- vLLM: `dynamo/common/forward_pass_metrics.py` (two optional list fields on
-  `ScheduledRequestMetrics`) and `dynamo/vllm/instrumented_scheduler.py`
-  (`_extract_scheduled` fills them from `num_computed_tokens` /
-  `num_new_tokens`).
-- SGLang: `sglang/srt/observability/forward_pass_metrics.py` (same two fields)
-  and `metrics_reporter._build_scheduled_request_metrics` (values from the
-  schedule-time `batch.extend_lens` / `batch.prefix_lens`; the per-request
-  attributes are already reset when metrics are emitted). Mixed batches append
-  the decode requests as `(1, seqlen)`.
-
-Streams from unpatched producers train with `--features v1` only.
+Streams recorded without the hooks train with `--features v1` only.
 
 ## 2. Train
 

@@ -1,2 +1,0 @@
-# Unified diffs carry single-space context lines; do not treat them as whitespace errors.
-*.patch -whitespace
