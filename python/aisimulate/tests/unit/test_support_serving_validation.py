@@ -431,6 +431,27 @@ def test_latency_and_throughput_are_independent_gates_with_editable_limits(servi
     assert second["recipe"] == report["recipe"]
 
 
+@pytest.mark.parametrize("argument", ["latency_p95_error", "throughput_error"])
+@pytest.mark.parametrize("limit", [False, True, -0.1, "0.2", float("nan"), float("inf"), float("-inf")])
+def test_serving_error_limits_reject_invalid_values_in_preparation_and_assessment(
+    serving_case, tmp_path, argument, limit
+):
+    case = serving_case
+    with pytest.raises(ValueError, match=f"{argument} must"):
+        serving.prepare_serving_validation(
+            trace=case.trace,
+            prediction_config=case.prediction_config,
+            output=tmp_path / "invalid-limit",
+            endpoint="http://127.0.0.1:8000",
+            tokenizer=case.tokenizer,
+            expected_execution=case.recipe["expected_execution"],
+            aiperf_python=Path("/benchmark/bin/python"),
+            **{argument: limit},
+        )
+    with pytest.raises(ValueError, match=f"{argument} must"):
+        _assess(case, **{argument: limit})
+
+
 @pytest.mark.parametrize("change", ["nested", "overlap", "prefix_fork", "multiple_plays", "mixed_timing"])
 def test_unsupported_trace_preparation_remains_incomplete(serving_case, tmp_path, change):
     case = serving_case

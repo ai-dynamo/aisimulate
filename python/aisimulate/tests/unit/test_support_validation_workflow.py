@@ -11,6 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+import yaml
 from collector.fpm_forward import cli as collector_cli
 from collector.fpm_forward import planner, repeatability
 from collector.fpm_forward.config import FPMCollectionOptions
@@ -285,21 +286,30 @@ def test_requalification_rejects_changed_or_forged_evidence(quality_case, which)
         workflow.check_collection_report(report_path, workflow.ValidationPolicy())
 
 
+@pytest.mark.parametrize("policy_format", ["json", "yaml"])
 @pytest.mark.parametrize(
     "values",
     [
         {"repeatability": {"samples": True}},
         {"serving": {"max_latency_p95_relative_error": float("nan")}},
+        {"serving": {"max_latency_p95_relative_error": -0.1}},
+        {"serving": {"max_latency_p95_relative_error": "1e-05"}},
+        {"serving": {"max_throughput_relative_error": True}},
+        {"serving": {"max_throughput_relative_error": float("inf")}},
+        {"serving": {"max_throughput_relative_error": float("-inf")}},
         {"interpolation": {"max_unsupported_fraction": 1.1}},
         {"typo": 1},
+        [],
     ],
 )
-def test_validation_policy_rejects_ambiguous_settings(values):
+def test_validation_policy_rejects_ambiguous_settings(values, tmp_path, policy_format):
+    policy = tmp_path / f"policy.{policy_format}"
+    policy.write_text(json.dumps(values) if policy_format == "json" else yaml.safe_dump(values))
     with pytest.raises(ValueError):
-        workflow.ValidationPolicy.model_validate(values)
+        workflow._policy(policy)
 
 
-def _prepare_matched(case, tmp_path):
+def _prepare_matched(case, tmp_path, *, policy=None):
     assert cli.main([*case["args"], "--execute"]) == 0
     assert cli.main(case["replay_args"]) == 0
     tokenizer = tmp_path / "tokenizer"
@@ -314,6 +324,8 @@ def _prepare_matched(case, tmp_path):
         "--replay-report",
         str(case["replay_output"] / "validation.json"),
     ]
+    if policy is not None:
+        args.extend(["--policy", str(policy)])
     assert (
         cli.main(
             [
@@ -640,7 +652,55 @@ def test_combined_gate_rejects_missing_and_stale_evidence(quality_case, tmp_path
         assert report["gates"]["collection"]["status"] == "passed"
 
 
-def test_serving_threshold_reassessment_preserves_measurements(quality_case, tmp_path):
+@pytest.mark.parametrize("policy_format", ["json", "yaml"])
+@pytest.mark.parametrize("limit", [0.0, 0.00001, 1.1])
+def test_serving_error_limits_survive_preparation_assessment_and_recheck(quality_case, tmp_path, limit, policy_format):
+    policy = tmp_path / f"policy.{policy_format}"
+    values = {"serving": {"max_latency_p95_relative_error": limit, "max_throughput_relative_error": limit}}
+    policy.write_text(json.dumps(values) if policy_format == "json" else yaml.safe_dump(values))
+    args, recipe_path, recipe, tokenizer = _prepare_matched(quality_case, tmp_path, policy=policy)
+    assert recipe["policy"]["latency_p95_relative_error"] == limit
+    assert recipe["policy"]["throughput_relative_error"] == limit
+    observed = _synthetic_serving(recipe_path, recipe, tokenizer)
+    raw = {path: path.read_bytes() for path in recipe_path.parent.rglob("*") if path.is_file()}
+    output = tmp_path / "assessed"
+    assert (
+        cli.main(
+            [
+                *args,
+                "--action",
+                "assess",
+                "--recipe",
+                str(recipe_path),
+                "--execution-evidence",
+                str(observed),
+                "--validation-output-dir",
+                str(output),
+            ]
+        )
+        == 0
+    )
+    report = serving.check_serving_validation_report(output / "serving-validation.json")
+    assert report["status"] == "passed"
+    assert report["policy"] == recipe["policy"]
+    assert report["metrics"]["ttft"]["p95_relative_error"] == 0
+    assert report["metrics"]["tpot"]["p95_relative_error"] == 0
+    assert report["metrics"]["output_throughput"]["relative_error"] == 0
+    assert raw == {path: path.read_bytes() for path in raw}
+
+
+@pytest.mark.parametrize(
+    "duration_scale,strict_limit,relaxed_limit,failed_metric",
+    [
+        (1.5, 0.2, 0.5, "ttft"),
+        (1.000001, 0.0, 0.00001, "ttft"),
+        (0.48, 1.0, 1.1, "ttft"),
+        (3.4, 1.0, 1.1, "output_throughput"),
+    ],
+)
+def test_serving_threshold_reassessment_preserves_measurements(
+    quality_case, tmp_path, duration_scale, strict_limit, relaxed_limit, failed_metric
+):
     args, recipe_path, recipe, tokenizer = _prepare_matched(quality_case, tmp_path)
     observed = _synthetic_serving(recipe_path, recipe, tokenizer)
     records = Path(recipe["artifacts_dir"]) / "profile_export.jsonl"
@@ -651,10 +711,10 @@ def test_serving_threshold_reassessment_preserves_measurements(quality_case, tmp
         duration = metadata["request_end_ns"] - metadata["request_start_ns"]
         if previous is not None:
             metadata["request_start_ns"] = previous + 100_000_000
-        metadata["request_end_ns"] = metadata["request_start_ns"] + round(duration * 1.5)
+        metadata["request_end_ns"] = metadata["request_start_ns"] + round(duration * duration_scale)
         previous = metadata["request_end_ns"]
         for key in ("time_to_first_token", "inter_token_latency"):
-            row["metrics"][key]["value"] *= 1.5
+            row["metrics"][key]["value"] *= duration_scale
     records.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
     receipt_path = recipe_path.parent / "benchmark-execution.json"
     receipt = json.loads(receipt_path.read_text())
@@ -662,12 +722,22 @@ def test_serving_threshold_reassessment_preserves_measurements(quality_case, tmp
     _write(receipt_path, receipt)
     raw = {path: path.read_bytes() for path in recipe_path.parent.rglob("*") if path.is_file()}
     assess = [*args, "--action", "assess", "--recipe", str(recipe_path), "--execution-evidence", str(observed)]
-    assert cli.main([*assess, "--validation-output-dir", str(tmp_path / "strict")]) == 1
+    strict_policy = tmp_path / "strict.json"
+    _write(
+        strict_policy,
+        {"serving": {"max_latency_p95_relative_error": strict_limit, "max_throughput_relative_error": strict_limit}},
+    )
+    assert cli.main([*assess, "--validation-output-dir", str(tmp_path / "strict"), "--policy", str(strict_policy)]) == 1
     report = json.loads((tmp_path / "strict/validation.json").read_text())
-    assert report["gates"]["serving"]["metrics"]["ttft"]["status"] == "failed"
+    assert report["gates"]["serving"]["metrics"][failed_metric]["status"] == "failed"
+    assert serving.check_serving_validation_report(tmp_path / "strict/serving-validation.json")["status"] == "failed"
     policy = tmp_path / "relaxed.json"
-    _write(policy, {"serving": {"max_latency_p95_relative_error": 0.5, "max_throughput_relative_error": 0.5}})
+    _write(
+        policy,
+        {"serving": {"max_latency_p95_relative_error": relaxed_limit, "max_throughput_relative_error": relaxed_limit}},
+    )
     assert cli.main([*assess, "--validation-output-dir", str(tmp_path / "relaxed"), "--policy", str(policy)]) == 0
+    assert serving.check_serving_validation_report(tmp_path / "relaxed/serving-validation.json")["status"] == "passed"
     assert raw == {path: path.read_bytes() for path in raw}
 
 

@@ -85,10 +85,7 @@ def _number(value: Any, label: str, *, positive: bool = False) -> float:
 
 
 def _threshold(value: float, label: str) -> float:
-    value = _number(value, label, positive=True)
-    if value > 1:
-        raise ValueError(f"{label} must be in (0, 1]")
-    return value
+    return _number(value, label)
 
 
 def _read_play(trace: Path) -> tuple[dict[str, Any] | None, list[str]]:

@@ -100,11 +100,14 @@ The profile-based collection workflow targets vLLM text decoders with
 currently require cold aggregated execution, HBM-only cache, no speculative
 decoding and `prefix_caching: false`; generated grouped configurations preserve
 that setting. A multimodal checkpoint can supply an
-unambiguous `text_config` or flat decoder fields; its encoders, projectors,
-preprocessing and other non-text resources are excluded. Preserve that scope in
-profile provenance. Unsupported cache semantics, encoder pools, AFD, speculative
-decoding, wide EP and EPLB remain outside this route. A registered class existing
-for another mode is not evidence of support for the intended FPM deployment.
+unambiguous `text_config` or flat decoder fields. Text-decoder timing and
+config-derived estimates exclude encoders, projectors, preprocessing and other
+non-text components. Observed runtime cache capacity accounts for every component
+actually loaded by the worker; do not subtract guessed encoder allocations.
+Preserve that scope in profile provenance. Unsupported cache semantics, encoder
+pools, AFD, speculative decoding, wide EP and EPLB remain outside this route. A
+registered class existing for another mode is not evidence of support for the
+intended FPM deployment.
 
 ## 2. Registered-model route: reuse or implement the model description
 

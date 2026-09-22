@@ -80,7 +80,14 @@ def _checked(ref: dict[str, Any]) -> Path:
 
 
 def _policy(path: str | Path | None) -> ValidationPolicy:
-    return ValidationPolicy.model_validate(load_yaml(path)) if path else ValidationPolicy()
+    if not path:
+        return ValidationPolicy()
+    try:
+        # YAML 1.1 treats JSON exponent notation such as 1e-05 as a string.
+        values = _json(Path(path))
+    except (OSError, json.JSONDecodeError):
+        values = load_yaml(path)
+    return ValidationPolicy.model_validate(values)
 
 
 def _fresh(output: Path, *inputs: Path) -> None:
