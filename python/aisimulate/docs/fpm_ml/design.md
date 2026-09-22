@@ -506,18 +506,37 @@ Loading and featurizing the FPM stream (gzip JSON lines) dominates: 204 s for th
 
 ### 8.1 Cost against the native op-level model
 
-Same steps, same process, both estimators called once per step through the PyO3 binding
-(DeepSeek-V4-Flash, GB300, vLLM 0.24.0 tables, TP4/EP4, single thread; 463,717 decode and
-24,965 prefill steps of one AgentX capture run):
+Time to compute one estimate, native op-level analytic model vs. learned GBDT, same
+deployment (DeepSeek-V4-Flash, GB300, vLLM 0.24.0 tables, TP4/EP4), synthetic steps on a
+grid of decode batch sizes, single Grace core, release build. Two layers were measured:
+the pure Rust call `ForwardPassPerfModel::estimate_forward_pass_time_ms` on a prebuilt
+struct (what the simulator pays), and the Python wrapper, which serialises the FPM dict to
+JSON and parses it in Rust on every call.
 
-| Estimator | µs / step decode | µs / step prefill | work per step | build time | MAPE decode | MAPE prefill |
-| --- | --- | --- | --- | --- | --- | --- |
-| native op-level (`estimation_mode=op_level`) | 15.5 | 14.8 | 16 operator evaluations (10 top-level ops, layer count folded in as a scale factor: embedding, mHC pre/post, norms, two compressed-attention variants, MoE + shared-expert overlap, logits); each is 1–2 perf-table lookups with nested grid interpolation over 2–3 axes, on the order of 300–1000 scalar operations plus map/vector work, i.e. roughly 5–15 k operations per step | 2.1 s (loads the perf database) | 6.7% | 46% |
-| learned GBDT (400 trees) | 15.8 | 19.0 | 400 trees × mean leaf depth 6.9 ≈ 2.8 k comparisons + 400 additions + the 18-feature build (~10 operations per request), about 3.3 k operations per step | 5 ms | 4.0% | 5.1% |
+![Estimator latency, native vs GBDT, Rust layer and Python layer](figs/estimator_latency_native_vs_gbdt.png)
 
-At the Python boundary the two cost the same: the wrapper serialises the FPM dict to JSON
-and Rust parses it on every call, and that dominates both. The estimator arithmetic itself
-is 2–5× smaller for the GBDT; measuring that difference would need a Rust-side loop.
+| µs per estimate | native, Rust | GBDT, Rust | native, Python | GBDT, Python |
+| --- | --- | --- | --- | --- |
+| decode bs 1, context 32k | 1.4 | 3.3 | 9.1 | 11.1 |
+| decode bs 16, context 32k | 1.4 | 4.3 | 12.0 | 15.0 |
+| decode bs 64, context 128k | 3.7 | 5.1 | 23.2 | 24.7 |
+| decode bs 256, context 128k | 3.6 | 6.9 | 55.8 | 58.7 |
+| prefill 4096 tokens, prefix 0 | 1.1 | 6.5 | 8.8 | 14.0 |
+| prefill 4096 tokens, prefix 64k | 3.5 | 4.5 | 11.4 | 12.2 |
+| model construction | 2.1 s (decode), 0.9 s (prefill) | 5–8 ms | | |
+
+What each side does per step: the native model evaluates 16 operators (10 top-level ops
+with the 43-layer count folded in as a scale factor: embedding, mHC pre/post, norms, two
+compressed-attention variants, MoE + shared-expert overlap, logits), each a 1–2 table lookup
+with grid interpolation over 2–3 axes; it is flat in batch size with two plateaus (1.4 µs
+and 3.5 µs) that correspond to different interpolation regions. The GBDT walks 400 trees of
+~61 nodes (about 2.8 k comparisons) after building 18 features from the per-request lists,
+which is the mild growth with batch size. **The native model is 1.1–2.7× faster in pure
+compute**; both are a few microseconds, and at the Python boundary the JSON marshalling
+(6–39 µs, linear in batch size because of the two per-request lists) dominates both, so a
+Python caller sees them within 0.3–5 µs of each other. A million-step simulation spends
+1–7 s in either estimator. Accuracy on the real steps of the same deployment: native
+decode 6.7% / prefill 46%, GBDT 4.0% / 5.1% (§7.3, and below).
 
 What the native model evaluates per step, and how the two compare on real steps:
 
