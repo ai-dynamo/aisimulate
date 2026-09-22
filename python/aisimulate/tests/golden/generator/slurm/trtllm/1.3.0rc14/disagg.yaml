@@ -1,0 +1,202 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+deployment.json: |-
+  {
+    "backend": "trtllm",
+    "mode": "disagg",
+    "gpus": 4,
+    "port": 8000,
+    "model": "test-model",
+    "frontend": [
+      "python3",
+      "-m",
+      "dynamo.frontend",
+      "--http-port",
+      "8000"
+    ],
+    "workers": [
+      {
+        "name": "prefill-0",
+        "argv": [
+          "python3",
+          "-m",
+          "dynamo.trtllm",
+          "--model-path",
+          "/models/Qwen 3",
+          "--served-model-name",
+          "test-model",
+          "--tensor-parallel-size",
+          "2",
+          "--pipeline-parallel-size",
+          "1",
+          "--max-batch-size",
+          "8",
+          "--max-num-tokens",
+          "640",
+          "--extra-engine-args",
+          "prefill_config.yaml",
+          "--gpus-per-node",
+          "2",
+          "--disaggregation-mode",
+          "prefill"
+        ],
+        "env": {
+          "DYN_TRTLLM_DISAGGREGATION_MODE": null,
+          "DYN_TRTLLM_OVERRIDE_ENGINE_ARGS": ""
+        },
+        "gpu_offset": 0,
+        "gpu_count": 2
+      },
+      {
+        "name": "decode-0",
+        "argv": [
+          "python3",
+          "-m",
+          "dynamo.trtllm",
+          "--model-path",
+          "/models/Qwen 3",
+          "--served-model-name",
+          "test-model",
+          "--tensor-parallel-size",
+          "2",
+          "--pipeline-parallel-size",
+          "1",
+          "--max-batch-size",
+          "8",
+          "--max-num-tokens",
+          "32",
+          "--extra-engine-args",
+          "decode_config.yaml",
+          "--gpus-per-node",
+          "2",
+          "--disaggregation-mode",
+          "decode"
+        ],
+        "env": {
+          "DYN_TRTLLM_DISAGGREGATION_MODE": null,
+          "DYN_TRTLLM_OVERRIDE_ENGINE_ARGS": ""
+        },
+        "gpu_offset": 2,
+        "gpu_count": 2
+      }
+    ],
+    "env": {
+      "HF_HUB_OFFLINE": "1"
+    },
+    "startup_timeout": 1800,
+    "benchmark_timeout": 1800,
+    "benchmark_concurrency": [
+      1,
+      4
+    ],
+    "benchmark_rounds": 20
+  }
+prefill_config.yaml: |
+  backend: pytorch
+  tensor_parallel_size: 2
+  pipeline_parallel_size: 1
+  enable_attention_dp: false
+  enable_chunked_prefill: false
+  max_batch_size: 8
+  max_num_tokens: 640
+  kv_cache_config:
+    free_gpu_memory_fraction: 0.8
+    dtype: auto
+    tokens_per_block: 32
+    enable_block_reuse: false
+  cache_transceiver_config:
+    backend: DEFAULT
+    max_tokens_in_buffer: 704
+  cuda_graph_config:
+    enable_padding: false
+    batch_sizes:
+    - 1
+    - 2
+    - 4
+    - 8
+    - 16
+    - 32
+    - 64
+    - 128
+    - 256
+  disable_overlap_scheduler: true
+  print_iter_log: false
+decode_config.yaml: |
+  backend: pytorch
+  tensor_parallel_size: 2
+  pipeline_parallel_size: 1
+  enable_attention_dp: false
+  enable_chunked_prefill: false
+  max_batch_size: 8
+  max_num_tokens: 32
+  kv_cache_config:
+    free_gpu_memory_fraction: 0.8
+    dtype: auto
+    tokens_per_block: 32
+    enable_block_reuse: false
+  cache_transceiver_config:
+    backend: DEFAULT
+    max_tokens_in_buffer: 704
+  cuda_graph_config:
+    enable_padding: true
+    batch_sizes:
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+    - 16
+    - 20
+    - 24
+    - 28
+    - 32
+    - 32
+    - 40
+    - 48
+    - 56
+    - 64
+    - 64
+    - 80
+    - 96
+    - 112
+    - 128
+    - 128
+    - 160
+    - 192
+    - 224
+    - 256
+    - 256
+    - 320
+    - 384
+    - 448
+    - 512
+    - 1
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9
+    - 10
+    - 11
+    - 12
+    - 13
+    - 14
+    - 15
+    - 16
+  disable_overlap_scheduler: false
+  print_iter_log: false

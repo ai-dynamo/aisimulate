@@ -298,6 +298,12 @@ exactly. With corrected data, the prefill baselines change from
 The four Qwen baselines and all tolerances remain unchanged. These are
 prediction-stability values, not measured whole-model accuracy.
 
+After the PR #244 squash merge, its original baseline commit was no longer
+reachable in fresh CI checkouts. All eight sentinels were revalidated at
+`ba64235a645580a8a1b20a424fffef6514ff0103`; the manifest now references that
+permanent main-branch merge commit, which survives subsequent squash merges.
+Expected values, query inputs, and tolerances are unchanged.
+
 The 16-case manifest was reproduced from runtime and packaged data at
 `d066e918705b98e2d55eed55743ce8d225f129ea`. The original eight vLLM values
 were reproduced exactly and retained unchanged. The eight added backend values

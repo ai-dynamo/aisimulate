@@ -430,6 +430,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         kv_transfer_bytes_per_token: config.kv_transfer_bytes_per_token,
         kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
         native_host_offload: config.native_host_offload,
+        state_cache: config.state_cache,
         kv_transfer_bandwidth: config.kv_transfer_bandwidth,
         kv_transfer_timing_mode: match config.kv_transfer_timing_mode {
             TransferTimingMode::FullPrompt => KvTransferTimingMode::FullPrompt,
@@ -668,6 +669,25 @@ mod tests {
         HostOffloadObservation, HostOffloadObservationData, NativeHostOffloadConfig, PressureKind,
         TimingModelConfig,
     };
+
+    #[test]
+    fn state_cache_parameters_reach_rank_local_args() {
+        let config: EngineConfig = serde_json::from_value(serde_json::json!({
+            "num_gpu_blocks":8,"block_size":64,"kv_cache_bytes_per_token":16,
+            "state_cache": {"bytes_per_request":1500}
+        }))
+        .unwrap();
+        let args = core_args(&config, config.built_in_timing_model().unwrap());
+        assert_eq!(args.state_cache, config.state_cache);
+        assert_eq!(args.num_gpu_blocks, 8);
+        assert_eq!(args.block_size, 64);
+
+        let legacy = EngineConfig::default();
+        let args = core_args(&legacy, legacy.built_in_timing_model().unwrap());
+        assert!(args.state_cache.is_none());
+        assert_eq!(args.num_gpu_blocks, legacy.num_gpu_blocks);
+        assert_eq!(args.block_size, legacy.block_size);
+    }
 
     #[test]
     fn sglang_attention_dp_normalizes_per_rank_scheduler_controls_once() {
