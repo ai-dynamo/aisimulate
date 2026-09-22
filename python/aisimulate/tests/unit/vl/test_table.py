@@ -63,6 +63,17 @@ def test_a_table_belongs_to_one_serving_environment(tmp_path):
         update_table(path, _environment(python="3.12.1"), _row(model="other"))
 
 
+def test_a_missing_table_names_the_command_that_creates_it(tmp_path):
+    with pytest.raises(MissingRow, match="does not exist yet") as error:
+        resolve_frontend(
+            HostProfileConfig(path=str(tmp_path / "new.json"), frontend="rust"),
+            model="m",
+            images={"height": 480, "width": 480},
+            tensor=2,
+        )
+    assert "--frontend rust --images 480x480x1 --encoding png --tp 2" in str(error.value)
+
+
 def test_a_miss_names_the_command_that_measures_the_row(tmp_path):
     table = HostCostTable(environment=_environment(), rows=[_row()])
     measurement = FrontendMeasurementConfig(

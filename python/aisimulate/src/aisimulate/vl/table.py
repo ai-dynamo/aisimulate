@@ -166,6 +166,12 @@ def resolve_frontend(
 ) -> tuple[FrontendPredictionConfig, str]:
     """The frontend stages a prediction of `model` over `images` on `tensor` ranks runs with, and their row's digest."""
     measurement = FrontendMeasurementConfig.for_workload(model, config.frontend, images, tensor)
+    if not Path(config.path).exists():
+        # The first prediction on a new serving host: the table is created by its first collection.
+        raise MissingRow(
+            f"host cost table {config.path} does not exist yet. Measure the workload on the serving host, "
+            "then rerun:\n  " + collect_command(config.path, measurement)
+        )
     table = load_table(config.path)
     row = lookup(table, config.path, measurement)
     return FrontendPredictionConfig(stages=list(row.stages), measured_for=row.measured_for), table.digest(row)
