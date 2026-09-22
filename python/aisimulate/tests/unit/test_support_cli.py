@@ -521,7 +521,7 @@ def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, 
     assert calls[0][calls[0].index("--limit") + 1] == "1"
 
 
-def _local_collection_command(tmp_path):
+def _local_collection_command(tmp_path, *, with_profile=False):
     model = tmp_path / "model with spaces"
     model.mkdir()
     (model / "config.json").write_text(
@@ -542,9 +542,66 @@ def _local_collection_command(tmp_path):
     )
     request_path = tmp_path / "request.yaml"
     root = tmp_path / "plan"
-    assert cli.main(_init_args(request_path, model=model)) == 0
+    init = _init_args(request_path, model=model)
+    if with_profile:
+        overrides = tmp_path / "resources.json"
+        overrides.write_text(json.dumps({"fmha_quant_mode": "bfloat16", "kv_cache_dtype": "bfloat16"}))
+        init.extend(
+            (
+                "--model-config",
+                str(model / "config.json"),
+                "--resource-overrides",
+                str(overrides),
+                "--tensor-parallel",
+                "1",
+            )
+        )
+    assert cli.main(init) == 0
     assert cli.main(["onboard", "plan", "-c", str(request_path), "--output-dir", str(root)]) == 0
     return ["onboard", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
+
+
+@pytest.mark.parametrize("with_profile", [False, True], ids=["generic", "profile"])
+def test_plan_guides_both_collection_executors_without_launching_workers(tmp_path, monkeypatch, capsys, with_profile):
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("initialization, planning and collection preview must not launch workers")
+
+    monkeypatch.setattr(subprocess, "run", unexpected_launch)
+    monkeypatch.setitem(sys.modules, "collector.fpm_forward.cli", SimpleNamespace(main=unexpected_launch))
+    command = _local_collection_command(tmp_path, with_profile=with_profile)
+    request = SupportRequest.from_yaml(tmp_path / "request.yaml")
+    assert (request.fpm_profile is not None) == with_profile
+    plan = json.loads((tmp_path / "plan/support-plan.json").read_text())
+    runtime = next(item for item in plan["prerequisites"] if item["id"] == "runtime")
+    assert runtime["status"] == "not_checked"
+    detail = runtime["detail"]
+    for prerequisite in (
+        "Kubernetes",
+        "caller-owned sbatch/salloc Slurm allocation",
+        "Pyxis/Enroot",
+        "explicit --image",
+        "same absolute path",
+        "does not download a pinned checkpoint",
+    ):
+        assert prerequisite in detail
+    if with_profile:
+        assert "observed worker vLLM version" in detail
+        assert "profile's literal backend version before benchmarking on either executor" in detail
+        assert "do not verify the loaded checkpoint weights" in detail
+    else:
+        assert "does not enforce model/tokenizer revision or vLLM version declarations" in detail
+
+    command.remove("--execute")
+    capsys.readouterr()
+    assert cli.main([*command, "--executor", "kubernetes"]) == 0
+    assert "--fpm-executor" not in shlex.split(capsys.readouterr().out)
+    assert cli.main([*command, "--executor", "slurm", "--image", "runtime.sqsh"]) == 0
+    preview = shlex.split(capsys.readouterr().out)
+    assert preview[preview.index("--fpm-executor") + 1] == "slurm"
+    assert preview[preview.index("--fpm-slurm-container-image") + 1] == "runtime.sqsh"
+    assert "--plan-only" in preview
+    assert not (tmp_path / "plan/fpm-artifacts").exists()
+    assert not (tmp_path / "plan/fpm-checkpoint").exists()
 
 
 def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):

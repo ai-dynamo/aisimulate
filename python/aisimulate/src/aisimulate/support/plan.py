@@ -164,6 +164,14 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
         )
     prediction, recommendations, presets = _configs(request, root)
     commands = _commands(request, root, list(recommendations))
+    runtime_prerequisite = (
+        "Prepare and verify the declared model/tokenizer snapshots, visible GPUs, model access and compatible "
+        "Dynamo self-benchmark runtime. At collection, choose Kubernetes with the packaged Generator and "
+        "required deployment permissions, or a caller-owned sbatch/salloc Slurm allocation with Pyxis/Enroot, "
+        "an explicit --image and a campaign directory shared at the same absolute path across allocated nodes. "
+        "The Slurm allocation must match the collector plan's node count and provide the required GPUs per node. "
+        "This plan does not download a pinned checkpoint or inspect a running worker. "
+    )
     plan = {
         "schema_version": "aisimulate-support-plan/v2",
         "request_id": request_id(request),
@@ -208,11 +216,10 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
             {
                 "id": "runtime",
                 "status": "not_checked",
-                "detail": (
-                    "Prepare and verify the declared model/tokenizer revisions, vLLM version, visible GPUs, "
-                    "model access, and the packaged Dynamo/Kubernetes/Generator collector runtime. Local invocation "
-                    "uses that existing runtime. The collector does not apply revision/version declarations; "
-                    "use a pinned local model snapshot where needed."
+                "detail": runtime_prerequisite
+                + (
+                    "Without an FPM profile, the collector does not enforce model/tokenizer revision or "
+                    "vLLM version declarations; use and verify pinned local snapshots and a pinned runtime."
                 ),
             },
             {
@@ -294,11 +301,10 @@ def _plan_documents(request: SupportRequest, root: Path) -> tuple[dict[str, Any]
                 "Generated configs use direct interpolation; matching timing coverage is still required."
             ),
         )
-        plan["prerequisites"][1]["detail"] = (
-            "Prepare and verify the declared model/tokenizer revisions, visible GPUs, model access, and the "
-            "packaged Dynamo/Kubernetes/Generator collector runtime. This plan does not download a pinned "
-            "checkpoint or inspect the running runtime. During collection execution, the collector checks "
-            "the observed Pod vLLM version against the profile's literal backend version before benchmarking."
+        plan["prerequisites"][1]["detail"] = runtime_prerequisite + (
+            "During collection execution, the collector checks the observed worker vLLM version against the "
+            "profile's literal backend version before benchmarking on either executor. Model/tokenizer "
+            "revision declarations and this version check do not verify the loaded checkpoint weights."
         )
         plan["prerequisites"][2]["detail"] = (
             "Collect matching prefill/decode timings into the local systems tree before prediction or recommendation. "
