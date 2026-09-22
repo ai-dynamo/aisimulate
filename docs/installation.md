@@ -130,9 +130,47 @@ The [artifact contract](artifact-contract.md) describes wheel/crate versioning.
 
 ## Optional Dynamo integration
 
-The engine stack does not require Dynamo. For `--stack dynamo`, install a
-Dynamo distribution that supplies the required runner and adapters into the
-same environment. The verified **source** pairing on September 14, 2026 is:
+The built-in engine stack does not require Dynamo. There are two optional
+integrations with separate packages, router schemas and runtime capabilities.
+Explicit `--stack` always wins. Without it, a `router` key after `--set` selects
+`dynamo-policy`, while no `router` selects `engine`; the selected adapter then
+validates the configuration. A Planner-only YAML needs explicit `--stack dynamo`.
+See [execution-stack selection](cli/user-guide.md#choose-an-execution-stack).
+
+### Native Dynamo policy plugin
+
+For `aisimulate predict` with `router.policy: kv_router` and optional
+`session` or `sibling_group` affinity, install the separate
+`aisimulate-dynamo-policy` plugin together with the matching base `aisimulate`
+wheel. This integration supports offline aggregated/P-D vLLM/SGLang prediction,
+including AgentX snapshots, warmup and duration profiles. It does not provide
+Planner, dynamic scaling, online execution or routing recommendation.
+
+The plugin is currently source-built; the base release and nightly jobs do not
+publish it. Follow the [AgentX quickstart installation](agentx-quickstart.md#1-install-from-source)
+for the combined source checkout, Rust 1.96.1 prerequisites, clean paired-wheel
+build/install commands and optional container. Initial adapter qualification is
+Linux x86-64. The builder records source revision and wheel hashes in
+`manifest.json`. Both native modules must agree on package version, replay API
+and core source digest, and the adapter checks its immutable merged Dynamo
+revision. Even equal package versions from different core source trees are
+rejected; see the [optional artifact contract](artifact-contract.md#optional-dynamo-policy-wheel).
+
+This plugin imports existing native Dynamo policy APIs without a full
+`ai-dynamo` installation or a running Dynamo service. Installing `ai-dynamo`
+does not install `aisimulate-dynamo-policy`, and the historical AISimulate 0.12
+pairing below is not a compatible substitute for the current paired source
+build. Missing or incompatible plugins fail explicitly, without falling back to
+round-robin. A source feature being merged does not establish that its matching
+plugin wheel is published on a package index.
+
+### Legacy full Dynamo stack
+
+For explicit `--stack dynamo`, install a Dynamo distribution that supplies its
+runner and legacy Router/Planner adapters into the same environment. The legacy
+Router tuning and recommendation schemas remain separate from the native policy
+plugin; keep `--stack dynamo` when predicting YAML saved by that stack's
+recommendation run. The verified **source** pairing on September 14, 2026 is:
 
 | Dynamo source | Declared AISimulate dependency | Integration registration |
 |---|---|---|

@@ -31,7 +31,7 @@ with AISimulate, see the [Legacy AIC CLI User Guide](legacy-aic-user-guide.md). 
   - [10. Presets and Default Ranges](#presets-and-default-ranges)
   - [11. Traffic](#traffic)
   - [12. Engine](#engine)
-  - [13. Router (Dynamo Adapter)](#router-dynamo-adapter)
+  - [13. Router integrations](#router-dynamo-adapter)
   - [14. Planner (Dynamo Adapter)](#planner-dynamo-adapter)
   - [15. Evaluation](#evaluation)
   - [16. Recommendation Domains](#recommendation-domains)
@@ -422,7 +422,7 @@ manifests and launch scripts are covered in the [migration guide](migrate-from-a
 | Option | Type | Default | Meaning |
 |---|---|---:|---|
 | `-c`, `--config PATH` | path | Required | Input YAML file. |
-| `--stack NAME` | string | `engine` | Built-in or discovered execution stack. This selection is CLI-only and is never written into YAML. |
+| `--stack NAME` | string | Inferred after `--set` | Explicit selection always wins; otherwise a present `router` selects `dynamo-policy`, and no `router` selects `engine`. Stack selection is CLI-only and is never written into YAML. |
 | `--set PATH=YAML_VALUE` | repeatable assignment | None | Set a supported configuration path after loading YAML. |
 | `--output-dir PATH` | path | `./aisimulate-output` | Directory for durable results. |
 | `--overwrite` | flag | `false` | Replace known AISimulate output files in an existing output directory. |
@@ -467,33 +467,56 @@ The following rules apply:
 
 ## 8. Choose an execution stack
 
-`--stack engine` is the default and uses the built-in offline runner. To use Dynamo-owned
-routing and Planner behavior, install the optional integration and select it explicitly:
+Stack selection runs after all `--set` overrides:
+
+| Input | Selected stack |
+|---|---|
+| Explicit `--stack NAME` | `NAME`, regardless of which sections are present. The selected stack must support those sections. |
+| No `--stack`, with a `router` key | Optional `dynamo-policy`; its schema then requires `router.policy: kv_router`. A present but empty or invalid router does not select a fallback. |
+| No `--stack`, without a `router` key | Built-in `engine`. A `planner` section alone does not automatically select Dynamo. |
+
+For native KV-aware selection with optional conversation affinity, build and install matching
+`aisimulate` and `aisimulate-dynamo-policy` wheels from the same checkout using the
+[AgentX quickstart](../agentx-quickstart.md#1-install-from-source), then run its complete YAML:
 
 ```bash
-python3 -m pip install aisimulate ai-dynamo
+aisimulate predict --config agentx.yaml --output-dir ./agentx-prediction
+```
+
+Explicit `--stack dynamo-policy` selects the same integration. This optional plugin supports offline
+`predict` with aggregated or P/D vLLM/SGLang replay. It has no Planner or routing recommendation
+support. Its [router schema](#native-dynamo-policy-router) is separate from the legacy adapter's
+knobs below. It imports native Dynamo policy APIs without requiring the full `ai-dynamo` Python
+package, and it is source-built until matching wheels are published.
+
+The existing full Dynamo integration remains available through explicit `--stack dynamo`. Install a
+compatible Dynamo runner/adapter distribution in the same environment, following
+[legacy Dynamo installation](../installation.md#legacy-full-dynamo-stack). An unpinned
+`pip install ai-dynamo` does not establish compatibility with the current AISimulate source.
+Its Router recommendation domains and Planner controls continue to use their own schema:
+
+```bash
 aisimulate predict --stack dynamo --config prediction.yaml --output-dir ./dynamo-prediction
 aisimulate recommend --stack dynamo --config recommendation.yaml --output-dir ./dynamo-recommendation
 ```
 
-A config containing `router` or `planner` requires the corresponding installed adapters; the
-Dynamo integration provides them. Use the same stack when predicting a configuration saved by
-that stack's recommendation run. See the complete [Dynamo prediction](#complete-dynamo-prediction-example)
-and [recommendation](#dynamo-scalar-recommendation-example) examples below.
+Use explicit `--stack dynamo` for Planner configurations, including a Planner-only YAML, and for the
+legacy [Dynamo prediction](#complete-dynamo-prediction-example) and
+[recommendation](#dynamo-scalar-recommendation-example) examples below. Keep that explicit selection
+when predicting YAML saved by the legacy recommendation run; omitting it would select
+`dynamo-policy` when the saved YAML contains `router`.
+
+Missing stacks, incompatible package pairs, unsupported sections and invalid routing options fail
+with an error. They never silently select `engine` or round-robin. Explicit `--stack engine` with a
+`router` section is also rejected because the built-in stack provides no router adapter. With neither
+`router` nor an explicit stack, the existing engine behavior is unchanged.
 
 `predict --online` requests wall-clock-paced execution from a stack that supports it.
-The built-in `engine` stack supports offline execution only; `recommend` is always offline.
+The built-in `engine` and native `dynamo-policy` stacks are offline only; `recommend` is always offline.
 Online execution paces the simulation and does not launch a real serving endpoint.
 
-If Dynamo is unavailable, the error includes the installed stack names. For example, when only
-the built-in engine is installed:
-
-```text
-stack 'dynamo' is unavailable; installed stacks: engine. Install the distribution that provides the requested stack.
-```
-
-Install the integration in the same Python environment as `aisimulate`. Implementation details
-for stack and adapter authors are in [Sweeper architecture](../sweeper/architecture.md#unified-cli-integration).
+Implementation details for stack and adapter authors are in
+[Sweeper architecture](../sweeper/architecture.md#unified-cli-integration).
 
 <a id="configuration-model"></a>
 
@@ -530,8 +553,8 @@ The command determines the document type. There is no top-level `kind` or stack 
 |---|---|---|---|
 | `traffic` | Optional | Optional | Request source, load shape, and stopping condition. Uses the default synthetic request traffic when omitted. |
 | `engine` | Required | Required | Model, hardware, backend, topology, and worker roles. |
-| `router` | Optional adapter | Optional adapter | Dynamo routing policy; round robin when omitted. Requires the integration when configured. |
-| `planner` | Optional adapter | Optional adapter | Dynamo runtime scaling; disabled when omitted. Requires the integration when configured. |
+| `router` | Optional adapter | Legacy adapter only | Native `dynamo-policy` accepts KV-aware policy and affinity for prediction; explicit `--stack dynamo` uses the legacy Router schema and recommendation domains. Without `router` and without an explicit stack, the engine default is unchanged. |
+| `planner` | Optional adapter | Optional adapter | Legacy Dynamo runtime scaling; disabled when omitted. Requires explicit `--stack dynamo` and its installed Planner adapter; unsupported by `dynamo-policy`. |
 | `evaluation` | Optional | Optional | Service-level objective (SLA) thresholds used for reporting and goals. |
 | `execution` | Optional | Optional | Host RAM/CPU budgets and supervisor deadlines; automatic defaults apply when omitted. See [local resources](../local-resources.md). |
 | `optimization` | Rejected | Required | Recommendation objective and candidate GPU constraints. |
@@ -596,9 +619,10 @@ combinations. A preset and independent domains cannot be active on the same obje
 Preset controls are recommendation-only. Recommended prediction YAMLs contain only the expanded
 concrete knobs.
 
-If the optional `router` or `planner` section is absent, that component stays fixed at its concrete
-default. A present Router searches its direct knob ranges. A present Planner activates its default
-sub-item preset sweeps.
+For explicit `--stack dynamo` recommendation, an absent `router` or `planner` section keeps that
+component at its concrete default. A present legacy Router searches its direct knob ranges, and a
+present Planner activates its default sub-item preset sweeps. The native `dynamo-policy` plugin
+accepts concrete prediction settings only; it rejects `recommend` and all search domains.
 
 <a id="parallelism-preset-behavior"></a>
 
@@ -843,11 +867,11 @@ first-arrival pacing, and inter-turn or dependency delays remain unscaled.
 |---|---|---|---|---|---|
 | `mooncake` | One request or session turn with a full prompt | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | None specific to the format. |
 | `mooncake-delta` | One session turn; follow-up input is only the new input delta | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | Aggregated deployment only; `planner.policy` must be `disabled`. |
-| `agentic_mooncake` | One request node in a dependency graph | `trace_timestamps` | Supported | Not supported; omit it | Offline aggregated or disaggregated vLLM/SGLang Engine replay; `planner.policy` must be `disabled`. |
+| `agentic_mooncake` | One request node in a dependency graph | `trace_timestamps` | Supported | Not supported; omit it | Offline aggregated or disaggregated vLLM/SGLang Engine replay; omit `planner` (dynamic scaling unsupported). |
 | `weka` | A raw kv-cache-tester or published AgentX JSON/JSONL corpus; directories are traversed recursively and JSONL files may contain multiple plays | `trace_timestamps` | Supported | Not supported; omit it | Offline aggregated or disaggregated vLLM/SGLang Engine replay; source block size is embedded and the result is functionally qualified. |
 | `applied_compute_agentic` | One complete session, expanded into `num_turns + 1` requests | `concurrency` | Not supported; omit it | Supported | Source rows have no first-turn timestamps. |
 | `dynamo` standard trace | Native request-trace records, possibly across multiple files | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | The embedded trace block size is authoritative. |
-| `dynamo` agentic trace | Native agentic request-trace records, possibly across multiple files | `trace_timestamps` | Supported | Not supported; omit it | Offline aggregated or disaggregated vLLM/SGLang Engine replay; `planner.policy` must be `disabled`. |
+| `dynamo` agentic trace | Native agentic request-trace records, possibly across multiple files | `trace_timestamps` | Supported | Not supported; omit it | Offline aggregated or disaggregated vLLM/SGLang Engine replay; omit `planner` (dynamic scaling unsupported). |
 
 The `dynamo` loader detects whether its records are standard or agentic and applies the corresponding
 row above. If `traffic.source.block_size` is supplied for `dynamo` or `weka`, it must match the
@@ -857,7 +881,9 @@ reconstruct prompts.
 Agentic Engine replay requires HBM-only KV cache with speculative decoding
 disabled; TensorRT-LLM is not qualified. P/D workers must share the same target
 model. Online P/D fails validation. These functional replay guarantees do not
-qualify the separate Dynamo runner, even when the input format is `dynamo`.
+qualify the separate legacy `--stack dynamo` runner, even when the input format is `dynamo`.
+The optional native `dynamo-policy` plugin reuses this Engine replay path for the supported
+[KV-aware routing and affinity configuration](#native-dynamo-policy-router).
 
 Weka is the public AgentX source format and AISimulate is its prediction entry point. AISimulate
 deterministically lowers Weka into Agentic Mooncake v2, the versioned producer-neutral interchange
@@ -1406,12 +1432,57 @@ G3 byte counters do not resolve that difference.
 
 <a id="router-dynamo-adapter"></a>
 
-## 13. Router (Dynamo Adapter)
+## 13. Router integrations
 
-Router is not part of the AISimulate core schema. The `dynamo.router` config adapter owns this
-section's concrete model, defaults, recommendation domains, validation, and runtime lowering. The
-section is accepted only when the selected stack provides that adapter; omitting it keeps an
-engine-only configuration engine-only.
+The selected stack's config adapter owns the `router` schema; the built-in `engine` stack provides
+no router adapter. Stack selection follows [the rules above](#choose-an-execution-stack).
+The native policy plugin and legacy Dynamo integration have distinct fields and capabilities.
+
+<a id="native-dynamo-policy-router"></a>
+
+### 13.1 Native Dynamo policy (`dynamo-policy`)
+
+The optional `aisimulate-dynamo-policy` package registers `dynamo-policy.router`. With no explicit
+stack, any `router` section selects this plugin after `--set`, and the plugin validates the section.
+It supports only concrete `predict` inputs; `recommend`, legacy Router tuning knobs, Planner and
+custom policies are unsupported. Use the [paired source installation](../installation.md#native-dynamo-policy-plugin)
+and the [complete AgentX configuration](../agentx-quickstart.md#3-configure-the-model-gpus-workers-and-traffic).
+
+```yaml
+router:
+  policy: kv_router
+  affinity:
+    mode: sibling_group
+    ttl_seconds: 3600
+```
+
+| Knob | Default | Default Range | Preset | Rules |
+|---|---:|---|---|---|
+| `router.policy` | Required | `x` | `-` | Must be `kv_router`; invokes native Dynamo KV-aware worker selection. |
+| `router.affinity` | `null` (unset) | `x` | `-` | Optional object. Omit it or use `null` for KV-aware selection without conversation affinity. |
+| `router.affinity.mode` | Required when affinity is set | `x` | `-` | `session` or `sibling_group`; independent of `router.policy`. Session mode requires session identity; sibling-group mode requires unambiguous Agentic conversation lineage. |
+| `router.affinity.ttl_seconds` | `3600` | `x` | `-` | Finite numeric seconds from `1` through `31536000`, inclusive; fractions are allowed. `null`, booleans, strings and out-of-range values are rejected. The same default applies at the Python and native entry points. |
+
+Session affinity binds each conversation. Sibling-group affinity binds children of the same parent
+conversation together; parents retain independent bindings. Bindings include the worker and its
+attention-DP rank, are independent for the P and D pools, and are isolated between plays. Native hard
+affinity commits only after accepted dispatch. Its idle TTL begins when the last active request
+releases its lease and advances with simulated time. Omitted affinity does not disable KV-aware
+selection.
+
+The qualified AgentX path is offline aggregated or P/D vLLM/SGLang, with HBM-only KV cache and
+speculative decoding disabled, including seeded snapshots, warmup and continuous profiles. The
+plugin does not provide online execution, dynamic scaling or routing recommendation. Unsupported
+combinations fail rather than switching policy. See the
+[quickstart's capability boundaries](../agentx-quickstart.md#capability-boundaries) for the full scope
+and the difference between native policy overlap and actual cache reuse.
+
+### 13.2 Legacy Router (explicit `--stack dynamo`)
+
+The table below belongs only to the existing `dynamo.router` config adapter supplied by the full
+Dynamo integration. Explicit `--stack dynamo` is required to select it; these defaults and search
+domains do not apply to `dynamo-policy`. The adapter owns its model, validation, recommendation
+domains and runtime lowering.
 
 | Knob | Default | Default Range | Preset | Rules |
 |---|---:|---|---|---|
@@ -1432,7 +1503,8 @@ deferred until the Router exposes that name.
 
 Planner is not part of the AISimulate core schema. The `dynamo.planner` config adapter owns this
 section's concrete model, presets, recommendation domains, validation, and runtime lowering. The
-section is accepted only when the selected stack provides that adapter.
+section requires the installed legacy integration and explicit `--stack dynamo`; a `planner` key
+does not select that stack automatically, and `dynamo-policy` does not provide this adapter.
 
 ```yaml
 planner:
@@ -1648,6 +1720,9 @@ optimizer:
 
 ## 19. Complete Dynamo Prediction Example
 
+This example uses the legacy Router/Planner schemas and requires explicit `--stack dynamo`.
+For native KV-aware policy with conversation affinity, use the [AgentX quickstart](../agentx-quickstart.md).
+
 Save this as `dynamo-prediction.yaml`:
 
 ```yaml
@@ -1705,7 +1780,7 @@ evaluation:
     itl_ms: 50
 ```
 
-Run it with the Dynamo integration installed:
+Run it with the compatible legacy Dynamo integration installed:
 
 ```bash
 aisimulate predict --stack dynamo --config dynamo-prediction.yaml --output-dir ./dynamo-full-prediction
@@ -1716,6 +1791,9 @@ The result is a metrics summary and `dynamo-full-prediction/prediction.json`.
 <a id="dynamo-scalar-recommendation-example"></a>
 
 ## 20. Dynamo Scalar Recommendation Example
+
+This example uses the legacy integration with explicit `--stack dynamo`. The native
+`dynamo-policy` plugin does not support recommendation.
 
 Save this as `dynamo-recommendation.yaml`:
 
@@ -1846,7 +1924,7 @@ Each phase shows publication status, source kind, and the concrete source tag.
 Missing or invalid display measurements render as `N/A`.
 
 The native engine export supports this evidence path with op-level timing on
-supported topologies. The external Dynamo Python adapter's diagnostics export
+supported topologies. The legacy `--stack dynamo` Python adapter's diagnostics export
 is not qualified by this PR: native Rust compatibility aliases do not establish
 adapter parity. If a selected runner exports no typed evidence, energy details
 state that reason. FPM, fixed, polynomial, AFD, and analytical EPD energy remain
@@ -2171,7 +2249,8 @@ recommendation.yaml: traffic.load.sessions_per_second.range.min:
 must be greater than 0, got 0
 ```
 
-Combination errors name conflicting values and explain the supported contract:
+Combination errors name conflicting values and explain the selected adapter’s contract. For example,
+the legacy `--stack dynamo` Router rejects this recommendation combination:
 
 ```text
 recommendation.yaml: router.prefill_load_model.type:
@@ -2190,7 +2269,9 @@ Unsupported stack, backend, or policy combinations are reported as errors.
 | Installation reports an unsupported Python version | AISimulate requires Python 3.11–3.13. | Check `python3 --version` and create the environment with a supported interpreter. |
 | Configuration or trace file cannot be found | Check the path and the directory where you ran the command. | Run from the directory containing `prediction.yaml`, or use absolute paths. |
 | Output directory is not empty | Each run needs an empty directory or explicit overwrite. | Add `--output-dir ./another-prediction`, or `--overwrite` to replace known outputs. |
-| Stack or config adapter is unavailable | Use the Python environment containing the selected integration. `router` and `planner` are Dynamo-owned sections. | Install `aisimulate ai-dynamo` in that environment and use `--stack dynamo`. |
+| Native `dynamo-policy` is unavailable or reports mismatched versions/core sources | A `router` section selects the optional plugin unless `--stack` is explicit. Both native modules and Python packages must match. | Build and install both wheels from the same checkout using the [AgentX quickstart](../agentx-quickstart.md#1-install-from-source). Installing `ai-dynamo` does not provide this plugin. |
+| Legacy `dynamo` stack or Router/Planner adapter is unavailable | Use explicit `--stack dynamo` and the environment containing a compatible full Dynamo integration. | Follow [legacy Dynamo installation](../installation.md#legacy-full-dynamo-stack); check the selected distribution’s dependency and entry-point metadata. |
+| Legacy Router knobs or `recommend` fail after omitting `--stack` | A present `router` selects `dynamo-policy`, whose schema supports only concrete `kv_router` prediction with optional affinity. | Restore explicit `--stack dynamo` for legacy configs. For native policy prediction, use the [native schema](#native-dynamo-policy-router). |
 | `predict` rejects a domain or `optimization` | A search input was passed to a concrete prediction command. | Run `recommend` first, then predict `recommendations/0001.yaml`. |
 | `--set` produces an unknown-field or load-validation error | Paths must be supported, and load fields must match the selected load type. | For the quick-start input, use `--set traffic.load.concurrency=8`. To change load type, replace the whole `traffic.load` mapping. |
 | No selected configuration and zero resource-limited candidates, exit `1` | Inspect `recommendation.json` for candidate status, reason, and GPU/SLA constraints. | Check that the model fits within `max_candidate_gpus`, and that the workload can meet the SLA. |
@@ -2206,6 +2287,8 @@ with no feasible result still saves its result ledger and does not provide a YAM
 
 ## 25. Related documentation
 
+- [AgentX quickstart and paired native-policy installation](../agentx-quickstart.md)
+- [Installation and integration choices](../installation.md#optional-dynamo-integration)
 - [AIC migration guide](migrate-from-aiconfigurator.md)
 - [Legacy AIC CLI User Guide](legacy-aic-user-guide.md)
 - [Sweeper architecture](../sweeper/architecture.md)
