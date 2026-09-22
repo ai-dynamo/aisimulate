@@ -3022,6 +3022,170 @@ mod agentic_pd_qualification {
     }
 
     #[test]
+    fn duration_profile_recycles_and_preserves_cross_cutoff_handoff() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            for duration in [0.051, 0.35] {
+                let mut replay = runtime(
+                    &config(backend, true),
+                    prepared(graph(false), 1),
+                    true,
+                    1.0,
+                    ReplayEngineFactory::new(),
+                );
+                replay
+                    .admission
+                    .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                        duration_seconds: duration,
+                        response_grace_seconds: 0.1,
+                        ..Default::default()
+                    })
+                    .unwrap();
+                let report = replay.run().unwrap().0.finish();
+                let profile = report.agentic_profile.as_ref().unwrap();
+                let origin = profile.profile_start_ms.unwrap();
+                assert!(
+                    report
+                        .per_request
+                        .iter()
+                        .all(|request| request.arrival_time_ms + origin
+                            < profile.admission_cutoff_ms.unwrap())
+                );
+                assert!(
+                    report
+                        .per_request
+                        .iter()
+                        .all(|request| request.terminal_status == ReplayTerminalStatus::Completed)
+                );
+                assert_eq!(profile.client_in_flight_requests, 0);
+                assert_eq!(profile.canceled_requests, 0);
+                if duration < 0.1 {
+                    assert!(profile.finished_at_ms.unwrap() > profile.admission_cutoff_ms.unwrap());
+                    assert_eq!(report.per_request.len(), 1);
+                    let request = &report.per_request[0];
+                    let cutoff = profile.admission_cutoff_ms.unwrap();
+                    // This case must cross C during P/D handoff, not merely
+                    // finish a decode request that was already admitted at C.
+                    assert!(request.arrival_time_ms + origin < cutoff);
+                    assert!(request.prefill_admit_ms.unwrap() + origin < cutoff);
+                    assert!(request.decode_admit_ms.unwrap() + origin > cutoff);
+                } else {
+                    assert!(profile.plays_started >= 3, "{backend:?}: {profile:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn duration_profile_drains_a_router_queue_after_admission_cutoff() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let mut driver =
+                WorkloadDriver::new_agentic_snapshots(prepared(graph(false), 1), 64, true, 1.0)
+                    .unwrap();
+            driver
+                .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                    duration_seconds: 0.051,
+                    response_grace_seconds: 0.1,
+                    ..Default::default()
+                })
+                .unwrap();
+            let mut config = config(backend, true).runtime_config(false).unwrap();
+            config.handoff_latency_ms = 5.0;
+            let captured = Rc::new(RefCell::new(None));
+            let mut replay =
+                DisaggRuntimeImpl::<QueueUntilWorkerPlacement, NoEngineEvents, ()>::new_composed(
+                    &config,
+                    AdmissionQueue::new_workload(driver, ReplayMode::Trace),
+                    false,
+                    |_, prefill_topology, _, decode_topology| {
+                        Ok((
+                            QueueUntilWorkerPlacement::initially_blocked(prefill_topology),
+                            QueueUntilWorkerPlacement::initially_blocked(decode_topology),
+                        ))
+                    },
+                )
+                .unwrap()
+                .with_per_request_records(true)
+                .with_scaling_policy(Box::new(CaptureAndScaleOncePolicy {
+                    at_ms: 60.0,
+                    captured: Rc::clone(&captured),
+                }));
+            replay.run_to_completion().unwrap();
+            let max_pending = replay.stats.max_prefill_router_pending_count
+                + replay.stats.max_decode_router_pending_count;
+            let report = replay.run().unwrap().0.finish();
+            let profile = report.agentic_profile.as_ref().unwrap();
+            assert_eq!(
+                max_pending, 1,
+                "{backend:?}: {profile:?}; {:?}",
+                report.per_request
+            );
+            assert_eq!(captured.borrow().as_ref().unwrap().now_ms, 60.0);
+            let cutoff = profile.admission_cutoff_ms.unwrap();
+            assert_eq!(cutoff, 51.0);
+            assert_eq!(report.per_request.len(), 1);
+            let request = &report.per_request[0];
+            assert_eq!(request.arrival_time_ms, 50.0);
+            assert!(request.arrival_time_ms < cutoff);
+            assert_eq!(request.prefill_admit_ms, Some(60.0));
+            assert!(request.prefill_admit_ms.unwrap() > cutoff);
+            assert!(request.decode_admit_ms.unwrap() > cutoff);
+            // vLLM routes prefill first; SGLang reserves its decode destination
+            // first. In either order the client was already queued before C.
+            let queued = request
+                .routing_history
+                .iter()
+                .find(|route| route.outcome == crate::replay::ReplayRoutingOutcome::Queued)
+                .unwrap();
+            assert_eq!(queued.queue_entered_at_ms, Some(50.0));
+            assert_eq!(queued.released_at_ms, Some(60.0));
+            assert_eq!(queued.queue_wait_ms, Some(10.0));
+            assert_eq!(
+                queued.pool,
+                if backend == EngineType::Vllm {
+                    crate::replay::ReplayRequestPool::Prefill
+                } else {
+                    crate::replay::ReplayRequestPool::Decode
+                }
+            );
+            assert_eq!(request.terminal_status, ReplayTerminalStatus::Completed);
+            assert_eq!(profile.successful_responses, 1);
+            assert_eq!(profile.canceled_requests, 0);
+            assert_eq!(profile.client_in_flight_requests, 0);
+        }
+    }
+
+    #[test]
+    fn duration_profile_cancel_does_not_wait_for_server_quiescence() {
+        for backend in [EngineType::Vllm, EngineType::Sglang] {
+            let mut replay = runtime(
+                &config(backend, true),
+                prepared(graph(false), 1),
+                true,
+                1.0,
+                ReplayEngineFactory::new(),
+            );
+            replay
+                .admission
+                .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
+                    duration_seconds: 0.051,
+                    response_grace_seconds: 0.0,
+                    ..Default::default()
+                })
+                .unwrap();
+            let report = replay.run().unwrap().0.finish();
+            let profile = report.agentic_profile.as_ref().unwrap();
+            assert_eq!(profile.finished_at_ms, profile.admission_cutoff_ms);
+            assert_eq!(profile.canceled_requests, 1);
+            assert_eq!(profile.client_in_flight_requests, 0);
+            assert!(profile.unsettled_server_requests > 0);
+            assert_eq!(
+                report.per_request[0].terminal_status,
+                ReplayTerminalStatus::Canceled
+            );
+        }
+    }
+
+    #[test]
     fn batch_warmup_summary_preserves_preparation_admissions_and_profile_epoch() {
         for backend in [EngineType::Vllm, EngineType::Sglang] {
             let prepared = prepared(graph(true), 2);

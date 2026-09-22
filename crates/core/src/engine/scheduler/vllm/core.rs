@@ -2088,6 +2088,7 @@ impl VllmCore {
         let fpm = self.compute_fpm(&scheduled, (end_ms - now_ms) / 1000.0);
         self.state.debug_assert_invariants();
         Ok(EnginePassResult {
+            committed_requests: scheduled.keys().copied().collect(),
             end_ms,
             same_timestamp_retry: if g3_epoch_before.is_some()
                 && end_ms == now_ms

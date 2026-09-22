@@ -54,6 +54,85 @@ def _run(config: dict):
     )
 
 
+def _agentic_profile_config(tmp_path: Path, backend: str, mode: str, warmup: bool, duration: float) -> dict:
+    """Locally authored corpus with long idle gaps and enough work to recycle."""
+    path = tmp_path / "continuous-profile.jsonl"
+    path.write_text(
+        "".join(
+            json.dumps(
+                {
+                    "id": f"play-{play}",
+                    "block_size": 64,
+                    "hash_id_scope": "local",
+                    "requests": [
+                        {
+                            "t": start,
+                            "type": "s",
+                            "model": "example/model",
+                            "in": 128,
+                            "out": 2,
+                            "api_time": 0.5,
+                            "hash_ids": [10, 20],
+                        }
+                        for start in [0.0, 600.0, 1200.0]
+                    ],
+                }
+            )
+            + "\n"
+            for play in range(2)
+        )
+    )
+    engine = {**_engine(mode), "backend": backend}
+    for worker in engine["workers"].values():
+        worker["timing"] = {"type": "fixed", "prefill_ms": 250, "decode_ms": 250}
+        # SGLang defaults to one-token blocks. Both active 130-token requests
+        # must fit independently, including their decode tokens.
+        worker["kv_cache"]["capacity"]["blocks"] = 1024
+    return {
+        "engine": engine,
+        "traffic": {
+            "source": {"type": "trace", "format": "weka", "paths": [str(path)]},
+            "load": {
+                "type": "trace_timestamps",
+                "agentic_lanes": 2,
+                "agentic_snapshot": {"seed": 42},
+                "agentic_warmup": warmup,
+                "agentic_profile": {"duration_seconds": duration},
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
+@pytest.mark.parametrize("warmup", [False, True])
+def test_native_continuous_agentic_profile_recycles_and_closes_admission(tmp_path, backend, mode, warmup):
+    report = _run(_agentic_profile_config(tmp_path, backend, mode, warmup, 120.0)).metadata["native_report"]
+    profile = report["agentic_profile"]
+    assert profile["admission_closed"]
+    assert profile["admission_cutoff_ms"] - profile["profile_start_ms"] == pytest.approx(120_000.0)
+    assert profile["plays_started"] > 4
+    assert profile["client_completed_plays"] >= 4
+    assert profile["corpus_cursor"] == profile["plays_started"]
+    assert profile["idle_shifts"]
+    assert not profile["cancel_drain_timed_out"]
+    assert profile["unsettled_server_requests"] == 0
+    assert profile["canceled_requests"] == 0
+    records = report["per_request"]
+    assert len(records) == profile["issued_requests"] == profile["successful_responses"]
+    assert all(0.0 <= record["arrival_time_ms"] < 120_000.0 for record in records)
+    cache_by_play: dict[str, set[str]] = {}
+    for record in records:
+        identity = record["agentic"]
+        cache_by_play.setdefault(identity["play_id"], set()).add(identity["cache_id"])
+    assert all(len(ids) == 1 for ids in cache_by_play.values())
+    assert len({next(iter(ids)) for ids in cache_by_play.values()}) == len(cache_by_play)
+    if warmup:
+        assert profile["profile_start_ms"] == report["agentic_phases"]["profile_start_ms"] > 0
+    else:
+        assert profile["profile_start_ms"] == 0
+
+
 @pytest.mark.parametrize(
     "timestamps,expected",
     [

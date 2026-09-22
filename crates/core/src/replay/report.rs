@@ -49,6 +49,8 @@ pub struct ReplayReport {
     pub agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
     /// Preparation is audited separately from the profile measurements.
     pub agentic_phases: Option<AgenticPhaseEvidence>,
+    /// Fixed-duration admission, idle, and client/server completion evidence.
+    pub agentic_profile: Option<crate::replay::loadgen::AgenticProfileReport>,
     /// Canonical driver lifecycle evidence on the absolute runtime clock. The
     /// compact JSON report publishes only its digest and event count;
     /// conformance tests can inspect all events.
@@ -516,6 +518,9 @@ impl Serialize for ReplayReport {
         }
         if let Some(phases) = &self.agentic_phases {
             map.serialize_entry("agentic_phases", phases)?;
+        }
+        if let Some(profile) = &self.agentic_profile {
+            map.serialize_entry("agentic_profile", profile)?;
         }
         if let Some(lifecycle) = &self.agentic_lifecycle {
             map.serialize_entry("agentic_lifecycle_event_count", &lifecycle.events.len())?;
@@ -1009,6 +1014,7 @@ pub struct TraceCollector {
     agentic_graph: Option<AgenticGraphIdentity>,
     agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
     agentic_phases: Option<AgenticPhaseEvidence>,
+    agentic_profile: Option<crate::replay::loadgen::AgenticProfileReport>,
     g3_profile_baseline: Option<crate::engine::G3Stats>,
     agentic_lifecycle: Option<AgenticLifecycleTranscript>,
     agentic_play_outcomes: Option<Vec<AgenticPlayOutcome>>,
@@ -1157,10 +1163,12 @@ impl TraceCollector {
                 crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
             })?;
         }
+        let static_worker_count = self.static_worker_count;
         let base = std::mem::take(self).finish_at(Some(summary.duration_ms()));
-        self.prepared_report = Some(summary.finish(base).map_err(|error| {
-            crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
-        })?);
+        self.prepared_report =
+            Some(summary.finish(base, static_worker_count).map_err(|error| {
+                crate::replay::ReplayError::ResourceLimited(format!("report storage: {error:#}"))
+            })?);
         Ok(())
     }
 
@@ -1311,6 +1319,10 @@ impl TraceCollector {
     /// as their origin when preparation succeeded.
     pub fn set_agentic_phases(&mut self, phases: AgenticPhaseEvidence) {
         self.agentic_phases = Some(phases);
+    }
+
+    pub fn set_agentic_profile(&mut self, profile: crate::replay::loadgen::AgenticProfileReport) {
+        self.agentic_profile = Some(profile);
     }
 
     pub(crate) fn set_g3_profile_baseline(&mut self, baseline: Option<crate::engine::G3Stats>) {
@@ -1771,6 +1783,7 @@ impl TraceCollector {
         let agentic_graph = self.agentic_graph;
         let agentic_snapshots = self.agentic_snapshots;
         let agentic_phases = self.agentic_phases;
+        let mut agentic_profile = self.agentic_profile;
         let agentic_lifecycle = self.agentic_lifecycle;
         let mut agentic_play_outcomes = self.agentic_play_outcomes;
         if let Some(origin) = agentic_phases
@@ -1810,6 +1823,8 @@ impl TraceCollector {
         let mut total_input_tokens = 0usize;
         let mut total_output_tokens = 0usize;
         let mut completed_requests = 0usize;
+        let mut observed_start_ms: Option<f64> = None;
+        let mut observed_end_ms: Option<f64> = None;
         let mut total_reused_tokens = 0usize;
         let mut total_first_admission_reused_tokens = 0usize;
         // Goodput: completed requests (and their output tokens) that satisfy the SLA.
@@ -1831,6 +1846,11 @@ impl TraceCollector {
             };
 
             completed_requests += 1;
+            observed_start_ms = Some(observed_start_ms.map_or(stats.arrival_time_ms, |value| {
+                value.min(stats.arrival_time_ms)
+            }));
+            observed_end_ms =
+                Some(observed_end_ms.map_or(terminal_time_ms, |value| value.max(terminal_time_ms)));
             total_input_tokens += stats.input_length;
             let output_length = stats.actual_output_length();
             total_output_tokens += output_length;
@@ -1868,6 +1888,17 @@ impl TraceCollector {
             }
         }
 
+        if let Some(profile) = &mut agentic_profile {
+            // Admission duration is a workload control, while throughput uses
+            // the observed successful-request cohort, including grace returns.
+            // Preparation and canceled requests never extend that cohort.
+            duration_ms = observed_start_ms
+                .zip(observed_end_ms)
+                .map_or(0.0, |(start, end)| (end - start).max(0.0));
+            profile.observation_duration_ms = Some(duration_ms);
+            profile.successful_request_throughput =
+                (duration_ms > 0.0).then_some(completed_requests as f64 * 1000.0 / duration_ms);
+        }
         let num_ttft_samples = ttfts.len();
         let num_tpot_samples = tpots.len();
         let num_e2e_latency_samples = e2e_latencies.len();
@@ -1947,6 +1978,7 @@ impl TraceCollector {
             agentic_graph,
             agentic_snapshots,
             agentic_phases,
+            agentic_profile,
             agentic_lifecycle,
             agentic_play_outcomes,
             goodput,
@@ -2455,6 +2487,88 @@ mod tests {
         assert_eq!(
             serde_json::to_value(baseline.finish()).unwrap(),
             serde_json::to_value(bounded.finish()).unwrap()
+        );
+    }
+
+    #[rstest::rstest]
+    fn profile_bounded_summary_preserves_worker_accounting(
+        #[values(false, true)] static_workers: bool,
+    ) {
+        use crate::replay::loadgen::{AgenticProfileOptions, AgenticProfileReport};
+        let profile = AgenticProfileReport {
+            schema: "aisimulate.agentic.profile.v1",
+            options: AgenticProfileOptions {
+                duration_seconds: 0.03,
+                response_grace_seconds: 0.07,
+                ..Default::default()
+            },
+            profile_start_ms: Some(0.0),
+            admission_cutoff_ms: Some(30.0),
+            response_grace_deadline_ms: Some(100.0),
+            cancel_drain_deadline_ms: Some(10_100.0),
+            admission_closed: true,
+            finished_at_ms: Some(100.0),
+            cancel_drain_timed_out: false,
+            unsettled_server_requests: 0,
+            plays_started: 1,
+            client_completed_plays: 1,
+            retired_plays: 1,
+            server_quiescent_plays: 1,
+            issued_requests: 2,
+            successful_responses: 1,
+            canceled_requests: 1,
+            never_issued_requests: 0,
+            client_in_flight_requests: 0,
+            server_unsettled_requests: 0,
+            first_request_ms: Some(0.0),
+            last_successful_response_ms: Some(50.0),
+            observation_duration_ms: None,
+            successful_request_throughput: None,
+            corpus_cursor: 1,
+            idle_shifts: Vec::new(),
+        };
+        let run = |capture| {
+            let mut collector = TraceCollector::default();
+            collector.set_capture_per_request(capture);
+            collector.begin_batch_reporting();
+            collector.set_gpus_per_worker(4, 8);
+            if static_workers {
+                collector.set_static_worker_count(2, 3);
+            } else {
+                collector.add_worker_seconds(1.2, 2.3);
+            }
+            // A canceled request starts earlier and finishes later than the
+            // successful cohort; neither endpoint extends observation time.
+            let canceled = Uuid::from_u128(1);
+            collector.try_on_arrival(canceled, 0.0, 32, 1).unwrap();
+            collector.on_admit(canceled, 1.0, 0);
+            let completed = Uuid::from_u128(2);
+            collector.try_on_arrival(completed, 10.0, 32, 1).unwrap();
+            collector.on_admit(completed, 11.0, 0);
+            collector.on_token(completed, 50.0);
+            collector.on_terminal(completed, 50.0, ReplayTerminalStatus::Completed);
+            collector.on_terminal(canceled, 100.0, ReplayTerminalStatus::Canceled);
+            collector.set_agentic_profile(profile.clone());
+            collector.prepare_batch_report().unwrap();
+            collector.finish()
+        };
+        let detailed = run(true);
+        let summary = run(false);
+        assert_eq!(summary.throughput.duration_ms, 40.0);
+        assert_eq!(summary.throughput.request_throughput_rps, 25.0);
+        let (prefill, decode) = if static_workers {
+            (0.08, 0.12)
+        } else {
+            (1.2, 2.3)
+        };
+        assert_eq!(summary.throughput.prefill_worker_seconds, prefill);
+        assert_eq!(summary.throughput.decode_worker_seconds, decode);
+        assert!(
+            (summary.throughput.gpu_hours - (prefill * 4.0 + decode * 8.0) / 3600.0).abs() < 1e-12
+        );
+        assert_eq!(
+            serde_json::to_value(summary).unwrap(),
+            serde_json::to_value(detailed).unwrap()
         );
     }
 

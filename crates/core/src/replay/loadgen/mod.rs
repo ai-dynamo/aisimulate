@@ -7,6 +7,7 @@ mod dynamo;
 mod generated;
 mod lineage;
 mod phase;
+mod profile;
 mod snapshot;
 mod steppable;
 mod trace;
@@ -27,6 +28,7 @@ pub use phase::{
     AGENTIC_PHASE_SCHEMA_V1, AGENTIC_WARMUP_REQUESTS_PER_LANE, AgenticPhaseEvidence,
     AgenticPhaseLane, AgenticPhaseRequest, AgenticPreparationTransition, AgenticReplayPhase,
 };
+pub use profile::{AgenticIdleShift, AgenticProfileOptions, AgenticProfileReport};
 pub use snapshot::{
     AGENTIC_SNAPSHOT_SCHEMA_V1, AgenticPlaySnapshot, AgenticPrimer, AgenticReplayContext,
     AgenticSnapshotEvidence, AgenticSnapshotOptions, AgenticSnapshotRequest,

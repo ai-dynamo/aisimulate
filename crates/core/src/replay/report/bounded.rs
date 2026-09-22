@@ -138,6 +138,7 @@ pub(super) struct BoundedSummary {
     reused: usize,
     first_reused: usize,
     duration_ms: f64,
+    first_successful_arrival_ms: Option<f64>,
     good_requests: usize,
     good_output: usize,
     ttft: Samples,
@@ -168,6 +169,10 @@ impl BoundedSummary {
         self.reused += stats.reused_input_tokens;
         self.first_reused += stats.first_admission_reused_input_tokens;
         self.duration_ms = self.duration_ms.max(terminal_ms);
+        self.first_successful_arrival_ms = Some(
+            self.first_successful_arrival_ms
+                .map_or(stats.arrival_time_ms, |at| at.min(stats.arrival_time_ms)),
+        );
         let (Some(first), Some(last)) = (stats.first_token_ms(), stats.last_token_ms()) else {
             if sla.is_set()
                 && sla.is_good_without_tokens((terminal_ms - stats.arrival_time_ms).max(0.0))
@@ -193,7 +198,11 @@ impl BoundedSummary {
         Ok(())
     }
 
-    pub(super) fn finish(self, mut report: ReplayReport) -> Result<ReplayReport> {
+    pub(super) fn finish(
+        self,
+        mut report: ReplayReport,
+        static_worker_count: Option<(usize, usize)>,
+    ) -> Result<ReplayReport> {
         report.request_counts = TraceRequestCounts {
             num_requests: self.total,
             completed_requests: self.completed,
@@ -202,7 +211,26 @@ impl BoundedSummary {
         };
         // The base collector already subtracts the profile epoch origin.
         let throughput = &mut report.throughput;
+        if let Some(profile) = &mut report.agentic_profile {
+            throughput.duration_ms = self
+                .first_successful_arrival_ms
+                .map_or(0.0, |start| (self.duration_ms - start).max(0.0));
+            profile.observation_duration_ms = Some(throughput.duration_ms);
+            profile.successful_request_throughput = (throughput.duration_ms > 0.0)
+                .then_some(self.completed as f64 * 1000.0 / throughput.duration_ms);
+        }
         let seconds = (throughput.duration_ms / 1000.0).max(1e-9);
+        // The base report has no retained request rows, so its profile cohort
+        // has zero duration. Recompute static provisioned time using the final
+        // observation interval; runtime-integrated worker time stays intact.
+        if let Some((prefill, decode)) = static_worker_count {
+            throughput.prefill_worker_seconds = prefill as f64 * seconds;
+            throughput.decode_worker_seconds = decode as f64 * seconds;
+            throughput.gpu_hours = (throughput.prefill_worker_seconds
+                * throughput.prefill_gpus_per_worker as f64
+                + throughput.decode_worker_seconds * throughput.decode_gpus_per_worker as f64)
+                / 3600.0;
+        }
         throughput.request_throughput_rps = self.completed as f64 / seconds;
         throughput.input_throughput_tok_s = self.input as f64 / seconds;
         throughput.output_throughput_tok_s = self.output as f64 / seconds;

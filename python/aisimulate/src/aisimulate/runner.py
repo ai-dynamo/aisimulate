@@ -83,6 +83,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "agentic_lanes",
         "agentic_snapshot",
         "agentic_warmup",
+        "agentic_profile",
     }
 )
 
@@ -382,6 +383,7 @@ class EngineReplayRunnerFactory:
             supports_agentic_lanes=True,
             supports_agentic_snapshots=True,
             supports_agentic_warmup=True,
+            supports_agentic_profile=True,
             supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
             supports_agentic_host_offload=False,
@@ -1949,6 +1951,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
             "agentic_lanes",
             "agentic_snapshots",
             "agentic_phases",
+            "agentic_profile",
             "agentic_model_projection",
             "weka_nested_timestamp_basis",
         )

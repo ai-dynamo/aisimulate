@@ -879,6 +879,9 @@ impl SglangCore {
             }
         }
 
+        // Retain committed chunk ownership even when no token is emitted.
+        let mut committed_requests: Vec<_> =
+            admit.can_run.iter().map(|request| request.uuid).collect();
         // Capture per-request prefill FPM data before dispersing can_run.
         let prefill_fpm = admit.prefill_fpm;
 
@@ -953,6 +956,18 @@ impl SglangCore {
                 return Err(error);
             }
         };
+        if !prefill_pass {
+            // The decode step can retract requests before executing the batch.
+            committed_requests.extend(
+                decode
+                    .output_signals
+                    .iter()
+                    .filter(|signal| signal.token_id.is_some())
+                    .map(|signal| signal.uuid),
+            );
+            committed_requests.sort_unstable();
+            committed_requests.dedup();
+        }
         self.model_work_in_pass = self.prefill_in_pass
             || (!prefill_pass && decode.output_signals.iter().any(|s| s.token_id.is_some()));
         if !stalled.is_empty() {
@@ -1072,6 +1087,7 @@ impl SglangCore {
             self.finish_group_pass(self.prefill_in_pass, self.model_work_in_pass);
         }
         Ok(EnginePassResult {
+            committed_requests,
             end_ms: decode.end_ms,
             same_timestamp_retry: if defer_prefill {
                 crate::engine::generalized::SameTimestampRetry::Countdown {

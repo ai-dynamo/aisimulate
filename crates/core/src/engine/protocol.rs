@@ -292,6 +292,9 @@ pub struct CommandEffects {
 /// Effects visible as soon as an engine pass starts.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PassStartEffects {
+    /// Requests selected for this committed pass, including chunked prefill.
+    /// Queue ownership alone does not imply unfinished model work.
+    pub committed_requests: Vec<Uuid>,
     pub admissions: Vec<Admission>,
     pub pressure_events: Vec<PressureEvent>,
     pub kv_events: Vec<KvEvent>,
