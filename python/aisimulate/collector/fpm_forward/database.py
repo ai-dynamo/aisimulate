@@ -302,6 +302,12 @@ def validate_formal_database_commit(
     payload = json.loads(metadata_path.read_text())
     if not isinstance(payload, dict):
         raise TypeError(f"FPM database commit record must be a mapping: {metadata_path}")
+    if payload.get("schema_name") == "aic_fpm_forward_perf" and payload.get("schema_version") == 6:
+        raise ValueError(
+            "historical schema-6 FPM publications cannot be finalized by this collector; schema 7 is required. "
+            "Preserve the existing artifacts. Automatic migration is unsupported; "
+            "use a fresh output directory for any new collection."
+        )
     expected = {
         "schema_name": "aic_fpm_forward_perf",
         "schema_version": 7,

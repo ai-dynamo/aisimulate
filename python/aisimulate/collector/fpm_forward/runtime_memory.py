@@ -14,10 +14,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
+
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import BackendPolicy, FPMCell, _canonical_hash
 from .runtime.fpm_memory_observer import SCHEMA_NAME, SCHEMA_VERSION, SUPPORTED_VERSION
 from .types import ParallelTopology
+
+_CELL_EXECUTION_FIELDS = frozenset({"execution_identity", "input_text_sha256"})
 
 
 def _positive(value: Any, label: str) -> int:
@@ -30,6 +34,22 @@ def cell_from_dict(payload: dict[str, Any]) -> FPMCell:
     """Read an exact saved cell without resolving current models or capabilities."""
     if not isinstance(payload, dict):
         raise ValueError("saved FPM cell must be an object")
+    execution_fields = _CELL_EXECUTION_FIELDS.intersection(payload)
+    if execution_fields and execution_fields != _CELL_EXECUTION_FIELDS:
+        raise ValueError("saved FPM cell has an incomplete execution identity")
+    execution = LEGACY_EXECUTION_IDENTITY
+    input_text_sha256 = ""
+    if execution_fields:
+        declared = payload["execution_identity"]
+        input_text_sha256 = payload["input_text_sha256"]
+        if (
+            not isinstance(declared, dict)
+            or set(declared) != set(EXECUTION_COLUMNS)
+            or any(not isinstance(value, str) for value in declared.values())
+            or not isinstance(input_text_sha256, str)
+        ):
+            raise ValueError("saved FPM cell has an invalid execution identity")
+        execution = tuple(declared[name] for name in EXECUTION_COLUMNS)
     try:
         topology = ParallelTopology(**payload["topology"])
         for name, value in topology.to_dict().items():
@@ -49,10 +69,17 @@ def cell_from_dict(payload: dict[str, Any]) -> FPMCell:
             fmha_quant_mode=dtypes["fmha_quant_mode"],
             comm_quant_mode=dtypes["comm_quant_mode"],
             fmha_resolution=dtypes["fmha_resolution"],
+            execution_identity=execution,
+            input_text_sha256=input_text_sha256,
         )
     except (KeyError, TypeError) as error:
         raise ValueError(f"invalid saved FPM cell: {error}") from error
-    if cell.to_dict() != payload or cell.workload_kind not in {"prefill", "decode"}:
+    serialized = cell.to_dict()
+    if not execution_fields:
+        # Old cells retain their exact stored shape and identity when hashed.
+        for name in _CELL_EXECUTION_FIELDS:
+            serialized.pop(name)
+    if serialized != payload or cell.workload_kind not in {"prefill", "decode"}:
         raise ValueError("saved FPM cell does not match the native collection contract")
     if not isinstance(cell.cell_id, str) or not cell.cell_id:
         raise ValueError("saved FPM cell requires a nonempty identity")
@@ -60,13 +87,13 @@ def cell_from_dict(payload: dict[str, Any]) -> FPMCell:
 
 
 def validate_saved_plan(payload: dict[str, Any]) -> None:
-    """Verify the immutable schema-v10 producer hash; no remote model reads."""
+    """Verify current and historical producer hashes without rewriting identity."""
     if (
         not isinstance(payload, dict)
         or payload.get("schema_name") != "aic_fpm_collection_plan"
-        or payload.get("schema_version") != 10
+        or payload.get("schema_version") not in (10, 11)
     ):
-        raise ValueError("runtime memory finalization requires a schema-v10 collection plan")
+        raise ValueError("runtime memory finalization requires a schema-v10 or schema-v11 collection plan")
     try:
         canonical = {
             key: payload[key]
@@ -98,6 +125,11 @@ def validate_saved_plan(payload: dict[str, Any]) -> None:
             canonical["fpm_profile"] = payload["fpm_profile"]
         if "runtime_memory_policy" in payload:
             canonical["runtime_memory_policy"] = payload["runtime_memory_policy"]
+        for item in payload["cells"]:
+            present = _CELL_EXECUTION_FIELDS.intersection(item)
+            required = _CELL_EXECUTION_FIELDS if payload["schema_version"] == 11 else frozenset()
+            if present != required:
+                raise ValueError("saved collection plan cell execution identity does not match its schema version")
         cells = [cell_from_dict(item) for item in payload["cells"]]
         if not cells or len({cell.cell_id for cell in cells}) != len(cells):
             raise ValueError("saved collection plan requires unique cells")
@@ -110,6 +142,7 @@ def validate_saved_plan(payload: dict[str, Any]) -> None:
 @dataclass(frozen=True, slots=True)
 class _SavedOptions:
     warmup_iterations: int
+    benchmark_points_json: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,17 +163,23 @@ class SavedCollectionIdentity:
     sha256: str
     options: _SavedOptions
     capability: _SavedCapability
+    cells: tuple[FPMCell, ...]
 
 
 def saved_plan_identity(payload: dict[str, Any]) -> SavedCollectionIdentity:
     validate_saved_plan(payload)
     capability = payload["capability"]
+    points = payload["options"].get("benchmark_points")
     return SavedCollectionIdentity(
         backend=payload["backend"],
         model_path=payload["model_path"],
         system=payload["system"],
         sha256=payload["sha256"],
-        options=_SavedOptions(payload["options"]["global_warmup_iterations"]),
+        options=_SavedOptions(
+            warmup_iterations=payload["options"]["global_warmup_iterations"],
+            benchmark_points_json=json.dumps(points["payload"]) if points is not None else None,
+        ),
+        cells=tuple(cell_from_dict(item) for item in payload["cells"]),
         capability=_SavedCapability(
             **{
                 key: capability[key]

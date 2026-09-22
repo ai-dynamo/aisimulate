@@ -720,3 +720,85 @@ def test_unaudited_runtime_keeps_native_timing_launch_and_pending_memory():
         assert "--scheduler-cls" not in args
         assert ("--no-async-scheduling" in args) == (cell.workload_kind == "prefill")
         assert runner._observe_runtime_memory(plan, cell) is False
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_historical_v10_plan_keeps_hash_and_reaches_native_aggregation(tmp_path):
+    from collector.fpm_forward import database
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
+
+    # Captured from the actual schema-10 producer at 4d702ff6b756b21e74b76f30273e9828fdde6861.
+    # Absolute source paths are immutable provenance; this reader must not open them.
+    fixture = Path(__file__).parent / "fixtures/fpm_collection_plan_v10.json"
+    original = fixture.read_bytes()
+    payload = json.loads(original)
+    frozen = runtime_memory.saved_plan_identity(payload)
+    assert frozen.sha256 == "ea99845deee06804fd35a7a0999b0118446df1ac8ededbf7c813345360ba6bf7"
+    assert [cell.cell_id for cell in frozen.cells] == ["fpm-d111aeb8823a9bee", "fpm-66274b2ba8ae195c"]
+    assert frozen.options.benchmark_points_json is None
+    rows = []
+    for cell in frozen.cells:
+        unit = tmp_path / cell.cell_id / "raw/node0000"
+        unit.mkdir(parents=True)
+        provenance_path = unit / "collector-provenance.json"
+        _write_provenance(provenance_path, cell_id=cell.cell_id, plan_sha256=frozen.sha256, attempt_id="historical")
+        provenance = json.loads(provenance_path.read_text())
+        provenance["runtime"]["backend_version"] = "0.27.0"
+        provenance_path.write_text(json.dumps(provenance))
+        (unit / "benchmark.json").write_text(json.dumps(_native_payload(phase=cell.workload_kind, rank=0, dp=1)))
+        rows.extend(database.aggregate_cell(frozen, cell, tmp_path / cell.cell_id, expected_attempt_id="historical"))
+    assert len(rows) == 2
+    for row in rows:
+        assert row["source_plan_sha256"] == frozen.sha256
+        assert tuple(row[name] for name in EXECUTION_COLUMNS) == LEGACY_EXECUTION_IDENTITY
+    assert fixture.read_bytes() == original
+
+
+@pytest.mark.parametrize("schema_version", [10, 11])
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_saved_plan_rejects_cell_identity_from_other_schema(schema_version):
+    payload = _pending_plan().to_dict()
+    payload["schema_version"] = schema_version
+    if schema_version == 11:
+        for cell in payload["cells"]:
+            cell.pop("execution_identity")
+            cell.pop("input_text_sha256")
+    with pytest.raises(ValueError, match="execution identity does not match its schema"):
+        runtime_memory.validate_saved_plan(payload)
+
+
+def test_saved_cell_preserves_complete_nonlegacy_execution_identity():
+    payload = _cell().to_dict()
+    payload["execution_identity"] = {
+        "model_config_sha256": "a" * 64,
+        "execution_profile": "decoder_replay",
+        "engram_residency": "hbm_tp_sharded",
+        "input_modality": "text",
+    }
+    payload["input_text_sha256"] = "b" * 64
+    assert runtime_memory.cell_from_dict(payload).to_dict() == payload
+    payload["execution_identity"].pop("engram_residency")
+    with pytest.raises(ValueError, match="invalid execution identity"):
+        runtime_memory.cell_from_dict(payload)
+
+
+def test_saved_cell_rejects_partial_execution_identity():
+    payload = _cell().to_dict()
+    payload.pop("input_text_sha256")
+    with pytest.raises(ValueError, match="incomplete execution identity"):
+        runtime_memory.cell_from_dict(payload)
+
+
+@pytest.mark.usefixtures("no_models_or_timing_data")
+def test_historical_formal_publication_reports_unsupported_migration_without_changes(tmp_path):
+    from collector.fpm_forward import database
+
+    parquet = tmp_path / "fpm_forward_perf.parquet"
+    metadata = tmp_path / "fpm_forward_perf.metadata.json"
+    parquet.write_bytes(b"historical sealed data stays unchanged")
+    metadata.write_text(json.dumps({"schema_name": "aic_fpm_forward_perf", "schema_version": 6}))
+    original = parquet.read_bytes(), metadata.read_bytes()
+    with pytest.raises(ValueError, match="historical schema-6.*Automatic migration is unsupported"):
+        database.validate_formal_database_commit(parquet, metadata, _pending_plan())
+    assert (parquet.read_bytes(), metadata.read_bytes()) == original

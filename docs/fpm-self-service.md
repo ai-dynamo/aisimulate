@@ -720,6 +720,8 @@ The fresh directory contains `request.yaml`, `fpm-model-profile.json`, ordinary 
 
 Review the resolved profile and assumptions with the user. Finalization does not accept it in the session checkpoint. Save its request as a new draft, record the new artifact paths and source relationship, and obtain acceptance of the exact resolved profile with the existing checkpoint workflow. Preserve the original collection references. Only then continue simulation using `./aisimulate-support-resolved/request.yaml` and `--output-dir ./aisimulate-support-resolved`. A pending profile produces a clear error before prediction/recommendation cache sizing or replay validation.
 
+Resuming `onboarding-checkpoint.json` restores the onboarding conversation and accepted inputs; it does not migrate collection artifacts. Current collection and finalization use a schema-11 collection plan and schema-7 formal FPM publication. The collector can still verify schema-10 plan hashes and read their matching native timing and memory evidence, preserving historical cell and attempt identities. Historical schema-6 formal publications cannot be finalized by this collector, and automatic migration is unsupported. Keep those artifacts unchanged and use fresh output directories for any new collection.
+
 ## Validate FPM query coverage with AgentX replay
 
 After verifying a matching formal FPM pair and resolving memory, run the existing cold aggregated replay path against a local Weka JSON or JSONL file. For pending collection profiles, use the fresh directory from `onboard finalize`:
