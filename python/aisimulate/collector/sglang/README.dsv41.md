@@ -266,3 +266,96 @@ Sources: [`one_batch.py`](https://github.com/sgl-project/sglang/blob/1aa0e962b20
 [`deepseek_v4.py`](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/models/deepseek_v4.py),
 [`engram.py`](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/layers/engram.py).
 See the repository's canonical third-party notices for attribution.
+
+## Collected H100/H200/B200/GB200 TP2 and TP4 profiles
+
+The collected `full` execution profiles use SGLang
+`dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc`. Select these MoE kernels explicitly:
+
+| System | TP2 | TP4 |
+| --- | --- | --- |
+| `h100_sxm`, `h200_sxm` | `w4a16_mxfp4_cutlass` | `w4a16_mxfp4_humming` |
+| `b200_sxm`, `gb200` | `w4a8_mxfp4_mxfp8_trtllm` | `w4a8_mxfp4_mxfp8_trtllm` |
+
+Set GEMM to `fp8_block`, FMHA to `fp8`, MoE TP equal to model TP, and MoE EP to 1.
+Profiles measure native serving modules with synthetic weights/hidden states and real
+native token/KV metadata. GB200 TP4 attention was measured in the whole model with the
+immutable checkpoint. All primitive families use the isolated collector. TP2 supplies
+duplicate mHC/router physical keys after an explicit shape/dtype/source/scope parity
+audit; every TP4 raw sample remains in the private collection archive. Selection did not
+depend on latency.
+
+The communication table measures `torch.distributed.all_reduce` with the loaded NCCL
+2.30.7 provider. PyTorch's reported build version is 2.29.7 and does not identify this
+loaded library. Native SGLang PyNccl is a separate API. Keep the packaged default
+systems intact and use the existing `systems_paths` override to select the measured NCCL
+version:
+
+```python
+from importlib.resources import files
+from pathlib import Path
+import yaml
+
+systems = Path(str(files("aisimulate_core") / "systems"))
+overlay = Path("dsv41-systems").resolve()
+overlay.mkdir(exist_ok=True)
+for name in ("h100_sxm", "h200_sxm", "b200_sxm", "gb200"):
+    config = yaml.safe_load((systems / f"{name}.yaml").read_text())
+    config["data_dir"] = str((systems / config["data_dir"]).resolve())
+    config["misc"]["nccl_version"] = "2.30.7"
+    (overlay / f"{name}.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+```
+
+Pass `systems_paths=[str(overlay)]` to the SDK or `--systems-paths dsv41-systems` to the
+legacy `aiconfigurator cli estimate` command, along with the explicit backend version
+and `SILICON` mode. For example:
+
+```bash
+aiconfigurator cli estimate --estimate-mode static \
+  --model-path deepseek-ai/DeepSeek-V4.1-Flash --system gb200 --backend sglang \
+  --perf-db-version dev-1aa0e962b206102b7c439a4a0c4981cfec6e87bc \
+  --systems-paths dsv41-systems --database-mode SILICON \
+  --tp-size 4 --moe-tp-size 4 --moe-ep-size 1 \
+  --gemm-quant-mode fp8_block --moe-quant-mode w4a8_mxfp4_mxfp8_trtllm \
+  --fmha-quant-mode fp8 --isl 128 --osl 2 --batch-size 1
+```
+
+All eight hardware/TP full-profile cells pass strict prediction checks for the frozen
+145 calibration geometries (108 prefill and 37 decode, batches 1/2/3) and 38 independent
+heldout geometries (28 prefill and 10 decode). This is the explicit case grid, not every
+Cartesian combination or arbitrary batch/length coverage. Primitive token counts are 1,
+2, 4, 8, 16, 32, 64, 128, 129, 256, 512, 1024, 2048, 4096, and 8192. Successful heldout
+geometry prediction is coverage unless a separate whole-model truth run is reported.
+Whole-model memory feasibility must be evaluated separately from isolated operator
+coverage. No extrapolated H100 or TP2 whole-model accuracy is reported. The
+`decoder_bounded` raw collection retains eight colliding physical-key groups and is
+excluded from these admitted tables pending native-equivalence validation.
+
+Independent full-checkpoint validation used 38 cases, five repetitions and four ranks
+for each of these full-profile cells:
+
+| System / TP | Overall MAPE | Prefill (28 cases) | Decode (10 cases) |
+| --- | --- | --- | --- |
+| GB200 / TP4 | 6.96% | 4.52% | 13.78% |
+| H200 / TP4, native Humming | 12.68% | 7.47% | 27.27% |
+
+Ground truth uses each repetition's maximum rank wall time, then the median across
+five repetitions. Its native synchronized wall boundary includes preparation.
+Predictions and database hashes were frozen before reading each system's truth,
+with separate text/tokenized corpora and no geometry overlap. No accuracy threshold
+was asserted; the larger H200 decode error remains visible without fitting the
+tables to these heldout observations.
+
+These measurements use immutable AMD64 image manifest
+`sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5` and ARM64
+image manifest
+`sha256:800cc9adea5be1e18f48185451220c4bc487c545b7095c720d2ccc9ba9bb3b5d`. Each
+collection event records the actual SquashFS archive SHA-256; independently repacked
+archives are distinct even when they have the same OCI manifest. The installed
+`srt/models/deepseek_v4.py` carries the runtime image's vision-only attention-DP guard:
+upstream SHA-256 `48c8a718d90e3136aa7c0fa1373432eaa274f5dd013fdf154e0ddc5719b5c888`
+becomes installed SHA-256
+`d69b85051bcf4535993d9c2a6625a1e86386e99e1954bb9c2c25e47cd577a8a9`. The recorded source
+audit verified this change does not alter the measured text-model path. Both
+architectures verify the installed source bytes; their runtimes are not described as an
+unmodified upstream checkout.
