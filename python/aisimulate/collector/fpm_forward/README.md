@@ -52,3 +52,32 @@ failed evidence when a later source revision succeeds.
 These archives are executable source, so review the published source and its
 provenance before using `--run`. Hashes establish identity; they do not establish
 trust or replace the native qualification required by the dataset.
+
+## DeepSeek V4.1 GB200 TP4 full
+
+From `python/aisimulate`, with the project environment installed:
+
+```bash
+python -m collector.fpm_forward.recipe \
+  --pin collector/fpm_forward/recipes/dsv41_gb200_tp4_full.json \
+  --destination /path/to/new-reproduction
+python -m aisimulate_core.sdk.fpm_dataset \
+  src/aisimulate_core/systems/profiles/dsv41_fpm/four_gpu_hf_dataset.json \
+  gb200-tp4-full --cache-dir /path/to/fpm-cache
+```
+
+The first command pins the HF source artifact commit; the second pins the
+separate data commit and prints the systems root for prediction. The source
+archive's `README.md`, `entrypoint.py` and `replay-contract.json` document CPU
+reduction and prediction, including the exact raw/prepared archive paths and
+hashes. Download those evidence archives from the data manifest's immutable HF
+revision. CPU replay verifies the original native admission, reproduces the
+145-row table byte for byte, and evaluates 38 independent heldout geometries
+with ten observations each. It needs no GPU or private campaign directory.
+
+New GPU collection requires the archive's original qualified runtime and
+checkpoint. Its retained Slurm launch files record the original site paths;
+they are not a portable allocation service. Other GPU/TP/profile combinations
+are not implied by this pin. The `dev-800cc9…-cohort…` selector identifies the
+image and cohort adapter; the recorded SGLang Git revision is
+`1aa0e962b206102b7c439a4a0c4981cfec6e87bc`.

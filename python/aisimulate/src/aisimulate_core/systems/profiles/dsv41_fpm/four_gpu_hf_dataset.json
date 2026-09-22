@@ -1,0 +1,56 @@
+{
+  "format_version": 1,
+  "repo_id": "nvidia/aisimulate-fpm-dataset",
+  "revision": "697834bc7473c8f9b4a2672aa95174df6a3448cd",
+  "profiles": {
+    "gb200-tp4-full": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb200",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "source_artifact_revision": "31bf73d5f676dc1bebbe6c05277ca3f367c98162",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/pure-tp4/fpm/fpm_forward_perf.full.parquet",
+          "target": "data/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/fpm_forward_perf.parquet",
+          "sha256": "ab7ab62caa70cfd748969c5b7e200d7d5a73ca6a3a40e84c8ac5b3c7313d38b8"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/pure-tp4/fpm/fpm_forward_perf.full.metadata.json",
+          "target": "data/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/fpm_forward_perf.metadata.json",
+          "sha256": "a9c62d4da67ac9a6364b607a73f5c46ebb3fc0a6d84781e815c6dafae8b69ced"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/pure-tp4/fpm/provenance/systems.full.yaml",
+          "target": "gb200.yaml",
+          "sha256": "0eae1446798493cf7d2b60b5edcf22f7eebe9d6ece3edd7216347c9b453309f1"
+        }
+      ]
+    }
+  }
+}

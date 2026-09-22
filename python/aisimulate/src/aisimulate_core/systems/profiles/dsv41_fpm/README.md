@@ -5,6 +5,25 @@ SPDX-License-Identifier: Apache-2.0
 
 # DeepSeek-V4.1 FPM databases
 
+`four_gpu_hf_dataset.json` adds the separately collected **GB200 TP4 full**
+profile from [HF PR #13](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/13),
+pinning data commit `697834bc7473c8f9b4a2672aa95174df6a3448cd` and each file's SHA256.
+Its 145 calibration geometries and 38 independent heldout geometries retain
+ten fixed attempts each. Heldout MAPE is **1.18418035%**, with maximum geometry
+error **14.2899673%**; each error compares prediction with the median of ten
+observations, and all 38 errors have equal weight. These results apply only
+to the recorded full profile, 4 request slots and 5120-token physical pool.
+No heldout samples were used for calibration. Calibration self-queries check
+reader integrity and do not measure accuracy.
+
+The source recipe and CPU replay instructions are in
+[`collector/fpm_forward/README.md`](../../../../../collector/fpm_forward/README.md).
+The source artifact is pinned separately at HF commit
+`31bf73d5f676dc1bebbe6c05277ca3f367c98162`; it is not an AISimulate producer Git
+revision. The sidecar records the actual SGLang revision and image identity.
+This manifest currently admits only `gb200-tp4-full`; other requested four-GPU
+campaign profiles remain unlisted until their own collection and validation pass.
+
 This directory defines the loading contract for DeepSeek-V4.1 whole-forward
 measurements on GB300 at TP2 and B300 at TP2 or TP4. Published tables
 cover B300 TP2/TP4 and GB300 TP2 in both the `full` and
