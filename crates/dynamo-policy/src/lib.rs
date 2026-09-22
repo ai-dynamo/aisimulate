@@ -49,7 +49,11 @@ struct RouterConfig {
 #[serde(deny_unknown_fields)]
 struct AffinityConfig {
     mode: AffinityMode,
+    #[serde(default = "default_affinity_ttl_seconds")]
     ttl_seconds: f64,
+}
+fn default_affinity_ttl_seconds() -> f64 {
+    3600.0
 }
 #[derive(Clone, Copy, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1154,6 +1158,13 @@ mod tests {
     }
     #[test]
     fn invalid_router_and_affinity_inputs_fail_explicitly() {
+        for mode in ["session", "sibling_group"] {
+            let config = RouterConfig::parse(&format!(
+                r#"{{"policy":"kv_router","affinity":{{"mode":"{mode}"}}}}"#
+            ))
+            .unwrap();
+            assert_eq!(config.affinity.unwrap().ttl_seconds, 3600.0);
+        }
         for config in [
             r#"{"policy":"round_robin"}"#,
             r#"{"policy":"kv_router","affinity":{"mode":"session","ttl_seconds":0.5}}"#,
@@ -1342,7 +1353,7 @@ mod tests {
             let result: Value = serde_json::from_str(
                 &execute(
                     &payload.to_string(),
-                    r#"{"policy":"kv_router","affinity":{"mode":"session","ttl_seconds":10}}"#,
+                    r#"{"policy":"kv_router","affinity":{"mode":"session"}}"#,
                 )
                 .unwrap(),
             )
