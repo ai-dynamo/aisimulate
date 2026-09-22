@@ -31,7 +31,7 @@ def environment(recording: dict[str, Any]) -> TableEnvironment:
     return TableEnvironment.model_validate(recording["environment"])
 
 
-def frontend_row(recording: dict[str, Any], *, model: str, measurement: FrontendMeasurementConfig) -> FrontendRow:
+def frontend_row(recording: dict[str, Any], measurement: FrontendMeasurementConfig) -> FrontendRow:
     """Stages of one frontend from the worker script's recording.
 
     Python: the multimodal processor path (image decode, HF processor, layout)
@@ -45,12 +45,7 @@ def frontend_row(recording: dict[str, Any], *, model: str, measurement: Frontend
     if recording["frontend"] == "python":
         stages.append(FrontendStageConfig(service_ms=float(recording["send_ms"])))
     stages.append(FrontendStageConfig(service_ms=float(recording["receive_ms"])))
-    return FrontendRow(
-        model=model,
-        measured_for=measurement,
-        stages=stages,
-        provenance=dict(recording.get("provenance", {})),
-    )
+    return FrontendRow(measured_for=measurement, stages=stages, provenance=dict(recording.get("provenance", {})))
 
 
 STAGE_LABELS = {"python": ("process", "send", "receive"), "rust": ("process", "receive")}

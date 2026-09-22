@@ -126,12 +126,16 @@ def test_images_encode_on_the_language_worker_without_a_host_loop():
 
 @pytest.mark.parametrize(
     "kind",
-    ["encoder_and_host", "frontend_without_host", "vllm", "fixed_timing"],
+    ["encoder_and_host", "frontend_without_host", "vllm", "fixed_timing", "pipeline_without_vision_key"],
 )
 def test_native_vl_schema_rejects_unsupported(kind):
     raw = _prediction()
     worker = raw["engine"]["workers"]["aggregated"]
-    if kind == "encoder_and_host":
+    if kind == "pipeline_without_vision_key":
+        # Images enable the encoder implicitly; the layout gate must not depend on spelling `vision` out.
+        del worker["frontend"]
+        worker["parallelism"] = {"replicas": 1, "tensor": 1, "pipeline": 2}
+    elif kind == "encoder_and_host":
         raw["engine"]["workers"]["encoder"] = {
             "tensor": 1,
             "batch_size": 1,
@@ -148,29 +152,25 @@ def test_native_vl_schema_rejects_unsupported(kind):
         CorePredictionConfig.model_validate(deepcopy(raw))
 
 
-def _host_table(sglang_version="0.5.19"):
-    worker = _prediction()["engine"]["workers"]["aggregated"]
-    row = {
-        "model": "Qwen/Qwen3-VL-8B-Instruct",
+def _host_row(frontend="python", feature_transport="shm", service_ms=3.0):
+    return {
         "measured_for": {
-            "frontend": "python",
-            "feature_transport": "shm",
+            "model": "Qwen/Qwen3-VL-8B-Instruct",
+            "frontend": frontend,
+            "feature_transport": feature_transport,
             "height": 448,
             "width": 448,
             "count": 1,
             "encoding": "png",
         },
-        "stages": worker["frontend"]["stages"],
-        "provenance": {"text_tokens": 128},
+        "stages": [{"workers": 1, "service_ms": service_ms}],
+        "provenance": {"text_tokens": 128, "host": "example-host", "threads": 16},
     }
-    environment = {
-        "cpu": "example-cpu",
-        "host": "example-host",
-        "threads": 16,
-        "sglang_version": sglang_version,
-        "python": "3.10.12",
-    }
-    return {"schema_version": 1, "environment": environment, "rows": [row]}
+
+
+def _host_table(sglang_version="0.5.19", rows=None):
+    environment = {"cpu": "example-cpu", "sglang_version": sglang_version, "python": "3.10.12"}
+    return {"schema_version": 1, "environment": environment, "rows": rows or [_host_row()]}
 
 
 def test_host_profile_lowers_to_the_explicit_stages(tmp_path):
@@ -247,8 +247,12 @@ def _recommendation():
 
 
 def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
+    recommendation = _recommendation()
+    # A relative stop is resolved per candidate; the saved prediction must still be
+    # recognized as the scored run.
+    recommendation["traffic"]["stop"] = {"requests_per_load_unit": 2}
     path = tmp_path / "search.yaml"
-    path.write_text(yaml.safe_dump(_recommendation()))
+    path.write_text(yaml.safe_dump(recommendation))
     root = tmp_path / "recommend"
     assert (
         main(
@@ -300,6 +304,11 @@ def test_native_vl_recommend_yaml_predict_roundtrip(tmp_path, capsys):
     validate_vl_prediction_mapping(raw, spec)
     raw["engine"]["workers"]["aggregated"]["frontend"]["stages"][0]["service_ms"] = 1.0
     with pytest.raises(ValueError, match="prediction-ready"):
+        validate_vl_prediction_mapping(raw, spec)
+    # The resolved request count is compared, not the spelling of the stop condition.
+    raw = concrete.model_dump(mode="python", exclude_none=True)
+    raw["traffic"]["stop"] = {"requests": 99}
+    with pytest.raises(ValueError, match="traffic changed: request_count=99"):
         validate_vl_prediction_mapping(raw, spec)
 
 
@@ -357,6 +366,30 @@ def test_profile_backed_recommendation_pins_the_resolved_stages(tmp_path, capsys
     edited["traffic"]["source"]["images"]["count"] = 2
     with pytest.raises(ValueError, match="measured for"):
         prediction_to_replay_spec(CorePredictionConfig.model_validate(edited))
+    edited = yaml.safe_load(saved_path.read_text())
+    edited["engine"]["model"] = "Qwen/Qwen3-VL-2B-Instruct"
+    with pytest.raises(ValueError, match="measured for"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(edited))
+
+
+def test_rust_profiles_resolve_only_the_transports_the_tp_domain_uses(tmp_path):
+    path = tmp_path / "table.json"
+    rows = [_host_row("rust", "inline", 2.0), _host_row("rust", "shm", 5.0)]
+    path.write_text(json.dumps(_host_table(rows=rows)))
+    raw = _recommendation()
+    worker = raw["engine"]["workers"]["aggregated"]
+    del worker["frontend"]
+    worker["host_profile"] = {"path": str(path), "frontend": "rust"}
+
+    def transports(tensor):
+        worker["parallelism"]["tensor"] = tensor
+        space = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(deepcopy(raw))).search_space
+        return {key: row["frontend"]["stages"][0]["service_ms"] for key, row in space.agg_frontend_by_transport.items()}
+
+    # One rank keeps features inline; every wider candidate shares the shm row.
+    assert transports({"choices": [1, 2]}) == {"inline": 2.0, "shm": 5.0}
+    assert transports({"range": {"min": 2, "max": 4, "scale": "log"}}) == {"shm": 5.0}
+    assert transports(4) == {"shm": 5.0}
 
 
 def test_text_only_host_tables_reach_predict_and_recommend_alike(tmp_path, capsys):

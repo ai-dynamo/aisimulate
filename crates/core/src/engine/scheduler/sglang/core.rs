@@ -963,23 +963,6 @@ impl SglangCore {
         let batch_size = admit.can_run.len();
         let mean_isl = admit.total_isl.checked_div(batch_size).unwrap_or(0);
         let mean_prefix = admit.total_prefix.checked_div(batch_size).unwrap_or(0);
-        // The forward encodes the cache-miss images whose placeholders overlap this
-        // pass's chunks before the language-model prefill runs over the batch.
-        let vision_misses =
-            self.vision_cache
-                .misses(
-                    admit
-                        .can_run
-                        .iter()
-                        .zip(&admit.prefill_fpm)
-                        .map(|(request, item)| {
-                            (
-                                request.images.as_slice(),
-                                item.prefix_tokens,
-                                item.prefix_tokens + item.tokens_computed,
-                            )
-                        }),
-                );
         let prefill_time = (|| {
             self.config.perf_model.validate_prefill_batch(
                 &admit
@@ -988,21 +971,40 @@ impl SglangCore {
                     .map(|item| (item.tokens_computed, item.prefix_tokens))
                     .collect::<Vec<_>>(),
             )?;
+            // The forward encodes the cache-miss images whose placeholders overlap this
+            // pass's chunks before the language-model prefill runs over the batch. The
+            // lookup touches the cache, so it follows the batch validation a provider
+            // may still reject.
+            let vision_misses =
+                self.vision_cache
+                    .misses(
+                        admit
+                            .can_run
+                            .iter()
+                            .zip(&admit.prefill_fpm)
+                            .map(|(request, item)| {
+                                (
+                                    request.images.as_slice(),
+                                    item.prefix_tokens,
+                                    item.prefix_tokens + item.tokens_computed,
+                                )
+                            }),
+                    );
             let vision_ms = modeled_duration_ms(
                 self.config.perf_model.predict_vision_time(&vision_misses)?,
                 self.config.speedup_ratio,
             )?;
             let prefill =
                 simulate_prefill_duration(batch_size, mean_isl, mean_prefix, &self.config, true)?;
-            Ok((prefill, vision_ms))
+            Ok((prefill, vision_ms, vision_misses))
         })();
         let (prefill_time, vision_ms) = match prefill_time {
-            Ok(durations) => {
+            Ok((prefill, vision_ms, vision_misses)) => {
                 if let Some((checkpoint, _)) = admission_checkpoint {
                     self.kv_manager.commit_admission(checkpoint);
                 }
                 self.vision_cache.store(&vision_misses);
-                durations
+                (prefill, vision_ms)
             }
             Err(error) => {
                 // A retry is still part of the caller's prepared group round;

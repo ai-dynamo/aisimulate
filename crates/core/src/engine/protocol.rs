@@ -25,13 +25,6 @@ pub struct EncoderShape {
     pub output_tokens: u32,
 }
 
-impl EncoderShape {
-    /// Patch-embedding tokens over all sequences of the image.
-    pub fn total_patch_tokens(&self) -> usize {
-        self.sequences as usize * self.patch_tokens as usize
-    }
-}
-
 /// One image placeholder span and the encoder shape behind it.
 ///
 /// `token_start..token_end` is the half-open placeholder interval inside the

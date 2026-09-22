@@ -489,19 +489,18 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
     from .config.engine import feature_transport
     from .vl.table import resolve_frontend
 
+    # The transport only depends on whether a candidate runs on one rank, so the
+    # domain's members (a log range contributes its bounds) decide which rows exist.
     tensors, log_range = _integer_domain((aggregated.get("parallelism") or {}).get("tensor"), default=[1, 2, 4, 8])
-    transports = (
-        {"inline", "shm"}
-        if log_range is not None
-        else {feature_transport(worker.host_profile.frontend, tensor) for tensor in tensors}
-    )
+    tensors = set(tensors) | set(log_range or ())
+    by_tensor = {feature_transport(worker.host_profile.frontend, tensor): tensor for tensor in sorted(tensors)}
     by_transport: dict[str, Any] = {}
-    for transport in sorted(transports):
+    for transport, tensor in sorted(by_tensor.items()):
         frontend, digest = resolve_frontend(
             worker.host_profile,
             model=config.engine.model,
             images=images.model_dump(mode="json"),
-            tensor=1 if transport == "inline" else 2,
+            tensor=tensor,
         )
         by_transport[transport] = {"frontend": frontend.model_dump(mode="json"), "digest": digest}
     result["agg_frontend_by_transport"] = by_transport

@@ -82,6 +82,9 @@ impl VisionCache {
     /// Retain freshly computed embeddings, evicting least recently used entries.
     pub(super) fn store(&mut self, images: &[ImageSpec]) {
         for image in images {
+            if self.capacity == 0 || image.embedding_bytes == 0 {
+                continue;
+            }
             if let Some(index) = self
                 .entries
                 .iter()

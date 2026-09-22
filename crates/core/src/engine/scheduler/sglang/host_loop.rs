@@ -61,10 +61,14 @@ pub(super) struct ForwardOutputs {
 impl ForwardOutputs {
     /// Drop everything owed to `uuid`; returns how many output tokens that was.
     fn discard_request(&mut self, uuid: Uuid) -> usize {
-        let before = self.output_signals.len();
+        let tokens = self
+            .output_signals
+            .iter()
+            .filter(|signal| signal.uuid == uuid && signal.token_id.is_some())
+            .count();
         self.output_signals.retain(|signal| signal.uuid != uuid);
         self.cache_commits.retain(|(request, _)| *request != uuid);
-        before - self.output_signals.len()
+        tokens
     }
 }
 

@@ -3413,7 +3413,8 @@ mod host_loop_passes {
                     "the forward in flight delivered a token to the retracted request"
                 );
                 assert_eq!(
-                    output_len, delivered[&uuid],
+                    output_len,
+                    delivered.get(&uuid).copied().unwrap_or(0),
                     "the retracted request keeps exactly the tokens the scheduler observed"
                 );
                 return;

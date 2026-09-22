@@ -33,7 +33,6 @@ const MAX_CONSECUTIVE_SAME_TIMESTAMP_RETRIES: usize = 1024;
 struct PendingPass {
     pass_id: PassId,
     started_at_ms: f64,
-    end_ms: f64,
 }
 
 struct LogicalWorker {
@@ -790,7 +789,6 @@ where
             let pending = PendingPass {
                 pass_id: started.pass_id,
                 started_at_ms: started.started_at_ms,
-                end_ms: started.end_ms,
             };
 
             let mut effects: EngineEffects<Observation::Batch> = EngineEffects::default();
@@ -1130,7 +1128,6 @@ fn lower_completion<Observation: ReplayEngineObservation>(
     capture_artifact_kv_events: bool,
     effects: PassCompletionEffects,
 ) -> WorkerCompletionPayload<Observation::Batch> {
-    let wall_time_secs = (pass.end_ms - pass.started_at_ms).max(0.0) / 1_000.0;
     let completed_requests = effects
         .outputs
         .iter()
@@ -1176,17 +1173,15 @@ fn lower_completion<Observation: ReplayEngineObservation>(
             made_progress,
             had_raw_observations,
         },
-        fpm: Some(native_fpm(
-            dp_rank,
-            wall_time_secs,
-            effects.forward_pass_metrics,
-        )),
+        fpm: Some(native_fpm(dp_rank, effects.forward_pass_metrics)),
         accept_length_output_tokens,
         accept_length_decode_forwards,
     }
 }
 
-fn native_fpm(dp_rank: u32, wall_time_secs: f64, fpm: ForwardPassMetrics) -> ForwardPassSnapshot {
+/// The forward-pass snapshot's wall time is the forward's own device time, which
+/// the engine already separates from the pass under the SGLang host loop.
+fn native_fpm(dp_rank: u32, fpm: ForwardPassMetrics) -> ForwardPassSnapshot {
     ForwardPassSnapshot {
         version: 0,
         worker_id: String::new(),
@@ -1205,7 +1200,7 @@ fn native_fpm(dp_rank: u32, wall_time_secs: f64, fpm: ForwardPassMetrics) -> For
         num_queued_decode: fpm.num_queued_decode,
         sum_queued_decode_kv_tokens: fpm.sum_queued_decode_kv_tokens,
         var_queued_decode_kv_tokens: fpm.var_queued_decode_kv_tokens,
-        wall_time_secs,
+        wall_time_secs: fpm.duration_ms / 1_000.0,
     }
 }
 
@@ -1213,6 +1208,20 @@ fn native_fpm(dp_rank: u32, wall_time_secs: f64, fpm: ForwardPassMetrics) -> For
 mod tests {
     use super::*;
     use crate::engine::{Backend, EngineConfig, KvEvent, SglangConfig, TimingModelConfig};
+
+    #[test]
+    fn fpm_snapshot_wall_time_is_the_forward_duration() {
+        // Under the host loop a 7 ms prefill is launched by a pass that returns at
+        // once; the snapshot must carry the forward's 7 ms, not the pass's 0.
+        let snapshot = native_fpm(
+            0,
+            ForwardPassMetrics {
+                duration_ms: 7.0,
+                ..Default::default()
+            },
+        );
+        assert_eq!(snapshot.wall_time_secs, 0.007);
+    }
     use crate::replay::components::AdmissionEvent;
     use crate::replay::{ReplayEngineConfig, ReplayEngineFactory, WorkerStage};
 

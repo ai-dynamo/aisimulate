@@ -214,7 +214,7 @@ def _deployment(
     if mode == "agg":
         assert engine.workers.aggregated is not None
         worker, vl_metadata = _resolve_host_profile(engine, engine.workers.aggregated, workload)
-        _check_frontend_measurement(worker, workload)
+        _check_frontend_measurement(engine, worker, workload)
         parallel = _parallel_mapping(worker, prefix="")
         # Images without a dedicated encoder pool are encoded on the language worker.
         vision = None
@@ -391,15 +391,17 @@ def _resolve_host_profile(
     return resolved, {"vl": {"host_profile_digest": digest, "frontend": worker.host_profile.frontend}}
 
 
-def _check_frontend_measurement(worker: AggregatedWorkerPredictionConfig, workload: dict[str, JSONValue]) -> None:
-    """Stages measured on one workload and feature transport price only that workload."""
+def _check_frontend_measurement(
+    engine: EnginePredictionConfig, worker: AggregatedWorkerPredictionConfig, workload: dict[str, JSONValue]
+) -> None:
+    """Stages measured on one model, workload and feature transport price only that combination."""
     measured = worker.frontend.measured_for if worker.frontend is not None else None
     if measured is None:
         return
     images = workload.get("images")
     if not isinstance(images, dict):
         raise ValueError(f"frontend stages were measured for {measured.describe()}; this workload has no images")
-    needed = FrontendMeasurementConfig.for_workload(measured.frontend, images, worker.parallelism.tensor)
+    needed = FrontendMeasurementConfig.for_workload(engine.model, measured.frontend, images, worker.parallelism.tensor)
     if needed != measured:
         raise ValueError(
             f"frontend stages were measured for {measured.describe()}; this prediction needs {needed.describe()}"

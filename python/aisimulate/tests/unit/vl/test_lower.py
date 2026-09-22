@@ -11,7 +11,7 @@ from aisimulate.vl.collect.samples import Span
 
 pytestmark = pytest.mark.unit
 
-ENVIRONMENT = {"cpu": "c", "host": "h", "threads": 4, "sglang_version": "0.5.19", "python": "3.10.12"}
+ENVIRONMENT = {"cpu": "c", "sglang_version": "0.5.19", "python": "3.10.12"}
 
 
 def _level(concurrency: int, service_ms: float, rounds: int = 12) -> list[list[int]]:
@@ -50,16 +50,14 @@ def test_recordings_lower_to_each_frontends_stages():
             "environment": ENVIRONMENT,
             "provenance": {"text_tokens": 128},
         },
-        model="m",
-        measurement=FrontendMeasurementConfig(frontend="python", feature_transport="shm", height=480, width=480),
+        FrontendMeasurementConfig(model="m", frontend="python", feature_transport="shm", height=480, width=480),
     )
     assert [(s.workers, s.service_ms) for s in python.stages] == [(2, pytest.approx(20.0)), (1, 3.5), (1, 7.25)]
     assert python.stages[0].concurrency_scale == pytest.approx([1.0, 1.2])
     assert python.provenance == {"text_tokens": 128}
     rust = frontend_row(
         {"frontend": "rust", "workers": 2, "levels": levels, "receive_ms": 0.3, "environment": ENVIRONMENT},
-        model="m",
-        measurement=FrontendMeasurementConfig(frontend="rust", feature_transport="inline", height=480, width=480),
+        FrontendMeasurementConfig(model="m", frontend="rust", feature_transport="inline", height=480, width=480),
     )
     assert [(s.workers, s.service_ms) for s in rust.stages] == [(2, pytest.approx(20.0)), (1, 0.3)]
     assert environment({"environment": ENVIRONMENT}).cpu == "c"

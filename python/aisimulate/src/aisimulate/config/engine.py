@@ -297,8 +297,9 @@ def feature_transport(frontend: FrontendKind, tensor: int) -> FeatureTransport:
 
 
 class FrontendMeasurementConfig(StrictModel):
-    """The frontend, feature transport and image workload a set of stages was measured on."""
+    """The model, frontend, feature transport and image workload a set of stages was measured on."""
 
+    model: str = Field(min_length=1)
     frontend: FrontendKind
     feature_transport: FeatureTransport
     height: PositiveInt
@@ -309,9 +310,12 @@ class FrontendMeasurementConfig(StrictModel):
     max_pixels: PositiveInt | None = None
 
     @classmethod
-    def for_workload(cls, frontend: FrontendKind, images: Mapping[str, Any], tensor: int) -> FrontendMeasurementConfig:
-        """The measurement a prediction of `images` on `tensor` ranks needs."""
+    def for_workload(
+        cls, model: str, frontend: FrontendKind, images: Mapping[str, Any], tensor: int
+    ) -> FrontendMeasurementConfig:
+        """The measurement a prediction of `model` over `images` on `tensor` ranks needs."""
         return cls(
+            model=model,
             frontend=frontend,
             feature_transport=feature_transport(frontend, tensor),
             height=int(images["height"]),
@@ -329,7 +333,8 @@ class FrontendMeasurementConfig(StrictModel):
             if value is not None
         )
         return (
-            f"{self.frontend} {self.feature_transport} {self.height}x{self.width}x{self.count} {self.encoding}{pixels}"
+            f"{self.model} {self.frontend} {self.feature_transport} "
+            f"{self.height}x{self.width}x{self.count} {self.encoding}{pixels}"
         )
 
 
@@ -877,6 +882,32 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
                 raise ValueError(f"workers.{role}.scheduler.{field} is supported only for backend={backend}")
 
 
+def require_native_vl_parallelism(
+    worker: AggregatedWorkerPredictionConfig | AggregatedWorkerRecommendationConfig,
+) -> None:
+    """The host loop and the colocated vision encoder run on one pipeline stage without attention DP.
+
+    Shared by the explicit `host_loop`/`vision` gates and by the image workloads that
+    enable the encoder implicitly, so spelling the defaults out changes nothing.
+    """
+    parallel = worker.parallelism
+    if isinstance(worker, AggregatedWorkerPredictionConfig):
+        if parallel.pipeline != 1 or parallel.attention_data != 1:
+            raise ValueError(
+                "native VL replay requires workers.aggregated.parallelism with pipeline=1 and attention_data=1"
+            )
+        return
+    if (
+        parallel.preset not in (False, {})
+        or parallel.pipeline not in (None, 1)
+        or parallel.attention_data not in (None, 1)
+    ):
+        raise ValueError(
+            "native VL recommendation requires workers.aggregated.parallelism with preset: false, pipeline=1 and "
+            "attention_data=1"
+        )
+
+
 def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
     worker = engine.workers.aggregated
     if worker is None or (not worker.host_loop and worker.vision is None):
@@ -887,8 +918,7 @@ def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
         )
     if engine.mode != "aggregated":
         raise ValueError("workers.aggregated.host_loop and workers.aggregated.vision require engine.mode='aggregated'")
-    if worker.parallelism.pipeline != 1 or worker.parallelism.attention_data != 1:
-        raise ValueError("workers.aggregated.host_loop requires pipeline=1 and attention_data=1")
+    require_native_vl_parallelism(worker)
 
 
 def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
@@ -984,13 +1014,7 @@ def _validate_recommendation_host(engine: EngineRecommendationConfig, *, modes: 
         raise ValueError("host recommendation requires concrete mode=aggregated")
     if backends != {"sglang"}:
         raise ValueError("host recommendation requires concrete backend=sglang")
-    parallel = worker.parallelism
-    if (
-        parallel.preset not in (False, {})
-        or parallel.pipeline not in (None, 1)
-        or parallel.attention_data not in (None, 1)
-    ):
-        raise ValueError("host recommendation requires parallelism with preset: false, pipeline=1 and attention_data=1")
+    require_native_vl_parallelism(worker)
 
 
 def _validate_worker_roles(*, modes: set[str], workers, has_transfer: bool) -> None:

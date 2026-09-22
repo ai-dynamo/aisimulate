@@ -1443,8 +1443,9 @@ table named by `host_profile.path`; every prediction and recommendation then
 reuses that table. A row is keyed by model, frontend, feature transport (the
 Rust frontend keeps image features inline on one rank and uses shared memory
 across tensor-parallel ranks) and image shape; a workload the table has no row
-for fails closed and prints the `collect` command that adds it, and one table
-belongs to one serving environment. Explicit `frontend.stages` may be written
+for fails closed and prints the `collect` command that adds it, one table
+belongs to one serving environment, and `collect --recording` lowers a kept raw
+recording without measuring again. Explicit `frontend.stages` may be written
 by hand instead. The summary adds the mean time to first token split by
 milestone, `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
 `mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, and

@@ -23,11 +23,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import Field, PositiveInt
+from pydantic import Field
 
 from ..config.common import StrictModel
 from ..config.engine import (
-    FrontendKind,
     FrontendMeasurementConfig,
     FrontendPredictionConfig,
     FrontendStageConfig,
@@ -35,24 +34,27 @@ from ..config.engine import (
 )
 
 SGLANG_VERSION = "0.5.19"
-"""The sglang release whose frontend the stage boundaries were defined on."""
+"""The sglang release (commit 0bcd822) whose frontend the stage boundaries were defined on."""
 
-SGLANG_REVISION = "0bcd822377da7b5718e674eaf9c870d349424dd1"
-"""Immutable sgl-project/sglang commit of that release; the behavior model's reference."""
+
+def sglang_release(version: str) -> str:
+    """`major.minor.patch` of an installed sglang version string, local suffixes dropped."""
+    return ".".join(version.split("+", 1)[0].split(".")[:3])
 
 
 class TableEnvironment(StrictModel):
-    """The serving environment every row of a table was measured on."""
+    """The serving environment every row of a table was measured on.
+
+    Only what stays fixed across collections belongs here; the host name, thread
+    count and sampling time of one collection travel in its row's provenance.
+    """
 
     cpu: str
-    host: str
-    threads: PositiveInt
     sglang_version: str
     python: str
 
 
 class FrontendRow(StrictModel):
-    model: str
     measured_for: FrontendMeasurementConfig
     stages: list[FrontendStageConfig] = Field(min_length=1)
     provenance: dict[str, Any] = Field(default_factory=dict)
@@ -67,7 +69,6 @@ class HostCostTable(StrictModel):
         """Content digest of a row's measured costs and environment; provenance does not change it."""
         content = {
             "environment": self.environment.model_dump(mode="json"),
-            "model": row.model,
             "measured_for": row.measured_for.model_dump(mode="json"),
             "stages": [stage.model_dump(mode="json") for stage in row.stages],
         }
@@ -99,7 +100,7 @@ def update_table(path: str | Path, environment: TableEnvironment, row: FrontendR
 
     The read-modify-write is serialized across collectors sharing the table; the
     measurement itself holds no lock. A table belongs to one serving environment,
-    so a recording from another CPU or sglang release is refused.
+    so a recording from another CPU, sglang release or Python is refused.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -107,23 +108,18 @@ def update_table(path: str | Path, environment: TableEnvironment, row: FrontendR
         fcntl.flock(lock, fcntl.LOCK_EX)
         table = load_table(path) if path.exists() else HostCostTable(environment=environment)
         recorded = table.environment
-        if (recorded.cpu, recorded.sglang_version) != (environment.cpu, environment.sglang_version):
+        if recorded != environment:
             raise ValueError(
-                f"host cost table {path} was measured on {recorded.cpu} with sglang {recorded.sglang_version}; "
-                f"this recording is from {environment.cpu} with sglang {environment.sglang_version}. "
-                "Keep one table per serving environment."
+                f"host cost table {path} was measured on {recorded.model_dump()}; "
+                f"this recording is from {environment.model_dump()}. Keep one table per serving environment."
             )
-        kept = [
-            existing
-            for existing in table.rows
-            if (existing.model, existing.measured_for) != (row.model, row.measured_for)
-        ]
+        kept = [existing for existing in table.rows if existing.measured_for != row.measured_for]
         table = table.model_copy(update={"rows": [*kept, row]})
         save_table(path, table)
     return table
 
 
-def collect_command(path: str | Path, *, model: str, measurement: FrontendMeasurementConfig) -> str:
+def collect_command(path: str | Path, measurement: FrontendMeasurementConfig) -> str:
     """The exact command that adds the missing row, ready to paste."""
     parts = [
         shlex.quote(sys.executable),
@@ -132,7 +128,7 @@ def collect_command(path: str | Path, *, model: str, measurement: FrontendMeasur
         "--table",
         shlex.quote(str(path)),
         "--model",
-        shlex.quote(model),
+        shlex.quote(measurement.model),
         "--frontend",
         measurement.frontend,
         "--images",
@@ -149,38 +145,34 @@ def collect_command(path: str | Path, *, model: str, measurement: FrontendMeasur
     return " ".join(parts)
 
 
-def lookup(
-    table: HostCostTable, path: str | Path, *, model: str, measurement: FrontendMeasurementConfig
-) -> FrontendRow:
+def lookup(table: HostCostTable, path: str | Path, measurement: FrontendMeasurementConfig) -> FrontendRow:
     """The row measured for exactly this model and workload on the pinned sglang release."""
-    if not table.environment.sglang_version.startswith(SGLANG_VERSION):
+    if sglang_release(table.environment.sglang_version) != SGLANG_VERSION:
         raise ValueError(
             f"host cost table {path} was measured with sglang {table.environment.sglang_version}; "
             f"the frontend model is defined on {SGLANG_VERSION}"
         )
     for row in table.rows:
-        if row.model == model and row.measured_for == measurement:
+        if row.measured_for == measurement:
             return row
     raise MissingRow(
-        f"host cost table {path} has no row for {model} {measurement.describe()}. "
-        "Measure it on the serving host, then rerun:\n  " + collect_command(path, model=model, measurement=measurement)
+        f"host cost table {path} has no row for {measurement.describe()}. "
+        "Measure it on the serving host, then rerun:\n  " + collect_command(path, measurement)
     )
 
 
 def resolve_frontend(
     config: HostProfileConfig, *, model: str, images: Mapping[str, Any], tensor: int
 ) -> tuple[FrontendPredictionConfig, str]:
-    """The frontend stages a prediction of `images` on `tensor` ranks runs with, and their row's digest."""
-    measurement = FrontendMeasurementConfig.for_workload(config.frontend, images, tensor)
+    """The frontend stages a prediction of `model` over `images` on `tensor` ranks runs with, and their row's digest."""
+    measurement = FrontendMeasurementConfig.for_workload(model, config.frontend, images, tensor)
     table = load_table(config.path)
-    row = lookup(table, config.path, model=model, measurement=measurement)
+    row = lookup(table, config.path, measurement)
     return FrontendPredictionConfig(stages=list(row.stages), measured_for=row.measured_for), table.digest(row)
 
 
 __all__ = [
-    "SGLANG_REVISION",
     "SGLANG_VERSION",
-    "FrontendKind",
     "FrontendRow",
     "HostCostTable",
     "MissingRow",
@@ -190,5 +182,6 @@ __all__ = [
     "lookup",
     "resolve_frontend",
     "save_table",
+    "sglang_release",
     "update_table",
 ]

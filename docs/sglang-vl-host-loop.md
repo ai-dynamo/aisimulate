@@ -56,17 +56,20 @@ followed by `receive`. The single-worker stages serialize requests but do not
 stall the dispatch of arrivals as the real loop thread does; on the measured H20
 grid that moved TTFT by at most a few percent at eight concurrent requests.
 
-A host cost table belongs to one serving environment (CPU, sglang release) and
-holds one row per model, frontend, feature transport, and image shape (height,
-width, count, encoding, processor pixel budget). The feature transport follows
-sglang: the Python tokenizer manager always parks image features in POSIX
-shared memory, the Rust workers keep them inline on a single rank and use shared
-memory once the request is broadcast across tensor-parallel ranks, so a Rust
-table needs a row per transport the tensor-parallel candidates use
-(`collect --tp`). A prediction whose workload has no row fails closed and prints
-the `collect` command that adds it. The stages a prediction or candidate runs
-with carry the workload they were measured for (`frontend.measured_for`), so a
-saved recommendation refuses to price a different image shape or transport with
+A host cost table belongs to one serving environment (CPU model, sglang
+release, Python) and holds one row per measurement: model, frontend, feature
+transport, and image shape (height, width, count, encoding, processor pixel
+budget). The host name, thread count and sampling time of each collection stay in
+the row's provenance. The feature transport follows sglang on one node: the
+Python tokenizer manager always parks image features in POSIX shared memory, the
+Rust workers keep them inline on a single rank and use shared memory once the
+request is broadcast across tensor-parallel ranks, so a Rust table needs a row
+per transport the tensor-parallel candidates use (`collect --tp`). A prediction
+whose workload has no row fails closed and prints the `collect` command that adds
+it; a failed lowering keeps the raw recording next to the table, and
+`collect --recording` lowers it again. The stages a prediction or candidate runs
+with carry the measurement they came from (`frontend.measured_for`), so a saved
+recommendation refuses to price another model, image shape or transport with
 stale constants, and the row's content digest travels in the prediction
 metadata. Explicit `frontend.stages` remain available for hand-written tables
 and tests. Text length is recorded with the row but not part of its key: on the
@@ -177,11 +180,15 @@ short prompts, for decode-step latency at small batch sizes, and for
 tensor-parallel scheduler synchronization, which is not measured. HTTP parsing
 and chat templating in the Python server are outside the measured stages
 (3-10 ms per MB of request body); the Rust stage includes its HTTP receive and
-tokenization. The collector measures the CPU image path only and must not run
-next to a serving process on the same host; it times `receive` with torch's
+tokenization, and the Rust `process` stage starts at the client's JSON encoding
+of the request body. The collector measures the CPU image path only and must not
+run next to a serving process on the same host; it times `receive` with torch's
 intra-op pool at one thread, as the scheduler process runs it (`ModelRunner.load_model`),
 since the default pool on the two cores the Rust server leaves the scheduler
-turns a 25 MB shared-memory clone from about 12 ms into hundreds.
+turns a 25 MB shared-memory clone from about 12 ms into hundreds. `receive` runs
+the placeholder padding pattern Qwen3-VL and Llama 4 use
+(`MultiModalityDataPaddingPatternMultimodalTokens`); other VL families may pad
+differently and have not been measured.
 
 Support matrix: the mechanics are exercised end to end for Qwen3-VL on the
 packaged `h200_sxm` SGLang data with hand-written stages; the collector's Python

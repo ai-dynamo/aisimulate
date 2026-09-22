@@ -20,7 +20,7 @@ from .common import (
     StrictModel,
     load_yaml,
 )
-from .engine import EnginePredictionConfig, EngineRecommendationConfig
+from .engine import EnginePredictionConfig, EngineRecommendationConfig, require_native_vl_parallelism
 from .traffic import (
     SyntheticSource,
     TraceSource,
@@ -127,6 +127,7 @@ def _validate_epd(traffic, engine) -> None:
             )
         if aggregated.timing.type != "default":
             raise ValueError("native VL replay requires default timing")
+        require_native_vl_parallelism(aggregated)
         return
     if (encoder is None) != (images is None):
         raise ValueError("EPD requires both traffic.source.images and engine.workers.encoder")

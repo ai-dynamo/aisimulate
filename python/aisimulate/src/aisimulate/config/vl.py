@@ -5,14 +5,46 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from ..sweeper.replay import ReplaySpec
 
+_SEARCH_ONLY_TRAFFIC = ("load_search_field", "load_choices", "load_range", "load_integer", "load_log_scale")
+
+
+def _execution_traffic(spec: ReplaySpec) -> dict[str, Any]:
+    """The traffic the runner executes for `spec`, in one spelling.
+
+    The sweeper spells out defaults and keeps relative forms (`num_request_ratio`,
+    `kv_load_ratio`) that the compiler resolves into concrete values, so both are
+    normalized through the sweeper's workload model and the runner's rules:
+    the resolved concurrency travels on the spec, and the request count of a
+    relative stop is the runner's `round(ratio * load)`.
+    """
+    from ..sweeper.config import Workload
+
+    traffic = Workload.model_validate(spec.workload).model_dump(mode="json")
+    for key in _SEARCH_ONLY_TRAFFIC:
+        traffic.pop(key, None)
+    if spec.concurrency is not None:
+        traffic["concurrency"] = spec.concurrency
+    traffic.pop("kv_load_ratio", None)
+    ratio = traffic.pop("num_request_ratio", None)
+    if traffic.get("request_count") is None and ratio is not None:
+        load = traffic.get("concurrency") or traffic.get("request_rate")
+        if load is not None:
+            traffic["request_count"] = max(1, round(ratio * load))
+    return traffic
+
+
+def _differences(mine: dict[str, Any], scored: dict[str, Any]) -> str:
+    keys = sorted(key for key in set(mine) | set(scored) if mine.get(key) != scored.get(key))
+    return ", ".join(f"{key}={mine.get(key)!r} vs {scored.get(key)!r}" for key in keys)
+
 
 def validate_vl_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
-    """A callback must reproduce the scored workload and the language replay that ran it."""
+    """A callback must reproduce the scored traffic, SLA and the language replay that ran it."""
     from ..compiler import _parallel_mapping, prediction_to_replay_spec
     from ..runner import _materialize_sla
     from .cli import CorePredictionConfig
@@ -23,29 +55,19 @@ def validate_vl_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
         if prediction.engine.workers.encoder is not None or prediction.engine.workers.aggregated is None:
             raise ValueError("aggregated worker was dropped")
         compiled = prediction_to_replay_spec(prediction)
-        # The compiled workload, goal and engine descriptors carry every image,
-        # load, stop, host, frontend and vision setting the runner executes;
-        # compare those rather than a second list of fields. The sweeper spells
-        # out defaults the compiler leaves to the runner, so every setting the
-        # prediction produces must match the scored value, not the reverse.
-        for name, mine, scored in (
-            ("workload", compiled.workload, spec.workload),
-            ("goal", compiled.goal, spec.goal),
-        ):
-            changed = {key for key, value in mine.items() if value is not None and scored.get(key) != value}
-            if changed:
-                raise ValueError(
-                    f"{name} changed: "
-                    + ", ".join(f"{key}={mine[key]!r} vs {scored.get(key)!r}" for key in sorted(changed))
-                )
-        if compiled.concurrency != spec.concurrency:
-            raise ValueError(f"concurrency changed: {compiled.concurrency!r} vs {spec.concurrency!r}")
+        # Compare what the runner executes, in both directions: a stop condition or
+        # seed that the saved prediction drops is as much a change as one it adds.
+        # The search target itself is not part of a prediction; its SLA is checked below.
+        mine, scored = _execution_traffic(compiled), _execution_traffic(spec)
+        if mine != scored:
+            raise ValueError(f"traffic changed: {_differences(mine, scored)}")
         deployment = spec.backend_deployment
         if deployment.deployment_mode != "agg":
             raise ValueError("language layout changed")
         parallel = _parallel_mapping(prediction.engine.workers.aggregated, prefix="")
         if any(deployment.parallel_config.get(key) != val for key, val in parallel.items()):
             raise ValueError("language GPU topology changed")
+        # The engine descriptors carry the host, frontend and vision tables.
         if _language_execution(compiled) != _language_execution(spec):
             raise ValueError("language replay settings changed")
         if _materialize_sla(compiled) != _materialize_sla(spec):
