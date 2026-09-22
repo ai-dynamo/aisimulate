@@ -140,10 +140,27 @@ them. Capture overrides must match the serving target. A complete generated grid
 does not establish AgentX/direct-FPM query coverage; do not invent a separate
 AgentX collection grid.
 
-The collector deploys and launches benchmark workers through the existing
-Generator/Kubernetes path; it does not require an already-running HTTP server.
-Prepare the compatible pinned image, accessible checkpoint, GPUs, namespace and
-deployment permissions before execution. The engine initializes the model/cache
+The collector generates and launches benchmark workers through the existing
+Kubernetes or Slurm executor; it does not require an already-running HTTP server.
+Choose the executor at the collection stage through `onboard collect-fpm
+--executor kubernetes|slurm`. Kubernetes retains the existing namespace/PVC and
+deployment permissions. Slurm uses a caller-owned `sbatch`/`salloc` allocation,
+an explicit `--image`, repeated `--container-mount` options as needed, Pyxis/Enroot,
+and a campaign directory shared at the same absolute path across allocated nodes.
+The allocation's node count must match the generated collector plan, with enough
+GPUs per node for the selected worker. Separate configurations can reuse those
+GPUs; do not require allocation details during model intake or claim generic
+executor support qualifies every topology. `--transport` still selects GPU
+networking, not the executor. Preview, execute and resume with the same deployment
+options. Save their exact values in each configuration's existing checkpoint
+`inputs.collection_deployment` before registering collection outputs; recover
+and explicitly pass those options after `onboard resume`. The checkpoint stores
+context and never applies or executes saved options automatically. Deployment
+changes invalidate affected acceptance and collection references: preserve the
+old campaign, archive superseded references with a reason, and use new output
+paths with the existing review workflow.
+Prepare the compatible pinned image, accessible checkpoint and GPUs before
+execution. The engine initializes the model/cache
 and resolves runtime settings, then Dynamo self-benchmark generates and times the
 points. Inspect effective precision, graph policy, cache allocation/padding and
 supported seeding behavior during bring-up. Benchmark prefix seeding is separate

@@ -104,7 +104,7 @@ Explain each configuration's minimum collection GPUs, rank-local scheduler/resou
 
 ### 5. Collect and verify data
 
-First inspect any existing timing data for a matching deployment. Reuse a verified matching formal pair when available; do not collect again merely to complete a stage. For new collection, follow the [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md) to prepare the compatible pinned Dynamo/vLLM image, accessible checkpoint, GPU resources, Kubernetes namespace and deployment permissions. An already-running HTTP server is not required: the AISimulate collector deploys and launches benchmark workers through the existing Generator/Kubernetes path. The engine initializes the model and cache, resolves its graph configuration, and Dynamo self-benchmark generates and times the admitted points. Use the agreed scope and existing execution authorization, reporting concrete missing prerequisites when blocked. Preview and execute with the same deployment options. `--execute` launches collection; optional `--smoke` is diagnostic and publishes no formal FPM pair. Inspect effective precision, graph mode/capture sizes, cache allocation/padding and supported benchmark seeding during bring-up; preserve checkpoints, initialization logs and raw evidence.
+First inspect any existing timing data for a matching deployment. Reuse a verified matching formal pair when available; do not collect again merely to complete a stage. For new collection, prepare the compatible pinned Dynamo/vLLM image, accessible checkpoint and GPU resources. Choose the existing collection executor at this stage: Kubernetes needs its namespace and deployment permissions; Slurm needs a caller-owned `sbatch`/`salloc` allocation with Pyxis and shared storage. Follow the [deployment options](#choose-the-collection-executor) below and the [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md). An already-running HTTP server is not required: the AISimulate collector generates the runtime and launches benchmark workers through the selected executor. The engine initializes the model and cache, resolves its graph configuration, and Dynamo self-benchmark generates and times the admitted points. Use the agreed scope and existing execution authorization, reporting concrete missing prerequisites when blocked. Preview and execute with the same deployment options. `--execute` launches collection; optional `--smoke` is diagnostic and publishes no formal FPM pair. Inspect effective precision, graph mode/capture sizes, cache allocation/padding and supported benchmark seeding during bring-up; preserve checkpoints, initialization logs and raw evidence.
 
 For both reused and new data, [inspect the published pair](../python/aisimulate/docs/fpm/end-to-end-workflow.md#5-inspect-the-published-pair): verify hashes, schema and identities, including actual runtime, topology, precision and available prefill/decode cells. Keep it at the generated configs' local systems path. Record any historical checkpoint-revision uncertainty in provenance; a declared revision does not prove that old measurements used it. A successful preview or smoke run is not formal data, and a matching pair does not prove all simulated queries are covered.
 
@@ -260,6 +260,36 @@ Use the checkpoint's absolute path when resuming from another working directory.
 Relevant shared inputs affect every configuration; configuration input/draft changes affect only that configuration. Such changes invalidate affected acceptance and downstream progress. Research/rationale-only edits preserve acceptance. Changes under `validation_inputs` invalidate validation progress without discarding valid collection data. Archive superseded references explicitly when replacing stale outputs; leaving them current continues to block readiness even after replacements are registered. Do not reuse stale outputs as current or delete completed collection to make a status pass.
 
 Resume verifies checkpoint integrity and current referenced file snapshots; archived references are historical and unverified. It does not establish runtime compatibility, inspect every plan/data semantic or certify collection, coverage or accuracy from saved stage strings. Inspect the corresponding command results and ordinary plan/data/validation evidence before continuing. Existing collector frozen-plan identity checks remain authoritative when actual collection resumes through `onboard collect-fpm --resume`.
+
+#### Preserve collection deployment options
+
+At the collection stage, save the exact executor, pinned image, mounts, networking and other deployment options in the existing configuration's `inputs.collection_deployment`. Record them before registering collection artifacts so the checkpoint binds those artifacts to the selected deployment. For example, if the current checkpoint revision is 8:
+
+```bash
+aisimulate onboard checkpoint \
+  --file ./model-onboarding/onboarding-checkpoint.json \
+  --expect-revision 8 --update - <<'JSON'
+{
+  "configurations": {
+    "worker-a": {
+      "inputs": {
+        "collection_deployment": {
+          "executor": "slurm",
+          "image": "/shared/images/pinned-runtime.sqsh",
+          "container_mount": ["/shared/models:/models:ro", "/shared/hf-cache:/root/.cache/huggingface"],
+          "transport": "ib"
+        }
+      },
+      "progress": {"next_action": "Inspect the allocation, preview with the saved deployment options, then resume the matching campaign."}
+    }
+  }
+}
+JSON
+```
+
+Use the actual revision, configuration ID and deployment values. This object is saved agent context, using the existing generic `inputs` field; it is not a second collector configuration format. On `onboard resume`, recover these values and pass the corresponding `collect-fpm` flags explicitly, including every repeated `--container-mount`. Preserve any supplied `dynamo_version` and Kubernetes options in the same way. Save the reviewed command and its results as session context. Neither `resume` nor the generated generic commands automatically applies this object or executes a saved command string.
+
+As with other effective input changes, changing these values invalidates that configuration's acceptance and marks its existing collection references stale. Review the affected context, retain the old campaign, archive superseded references with a reason, and plan into a new directory. Record replacement artifacts and use the existing exact-profile acceptance workflow; do not rewrite or discard the collector's checkpoint to force a changed deployment to resume. An interrupted unchanged campaign uses its original deployment options and `collect-fpm --resume`. Acquiring a replacement Slurm allocation does not by itself change the saved deployment options; the collector still verifies the current allocation and frozen plan.
 
 ### Resume from existing work
 
@@ -579,7 +609,7 @@ Saved `aisimulate-support-request/v1` requests are read as v2 while preserving t
 
 Some earlier v1 drafts also included `identity.gpu_count`, `identity.node_count`, `identity.gpus_per_node` and `search.max_candidates`; those obsolete fields remain rejected. Copy the request, remove them and review the retained topology/profile before regeneration. Plan summaries use `fpm.collection_gpus_required` and `search.candidates[].required_gpus`. The old `onboard init` allocation flags (`--gpu-count`, `--node-count`, `--gpus-per-node`, `--max-candidates`) are not accepted. Ordinary `predict` and `recommend` replica and GPU-budget APIs are unchanged.
 
-Before execution, prepare the real checkpoint and compatible pinned runtime image using the existing [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md). The packaged collector generates the deployment, creates the benchmark workloads and launches Dynamo/vLLM workers. It needs available GPU resources, Kubernetes access and permissions, deployment configuration, and model/image access; it does not require a prestarted serving process or HTTP endpoint. The command launches workers within that prepared environment rather than provisioning the cluster itself. `commands.json` publishes the guarded `aisimulate onboard collect-fpm --execute` command for collection, alongside a read-only collector planning command.
+Before execution, prepare the real checkpoint and compatible pinned runtime image using the existing [FPM collection guide](../python/aisimulate/docs/fpm/end-to-end-workflow.md). The packaged collector generates the runtime, creates the benchmark workloads and launches Dynamo/vLLM workers. It needs GPU resources, deployment configuration, model/image access and the selected executor's prerequisites below; it does not require a prestarted serving process or HTTP endpoint. The command launches workers within that prepared environment rather than provisioning the cluster itself. `commands.json` publishes the guarded `aisimulate onboard collect-fpm --execute` command for collection, alongside a read-only collector planning command. Apply the selected deployment options to either command; the generated examples retain Kubernetes defaults.
 
 For a source checkout installed with `uv sync`, activate its environment and expose the collector source package before running generated collector commands. From the repository root:
 
@@ -598,13 +628,42 @@ aisimulate onboard collect-fpm \
   --output-dir ./aisimulate-support --execute
 ```
 
-Execution requires a matching saved plan. Creating the initial plan records model and runtime revisions without downloading a pinned checkpoint or inspecting the running runtime. During profile-based collection execution, the collector checks the observed Pod's vLLM version against the profile's literal backend version before benchmarking. Keep the actual checkpoint consistent with the declared model revision.
+Execution requires a matching saved plan. Creating the initial plan records model and runtime revisions without downloading a pinned checkpoint or inspecting the running runtime. During profile-based collection execution, the collector checks the initialized worker's vLLM version against the profile's literal backend version before benchmarking. Keep the actual checkpoint consistent with the declared model revision.
 
 For a profile-based campaign, the collector validates its resolved topology and precision against the supplied profile before execution. It does not relabel an FP8 cell as BF16 or change checkpoint quantization to satisfy the profile. A mismatch reports the conflicting field and requires a matching profile/runtime or a supported collector configuration. Pending profiles defer memory admission to the initialized runtime; complete declared profiles retain CPU admission without constructing an analytical model. Profile contents participate in the collector's frozen-plan identity.
 
 New profile-based collection currently uses checkpoint-native weight, FMHA and KV precision without consulting op-level timing tables. The requested KV dtype must match that checkpoint-native dtype. An older FPM profile can still be valid for prediction while being unsuitable for new collection: the historical MiniMax/H200 BF16 FMHA fallback cell differs from its checkpoint-native FP8 inference. Use the historical identity to query those timings and a matching native profile for new collection; the collector rejects that mismatch. Publish the new FP8 campaign into a clean, separate dataset using a new onboarding output directory. Existing cell IDs omit FMHA precision, and publication retains the first published run for a cell ID. If the historical BF16 dataset already holds that cell ID, publication skips the new FP8 run. A collection profile must select one literal runtime version for the target hardware/backend.
 
-Set deployment options directly on `onboard collect-fpm`: `--dynamo-version VERSION`, `--image IMAGE`, `--namespace NAME`, `--model-cache NAME[:MOUNT[:SUBPATH]]`, `--transport nvlink|ib|efa`, and `--image-pull-secret NAME`. The mount, when supplied, is an absolute container path. Prefer an immutable image digest. Supply the same options when previewing, executing, and resuming; deployment settings are part of the collector's frozen-plan identity, so changed settings require a new output directory. Arbitrary collector arguments and engine overrides are not accepted by this command.
+### Choose the collection executor
+
+Set deployment options directly on `onboard collect-fpm`:
+
+| Option | Kubernetes (default) | Slurm (`--executor slurm`) |
+| --- | --- | --- |
+| `--image IMAGE` | Overrides the worker image. | Required Pyxis image or accessible SquashFS image path. |
+| `--container-mount SRC[:DST[:FLAGS]]` | Rejected; use the model-cache PVC option. | Repeat for checkpoint, cache or other required mounts; spelling and order are preserved. |
+| `--namespace`, `--model-cache NAME[:MOUNT[:SUBPATH]]`, `--image-pull-secret` | Existing namespace, model PVC and registry-secret settings. A supplied mount is an absolute container path. | Rejected because they configure Kubernetes resources. |
+| `--dynamo-version VERSION` | Pinned template version. | Same template-version selection. |
+| `--transport nvlink\|ib\|efa` | GPU networking transport. | GPU networking transport; it does not select the executor. |
+
+Prefer an immutable image digest or a pinned image file. Supply the same options when previewing, executing and resuming; deployment settings are part of the collector's frozen-plan identity, so changed settings require a new output directory. [Save these options in the session checkpoint](#preserve-collection-deployment-options). Arbitrary collector arguments and engine overrides are not accepted by this command.
+
+For Slurm, run within an existing allocation obtained through your cluster's ordinary `salloc` or `sbatch` process. The collector uses `srun` with Pyxis/Enroot to launch its benchmark workers; it does not submit an allocation. The allocated node count must match the generated collector plan, with enough GPUs per node for the selected worker. Separate configurations can reuse those GPUs in successive runs. These are collection-time requirements, not questions about the user's total GPU pool during model intake. Support for the executor does not qualify every model/runtime/topology combination.
+
+Keep the campaign directory on storage shared at the same absolute path across the allocated nodes. Make the pinned image and checkpoint accessible, and mount the model/cache paths required inside the container. The collector adds its own staged runtime and result mounts, preserves initialization and native-result evidence, and cleans up its own named job steps without canceling the caller's allocation. Commas and control characters are not allowed in individual mount strings; use repeated flags for multiple mounts. For example, preview an existing plan in shared storage:
+
+```bash
+aisimulate onboard collect-fpm \
+  --config /shared/onboarding/request.yaml \
+  --output-dir /shared/onboarding/collection \
+  --executor slurm \
+  --image /shared/images/pinned-runtime.sqsh \
+  --container-mount /shared/models:/models:ro \
+  --container-mount /shared/hf-cache:/root/.cache/huggingface \
+  --transport ib
+```
+
+Use your cluster's actual paths and networking. Add `--execute` to this same command when its prepared allocation is available; add `--resume` as well when continuing its existing campaign. Both executors use the same native-grid collection, checkpoint, formal publication and memory-finalization workflow. Slurm does not introduce another timing grid or automatically launch an HTTP serving endpoint.
 
 For a diagnostic run, add `--execute --smoke`; `--limit N` also requires `--smoke`. Diagnostic smoke and limited runs do not publish formal FPM data. Existing campaign data, raw artifacts, or checkpoints require explicit `--resume` and a readable matching collector checkpoint; otherwise choose a new output directory. A custom `--checkpoint-dir`, if needed, must remain inside the plan's `fpm-checkpoint/` directory. Selecting an empty checkpoint directory does not allow reuse of existing campaign artifacts. Smoke and formal campaigns have separate checkpoints and artifact directories, so an existing smoke run does not prevent the first formal run, or vice versa. The collector verifies the resumed checkpoint's frozen-plan identity.
 
@@ -616,7 +675,7 @@ AISimulate and Dynamo jointly determine what is collected. For formal collection
 
 | Part of collection policy | Responsibility |
 | --- | --- |
-| Worker deployment | The AISimulate collector renders the deployment and launches benchmark workers in the prepared GPU/Kubernetes environment. |
+| Worker deployment | The AISimulate collector generates the runtime and launches benchmark workers through Kubernetes or an existing Slurm/Pyxis allocation. |
 | Runtime bounds | AISimulate forwards the reviewed per-request context, scheduled-token and sequence bounds, and configured GPU memory fraction, to prefill and decode workers. |
 | Runtime capture policy | With `runtime`, AISimulate emits no prefill compilation override or capture-derived new-token sample cap. Capture sizes and the corresponding new-token axis/counts remain unresolved before engine initialization; the scheduler-derived KV-read sample cap remains bounded. |
 | Explicit capture policy | With `explicit`, AISimulate constructs the capture-size list and overrides the prefill engine's compilation configuration. It derives prefill new-token and KV-read sample caps from captures and runtime bounds. These caps are inputs to Dynamo, not an exact point list. |
@@ -675,7 +734,7 @@ aisimulate onboard validate-fpm \
 
 The output directory must be separate from, and neither inside nor above, the collection directory. Use a fresh directory or `--overwrite` to replace prior validation outputs. The command verifies the saved collection plan, writes `predict.yaml`, and invokes ordinary `aisimulate predict` with per-request evidence. It does not download traces or run GPU collection. The reviewed target model, topology, runtime, profile, scheduler limits and systems paths remain fixed; source model labels in a trace do not replace the configured target model.
 
-The current validation scope is **cold aggregated replay, one client lane, HBM-only cache and no speculative decoding**. The cache starts cold. Linear profiles can accumulate normal prefix reuse; grouped profiles retain `prefix_caching: false` and require vLLM with PP1/CP1. Nested timestamps are interpreted relative to the root play (`nested_timestamp_basis: absolute`). The command replays the complete supplied file; selecting one complete play is useful for a first check, but does not establish coverage of a larger corpus. Preserve the full play and its dependencies when preparing a subset. Ordinary prediction's host-memory checks still apply; a larger corpus can require a larger host, and a preflight rejection remains incomplete validation. The current path builds on existing vLLM/SGLang replay support; onboarding collection remains vLLM. Seeded cache snapshots, explicit warmup and expanded replay modes are follow-up work after the relevant AgentX changes, including [#207](https://github.com/ai-dynamo/aisimulate/pull/207) and [#235](https://github.com/ai-dynamo/aisimulate/pull/235); they are not prerequisites for this workflow.
+The current validation scope is **cold aggregated replay, one client lane, HBM-only cache and no speculative decoding**. The cache starts cold. Linear profiles can accumulate normal prefix reuse; grouped profiles retain `prefix_caching: false` and require vLLM with PP1/CP1. Nested timestamps are interpreted relative to the root play (`nested_timestamp_basis: absolute`). The command replays the complete supplied file; selecting one complete play is useful for a first check, but does not establish coverage of a larger corpus. Preserve the full play and its dependencies when preparing a subset. Ordinary prediction's host-memory checks still apply; a larger corpus can require a larger host, and a preflight rejection remains incomplete validation. The current path builds on existing vLLM/SGLang replay support; onboarding collection remains vLLM. Integrating seeded cache snapshots, explicit warmup and expanded replay modes from the merged AgentX changes, including [#207](https://github.com/ai-dynamo/aisimulate/pull/207) and [#235](https://github.com/ai-dynamo/aisimulate/pull/235), remains follow-up work for onboarding; those modes are not prerequisites for this workflow.
 
 The reference corpus is [semianalysisai/cc-traces-weka-062126-256k](https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740). To download that pinned revision separately, with Hugging Face access available:
 

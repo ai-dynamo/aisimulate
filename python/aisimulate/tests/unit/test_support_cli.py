@@ -588,6 +588,102 @@ def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):
     assert kwargs["database_root"] == str(tmp_path / "plan/systems/data")
 
 
+def test_slurm_deployment_preview_and_execution_reach_frozen_collector_plan(tmp_path, monkeypatch, capsys):
+    from collector.fpm_forward import runner
+
+    calls = []
+    monkeypatch.setattr(runner, "run_collection", lambda plan, **kwargs: calls.append((plan, kwargs)) or [])
+    image = "registry.example/fpm@sha256:" + "a" * 64
+    mounts = ["/shared/model cache:/models:ro", "/shared/huggingface:/root/.cache/huggingface"]
+    command = [
+        *_local_collection_command(tmp_path),
+        "--executor",
+        "slurm",
+        "--dynamo-version",
+        "1.2.0",
+        "--image",
+        image,
+        "--transport",
+        "ib",
+    ]
+    for mount in mounts:
+        command.extend(("--container-mount", mount))
+    capsys.readouterr()
+
+    assert cli.main([argument for argument in command if argument != "--execute"]) == 0
+    preview = shlex.split(capsys.readouterr().out)
+    assert preview[preview.index("--fpm-executor") + 1] == "slurm"
+    assert preview[preview.index("--fpm-slurm-container-image") + 1] == image
+    assert [
+        preview[index + 1] for index, value in enumerate(preview) if value == "--fpm-slurm-container-mount"
+    ] == mounts
+    assert "--generator-set" not in preview
+    assert "--plan-only" in preview
+    assert calls == []
+
+    assert cli.main(command) == 0
+    [(plan, kwargs)] = calls
+    assert plan.options.executor == "slurm"
+    assert plan.options.slurm_container_image == image
+    assert plan.options.slurm_container_mounts == tuple(mounts)
+    assert kwargs["generator_overrides"] == {
+        "generator_dynamo_version": "1.2.0",
+        "K8sConfig": {"transport": "ib"},
+    }
+    assert kwargs["artifact_root"] == str(tmp_path / "plan/fpm-artifacts")
+    assert kwargs["database_root"] == str(tmp_path / "plan/systems/data")
+
+
+def test_explicit_kubernetes_executor_preserves_default_collector_preview(tmp_path, capsys):
+    command = [argument for argument in _local_collection_command(tmp_path) if argument != "--execute"]
+    capsys.readouterr()
+    assert cli.main(command) == 0
+    default = capsys.readouterr().out
+    assert cli.main([*command, "--executor", "kubernetes"]) == 0
+    assert capsys.readouterr().out == default
+    assert "--fpm-executor" not in default
+    assert "--fpm-slurm" not in default
+
+
+@pytest.mark.parametrize(
+    "options,diagnostic",
+    [
+        (["--executor", "slurm"], "--executor slurm requires --image"),
+        (["--executor", "slurm", "--image", "runtime.sqsh", "--namespace", "example"], "--namespace"),
+        (["--executor", "slurm", "--image", "runtime.sqsh", "--model-cache", "model-cache"], "--model-cache"),
+        (
+            ["--executor", "slurm", "--image", "runtime.sqsh", "--image-pull-secret", "registry"],
+            "--image-pull-secret",
+        ),
+        (["--container-mount", "/shared:/models"], "--container-mount requires --executor slurm"),
+        *[
+            (["--executor", "slurm", "--image", "runtime.sqsh", "--container-mount", mount], "container mounts")
+            for mount in (
+                "",
+                "  ",
+                "/one:/models,/two:/cache",
+                "/one\n:/models",
+                "/one\r:/models",
+                "/one\x00:/models",
+                "/one\t:/models",
+                "/one\x7f:/models",
+            )
+        ],
+    ],
+)
+def test_executor_options_fail_before_collection_for_incompatible_inputs(tmp_path, capsys, options, diagnostic):
+    command = _local_collection_command(tmp_path)
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as error:
+        cli.main([*command, *options])
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert diagnostic in output.err
+    assert "Traceback" not in output.err
+    assert not (tmp_path / "plan/fpm-checkpoint").exists()
+    assert not (tmp_path / "plan/fpm-artifacts").exists()
+
+
 @pytest.mark.parametrize(
     "option,value",
     [
@@ -661,6 +757,49 @@ def test_deployment_resume_requires_the_same_frozen_identity(tmp_path, monkeypat
     monkeypatch.setattr(runner, "KubernetesCellRunner", lambda *args, **kwargs: pytest.fail("must not launch GPU work"))
     capsys.readouterr()
     assert cli.main([*command, "--resume", option, changed]) == 1
+    assert "checkpoint does not match the current frozen plan" in capsys.readouterr().err
+    assert checkpoint.read_bytes() == saved
+
+
+@pytest.mark.parametrize(
+    "changed_options",
+    [
+        ["--image", "registry.example/fpm:changed"],
+        ["--container-mount", "/shared/checkpoint:/models:ro"],
+        ["--executor", "kubernetes"],
+    ],
+)
+def test_slurm_collection_resume_rejects_changed_deployment(tmp_path, monkeypatch, capsys, changed_options):
+    from collector.fpm_forward import planner, runner, slurm
+
+    command = [*_local_collection_command(tmp_path), "--executor", "slurm", "--image", "registry.example/fpm:pinned"]
+    checkpoint = tmp_path / "plan/fpm-checkpoint/fpm_forward.json"
+    plans = []
+    actual_run = runner.run_collection
+
+    def checkpoint_only(plan, **kwargs):
+        # A synthetic empty checkpoint exercises the public frozen-plan guard;
+        # no Slurm allocation, GPU execution or silicon measurements are used.
+        plans.append(plan)
+        checkpoint.parent.mkdir(exist_ok=True)
+        checkpoint.write_text(json.dumps({"schema": runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": {}}))
+        return []
+
+    monkeypatch.setattr(planner, "_git_revision", lambda: "test-source-revision")
+    monkeypatch.setattr(runner, "run_collection", checkpoint_only)
+    assert cli.main(command) == 0
+    saved = checkpoint.read_bytes()
+    assert cli.main([*command, "--resume"]) == 0
+    assert plans[0].sha256 == plans[1].sha256
+
+    def unexpected_launch(*args, **kwargs):
+        pytest.fail("changed deployment must fail before launching GPU work")
+
+    monkeypatch.setattr(runner, "run_collection", actual_run)
+    monkeypatch.setattr(runner, "KubernetesCellRunner", unexpected_launch)
+    monkeypatch.setattr(slurm, "SlurmCellRunner", unexpected_launch)
+    capsys.readouterr()
+    assert cli.main([*command, "--resume", *changed_options]) == 1
     assert "checkpoint does not match the current frozen plan" in capsys.readouterr().err
     assert checkpoint.read_bytes() == saved
 

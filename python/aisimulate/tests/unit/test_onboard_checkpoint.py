@@ -8,6 +8,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 from copy import deepcopy
@@ -176,6 +177,138 @@ def test_partial_approval_and_affected_changes(tmp_path, capsys, monkeypatch, re
     assert not shared["configurations"]["bf16-tp1"]["profile_accepted"]
     assert shared["state"]["configurations"]["bf16-tp1"]["progress"]["stage"] == 3
     assert not (tmp_path / "request.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        {"image": "registry.example/fpm:replacement"},
+        {"container_mount": ["/shared/other checkpoint:/models:ro"]},
+    ],
+)
+def test_slurm_options_survive_pause_and_require_fresh_collection_after_edit(
+    tmp_path, capsys, monkeypatch, request_payload, edit
+):
+    path = tmp_path / "onboarding-checkpoint.json"
+    request = tmp_path / "request.yaml"
+    request.write_text(yaml.safe_dump(request_payload))
+    original = tmp_path / "collection"
+    assert cli.main(["onboard", "plan", "-c", str(request), "--output-dir", str(original)]) == 0
+    capsys.readouterr()
+    collector = original / "fpm-checkpoint/fpm_forward.json"
+    collector.parent.mkdir()
+    # Session resume verifies readability only; the separate collector resume
+    # tests exercise its schema and frozen-plan identity before execution.
+    collector.write_text('{"synthetic_pause_evidence": true}\n')
+    original_bytes = {file: file.read_bytes() for file in original.rglob("*") if file.is_file()}
+    deployment = {
+        "executor": "slurm",
+        "image": "registry.example/fpm@sha256:" + "a" * 64,
+        "container_mount": ["/shared/model cache:/models:ro", "/shared/cache:/root/.cache/huggingface"],
+        "transport": "ib",
+    }
+    _save(
+        path,
+        capsys,
+        monkeypatch,
+        {
+            "configurations": {
+                "worker": {
+                    "inputs": {"collection_deployment": deployment},
+                    "draft_request": request_payload,
+                    "progress": {"stage": 5, "next_action": "Inspect the existing allocation, then resume collection."},
+                    "artifacts": {
+                        "plan": {"path": "collection/support-plan.json", "scope": "collection"},
+                        "collector": {
+                            "path": "collection/fpm-checkpoint/fpm_forward.json",
+                            "kind": "collector_checkpoint",
+                            "scope": "collection",
+                        },
+                    },
+                }
+            }
+        },
+        accept=["worker"],
+    )
+
+    paused_bytes = path.read_bytes()
+    resumed = _resume(path, capsys)
+    assert path.read_bytes() == paused_bytes
+    assert resumed["configurations"]["worker"]["profile_accepted"]
+    assert resumed["verification"]["executed"] is False
+    saved_options = resumed["state"]["configurations"]["worker"]["inputs"]["collection_deployment"]
+    assert saved_options == deployment
+
+    def preview(options, root, *, resume=False):
+        command = ["onboard", "collect-fpm", "-c", str(request), "--output-dir", str(root)]
+        for name in ("executor", "image", "transport"):
+            command.extend(("--" + name, options[name]))
+        for mount in options["container_mount"]:
+            command.extend(("--container-mount", mount))
+        if resume:
+            command.append("--resume")
+        assert cli.main(command) == 0
+        return shlex.split(capsys.readouterr().out)
+
+    command = preview(saved_options, original, resume=True)
+    assert command[command.index("--fpm-executor") + 1] == "slurm"
+    assert command[command.index("--fpm-slurm-container-image") + 1] == deployment["image"]
+    assert [
+        command[index + 1] for index, value in enumerate(command) if value == "--fpm-slurm-container-mount"
+    ] == deployment["container_mount"]
+    assert "--resume" in command
+
+    updated = _save(
+        path,
+        capsys,
+        monkeypatch,
+        {"configurations": {"worker": {"inputs": {"collection_deployment": edit}}}},
+        1,
+        expected=2,
+    )
+    assert updated["saved"]
+    assert not updated["configurations"]["worker"]["profile_accepted"]
+    assert updated["state"]["configurations"]["worker"]["progress"]["stage"] == 3
+    assert {issue["artifact"] for issue in updated["integrity_issues"]} == {"plan", "collector"}
+    _resume(path, capsys, expected=2)
+
+    replacement = tmp_path / "collection-v2"
+    assert cli.main(["onboard", "plan", "-c", str(request), "--output-dir", str(replacement)]) == 0
+    capsys.readouterr()
+    recovered = _save(
+        path,
+        capsys,
+        monkeypatch,
+        {
+            "research": {"deployment_edit": "Reviewed changed deployment; preserve the earlier campaign."},
+            "configurations": {
+                "worker": {
+                    "artifacts": {
+                        "plan": {"archived": True},
+                        "collector": {"archived": True},
+                        "plan_v2": {"path": "collection-v2/support-plan.json", "scope": "collection"},
+                    }
+                }
+            },
+        },
+        2,
+        accept=["worker"],
+    )
+    assert recovered["configurations"]["worker"]["profile_accepted"]
+    assert len(recovered["archived_artifacts"]) == 2
+    final = _resume(path, capsys)
+    current = final["state"]["configurations"]["worker"]["inputs"]["collection_deployment"]
+    replacement_command = preview(current, replacement)
+    assert replacement_command[replacement_command.index("--fpm-slurm-container-image") + 1] == current["image"]
+    assert [
+        replacement_command[index + 1]
+        for index, value in enumerate(replacement_command)
+        if value == "--fpm-slurm-container-mount"
+    ] == current["container_mount"]
+    assert replacement_command[replacement_command.index("--fpm-artifact-root") + 1] == str(
+        replacement / "fpm-artifacts"
+    )
+    assert all(file.read_bytes() == content for file, content in original_bytes.items())
 
 
 def test_validation_changes_preserve_collection_identity_and_approval(tmp_path, capsys, monkeypatch, request_payload):

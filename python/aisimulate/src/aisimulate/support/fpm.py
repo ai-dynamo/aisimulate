@@ -95,11 +95,18 @@ def fpm_cli_args(
     if request.identity.sm is not None:
         command.extend(("--sm", str(request.identity.sm)))
     if deployment is not None:
-        for name, value in deployment.model_dump(exclude_none=True).items():
+        if deployment.executor == "slurm":
+            command.extend(("--fpm-executor", "slurm"))
+        for name, value in deployment.model_dump(exclude_none=True, exclude={"executor", "container_mount"}).items():
             if name == "image":
-                command.extend(("--generator-set", f"K8sConfig.k8s_image={json.dumps(value)}"))
+                if deployment.executor == "slurm":
+                    command.extend(("--fpm-slurm-container-image", value))
+                else:
+                    command.extend(("--generator-set", f"K8sConfig.k8s_image={json.dumps(value)}"))
             else:
                 command.extend(("--" + name.replace("_", "-"), value))
+        for mount in deployment.container_mount:
+            command.extend(("--fpm-slurm-container-mount", mount))
     if plan_only:
         command.append("--plan-only")
     if smoke:

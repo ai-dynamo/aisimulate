@@ -156,12 +156,40 @@ _DNS_SUBDOMAIN = rf"{_DNS_LABEL}(?:\.{_DNS_LABEL})*"
 class FPMDeployment(StrictModel):
     """Deployment-only inputs included in the collector's frozen-plan identity."""
 
+    executor: Literal["kubernetes", "slurm"] = "kubernetes"
     dynamo_version: str | None = None
     image: str | None = Field(default=None, pattern=r"^[^\s\x00]+$")
+    container_mount: list[str] = Field(default_factory=list)
     namespace: str | None = Field(default=None, pattern=rf"^{_DNS_LABEL}$")
     model_cache: str | None = None
     transport: Literal["nvlink", "ib", "efa"] | None = None
     image_pull_secret: str | None = Field(default=None, pattern=rf"^{_DNS_SUBDOMAIN}$", max_length=253)
+
+    @model_validator(mode="after")
+    def _executor_options(self) -> FPMDeployment:
+        if self.executor == "slurm":
+            incompatible = [
+                "--" + name.replace("_", "-")
+                for name in ("namespace", "model_cache", "image_pull_secret")
+                if getattr(self, name) is not None
+            ]
+            if incompatible:
+                raise ValueError("--executor slurm rejects Kubernetes options: " + ", ".join(incompatible))
+            if self.image is None:
+                raise ValueError("--executor slurm requires --image for the Pyxis container")
+        elif self.container_mount:
+            raise ValueError("--container-mount requires --executor slurm; use --model-cache for Kubernetes")
+        return self
+
+    @field_validator("container_mount")
+    @classmethod
+    def _container_mounts(cls, values: list[str]) -> list[str]:
+        if any(
+            not value.strip() or any(ord(char) < 32 or ord(char) == 127 or char == "," for char in value)
+            for value in values
+        ):
+            raise ValueError("container mounts must be nonempty and contain no control characters or commas")
+        return values
 
     @field_validator("dynamo_version")
     @classmethod

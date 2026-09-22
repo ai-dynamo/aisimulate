@@ -205,11 +205,27 @@ def add_support_parser(subparsers: Any) -> None:
     collect.add_argument("--resume", action="store_true", help="Resume the existing collector checkpoint.")
     collect.add_argument("--checkpoint-dir", help="Checkpoint directory inside the plan's fpm-checkpoint directory.")
     deployment = collect.add_argument_group("Collector deployment")
+    deployment.add_argument(
+        "--executor",
+        choices=("kubernetes", "slurm"),
+        default="kubernetes",
+        help="Collection executor (default: kubernetes); Slurm uses an existing sbatch/salloc allocation.",
+    )
     deployment.add_argument("--dynamo-version", help="Target Dynamo release used to resolve collector templates.")
-    deployment.add_argument("--image", help="Collector container image; prefer an immutable digest.")
+    deployment.add_argument(
+        "--image", help="Collector container image; required for Slurm. Prefer an immutable digest."
+    )
+    deployment.add_argument(
+        "--container-mount",
+        action="append",
+        metavar="SRC[:DST[:FLAGS]]",
+        help="Slurm/Pyxis container mount; repeat for several mounts. Kubernetes uses --model-cache.",
+    )
     deployment.add_argument("--namespace", help="Kubernetes namespace for collector resources.")
     deployment.add_argument("--model-cache", metavar="NAME[:MOUNT[:SUBPATH]]", help="Model-cache PVC and mount.")
-    deployment.add_argument("--transport", choices=("nvlink", "ib", "efa"))
+    deployment.add_argument(
+        "--transport", choices=("nvlink", "ib", "efa"), help="GPU networking transport, independent of the executor."
+    )
     deployment.add_argument("--image-pull-secret", help="Kubernetes secret for pulling the collector image.")
     from .finalization import add_finalization_parser
     from .validation import add_validation_parser
