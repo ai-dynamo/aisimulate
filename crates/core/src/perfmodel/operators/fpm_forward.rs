@@ -75,7 +75,7 @@ pub enum FpmInterpolation {
 
 /// One whole-model forward pass for a single phase.
 ///
-/// `match_identity` is the 15-string cell identity in
+/// `match_identity` is the 19-string cell identity (legacy schema-6 requests use 15) in
 /// [`FPM_CELL_MATCH_COLUMNS`](crate::perf_database::fpm_forward::FPM_CELL_MATCH_COLUMNS)
 /// order, computed by the PYTHON producer via `_norm_identity` (None -> "",
 /// Enum -> `.name`) so Rust compares strings verbatim with no re-normalization
@@ -109,6 +109,10 @@ pub struct FpmForwardOp {
     #[serde(default)]
     pub interpolation: FpmInterpolation,
     pub sol_ops: Vec<Op>,
+    /// Present only for an explicit table selector. Preserves the model's mode
+    /// before match_identity[2] was selected; it is NOT observed runtime precision.
+    #[serde(default)]
+    pub original_fmha_quant_mode: Option<String>,
 }
 
 fn default_verify_width() -> u32 {
@@ -120,6 +124,22 @@ fn data_err(msg: String) -> AicError {
 }
 
 impl FpmForwardOp {
+    fn select_cell<'a>(&self, db: &'a PerfDatabase) -> Result<&'a FpmForwardCell, AicError> {
+        // Exact matching remains authoritative, including the recorded FMHA label.
+        // A different precision cell is a miss; the selector never rewrites it.
+        let cell = db
+            .fpm_forward
+            .select_cell(&self.match_identity, &self.model_path)?;
+        if let Some(original) = &self.original_fmha_quant_mode {
+            if let Some(warning) = cell.fmha_selector_warning(original) {
+                // The perfmodel has no installed logging facade. Emit a visible,
+                // once-per-cell/model-mode warning rather than a silent log record.
+                eprintln!("WARNING: {warning}");
+            }
+        }
+        Ok(cell)
+    }
+
     /// Mirror of Python `FPMForwardOp.query`: validate kwargs, map to
     /// iteration-total coordinates, resolve against the selected cell.
     pub fn query(
@@ -223,9 +243,7 @@ impl FpmForwardOp {
                 coverage,
             );
         }
-        let cell = db
-            .fpm_forward
-            .select_cell(&self.match_identity, &self.model_path)?;
+        let cell = self.select_cell(db)?;
         self.resolve(db, cell, coords)
     }
 
@@ -237,9 +255,7 @@ impl FpmForwardOp {
                 self.phase.as_str()
             )));
         }
-        let cell = db
-            .fpm_forward
-            .select_cell(&self.match_identity, &self.model_path)?;
+        let cell = self.select_cell(db)?;
         if self.interpolation == FpmInterpolation::Direct {
             return Ok(cell
                 .direct_decode
@@ -296,9 +312,7 @@ impl FpmForwardOp {
                 coverage,
             );
         }
-        let cell = db
-            .fpm_forward
-            .select_cell(&self.match_identity, &self.model_path)?;
+        let cell = self.select_cell(db)?;
         if self.interpolation == FpmInterpolation::Direct {
             return self
                 .resolve_direct_decode(cell, &[batch_size as f64, total_kv], true)
@@ -535,9 +549,7 @@ impl FpmForwardOp {
                     "query coverage requires direct FPM interpolation".into(),
                 ));
             }
-            let cell = db
-                .fpm_forward
-                .select_cell(&self.match_identity, &self.model_path)?;
+            let cell = self.select_cell(db)?;
             cell_ids = cell.cell_ids.as_slice();
             match self.phase {
                 FpmPhase::Prefill => self.resolve_direct_prefill(cell, coords),
@@ -993,6 +1005,7 @@ mod tests {
             weight_bytes: 0.0,
             verify_width: 1,
             interpolation: FpmInterpolation::Sol,
+            original_fmha_quant_mode: None,
             // Empty sol_ops: exact hits and in-curve lerps never call SOL.
             sol_ops: vec![],
         }
@@ -1965,5 +1978,61 @@ mod tests {
                     .contains("verify_width")
             );
         }
+    }
+    #[test]
+    fn selector_warning_preserves_values_and_rejects_wrong_recorded_precision() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &default_rows());
+        let db = db_with_pair(tmp.path());
+        let mut selected = op(FpmPhase::Decode);
+        // Independent original model mode differs from the recorded table label.
+        selected.original_fmha_quant_mode = Some("fp8".into());
+        let cell = db
+            .fpm_forward
+            .select_cell(&selected.match_identity, &selected.model_path)
+            .unwrap();
+        let message = cell.fmha_selector_warning("fp8").unwrap();
+        assert!(message.contains("original_model_mode=\"fp8\""));
+        assert!(message.contains("selector=\"bfloat16\""));
+        assert!(message.contains(&format!("matched_cell_ids={:?}", cell.cell_ids)));
+        assert!(message.contains("does not independently verify runtime attention precision"));
+        assert!(cell.fmha_selector_warning("fp8").is_none());
+        assert!(cell.fmha_selector_warning("float16").is_some());
+        let base = op(FpmPhase::Decode);
+        let coords = [8.0, 4096.0];
+        assert_eq!(
+            selected.query_totals(&db, &coords).unwrap(),
+            base.query_totals(&db, &coords).unwrap()
+        );
+        selected.match_identity[2] = "fp8".into();
+        // All query routes retain exact matching; no substitution for table precision.
+        assert!(
+            selected
+                .query(&db, &ctx(4, 1024, 0))
+                .unwrap_err()
+                .to_string()
+                .contains("No FPM cell matches")
+        );
+        assert!(
+            selected
+                .query_totals(&db, &coords)
+                .unwrap_err()
+                .to_string()
+                .contains("No FPM cell matches")
+        );
+        assert!(
+            selected
+                .query_pass_baseline(&db, 4, 4096.0)
+                .unwrap_err()
+                .to_string()
+                .contains("No FPM cell matches")
+        );
+        assert!(
+            selected
+                .decode_kv_ceiling(&db)
+                .unwrap_err()
+                .to_string()
+                .contains("No FPM cell matches")
+        );
     }
 }

@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY, execution_identity
 from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile, FpmModelProfile, load_fpm_profile
 
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
@@ -420,6 +421,8 @@ def _backend_policies(
 
     extra_cli_args: list[str] = []
     expected_markers: dict[str, str] = {}
+    if options.enforce_eager:
+        expected_markers["config.engine_args.enforce_eager"] = "True"
     if moe != "auto":
         extra_cli_args += ["--kernel-config", json.dumps({"moe_backend": moe})]
         expected_markers["config.engine_args.kernel_config.moe_backend"] = moe
@@ -467,10 +470,14 @@ class FPMCell:
     fmha_quant_mode: str | None = None
     comm_quant_mode: str | None = None
     fmha_resolution: str | None = None
+    execution_identity: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY
+    input_text_sha256: str = ""
 
     def to_dict(self) -> dict[str, object]:
         return {
             "cell_id": self.cell_id,
+            "execution_identity": dict(zip(EXECUTION_COLUMNS, self.execution_identity, strict=True)),
+            "input_text_sha256": self.input_text_sha256,
             "workload_kind": self.workload_kind,
             "point_source": "dynamo_native_self_benchmark",
             "topology": self.topology.to_dict(),
@@ -530,9 +537,12 @@ class FPMCollectionPlan:
 
     def to_dict(self) -> dict[str, object]:
         prefill_sampling = self.options.prefill_sampling.to_dict()
+        explicit_points = (
+            json.loads(self.options.benchmark_points_json) if self.options.benchmark_points_json is not None else None
+        )
         payload = {
             "schema_name": "aic_fpm_collection_plan",
-            "schema_version": 10,
+            "schema_version": 11,
             "backend": self.backend,
             "model_path": self.model_path,
             "system": self.system,
@@ -544,6 +554,8 @@ class FPMCollectionPlan:
             "point_generation": {
                 "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
                 "method": "native_self_benchmark",
+                "source": "frozen_explicit_manifest" if explicit_points is not None else "native_auto_grid",
+                "manifest_sha256": self.options.benchmark_points_sha256,
                 "coordinates": [
                     "batch_size",
                     "total_prefill_tokens",
@@ -553,7 +565,11 @@ class FPMCollectionPlan:
                 "point_admission": "dynamo_live_scheduler",
                 "precondition": "vllm_engine_initialized",
                 "prefill_sampling": prefill_sampling,
-                "planned_point_count": None,
+                "planned_point_count": (
+                    sum(len(explicit_points.get(phase, [])) for phase in ("prefill", "decode"))
+                    if explicit_points is not None
+                    else None
+                ),
             },
             "topologies": [
                 {
@@ -600,6 +616,8 @@ def _cell_id(
     weight_quantization: str,
     kv_cache_dtype: str,
     policy: BackendPolicy,
+    execution: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY,
+    input_text_sha256: str = "",
 ) -> str:
     payload = {
         "backend": backend,
@@ -610,6 +628,8 @@ def _cell_id(
         "weight_quantization": weight_quantization,
         "kv_cache_dtype": kv_cache_dtype,
         **backend_identity_columns(policy),
+        **dict(zip(EXECUTION_COLUMNS, execution, strict=True)),
+        "input_text_sha256": input_text_sha256,
         "point_source": "dynamo_native_self_benchmark",
     }
     return f"fpm-{_canonical_hash(payload)[:16]}"
@@ -666,6 +686,24 @@ def build_collection_plan(
         ),
         checkpoint_native_dtypes=profile is not None,
     )
+    execution = execution_identity(
+        capability.model_config.payload,
+        decoder_replay=options.decoder_replay,
+        backend=backend,
+        # The rendered V4.1 collection contract requests text-only HBM Engram.
+        # The producer must independently attest these actual runtime facts.
+        engram_cpu_offload=False,
+        input_modality="text",
+    )
+    if execution[0] and not options.enforce_eager:
+        raise ValueError("V4.1 FPM collection currently requires --fpm-enforce-eager; graph timing is not qualified")
+    if options.enforce_eager and not execution[0]:
+        raise ValueError("explicit eager FPM collection is currently qualified only for DeepSeek V4.1")
+    input_text_sha256 = (
+        hashlib.sha256((Path(__file__).parent / "runtime" / "fpm_text.txt").read_bytes()).hexdigest()
+        if execution[0]
+        else ""
+    )
     candidate_topologies = enumerate_fpm_topologies(
         backend=backend,
         is_moe=capability.is_moe,
@@ -707,7 +745,10 @@ def build_collection_plan(
             )
             resources.validate_envelope(
                 max_num_tokens=options.max_num_batched_tokens or max_prefill_isl,
-                max_batch_size=options.max_num_seqs or options.max_prefill_batch_size or resources.max_batch_size,
+                max_batch_size=max(
+                    options.max_decode_batch_size or options.max_num_seqs or resources.max_batch_size,
+                    options.max_prefill_batch_size or options.max_num_seqs or resources.max_batch_size,
+                ),
             )
     topologies, topology_memory_admission = filter_memory_infeasible_topologies(
         backend=backend,
@@ -758,7 +799,11 @@ def build_collection_plan(
                 weight_quantization=weight_quantization,
                 kv_cache_dtype=kv_cache_dtype,
                 policy=policy,
+                execution=execution,
+                input_text_sha256=input_text_sha256,
             ),
+            execution_identity=execution,
+            input_text_sha256=input_text_sha256,
             workload_kind=phase,
             topology=topology,
             weight_quantization=weight_quantization,

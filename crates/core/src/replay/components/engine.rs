@@ -263,6 +263,10 @@ where
             .map(|r| r.lock().unwrap().snapshot())
     }
 
+    pub(crate) fn reset_timing_evidence(&self) -> Result<()> {
+        self.factory.reset_timing_evidence()
+    }
+
     fn required_worker(&self, worker_id: usize) -> Result<&LogicalWorker> {
         self.workers
             .get(worker_id)

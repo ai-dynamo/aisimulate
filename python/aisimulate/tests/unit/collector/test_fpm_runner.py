@@ -11,6 +11,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -1310,6 +1311,7 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -1368,9 +1370,9 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
     # fresh checkpoint proves nothing about the cluster) and one after.
     assert events.count("cleanup") == 2
     assert events.index("cleanup") < events.index("apply")
-    # Contract: the staged set is exactly the two rendered runtime artifacts
+    # Contract: the staged set includes the rendered runtime artifacts
     # plus the collector's own in-pod runtime and preflight.
-    expected_files = {"run.sh", "fpm_env.sh", "fpm_exec.sh", "preflight.py"}
+    expected_files = {"run.sh", "fpm_env.sh", "collector-runtime-env.sh", "fpm_exec.sh", "preflight.py"}
     if pending_memory:
         expected_files.update({"fpm_memory_observer.py", "fpm_memory_worker.py", "fpm_memory_scheduler.py"})
     assert set(staged_names) == expected_files
@@ -1398,6 +1400,7 @@ def test_partial_formal_run_is_campaign_incomplete_not_database_failure(monkeypa
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -1605,6 +1608,7 @@ def test_cleanup_failure_marks_passed_cell_retryable(monkeypatch, tmp_path):
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -1678,6 +1682,7 @@ def test_typed_generator_render_uses_collector_prefill_axis(tmp_path):
     base = {
         "K8sConfig": {
             "k8s_image": "nvcr.io/nvidia/ai-dynamo/vllm-runtime:test",
+            "extra_env": [{"name": "FPM_READINESS_TIMEOUT_SECONDS", "value": "600"}],
             "k8s_pvc_mount_path": "/model-cache",
             "k8s_model_path_in_pvc": "models--nvidia--GLM-5.2-NVFP4",
         }
@@ -1689,7 +1694,12 @@ def test_typed_generator_render_uses_collector_prefill_axis(tmp_path):
     for artifact in ("k8s_deploy.yaml", "fpm_env.sh", "run.sh"):
         assert (tmp_path / artifact).exists(), artifact
 
+    startup = (tmp_path / "collector-runtime-env.sh").read_text()
+    assert "export FPM_READINESS_TIMEOUT_SECONDS=600" in startup
+    # The keepalive Pod intentionally has no engine environment. Staging
+    # supplies the startup file before either transport launches preflight.
     script = (tmp_path / "run.sh").read_text()
+    assert "export FPM_READINESS_TIMEOUT_SECONDS=600" in script
     assert "--benchmark-mode prefill" in script
     assert "--benchmark-warmup-iterations 3" in script
     assert "--scheduler-cls fpm_scheduler" not in script
@@ -2082,6 +2092,7 @@ def _running_cell_fixture(tmp_path, plan, cell):
     (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
     (cell_dir / "run.sh").write_text("#!/bin/sh\n")
     (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+    (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     checkpoint_dir = tmp_path / "checkpoints"
     checkpoint_dir.mkdir()
@@ -2283,6 +2294,7 @@ def test_pre_apply_cleanup_failure_blocks_apply(monkeypatch, tmp_path):
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     applied = []
 
@@ -2425,7 +2437,7 @@ def test_completed_formal_database_is_terminal_after_commit_validation(monkeypat
     )
     validated = []
 
-    def validate(parquet_path, metadata_path, plan_arg):
+    def validate(parquet_path, metadata_path, plan_arg, **_kwargs):
         validated.append((parquet_path, metadata_path, plan_arg.sha256))
         return {"schema_version": 6}
 
@@ -2451,6 +2463,236 @@ def test_completed_formal_database_is_terminal_after_commit_validation(monkeypat
     assert validated == [(parquet, metadata, plan.sha256)]
     manifest = json.loads((artifact_root / plan.sha256[:16] / "run-manifest.json").read_text())
     assert manifest["attempts"] == []
+
+
+@pytest.fixture
+def completed_explicit_campaign(monkeypatch, tmp_path):
+    """Complete real receipt validation, native aggregation and publication on CPU."""
+    cell = _cell()
+    plan = _plan(cell)
+    points = {
+        "schema_version": 3,
+        "prefill": [{"batch_size": 4, "total_prefill_tokens": 257, "total_kv_read_tokens": 128}],
+        "decode": [],
+    }
+    plan.options.benchmark_points_json = json.dumps(points, sort_keys=True, separators=(",", ":"))
+    plan.options.benchmark_points_sha256 = hashlib.sha256(plan.options.benchmark_points_json.encode()).hexdigest()
+    runs = []
+
+    def render_cell(_plan, _cell, cell_dir, _overrides, **_kwargs):
+        (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
+        for name in ("run.sh", "fpm_env.sh", "collector-runtime-env.sh"):
+            (cell_dir / name).write_text("#!/bin/sh\n")
+
+    class LocalResource:
+        def __init__(self, _manifest, cell_dir):
+            self.cell_dir = cell_dir
+            self.raw = cell_dir / "raw" / "pod-0"
+
+        def apply(self):
+            self.raw.mkdir(parents=True)
+
+        def wait_ready(self, _expected_nodes):
+            return ["pod-0"]
+
+        def stage(self, _pods, _files):
+            pass
+
+        def prepare_attempt(self, _pods, **identity):
+            _write_provenance(self.raw / "collector-provenance.json", **identity)
+
+        def _exec(self, _pod, command, *, timeout):
+            # Run the actual before/after receipt producer with local paths.
+            return subprocess.run(
+                [
+                    sys.executable,
+                    *command[1:-2],
+                    str(self.cell_dir / fpm_runner.POINTS_FILENAME),
+                    str(self.raw / fpm_runner.POINTS_RECEIPT_FILENAME),
+                ],
+                timeout=timeout,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        def execute(self, _pods):
+            runs.append("execute")
+            (self.raw / "benchmark.json").write_text(json.dumps(_native_payload(phase="prefill", rank=0, dp=1)))
+
+        def collect(self, _pods, *, require_benchmark=True):
+            pass
+
+        def cleanup(self):
+            pass
+
+    monkeypatch.setattr(fpm_runner, "_render_cell", render_cell)
+    monkeypatch.setattr(fpm_runner, "KubernetesCellRunner", LocalResource)
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    kwargs = {
+        "generator_overrides": {},
+        "checkpoint_dir": str(checkpoint_dir),
+        "artifact_root": str(tmp_path / "artifacts"),
+        "retry_failed": False,
+        "database_root": str(tmp_path / "db"),
+    }
+    assert run_collection(plan, resume=False, **kwargs) == []
+    checkpoint_path = checkpoint_dir / "fpm_forward.json"
+    checkpoint = json.loads(checkpoint_path.read_text())
+    assert checkpoint["cells"][cell.cell_id]["status"] == "passed"
+    assert checkpoint["database"]["status"] == "passed"
+    from collector.fpm_forward.database import validate_formal_database_commit
+
+    database = checkpoint["database"]
+    parquet, metadata = Path(database["parquet"]), Path(database["metadata"])
+    assert validate_formal_database_commit(parquet, metadata, plan)["row_count"] == 1
+    return SimpleNamespace(
+        plan=plan,
+        cell=cell,
+        kwargs=kwargs,
+        checkpoint_path=checkpoint_path,
+        parquet=parquet,
+        metadata=metadata,
+        runs=runs,
+    )
+
+
+@pytest.mark.parametrize("different_artifact_root", [False, True])
+def test_explicit_terminal_database_resumes_after_raw_reclamation(completed_explicit_campaign, different_artifact_root):
+    campaign = completed_explicit_campaign
+    committed = (campaign.parquet.read_bytes(), campaign.metadata.read_bytes())
+    original_checkpoint = campaign.checkpoint_path.read_bytes()
+    root = Path(campaign.kwargs["artifact_root"])
+    shutil.rmtree(root / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw")
+    if different_artifact_root:
+        root = root.with_name("new-artifacts")
+        campaign.kwargs["artifact_root"] = str(root)
+
+    assert run_collection(campaign.plan, resume=True, **campaign.kwargs) == []
+
+    assert campaign.runs == ["execute"]
+    assert campaign.checkpoint_path.read_bytes() == original_checkpoint
+    assert (campaign.parquet.read_bytes(), campaign.metadata.read_bytes()) == committed
+    assert json.loads((root / campaign.plan.sha256[:16] / "run-manifest.json").read_text())["attempts"] == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("cell_id", "different-cell"),
+        ("source_plan_sha256", "different-plan"),
+        ("collector_attempt_id", "different-attempt"),
+        ("tp", 8),
+        ("total_prefill_tokens", 258),
+        ("latency_ms", 999.0),
+    ],
+)
+def test_terminal_resume_rejects_resealed_foreign_rows(completed_explicit_campaign, field, value, caplog):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    campaign = completed_explicit_campaign
+    rows = pq.read_table(campaign.parquet).to_pylist()
+    rows[0][field] = value
+    pq.write_table(pa.Table.from_pylist(rows), campaign.parquet)
+    metadata = json.loads(campaign.metadata.read_text())
+    metadata["parquet_sha256"] = hashlib.sha256(campaign.parquet.read_bytes()).hexdigest()
+    campaign.metadata.write_text(json.dumps(metadata))
+    raw = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw"
+    shutil.rmtree(raw)
+
+    with pytest.raises(ValueError, match="explicit benchmark points have no runtime receipt owners"):
+        run_collection(campaign.plan, resume=True, **campaign.kwargs)
+    assert "Completed FPM database checkpoint failed validation" in caplog.text
+    assert campaign.runs == ["execute"]
+
+
+def test_terminal_resume_preserves_complete_first_publisher_reuse(completed_explicit_campaign):
+    campaign = completed_explicit_campaign
+    committed = (campaign.parquet.read_bytes(), campaign.metadata.read_bytes())
+    original = json.loads(campaign.checkpoint_path.read_text())
+    campaign.plan.sha256 = "another-plan-sha"
+    assert run_collection(campaign.plan, resume=False, **campaign.kwargs) == []
+    repeated = json.loads(campaign.checkpoint_path.read_text())
+    assert repeated["database"]["skipped_first_publisher_wins"] == [campaign.cell.cell_id]
+    assert (
+        repeated["cells"][campaign.cell.cell_id]["attempt_id"] != original["cells"][campaign.cell.cell_id]["attempt_id"]
+    )
+    raw = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw"
+    shutil.rmtree(raw)
+
+    assert run_collection(campaign.plan, resume=True, **campaign.kwargs) == []
+    assert campaign.runs == ["execute", "execute"]
+    assert (campaign.parquet.read_bytes(), campaign.metadata.read_bytes()) == committed
+
+
+def test_legacy_terminal_explicit_checkpoint_checks_requested_coordinates(completed_explicit_campaign, caplog):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    campaign = completed_explicit_campaign
+    checkpoint = json.loads(campaign.checkpoint_path.read_text())
+    del checkpoint["database"]["cell_rows"]
+    campaign.checkpoint_path.write_text(json.dumps(checkpoint))
+    raw = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw"
+    shutil.rmtree(raw)
+    assert run_collection(campaign.plan, resume=True, **campaign.kwargs) == []
+
+    rows = pq.read_table(campaign.parquet).to_pylist()
+    rows[0]["total_prefill_tokens"] += 1
+    pq.write_table(pa.Table.from_pylist(rows), campaign.parquet)
+    metadata = json.loads(campaign.metadata.read_text())
+    metadata["parquet_sha256"] = hashlib.sha256(campaign.parquet.read_bytes()).hexdigest()
+    campaign.metadata.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="explicit benchmark points have no runtime receipt owners"):
+        run_collection(campaign.plan, resume=True, **campaign.kwargs)
+    assert "does not cover requested coordinates" in caplog.text
+
+
+@pytest.mark.parametrize("database_status", ["unpublished", "invalid_commit"])
+def test_explicit_resume_still_requires_raw_receipts_without_valid_commit(completed_explicit_campaign, database_status):
+    campaign = completed_explicit_campaign
+    if database_status == "unpublished":
+        checkpoint = json.loads(campaign.checkpoint_path.read_text())
+        del checkpoint["database"]
+        campaign.checkpoint_path.write_text(json.dumps(checkpoint))
+    else:
+        metadata = json.loads(campaign.metadata.read_text())
+        metadata["parquet_sha256"] = "invalid"
+        campaign.metadata.write_text(json.dumps(metadata))
+    raw = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id / "raw"
+    shutil.rmtree(raw)
+
+    with pytest.raises(ValueError, match="explicit benchmark points have no runtime receipt owners"):
+        run_collection(campaign.plan, resume=True, **campaign.kwargs)
+    assert campaign.runs == ["execute"]
+
+
+@pytest.mark.parametrize("status", ["passed", "failed"])
+def test_explicit_recovery_and_publication_reject_wrong_attempt_receipt(completed_explicit_campaign, status):
+    campaign = completed_explicit_campaign
+    checkpoint = json.loads(campaign.checkpoint_path.read_text())
+    del checkpoint["database"]
+    checkpoint["cells"][campaign.cell.cell_id]["status"] = status
+    campaign.checkpoint_path.write_text(json.dumps(checkpoint))
+    cell_dir = Path(campaign.kwargs["artifact_root"]) / campaign.plan.sha256[:16] / "cells" / campaign.cell.cell_id
+    receipt_path = cell_dir / "raw" / "pod-0" / fpm_runner.POINTS_RECEIPT_FILENAME
+    receipt = json.loads(receipt_path.read_text())
+    receipt["attempt_id"] = "another-attempt"
+    receipt_path.write_text(json.dumps(receipt))
+
+    if status == "passed":
+        with pytest.raises(ValueError, match="runtime benchmark-points receipt mismatch"):
+            run_collection(campaign.plan, resume=True, **campaign.kwargs)
+    else:
+        errors = run_collection(campaign.plan, resume=True, **campaign.kwargs)
+        assert [error["classification"] for error in errors] == ["campaign_incomplete"]
+    resumed = json.loads(campaign.checkpoint_path.read_text())
+    assert resumed["cells"][campaign.cell.cell_id]["status"] == status
+    assert "artifact_recovery" not in resumed["cells"][campaign.cell.cell_id]
+    assert resumed.get("database", {}).get("status") != "passed"
+    assert campaign.runs == ["execute"]
 
 
 def test_user_extra_env_reaches_the_render_request_alongside_collector_identities():
@@ -2515,18 +2757,15 @@ def test_publish_partial_ships_passed_cells_and_records_the_missing(tmp_path, mo
         )
     )
 
-    # The database writer has its own coverage; stub it so this test isolates
-    # the publication gate and the aggregation over passed cells.
+    # Keep the publication gate observable while exercising its sealed
+    # per-cell checkpoint proof with the real database writer.
+    from collector.fpm_forward.database import write_formal_database
+
     published = {}
 
     def fake_writer(plan_arg, rows, *, systems_root=None):
         published["rows"] = rows
-        parquet = tmp_path / "db" / "fpm_forward_perf.parquet"
-        parquet.parent.mkdir(parents=True, exist_ok=True)
-        parquet.write_bytes(b"parquet")
-        metadata = parquet.with_suffix(".metadata.json")
-        metadata.write_text("{}")
-        return parquet, metadata, ()
+        return write_formal_database(plan_arg, rows, systems_root=systems_root)
 
     monkeypatch.setattr("collector.fpm_forward.database.write_formal_database", fake_writer)
 
@@ -2660,6 +2899,7 @@ def test_run_manifest_records_collector_phases_and_engine_interface(monkeypatch,
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -2740,6 +2980,7 @@ def test_failed_attempt_persists_partial_phase_timing_in_manifest(monkeypatch, t
         (cell_dir / "k8s_deploy.yaml").write_text("apiVersion: v1\nkind: Pod\nmetadata:\n  name: cell\n")
         (cell_dir / "run.sh").write_text("#!/bin/sh\n")
         (cell_dir / "fpm_env.sh").write_text("#!/bin/sh\n")
+        (cell_dir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
 
     class FakeResource:
         def __init__(self, _manifest, _cell_dir):
@@ -2777,3 +3018,83 @@ def test_failed_attempt_persists_partial_phase_timing_in_manifest(monkeypatch, t
     assert attempt["collector_phase_seconds"].keys() == {"render_s"}
     checkpoint = json.loads((checkpoint_dir / "fpm_forward_smoke.json").read_text())
     assert checkpoint["cells"][cell.cell_id]["collector_phase_seconds"].keys() == {"render_s"}
+
+
+@pytest.mark.parametrize("seconds", ["0", "-1", "1.5", "3601", "nan", True])
+def test_runtime_readiness_configuration_rejects_invalid_budget(seconds):
+    cell = _cell()
+    with pytest.raises(ValueError, match="FPM_READINESS_TIMEOUT_SECONDS"):
+        _cell_generator_overrides(
+            _plan(cell),
+            cell,
+            {"K8sConfig": {"extra_env": [{"name": "FPM_READINESS_TIMEOUT_SECONDS", "value": seconds}]}},
+        )
+
+
+def test_runtime_environment_uses_configured_path_and_budget_before_engine(tmp_path):
+    cell = _cell()
+    plan = _plan(cell)
+    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+    plan.options.decoder_replay = False
+    settings = {
+        "K8sConfig": {
+            "extra_env": [
+                {"name": "PYTHONPATH", "value": "/custom/runtime components/src"},
+                {"name": "FPM_READINESS_TIMEOUT_SECONDS", "value": "600"},
+            ]
+        }
+    }
+    overrides = _cell_generator_overrides(plan, cell, settings)
+    fpm_runner._write_runtime_environment(tmp_path, overrides)
+    actual = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1"; printf "%s\\n%s\\n" "$PYTHONPATH" "$FPM_READINESS_TIMEOUT_SECONDS"',
+            "bash",
+            str(tmp_path / fpm_runner.RUNTIME_ENV_FILENAME),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert actual.stdout.splitlines() == ["/tmp/fpm-bench:/custom/runtime components/src", "600"]
+    env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+    assert env["PYTHONPATH"] == actual.stdout.splitlines()[0]
+    assert env["DYN_FPM_DSV41_REAL_KV"] == "1"
+
+
+def test_runtime_default_path_is_adapter_owned():
+    cell = _cell()
+    plan = _plan(cell)
+    plan.capability = SimpleNamespace(architecture="DeepseekV41ForCausalLM")
+    plan.options.decoder_replay = False
+    overrides = _cell_generator_overrides(plan, cell, {})
+    env = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+    adapter = Path(fpm_runner.__file__).parent / "runtime/dsv41/runtime-paths.json"
+    assert env["PYTHONPATH"] == "/tmp/fpm-bench:" + json.loads(adapter.read_text())["python_path"]
+    assert env["FPM_READINESS_TIMEOUT_SECONDS"] == "900"
+
+
+def test_kubernetes_stages_exact_startup_configuration(tmp_path):
+    runner = _runner(tmp_path)
+    source = tmp_path / "collector-runtime-env.sh"
+    source.write_text("export FPM_READINESS_TIMEOUT_SECONDS=600\n")
+    remote = tmp_path / "remote"
+    remote.mkdir()
+
+    def kubectl(*args, **kwargs):
+        assert args[0] == "cp"
+        shutil.copy2(args[1], remote / Path(args[1]).name)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    def execute(pod, command, *, timeout):
+        if command[0] == "mkdir":
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+        rewritten = [arg.replace(REMOTE_WORKDIR, str(remote)) for arg in command]
+        return subprocess.run(rewritten, check=True, capture_output=True, text=True, timeout=timeout)
+
+    runner._kubectl = kubectl
+    runner._exec_checked = execute
+    runner.stage(["pod-0"], [source])
+    assert (remote / source.name).read_bytes() == source.read_bytes()

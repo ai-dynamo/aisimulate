@@ -17,6 +17,15 @@ workdir=/tmp/fpm-bench
 # the same status before any resource is started.
 source "${workdir}/fpm_env.sh"
 
+# This is staged by the Collector from the same resolved deployment settings
+# used by run.sh. It carries startup configuration across both transports.
+source "${workdir}/collector-runtime-env.sh"
+if [[ ! "${FPM_READINESS_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]] ||
+   (( ${#FPM_READINESS_TIMEOUT_SECONDS} > 4 || FPM_READINESS_TIMEOUT_SECONDS > 3600 )); then
+  echo "FPM_READINESS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2
+  exit 2
+fi
+
 if [[ -f "${workdir}/fpm_memory_worker.py" ]]; then
   # The wrappers are staged alongside this script and delegate all execution
   # to the image's installed vLLM/Dynamo classes. Only pending-memory cells
@@ -78,14 +87,16 @@ if [[ "${FPM_NODE_RANK}" == "0" ]]; then
   etcd_pid=$!
 fi
 
+# Adapter activation and its import path have already been sourced from the
+# frozen startup settings; no image-specific path belongs in this wrapper.
 python3 "${workdir}/preflight.py"
 
 if [[ "${FPM_NODE_RANK}" == "0" ]]; then
   # The leader owns the etcd process, so its readiness wait is etcd-aware:
   # a dead etcd (missing binary, bound port, data-dir permissions) fails the
-  # cell immediately with direct evidence instead of burning the 120s probe
+  # cell immediately with direct evidence instead of burning the configured probe
   # budget and reporting only "readiness timeout".
-  readiness_deadline=$((SECONDS + 120))
+  readiness_deadline=$((SECONDS + FPM_READINESS_TIMEOUT_SECONDS))
   while ! (exec 3<>"/dev/tcp/${FPM_MASTER_ADDR}/2379") 2>/dev/null; do
     if ! kill -0 "${etcd_pid}" 2>/dev/null; then
       set +e
@@ -104,16 +115,16 @@ if [[ "${FPM_NODE_RANK}" == "0" ]]; then
     sleep 1
   done
 else
-  python3 - "${FPM_MASTER_ADDR}" <<'PY'
+  python3 - "${FPM_MASTER_ADDR}" "$FPM_READINESS_TIMEOUT_SECONDS" <<'PY'
 import socket
 import sys
 import time
 
 host = sys.argv[1]
-deadline = time.monotonic() + 120
+deadline = time.monotonic() + float(sys.argv[2])
 while time.monotonic() < deadline:
     try:
-        with socket.create_connection((host, 2379), timeout=1):
+        with socket.create_connection((host, 2379), timeout=min(1.0, max(0.001, deadline - time.monotonic()))):
             break
     except OSError:
         time.sleep(0.2)

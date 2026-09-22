@@ -1125,3 +1125,56 @@ def test_onboard_cli_embeds_profile_and_preserves_topology(profile, tmp_path, tp
     profile_output.unlink()
     create_plan(request, plan, overwrite=True)
     assert profile_output.read_bytes() == original
+
+
+@pytest.mark.parametrize("selector", [None, "fp8"])
+def test_direct_profile_uses_external_pair_and_preserves_fmha_arithmetic(
+    profile, timing_systems, tmp_path, monkeypatch, selector
+):
+    import shutil
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from aisimulate_core.sdk import RustForwardPassPerfModel
+
+    # Move the only measured pair outside the systems tree, so silently losing
+    # the external path cannot succeed through packaged-data fallback.
+    source = Path(timing_systems) / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+    external = tmp_path / "reviewed-fpm.parquet"
+    rows = pq.read_table(source).to_pylist()
+    if selector is not None:
+        for row in rows:
+            row["fmha_quant_mode"] = selector
+    pq.write_table(pa.Table.from_pylist(rows), external)
+    metadata = json.loads(source.with_suffix(".metadata.json").read_text())
+    metadata["parquet_sha256"] = hashlib.sha256(external.read_bytes()).hexdigest()
+    external.with_suffix(".metadata.json").write_text(json.dumps(metadata))
+    shutil.rmtree(Path(timing_systems) / "data")
+    monkeypatch.chdir(tmp_path)
+    model = RustForwardPassPerfModel.best_available(
+        {
+            "model": profile["model"],
+            "fpm_profile": profile,
+            "system": "h200_sxm",
+            "backend": "vllm",
+            "backend_version": "0.25.1",
+            "worker_type": "aggregated",
+            "tp": 2,
+            "moe_tp_size": 2,
+            "moe_ep_size": 1,
+            "systems_paths": [timing_systems],
+            "estimation_mode": "fpm_interpolation",
+            "fpm_fmha_quant_mode": selector,
+            "estimator_config": {"fpm_interpolation": {"method": "direct", "fpm_parquet_path": external.name}},
+        }
+    )
+    resolved = model.diagnostics()["provenance"]["config"]
+    assert resolved["fmha_quant_mode"] == "bfloat16"
+    assert resolved["fpm_fmha_quant_mode"] == selector
+    assert resolved["estimator_config"]["fpm_interpolation"]["fpm_parquet_path"] == str(external)
+    # Every synthetic decode row is 1 ms; the unseen KV=2 point interpolates
+    # between the independently declared KV=1 and KV=64 rows without a graph.
+    assert model.estimate_forward_pass_time_ms(
+        {"scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 2}}
+    ) == pytest.approx(1.0)

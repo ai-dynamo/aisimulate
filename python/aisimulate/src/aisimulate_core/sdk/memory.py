@@ -310,7 +310,7 @@ class KVCacheEstimator:
         diagnostics but excludes them from the static weights/KV pool: its
         ``mem_fraction_static`` already reserves transient execution headroom.
 
-        Raises when AIC cannot build the model/backend or the perf DB is missing --
+        Raises when AIC cannot build the model/backend or the system spec is missing --
         the signal for the caller to fall back to the naive estimator.
         """
         resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
@@ -341,7 +341,11 @@ class KVCacheEstimator:
         # Memory is cost-side only; accepted-token progress never enters
         # capacity math.
         apply_nextn(model_config, nextn)
-        database = perf_database.get_database(system, backend, backend_version, systems_paths=systems_path)
+        # Capacity needs model/system metadata, including when external FPM
+        # timing has no backend data directory.
+        database = perf_database.get_database(
+            system, backend, backend_version, systems_paths=systems_path, allow_missing_data=True
+        )
         resolve_sglang_mla_compute(model_config, model_path, backend, database.version, database.system_spec)
         model = get_model(model_path, model_config, backend)
         backend_obj = get_backend(backend)

@@ -107,6 +107,7 @@ fn fixture_engine_config() -> EngineConfig {
         backend: BackendKind::Vllm,
         backend_version: Some("0.24.0".to_string()),
         forward_model: None,
+        fpm_parquet_path: None,
         decoder_replay: false,
         kv_block_size: None,
         parallel: ParallelMapping {
@@ -121,6 +122,7 @@ fn fixture_engine_config() -> EngineConfig {
             weight_dtype: None,
             moe_dtype: None,
             activation_dtype: None,
+            fpm_fmha_dtype: None,
             kv_cache_dtype: None,
         },
         speculative: None,
@@ -197,6 +199,7 @@ fn direct_coverage_model(dir: &std::path::Path) -> ForwardPassPerfModel {
             phase,
             model_path: "org/model-a".into(),
             match_identity: default_identity(4),
+            original_fmha_quant_mode: None,
             weight_bytes: 0.0,
             verify_width: 1,
             interpolation: FpmInterpolation::Direct,
@@ -2197,6 +2200,15 @@ fn native_model_starts_ready_with_aic_source() {
 #[test]
 fn canonical_static_phase_diagnostics_are_available_only_for_native_models() {
     let model = native_model(ForwardPassPerfOptions::default());
+    let engine = model.native_engine().unwrap();
+    assert_eq!(
+        model.static_phase_latency(4, 512, 4, true).unwrap(),
+        engine.predict_prefill_latency(4, 512, 0).unwrap()
+    );
+    assert_eq!(
+        model.static_phase_latency(4, 512, 4, false).unwrap(),
+        engine.predict_decode_latency(4, 512, 4).unwrap()
+    );
     assert!(
         model
             .static_phase_diagnostics(4, u32::MAX, 0, false)
@@ -2223,4 +2235,5 @@ fn canonical_static_phase_diagnostics_are_available_only_for_native_models() {
             .static_phase_diagnostics(4, 512, 0, true)
             .is_err()
     );
+    assert!(regression.static_phase_latency(4, 512, 4, true).is_err());
 }

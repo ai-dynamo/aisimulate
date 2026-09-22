@@ -16,8 +16,13 @@ from dataclasses import dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
+import numpy as np
+
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
 from .capacity import materialize_aic_num_gpu_blocks
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
+from .config.engine import StateCacheConfig
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -76,6 +81,8 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "kv_load_ratio",
         "max_sim_time_ms",
         "agentic_lanes",
+        "agentic_snapshot",
+        "agentic_warmup",
     }
 )
 
@@ -87,11 +94,13 @@ _AIC_TIMING_FIELD_ALIASES = {
     "gemm_dtype": ("gemm_dtype", "aic_gemm_dtype"),
     "moe_dtype": ("moe_dtype", "aic_moe_dtype"),
     "fmha_dtype": ("fmha_dtype", "aic_fmha_dtype"),
+    "fpm_fmha_dtype": ("fpm_fmha_dtype", "aic_fpm_fmha_dtype"),
     "kv_cache_dtype": ("kv_cache_dtype", "aic_kv_cache_dtype"),
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
     "forward_model": ("forward_model", "aic_forward_model"),
     "fpm_profile": ("fpm_profile", "aic_fpm_profile"),
+    "fpm_parquet_path": ("fpm_parquet_path", "aic_fpm_parquet_path"),
     "moe_backend": ("aic_moe_backend",),
     "attention_backend": ("aic_attention_backend",),
     "enable_eplb": ("aic_enable_eplb",),
@@ -192,6 +201,7 @@ class AICAFDCompanionPerformanceModel:
                 provenance={"provider": "fixed", "field": key},
             )
 
+        timing_overrides = _pop_aic_timing_overrides(dict(args), role)
         estimator = self._estimator
         if estimator is None:
             from aisimulate.legacy_cli.api import cli_estimate
@@ -199,12 +209,7 @@ class AICAFDCompanionPerformanceModel:
             estimator = cli_estimate
         prefix = f"{role}_"
         parallel = deployment.parallel_config
-        forward_model = args.get("aic_forward_model", "op_level")
-        if not isinstance(forward_model, str) or forward_model not in _AIC_FORWARD_MODELS:
-            raise ValueError(
-                f"{role} AFD companion aic_forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, "
-                f"got {forward_model!r}"
-            )
+        forward_model = timing_overrides.get("forward_model", "op_level")
         kwargs: dict[str, Any] = {
             "mode": "static_ctx" if role == "prefill" else "static_gen",
             "backend_name": deployment.backend,
@@ -226,20 +231,100 @@ class AICAFDCompanionPerformanceModel:
         ):
             if parallel.get(source) is not None:
                 kwargs[target] = _positive_int(parallel[source], f"parallel_config.{source}")
+        # Timing identity must agree with deployment topology and provenance.
+        for identity_field, parameter in (
+            ("backend_version", "backend_version"),
+            ("pp", "pp_size"),
+            ("moe_tp_size", "moe_tp_size"),
+            ("moe_ep_size", "moe_ep_size"),
+        ):
+            if identity_field in timing_overrides and timing_overrides[identity_field] != kwargs.get(parameter):
+                raise ValueError(
+                    f"{role} AFD companion {identity_field}={timing_overrides[identity_field]!r} "
+                    f"conflicts with deployment value {kwargs.get(parameter)!r}; "
+                    "set identity fields in BackendDeploymentSpec"
+                )
         if args.get("aic_nextn") is not None:
             kwargs["nextn"] = _positive_int(args["aic_nextn"], "aic_nextn")
         model_name = args.get("aic_model_path")
         hardware = args.get("aic_system")
         if not isinstance(model_name, str) or not model_name or not isinstance(hardware, str) or not hardware:
             raise ValueError(f"{role} AFD companion requires aic_model_path and aic_system")
+        fpm_parquet_path = timing_overrides.get("fpm_parquet_path")
+        has_fpm_selector = "fpm_fmha_dtype" in timing_overrides
+        metric = "ttft" if role == "prefill" else "tpot"
+        source = "aisimulate.legacy_cli.api.cli_estimate"
         try:
-            result = estimator(model_name, hardware, **kwargs)
+            if fpm_parquet_path is not None or has_fpm_selector:
+                # The canonical API is the only path that preserves FPM selectors.
+                if forward_model != "fpm":
+                    raise ValueError("FPM controls require forward_model='fpm'")
+                quantization = {}
+                for field, parameter in (
+                    ("gemm_dtype", "gemm_quant_mode"),
+                    ("moe_dtype", "moe_quant_mode"),
+                    ("fmha_dtype", "fmha_quant_mode"),
+                    ("fpm_fmha_dtype", "fpm_fmha_quant_mode"),
+                    ("kv_cache_dtype", "kvcache_quant_mode"),
+                    ("comm_dtype", "comm_quant_mode"),
+                ):
+                    if field in timing_overrides:
+                        quantization[parameter] = timing_overrides[field]
+                sharded_moe = kwargs.get("moe_tp_size", 1) * kwargs.get("moe_ep_size", 1) > 1
+                config = ForwardPassPerfModelConfig(
+                    model=model_name,
+                    system=hardware,
+                    backend=deployment.backend,
+                    backend_version=deployment.backend_version,
+                    worker_type=role,
+                    tp=kwargs["tp_size"],
+                    pp=kwargs["pp_size"],
+                    attention_dp=kwargs["attention_dp_size"],
+                    moe_tp_size=kwargs.get("moe_tp_size") if sharded_moe else None,
+                    moe_ep_size=kwargs.get("moe_ep_size") if sharded_moe else None,
+                    nextn=kwargs.get("nextn", 0),
+                    kv_block_size=args.get("block_size"),
+                    estimation_mode="fpm_interpolation",
+                    estimator_config=(
+                        {"fpm_interpolation": {"fpm_parquet_path": fpm_parquet_path}}
+                        if fpm_parquet_path is not None
+                        else {}
+                    ),
+                    systems_paths=(timing_overrides["systems_path"],) if "systems_path" in timing_overrides else (),
+                    **quantization,
+                    **{
+                        name: timing_overrides[name]
+                        for name in (
+                            "attention_backend",
+                            "moe_backend",
+                            "enable_eplb",
+                            "wideep_num_slots",
+                            "decoder_replay",
+                            "database_mode",
+                            "enable_shared_layer",
+                            "strict_provenance",
+                        )
+                        if name in timing_overrides
+                    },
+                )
+                model = RustForwardPassPerfModel.best_available(config)
+                try:
+                    latency = model.static_phase_latency(
+                        batch_size=batch_capacity, input_tokens=isl, output_tokens=osl, prefill=role == "prefill"
+                    )
+                    if role == "decode":
+                        latency /= max(1, osl - 1)
+                finally:
+                    model.close()
+                raw = {metric: latency}
+                source = "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
+            else:
+                result = estimator(model_name, hardware, **kwargs)
+                raw = getattr(result, "raw", None)
         except Exception as exc:
             raise InvalidRunnerError(
                 f"AIC could not measure the AFD {role} companion: {type(exc).__name__}: {exc}"
             ) from exc
-        raw = getattr(result, "raw", None)
-        metric = "ttft" if role == "prefill" else "tpot"
         if not isinstance(raw, Mapping):
             raise InvalidRunnerError("AIC AFD companion estimate did not return a result mapping")
         latency = _positive_number(raw.get(metric), f"AIC AFD companion {metric}")
@@ -250,9 +335,11 @@ class AICAFDCompanionPerformanceModel:
             workers=workers,
             provenance={
                 "provider": "aic",
-                "source": "aisimulate.legacy_cli.api.cli_estimate",
+                "source": source,
                 "backend_version": deployment.backend_version,
                 "forward_model": forward_model,
+                **({"fpm_parquet_path": fpm_parquet_path} if fpm_parquet_path is not None else {}),
+                **({"fpm_fmha_dtype": timing_overrides["fpm_fmha_dtype"]} if has_fpm_selector else {}),
                 "metric": metric,
             },
         )
@@ -284,6 +371,7 @@ class EngineReplayRunnerFactory:
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
+            supports_state_cache=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -293,7 +381,9 @@ class EngineReplayRunnerFactory:
                 "weka",
             ),
             supports_agentic_lanes=True,
-            supported_agentic_topologies=("agg",),
+            supports_agentic_snapshots=True,
+            supports_agentic_warmup=True,
+            supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
             supports_agentic_host_offload=False,
             supports_agentic_speculative_decoding=False,
@@ -353,6 +443,8 @@ class EngineReplayRunner:
         output_requirements = output_requirements or ReplayOutputRequirements()
         if output_requirements.capture_telemetry:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
+        if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
+            raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
         encoder = spec.backend_deployment.encoder
         if encoder is None and spec.workload.get("images") is not None:
@@ -992,6 +1084,24 @@ def _materialize_engine_execution_spec(
         trace_format = traffic.get("trace_format")
         if trace_format in {"agentic_mooncake", "dynamo", "weka"}:
             requires_agentic_model = trace_format != "dynamo" or traffic.get("agentic_lanes") is not None
+            if deployment_mode == "disagg":
+                prefill_model = _execution_target_model(deployment, "prefill", raw_prefill)
+                decode_model = _execution_target_model(deployment, "decode", raw_decode)
+                if requires_agentic_model and prefill_model != decode_model:
+                    raise ValueError("agentic prefill and decode must use the same configured target model")
+                if prefill_model == decode_model:
+                    execution_model = prefill_model
+                if requires_agentic_model:
+                    for role, descriptor in (("prefill", prefill), ("decode", decode)):
+                        timing = descriptor["rank"].get("timing_model")
+                        if (
+                            isinstance(timing, Mapping)
+                            and timing.get("type") == "external"
+                            and timing.get("provider") == "aic"
+                            and isinstance(timing.get("config"), Mapping)
+                            and timing["config"].get("model") != execution_model
+                        ):
+                            raise ValueError(f"agentic {role} AIC timing model must match the configured target model")
             if requires_agentic_model and execution_model is None:
                 raise ValueError("agentic execution requires a configured target model")
             # Dynamo may contain standard or agentic requests; native validates the loaded kind.
@@ -1039,6 +1149,36 @@ def _configured_in_flight_cap(spec: ReplaySpec) -> int | None:
     return _positive_int(value, "concurrency") if value is not None else None
 
 
+def _pop_aic_timing_overrides(rank: dict[str, JSONValue], role: str) -> dict[str, JSONValue]:
+    aic_timing_overrides: dict[str, JSONValue] = {}
+    for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
+        configured = [alias for alias in aliases if alias in rank]
+        if len(configured) > 1:
+            names = ", ".join(configured)
+            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
+        if not configured:
+            continue
+        value = rank.pop(configured[0])
+        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
+            value = _positive_int(value, f"engine provider {role} {target}")
+        elif target == "fpm_profile":
+            from aisimulate_core.sdk.fpm_profile import load_fpm_profile
+
+            value = load_fpm_profile(value).model_dump(mode="json")
+        elif target in {"enable_eplb", "decoder_replay", "enable_shared_layer", "strict_provenance"}:
+            if not isinstance(value, bool):
+                raise ValueError(f"engine provider {role} {target} must be a boolean")
+        elif not isinstance(value, str) or not value:
+            raise ValueError(f"engine provider {role} {target} must be a string")
+        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
+            raise ValueError(
+                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
+            )
+        aic_timing_overrides[target] = value
+
+    return aic_timing_overrides
+
+
 def _required_engine_args(payload: dict[str, JSONValue] | None, role: str) -> dict[str, JSONValue]:
     if payload is None:
         raise ValueError(f"ReplaySpec is missing {role} engine arguments")
@@ -1058,6 +1198,8 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
             raise TypeError("trace_path must be a non-empty string")
         if workload.get("random_range_ratio", 1.0) != 1.0 or workload.get("random_seed", 0) != 0:
             raise ValueError("random_range_ratio and random_seed only apply to synthetic replay")
+        if workload.get("length_sampler", "python_random") != "python_random":
+            raise ValueError("length_sampler only applies to synthetic replay")
         configured_trace_block_size = workload.get("trace_block_size")
         requests = materialize_configured_traffic(
             {
@@ -1117,7 +1259,15 @@ def _materialize_requests(spec: ReplaySpec, trace_block_size: int) -> tuple[list
 
     random_range_ratio = _random_range_ratio(workload.get("random_range_ratio", 1.0))
     random_seed = _random_seed(workload.get("random_seed", 0))
-    length_rng = random.Random(random_seed)
+    sampler = workload.get("length_sampler", "python_random")
+    if sampler == "numpy_random_state":
+        if random_seed > 0xFFFF_FFFF:
+            raise ValueError("numpy_random_state random_seed must be an unsigned 32-bit integer")
+        length_rng = np.random.RandomState(random_seed)
+    elif sampler == "python_random":
+        length_rng = random.Random(random_seed)
+    else:
+        raise ValueError(f"unsupported length_sampler: {sampler!r}")
     # Follow InferenceX's draw order: sample the complete ISL vector before OSL.
     input_lengths = _sample_synthetic_lengths(isl, request_count, random_range_ratio, length_rng)
     output_lengths = _sample_synthetic_lengths(osl, request_count, random_range_ratio, length_rng)
@@ -1195,6 +1345,7 @@ def _materialize_engine_role(
     capacity_materialized = False
     num_gpu_blocks_is_explicit = False
     if "rank" not in role_config:
+        state_cache = _manual_state_cache(role_config, deployment_backend, role)
         num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
         for name in ("aic_backend_version", "backend_version"):
             if role_config.get(name) is None:
@@ -1232,18 +1383,21 @@ def _materialize_engine_role(
                 role_config["aic_backend_version"] = version
             if timing_config is not None and timing_config.get("backend_version") is None:
                 role_config["timing_model"] = {**timing, "config": {**timing_config, "backend_version": version}}
-        role_config = materialize_aic_num_gpu_blocks(
-            role_config,
-            **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
-        )
-        if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
-            role_memory["status"] = "available"
-            if "num_gpu_blocks" in role_memory:
-                role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
-            role_memory.pop("unavailable_reason", None)
-        capacity_materialized = (
-            role_config.get("num_gpu_blocks") is not None or role_config.get("kv_cache_capacity_bytes") is not None
-        )
+        if state_cache is not None:
+            role_config["state_cache"] = state_cache.model_dump(mode="json")
+        else:
+            role_config = materialize_aic_num_gpu_blocks(
+                role_config,
+                **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
+            )
+            if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
+                role_memory["status"] = "available"
+                if "num_gpu_blocks" in role_memory:
+                    role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
+                role_memory.pop("unavailable_reason", None)
+            capacity_materialized = (
+                role_config.get("num_gpu_blocks") is not None or role_config.get("kv_cache_capacity_bytes") is not None
+            )
     for name in ("engine_type", "aic_backend"):
         configured = role_config.pop(name, None)
         if configured is not None and configured != deployment_backend:
@@ -1314,6 +1468,11 @@ def _materialize_engine_role(
         # role mappings may use the same shorthand.
         rank = role_config
 
+    state_cache = _manual_state_cache(rank, deployment_backend, role)
+    if state_cache is not None:
+        num_gpu_blocks_is_explicit = True
+        rank["state_cache"] = state_cache.model_dump(mode="json")
+
     nested_cuda_graph_reserved_bytes = rank.pop("cuda_graph_reserved_bytes", None)
     if cuda_graph_reserved_bytes is not None and nested_cuda_graph_reserved_bytes is not None:
         raise ValueError(f"engine provider {role} config duplicates cuda_graph_reserved_bytes")
@@ -1339,7 +1498,7 @@ def _materialize_engine_role(
             "engine provider rank backend conflicts with deployment backend: "
             f"{configured_backend!r} != {deployment_backend!r}"
         )
-    if "block_size" not in rank:
+    if "block_size" not in rank and state_cache is None:
         # Keep scheduler capacity, AIC compilation, and synthetic-prefix
         # materialization on one explicit backend-native block size.
         rank["block_size"] = {
@@ -1371,31 +1530,7 @@ def _materialize_engine_role(
         if not num_gpu_blocks_is_explicit:
             memory_fraction_overrides[memory_field] = float(value)
 
-    aic_timing_overrides: dict[str, JSONValue] = {}
-    for target, aliases in _AIC_TIMING_FIELD_ALIASES.items():
-        configured = [alias for alias in aliases if alias in rank]
-        if len(configured) > 1:
-            names = ", ".join(configured)
-            raise ValueError(f"engine provider {role} config duplicates AIC field {target}: {names}")
-        if not configured:
-            continue
-        value = rank.pop(configured[0])
-        if target in {"pp", "moe_tp_size", "moe_ep_size", "wideep_num_slots"}:
-            value = _positive_int(value, f"engine provider {role} {target}")
-        elif target == "fpm_profile":
-            from aisimulate_core.sdk.fpm_profile import load_fpm_profile
-
-            value = load_fpm_profile(value).model_dump(mode="json")
-        elif target in {"enable_eplb", "decoder_replay", "enable_shared_layer", "strict_provenance"}:
-            if not isinstance(value, bool):
-                raise ValueError(f"engine provider {role} {target} must be a boolean")
-        elif not isinstance(value, str) or not value:
-            raise ValueError(f"engine provider {role} {target} must be a string")
-        if target == "forward_model" and value not in _AIC_FORWARD_MODELS:
-            raise ValueError(
-                f"engine provider {role} forward_model must be one of {sorted(_AIC_FORWARD_MODELS)}, got {value!r}"
-            )
-        aic_timing_overrides[target] = value
+    aic_timing_overrides = _pop_aic_timing_overrides(rank, role)
 
     timing_model = rank.get("timing_model")
     uses_aic_timing = timing_model is None or (
@@ -1619,6 +1754,46 @@ def _materialize_engine_role(
     }
 
 
+def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) -> StateCacheConfig | None:
+    """Validate manual geometry before any automatic capacity materialization."""
+
+    raw = rank.get("state_cache")
+    if raw is None:
+        return None
+    state_cache = StateCacheConfig.model_validate(raw)
+    if backend != "vllm" or role != "aggregated":
+        raise ValueError("state_cache requires backend=vllm and an aggregated G1 worker")
+    if rank.get("native_host_offload") is not None:
+        raise ValueError("state_cache supports G1 only; native_host_offload is not supported")
+    if rank.get("g3_offload") is not None:
+        raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+    conflicts = [
+        name
+        for name in (
+            "gpu_memory_utilization",
+            "mem_fraction_static",
+            "free_gpu_memory_fraction",
+            "kv_transfer_bytes_per_token",
+            "kv_transfer_bandwidth",
+        )
+        if rank.get(name) is not None
+    ]
+    if rank.get("cuda_graph_reserved_bytes") not in (None, 0):
+        conflicts.append("cuda_graph_reserved_bytes")
+    # Rust serializes this default explicitly; it does not enable PD transfer.
+    if rank.get("kv_transfer_timing_mode") not in (None, "full_prompt"):
+        conflicts.append("kv_transfer_timing_mode")
+    if conflicts:
+        raise ValueError(f"state_cache rejects capacity/transfer overrides: {', '.join(conflicts)}")
+    for name in ("num_gpu_blocks", "block_size", "kv_cache_bytes_per_token"):
+        value = rank.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= (1 << 64) - 1:
+            raise ValueError(f"state_cache requires explicit positive {name} within u64")
+    if rank["num_gpu_blocks"] < state_cache.state_blocks(rank["block_size"], rank["kv_cache_bytes_per_token"]) + 1:
+        raise ValueError("state_cache capacity must fit one token block and one request state")
+    return state_cache
+
+
 def _positive_int(value: JSONValue, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"{name} must be a positive integer")
@@ -1667,13 +1842,15 @@ def _sample_synthetic_lengths(
     upper: int,
     count: int,
     random_range_ratio: float,
-    rng: random.Random,
+    rng: random.Random | np.random.RandomState,
 ) -> list[int]:
     if random_range_ratio == 1.0:
         return [upper] * count
     lower = int(upper * random_range_ratio)
     if lower == 0:
         raise ValueError(f"random_range_ratio={random_range_ratio} gives a zero-token lower bound for length {upper}")
+    if isinstance(rng, np.random.RandomState):
+        return rng.randint(lower, upper + 1, size=count).tolist()
     return [rng.randint(lower, upper) for _ in range(count)]
 
 
@@ -1781,6 +1958,8 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
             "agentic_qualification",
             "agentic_input_format",
             "agentic_lanes",
+            "agentic_snapshots",
+            "agentic_phases",
             "agentic_model_projection",
             "weka_nested_timestamp_basis",
         )

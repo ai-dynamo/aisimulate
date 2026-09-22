@@ -447,9 +447,10 @@ pub enum TimingModelConfig {
 /// Implementations may call AIC, interpolate profiler data, or use another
 /// provider without adding that dependency to `aisimulate-core`.
 pub trait TimingModel: Send + Sync {
-    /// Whether admission needs a checkpoint around `validate_prefill_batch`.
-    /// Existing custom providers default to the safe, fallible contract. Providers
-    /// opting out must accept every batch geometry in that validation hook.
+    /// Whether `validate_prefill_batch` may reject geometry. A false return
+    /// guarantees only that validation accepts every batch, not that prediction
+    /// or duration conversion is infallible. Admission must still protect those
+    /// later operations for external providers.
     fn prefill_batch_validation_can_fail(&self) -> bool {
         true
     }
@@ -485,6 +486,19 @@ pub trait TimingModel: Send + Sync {
     /// fabricate energy or coverage values.
     fn evidence_summary(&self) -> Option<TimingEvidenceSummary> {
         None
+    }
+
+    /// Start a new measurement epoch without changing timing predictions or
+    /// provider caches. Called only after preparation work has settled.
+    ///
+    /// Latency-only providers need no reset. Evidence-producing providers must
+    /// override this method so preparation cannot leak into profile evidence.
+    fn reset_evidence(&self) -> Result<()> {
+        ensure!(
+            self.evidence_summary().is_none(),
+            "timing provider exposes evidence but does not support resetting its measurement epoch"
+        );
+        Ok(())
     }
 }
 
@@ -1032,5 +1046,7 @@ mod tests {
 
         assert_eq!(fixed.evidence_summary(), None);
         assert_eq!(polynomial.evidence_summary(), None);
+        fixed.reset_evidence().unwrap();
+        polynomial.reset_evidence().unwrap();
     }
 }

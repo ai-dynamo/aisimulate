@@ -23,6 +23,17 @@ fn default_num_gpu_blocks() -> usize {
     16_384
 }
 
+fn deserialize_explicit_num_gpu_blocks<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<usize>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    // Preserve the legacy rule that an explicit capacity must be an integer;
+    // only an omitted field may use the default or state-cache-derived value.
+    usize::deserialize(deserializer).map(Some)
+}
+
 fn default_block_size() -> usize {
     64
 }
@@ -312,6 +323,37 @@ impl NativeHostOffloadConfig {
     }
 }
 
+/// Recurrent-state allocation size for one simulated rank/GPU.
+/// Token block geometry and pool capacity use the existing EngineConfig fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateCacheConfig {
+    /// Bytes occupied by one physical working state or snapshot.
+    pub bytes_per_request: usize,
+}
+
+impl StateCacheConfig {
+    /// State size in token-equivalent blocks, rounded up without overflow.
+    pub fn state_blocks(&self, block_size: usize, bytes_per_token: usize) -> Result<usize> {
+        ensure!(
+            self.bytes_per_request > 0,
+            "state_cache.bytes_per_request must be positive"
+        );
+        ensure!(
+            block_size >= 2,
+            "state_cache requires block_size at least two"
+        );
+        ensure!(
+            bytes_per_token > 0,
+            "state_cache requires positive kv_cache_bytes_per_token"
+        );
+        let block_bytes = block_size
+            .checked_mul(bytes_per_token)
+            .ok_or_else(|| anyhow::anyhow!("KV block byte size overflowed"))?;
+        Ok(self.bytes_per_request.div_ceil(block_bytes))
+    }
+}
+
 /// Serializable configuration for one scheduler rank.
 ///
 /// Attention-DP size and worker identity belong to
@@ -400,6 +442,9 @@ pub struct EngineConfig {
     pub native_host_offload: Option<NativeHostOffloadConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub g3_offload: Option<crate::engine::G3OffloadConfig>,
+    /// Optional manual vLLM G1 token/state cache configuration.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_cache: Option<StateCacheConfig>,
     /// Modeled prefill-to-decode transfer bandwidth in decimal GB/s.
     pub kv_transfer_bandwidth: Option<f64>,
     /// Prompt footprint used to model disaggregated transfer time.
@@ -412,14 +457,18 @@ pub struct EngineConfig {
     pub trtllm: TrtllmConfig,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EngineConfigWire {
     #[serde(default)]
     backend: Backend,
-    #[serde(default = "default_num_gpu_blocks")]
-    num_gpu_blocks: usize,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_explicit_num_gpu_blocks",
+        skip_serializing_if = "Option::is_none"
+    )]
+    num_gpu_blocks: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     block_size: Option<usize>,
     #[serde(default)]
     max_model_len: Option<usize>,
@@ -455,14 +504,16 @@ struct EngineConfigWire {
     emit_kv_token_ids: bool,
     #[serde(default, alias = "kv_bytes_per_token")]
     kv_transfer_bytes_per_token: Option<usize>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     kv_cache_bytes_per_token: Option<usize>,
     #[serde(default)]
     kv_cache_groups: Vec<FpmCacheGroup>,
     #[serde(default)]
     kv_cache_capacity_bytes: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     native_host_offload: Option<NativeHostOffloadConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    state_cache: Option<StateCacheConfig>,
     #[serde(default)]
     g3_offload: Option<crate::engine::G3OffloadConfig>,
     #[serde(default)]
@@ -483,12 +534,23 @@ impl<'de> Deserialize<'de> for EngineConfig {
         D: Deserializer<'de>,
     {
         let wire = EngineConfigWire::deserialize(deserializer)?;
-        Ok(Self {
+        if wire.state_cache.is_some()
+            && (wire.num_gpu_blocks.is_none()
+                || wire.block_size.is_none()
+                || wire.kv_cache_bytes_per_token.is_none())
+        {
+            return Err(serde::de::Error::custom(
+                "state_cache requires explicit num_gpu_blocks, block_size and kv_cache_bytes_per_token",
+            ));
+        }
+        let num_gpu_blocks = wire.num_gpu_blocks.unwrap_or_else(default_num_gpu_blocks);
+        let block_size = wire
+            .block_size
+            .unwrap_or_else(|| wire.backend.default_block_size());
+        let config = Self {
             backend: wire.backend,
-            num_gpu_blocks: wire.num_gpu_blocks,
-            block_size: wire
-                .block_size
-                .unwrap_or_else(|| wire.backend.default_block_size()),
+            num_gpu_blocks,
+            block_size,
             max_model_len: wire.max_model_len,
             max_num_seqs: wire.max_num_seqs,
             max_num_batched_tokens: wire.max_num_batched_tokens,
@@ -511,12 +573,17 @@ impl<'de> Deserialize<'de> for EngineConfig {
             kv_cache_capacity_bytes: wire.kv_cache_capacity_bytes,
             native_host_offload: wire.native_host_offload,
             g3_offload: wire.g3_offload,
+            state_cache: wire.state_cache,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
             kv_transfer_timing_mode: wire.kv_transfer_timing_mode,
             timing_model: wire.timing_model,
             sglang: wire.sglang,
             trtllm: wire.trtllm,
-        })
+        };
+        config
+            .validate_state_cache()
+            .map_err(serde::de::Error::custom)?;
+        Ok(config)
     }
 }
 
@@ -548,6 +615,7 @@ impl Default for EngineConfig {
             kv_cache_capacity_bytes: None,
             native_host_offload: None,
             g3_offload: None,
+            state_cache: None,
             kv_transfer_bandwidth: None,
             kv_transfer_timing_mode: TransferTimingMode::FullPrompt,
             timing_model: TimingModelConfig::Polynomial,
@@ -570,7 +638,50 @@ impl EngineConfig {
         }
     }
 
+    fn validate_state_cache(&self) -> Result<()> {
+        if let Some(state_cache) = &self.state_cache {
+            ensure!(
+                self.backend == Backend::Vllm,
+                "state_cache is supported only for backend=vllm"
+            );
+            ensure!(
+                self.worker_type == WorkerType::Aggregated,
+                "state_cache is supported only for worker_type=aggregated"
+            );
+            ensure!(
+                self.native_host_offload.is_none(),
+                "state_cache does not support native_host_offload in the G1-only implementation"
+            );
+            ensure!(
+                self.g3_offload.is_none(),
+                "state_cache does not support g3_offload in the G1-only implementation"
+            );
+            ensure!(
+                self.kv_transfer_bytes_per_token.is_none() && self.kv_transfer_bandwidth.is_none(),
+                "state_cache does not support kv_transfer_bytes_per_token or kv_transfer_bandwidth"
+            );
+            // Keep the default accepted, including serialized configs that emit it explicitly.
+            ensure!(
+                self.kv_transfer_timing_mode == TransferTimingMode::FullPrompt,
+                "state_cache does not support non-default kv_transfer_timing_mode"
+            );
+            let bytes_per_token = self
+                .kv_cache_bytes_per_token
+                .ok_or_else(|| anyhow::anyhow!("state_cache requires kv_cache_bytes_per_token"))?;
+            let state_blocks = state_cache.state_blocks(self.block_size, bytes_per_token)?;
+            let minimum = state_blocks
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("state_cache minimum capacity overflowed"))?;
+            ensure!(
+                self.num_gpu_blocks >= minimum,
+                "state_cache capacity must fit one token block and one working state"
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate(&self) -> Result<()> {
+        self.validate_state_cache()?;
         ensure!(self.num_gpu_blocks > 0, "num_gpu_blocks must be positive");
         ensure!(self.block_size > 0, "block_size must be positive");
         if matches!(self.backend, Backend::Vllm | Backend::Trtllm) {
@@ -805,6 +916,196 @@ mod tests {
                 .contains(expected_message),
             "validation error did not contain {expected_message:?}"
         );
+    }
+
+    fn state_cache_config_json() -> serde_json::Value {
+        serde_json::json!({
+            "num_gpu_blocks": 8, "block_size": 64, "kv_cache_bytes_per_token": 16,
+            "state_cache": {"bytes_per_request": 1500}
+        })
+    }
+
+    #[test]
+    fn state_cache_uses_shared_geometry_and_round_trips() {
+        let config: EngineConfig = serde_json::from_value(state_cache_config_json()).unwrap();
+        assert_eq!(
+            config
+                .state_cache
+                .unwrap()
+                .state_blocks(config.block_size, config.kv_cache_bytes_per_token.unwrap())
+                .unwrap(),
+            2
+        );
+        config.validate().unwrap();
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(encoded["num_gpu_blocks"], 8);
+        assert_eq!(encoded["block_size"], 64);
+        assert_eq!(
+            encoded["state_cache"],
+            serde_json::json!({"bytes_per_request": 1500})
+        );
+        assert_eq!(
+            serde_json::from_value::<EngineConfig>(encoded).unwrap(),
+            config
+        );
+        let legacy = serde_json::to_value(EngineConfig::default()).unwrap();
+        assert!(legacy.get("state_cache").is_none());
+        assert!(legacy.get("kv_cache_bytes_per_token").is_none());
+    }
+
+    #[test]
+    fn state_cache_requires_explicit_shared_geometry_and_positive_state_size() {
+        for field in ["num_gpu_blocks", "block_size", "kv_cache_bytes_per_token"] {
+            let mut input = state_cache_config_json();
+            input.as_object_mut().unwrap().remove(field);
+            assert!(serde_json::from_value::<EngineConfig>(input).is_err());
+            for value in [
+                serde_json::json!(0),
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!(true),
+                serde_json::Value::Null,
+            ] {
+                let mut input = state_cache_config_json();
+                input[field] = value;
+                assert!(serde_json::from_value::<EngineConfig>(input).is_err());
+            }
+        }
+        for state in [
+            serde_json::json!({}),
+            serde_json::json!({"bytes_per_request":0}),
+            serde_json::json!({"bytes_per_request":-1}),
+            serde_json::json!({"bytes_per_request":true}),
+            serde_json::json!({"bytes_per_request":1500,"tokens_per_block":64}),
+        ] {
+            let mut input = state_cache_config_json();
+            input["state_cache"] = state;
+            assert!(serde_json::from_value::<EngineConfig>(input).is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_null_capacity_does_not_fall_back_to_a_default() {
+        assert!(
+            serde_json::from_value::<EngineConfig>(serde_json::json!({
+                "num_gpu_blocks": null
+            }))
+            .is_err()
+        );
+        let mut input = state_cache_config_json();
+        input["num_gpu_blocks"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<EngineConfig>(input).is_err());
+    }
+
+    #[test]
+    fn state_cache_validates_overflow_and_minimum_capacity() {
+        for (field, value, message) in [
+            ("kv_cache_bytes_per_token", usize::MAX, "overflow"),
+            ("block_size", usize::MAX, "overflow"),
+            ("block_size", 1, "at least two"),
+            ("num_gpu_blocks", 2, "one token block and one working state"),
+        ] {
+            let mut input = state_cache_config_json();
+            input[field] = serde_json::json!(value);
+            let error = serde_json::from_value::<EngineConfig>(input).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+        let mut input = state_cache_config_json();
+        input["num_gpu_blocks"] = serde_json::json!(3);
+        serde_json::from_value::<EngineConfig>(input)
+            .unwrap()
+            .validate()
+            .unwrap();
+        assert_eq!(
+            StateCacheConfig {
+                bytes_per_request: usize::MAX
+            }
+            .state_blocks(2, 1)
+            .unwrap(),
+            usize::MAX / 2 + 1
+        );
+    }
+
+    #[test]
+    fn state_cache_rejects_non_vllm_disaggregated_and_host_offload_configs() {
+        for (field, value, message) in [
+            ("backend", serde_json::json!("sglang"), "backend=vllm"),
+            ("backend", serde_json::json!("trtllm"), "backend=vllm"),
+            (
+                "worker_type",
+                serde_json::json!("prefill"),
+                "worker_type=aggregated",
+            ),
+            (
+                "worker_type",
+                serde_json::json!("decode"),
+                "worker_type=aggregated",
+            ),
+            (
+                "native_host_offload",
+                serde_json::json!({"num_host_blocks": 8}),
+                "native_host_offload",
+            ),
+            (
+                "g3_offload",
+                serde_json::json!({"scope": "worker_local", "num_g3_blocks": 8}),
+                "g3_offload",
+            ),
+        ] {
+            let mut input = state_cache_config_json();
+            input[field] = value;
+            let error = serde_json::from_value::<EngineConfig>(input).unwrap_err();
+            assert!(error.to_string().contains(message), "{field}: {error}");
+        }
+    }
+
+    #[test]
+    fn state_cache_transfer_validation_preserves_default_roundtrip() {
+        for explicit_default in [false, true] {
+            let mut input = state_cache_config_json();
+            if explicit_default {
+                input["kv_transfer_timing_mode"] = serde_json::json!("full_prompt");
+            }
+            let config: EngineConfig = serde_json::from_value(input).unwrap();
+            config.validate().unwrap();
+            let roundtrip: EngineConfig =
+                serde_json::from_value(serde_json::to_value(&config).unwrap()).unwrap();
+            assert_eq!(config, roundtrip);
+        }
+        for (field, value) in [
+            ("kv_transfer_bytes_per_token", serde_json::json!(16)),
+            ("kv_bytes_per_token", serde_json::json!(16)),
+            ("kv_transfer_bandwidth", serde_json::json!(0.0)),
+            (
+                "kv_transfer_timing_mode",
+                serde_json::json!("destination_missing"),
+            ),
+        ] {
+            let mut input = state_cache_config_json();
+            input[field] = value;
+            assert!(
+                serde_json::from_value::<EngineConfig>(input.clone()).is_err(),
+                "{field}"
+            );
+            input.as_object_mut().unwrap().remove("state_cache");
+            let mut config: EngineConfig = serde_json::from_value(input).unwrap();
+            config.validate().unwrap();
+            config.state_cache = Some(StateCacheConfig {
+                bytes_per_request: 1500,
+            });
+            assert!(config.validate().is_err(), "{field}");
+        }
+    }
+
+    #[test]
+    fn state_cache_validates_geometry_for_direct_rust_construction() {
+        let config: EngineConfig = serde_json::from_value(state_cache_config_json()).unwrap();
+        let mut invalid = config.clone();
+        invalid.kv_cache_bytes_per_token = None;
+        assert!(invalid.validate().is_err());
+        invalid = config;
+        invalid.num_gpu_blocks = 2;
+        assert!(invalid.validate().is_err());
     }
 
     #[test]
