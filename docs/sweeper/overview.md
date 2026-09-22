@@ -24,6 +24,7 @@ of a replay. Sweeper imports a provider only when its adapter name appears in th
 - [Tutorial](tutorial.md) explains a complete sweep configuration.
 - [Architecture](architecture.md) explains CLI integration, parallelism search, and the provider, replay, and worker boundaries.
 - [Configuration](configuration.md) describes core and adapter-owned search spaces.
+- [Role-specific Context Limits](context-limits.md) defines worker precedence and selection evidence.
 - [Traffic](traffic.md) defines trace, request-rate, concurrency, and KV-load workloads.
 - [Optimization Goals](optimization-goals.md) defines scalar and Pareto objectives.
 - [AFD Topology Contract](afd-topology.md) defines Attention-FFN parallel shapes, validation, and

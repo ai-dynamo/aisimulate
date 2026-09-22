@@ -331,6 +331,7 @@ class TimingConfig(StrictModel):
 
 class WorkerPredictionConfig(StrictModel):
     hardware: str | None = Field(default=None, min_length=1)
+    context_length: PositiveInt | None = None
     parallelism: ParallelismPredictionConfig = Field(default_factory=ParallelismPredictionConfig)
     scheduler: SchedulerPredictionConfig = Field(default_factory=SchedulerPredictionConfig)
     kv_cache: KvCachePredictionConfig = Field(default_factory=KvCachePredictionConfig)
@@ -663,6 +664,7 @@ class KvCacheRecommendationConfig(StrictModel):
 
 class WorkerRecommendationConfig(StrictModel):
     hardware: str | None = Field(default=None, min_length=1)
+    context_length: PositiveInt | None = None
     parallelism: ParallelismRecommendationConfig = Field(default_factory=ParallelismRecommendationConfig)
     scheduler: SchedulerRecommendationConfig = Field(default_factory=SchedulerRecommendationConfig)
     kv_cache: KvCacheRecommendationConfig = Field(default_factory=KvCacheRecommendationConfig)
@@ -737,6 +739,8 @@ class EngineRecommendationConfig(EstimatorPolicyConfig):
         modes = set(self.mode.choices) if isinstance(self.mode, Choices) else {self.mode}
         backends = set(self.backend.choices) if isinstance(self.backend, Choices) else {self.backend}
         _validate_fpm_profile(self, modes, backends)
+        if self.workers.aggregated is not None and self.workers.aggregated.context_length is not None:
+            raise ValueError("workers.aggregated.context_length must be set as engine.context_length")
         _validate_worker_hardware(modes=modes, workers=self.workers)
         if "afd" in modes:
             if modes != {"afd"}:
