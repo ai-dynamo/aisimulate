@@ -49,6 +49,7 @@ from aisimulate.fpm_contract import (
 from .config import FPM_KV_WARMUP_DEFAULTS, with_kv_warmup_defaults
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan
+from .runtime.fpm_memory_observer import EXECUTION_SUPPORTED_VERSIONS
 from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
 from .types import KVWARM_STRATEGIES
 
@@ -133,6 +134,13 @@ def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
         deployment is not None
         and deployment.resources.memory_source == "pending"
         and deployment.backend_version == MEMORY_OBSERVER_VERSION
+    )
+
+
+def _observe_runtime_execution(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
+    return (
+        getattr(getattr(plan, "capability", None), "aic_database_version", None) in EXECUTION_SUPPORTED_VERSIONS
+        and not cell.execution_identity[0]
     )
 
 
@@ -1299,6 +1307,7 @@ def _cell_generator_overrides(
         {"name": FPM_RUN_ID_ENV, "value": cell.cell_id},
     ]
     observe_memory = _observe_runtime_memory(plan, cell)
+    observe_execution = _observe_runtime_execution(plan, cell)
     if observe_memory:
         if cell.workload_kind == "decode":
             # Use the prefill collection requirement for both phases when
@@ -1313,6 +1322,8 @@ def _cell_generator_overrides(
                 "fpm_memory_scheduler.FpmResourceInstrumentedScheduler",
             ]
         )
+    elif observe_execution:
+        model_args.extend(["--worker-cls", "fpm_memory_worker.FpmExecutionWorker"])
     if architecture == "DeepseekV41ForCausalLM":
         from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
 
@@ -1405,11 +1416,10 @@ def _cell_generator_overrides(
     merged = with_kv_warmup_defaults(merged)
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
-    if observe_memory and any(
-        str(argument).split("=", 1)[0].split(" ", 1)[0]
-        in {"--worker-cls", "--scheduler-cls", "--kv-cache-memory-bytes", "--num-gpu-blocks-override"}
-        for argument in policy_args
-    ):
+    policy_flags = {str(argument).split("=", 1)[0].split(" ", 1)[0] for argument in policy_args}
+    if (observe_memory or observe_execution) and "--worker-cls" in policy_flags:
+        raise ValueError("backend policy cannot replace the runtime execution/memory observer worker class")
+    if observe_memory and policy_flags & {"--scheduler-cls", "--kv-cache-memory-bytes", "--num-gpu-blocks-override"}:
         raise ValueError("backend policy cannot replace runtime memory observer classes or automatic cache sizing")
     if observe_memory and any(
         str(argument).split("=", 1)[0].split(" ", 1)[0] == "--async-scheduling" for argument in policy_args
@@ -1898,6 +1908,7 @@ def run_collection(
     cell_limit: int | None = None,
     database_root: str | None = None,
     publish_partial: bool = False,
+    publish_database: bool = True,
 ) -> list[dict[str, object]]:
     """Render and run every cell, always tearing down owned resources."""
 
@@ -1913,6 +1924,7 @@ def run_collection(
             cell_limit=cell_limit,
             database_root=database_root,
             publish_partial=publish_partial,
+            publish_database=publish_database,
         )
 
 
@@ -1928,6 +1940,7 @@ def _run_collection_impl(
     cell_limit: int | None = None,
     database_root: str | None = None,
     publish_partial: bool = False,
+    publish_database: bool = True,
 ) -> list[dict[str, object]]:
     if _frozen_points(plan) is not None and smoke:
         raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
@@ -1937,6 +1950,7 @@ def _run_collection_impl(
         root /= "smoke"
     root.mkdir(parents=True, exist_ok=True)
     _atomic_json(root / "collection-plan.json", plan.to_dict())
+    _atomic_json(root / "generator-overrides.json", with_kv_warmup_defaults(generator_overrides))
     checkpoint_name = "fpm_forward_smoke.json" if smoke else "fpm_forward.json"
     checkpoint_path = Path(checkpoint_dir).expanduser().resolve() / checkpoint_name
     checkpoint = _load_checkpoint(checkpoint_path, plan, resume)
@@ -1949,7 +1963,8 @@ def _run_collection_impl(
     formal_database_terminal = False
     database_entry = checkpoint.get("database")
     if (
-        resume
+        publish_database
+        and resume
         and not smoke
         and isinstance(database_entry, dict)
         and database_entry.get("status") == "passed"
@@ -2149,7 +2164,7 @@ def _run_collection_impl(
                     runtime_preflight,
                     *(
                         [runtime_exec.parent / filename for filename in _MEMORY_OBSERVER_FILES]
-                        if _observe_runtime_memory(plan, cell)
+                        if _observe_runtime_memory(plan, cell) or _observe_runtime_execution(plan, cell)
                         else []
                     ),
                     *_stage_points_file(plan, cell_dir),
@@ -2275,6 +2290,17 @@ def _run_collection_impl(
     if formal_database_terminal:
         return errors
     all_passed = all(checkpoint["cells"].get(cell.cell_id, {}).get("status") == "passed" for cell in target_cells)
+    if not publish_database:
+        if not all_passed and not errors:
+            errors.append(
+                {
+                    "module": "fpm_forward",
+                    "error_type": "IncompleteCampaign",
+                    "error_message": "validation collection has incomplete cells",
+                    "classification": "campaign_incomplete",
+                }
+            )
+        return errors
     # Formal publication eligibility must agree with completion: a deliberate
     # partial run (cell_limit below the frozen plan) can pass every targeted
     # cell yet cannot publish, and deserves the honest campaign_incomplete

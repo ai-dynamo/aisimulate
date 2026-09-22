@@ -1360,7 +1360,8 @@ def test_runtime_summaries_use_native_rank_artifacts_and_skip_merged(tmp_path):
 
 
 @pytest.mark.parametrize("pending_memory", [False, True])
-def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pending_memory):
+@pytest.mark.parametrize("validation_only", [False, True])
+def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pending_memory, validation_only):
     cell = _cell()
     plan = _plan(cell)
     if pending_memory:
@@ -1405,6 +1406,13 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
 
     monkeypatch.setattr(fpm_runner, "_render_cell", render_cell)
     monkeypatch.setattr(fpm_runner, "KubernetesCellRunner", FakeResource)
+    from collector.fpm_forward import database
+
+    monkeypatch.setattr(
+        database,
+        "write_formal_database",
+        lambda *_args, **_kwargs: pytest.fail("validation/smoke published formal data"),
+    )
     monkeypatch.setattr(
         fpm_runner,
         "_runtime_collection_summary",
@@ -1425,8 +1433,9 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
         artifact_root=str(tmp_path / "artifacts"),
         resume=False,
         retry_failed=False,
-        smoke=True,
+        smoke=not validation_only,
         cell_limit=1,
+        publish_database=not validation_only,
     )
 
     assert errors == []
@@ -1444,10 +1453,13 @@ def test_run_collection_stages_owned_runtime_files(monkeypatch, tmp_path, pendin
     assert "cases.json" not in staged_names
     assert "fpm_scheduler.py" not in staged_names
     assert "run_with_etcd.sh" not in staged_names
-    checkpoint = json.loads((checkpoint_dir / "fpm_forward_smoke.json").read_text())
-    assert checkpoint["cells"][cell.cell_id]["prefill_max_new_token_samples"] == 2
+    name = "fpm_forward.json" if validation_only else "fpm_forward_smoke.json"
+    checkpoint = json.loads((checkpoint_dir / name).read_text())
+    if not validation_only:
+        assert checkpoint["cells"][cell.cell_id]["prefill_max_new_token_samples"] == 2
+        assert "prefill_requested_new_token_axis_count" not in checkpoint["cells"][cell.cell_id]
     assert checkpoint["cells"][cell.cell_id]["measured_new_token_axis_count"] == 2
-    assert "prefill_requested_new_token_axis_count" not in checkpoint["cells"][cell.cell_id]
+    assert "database" not in checkpoint
 
 
 def test_partial_formal_run_is_campaign_incomplete_not_database_failure(monkeypatch, tmp_path):

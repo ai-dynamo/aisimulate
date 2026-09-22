@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from collector.model_cases import build_collection_case_plan
 
 from .config import add_fpm_arguments, add_fpm_generator_arguments
-from .entry import resolve_inputs, resolve_run_inputs, run_resolved
+from .entry import _load_generator_overrides, resolve_inputs, resolve_run_inputs, run_resolved
 
 _INPUT_ERRORS = (OSError, RuntimeError, TypeError, ValueError)
 
@@ -28,7 +28,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-path", default=None)
     parser.add_argument("--model-architecture", default=None)
     parser.add_argument("--model-cases", default=None, help="Optional model cases YAML path.")
-    parser.add_argument("--gpu", required=True, help="Target AIC system, for example b200_sxm.")
+    parser.add_argument("--gpu", default=None, help="Target AIC system, required for a new campaign.")
     parser.add_argument("--sm", type=int, default=None, help="Optional explicit SM version for case planning.")
     parser.add_argument("--plan-only", action="store_true", help="Print the frozen FPM plan and exit.")
     parser.add_argument("--smoke", action="store_true", help="Run the minimal smoke sampling profile.")
@@ -40,6 +40,17 @@ def _parser() -> argparse.ArgumentParser:
         help="Retry failed cells while resuming; requires --resume.",
     )
     parser.add_argument("--checkpoint-dir", default=".collector_checkpoint")
+    validation = parser.add_argument_group("Validation subset collection")
+    validation.add_argument("--repeatability-source-campaign", default=None, help="Existing frozen campaign directory.")
+    validation.add_argument(
+        "--repeatability-source-checkpoint", default=None, help="Its passed fpm_forward.json checkpoint."
+    )
+    validation.add_argument(
+        "--repeatability-output-dir", default=None, help="Fresh validation output; original data is preserved."
+    )
+    validation.add_argument("--repeatability-samples", type=int, default=5)
+    validation.add_argument("--repeatability-max-points", type=int, default=12)
+    validation.add_argument("--repeatability-cv-threshold", type=float, default=0.05)
     add_fpm_arguments(parser)
     add_fpm_generator_arguments(parser)
     return parser
@@ -48,12 +59,58 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if not (args.model_path or args.model_architecture or args.model_cases):
+    if not (args.model_path or args.model_architecture or args.model_cases or args.repeatability_source_campaign):
         parser.error("FPM requires --model-path, --model-architecture, or --model-cases")
     if args.resume_retry_failed and not args.resume:
         parser.error("--resume-retry-failed requires --resume")
+    repeatability_paths = (
+        args.repeatability_source_campaign,
+        args.repeatability_source_checkpoint,
+        args.repeatability_output_dir,
+    )
+    repeatability = any(repeatability_paths)
+    if repeatability and not all(repeatability_paths):
+        parser.error("repeatability requires source campaign, source checkpoint and a separate output directory")
+    if repeatability and (args.smoke or args.limit is not None):
+        parser.error("repeatability cannot use --smoke or --limit")
+    if not repeatability and not args.gpu:
+        parser.error("FPM requires --gpu for a new campaign")
 
     try:
+        if repeatability:
+            from .repeatability import (
+                freeze_repeatability_plan,
+                load_repeatability_deployment,
+                load_repeatability_source,
+                run_repeatability,
+            )
+
+            plan = load_repeatability_source(args.repeatability_source_campaign)
+            generator_overrides = _load_generator_overrides(args)
+            if not generator_overrides and not args.plan_only:
+                generator_overrides = load_repeatability_deployment(args.repeatability_source_campaign)
+            kwargs = {
+                "samples": args.repeatability_samples,
+                "max_points_per_cell": args.repeatability_max_points,
+                "cv_threshold": args.repeatability_cv_threshold,
+            }
+            if args.plan_only:
+                result = freeze_repeatability_plan(
+                    plan, args.repeatability_source_campaign, args.repeatability_source_checkpoint, **kwargs
+                )
+            else:
+                result = run_repeatability(
+                    plan,
+                    generator_overrides=generator_overrides,
+                    source_campaign_dir=args.repeatability_source_campaign,
+                    source_checkpoint_path=args.repeatability_source_checkpoint,
+                    output_dir=args.repeatability_output_dir,
+                    resume=args.resume,
+                    retry_failed=args.resume_retry_failed,
+                    **kwargs,
+                )
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0 if args.plan_only or result["status"] == "passed" else 1
         case_plan = build_collection_case_plan(
             backend=args.backend,
             model_path=args.model_path,

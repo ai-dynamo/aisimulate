@@ -591,10 +591,47 @@ Do not delete unrelated workloads or the namespace. Default `/results` storage
 is Pod-local `emptyDir`, so deleting Pods before salvaging results loses those
 files.
 
-## 9. Validate accuracy separately
+## 9. Validate collection quality and serving accuracy
 
 Passing the preceding stages establishes that the collection and prediction
 path works. Accuracy requires independent measurements under matched conditions.
+The standard onboarding procedure implements these checks with `aisimulate
+onboard validate-collection`, existing `validate-fpm` replay coverage, and
+`validate-serving --action prepare|run|assess`. Follow the
+[campaign policy and command examples](../../../../docs/fpm-self-service.md#validate-collection-and-serving-accuracy).
+The policy is a separate editable JSON/YAML file; source collection plans,
+formal measurements and archived attempts are preserved.
+Run collection-quality checks during stage 5 before normal memory finalization;
+resolved memory still permits exploratory simulation while accuracy is unqualified.
+
+1. Validate every source point and formal row, and inspect actual initialized
+   attention groups, graph configuration and per-point KV initialization.
+   Missing runtime observations prevent qualification even when precision
+   labels match. Graph configuration is not a per-point dispatch trace.
+2. Select a bounded representative subset from the runtime grid and preserve
+   five fresh independently launched samples by default, at most 12 points per
+   phase cell. Both fresh-sample CV and CV including the original published
+   measurement must be at most 0.05 by default. This catches an unstable point
+   or an original outlier; warm-up alone does not establish repeatability.
+3. Withhold up to 16 coordinates per phase by default, retain envelope anchors,
+   and recompute direct interpolation with denied fallback. Report prefill and
+   decode p95 absolute relative error (default limit 0.20), plus unsupported
+   queries (default allowed fraction zero). Sparse data remains incomplete.
+4. Run matched serving separately, using frozen traffic and actual runtime
+   observations. Require replay completion/coverage, then independently report
+   TTFT, TPOT and throughput errors. Optional instrumented forward samples are
+   a separate check; missing forward instrumentation is reported unavailable.
+   Before preparation, follow the [isolated, Git-pinned AIPerf installation](../../../../docs/fpm-self-service.md#stage-6-matched-serving);
+   use that environment's Python for both preparation and execution.
+
+Counts, selection seed and numerical thresholds are editable before assessment.
+Threshold-only changes can reuse verified raw measurements in a fresh output
+directory; changing repeat selection/count/execution requires new measurements.
+No threshold edit mutates the original FPM table. The combined report only
+qualifies the evaluated configuration and workload when every mandatory gate
+passes; incomplete or failed gates do not prevent exploratory simulation.
+
+For broader accuracy studies, retain these additional requirements:
 
 1. Freeze a validation workload with held-out shapes or traces. Record model and
    runtime versions, GPU/system, parallelism, quantization, CUDA Graph policy,

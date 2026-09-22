@@ -16,6 +16,7 @@ runtime itself are never caught by these observation helpers or wrappers.
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import json
 import logging
@@ -27,6 +28,7 @@ from typing import Any
 SCHEMA_NAME = "aisimulate_fpm_runtime_memory"
 SCHEMA_VERSION = 1
 SUPPORTED_VERSION = "0.27.0"
+EXECUTION_SUPPORTED_VERSIONS = ("0.27.0", "0.28.0")
 RESULTS_DIR = Path("/results")
 _SPEC_MODULE = "vllm.v1.kv_cache_interface."
 _CONV_CLASS = "vllm.models.inkling.nvidia.sconv_swa_attn.InklingConvState"
@@ -76,7 +78,135 @@ def compilation_config(config: Any) -> dict[str, Any]:
     return {key: _json_value(getattr(compilation, key)) for key in _CONFIG_FIELDS["compilation_config"]}
 
 
-def resolved_config(config: Any) -> dict[str, Any]:
+def _write_execution_file(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        # Publish atomically without replacing an earlier observation, including
+        # when two worker processes accidentally report the same rank.
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _execution_destination() -> tuple[Path, dict[str, Any]]:
+    output_value = os.environ.get("FPM_EXECUTION_OUTPUT_DIR")
+    provenance_value = os.environ.get("FPM_EXECUTION_PROVENANCE_FILE")
+    custom = output_value is not None or provenance_value is not None
+    if custom:
+        if not output_value or not provenance_value:
+            raise ValueError("FPM_EXECUTION_OUTPUT_DIR and FPM_EXECUTION_PROVENANCE_FILE must be supplied together")
+        for name, value in (("output directory", output_value), ("provenance file", provenance_value)):
+            if not Path(value).is_absolute() or any(char in value for char in ("\n", "\r", "\x00")):
+                raise ValueError(f"execution observation {name} must be an absolute path without control characters")
+        directory, source = Path(output_value), Path(provenance_value)
+    else:
+        directory, source = RESULTS_DIR, RESULTS_DIR / "collector-provenance.json"
+    raw = source.read_bytes()
+    provenance = json.loads(raw)
+    if not isinstance(provenance, dict):
+        raise ValueError("execution provenance must be a JSON object")
+    binding = {
+        "execution_provenance": provenance,
+        "provenance_source": {"path": str(source), "sha256": hashlib.sha256(raw).hexdigest(), "size_bytes": len(raw)},
+    }
+    if not custom:
+        binding["collector_provenance"] = provenance
+        return directory, binding
+    if (
+        provenance.get("purpose") != "matched_serving_accuracy"
+        or not isinstance(provenance.get("run_id"), str)
+        or not provenance["run_id"].strip()
+        or "collector_attempt_id" in provenance
+        or provenance.get("schema_name") == "aic_fpm_collector_provenance"
+    ):
+        raise ValueError("custom execution provenance requires a serving run_id and purpose=matched_serving_accuracy")
+    directory.mkdir(parents=True, exist_ok=True)
+    marker = directory / ".execution-run.json"
+    if (directory / "collector-provenance.json").exists() or (
+        not marker.exists() and any(directory.glob("fpm-execution-worker-*.json"))
+    ):
+        raise ValueError("serving execution output requires a fresh directory, separate from collector attempts")
+    try:
+        _write_execution_file(marker, binding)
+    except FileExistsError:
+        if json.loads(marker.read_bytes()) != binding:
+            raise ValueError("execution observation directory already belongs to a different serving run") from None
+    return directory, binding
+
+
+def observe_execution(worker: Any, *, dp_rank: int, tp_rank: int, pp_rank: int) -> None:
+    """Record selected backend objects after initialization, outside timed forwards.
+
+    This original adapter reads AttentionGroup.backend/layer_names populated by
+    GPUModelRunner.initialize_attn_backend, including runtime backend wrappers:
+    https://github.com/vllm-project/vllm/blob/4bdc8a788d2e2ce9165d552b3d4d8b72604626bf/vllm/v1/worker/gpu_model_runner.py#L7020
+    https://github.com/vllm-project/vllm/blob/4bdc8a788d2e2ce9165d552b3d4d8b72604626bf/vllm/v1/worker/utils.py#L217
+    The same read-only interfaces were verified for vLLM 0.28.0 at:
+    https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/worker/gpu_model_runner.py#L7155
+    https://github.com/vllm-project/vllm/blob/2cf0a6915ce544dc493a0990f2ea38d81601128a/vllm/v1/worker/utils.py#L241
+    It does not infer a backend from requested flags or trace per-point dispatch.
+
+    Ordinary serving can use FpmExecutionWorker with absolute
+    FPM_EXECUTION_OUTPUT_DIR and FPM_EXECUTION_PROVENANCE_FILE paths. Both are
+    required together; the provenance identifies a fresh matched-serving run.
+    Collector launches retain their default /results output and provenance.
+    """
+    directory, binding = _execution_destination()
+    payload = {
+        "schema_name": "aisimulate_fpm_runtime_execution",
+        "schema_version": 1,
+        **binding,
+        "backend_version": importlib.metadata.version("vllm"),
+        "dp_rank": dp_rank,
+        "tp_rank": tp_rank,
+        "pp_rank": pp_rank,
+        "per_point_dispatch": "unreported",
+    }
+    try:
+        if payload["backend_version"] not in EXECUTION_SUPPORTED_VERSIONS:
+            raise ValueError(f"execution observation requires audited vLLM {EXECUTION_SUPPORTED_VERSIONS}")
+        groups = []
+        for cache_groups in worker.model_runner.attn_groups:
+            for group in cache_groups:
+                names = list(group.layer_names)
+                if not names or any(not isinstance(name, str) or not name for name in names):
+                    raise ValueError("runtime attention group has no explicit layer names")
+                backend = group.backend
+                if not isinstance(backend, type):
+                    raise ValueError("runtime attention group backend is not a class")
+                groups.append(
+                    {
+                        "kv_cache_group_id": group.kv_cache_group_id,
+                        "backend_class": f"{backend.__module__}.{backend.__qualname__}",
+                        "layer_names": names,
+                    }
+                )
+        if not groups:
+            raise ValueError("runtime reported no initialized attention groups")
+        payload.update(
+            attention_groups=groups,
+            graph_config=compilation_config(worker.vllm_config),
+            resolved_config=execution_config(worker.vllm_config),
+            status="observed",
+        )
+    except Exception as error:
+        payload.update(status="unresolved", error=f"{type(error).__name__}: {error}")
+        logging.getLogger(__name__).warning("FPM execution evidence is incomplete: %s", payload["error"])
+    path = directory / f"fpm-execution-worker-dp{dp_rank}-tp{tp_rank}-pp{pp_rank}.json"
+    if path.exists():
+        raise RuntimeError(f"refusing duplicate runtime execution observation: {path}")
+    try:
+        _write_execution_file(path, payload)
+    except FileExistsError:
+        raise RuntimeError(f"refusing duplicate runtime execution observation: {path}") from None
+
+
+def execution_config(config: Any) -> dict[str, Any]:
+    """Read execution identity without requiring the memory-finalization APIs."""
     result = {
         section: {
             key: _json_value(getattr(getattr(config, section), key))
@@ -89,16 +219,6 @@ def resolved_config(config: Any) -> dict[str, Any]:
     hf_config = getattr(config.model_config, "hf_config", None)
     if hf_config is not None and getattr(hf_config, "_commit_hash", None) is not None:
         result["model_config"]["loaded_config_commit_hash"] = hf_config._commit_hash
-    # vLLM 0.27.0 config/offload.py owns weight offload; cache_config does not.
-    offload = config.offload_config
-    result["offload_config"] = {
-        "offload_backend": offload.offload_backend,
-        "uva": {"cpu_offload_gb": offload.uva.cpu_offload_gb},
-        "prefetch": {
-            key: getattr(offload.prefetch, key)
-            for key in ("offload_group_size", "offload_num_in_group", "offload_prefetch_step")
-        },
-    }
     quant = config.quant_config
     result["quantization_config"] = (
         {
@@ -112,6 +232,21 @@ def resolved_config(config: Any) -> dict[str, Any]:
         if quant is not None
         else None
     )
+    return result
+
+
+def resolved_config(config: Any) -> dict[str, Any]:
+    result = execution_config(config)
+    # vLLM 0.27.0 config/offload.py owns weight offload; cache_config does not.
+    offload = config.offload_config
+    result["offload_config"] = {
+        "offload_backend": offload.offload_backend,
+        "uva": {"cpu_offload_gb": offload.uva.cpu_offload_gb},
+        "prefetch": {
+            key: getattr(offload.prefetch, key)
+            for key in ("offload_group_size", "offload_num_in_group", "offload_prefetch_step")
+        },
+    }
     return result
 
 

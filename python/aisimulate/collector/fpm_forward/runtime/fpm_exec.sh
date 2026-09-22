@@ -28,8 +28,8 @@ fi
 
 if [[ -f "${workdir}/fpm_memory_worker.py" ]]; then
   # The wrappers are staged alongside this script and delegate all execution
-  # to the image's installed vLLM/Dynamo classes. Only pending-memory cells
-  # stage them into the newly created pod. Avoid an empty path entry.
+  # to the image's installed vLLM/Dynamo classes. Supported execution or
+  # memory observation stages them into the new pod. Avoid an empty path entry.
   export PYTHONPATH="${workdir}${PYTHONPATH:+:${PYTHONPATH}}"
 fi
 

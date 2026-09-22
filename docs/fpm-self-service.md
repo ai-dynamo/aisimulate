@@ -108,7 +108,9 @@ First inspect any existing timing data for a matching deployment. Reuse a verifi
 
 For both reused and new data, [inspect the published pair](../python/aisimulate/docs/fpm/end-to-end-workflow.md#5-inspect-the-published-pair): verify hashes, schema and identities, including actual runtime, topology, precision and available prefill/decode cells. Keep it at the generated configs' local systems path. Record any historical checkpoint-revision uncertainty in provenance; a declared revision does not prove that old measurements used it. A successful preview or smoke run is not formal data, and a matching pair does not prove all simulated queries are covered.
 
-For a pending profile, [finalize runtime memory](#finalize-runtime-memory) into a fresh directory. Review and accept the resolved profile separately, save its provenance in the session checkpoint, then use that directory in stage 6. Matching timing data alone cannot finalize memory when initialization evidence is missing.
+Run the standard [collection quality checks](#validate-collection-and-serving-accuracy) against the original collection directory: point validity and effective execution inspection, bounded repeatability, and withheld-coordinate interpolation. Review and save the editable policy before measurements. A published table is usable evidence even when a quality gate is incomplete or failed, but it is not qualified accuracy evidence.
+
+Then, for a pending profile, [finalize runtime memory](#finalize-runtime-memory) into a fresh directory. Review and accept the resolved profile separately, save its provenance in the session checkpoint, then use that directory in stage 6. Matching timing data alone cannot finalize memory when initialization evidence is missing. Exploratory prediction/recommendation remains available with resolved memory while accuracy is unqualified.
 
 ### 6. Validate replay and run predict/recommend
 
@@ -116,7 +118,7 @@ For a pending profile, [finalize runtime memory](#finalize-runtime-memory) into 
 
 [Run the generated ordinary configurations](#run-the-generated-ordinary-configurations) when a synthetic prediction or recommendation check is useful. For deployment prediction or optimization, set the desired replicas and GPU budget in the ordinary runtime configs. Do not change precision labels or silently switch timing methods to obtain a result. Return to stage 5 to address missing data, or stage 2 if the selected deployment or collection limits change. A different validation trace alone does not invalidate collected timings. Report the simulation stage as incomplete while required queries fail.
 
-At handoff, provide the session checkpoint path and ensure it records the checkout revision, final request/profile, plan directory, data pair/provenance, exact commands/exit statuses and all result paths. Distinguish estimated memory fit and CPU planning from actual target-runtime checks, formal data/coverage, and completed simulations. For accuracy, report an independent matched silicon comparison if performed, or explicitly **not assessed**. Successful simulation is not evidence of accuracy; an accuracy study is not a mandatory additional collection campaign for onboarding.
+Complete the standard [matched serving validation](#validate-collection-and-serving-accuracy) for one representative compatible play. At handoff, provide the session checkpoint path and ensure it records the checkout revision, final request/profile, plan directory, policy, data pair/provenance, exact commands/exit statuses and all result paths. Distinguish estimated memory fit and CPU planning from actual target-runtime checks, formal data/coverage, completed simulations and measured accuracy. Missing or failed validation keeps accuracy unqualified; ordinary exploratory prediction and recommendation remain available.
 
 ### Checkpoint and resume an onboarding session
 
@@ -725,6 +727,176 @@ The fresh directory contains `request.yaml`, `fpm-model-profile.json`, ordinary 
 Review the resolved profile and assumptions with the user. Finalization does not accept it in the session checkpoint. Save its request as a new draft, record the new artifact paths and source relationship, and obtain acceptance of the exact resolved profile with the existing checkpoint workflow. Preserve the original collection references. Only then continue simulation using `./aisimulate-support-resolved/request.yaml` and `--output-dir ./aisimulate-support-resolved`. A pending profile produces a clear error before prediction/recommendation cache sizing or replay validation.
 
 Resuming `onboarding-checkpoint.json` restores the onboarding conversation and accepted inputs; it does not migrate collection artifacts. Current collection and finalization use a schema-11 collection plan and schema-7 formal FPM publication. The collector can still verify schema-10 plan hashes and read their matching native timing and memory evidence, preserving historical cell and attempt identities. Historical schema-6 formal publications cannot be finalized by this collector, and automatic migration is unsupported. Keep those artifacts unchanged and use fresh output directories for any new collection.
+
+## Validate collection and serving accuracy
+
+The standard procedure has four distinct checks. Collection validity verifies each native point and its published row, plus observed attention groups, initialized graph configuration and KV initialization regime. Repeatability checks a small subset of the actual runtime grid. Withheld-coordinate validation checks native direct interpolation against measurements excluded from its input table. Matched serving checks the selected workload separately. Fixed weight/KV precision, a complete grid, a measured-point lookup or successful replay alone cannot establish accuracy.
+
+Use separate validation directories for each precision/topology campaign. The original request, collection plan, raw results and formal pair remain unchanged. Save the following JSON as `validation-policy.json`, or supply equivalent YAML; omitted fields use these defaults and unknown fields are rejected:
+
+```json
+{
+  "schema_version": "aisimulate-onboarding-validation-policy/v1",
+  "repeatability": {
+    "samples": 5,
+    "max_points_per_cell": 12,
+    "max_cv": 0.05
+  },
+  "interpolation": {
+    "max_points_per_phase": 16,
+    "seed": 42,
+    "max_p95_relative_error": 0.20,
+    "max_unsupported_fraction": 0.0
+  },
+  "serving": {
+    "max_latency_p95_relative_error": 0.20,
+    "max_throughput_relative_error": 0.20,
+    "max_dispatch_delay_ms": 5.0,
+    "max_dispatch_delay_fraction": 0.01
+  }
+}
+```
+
+| Property | Meaning |
+| --- | --- |
+| `repeatability.samples` | Fresh, independently launched measurements per selected coordinate, at least 2. The source measurement is retained separately. |
+| `repeatability.max_points_per_cell` | Maximum representative coordinates per phase cell, at least 1. An insufficient budget that drops required observed strata is rejected. |
+| `repeatability.max_cv` | Maximum sample standard deviation divided by sample mean. Both fresh-sample CV and CV including the published source sample must pass. |
+| `interpolation.max_points_per_phase` | Maximum withheld coordinates for each phase, at least 1; selection retains boundary anchors and a viable retained measurement table. |
+| `interpolation.seed` | Nonnegative deterministic selection seed. |
+| `interpolation.max_p95_relative_error` | Maximum p95 absolute relative forward-time error, separately for prefill and decode. |
+| `interpolation.max_unsupported_fraction` | Maximum unsupported fraction among selected holdouts, from 0 to 1. Unsupported queries are never counted as successful numerical predictions. |
+| `serving.max_latency_p95_relative_error` | Maximum p95 absolute relative TTFT and per-request mean inter-token-latency errors, assessed separately; also applies to supplied forward samples. |
+| `serving.max_throughput_relative_error` | Maximum absolute relative error of total output tokens divided by elapsed time from first dispatch to last response, including inter-turn delays. |
+| `serving.max_dispatch_delay_ms` | Absolute dispatch-timing tolerance in milliseconds, default 5.0. |
+| `serving.max_dispatch_delay_fraction` | Relative dispatch-timing tolerance, default 0.01 of the required inter-turn gap. Allowed jitter is the larger of this bound and the absolute bound. This does not relax trace timing-policy compatibility. |
+
+Ratios are dimensionless: `0.20` means 20%. Error is `abs(predicted - measured) / measured`; percentiles use linear empirical quantiles. Timing reports identify their units. These initial criteria are editable and are not statistical confidence bounds or universal accuracy guarantees.
+
+### Stage 5: collection quality
+
+Freeze the policy and native subset, inspect source validity/execution and run the CPU holdout evaluator:
+
+```bash
+aisimulate onboard validate-collection \
+  --config ./aisimulate-support/request.yaml \
+  --output-dir ./aisimulate-support \
+  --validation-output-dir ./collection-quality \
+  --policy ./validation-policy.json
+```
+
+This writes `policy.json`, `campaign.json`, `repeatability-selection.json`, `holdout/` and `collection-validation.json`. It does not launch GPU work. Its initial overall status normally remains `incomplete` until repeats are collected. Failed numerical checks return nonzero even during preparation. To execute the frozen repeats with the archived collector deployment, use the same Kubernetes environment or caller-owned Slurm allocation as the source campaign:
+
+```bash
+aisimulate onboard validate-collection \
+  --config ./aisimulate-support/request.yaml \
+  --output-dir ./aisimulate-support \
+  --validation-output-dir ./collection-quality \
+  --resume --execute
+```
+
+The subset covers observed small/large batches, short/long KV contexts and selected graph boundaries. Each fresh sample is an isolated native explicit-manifest run through the existing executor, with separate raw artifacts and attempt IDs. Dynamo still admits and measures the points; repeated results do not replace the formal table. Global warm-up and KV preparation remain outside measured forward time. Inspect individual samples, counts, mean, minimum/maximum, sample standard deviation in seconds (`sample_stddev_seconds` and `source_inclusive_stddev_seconds`), and both CV values in `repeatability-assessment.json`. A published outlier cannot pass merely because five new measurements agree with each other. Failed attempts remain recorded; add `--retry-failed` when explicitly resuming them.
+
+The source must retain a schema-v11 collector plan, successful cell attempts, formal publication and archived `generator-overrides.json`. New GPU launches require the source collector revision; a different checkout must not silently remeasure old data under new behavior. Historical artifacts remain readable but missing observations or deployment evidence prevent qualification. Effective execution inspection records initialized backend/graph settings and point KV regimes; it does not claim a per-point CUDA graph dispatch trace.
+
+The holdout evaluator removes every physical row at each selected coordinate, preserves envelope anchors, and uses the canonical direct estimator with denied fallback and no analytical model class. It reports errors and unsupported counts separately for prefill/decode. Sparse tables without viable holdouts remain incomplete. References remain the original single-sample timings: repeatability evidence helps diagnose noise but does not subtract measurement noise from interpolation error.
+
+To change thresholds, edit a copy of the policy and create a new assessment without launching measurements:
+
+```bash
+aisimulate onboard validate-collection \
+  --config ./aisimulate-support/request.yaml \
+  --output-dir ./aisimulate-support \
+  --validation-output-dir ./collection-quality-reassessed \
+  --policy ./revised-validation-policy.json \
+  --repeatability-dir ./collection-quality/repeatability
+```
+
+Raw samples and source collection are revalidated before reuse. A different repeat count or subset budget requires new measurements; a changed holdout selection can reuse the formal table and rerun CPU evaluation. `--resume` requires unchanged policy and source evidence. Preserve prior assessments rather than editing their saved policy or status fields.
+
+### Stage 6: matched serving
+
+After memory finalization, run [ordinary replay coverage](#validate-fpm-query-coverage-with-agentx-replay) for the selected local play. Keep that replay report separate from collection quality.
+
+Before preparation, install [AIPerf at the accepted immutable revision](https://github.com/ai-dynamo/aiperf/tree/7db2ba37a62aa80c882bc90eaf61cc8073e2387b) in a separate environment from AISimulate:
+
+```bash
+uv venv --python 3.13 ./aiperf-validation-env
+uv pip install --python ./aiperf-validation-env/bin/python \
+  'aiperf @ git+https://github.com/ai-dynamo/aiperf.git@7db2ba37a62aa80c882bc90eaf61cc8073e2387b'
+./aiperf-validation-env/bin/python -m aiperf --version
+```
+
+This revision supports Python 3.11–3.13 and installs its tokenizer dependencies, including Transformers, SentencePiece, tiktoken and protobuf. Supply the matching checkpoint's local tokenizer files and chat template with `--tokenizer`; preparation loads them locally without remote code. The installation must retain the exact Git repository and commit in its PEP 610 `direct_url.json` metadata, which preparation and execution verify. A package-index installation with the same version number does not establish that source identity.
+
+Prepare a matched serving recipe using that environment:
+
+```bash
+aisimulate onboard validate-serving --action prepare \
+  --collection-report ./collection-quality/collection-validation.json \
+  --replay-report ./aisimulate-validation/agentx/validation.json \
+  --validation-output-dir ./serving-prepared \
+  --endpoint http://127.0.0.1:8000 \
+  --tokenizer /path/to/pinned-tokenizer \
+  --aiperf-python ./aiperf-validation-env/bin/python
+```
+
+Preparation rechecks collection, repeatability, holdout and replay evidence. It derives expected execution from the source collection; it never substitutes requested defaults for unreported attention/graph/runtime observations. Differences across phase/rank settings remain unresolved rather than choosing one arbitrarily. It accepts the original request or a memory-resolved request with verified finalization provenance and identical formal data. Missing prediction/coverage hashes in an older replay report require rerunning `validate-fpm`; the old report remains a coverage diagnostic.
+
+Collection's phase-specific prefix-caching flag is retained as evidence but excluded from this uniformity comparison because it implements benchmark KV preparation. The actual serving flag must independently match the replay's prefix-reuse policy; this exception does not waive the serving cache check.
+
+This iteration requires **one complete single-stream Weka play**. Additionally, all predecessor recorded API times must be zero/absent, or all inter-turn idle gaps must be zero, so the pinned AIPerf load semantics match the existing replay. Plays with both positive predecessor API times and positive idle gaps, branching plays and multi-play corpora remain explicitly incomplete. Select a naturally compatible complete play; do not flatten dependencies or edit timestamps to force a pass. Broader workload coverage requires additional matched validation.
+
+Trace token lengths alone do not include the target checkpoint's chat-template overhead. Preparation uses the pinned AIPerf environment and local target tokenizer to freeze actual chat payloads, tokenize them with that template, and create a separate explicit `agentic_mooncake` trace with exact target token identities and one-token blocks. This preserves prefix equality at the engine's cache-block boundaries even when the source Weka blocks are larger. It preserves the original play's request identities, serial dependencies, arrival bounds, inter-turn gaps and requested output lengths. It then runs ordinary strict direct-FPM prediction on this derived trace with the same engine/profile/formal table. `matched_workload` in the recipe records these payloads, tokenization and derived prediction/coverage artifacts; the original Weka trace and its broader replay report remain unchanged. A new target shape without FPM coverage leaves preparation incomplete.
+
+`serving/recipe.json` contains the pinned AIPerf revision and inspectable command, plus a `serving_observer` section with copied module hashes, environment variables and `--worker-cls` arguments. Start a fresh ordinary serving worker using the source model/runtime/topology/precision/graph settings and this observation setup. Make its evidence directory accessible to the validation process. The caller manages this server; preparing a recipe does not launch it, and Dynamo self-benchmark does not act as the serving benchmark. The observer checks supported actual worker ranks, attention groups, graphs and initialized runtime settings. A source-pinned image digest comes from the frozen launch; it is not a separate container attestation.
+
+Run traffic explicitly with the pinned AIPerf installation:
+
+```bash
+aisimulate onboard validate-serving --action run \
+  --recipe ./serving-prepared/serving/recipe.json \
+  --aiperf-python ./aiperf-validation-env/bin/python
+```
+
+The producer verifies its pin, checks the server's `/tokenize` responses against the frozen target token IDs/template, sends the frozen payloads through the native Mooncake raw-payload loader, and preserves native per-request records and execution receipts. A different server tokenizer/template cannot pass by reporting the same total token count. The endpoint must expose the matching vLLM tokenization API. Fill the generated `observed-execution.template.json` from actual serving initialization and scope evidence, preserving source paths/hashes; expected values are not observations. Then assess in another fresh directory:
+
+```bash
+aisimulate onboard validate-serving --action assess \
+  --collection-report ./collection-quality/collection-validation.json \
+  --replay-report ./aisimulate-validation/agentx/validation.json \
+  --recipe ./serving-prepared/serving/recipe.json \
+  --execution-evidence ./serving-prepared/serving/observed-execution.json \
+  --validation-output-dir ./onboarding-assessment
+```
+
+Add `--forward-evidence PATH` when matched instrumented forward timings are available. Their predictions are computed by the native direct estimator; they are independent from TTFT, TPOT and throughput metrics. Without them, forward validation is `unavailable`, and any successful claim is limited to the reported client metrics. Missing required runtime/request evidence remains incomplete; numerical or execution mismatches fail. Supplying forward evidence that fails also prevents qualification. Serving-only threshold changes can reuse the recipe and raw measurements by passing an edited `--policy` to a fresh assessment.
+
+The final `validation.json` reports collection, replay and serving gates independently. Only `status: passed` with `accuracy: qualified_for_evaluated_scope` qualifies the evaluated coordinates/configuration/play. The command independently recomputes assessments and verifies source hashes rather than trusting saved `passed` flags. It makes no claim for untested concurrency, mixed batches, other plays or other precision/topology cells. Ordinary prediction/recommendation remains available while accuracy is unqualified.
+
+### Save validation progress in the session checkpoint
+
+Use the existing single checkpoint and its revision checks. Add validation-only settings under the relevant configuration's `validation_inputs`, and artifacts with `scope: validation`; do not change collection `inputs` for threshold or trace edits. For example, merge this patch after the referenced reports exist:
+
+```json
+{
+  "configurations": {
+    "tp4": {
+      "validation_inputs": {
+        "policy": "/absolute/path/collection-quality/policy.json",
+        "trace": "/absolute/path/selected-play.jsonl"
+      },
+      "artifacts": {
+        "validation_policy": {"path": "/absolute/path/collection-quality/policy.json", "scope": "validation"},
+        "collection_quality": {"path": "/absolute/path/collection-quality/collection-validation.json", "scope": "validation"},
+        "onboarding_validation": {"path": "/absolute/path/onboarding-assessment/validation.json", "scope": "validation"}
+      }
+    }
+  }
+}
+```
+
+Apply it with `aisimulate onboard checkpoint --file PATH --expect-revision CURRENT --update PATCH.json`. Archive superseded validation references with a reason and register replacement paths, as in the [checkpoint workflow](#checkpoint-and-resume-an-onboarding-session). Policy/trace edits invalidate assessments, not accepted profiles or valid collected data. After resuming a partial repeatability run, replace its changed report reference before recording completion. Saved stage labels never substitute for rechecking machine evidence.
 
 ## Validate FPM query coverage with AgentX replay
 

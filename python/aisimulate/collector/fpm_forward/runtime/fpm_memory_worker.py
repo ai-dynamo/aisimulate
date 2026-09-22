@@ -5,18 +5,32 @@
 
 import logging
 
-from fpm_memory_observer import compilation_config, observe
+from fpm_memory_observer import compilation_config, observe, observe_execution
 
 try:
     from vllm.distributed import get_pp_group, get_tp_group
     from vllm.v1.worker.gpu_worker import Worker
 except ImportError as error:
     raise RuntimeError(
-        "FPM memory observation requires a compatible vLLM V1 GPU-worker image; the audited runtime is vLLM 0.27.0"
+        "FPM observation requires a compatible vLLM V1 GPU-worker image; "
+        "execution observation supports vLLM 0.27.0/0.28.0, memory supports 0.27.0"
     ) from error
 
 
-class FpmResourceWorker(Worker):
+class FpmExecutionWorker(Worker):
+    def compile_or_warm_up_model(self):
+        result = super().compile_or_warm_up_model()
+        parallel = self.vllm_config.parallel_config
+        dp_rank = getattr(parallel, "data_parallel_index", None)
+        if dp_rank is None:
+            dp_rank = parallel.data_parallel_rank
+        observe_execution(
+            self, dp_rank=dp_rank, tp_rank=get_tp_group().rank_in_group, pp_rank=get_pp_group().rank_in_group
+        )
+        return result
+
+
+class FpmResourceWorker(FpmExecutionWorker):
     def determine_available_memory(self):
         # vLLM 0.27.0 profiles a minimal cache and resolves graph mode here,
         # before initialize_from_config. Retain the first snapshot on repeats.

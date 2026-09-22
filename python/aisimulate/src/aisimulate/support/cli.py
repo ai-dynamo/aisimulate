@@ -229,8 +229,10 @@ def add_support_parser(subparsers: Any) -> None:
     deployment.add_argument("--image-pull-secret", help="Kubernetes secret for pulling the collector image.")
     from .finalization import add_finalization_parser
     from .validation import add_validation_parser
+    from .validation_workflow import add_quality_parsers
 
     add_validation_parser(actions)
+    add_quality_parsers(actions)
     add_finalization_parser(actions)
 
 
@@ -1169,6 +1171,10 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def run_support_command(args: argparse.Namespace) -> int:
+    if args.support_action in {"validate-collection", "validate-serving"}:
+        from .validation_workflow import validate_collection, validate_serving
+
+        return validate_collection(args) if args.support_action == "validate-collection" else validate_serving(args)
     if args.support_action == "finalize":
         from .finalization import run_finalization
 

@@ -581,6 +581,7 @@ def test_worker_and_scheduler_wrappers_delegate_before_observation(monkeypatch, 
     modules = {
         "fpm_memory_observer": {
             "observe": lambda *args, **kwargs: events.append(("observe", args, kwargs)),
+            "observe_execution": lambda *args, **kwargs: events.append(("observe_execution", args, kwargs)),
             "compilation_config": lambda _config: {"cudagraph_mode": "FULL"},
         },
         "vllm.distributed": {
@@ -610,11 +611,13 @@ def test_worker_and_scheduler_wrappers_delegate_before_observation(monkeypatch, 
     assert worker.compile_or_warm_up_model() == "compiled"
     assert events[:3] == ["profile", ("initialize", "cache"), "warmup"]
     assert events[3][2] == {"dp_rank": 3, "tp_rank": 1, "pp_rank": 0}
+    assert events[3][0] == "observe_execution"
+    assert events[4][0] == "observe"
     assert worker._fpm_available_cache_bytes == 1234
     assert worker._fpm_cache_initialized is True
     load("fpm_memory_scheduler").FpmResourceInstrumentedScheduler("config", "cache", "manager", block_size=16)
-    assert events[4] == ("scheduler", "config", "cache", ("manager",), {"block_size": 16})
-    assert events[5][2] == {"dp_rank": 3, "cache_config": "cache"}
+    assert events[5] == ("scheduler", "config", "cache", ("manager",), {"block_size": 16})
+    assert events[6][2] == {"dp_rank": 3, "cache_config": "cache"}
 
     def fail(_self, *_args):
         raise RuntimeError("real runtime failed")
@@ -642,6 +645,115 @@ def test_worker_and_scheduler_wrappers_delegate_before_observation(monkeypatch, 
     assert "FPM initial graph configuration is unavailable" in caplog.text
     worker.initialize_from_config("cache")
     assert worker._fpm_initial_compilation_config is None
+
+
+def test_ordinary_serving_worker_observes_initialized_runtime_without_dynamo(tmp_path, monkeypatch):
+    provenance = {
+        "schema": "aisimulate-serving-validation/v1",
+        "run_id": "serving-123",
+        "purpose": "matched_serving_accuracy",
+    }
+    provenance_path = tmp_path / "serving-provenance.json"
+    provenance_path.write_text(json.dumps(provenance))
+    output = tmp_path / "observations"
+    monkeypatch.setenv("FPM_EXECUTION_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("FPM_EXECUTION_PROVENANCE_FILE", str(provenance_path))
+    monkeypatch.setattr(observer.importlib.metadata, "version", lambda _name: "0.28.0")
+
+    class Worker:
+        def compile_or_warm_up_model(self):
+            self.vllm_config.compilation_config.cudagraph_mode = "PIECEWISE"
+            self.model_runner.attn_groups = [
+                [
+                    SimpleNamespace(
+                        backend=type("ResolvedBackend", (), {"__module__": "actual.runtime"}),
+                        layer_names=["layer.0"],
+                        kv_cache_group_id=0,
+                    )
+                ]
+            ]
+            return "compiled"
+
+    monkeypatch.setitem(sys.modules, "fpm_memory_observer", observer)
+    monkeypatch.setitem(sys.modules, "dynamo.vllm.instrumented_scheduler", None)
+    for name, values in {
+        "vllm.distributed": {
+            "get_pp_group": lambda: SimpleNamespace(rank_in_group=0),
+            "get_tp_group": lambda: SimpleNamespace(rank_in_group=0),
+        },
+        "vllm.v1.worker.gpu_worker": {"Worker": Worker},
+    }.items():
+        module = ModuleType(name)
+        module.__dict__.update(values)
+        monkeypatch.setitem(sys.modules, name, module)
+    spec = importlib.util.spec_from_file_location(
+        "fpm_memory_worker", Path(observer.__file__).with_name("fpm_memory_worker.py")
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    worker = module.FpmExecutionWorker()
+    worker.vllm_config = _vllm_config(tp=1, dp=1)
+    worker.vllm_config.parallel_config.data_parallel_rank = 0
+    worker.model_runner = SimpleNamespace(attn_groups=[])
+    assert worker.compile_or_warm_up_model() == "compiled"
+    sidecar = output / "fpm-execution-worker-dp0-tp0-pp0.json"
+    result = json.loads(sidecar.read_text())
+    assert result["status"] == "observed"
+    assert result["execution_provenance"] == provenance
+    assert result["provenance_source"]["path"] == str(provenance_path)
+    assert "collector_provenance" not in result
+    assert result["attention_groups"][0]["backend_class"] == "actual.runtime.ResolvedBackend"
+    assert result["graph_config"]["cudagraph_mode"] == "PIECEWISE"
+    assert not hasattr(worker, "_fpm_available_cache_bytes")
+    assert not list(output.glob("fpm-memory-*.json"))
+    original = sidecar.read_bytes()
+    with pytest.raises(RuntimeError, match="duplicate"):
+        worker.compile_or_warm_up_model()
+    assert sidecar.read_bytes() == original
+    # A second rank can share this run, but a different run cannot reuse it.
+    observer.observe_execution(worker, dp_rank=0, tp_rank=1, pp_rank=0)
+    provenance["run_id"] = "serving-456"
+    provenance_path.write_text(json.dumps(provenance))
+    with pytest.raises(ValueError, match="different serving run"):
+        observer.observe_execution(worker, dp_rank=0, tp_rank=2, pp_rank=0)
+
+
+@pytest.mark.parametrize(
+    "output,provenance",
+    [
+        ("absolute", None),
+        (None, "absolute"),
+        ("relative", "absolute"),
+        ("absolute", "relative"),
+        ("/bad\npath", "absolute"),
+    ],
+)
+def test_serving_execution_observation_requires_paired_absolute_paths(tmp_path, monkeypatch, output, provenance):
+    for name, value in (("FPM_EXECUTION_OUTPUT_DIR", output), ("FPM_EXECUTION_PROVENANCE_FILE", provenance)):
+        monkeypatch.delenv(name, raising=False)
+        if value is not None:
+            monkeypatch.setenv(name, str(tmp_path) if value == "absolute" else value)
+    with pytest.raises(ValueError, match="supplied together|absolute path"):
+        observer.observe_execution(SimpleNamespace(), dp_rank=0, tp_rank=0, pp_rank=0)
+
+
+@pytest.mark.parametrize("failure", ["purpose", "run_id", "collector", "orphan"])
+def test_serving_execution_observation_rejects_missing_or_reused_identity(tmp_path, monkeypatch, failure):
+    output = tmp_path / "observations"
+    output.mkdir()
+    provenance = {"run_id": "unique-run", "purpose": "matched_serving_accuracy"}
+    if failure in {"purpose", "run_id"}:
+        provenance.pop(failure)
+    elif failure == "collector":
+        (output / "collector-provenance.json").write_text("{}")
+    else:
+        (output / "fpm-execution-worker-dp0-tp0-pp0.json").write_text("{}")
+    provenance_path = tmp_path / "serving-provenance.json"
+    provenance_path.write_text(json.dumps(provenance))
+    monkeypatch.setenv("FPM_EXECUTION_OUTPUT_DIR", str(output))
+    monkeypatch.setenv("FPM_EXECUTION_PROVENANCE_FILE", str(provenance_path))
+    with pytest.raises(ValueError, match="requires a serving run_id|fresh directory"):
+        observer.observe_execution(SimpleNamespace(), dp_rank=0, tp_rank=0, pp_rank=0)
 
 
 def _pending_plan(version="0.27.0"):

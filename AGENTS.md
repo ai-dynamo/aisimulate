@@ -181,7 +181,8 @@ observer supports audited vLLM 0.27.0 full/sliding cache interfaces and supporte
 convolution storage. Other versions retain native timing collection without
 enabling the observer; unknown layouts report unresolved memory. Do not replace
 that diagnostic with guessed bytes.
-After complete formal collection, run `aisimulate onboard finalize --config
+After complete formal collection and the stage 5 collection-quality checks
+below, run `aisimulate onboard finalize --config
 ORIGINAL/request.yaml --output-dir ORIGINAL --resolved-output-dir FRESH`.
 It verifies native timing/resource evidence and formal data, then writes a new
 profile and simulation plan with the verified pair. It preserves source artifacts,
@@ -192,6 +193,24 @@ accepts it automatically in the session checkpoint. Record the fresh request,
 profile, data and provenance references while retaining the original collection.
 Use the resolved directory for simulation. Observed capacity includes all resident
 worker components even when timing models only text-decoder execution.
+
+Make collection quality and matched serving validation part of the standard
+onboarding procedure. In stage 5, follow
+[Validate collection and serving accuracy](docs/fpm-self-service.md#validate-collection-and-serving-accuracy):
+save an editable campaign policy before measurement, then run `onboard
+validate-collection` against the original collection directory. Inspect native
+validity, actual attention groups, graph configuration and KV initialization;
+run the bounded representative repeats only with explicit `--execute`. Preserve
+individual attempts and inspect both fresh-sample CV and CV including the
+original published sample. Evaluate withheld coordinates through native direct
+interpolation; keep unsupported queries separate from numerical errors. The
+default policy is five fresh samples per point, at most 12 points per phase cell,
+maximum CV 0.05, at most 16 holdouts per phase, seed 42, p95 absolute relative
+error 0.20 and zero unsupported holdouts. These are editable initial criteria,
+not statistical confidence guarantees. Do not overwrite original collection or
+policy snapshots. Threshold changes use fresh assessment directories and can
+reuse verified raw samples; changed selection/count/execution requires new
+measurements. Old campaigns lacking source/runtime evidence remain incomplete.
 
 After verifying the formal data pair and resolving memory, use `aisimulate onboard validate-fpm`
 with a local Weka trace and a separate validation output directory. Follow the
@@ -204,6 +223,29 @@ Missing timing stops replay and preserves partial evidence, which cannot certify
 the remainder of the trace. Report coverage and silicon accuracy separately.
 Reuse verified v2 collection plans for validation-only changes; legacy v1 plans
 need a new directory as described in the guide.
+
+In stage 6, follow the guide's separate-environment installation of the exact
+Git-pinned AIPerf revision before using `onboard validate-serving --action
+prepare|run|assess` for the matched serving check. Prepare does not launch anything. The caller launches a
+fresh ordinary serving worker with the recipe's observation module/settings;
+run explicitly sends pinned AIPerf traffic to that endpoint. Use one complete
+single-stream play whose recorded predecessor API times are all zero/absent or
+whose idle gaps are all zero. Other timing combinations, branches and corpora
+remain incomplete; never flatten or edit a trace to make it pass.
+Preparation freezes target-tokenized chat payloads and runs a separate ordinary
+prediction/coverage check on the derived explicit trace while preserving source
+play identities and timing. Keep its artifacts separate from the original Weka
+coverage report; requested trace lengths exclude target chat-template overhead.
+The producer verifies exact server tokenization before sending frozen payloads.
+Inspect TTFT, TPOT and throughput separately and instrument forward timing where available;
+missing forward samples are explicitly unavailable. Assessment rechecks source
+hashes, native measurements, effective execution and resolved-memory linkage.
+Only combined `accuracy: qualified_for_evaluated_scope` permits a bounded
+workload-accuracy claim. Missing, stale or failed mandatory gates prevent that
+claim; ordinary exploratory predict/recommend remains available. Register the
+policy and workload choices in each configuration's `validation_inputs` and
+reports with artifact `scope: validation` in the existing single checkpoint.
+Validation changes invalidate assessment only; preserve accepted collection.
 
 Grouped cache execution currently requires cold aggregated vLLM with PP1, CP1,
 HBM-only storage, no speculative decoding and `prefix_caching: false`. Preserve

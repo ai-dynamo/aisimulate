@@ -190,11 +190,14 @@ def run_validation(args: argparse.Namespace) -> int:
     coverage_path = Path(report["coverage_report"])
     coverage = json.loads(coverage_path.read_text(encoding="utf-8")) if coverage_path.is_file() else None
     report["fpm_query_coverage"] = coverage
+    if coverage_path.is_file():
+        report["coverage_evidence"] = _file_identity(coverage_path)
     issues = []
     if exit_code != 0:
         issues.append(f"predict exited with status {exit_code}; replay coverage is incomplete")
     prediction_report = Path(report["prediction_report"])
     if prediction_report.is_file():
+        report["prediction_evidence"] = _file_identity(prediction_report)
         replay = json.loads(prediction_report.read_text(encoding="utf-8"))
         issues.extend(_completion_issues(replay))
         report["agentic_graph"] = replay.get("agentic_graph")
