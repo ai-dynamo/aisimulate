@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
@@ -937,10 +937,207 @@ fn built_in_aggregated_replay_produces_a_deterministic_report() {
     assert_eq!(first.request_counts.completed_requests, 1);
     assert_eq!(first.request_counts.total_input_tokens, 4);
     assert_eq!(first.request_counts.total_output_tokens, 2);
-    assert_eq!(first.throughput.duration_ms, 14.0);
+    assert_eq!(first.throughput.duration_ms, 12.0);
     assert_eq!(first.throughput.decode_gpus_per_worker, 1);
-    assert_eq!(first.per_request[0].first_token_ms, Some(12.0));
-    assert_eq!(first.per_request[0].terminal_time_ms, 14.0);
+    assert_eq!(first.per_request[0].first_token_ms, Some(10.0));
+    assert_eq!(first.per_request[0].terminal_time_ms, 12.0);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TimingCall {
+    Prefill(usize, usize, usize),
+    Decode(usize, usize, usize),
+}
+
+#[derive(Default)]
+struct RecordingTiming {
+    calls: Mutex<Vec<TimingCall>>,
+}
+
+impl TimingModel for RecordingTiming {
+    fn predict_prefill_ms(
+        &self,
+        batch_size: usize,
+        mean_isl: usize,
+        mean_prefix: usize,
+    ) -> Result<f64> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(TimingCall::Prefill(batch_size, mean_isl, mean_prefix));
+        Ok(10.0)
+    }
+
+    fn predict_decode_ms(
+        &self,
+        batch_size: usize,
+        active_kv_tokens: usize,
+        mean_context_length: usize,
+        _total_kv_tokens: usize,
+    ) -> Result<f64> {
+        self.calls.lock().unwrap().push(TimingCall::Decode(
+            batch_size,
+            active_kv_tokens,
+            mean_context_length,
+        ));
+        Ok(2.0)
+    }
+}
+
+fn recording_timing_spec() -> ReplaySpec {
+    spec(engine_config(TimingModelConfig::External {
+        provider: "recording".to_string(),
+        config: serde_json::Value::Null,
+    }))
+}
+
+#[test]
+fn vllm_first_token_uses_the_final_prefill_forward_once() {
+    for output_tokens in [0, 1, 2] {
+        let timing = Arc::new(RecordingTiming::default());
+        let mut replay = recording_timing_spec();
+        replay.requests = vec![request("request", 0.0, 4, output_tokens)];
+        let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+        let record = &report.per_request[0];
+        assert_eq!(record.output_length, output_tokens);
+        assert_eq!(record.first_token_ms, (output_tokens > 0).then_some(10.0));
+        assert_eq!(
+            record.terminal_time_ms,
+            if output_tokens == 2 { 12.0 } else { 10.0 }
+        );
+        let mut expected = vec![TimingCall::Prefill(1, 4, 0)];
+        if output_tokens == 2 {
+            expected.push(TimingCall::Decode(1, 5, 5));
+        }
+        assert_eq!(*timing.calls.lock().unwrap(), expected);
+    }
+}
+
+#[test]
+fn vllm_prefill_batch_samples_all_first_tokens_without_a_decode_query() {
+    let timing = Arc::new(RecordingTiming::default());
+    let mut replay = recording_timing_spec();
+    replay.requests = vec![
+        request_with_tokens("first", 0.0, vec![1, 2, 3, 4], 1),
+        request_with_tokens("second", 0.0, vec![5, 6, 7, 8], 1),
+    ];
+    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    assert!(report.per_request.iter().all(|row| {
+        row.output_length == 1 && row.first_token_ms == Some(10.0) && row.terminal_time_ms == 10.0
+    }));
+    assert_eq!(
+        *timing.calls.lock().unwrap(),
+        vec![TimingCall::Prefill(2, 4, 0)]
+    );
+}
+
+#[test]
+fn first_token_timing_fix_preserves_trtllm_and_speculative_paths() {
+    for backend in [Backend::Trtllm, Backend::Vllm] {
+        let timing = Arc::new(RecordingTiming::default());
+        let mut config = engine_config(TimingModelConfig::External {
+            provider: "recording".to_string(),
+            config: serde_json::Value::Null,
+        });
+        config.rank.backend = backend;
+        if backend == Backend::Vllm {
+            config.rank.aic_nextn = Some(1);
+            config.rank.aic_nextn_accept_rates = Some("1.0".to_string());
+        }
+        let mut replay = spec(config);
+        replay.requests = vec![request("request", 0.0, 4, 1)];
+        let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+        assert_eq!(report.per_request[0].first_token_ms, Some(12.0));
+        assert_eq!(report.per_request[0].terminal_time_ms, 12.0);
+        assert_eq!(
+            *timing.calls.lock().unwrap(),
+            vec![TimingCall::Prefill(1, 4, 0), TimingCall::Decode(1, 4, 4),]
+        );
+    }
+}
+
+#[test]
+fn vllm_mixed_pass_prices_only_ongoing_decoders_and_completes_together() {
+    let timing = Arc::new(RecordingTiming::default());
+    let mut replay = recording_timing_spec();
+    replay.requests = vec![
+        request_with_tokens("decoding", 0.0, vec![1, 2, 3, 4], 2),
+        request_with_tokens("prefilling", 5.0, (10..18).collect(), 1),
+    ];
+    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+    let decoding = report
+        .per_request
+        .iter()
+        .find(|row| row.request_id.as_deref() == Some("decoding"))
+        .unwrap();
+    let prefilling = report
+        .per_request
+        .iter()
+        .find(|row| row.request_id.as_deref() == Some("prefilling"))
+        .unwrap();
+    assert_eq!(decoding.first_token_ms, Some(10.0));
+    assert_eq!(decoding.terminal_time_ms, 22.0);
+    assert_eq!(prefilling.first_token_ms, Some(22.0));
+    assert_eq!(prefilling.terminal_time_ms, 22.0);
+    assert_eq!(
+        *timing.calls.lock().unwrap(),
+        vec![
+            TimingCall::Prefill(1, 4, 0),
+            TimingCall::Prefill(1, 8, 0),
+            TimingCall::Decode(1, 5, 5),
+        ]
+    );
+}
+
+#[test]
+fn vllm_chunked_prefill_waits_for_the_final_chunk_before_sampling() {
+    let timing = Arc::new(RecordingTiming::default());
+    let mut replay = recording_timing_spec();
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
+    config.rank.max_num_batched_tokens = 4;
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![request("chunked", 0.0, 10, 2)];
+    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+    assert_eq!(report.per_request[0].first_token_ms, Some(30.0));
+    assert_eq!(report.per_request[0].terminal_time_ms, 32.0);
+    assert_eq!(
+        *timing.calls.lock().unwrap(),
+        vec![
+            TimingCall::Prefill(1, 4, 0),
+            TimingCall::Prefill(1, 8, 4),
+            TimingCall::Prefill(1, 10, 8),
+            TimingCall::Decode(1, 11, 11),
+        ]
+    );
+}
+
+#[test]
+fn vllm_cached_prefill_recomputes_logits_without_an_extra_decode_forward() {
+    for prompt in [
+        vec![1, 2, 3, 4, 5, 6, 7, 8],
+        vec![1, 2, 3, 4, 9, 10, 11, 12],
+    ] {
+        let timing = Arc::new(RecordingTiming::default());
+        let mut replay = recording_timing_spec();
+        replay.requests = vec![
+            request_with_tokens("seed", 0.0, (1..9).collect(), 0),
+            request_with_tokens("reuse", 20.0, prompt, 1),
+        ];
+        let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+        let reuse = report
+            .per_request
+            .iter()
+            .find(|row| row.request_id.as_deref() == Some("reuse"))
+            .unwrap();
+        assert_eq!(reuse.reused_input_tokens, 4);
+        assert_eq!(reuse.first_token_ms, Some(30.0));
+        assert_eq!(reuse.terminal_time_ms, 30.0);
+        assert_eq!(
+            *timing.calls.lock().unwrap(),
+            vec![TimingCall::Prefill(1, 8, 0), TimingCall::Prefill(1, 8, 4),]
+        );
+    }
 }
 
 #[test]
@@ -1483,7 +1680,7 @@ fn runner_must_resolve_external_timing_before_execution() {
         }),
     )
     .unwrap();
-    assert_eq!(report.throughput.duration_ms, 7.0);
+    assert_eq!(report.throughput.duration_ms, 6.0);
 }
 
 #[test]

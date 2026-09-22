@@ -1213,8 +1213,8 @@ fn scaling_honors_startup_delay_then_scales_the_ready_worker_back_down() {
         ]
     );
     assert_eq!(report.request_counts.completed_requests, 1);
-    assert_eq!(report.throughput.duration_ms, 3_000.0);
-    assert!((report.throughput.decode_worker_seconds - 3.2).abs() < 1e-9);
+    assert_eq!(report.throughput.duration_ms, 2_000.0);
+    assert!((report.throughput.decode_worker_seconds - 2.2).abs() < 1e-9);
 }
 
 #[test]
