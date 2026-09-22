@@ -497,6 +497,13 @@ Loading and featurizing the FPM stream (gzip JSON lines) dominates: 204 s for th
   dependency.
 - **Simulator wiring.** `best_available(config)` and `EstimationMode` have no learned
   option yet; the model is reachable through the SDK only.
+- **Shared prefixes are invisible.** `past_kv_lengths` says how much KV a request reads,
+  not whether several requests in the batch read the same physical blocks. Kernels that
+  exploit that (vLLM cascade attention on FlashInfer backends) make a shared-prefix batch
+  cheaper than its `past` values suggest; a batch-level "shared prefix tokens" field would
+  be needed to learn it. None of the captured configurations is known to have triggered
+  such a kernel, and the KV-capacity side of prefix sharing is the scheduler model's job,
+  not this model's.
 - **Speculative decoding.** Extends of `1 + k` are accepted, but no training data with
   MTP/EAGLE on exists yet.
 - **GPU type.** All numbers are GB300. A model is per deployment (GPU, engine, model,
