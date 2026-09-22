@@ -187,7 +187,7 @@ Per raw iteration, APE = |predicted − observed| / observed, step-weighted MAPE
 `inferencex-agentx-mvp` scenario) on Dynamo 1P1D, one 4×GB300 node per role,
 TP4, vLLM runtime 1.4.0, `DYN_FPM_TRACE` full mode with per-request lists,
 features = the 18 per-request features (`sglang18`), one HGB per engine.
-Train and test are two independent boots with different seeds and different
+Train and test are two independent capture runs (a capture run = one fresh Dynamo deployment on its own nodes, one aiperf seed, every concurrency tier once) with different seeds and different
 concurrency tiers (2026-09-18, dlcluster).
 
 | Deployment | Train tiers → test tiers | decode | prefill |
@@ -202,9 +202,9 @@ Leave-one-tier-out inside a single run lands at 1–4.5% for decode and
 1.2–3.7% for prefill on both deployments; the largest errors are the tiers
 outside the trained concurrency range (extrapolation).
 
-The DeepSeek-V4-Flash prefill number is a boot-to-boot offset, not scatter:
+The DeepSeek-V4-Flash prefill number is a run-to-run offset, not scatter:
 predicted/observed sits at about 1.04 median with a narrow p10–p90 band, i.e.
-the test boot's prefill engine ran ~4% faster than the training boot. The
+the test run's prefill engine ran ~4% faster than the training run. The
 online correction grid on top of the learned model (`tune_with_fpms`) is
 designed to absorb exactly this kind of constant factor.
 
@@ -231,8 +231,8 @@ c16/32/64/128 (seed 42) → test c24/48/96 (seed 7), 2026-09-20:
 
 Leave-one-tier-out inside the training run: decode 1.5% / 1.5% / 4.9%
 (c16 / c32 / c64), prefill 0.8–2.9%. `hisim` and `v1` land within 0.3 pp of
-`sglang18` on both engines. The test boot lost its c96 decode tier and the
-train boot its c128 prefill tier to a DeepGEMM prefill OOM at
+`sglang18` on both engines. The test run lost its c96 decode tier and the
+train run its c128 prefill tier to a DeepGEMM prefill OOM at
 `mem-fraction-static 0.8`; lower it for long-context V4.1 captures.
 
 Why the overlap flag matters: an earlier pair collected with the overlap
@@ -243,7 +243,7 @@ and identical-shape step times agree to 1%.
 
 A model trained on overlap-off data still predicts overlap-on decode steps
 (the GPU forward is the same quantity): scored against the overlap-on test
-boot it gives 5.5% MAPE (5.6% median) with a p95 of 8.4%, i.e. a near
+run it gives 5.5% MAPE (5.6% median) with a p95 of 8.4%, i.e. a near
 constant offset that the online correction grid absorbs. The overlap-on
 prefill records themselves are unusable as truth because of the accumulator
 merge, so no prefill cross-mode number is quoted.
@@ -251,12 +251,12 @@ merge, so no prefill cross-mode number is quoted.
 ### Workload coverage: AgentX and ShareGPT (chatbot) on DeepSeek-V4.1-Flash
 
 Same V4.1-Flash SGLang deployment, overlap off, `sglang18` features, four
-AgentX boots (seeds 42/7/11/23; tiers c16/32/64/128 or c24/48/96) and four
-ShareGPT chatbot boots (aiperf `--public-dataset sharegpt`, seeds 42/7/11/23;
+AgentX capture runs (seeds 42/7/11/23; tiers c16/32/64/128 or c24/48/96) and four
+ShareGPT chatbot capture runs (aiperf `--public-dataset sharegpt`, seeds 42/7/11/23;
 tiers c32/64/128/256 or c48/96/192), 2026-09-19 to 09-21, dlcluster GB300.
 
 The two workloads occupy different parts of the input space. Per scheduler
-step, from the FPM per-request lists of one boot each (p5 / p50 / p95 / max):
+step, from the FPM per-request lists of one capture run each (p5 / p50 / p95 / max):
 
 | Quantity | AgentX | ShareGPT |
 | --- | --- | --- |
@@ -273,26 +273,26 @@ never exceeds 64 (requests are long, so few are in flight); ShareGPT prefill
 is short with essentially no prefix hits, and its decode batch equals the
 concurrency.
 
-Pooled 60/40 split with no shared step: every (boot, tier) window is cut
+Pooled 60/40 split with no shared step: every (capture run, tier) window is cut
 into five consecutive time blocks, blocks 1/2/4 train and 3/5 test, so both
-sides see every boot and tier. Step-weighted MAPE (median / p95):
+sides see every capture run and tier. Step-weighted MAPE (median / p95):
 
 | Training data | Test data | decode steps | decode | prefill steps | prefill |
 | --- | --- | --- | --- | --- | --- |
-| AgentX only (4 boots) | AgentX 40% | 460k | 2.34% (1.74% / 6.4%) | 8.4k | 2.24% (1.50% / 6.4%) |
-| ShareGPT only (4 boots) | ShareGPT 40% | 208k | 2.26% (1.57% / 6.7%) | 15.3k | 2.55% (1.81% / 6.2%) |
-| AgentX + ShareGPT (8 boots) | both, 40% | 668k | 2.21% (1.63% / 6.3%) | 23.6k | 2.45% (1.73% / 6.3%) |
+| AgentX only (4 capture runs) | AgentX 40% | 460k | 2.34% (1.74% / 6.4%) | 8.4k | 2.24% (1.50% / 6.4%) |
+| ShareGPT only (4 capture runs) | ShareGPT 40% | 208k | 2.26% (1.57% / 6.7%) | 15.3k | 2.55% (1.81% / 6.2%) |
+| AgentX + ShareGPT (8 capture runs) | both, 40% | 668k | 2.21% (1.63% / 6.3%) | 23.6k | 2.45% (1.73% / 6.3%) |
 | AgentX + ShareGPT, equal steps per workload | both, 40% | 438k | 2.20% (1.61% / 6.3%) | 16.0k | 2.43% (1.72% / 6.4%) |
 
 Pooling costs neither workload anything against its own single-workload
-model. Holding out whole boots instead of time blocks (3 of 8 boots, 49% of
+model. Holding out whole capture runs instead of time blocks (3 of 8 runs, 49% of
 the decode steps) gives 2.14% decode / 2.29% prefill for the pooled model.
-The first two boots of each workload alone (one seed pair, 2026-09-20) land
-at 1.69% / 2.45% pooled; the extra boots add boot-to-boot variation (one
-AgentX boot runs with a 10–12% decode p95 against the others' 4–6%), which
+The first two capture runs of each workload alone (one seed pair, 2026-09-20) land
+at 1.69% / 2.45% pooled; the extra runs add run-to-run variation (one
+AgentX run shows a 10–12% decode p95 against the others' 4–6%), which
 is what the numbers above include.
 
-Training on one workload and testing on all four boots of the other:
+Training on one workload and testing on all four capture runs of the other:
 
 | Train → test | decode | prefill |
 | --- | --- | --- |
