@@ -249,7 +249,7 @@ def _estimate_trace(
     """Stream JSON/JSONL metadata without materializing request or token arrays."""
     unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
     format_name = workload.get("trace_format", "mooncake")
-    if stack not in {"engine", "dynamo"} or format_name not in {
+    if stack not in {"engine", "dynamo", "dynamo-policy"} or format_name not in {
         "mooncake",
         "mooncake-delta",
         "agentic_mooncake",
@@ -336,28 +336,34 @@ def _estimate_trace(
     cumulative = count if format_name in {"mooncake-delta", "applied_compute_agentic"} else 1
     lanes = int(workload.get("agentic_lanes") or 1)
     peak = WORKER_BASELINE_BYTES + 128 * total_bytes + lanes * (32 * tokens * cumulative + 65536 * count)
-    if workload.get("agentic_profile") is not None:
-        # Retired plays release their large payloads, but retain identities and
-        # lifecycle rows. Their count depends on simulated completion times, so
-        # neither the finite corpus nor duration alone bounds the full profile.
+    profile = workload.get("agentic_profile") is not None
+    if profile or stack == "dynamo-policy":
+        # Native routing retains additional state outside the engine estimate.
+        # Profiles also retain retired identities and lifecycle rows, whose
+        # count depends on simulated completion times rather than corpus size.
         # Keep the initial-materialization refusal before admitting unknown peaks.
+        model = "agentic-profile" if profile else "dynamo-policy"
         if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
             return ResourceEstimate(
-                "agentic-profile-materialization-v1",
+                f"{model}-materialization-v1",
                 None,
                 0,
                 0,
                 peak,
-                "initial profile trace materialization estimate exceeds live headroom",
+                "initial trace materialization estimate exceeds live headroom",
             )
         return ResourceEstimate(
-            "agentic-profile-unqualified-v1",
+            f"{model}-unqualified-v1",
             None,
             0,
             0,
             None,
-            "agentic profile retains evidence beyond the initial corpus; total memory has no qualified static bound "
-            "and requires supervised serial execution",
+            (
+                "agentic profile retains evidence beyond the initial corpus"
+                if profile
+                else "Dynamo policy retains native router state beyond the engine trace estimate"
+            )
+            + "; total memory has no qualified static bound and requires supervised serial execution",
         )
     return ResourceEstimate(
         "trace-json-metadata-v1",

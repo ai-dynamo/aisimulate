@@ -307,3 +307,31 @@ def test_without_routing_configuration_retains_core_default(installed_cli, tmp_p
     report = _run(installed_cli, tmp_path, config, name="default")
     assert report["completed_requests"] == 26
     assert "dynamo_policy" not in report
+
+
+@pytest.mark.parametrize("profile", [False, True])
+@pytest.mark.parametrize("oversized", ["storage", "tokens"])
+def test_native_policy_rejects_oversized_trace_before_materialization(installed_cli, tmp_path, profile, oversized):
+    config = _config(tmp_path, "vllm", "aggregated", "session")
+    config["execution"] = {"resources": {"memory_limit_gb": 2}}
+    if profile:
+        config["traffic"]["load"].update(
+            agentic_lanes=2, agentic_snapshot={"seed": 42}, agentic_profile={"duration_seconds": 3600}
+        )
+    trace = Path(config["traffic"]["source"]["paths"][0])
+    if oversized == "storage":
+        with trace.open("wb") as stream:
+            stream.truncate(128 * 1024**2)
+    else:
+        rows = [json.loads(line) for line in trace.read_text().splitlines()]
+        rows[1]["input_length"] = 10**12
+        trace.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    process, output = _invoke(installed_cli, tmp_path, config, name="oversized")
+    assert process.returncode == 3, process.stderr
+    assert not (output / "prediction.json").exists()
+    plan = json.loads((output / "resource-plan.json").read_text())
+    assert plan["status"] == "resource_limited"
+    assert plan["stack"] == "dynamo-policy"
+    assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
+    reason = plan["estimate"]["reason"]
+    assert ("before metadata parsing" if oversized == "storage" else "initial") in reason
