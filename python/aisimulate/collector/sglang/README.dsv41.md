@@ -73,6 +73,98 @@ temporary fixtures in `test_dsv41_humming_consumer.py` exercise loading,
 task validation and a complete V4.1 decode prediction on H100/H200; their
 synthetic timings test selection only and are not measured profiles.
 
+## Isolated native operators
+
+`dsv41_isolated_runner` constructs one checkpoint-shaped native module at a
+time when the complete checkpoint cannot reside on the requested GPUs. This
+is a separate distributed producer for the existing component and baseline
+tables. It retains the unchanged model configuration and native quantization
+selector and invokes native post-load processing. Floating weights use native
+random initialization on bounded parameter views; packed E2M1 bytes are random,
+and scales remain positive. Its observations do not validate checkpoint accuracy,
+whole-model residency, attention coverage, or FPM.
+
+The declared components are `baselines` (router, LM head, experts and native
+collectives), `linear` (sharded shared-expert projections), `engram` (both
+physical tables, loaded sequentially), and `mhc`. Engram retains each complete
+native GPU table and its real all-reduce. Inputs come from the serving
+tokenizer and native `EngramHasher`; hashing and rank agreement checks run
+outside the timed module. Each independent sequence uses the native EXTEND
+history contract without a prefix. The mHC measurement uses native predecessor
+mix coefficients, seeded synthetic attention/FFN outputs, and both real
+mix/post sites with no statistics stream. It measures the serial operator
+boundary, without an overlap-aware block-latency claim.
+
+Freeze a JSON plan before launch with schema `dsv41.isolated-collection.v1`,
+`purpose` (`smoke` or `calibration`), `tp_size`, `execution_profile`, increasing
+`token_counts`, `components`, `warmup`, `iterations`, `seed`, explicit
+`moe_runner_backend`, `expected_gpu`, `expected_sm`, `framework_commit`,
+`collector_revision`, `weight_initializer`, `source_pins`, `metadata_pins`, `runtime_digest`, and
+`image_sha256`. Freeze the producer commit and exact copied files before
+formal collection; a dirty worktree must not claim its previous revision. Source
+pins must describe the actual installed image, including any documented
+source modifications. Metadata pins include the unchanged checkpoint config
+and tokenizer files. Generate the consumer manifest with
+`dsv41_contract.build_manifest(tp_size, decoder_bounded)` and preserve its
+exact bytes alongside the plan and token corpus.
+
+On an owned allocation with the matching visible GPU count, bind the actual
+HOME cache and `/root/.cache` to the same allocation-private `home-cache`
+directory, set `DSV41_PRIVATE_CACHE` to its parent, and set
+`SGLANG_DISTRIBUTED_INIT_METHOD_OVERRIDE=env://` before native imports. Verify
+the container's SHA-256 before setting `DSV41_LAUNCH_IMAGE_SHA256`. Launch with
+the pinned framework installed:
+
+```bash
+python -m torch.distributed.run --standalone --nproc-per-node=2 \
+  -m collector.sglang.dsv41_isolated_runner \
+  --plan /campaign/plan.json --manifest /campaign/manifest.json \
+  --model-path /campaign/checkpoint-metadata \
+  --prompt-file /campaign/token-corpus.txt --output /campaign/raw \
+  --runtime-digest "$VERIFIED_IMAGE_DIGEST"
+```
+
+Each rank preserves its native source, allocated GPU UUID/driver, parameter
+shapes, input hashes, measurement scope and failure receipt. The raw output
+is never published automatically. `aggregate_isolated_records(raw, plan,
+manifest)` rejects smoke data and requires every declared token, geometry,
+sample and rank, including both Engram tables and matching native Humming
+qualification. Its component rows and separate baseline rows still require
+the normal perf-table provenance and consumer validation before publication.
+Freeze and execute a new calibration plan; changing an old smoke receipt's
+description does not admit it as calibration data.
+
+The `native_random_chunks_v1` initializer calls the pinned native
+`weight_utils.initialize_dummy_weights` with its default uniform range on
+views of at most 8 Mi elements. Each chunk uses `seed + chunk_index`; this is
+reproducible but does not claim the full-parameter initializer's exact RNG
+sequence. It bounds the native FP8 conversion temporary without replacing the
+native conversion. Packed bytes contain uniformly selected valid E2M1
+nibbles; E8M0 scales encode a declared synthetic positive one, avoiding invalid signed uniform
+initialization of an unsigned exponent format. Per-parameter sample hashes,
+nonzero counts, dtype and chunk seeds are recorded before native post-load
+processing. Historical zero-weight capability probes are not formal data.
+
+Input population references below are in `python/sglang/srt/` at the pinned
+SGLang commit; the AMD image's documented vision-only guard does not change
+these sites:
+
+| Input contract | Native source |
+| --- | --- |
+| Random weights, conversion and post-load order | `model_loader/weight_utils.py:1647-1682`; `model_loader/loader.py:1601-1621` |
+| Packed E2M1 values/storage and positive block scales | `layers/quantization/fp8.py:169-213,1266-1284,1354-1377`; `layers/quantization/mxfp4_flashinfer_cutlass_moe.py:74-81` |
+| EXTEND mode, tokens and no-prefix sequence lengths | `managers/schedule_batch.py:2553-2595`; `model_executor/forward_batch_info.py:780-798` |
+| EXTEND starts and positions | `model_executor/forward_batch_info.py:903-928,1826-1840` |
+| One legal isolated history slot, reset history and missing-predecessor PAD | `layers/engram.py:232-243,285-340,399-404` |
+| Hasher-only `out_cache_loc=None`, distinct from zero-slot graph padding | `layers/engram.py:346-356` |
+| Serving tokenizer parity and Engram input/gate shape | `layers/engram.py:245-268,923-942` |
+| mHC predecessor pre-mix, both residual/post sites and stream join | `models/deepseek_v4.py:2651-2661,2734-2785` |
+
+Slot zero belongs to this initialized isolated history fixture; native
+`alloc_for_extend` (`schedule_batch.py:2618,2770`) may allocate another slot.
+The recipe measures only the native hasher/module contract, not scheduler
+allocation, prefix-cache behavior, attention, or model hidden-state quality.
+
 ## Data contract
 
 `dsv41_module_perf.parquet` keys component, canonical native geometry excluding

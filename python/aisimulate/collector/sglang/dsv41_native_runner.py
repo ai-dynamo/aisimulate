@@ -184,15 +184,25 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
     All ranks use the same seeded input and expert IDs. Communication calls
     use the actual NCCL process group rather than framework custom all-reduce.
     """
+    layers = [m for m in runner.model.modules() if type(m).__name__ == "DeepseekV4DecoderLayer"]
+    collect_native_kernel_baselines(
+        layers[2].mlp.experts,
+        layers[2].mlp.gate,
+        runner.model.lm_head,
+        runner.model.tp_size,
+        runner.model.config.vocab_size,
+        options,
+        tp_rank,
+        provenance,
+    )
+
+
+def collect_native_kernel_baselines(experts, gate, lm_head, tp_size, vocab_size, options, tp_rank, provenance):
+    """The same native-kernel sweep for loaded full models or isolated modules."""
     import torch
     import torch.distributed as dist
     from sglang.srt.layers.moe.topk import StandardTopKOutput
 
-    layers = [m for m in runner.model.modules() if type(m).__name__ == "DeepseekV4DecoderLayer"]
-    experts = layers[2].mlp.experts
-    gate = layers[2].mlp.gate
-    lm_head = runner.model.lm_head
-    tp_size = runner.model.tp_size
     # The measured all-reduce uses the default process group. Only pure TP
     # may label that collective and the loaded expert shards with this size.
     if dist.get_world_size() != tp_size or dist.get_rank() != tp_rank:
@@ -204,7 +214,6 @@ def collect_native_baselines(runner, options, tp_rank, provenance):
     # ParallelLMHead is built from the loaded text config (SGLang@1aa0e962,
     # models/deepseek_v4.py:4079-4085). Verify its physical shard before
     # recording the GEMM key; a differently padded runtime must fail closed.
-    vocab_size = runner.model.config.vocab_size
     local_vocab_size = vocab_size // tp_size
     if (
         vocab_size % tp_size
