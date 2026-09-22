@@ -199,16 +199,31 @@ def get_context_test_cases(attn_type: str):
     """
     cases = []
     sweep = get_mla_module_sweep_spec("vllm")
+    # DSA context mirrors serving's chunked prefill (matches DSV4 sparse +
+    # sglang DSA): cap the per-forward NEW-token budget (b*s) at the chunk
+    # prefill size and let the long context enter via prefix, bounded by the
+    # full-sequence budget b*(s+prefix). This makes rows faithful to the
+    # engine's query shape (isl=chunk, prefix=context) and keeps the fp8
+    # sparse-decode q stride int32-safe. Falls back to the shared context
+    # axes when the DSA-specific budgets are not declared.
+    dsa_new_token_budget = sweep.context_dsa_chunk_prefill_size or sweep.context_max_tokens
+    dsa_full_seq_budget = sweep.context_dsa_max_full_sequence_length
+    dsa_prefixes = sweep.context_dsa_prefix_lengths or sweep.context_prefix_lengths
     for compute_dtype, kv_dtype, gemm_type in _get_precision_combos("context", attn_type):
         for num_heads in sweep.inner_sweep_head_counts:
             for b in sweep.context_batch_sizes:
                 for s in sweep.context_sequence_lengths:
-                    if b * s > sweep.context_max_tokens:
-                        continue
                     if attn_type == "dsa":
-                        for prefix_len in sweep.context_prefix_lengths:
+                        # new-token budget per chunk (not the shared memory cap)
+                        if b * s > dsa_new_token_budget:
+                            continue
+                        for prefix_len in dsa_prefixes:
+                            if dsa_full_seq_budget and b * (s + prefix_len) > dsa_full_seq_budget:
+                                continue
                             cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type, prefix_len])
                     else:
+                        if b * s > sweep.context_max_tokens:
+                            continue
                         cases.append([s, b, num_heads, kv_dtype, compute_dtype, gemm_type])
     return cases
 
