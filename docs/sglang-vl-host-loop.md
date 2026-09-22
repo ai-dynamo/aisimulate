@@ -55,8 +55,8 @@ scheduler's per-request preparation (shared-memory materialization, feature
 hashing, placeholder padding), one worker. The Rust frontend is `process`, the
 multimodal worker pool timed from the HTTP send to the scheduler-side drain,
 followed by `receive`. The single-worker stages serialize requests but do not
-stall the dispatch of arrivals as the real loop thread does; on the measured H20
-grid that moved TTFT by at most a few percent at eight concurrent requests.
+stall the dispatch of arrivals as the real loop thread does; on the measured
+serving host that moved TTFT by at most a few percent at eight concurrent requests.
 
 A host cost table belongs to one serving environment (CPU model, sglang
 release, Python) and holds one row per measurement: model, frontend, feature
