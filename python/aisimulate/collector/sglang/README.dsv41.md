@@ -268,6 +268,18 @@ not be silently combined under duplicate physical keys. The table writer
 rejects duplicates and mixed immutable provenance. Decode and positive-prefix
 attention require real KV; other components use `kv_seed_regime=n/a`.
 
+After each profile independently passes raw invocation and sample admission,
+`dsv41_contract.write_full_with_bounded_attention(full_rows, bounded_additions,
+path)` can export a full table with disjoint bounded attention additions. The
+caller explicitly retains full measurements for common physical keys; the
+exporter rejects any overlap, primitive addition or source/config/runtime/graph
+mismatch. Each added geometry, with only `bounded_prefill` set to false, must
+match a full attention geometry. Early-layer additions therefore retain their
+original `decoder_bounded` provenance without pretending their native attention
+was truncated. Every included row is preserved, including latency and profile.
+This separate export API does not relax the collection output marker or ordinary
+writer, resolve invocation collisions, or qualify unpublished bounded data.
+
 Sources: [`one_batch.py`](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/benchmark/one_batch.py),
 [`deepseek_v4.py`](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/models/deepseek_v4.py),
 [`engram.py`](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/layers/engram.py).

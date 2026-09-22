@@ -18,6 +18,7 @@ from collector.sglang.dsv41_contract import (
     validate_attention_geometry,
     validate_attention_manifest,
     validate_row,
+    write_full_with_bounded_attention,
     write_parquet,
 )
 
@@ -215,6 +216,136 @@ def test_bounded_context_requires_actual_tail_and_real_prefix():
     for change in ({"x": 129}, {"execution_profile": "full"}, {"kv_seed_regime": "n/a"}):
         with pytest.raises(ValueError):
             validate_row(point | change)
+
+
+def joint_export_fixture():
+    # Synthetic selection witnesses only, never GPU observations or accuracy.
+    full, bounded = build_manifest(4, False), build_manifest(4, True)
+
+    def point(manifest, layer, prefix, latency):
+        entry = next(e for e in manifest["phases"]["context"] if e["component"] == "attention" and e["layer"] == layer)
+        return row() | {
+            "geometry": entry["geometry"],
+            "x": 128,
+            "prefix": prefix,
+            "latency": latency,
+            "execution_profile": manifest["execution_profile"],
+        }
+
+    return [point(full, 0, 64, 0.125), point(full, 21, 64, 0.25)], [
+        point(bounded, 0, 320, 0.375),
+        point(bounded, 21, 64, 0.75),
+    ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "empty_base",
+        "empty_additions",
+        "base_profile",
+        "addition_profile",
+        "unknown_profile",
+        "primitive",
+        "duplicate_base",
+        "duplicate_addition",
+        "overlap",
+        "source_sha256",
+        "config_sha256",
+        "runtime_digest",
+        "used_cuda_graph",
+        "missing_geometry",
+        "invalid_tail",
+        "different_columns",
+    ],
+)
+def test_joint_export_rejects_unqualified_cohorts_without_writing(tmp_path, failure):
+    full, bounded = joint_export_fixture()
+    if failure == "empty_base":
+        full.clear()
+    elif failure == "empty_additions":
+        bounded.clear()
+    elif failure == "base_profile":
+        full = [r | {"execution_profile": "decoder_bounded"} for r in full]
+    elif failure in ("addition_profile", "unknown_profile"):
+        bounded = [bounded[0] | {"execution_profile": "full" if failure == "addition_profile" else "unknown"}]
+    elif failure == "primitive":
+        bounded = [
+            bounded[0]
+            | {
+                "component": "mhc",
+                "geometry": '{"hc_mult":4,"hidden_size":5120,"sinkhorn_iters":20}',
+                "prefix": 0,
+                "kv_seed_regime": "n/a",
+            }
+        ]
+    elif failure == "duplicate_base":
+        full.append(full[0].copy())
+    elif failure == "duplicate_addition":
+        bounded.append(bounded[0].copy())
+    elif failure == "overlap":
+        bounded = [full[0] | {"execution_profile": "decoder_bounded"}]
+    elif failure in ("source_sha256", "config_sha256", "runtime_digest", "used_cuda_graph"):
+        value = True if failure == "used_cuda_graph" else ("sha256:" if failure == "runtime_digest" else "") + "c" * 64
+        bounded = [r | {failure: value} for r in bounded]
+    elif failure == "missing_geometry":
+        bounded[0]["geometry"] = operation_geometry(json.loads(bounded[0]["geometry"]) | {"num_heads": 8})
+    elif failure == "invalid_tail":
+        bounded[1]["x"] = 129
+    elif failure == "different_columns":
+        bounded[0]["extra_evidence"] = "must not be silently dropped"
+    target = tmp_path / "joint.parquet"
+    with pytest.raises(ValueError):
+        write_full_with_bounded_attention(full, bounded, target)
+    assert not target.exists()
+
+
+def test_joint_export_preserves_profiles_and_native_silicon_selection(tmp_path):
+    import aisimulate_core._native as core
+    from aisimulate_core.sdk.engine import _evaluate_single_op
+    from aisimulate_core.sdk.perf_database import PerfDatabase
+
+    full, bounded = joint_export_fixture()
+    original = json.loads(json.dumps([*full, *bounded]))
+    with pytest.raises(ValueError, match="one immutable"):
+        write_parquet([*full, *bounded], tmp_path / "ordinary.parquet")
+    databases = []
+    for name in ("full", "joint"):
+        root = tmp_path / name
+        data = root / "data/gb300/sglang/dev-test-joint-export"
+        data.mkdir(parents=True)
+        package = Path(__file__).resolve().parents[3]
+        shutil.copy(package / "src/aisimulate_core/systems/gb300.yaml", root / "gb300.yaml")
+        target = data / "dsv41_module_perf.parquet"
+        if name == "full":
+            write_parquet(full, target)
+        else:
+            write_full_with_bounded_attention(full, bounded, target)
+            assert pq.read_table(target).to_pylist() == original
+        databases.append(
+            PerfDatabase(
+                "gb300", "sglang", "dev-test-joint-export", str(root), database_mode="SILICON", strict_provenance=False
+            )
+        )
+    assert [*full, *bounded] == original
+
+    def predict(database, point):
+        operation = core.op_from_spec_json(
+            json.dumps({"Dsv41Attention": json.loads(point["geometry"]) | {"name": "context_attention"}})
+        )
+        result = _evaluate_single_op(
+            database, operation, is_context=True, batch_size=1, s=point["x"], prefix=point["prefix"]
+        )
+        assert result.source == "silicon"
+        return float(result)
+
+    for point in full:
+        assert predict(databases[0], point) == pytest.approx(point["latency"])
+        assert predict(databases[1], point) == pytest.approx(point["latency"])
+    for point in bounded:
+        with pytest.raises(RuntimeError, match="no measured SILICON data"):
+            predict(databases[0], point)
+        assert predict(databases[1], point) == pytest.approx(point["latency"])
 
 
 def test_rank_aggregation_requires_complete_distinct_invocations(tmp_path):
