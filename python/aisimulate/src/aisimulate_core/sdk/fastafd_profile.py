@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -71,9 +72,16 @@ class FastAFDMoEStageMeasurement:
 class FastAFDMoEStageProfile:
     """Validated exact-only index over FastAFD stage measurements."""
 
-    def __init__(self, entries: tuple[FastAFDMoEStageMeasurement, ...], *, source: Path) -> None:
+    def __init__(
+        self,
+        entries: tuple[FastAFDMoEStageMeasurement, ...],
+        *,
+        source: Path,
+        profile_sha256: str,
+    ) -> None:
         self.entries = entries
         self.source = source
+        self.profile_sha256 = profile_sha256
         self._entries: dict[FastAFDMoEStageKey, FastAFDMoEStageMeasurement] = {}
         for entry in entries:
             if entry.key in self._entries:
@@ -84,7 +92,8 @@ class FastAFDMoEStageProfile:
     def load(cls, path: str | Path) -> FastAFDMoEStageProfile:
         source = Path(path).expanduser().resolve()
         try:
-            payload = json.loads(source.read_text(encoding="utf-8"))
+            raw = source.read_bytes()
+            payload = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ValueError(f"FastAFD profile is not valid JSON: {source}: {exc}") from exc
         if not isinstance(payload, dict):
@@ -96,7 +105,11 @@ class FastAFDMoEStageProfile:
         raw_entries = payload.get("entries")
         if not isinstance(raw_entries, list) or not raw_entries:
             raise ValueError("FastAFD profile entries must be a non-empty list")
-        return cls(tuple(_parse_entry(raw, index) for index, raw in enumerate(raw_entries)), source=source)
+        return cls(
+            tuple(_parse_entry(raw, index) for index, raw in enumerate(raw_entries)),
+            source=source,
+            profile_sha256=hashlib.sha256(raw).hexdigest(),
+        )
 
     def find(self, key: FastAFDMoEStageKey) -> FastAFDMoEStageMeasurement | None:
         return self._entries.get(key)

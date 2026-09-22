@@ -70,6 +70,7 @@ def test_exact_lookup_preserves_provenance(tmp_path):
     measurement = profile.require(_key())
 
     assert measurement.latency_ms == pytest.approx(16.7)
+    assert len(profile.profile_sha256) == 64
     assert measurement.provenance()["source_commit"] == "e507eacf858d2046bdc2cca02ed86c0e58bd6c60"
     assert profile.find(_key(topology="2A6F")) is None
 
