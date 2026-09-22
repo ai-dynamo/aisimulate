@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
-  "revision": "697834bc7473c8f9b4a2672aa95174df6a3448cd",
+  "revision": "bbcba43605bc0d7683c38efa14a9454d2ce83e48",
   "profiles": {
     "gb200-tp4-full": {
       "admission": "serving",
@@ -47,6 +47,55 @@
         },
         {
           "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/pure-tp4/fpm/provenance/systems.full.yaml",
+          "target": "gb200.yaml",
+          "sha256": "0eae1446798493cf7d2b60b5edcf22f7eebe9d6ece3edd7216347c9b453309f1"
+        }
+      ]
+    },
+    "gb200-tp4-decoder_bounded": {
+      "admission": "serving",
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "decoder_bounded",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "gb200",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "source_artifact_revision": "31bf73d5f676dc1bebbe6c05277ca3f367c98162",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/pure-tp4/fpm/fpm_forward_perf.decoder_bounded.parquet",
+          "target": "data/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/fpm_forward_perf.parquet",
+          "sha256": "294b801d3c7dd5d66fb216b8ad8f6804767bb75585319718f2ebfab8aec32457"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/pure-tp4/fpm/fpm_forward_perf.decoder_bounded.metadata.json",
+          "target": "data/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/fpm_forward_perf.metadata.json",
+          "sha256": "17e15096cfb69807d8c007afe1fea70e261040cd790e2a96eff53b7b997f6058"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/gb200/sglang/dev-800cc9adea5b-cohort-v3-9f1d02c63f7c0b750fa57eee6d4997d6b9865b049d2f4c67a9baecbaf514ab98/pure-tp4/fpm/provenance/systems.decoder_bounded.yaml",
           "target": "gb200.yaml",
           "sha256": "0eae1446798493cf7d2b60b5edcf22f7eebe9d6ece3edd7216347c9b453309f1"
         }

@@ -5,9 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # DeepSeek-V4.1 FPM databases
 
-`four_gpu_hf_dataset.json` adds the separately collected **GB200 TP4 full**
+`four_gpu_hf_dataset.json` adds separately collected **GB200 TP4 full and decoder_bounded**
 profile from [HF PR #13](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/13),
-pinning data commit `697834bc7473c8f9b4a2672aa95174df6a3448cd` and each file's SHA256.
+pinning data commit `bbcba43605bc0d7683c38efa14a9454d2ce83e48` and each file's SHA256.
 Its 145 calibration geometries and 38 independent heldout geometries retain
 ten fixed attempts each. Heldout MAPE is **1.18418035%**, with maximum geometry
 error **14.2899673%**; each error compares prediction with the median of ten
@@ -16,13 +16,26 @@ to the recorded full profile, 4 request slots and 5120-token physical pool.
 No heldout samples were used for calibration. Calibration self-queries check
 reader integrity and do not measure accuracy.
 
+The separate bounded table also has 145 calibration geometries and 38 heldout
+geometries, each with ten fixed attempts. The explicit native API, using qualified
+per-request seed/chunk/context witnesses, predicts **38/38 geometries and 380/380
+observations**, with MAPE **1.12313769%** and maximum geometry error **8.85221426%**.
+The aggregate API predicts **26/38 geometries and 260/380 observations**, with
+conditional MAPE **1.23254318%**. Its unchanged guard rejects the other 12
+multi-prefill geometries because aggregate metrics omit per-request extend
+lengths. Explicit coverage does not expand aggregate support. Both evaluations
+use equally weighted geometry errors against heldout medians, without fitting.
+
 The source recipe and CPU replay instructions are in
 [`collector/fpm_forward/README.md`](../../../../../collector/fpm_forward/README.md).
 The source artifact is pinned separately at HF commit
 `31bf73d5f676dc1bebbe6c05277ca3f367c98162`; it is not an AISimulate producer Git
 revision. The sidecar records the actual SGLang revision and image identity.
-This manifest currently admits only `gb200-tp4-full`; other requested four-GPU
-campaign profiles remain unlisted until their own collection and validation pass.
+The additional bounded CPU replay archive is pinned at the data commit above;
+the common original collection source remains at `31bf73d5f676dc1bebbe6c05277ca3f367c98162`.
+The full recipe and table retain their original hashes. This manifest admits
+`gb200-tp4-full` and `gb200-tp4-decoder_bounded`; other requested campaign profiles
+remain unlisted until their own collection and validation pass.
 
 This directory defines the loading contract for DeepSeek-V4.1 whole-forward
 measurements on GB300 at TP2 and B300 at TP2 or TP4. Published tables

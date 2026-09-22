@@ -53,7 +53,7 @@ These archives are executable source, so review the published source and its
 provenance before using `--run`. Hashes establish identity; they do not establish
 trust or replace the native qualification required by the dataset.
 
-## DeepSeek V4.1 GB200 TP4 full
+## DeepSeek V4.1 GB200 TP4 full and decoder bounded
 
 From `python/aisimulate`, with the project environment installed:
 
@@ -74,6 +74,17 @@ hashes. Download those evidence archives from the data manifest's immutable HF
 revision. CPU replay verifies the original native admission, reproduces the
 145-row table byte for byte, and evaluates 38 independent heldout geometries
 with ten observations each. It needs no GPU or private campaign directory.
+
+For the independently collected bounded profile, use
+`recipes/dsv41_gb200_tp4_decoder_bounded.json` in the same recipe directory and
+`gb200-tp4-decoder_bounded` as the dataset key. Use a separate materialization
+directory for each profile. The bounded archive adds its own CPU replay entry;
+the original full entry and pin are unchanged. Its explicit native API predicts
+38/38 heldout geometries (380 observations), MAPE **1.12313769%**. The aggregate
+API predicts 26/38 (260 observations), conditional MAPE **1.23254318%**, and keeps
+its existing rejection of 12 multi-prefill geometries lacking per-request extend
+lengths. Per-request witnesses come from the frozen request and native geometry
+proof, never from latency or fitted residuals.
 
 New GPU collection requires the archive's original qualified runtime and
 checkpoint. Its retained Slurm launch files record the original site paths;

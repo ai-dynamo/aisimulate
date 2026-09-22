@@ -8,8 +8,9 @@ SPDX-License-Identifier: Apache-2.0
 This campaign requests DeepSeek-V4.1-Flash TP2 and TP4, separately for `full`
 and `decoder_bounded`. Its execution contract keeps the native checkpoint
 precision, GPU-resident TP-sharded Engram, DP1, PP1, EP1, eager execution,
-text inputs and speculation disabled. New measurements and accuracy results are
-pending. A requested cell is not an available FPM profile.
+text inputs and speculation disabled. GB200 TP4 full and decoder_bounded now
+have independently validated HF tables; other requested profiles remain pending
+or exceed weight capacity. A requested cell is not an available FPM profile.
 
 The checkpoint is pinned to
 [`fb2764a5cf321eaa5070ca8f9e892818f477c16d`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/fb2764a5cf321eaa5070ca8f9e892818f477c16d).
@@ -34,13 +35,25 @@ architecture and topology; a system YAML is not a live allocation receipt.
 | `h100_sxm` | 80 GiB | Weights exceed capacity | Weights exceed capacity |
 | `h200_sxm` | 141 GiB | Weights exceed capacity | Native Humming full smoke passed at static fraction 0.98; bounded qualification pending |
 | `b200_sxm` | 180 GiB | Weights exceed capacity | Full smoke observed; accepted FPM profiles pending |
-| `gb200` | 185.03 GiB | Weights exceed capacity | Full smoke and all ten fixed geometry suites passed; accepted FPM profiles pending |
+| `gb200` | 185.03 GiB | Weights exceed capacity | Full and decoder_bounded tables admitted; independent coverage below |
 
 Capacity rejection is not a failed GPU experiment and must not be reported as
 an observed OOM. A bounded decoder profile does not cure weight residency.
 Increasing TP, moving Engram to host memory, or changing weight precision would
 create a different campaign identity; none is an implicit substitute for the
 requested cell.
+
+GB200 TP4 uses separate 145-geometry calibration and 38-geometry heldout runs
+for each profile, with ten fixed attempts per point. Full predicts all 38 heldout
+geometries: MAPE **1.18418035%**, maximum error **14.2899673%**. Bounded with the
+explicit per-request native API predicts 38/38: MAPE **1.12313769%**, maximum error
+**8.85221426%**. Its aggregate API separately supports 26/38 geometries with
+conditional MAPE **1.23254318%**; the unchanged guard rejects 12 multi-prefill
+geometries that need per-request extend lengths. Each MAPE equally weights
+geometry errors against medians of ten heldout samples. These results cover
+the predeclared grid and the measured 4-slot / 5120-token pool, not arbitrary
+loads. See the [profile pins and coverage](../../src/aisimulate_core/systems/profiles/dsv41_fpm/README.md)
+and [source replay instructions](../../collector/fpm_forward/README.md).
 
 H200 TP4 uses the separately qualified native Humming route with BF16
 activations. The default Hopper CUTLASS route rejects the local intermediate
