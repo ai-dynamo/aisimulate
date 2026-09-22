@@ -4,8 +4,8 @@
 
 Applied to ``dynamo.vllm.instrumented_scheduler`` after import. Values come
 from the ``SchedulerOutput`` the scheduler just produced: ``num_scheduled_tokens``
-per request is the extend, ``num_computed_tokens`` the past KV. Sorted by past
-descending, then extend descending.
+per request is the extend, ``num_computed_tokens`` the past KV. Emitted sorted by
+past descending, then extend descending; consumers do not depend on the order.
 """
 
 from __future__ import annotations

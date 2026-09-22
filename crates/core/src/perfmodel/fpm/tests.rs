@@ -2336,6 +2336,63 @@ fn learned_feature_vector_per_request_and_slots() {
 }
 
 #[test]
+fn learned_model_reads_hisim_slot_features() {
+    // Stump on slot0_past (the largest past in the batch after the descending sort).
+    let artifact = serde_json::json!({
+        "schema": "aic_fpm_learned_forward_perf", "schema_version": 1,
+        "worker_type": "decode", "target": "ms",
+        "features": ["req_batch_size", "slot0_present", "slot0_past", "slot0_extend"],
+        "stores": {"pure_decode": {"baseline": 0.0, "trees": [
+            {"left": [1, -1, -1], "right": [2, -1, -1], "feature": [2, -1, -1],
+             "threshold": [100.0, 0.0, 0.0], "value": [0.0, 10.0, 20.0],
+             "missing_left": [false, false, false]}]}},
+        "metadata": {}
+    })
+    .to_string();
+    let model =
+        ForwardPassPerfModel::from_learned(&artifact, ForwardPassPerfOptions::default()).unwrap();
+    let mut small = decode_fpm(2, 120, 0.0);
+    small.scheduled_requests.extend_lengths = vec![1, 1];
+    small.scheduled_requests.past_kv_lengths = vec![40, 80];
+    assert_eq!(
+        model.estimate_forward_pass_time_ms(&[small]).unwrap(),
+        Some(10.0)
+    );
+    let mut large = decode_fpm(2, 200, 0.0);
+    large.scheduled_requests.extend_lengths = vec![1, 1];
+    // batch order does not matter: the slots are filled by past descending
+    large.scheduled_requests.past_kv_lengths = vec![50, 150];
+    assert_eq!(
+        model.estimate_forward_pass_time_ms(&[large]).unwrap(),
+        Some(20.0)
+    );
+}
+
+#[test]
+fn learned_model_returns_none_for_kind_without_store() {
+    // An aggregated worker whose artifact only has a pure_decode store: a
+    // prefill iteration is a valid workload kind with no trained store.
+    let artifact = serde_json::json!({
+        "schema": "aic_fpm_learned_forward_perf", "schema_version": 1,
+        "worker_type": "aggregated", "target": "ms",
+        "features": ["num_decode_requests"],
+        "stores": {"pure_decode": {"baseline": 5.0, "trees": []}},
+        "metadata": {}
+    })
+    .to_string();
+    let model =
+        ForwardPassPerfModel::from_learned(&artifact, ForwardPassPerfOptions::default()).unwrap();
+    assert_eq!(
+        model.estimate_forward_pass_time_ms(&[decode_fpm(3, 300, 0.0)]).unwrap(),
+        Some(5.0)
+    );
+    assert_eq!(
+        model.estimate_forward_pass_time_ms(&[prefill_fpm(512, 0.0)]).unwrap(),
+        None
+    );
+}
+
+#[test]
 fn learned_model_refuses_request_features_without_lists() {
     // Stump on req_max_past. With aligned lists the learned route applies; an
     // iteration without lists (or with lists contradicting the aggregates) is

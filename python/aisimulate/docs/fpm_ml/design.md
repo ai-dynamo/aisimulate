@@ -108,7 +108,7 @@ base, the two lists are added at runtime inside the engine process by
    consumers ignore the two extra keys, the Dynamo runtime decodes the event
    unchanged and the Rust trace sink writes them out. If the producer's struct already
    has both fields (a patched image), the hook is a no-op.
-3. **SGLang** (`fpm_hooks/sglang.py`). The class that defines
+3. **SGLang** (`fpm_hooks/_sglang.py`; the leading underscore keeps the hook directory, which precedes site-packages on `PYTHONPATH`, from shadowing the real `sglang` package). The class that defines
    `_build_scheduled_request_metrics` is found by method name (it is
    `SchedulerMetricsReporter` in the V4.1 runtime, a mixin in other versions). Its
    method is wrapped: the wrapper calls the original, then derives one `(extend, past)`
@@ -116,10 +116,13 @@ base, the two lists are added at runtime inside the engine process by
    - prefill (extend) batches: `batch.extend_lens[i]` and `batch.prefix_lens[i]`, the
      schedule-time values aligned with `batch.reqs` (the per-request attributes are
      reset after the step, so they cannot be used);
-   - decode batches: `(1, batch.seq_lens_cpu[i])`, the same source the aggregate
-     `sum_decode_kv_tokens` is computed from (`req.seqlen` is already incremented when
-     the metrics are built and would be one token high).
-4. **Dynamo vLLM** (`fpm_hooks/dynamo_vllm.py`). `InstrumentedScheduler._extract_scheduled`
+   - decode batches: `(1, batch.seq_lens_cpu[i])`. On the runtime used for the captures
+     this equals the per-request term of the aggregate `sum_decode_kv_tokens`; depending
+     on the SGLang version it may include the token being decoded, i.e. be one above
+     "KV before the step". The learned model tolerates exactly that (one token of slack
+     per decode request in its consistency bound), and the trees see the same
+     convention at training and inference time.
+4. **Dynamo vLLM** (`fpm_hooks/_dynamo_vllm.py`). `InstrumentedScheduler._extract_scheduled`
    is wrapped; the pairs come from the `SchedulerOutput` the scheduler just produced:
    `num_scheduled_tokens[req_id]` is the extend, the request's `num_computed_tokens`
    the past (for newly scheduled requests from the request object, for cached
@@ -151,8 +154,9 @@ padding makes `sum_prefill_tokens` slightly larger than Σ extend).
 
 ## 3. Features
 
-The artifact is a fixed 135-slot feature ABI; a preset selects which slots a model
-reads. Unused slots are NaN. Three presets exist:
+The feature space is a fixed 135-name ABI; an artifact lists the names it reads
+(a preset), and only those are computed into the vector it consumes. The `req_*` and
+`slot*` names are NaN when a step has no usable per-request lists. Three presets exist:
 
 | Preset | Slots | Source |
 | --- | --- | --- |
@@ -193,8 +197,10 @@ per-request information.
 ### 4.1 Estimator
 
 One `HistGradientBoostingRegressor` (scikit-learn GBDT, histogram-binned, 255 bins)
-per **store**, where a store is `(worker role, workload kind)`: `pure_prefill`,
-`pure_decode`, and `mixed` when a worker schedules both in one step. Target is
+per **store**, where a store is one workload kind of the worker role: `pure_prefill`,
+`pure_decode`, `contains_locally_mixed` (some rank ran prefill and decode in the same
+step) and `cross_rank_aggregated` (prefill on some ranks, decode on others). A
+prefill or decode worker has the pure kind only; an aggregated worker can have all four. Target is
 `log(wall_ms)`; the prediction is `exp(raw)`. The log target makes the loss relative
 (a 10% miss on a 4 ms decode step and on a 400 ms prefill step weigh the same) and
 keeps predictions positive.
@@ -227,9 +233,9 @@ scaling, GPU-free training is slower and the artifact is not a portable JSON.
 A single JSON per worker role, schema version 1:
 
 ```
-schema, schema_version, worker_type, target ("log_ms"), features (ordered names),
-stores: {kind: {trees: [{children_left, children_right, feature, threshold, value, missing_left}], base_score}},
-metadata: {trainer, model, hyperparameters, trees_fitted, train_rows, features_preset, deployment, ...}
+schema, schema_version, worker_type, target ("log_ms" | "ms"), features (ordered names),
+stores: {kind: {baseline, trees: [{left, right, feature, threshold, value, missing_left}]}},
+metadata: {trainer, model, hyperparameters, trees_fitted, train_rows, sources, features_preset, ...}
 ```
 
 `validate_artifact` checks the schema version is an `int` equal to 1, every tree is
@@ -244,8 +250,9 @@ ABI), and `missing_left` is optional per tree. Typical size 100–450 KB.
    vector from all ranks of one step, walking the per-request lists once, and records
    whether request lists were present and consistent.
 2. `predict_ms` selects the store by workload kind, walks each tree (NaN follows
-   `missing_left`), sums leaf values onto `base_score`, and returns `exp`. A non-finite
-   result is an error, not `None`.
+   `missing_left`, `<=` threshold goes left), sums leaf values onto `baseline`, and
+   applies `exp` for the `log_ms` target. A kind without a store returns `None`; a
+   non-finite result is an error.
 3. `learned_base_ms` (in `model.rs`) refuses with `InvalidForwardPassMetrics` when the
    artifact uses any `req_*` / `slot*` feature and the step has no usable lists on an
    active rank; idle steps return `Some(0.0)`. Regression-store weights never affect the
@@ -260,9 +267,11 @@ time.
 - **Unit:** one raw scheduler step. `APE = |predicted − observed| / observed`.
   Reported: step-weighted MAPE, median APE, p95 APE. No aggregation into tiers before
   scoring, so a model that is right on average but wrong per step is not rewarded.
-- **Never a random split.** Consecutive steps of one run are strongly correlated
-  (same requests, same KV state); a random shuffle puts near-duplicates of test steps
-  into training and hides run-to-run variation, so it is not used anywhere.
+- **No random split in reported numbers.** Consecutive steps of one run are strongly
+  correlated (same requests, same KV state); a random shuffle puts near-duplicates of
+  test steps into training and hides run-to-run variation. The trainer CLI's
+  `--holdout-frac` is such a random split and is labelled as a smoke check in its
+  report; none of the figures below come from it.
 - **Two split schemes are used:**
   1. *Independent runs*: train on one capture run, test on another with a different
      seed and different concurrency tiers. The strictest test; used for the

@@ -308,8 +308,6 @@ impl LearnedForwardPassModel {
         self.stores.keys().copied().collect()
     }
 
-    /// Predict milliseconds for one iteration's named feature vector. Returns
-    /// `None` when the workload kind has no trained store.
     /// `true` when the artifact uses any per-request (`req_*`) or slot feature
     /// and therefore needs `extend_lengths` / `past_kv_lengths` on the input.
     pub(crate) fn needs_request_features(&self) -> bool {
@@ -430,6 +428,7 @@ pub(crate) struct IterationFeatureVector {
 }
 
 impl IterationFeatureVector {
+    #[cfg(test)]
     pub(crate) fn get(&self, name: &str) -> Option<f64> {
         feature_index(name).map(|index| self.values[index])
     }

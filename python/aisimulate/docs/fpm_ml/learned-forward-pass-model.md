@@ -70,7 +70,8 @@ The same requirement holds for the SGLang simulator's own collection hook.
 
 Stock Dynamo FPM v1 (both backends) carries aggregates only. The per-request
 presets (`sglang18`, `hisim`) need two additive, aligned lists in
-`scheduled_requests`, one entry per scheduled request, prefill requests first:
+`scheduled_requests`, one entry per scheduled request in any order (the
+consumer sorts; only the alignment of the two lists matters):
 
 ```json
 "extend_lengths":  [16384, 1, 1],      // tokens computed for the request in this step
@@ -189,8 +190,10 @@ concurrency tiers (2026-09-18, dlcluster).
 | Qwen3-32B-FP8, 262k YaRN ctx | c16/32/64 → c24/48/96 | 2.77% (1.02%) over 122k steps | 1.64% (0.55%) over 13k steps |
 | DeepSeek-V4-Flash, 262k ctx | c16/32/64/128 → c24/48/96/64 | 3.29% (1.01%) over 457k steps | 4.43% (4.32%) over 32k steps |
 
-All accuracy figures in this section are from the trainer defaults (400 trees,
-learning rate 0.05, 31 leaves, early stopping off).
+All accuracy figures in this section use `HistGradientBoostingRegressor` with 400
+trees, learning rate 0.05, 31 leaves, 5 samples per leaf and scikit-learn's default
+`early_stopping='auto'` (prefill stores stop early, decode stores run all 400 trees).
+The CLI defaults differ: `--max-iter 600` and early stopping off.
 
 Leave-one-tier-out inside a single run lands at 1–4.5% for decode and
 1.2–3.7% for prefill on both deployments; the largest errors are the tiers

@@ -8,10 +8,10 @@ The learned forward-pass model's per-request feature presets (``sglang18``,
 SGLang emit aggregates only. Instead of patching either code base, this package
 installs the two lists at import time inside the engine process:
 
-- SGLang: wraps ``SchedulerMetricsReporter._build_scheduled_request_metrics`` and
+- SGLang (``_sglang.py``): wraps ``SchedulerMetricsReporter._build_scheduled_request_metrics`` and
   swaps ``ScheduledRequestMetrics`` for a subclass carrying the two lists
   (values from the schedule-time ``batch.extend_lens`` / ``batch.prefix_lens``).
-- Dynamo vLLM: wraps ``InstrumentedScheduler._extract_scheduled`` the same way
+- Dynamo vLLM (``_dynamo_vllm.py``): wraps ``InstrumentedScheduler._extract_scheduled`` the same way
   (values from ``SchedulerOutput.num_scheduled_tokens`` / ``num_computed_tokens``).
 
 Both are no-ops when the producer already carries the fields natively. The
@@ -43,8 +43,8 @@ import sys
 from collections.abc import Callable
 from types import ModuleType
 
-from .dynamo_vllm import patch_dynamo_vllm_instrumented_scheduler
-from .sglang import patch_sglang_metrics_reporter
+from ._dynamo_vllm import patch_dynamo_vllm_instrumented_scheduler
+from ._sglang import patch_sglang_metrics_reporter
 
 __all__ = [
     "TARGETS",
@@ -66,7 +66,12 @@ _INSTALLED_ATTR = "_aisimulate_fpm_hooks_installed"
 
 
 def hook_path() -> str:
-    """Directory to prepend to ``PYTHONPATH`` so ``sitecustomize`` installs the hooks."""
+    """Directory to prepend to ``PYTHONPATH`` so ``sitecustomize`` installs the hooks.
+
+    The hook modules are named ``_sglang`` / ``_dynamo_vllm`` on purpose: this directory
+    precedes site-packages on ``sys.path``, so a module called ``sglang.py`` here would
+    shadow the real ``sglang`` package.
+    """
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -98,6 +103,9 @@ class _PostImportPatcher(importlib.abc.MetaPathFinder):
         self._targets = dict(targets)
         self._resolving: set[str] = set()
 
+    def target_names(self) -> set[str]:
+        return set(self._targets)
+
     def find_spec(self, fullname, path, target=None):
         patch = self._targets.get(fullname)
         if patch is None or fullname in self._resolving:
@@ -121,6 +129,10 @@ def install(targets: dict[str, Callable[[ModuleType], None]] | None = None) -> b
     if getattr(sys, _INSTALLED_ATTR, False) and targets is None:
         return False
     chosen = TARGETS if targets is None else targets
+    # one finder per target set: repeated explicit installs must not stack finders
+    for finder in sys.meta_path:
+        if isinstance(finder, _PostImportPatcher) and finder.target_names() == set(chosen):
+            return False
     sys.meta_path.insert(0, _PostImportPatcher(chosen))
     if targets is None:
         setattr(sys, _INSTALLED_ATTR, True)

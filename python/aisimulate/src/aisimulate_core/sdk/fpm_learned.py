@@ -262,11 +262,58 @@ def _validate_request_lists(sched: dict[str, Any], index: int) -> None:
         )
 
 
-def _has_request_lists(sched: dict[str, Any]) -> bool:
-    """Both per-request lists present, non-empty and aligned."""
+def _request_pairs(sched: dict[str, Any]) -> list[tuple[int, int]] | None:
+    """Aligned, non-empty ``(extend, past)`` pairs of one rank, or ``None`` when absent."""
     extend = sched.get("extend_lengths") or []
     past = sched.get("past_kv_lengths") or []
-    return bool(extend) and len(extend) == len(past)
+    if not extend or len(extend) != len(past):
+        return None
+    return [(int(e), int(p)) for e, p in zip(extend, past, strict=True)]
+
+
+def _pairs_consistent(sched: dict[str, Any], pairs: Sequence[tuple[int, int]]) -> bool:
+    """Same bound as ``IterationFeatureVector``: the past-KV total cannot exceed what the
+    aggregates describe (``+ sum_prefill_tokens`` for producers that read the KV sum after the
+    step, ``+ num_decode_requests`` for per-request decode lengths read one token late)."""
+    bound = (
+        int(sched.get("sum_prefill_kv_tokens", 0))
+        + int(sched.get("sum_decode_kv_tokens", 0))
+        + int(sched.get("sum_prefill_tokens", 0))
+        + int(sched.get("num_decode_requests", 0))
+    )
+    return sum(p for _, p in pairs) <= bound
+
+
+def _has_request_lists(sched: dict[str, Any]) -> bool:
+    """Both per-request lists present, non-empty, aligned and consistent with the aggregates."""
+    pairs = _request_pairs(sched)
+    return pairs is not None and _pairs_consistent(sched, pairs)
+
+
+def _rank_active(sched: dict[str, Any]) -> bool:
+    return int(sched.get("sum_prefill_tokens", 0)) > 0 or int(sched.get("num_decode_requests", 0)) > 0
+
+
+def _validate_metrics(fpm: dict[str, Any], index: int) -> None:
+    """Mirror ``validate_forward_pass_metrics``: version, aggregate/count agreement, list alignment."""
+    version = fpm.get("version", 1)
+    if version != 1:
+        raise ValueError(f"iteration {index}: unsupported FPM version {version!r}; expected 1")
+    sched = _sched(fpm)
+    np_ = int(sched.get("num_prefill_requests", 0))
+    nd = int(sched.get("num_decode_requests", 0))
+    if np_ == 0 and (int(sched.get("sum_prefill_tokens", 0)) > 0 or int(sched.get("sum_prefill_kv_tokens", 0)) > 0):
+        raise ValueError(f"iteration {index}: prefill tokens reported with num_prefill_requests == 0")
+    if nd == 0 and int(sched.get("sum_decode_kv_tokens", 0)) > 0:
+        raise ValueError(f"iteration {index}: decode KV tokens reported with num_decode_requests == 0")
+    _validate_request_lists(sched, index)
+
+
+def iteration_has_request_lists(metrics_by_rank: Sequence[dict[str, Any]]) -> bool:
+    """``True`` when every active rank carries usable per-request lists (what the Rust model requires
+    before it will read ``req_*`` / ``slot*`` features)."""
+    active = [_sched(fpm) for fpm in metrics_by_rank if _rank_active(_sched(fpm))]
+    return bool(active) and all(_has_request_lists(sched) for sched in active)
 
 
 def _sched(fpm: dict[str, Any]) -> dict[str, Any]:
@@ -339,10 +386,9 @@ def compute_features(metrics_by_rank: Sequence[dict[str, Any]]) -> dict[str, flo
         if has_decode:
             mean = dkv / nd
             sum_dkv_sq += nd * vd + nd * mean * mean
-        ext_list = s.get("extend_lengths") or []
-        past_list = s.get("past_kv_lengths") or []
-        if pairs is not None and ext_list and len(ext_list) == len(past_list):
-            pairs.extend((float(e), float(p)) for e, p in zip(ext_list, past_list, strict=True))
+        rank_pairs = _request_pairs(s)
+        if pairs is not None and rank_pairs is not None and _pairs_consistent(s, rank_pairs):
+            pairs.extend((float(e), float(p)) for e, p in rank_pairs)
         else:
             pairs = None
     mean_prefill_chunk = sum_ptok / num_prefill if num_prefill > 0.0 else 0.0
@@ -436,10 +482,11 @@ def build_dataset(
     if unknown:
         raise ValueError(f"unknown features {unknown}; valid names: {list(FEATURE_NAMES)}")
     dataset: dict[str, tuple[list[list[float]], list[float]]] = defaultdict(lambda: ([], []))
-    skipped_role = 0
+    needs_lists = any(name.startswith(("req_", "slot")) for name in features)
+    skipped_role = skipped_lists = 0
     for index, metrics_by_rank in enumerate(iterations):
         for fpm in metrics_by_rank:
-            _validate_request_lists(_sched(fpm), index)
+            _validate_metrics(fpm, index)
         try:
             kind = classify_workload(metrics_by_rank, worker_type)
         except ValueError:
@@ -450,12 +497,21 @@ def build_dataset(
         wall_ms = iteration_wall_ms(metrics_by_rank)
         if wall_ms is None:
             continue
+        if needs_lists and not iteration_has_request_lists(metrics_by_rank):
+            # the Rust model refuses these at inference; do not teach the trees a NaN route
+            skipped_lists += 1
+            continue
         named = compute_features(metrics_by_rank)
         rows, y = dataset[kind]
         rows.append([named[name] for name in features])
         y.append(wall_ms)
     if skipped_role:
         logger.warning("skipped %d iterations incompatible with worker_type=%s", skipped_role, worker_type)
+    if skipped_lists:
+        logger.warning(
+            "skipped %d iterations without usable per-request lists (features need extend_lengths/past_kv_lengths)",
+            skipped_lists,
+        )
     return dict(dataset)
 
 
@@ -587,9 +643,11 @@ _TREE_ARRAYS = ("left", "right", "feature", "threshold", "value", "missing_left"
 
 
 def validate_artifact(artifact: dict[str, Any]) -> None:
-    """Reject artifacts the Rust loader would reject (schema, version, target, features, tree shape).
+    """Structural pre-check of an artifact (schema, version, target, features, tree shape).
 
-    Raises ``ValueError`` with the offending field; mirrors ``LearnedForwardPassModel::from_artifact``.
+    Raises ``ValueError`` with the offending field. The Rust loader
+    (``LearnedForwardPassModel::from_artifact``) is authoritative and additionally checks
+    store kinds against the worker type and the finiteness of every number.
     """
     if not isinstance(artifact, dict):
         raise ValueError("artifact must be a JSON object")
@@ -665,7 +723,12 @@ def evaluate(
         truth = iteration_wall_ms(metrics_by_rank)
         if truth is None:
             continue
-        pred = predict(metrics_by_rank)
+        try:
+            pred = predict(metrics_by_rank)
+        except (ValueError, RuntimeError):
+            # the Rust model refuses iterations without per-request lists for req_*/slot artifacts
+            apes["_refused"].append(0.0)
+            continue
         if pred is None:
             apes["_unpredicted"].append(0.0)
             continue
@@ -674,7 +737,7 @@ def evaluate(
         apes["_all"].append(ape)
     result: dict[str, dict[str, float]] = {}
     for kind, values in apes.items():
-        if kind == "_unpredicted":
+        if kind in ("_unpredicted", "_refused"):
             result[kind] = {"n": float(len(values))}
             continue
         ordered = sorted(values)
@@ -721,7 +784,7 @@ def _format_report(report: dict[str, dict[str, float]]) -> str:
     lines = [f"{'store':<26}{'n':>9}{'MAPE%':>9}{'median%':>9}{'p95%':>9}"]
     for kind in sorted(report, key=lambda k: (k.startswith("_"), k)):
         stats = report[kind]
-        if kind == "_unpredicted":
+        if kind in ("_unpredicted", "_refused"):
             lines.append(f"{kind:<26}{int(stats['n']):>9}{'-':>9}{'-':>9}{'-':>9}")
             continue
         lines.append(
@@ -759,6 +822,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
             "join_ranks": args.join_ranks,
             "train_iterations": len(train_set),
             "holdout_iterations": len(holdout),
+            "features_preset": args.features,
         },
     )
     out = Path(args.out)
@@ -768,7 +832,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
     print("train-set fit:")
     print(_format_report(evaluate(artifact, train_set)))
     if holdout:
-        print(f"holdout ({len(holdout)} iterations):")
+        print(f"random holdout ({len(holdout)} iterations; consecutive steps are correlated, treat as a smoke check):")
         print(_format_report(evaluate(artifact, holdout)))
     return 0
 

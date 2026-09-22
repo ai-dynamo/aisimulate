@@ -8,10 +8,14 @@ import types
 
 import pytest
 
+pytestmark = pytest.mark.unit
+
 msgspec = pytest.importorskip("msgspec")
 
 from aisimulate_core import fpm_hooks
-from aisimulate_core.fpm_hooks import _struct, dynamo_vllm, sglang
+from aisimulate_core.fpm_hooks import _dynamo_vllm as dynamo_vllm
+from aisimulate_core.fpm_hooks import _sglang as sglang
+from aisimulate_core.fpm_hooks import _struct
 
 
 def _stock_fpm_module(name: str) -> types.ModuleType:

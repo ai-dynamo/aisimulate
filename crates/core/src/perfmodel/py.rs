@@ -1795,7 +1795,9 @@ impl PyForwardPassPerfModel {
 
     /// Estimate one forward-pass iteration in ms. `fpm_json` is one iteration as
     /// a single FPM object or a per-attention-DP-rank array. Returns `None` for
-    /// regression models without enough data yet. Pure-Rust compute (GIL freed).
+    /// regression models without enough data yet and for learned models whose
+    /// artifact has no store for the iteration's workload kind. Pure-Rust
+    /// compute (GIL freed).
     fn estimate_forward_pass_time_ms(
         &self,
         py: Python<'_>,

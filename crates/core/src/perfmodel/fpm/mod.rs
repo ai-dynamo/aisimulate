@@ -41,12 +41,7 @@ pub use config::{
     ForwardPassSpeculationConfig,
 };
 pub use estimator::*;
-pub use learned::{
-    AGGREGATE_FEATURE_NAMES as LEARNED_AGGREGATE_FEATURE_NAMES,
-    FEATURE_COUNT as LEARNED_FEATURE_COUNT, LEARNED_SCHEMA_NAME, LEARNED_SCHEMA_VERSION,
-    REQUEST_FEATURE_NAMES as LEARNED_REQUEST_FEATURE_NAMES, SLOT_COUNT as LEARNED_SLOT_COUNT,
-    feature_names as learned_feature_names,
-};
+pub use learned::LEARNED_SCHEMA_VERSION;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 pub use model::{

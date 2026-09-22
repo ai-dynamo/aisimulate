@@ -321,3 +321,79 @@ def test_build_dataset_rejects_misaligned_request_lists() -> None:
     ok["scheduled_requests"]["extend_lengths"] = [4, 4, 4]  # speculative decode: >1 token per request is fine
     ok["scheduled_requests"]["past_kv_lengths"] = [100, 100, 100]
     assert fpm_learned.build_dataset([[ok]], "decode", list(fpm_learned.AGGREGATE_FEATURE_NAMES))
+
+
+def test_build_dataset_skips_iterations_without_lists_when_features_need_them() -> None:
+    with_lists = _decode_fpm(2, 200, 0.01)
+    with_lists["scheduled_requests"]["extend_lengths"] = [1, 1]
+    with_lists["scheduled_requests"]["past_kv_lengths"] = [120, 80]
+    without = _decode_fpm(2, 200, 0.01)
+    inconsistent = _decode_fpm(2, 200, 0.01)
+    inconsistent["scheduled_requests"]["extend_lengths"] = [1, 1]
+    inconsistent["scheduled_requests"]["past_kv_lengths"] = [5000, 5000]
+    rows = fpm_learned.build_dataset([[with_lists], [without], [inconsistent]], "decode", fpm_learned.REQUEST_FEATURE_NAMES)
+    assert len(rows["pure_decode"][1]) == 1
+    # aggregate-only features keep every iteration
+    rows = fpm_learned.build_dataset([[with_lists], [without], [inconsistent]], "decode", fpm_learned.AGGREGATE_FEATURE_NAMES)
+    assert len(rows["pure_decode"][1]) == 3
+    # inconsistent lists are treated as absent by compute_features too (NaN req_* features)
+    assert math.isnan(fpm_learned.compute_features([inconsistent])["req_max_past"])
+    assert fpm_learned.compute_features([with_lists])["req_max_past"] == 120.0
+
+
+def test_build_dataset_rejects_metrics_the_rust_validator_rejects() -> None:
+    bad_version = _decode_fpm(2, 200, 0.01)
+    bad_version["version"] = 2
+    with pytest.raises(ValueError, match="unsupported FPM version"):
+        fpm_learned.build_dataset([[bad_version]], "decode", fpm_learned.AGGREGATE_FEATURE_NAMES)
+    ghost_prefill = _prefill_fpm(0, 512, 0, 0.01)
+    with pytest.raises(ValueError, match="num_prefill_requests == 0"):
+        fpm_learned.build_dataset([[ghost_prefill]], "prefill", fpm_learned.AGGREGATE_FEATURE_NAMES)
+    ghost_decode = _decode_fpm(0, 300, 0.01)
+    with pytest.raises(ValueError, match="num_decode_requests == 0"):
+        fpm_learned.build_dataset([[ghost_decode]], "decode", fpm_learned.AGGREGATE_FEATURE_NAMES)
+
+
+def test_evaluate_counts_refused_and_unpredicted_iterations() -> None:
+    artifact = {
+        "schema": fpm_learned.SCHEMA_NAME,
+        "schema_version": fpm_learned.SCHEMA_VERSION,
+        "worker_type": "decode",
+        "target": "ms",
+        "features": ["req_max_past"],
+        "stores": {"pure_decode": {"baseline": 7.0, "trees": []}},
+        "metadata": {},
+    }
+    with_lists = _decode_fpm(2, 200, 0.007)
+    with_lists["scheduled_requests"]["extend_lengths"] = [1, 1]
+    with_lists["scheduled_requests"]["past_kv_lengths"] = [120, 80]
+    without = _decode_fpm(2, 200, 0.007)
+
+    def predict(metrics_by_rank):
+        if not fpm_learned.iteration_has_request_lists(metrics_by_rank):
+            raise ValueError("per-request features")
+        return 7.0
+
+    report = fpm_learned.evaluate(artifact, [[with_lists], [without]], predict=predict)
+    assert report["pure_decode"]["n"] == 1 and report["pure_decode"]["mape_pct"] == 0.0
+    assert report["_refused"]["n"] == 1
+    assert "_refused" in fpm_learned._format_report(report)
+
+
+def test_train_hisim_slot_features_roundtrip() -> None:
+    pytest.importorskip("sklearn")
+    iterations = []
+    for i in range(300):
+        nd = 1 + i % 8
+        past = 500 * (1 + (i * 5) % 40)
+        wall = 0.004 + 0.0003 * nd + 0.00000004 * past * nd
+        fpm = _decode_fpm(nd, past * nd, wall, counter=i)
+        fpm["scheduled_requests"]["extend_lengths"] = [1] * nd
+        fpm["scheduled_requests"]["past_kv_lengths"] = [past] * nd
+        iterations.append([fpm])
+    artifact = fpm_learned.train(iterations, "decode", features=fpm_learned.FEATURE_PRESETS["hisim"], max_iter=30, min_store_rows=10)
+    assert artifact["features"][:2] == ["req_batch_size", "slot0_present"]
+    assert len(artifact["features"]) == 1 + 3 * fpm_learned.SLOT_COUNT
+    fpm_learned.validate_artifact(artifact)
+    report = fpm_learned.evaluate(artifact, iterations, predict=lambda m: fpm_reference.reference_predict_ms(artifact, m))
+    assert report["pure_decode"]["mape_pct"] < 5.0
