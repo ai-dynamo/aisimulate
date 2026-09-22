@@ -88,6 +88,8 @@ configuration for each candidate.
 | `gpu_budget` | `32` | maximum GPUs per candidate |
 | `min_gpu_budget` | `None` | optional lower bound during enumeration |
 | `context_length` | `None` | optional KV-feasibility and runtime prompt-plus-output token limit |
+| `prefill_context_length` | `None` | disaggregated prefill KV-feasibility and runtime limit; overrides `context_length` |
+| `decode_context_length` | `None` | disaggregated decode KV-feasibility and runtime limit; overrides `context_length` |
 | `parallel_configs` | `[]` | optional pinned parallel configurations |
 | `startup_time` | `None` | optional simulated worker startup time |
 | `aic_nextn` | `None` | optional speculative-decoding depth |
@@ -106,6 +108,23 @@ external parquet for that role (`agg`, `prefill`, or `decode`); the adjacent sam
 `.metadata.json` sidecar is required. The path requires default timing with `forward_model: fpm`
 and is preserved in deployment metadata, runtime arguments, and candidate YAML.
 A one-item list pins a searched field.
+
+### Role-specific context limits
+
+The public recommendation fields `engine.workers.prefill.context_length` and
+`engine.workers.decode.context_length` map to `prefill_context_length` and
+`decode_context_length` in the Sweeper search space. Values must be positive. They apply only to
+disaggregated prefill/decode workers; aggregated recommendations must use the shared
+`engine.context_length` field. For each role, the effective limit is the role-specific override
+when set, otherwise the shared `context_length`, otherwise the model's configured maximum context.
+The effective value is used both by KV-feasibility filtering and by generated worker
+`max_model_len` payloads. AFD companion branches use the limit for the companion role.
+
+This precedence is intentionally a runtime contract rather than a new performance-model input:
+the model maximum comes from the resolved model metadata, while role-specific values are explicit
+operator limits. The regression matrix in
+[`context-limits.md`](context-limits.md#selection-evidence) records the expected before/after
+selection behavior for aggregate, disaggregated, heterogeneous, and AFD companion branches.
 
 `prefill_hardware_sku` and `decode_hardware_sku` apply only to the ordinary `disagg` branch. Either
 override may be set independently: an omitted role inherits `hardware_sku`. Both roles still share

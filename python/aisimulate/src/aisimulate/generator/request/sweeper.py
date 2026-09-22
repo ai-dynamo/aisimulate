@@ -172,9 +172,12 @@ def _role_sizing(config: Mapping[str, Any], role: str, *, backend: str) -> tuple
         if memory_fraction > 1:
             raise SweeperCandidateError(f"{memory_path} must be at most 1")
         extra["kv_cache_free_gpu_memory_fraction"] = memory_fraction
-    context_length = config.get("context_length")
+    context_key = "context_length" if role == "agg" else f"{role}_context_length"
+    role_context_length = config.get(context_key)
+    selected_context_key = context_key if role_context_length is not None else "context_length"
+    context_length = role_context_length if role_context_length is not None else config.get("context_length")
     if context_length is not None:
-        extra["max_seq_len"] = _positive_int(context_length, path="candidate.config.context_length")
+        extra["max_seq_len"] = _positive_int(context_length, path=f"candidate.config.{selected_context_key}")
 
     return (
         RoleSizing(

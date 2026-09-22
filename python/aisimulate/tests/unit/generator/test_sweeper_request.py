@@ -146,7 +146,7 @@ def test_agg_candidate_lowers_evaluated_engine_limits_and_deployment_overrides()
 
 def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
     request = from_sweeper_candidate(
-        _disagg_candidate(),
+        _disagg_candidate(prefill_context_length=64000, decode_context_length=128000),
         workload={"isl": 8192, "osl": 1024},
         model_facts=ModelFacts(is_moe=True, architecture="DeepseekV3ForCausalLM"),
     )
@@ -155,7 +155,9 @@ def test_disagg_candidate_preserves_dynamo_adapter_configs_and_concurrency():
     assert params["WorkerConfig"]["prefill_workers"] == 4
     assert params["WorkerConfig"]["decode_workers"] == 1
     assert params["params"]["prefill"]["max_batch_size"] == 4
+    assert params["params"]["prefill"]["max_seq_len"] == 64000
     assert params["params"]["decode"]["max_batch_size"] == 512
+    assert params["params"]["decode"]["max_seq_len"] == 128000
     assert params["params"]["decode"]["kv_cache_free_gpu_memory_fraction"] == 0.85
     assert params["BenchConfig"]["estimated_concurrency"] == 256
     assert params["DynConfig"]["enable_router"] is True

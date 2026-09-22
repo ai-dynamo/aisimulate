@@ -51,6 +51,7 @@ _PREFILL_PINNED = (
     "prefill_forward_model",
     "prefill_fpm_parquet_path",
     "prefill_startup_time",
+    "prefill_context_length",
 )
 _DECODE_SEARCHED = ("decode_max_num_batched_tokens", "decode_max_num_seqs")
 _DECODE_PINNED = (
@@ -64,6 +65,7 @@ _DECODE_PINNED = (
     "decode_forward_model",
     "decode_fpm_parquet_path",
     "decode_startup_time",
+    "decode_context_length",
 )
 
 

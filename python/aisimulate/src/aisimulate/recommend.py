@@ -193,6 +193,8 @@ def recommendation_to_sweeper(
     if engine.get("speculation") is not None:
         search_space["speculation"] = deepcopy(engine["speculation"])
     for role in ("prefill", "decode"):
+        if workers.get(role, {}).get("context_length") is not None:
+            search_space[f"{role}_context_length"] = workers[role]["context_length"]
         if workers.get(role, {}).get("hardware") is not None:
             search_space[f"{role}_hardware_sku"] = workers[role]["hardware"]
     if isinstance(afd, dict):
@@ -898,7 +900,7 @@ def _candidate_prediction(
             kv_cache["bytes_per_token"] = role_args["kv_cache_bytes_per_token"]
         if sample.get(f"{role}_native_host_offload") is not None:
             kv_cache["host_offload"] = deepcopy(sample[f"{role}_native_host_offload"])
-        engine["workers"][public_role] = {
+        worker_config = {
             "parallelism": {
                 "replicas": sample[f"{prefix}replicas"],
                 "tensor": sample[f"{prefix}tp"],
@@ -917,6 +919,9 @@ def _candidate_prediction(
             if sample.get(f"{role}_startup_time") is not None
             else raw_worker.get("startup_seconds", 0),
         }
+        if role != "agg":
+            worker_config["context_length"] = sample.get(f"{role}_context_length") or sample.get("context_length")
+        engine["workers"][public_role] = worker_config
         if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
             engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
