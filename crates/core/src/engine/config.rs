@@ -324,7 +324,7 @@ impl NativeHostOffloadConfig {
 
 /// Recurrent-state allocation size for one simulated rank/GPU.
 /// Token block geometry and pool capacity use the existing EngineConfig fields.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateCacheConfig {
     /// Bytes occupied by one physical working state or snapshot.
@@ -1034,7 +1034,6 @@ mod tests {
         assert_eq!(
             StateCacheConfig {
                 bytes_per_request: usize::MAX,
-                ..Default::default()
             }
             .state_blocks(2, 1)
             .unwrap(),
@@ -1108,7 +1107,6 @@ mod tests {
             config.validate().unwrap();
             config.state_cache = Some(StateCacheConfig {
                 bytes_per_request: 1500,
-                ..Default::default()
             });
             assert!(config.validate().is_err(), "{field}");
         }

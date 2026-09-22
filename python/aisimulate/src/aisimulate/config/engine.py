@@ -794,8 +794,8 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         worker = getattr(engine.workers, role)
         if worker is None or worker.kv_cache.state_cache is None:
             continue
-        if worker.kv_cache.prefix_match_unit is not None and engine.speculation is not None:
-            raise ValueError("prefix_match_unit does not support speculative decoding")
+        if worker.kv_cache.prefix_match_unit is not None and (engine.speculation is not None or engine.nextn > 0):
+            raise ValueError("prefix_match_unit does not support speculative decoding (speculation or nextn > 0)")
         if engine.backend != "vllm" or engine.mode != "aggregated" or role != "aggregated":
             raise ValueError("state_cache requires backend=vllm and mode=aggregated (G1 only)")
 

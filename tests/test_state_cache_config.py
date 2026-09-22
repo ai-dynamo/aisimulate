@@ -325,6 +325,28 @@ def test_aligned_state_config_rejects_speculation():
         _materialize_engine_role("vllm", "", {}, {**RANK, "prefix_match_unit": 16, "aic_nextn": 1}, "agg")
 
 
+@pytest.mark.parametrize("nextn", [1, 5])
+def test_aligned_state_config_rejects_positive_nextn_at_public_validation(nextn):
+    config = _public(timing="default", prefix_match_unit=16)
+    config["engine"].update(nextn=nextn, nextn_accepted=float(nextn))
+    with pytest.raises(ValidationError, match="prefix_match_unit.*nextn > 0"):
+        CorePredictionConfig.model_validate(config)
+
+
+def test_aligned_state_config_allows_zero_nextn_through_engine_handoff(forbid_estimators):
+    raw = _public(timing="default", prefix_match_unit=16)
+    raw["engine"]["nextn"] = 0
+    config = CorePredictionConfig.model_validate(raw)
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    spec = prediction_to_replay_spec(config)
+    assert "aic_nextn" not in spec.backend_deployment.agg_engine_args
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank.get("aic_nextn") is None
+    assert rank["prefix_match_unit"] == 16
+
+
 def test_aligned_state_config_runs_through_native_replay(forbid_estimators):
     raw = _public(
         block_size=1536,
