@@ -48,9 +48,8 @@ use crate::operators::attention::default_lane_order;
 use crate::operators::dsa::DsaProjectionQuants;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, ElementwiseOp, EmbeddingOp,
-    EncoderAttentionOp, FastAfdMoeStageOp, FastAfdMoeStagePoint, GemmOp,
-    GenerationAttentionOp, GenerationMlaOp, MhcModuleOp, MlaBmmOp, MlaModuleOp, NcclOp, Op,
-    P2POp,
+    EncoderAttentionOp, FastAfdMoeStageOp, FastAfdMoeStagePoint, GemmOp, GenerationAttentionOp,
+    GenerationMlaOp, MhcModuleOp, MlaBmmOp, MlaModuleOp, NcclOp, Op, P2POp,
 };
 
 // ---------------------------------------------------------------------------
@@ -4132,7 +4131,7 @@ impl PyFastAfdMoeStage {
             op.profile_sha256.clone(),
             op.weight_bytes,
         )
-        .into_pyobject(py)?;
+            .into_pyobject(py)?;
         Ok((args, PyDict::new(py)))
     }
 

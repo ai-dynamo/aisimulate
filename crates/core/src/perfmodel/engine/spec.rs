@@ -168,11 +168,10 @@ mod tests {
     use crate::operators::{
         ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp,
         Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp,
-        ElementwiseOp, EmbeddingOp, EncoderAttentionOp, FastAfdMoeStageOp,
-        FastAfdMoeStagePoint, GdnOp, GemmOp, GenerationAttentionOp, GenerationMlaOp, KdaOp,
-        Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp, MoeAllToAllOp,
-        MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp,
-        WideEpContextMlaOp, WideEpGenerationMlaOp,
+        ElementwiseOp, EmbeddingOp, EncoderAttentionOp, FastAfdMoeStageOp, FastAfdMoeStagePoint,
+        GdnOp, GemmOp, GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp,
+        MlaBmmOp, MlaModuleOp, MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp,
+        P2POp, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
     };
     use crate::perf_database::dsv4::AttnKind;
     use crate::{

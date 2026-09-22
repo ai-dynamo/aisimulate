@@ -307,7 +307,9 @@ impl ForwardPassPerfModelConfig {
                 ));
             }
             if self.backend != BackendKind::Sglang {
-                return Err(invalid_config("FastAFD MoE profiles require backend=sglang"));
+                return Err(invalid_config(
+                    "FastAFD MoE profiles require backend=sglang",
+                ));
             }
             if self.pp != 1 {
                 return Err(invalid_config("FastAFD MoE profiles require pp=1"));

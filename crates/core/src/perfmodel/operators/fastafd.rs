@@ -43,7 +43,8 @@ impl FastAfdMoeStageOp {
         for point in &self.points {
             if point.num_tokens == 0 || point.num_tokens <= previous {
                 return Err(
-                    "FastAFD MoE stage token counts must be positive and strictly increasing".into(),
+                    "FastAFD MoE stage token counts must be positive and strictly increasing"
+                        .into(),
                 );
             }
             if !point.latency_ms.is_finite() || point.latency_ms <= 0.0 {

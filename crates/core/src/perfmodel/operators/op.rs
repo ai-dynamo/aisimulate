@@ -23,10 +23,9 @@ use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
     Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp,
     EmbeddingOp, EncoderAttentionOp, FastAfdMoeStageOp, FpmForwardOp, GdnOp, GemmOp,
-    GenerationAttentionOp,
-    GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
-    MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp, PerformanceResult,
-    Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
+    GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp,
+    MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp,
+    PerformanceResult, Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
 };
 use crate::perf_database::PerfDatabase;
 
