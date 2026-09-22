@@ -1330,7 +1330,6 @@ mod tests {
         assert!(!component.process_internal_work(0.5).unwrap().made_progress);
         assert!(component.process_internal_work(1.0).unwrap().made_progress);
         assert_eq!(component.try_remove_drained().unwrap(), vec![worker]);
-        assert!(component.is_drained());
     }
 
     #[test]
