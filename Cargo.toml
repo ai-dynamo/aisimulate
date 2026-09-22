@@ -5,7 +5,7 @@
 members = [
     "crates/core",
 ]
-exclude = ["crates/tests/public-api"]
+exclude = ["crates/tests/public-api", "crates/dynamo-policy"]
 resolver = "3"
 
 [workspace.package]

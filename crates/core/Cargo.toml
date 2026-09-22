@@ -54,3 +54,6 @@ replay-bench = []
 
 [dev-dependencies]
 rstest = "0.18.2"
+
+[build-dependencies]
+sha2 = "0.10"

@@ -336,7 +336,7 @@ def _save_report(output: str, filename: str, report: dict[str, Any], *, overwrit
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    from .cli_args import _apply_overrides, _load_mapping, build_parser
+    from .cli_args import _apply_overrides, _load_mapping, build_parser, select_stack
     from .output import prepare_output_directory
 
     arguments = list(sys.argv[1:] if argv is None else argv)
@@ -346,6 +346,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         raw = _load_mapping(args.config)
         _apply_overrides(raw, args.overrides, command=args.command)
+        args.stack = select_stack(args.stack, raw)
         policy = ResourceConfig.model_validate(raw.get("execution", {}).get("resources", {}))
     except (OSError, ValueError, AttributeError):
         # The child retains stack/schema error ordering under conservative limits.

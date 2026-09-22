@@ -22,6 +22,8 @@ pub mod engine;
 pub mod perfmodel;
 #[cfg(feature = "python")]
 mod python;
+#[cfg(feature = "python")]
+pub use python::execute_replay_json_with_composition;
 pub mod replay;
 
 pub use engine::{
@@ -29,6 +31,19 @@ pub use engine::{
     TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
 };
 pub use replay::{ReplayReport, ReplaySpec, Replayer};
+
+/// Identity of the serialized replay contract compiled into this library.
+///
+/// Optional extensions compare this with the base Python runtime before
+/// execution. A source digest also catches incompatible development wheels
+/// sharing a version number, without relying on checkout paths or Git state.
+pub fn native_replay_contract() -> serde_json::Value {
+    serde_json::json!({
+        "api_version": 1,
+        "core_version": env!("CARGO_PKG_VERSION"),
+        "core_source_sha256": env!("AISIMULATE_CORE_SOURCE_SHA256"),
+    })
+}
 
 // Preserve the former published AIC crate-root surface. Replay's conflicting
 // engine configuration remains available as `engine::EngineConfig` and under

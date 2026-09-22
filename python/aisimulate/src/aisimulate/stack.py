@@ -64,6 +64,14 @@ def resolve_runner_factory(
     if not matches:
         available = sorted(set(builtin_factories) | {entry.name for entry in installed})
         choices = ", ".join(available) if available else "<none>"
+        if stack == "dynamo-policy":
+            raise StackNotFoundError(
+                "router configuration requires the optional 'aisimulate-dynamo-policy' package. "
+                "Install matching aisimulate and aisimulate-dynamo-policy wheels with "
+                "'python -m pip install <aisimulate.whl> <aisimulate_dynamo_policy.whl>'; "
+                "see docs/agentx-quickstart.md for the paired source-build instructions. "
+                "Routing will not fall back to round-robin."
+            )
         raise StackNotFoundError(
             f"stack {stack!r} is unavailable; installed stacks: {choices}. "
             "Install the distribution that provides the requested stack."

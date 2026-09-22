@@ -196,6 +196,23 @@ def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monk
         assert report[key] == details.get(key)
 
 
+def test_supervisor_reports_auto_selected_routing_stack(tmp_path, monkeypatch):
+    from aisimulate import supervision
+    from aisimulate.resources import ResourceLimitError
+
+    args = _cli_arguments(tmp_path)
+    config = tmp_path / "config.yaml"
+    config.write_text(config.read_text() + "router: {policy: kv_router}\n")
+
+    def refuse(*args, **kwargs):
+        raise ResourceLimitError("resource probe failed")
+
+    monkeypatch.setattr(supervision, "run_process", refuse)
+    assert supervision.main(args) == 3
+    plan = json.loads((tmp_path / "output/resource-plan.json").read_text())
+    assert plan["stack"] == "dynamo-policy"
+
+
 @pytest.mark.parametrize("child_code,expected", [(-9, 1), (-15, 1), (2, 2)])
 def test_cli_normalizes_signal_exit_but_retains_raw_diagnostics(tmp_path, monkeypatch, child_code, expected):
     from aisimulate import supervision

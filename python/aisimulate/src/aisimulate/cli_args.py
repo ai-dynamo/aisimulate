@@ -33,7 +33,10 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("predict", "recommend"):
         child = subparsers.add_parser(command)
         child.add_argument("-c", "--config", required=True)
-        child.add_argument("--stack", default="engine")
+        child.add_argument(
+            "--stack",
+            help="execution stack; defaults to engine, or dynamo-policy when router is configured",
+        )
         child.add_argument(
             "--set",
             dest="overrides",
@@ -76,6 +79,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="pace prediction against the real wall clock instead of virtual time",
     )
     return parser
+
+
+def select_stack(explicit: str | None, config: dict[str, Any]) -> str:
+    """Select an optional integration only when no stack was explicitly requested."""
+
+    if explicit is not None:
+        return explicit
+    return "dynamo-policy" if "router" in config else "engine"
 
 
 def _load_mapping(path: str) -> dict[str, Any]:
