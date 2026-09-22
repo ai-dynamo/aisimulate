@@ -21,6 +21,25 @@ instructions, see the [application README](python/aisimulate/README.md).
 - [Office Hours](https://www.youtube.com/playlist?list=PL5B692fm6--tgryKu94h2Zb7jTFM3Go4X)
 - [Community Meetings](https://docs.google.com/document/d/1uR8xD_hlYGwV6QspvSc36k1H-wo1BUcVmFbHH9xlXd8/view) ([YouTube](https://www.youtube.com/@ai-dynamo-community)) -- Weekly (Wed 10:30 AM PT) development community meetings
 
+## Preparing a pull request
+
+Use the root [PR template](.github/pull_request_template.md) to describe the
+behavior change, validation, and review handoff. Choose low, medium, or high risk
+using the [review contract](REVIEW.md#risk-tiered-review-and-ci), name the
+responsible CODEOWNER team/reviewer, and identify the expert decision for
+high-risk work. Keep unfinished work as a draft: Fast CI still runs, and marking
+the PR ready starts eligible automatic CodeRabbit review without a
+`review-ready` label. Remove title/label exclusions when requesting review;
+a skipped CodeRabbit check does not qualify the PR for maintainer Full CI
+admission. Medium/high risk also requires same-commit Codex review.
+
+Follow the [handoff and finding policy](REVIEW.md#review-handoff-and-finding-disposition)
+when requesting review or responding to findings. Keep blocking conversations
+visible, link agreed follow-up issues, and refresh review/CI evidence after each
+push. Every tier needs applicable CODEOWNER approval; high risk also needs the
+relevant expert. The [CI guide](docs/ci.md#code-review-and-pr-admission) describes
+Full CI admission and the separate repository-enforcement requirements.
+
 ## Developer Certificate of Origin
 
 AISimulate is an open source project released under the Apache 2.0 license
