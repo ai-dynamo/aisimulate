@@ -204,8 +204,8 @@ import importlib.abc
 import sys
 from pathlib import Path
 
-blocked = ("aisimulate._runtime", "aisimulate_core", "aiconfigurator", "aiconfigurator_core",
-           "numpy", "pandas", "torch", "transformers", "huggingface_hub", "collector")
+blocked = ("aisimulate._runtime", "aisimulate_core._native", "aisimulate_core.sdk", "aiconfigurator",
+           "aiconfigurator_core", "numpy", "pandas", "torch", "transformers", "huggingface_hub", "collector")
 
 class NoEstimatorRuntime(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):

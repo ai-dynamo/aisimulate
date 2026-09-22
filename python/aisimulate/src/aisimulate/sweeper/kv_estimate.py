@@ -20,11 +20,16 @@ Native only: the estimate reads the perf database for ``(hardware_sku, backend)`
 (:func:`get_latest_database_version` resolves the version). SKUs without a perf
 DB raise :class:`NoPerfDatabase`; the naive fallback is intentionally disabled
 because it mis-models MoE expert sharding.
+
+An explicit FPM profile instead supplies per-deployment resource bounds. That
+memory path requires a hardware specification and literal profile version,
+but no timing database or analytical model.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
+from typing import Any
 
 from aisimulate_core.sdk.memory import estimate_kv_cache
 from aisimulate_core.sdk.perf_database import get_latest_database_version
@@ -92,6 +97,7 @@ def estimate_kv_tokens(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     nextn: int = 0,
+    fpm_profile: dict[str, Any] | None = None,
     model_controls: dict[str, str | int | bool] | None = None,
 ) -> int | None:
     """Per-rank KV-cache capacity (in tokens) for ``shape``, or ``None`` when the
@@ -118,6 +124,7 @@ def estimate_kv_tokens(
             **(model_controls or {}),
             systems_path=(list(resolve_systems_paths(systems_paths)) if systems_paths is not None else None),
             allow_naive_fallback=False,
+            **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
         )
     except ValueError as exc:
         msg = str(exc)
@@ -145,6 +152,7 @@ def feasible_shape_tokens(
     max_num_tokens: int = DEFAULT_MAX_NUM_TOKENS,
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
+    fpm_profile: dict[str, Any] | None = None,
     model_controls: dict[str, str | int | bool] | None = None,
     nextn: int = 0,
 ) -> dict[ParallelShape, int]:
@@ -168,6 +176,7 @@ def feasible_shape_tokens(
             max_num_tokens=max_num_tokens,
             max_batch_size=max_batch_size,
             memory_fraction=memory_fraction,
+            **({"fpm_profile": fpm_profile} if fpm_profile is not None else {}),
             **({"model_controls": model_controls} if model_controls else {}),
             **({"nextn": nextn} if nextn else {}),
         )

@@ -446,6 +446,45 @@ def _run_command(
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
 
 
+def _attempt_provenance_command(
+    *,
+    cell_id: str,
+    plan_sha256: str,
+    attempt_id: str,
+    expected_backend_version: str | None = None,
+) -> list[str]:
+    """Record the observed runtime before checking a profile's pinned version."""
+
+    payload = json.dumps(
+        {
+            "schema_name": "aic_fpm_collector_provenance",
+            "schema_version": 1,
+            "cell_id": cell_id,
+            "plan_sha256": plan_sha256,
+            "attempt_id": attempt_id,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    script = (
+        "import importlib.metadata, json, pathlib, sys; "
+        "payload = json.loads(sys.argv[1]); "
+        "payload['runtime'] = {'backend': 'vllm', "
+        "'backend_version': importlib.metadata.version('vllm')}; "
+        f"path = pathlib.Path('{FPM_RESULTS_DIR}') / sys.argv[2]; "
+        "path.write_text(json.dumps(payload, sort_keys=True) + '\\n')"
+    )
+    version_args = []
+    if expected_backend_version is not None:
+        script += (
+            "\nactual = payload['runtime']['backend_version']\n"
+            "if actual != sys.argv[3]:\n"
+            "    raise RuntimeError(f'FPM profile runtime mismatch: actual={actual!r}, expected={sys.argv[3]!r}')\n"
+        )
+        version_args.append(expected_backend_version)
+    return ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME, *version_args]
+
+
 class KubernetesCellRunner:
     """Own one generated Pod/LWS/PCS and auxiliary resources through deletion."""
 
@@ -663,27 +702,15 @@ class KubernetesCellRunner:
         cell_id: str,
         plan_sha256: str,
         attempt_id: str,
+        expected_backend_version: str | None = None,
     ) -> None:
         """Clear stale results and bind every Pod to this Collector attempt."""
 
-        payload = json.dumps(
-            {
-                "schema_name": "aic_fpm_collector_provenance",
-                "schema_version": 1,
-                "cell_id": cell_id,
-                "plan_sha256": plan_sha256,
-                "attempt_id": attempt_id,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        script = (
-            "import importlib.metadata, json, pathlib, sys; "
-            "payload = json.loads(sys.argv[1]); "
-            "payload['runtime'] = {'backend': 'vllm', "
-            "'backend_version': importlib.metadata.version('vllm')}; "
-            f"path = pathlib.Path('{FPM_RESULTS_DIR}') / sys.argv[2]; "
-            "path.write_text(json.dumps(payload, sort_keys=True) + '\\n')"
+        command = _attempt_provenance_command(
+            cell_id=cell_id,
+            plan_sha256=plan_sha256,
+            attempt_id=attempt_id,
+            expected_backend_version=expected_backend_version,
         )
         for pod in pods:
             self._exec_checked(
@@ -704,11 +731,7 @@ class KubernetesCellRunner:
                 ],
                 timeout=60,
             )
-            self._exec_checked(
-                pod,
-                ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME],
-                timeout=60,
-            )
+            self._exec_checked(pod, command, timeout=60)
 
     def _remote_result_manifest(self, pod: str) -> dict[str, dict[str, int | str]]:
         script = (
@@ -1222,6 +1245,16 @@ def _cell_generator_overrides(
                     "2",
                 ]
             )
+    if getattr(plan, "fpm_profile", None) is not None:
+        deployment_profile = plan.deployment_profile(cell)
+        assert deployment_profile is not None
+        resources = deployment_profile.resources
+        # Native point generation sees the declared scheduler bounds before
+        # any cases are queued. Never discard runtime cases to fit a profile.
+        if "--max-num-batched-tokens" not in scheduler_args:
+            scheduler_args.extend(["--max-num-batched-tokens", str(resources.max_num_tokens)])
+        if "--max-num-seqs" not in scheduler_args:
+            scheduler_args.extend(["--max-num-seqs", str(resources.max_batch_size)])
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
     if architecture == "DeepseekV41ForCausalLM":
@@ -2043,11 +2076,17 @@ def _run_collection_impl(
                     ),
                 ],
             )
+            profile_version = (
+                {"expected_backend_version": plan.capability.aic_database_version}
+                if getattr(plan, "fpm_profile", None) is not None
+                else {}
+            )
             resource.prepare_attempt(
                 pods,
                 cell_id=cell.cell_id,
                 plan_sha256=plan.sha256,
                 attempt_id=attempt_id,
+                **profile_version,
             )
             _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="before")
             phase_marks["stage_s"] = round(time.monotonic() - mark, 3)

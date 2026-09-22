@@ -48,6 +48,27 @@ def prediction_to_replay_spec(
         afd_performance_model=afd_performance_model,
     )
     deployment = _pin_estimator_version_aliases(deployment)
+    metadata = dict(deployment.performance_model_metadata)
+    for role, field in (
+        ("aggregated", "agg_engine_args"),
+        ("prefill", "prefill_engine_args"),
+        ("decode", "decode_engine_args"),
+    ):
+        timing = (getattr(deployment, field) or {}).get("timing_model", {})
+        if timing.get("provider") == "aic" and "estimation_mode" in timing.get("config", {}):
+            identity = {
+                key: value
+                for key, value in timing["config"].items()
+                if key
+                not in {
+                    "gpu_memory_utilization",
+                    "mem_fraction_static",
+                    "free_gpu_memory_fraction",
+                    "cuda_graph_reserved_bytes",
+                }
+            }
+            metadata[role] = {**metadata.get(role, {}), "provider": "aic", "config": identity}
+    deployment = replace(deployment, performance_model_metadata=metadata)
     if config.engine.mode == "disaggregated":
         assert config.engine.workers.prefill is not None
         for adapter in (adapter_specs or {}).values():
@@ -459,6 +480,8 @@ def _worker_engine_args(
         payload["max_model_len"] = (
             engine.context_length
             if isinstance(engine.context_length, int)
+            else engine.fpm_profile.context_length
+            if engine.fpm_profile is not None
             else resolve_model_context_length(engine.model)
         )
     if cache.state_cache is not None:
@@ -509,6 +532,7 @@ def _worker_engine_args(
         sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
         canonical = ForwardPassPerfModelConfig(
             model=engine.model,
+            fpm_profile=engine.fpm_profile.model_dump(mode="json") if engine.fpm_profile is not None else None,
             system=worker.hardware or engine.hardware,
             backend=backend,
             backend_version=engine.backend_version,
@@ -594,6 +618,17 @@ def _resolve_kv_bytes_per_token(
         pp_size=parallel.pipeline,
         moe_tp_size=parallel.moe_tensor,
         moe_ep_size=parallel.moe_expert,
+        **(
+            {
+                "fpm_profile": engine.fpm_profile.model_dump(mode="json"),
+                "system": worker.hardware or engine.hardware,
+                "backend": engine.backend,
+                "backend_version": engine.backend_version,
+                "attention_dp_size": parallel.attention_data,
+            }
+            if engine.fpm_profile is not None
+            else {}
+        ),
         **({"kvcache_quant_mode": engine.kvcache_quant_mode} if engine.kvcache_quant_mode else {}),
     )
 

@@ -48,8 +48,8 @@ pub use perfmodel::{
     SpeculativeConfig,
 };
 pub use perfmodel::{
-    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,
-    RegressionFitConfig, RegressionFitKind,
+    CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, FpmInterpolationMethod,
+    OpLevelConfig, RegressionFitConfig, RegressionFitKind,
 };
 
 #[cfg(feature = "python")]

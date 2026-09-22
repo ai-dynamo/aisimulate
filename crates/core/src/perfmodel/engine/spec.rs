@@ -623,6 +623,7 @@ mod tests {
         // Recursive like Overlap/Fallback: sol_ops carries the model's
         // original granular list, so the round-trip must preserve nesting.
         crate::operators::FpmForwardOp {
+            interpolation: Default::default(),
             name: "fpm_forward_prefill".into(),
             phase: crate::operators::FpmPhase::Prefill,
             model_path: "org/model-a".into(),
@@ -1050,6 +1051,31 @@ mod tests {
             .expect("from_bincode");
         assert_eq!(decoded, spec);
         assert_eq!(decoded.schema_version, ENGINE_SPEC_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn fpm_interpolation_round_trip_and_schema20_rejection() {
+        let mut op = fpm_forward();
+        op.interpolation = crate::operators::fpm_forward::FpmInterpolation::Direct;
+        op.sol_ops.clear();
+        op.original_fmha_quant_mode = None;
+        let spec = EngineSpec::new(sample_engine_config(), vec![], vec![OpSpec::FpmForward(op)]);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+        // Main's schema20 payload has an empty sol_ops vector and trailing
+        // original-FMHA None (one byte), without the interpolation enum.
+        let selector = bytes.len() - 13;
+        assert_eq!(&bytes[selector..selector + 4], &1u32.to_le_bytes());
+        bytes.drain(selector..selector + 4);
+        bytes[..4].copy_from_slice(&20u32.to_le_bytes());
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 20,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+            })
+        ));
     }
 
     /// A buffer too short to even hold the 4-byte version prefix must fail at the

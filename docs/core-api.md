@@ -282,8 +282,34 @@ nested paths. The supported namespaces are:
 - `correction`: `enabled` (true), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
-- `op_level` and `fpm_interpolation`: reserved typed namespaces with no
-  additional knobs yet; unknown fields are rejected.
+- `fpm_interpolation.method`: `auto` (default), `sol`, or `direct`. Rust selects
+  SOL for a registered architecture, or direct interpolation for an unknown
+  architecture with a valid profile. Without a profile, auto retains SOL.
+  Explicit SOL requires a registered analytical model; direct requires a profile.
+- `op_level`: a reserved typed namespace; unknown fields are rejected.
+
+The top-level `fpm_profile` contains the complete profile dictionary: pinned
+model revision, architecture, context length, expert count, deployment precision
+and topology, conservative resource bounds, and provenance. A profile requires
+an explicit literal `backend_version` that matches its selected deployment;
+slot aliases and omitted versions are rejected. Profile/schema and precision
+conflicts fail before estimator fallback. Omitted precision fields are filled
+from the profile and preserved in the resolved canonical configuration.
+
+For measured-only timing, pass `estimation_mode="fpm_interpolation"`,
+`fallback_policy="deny"`, and
+`estimator_config={"fpm_interpolation": {"method": "direct"}}` together with
+`fpm_profile`. Direct interpolation requires `database_mode="SILICON"`, emits
+whole-forward native operations without SOL operations, and never constructs
+an analytical graph. Profile resource estimates and memory planning do not
+require timing data or a native timing model.
+
+The returned provenance pins both the selected estimation mode and interpolation
+method, alongside the complete normalized profile. Reusing its `config` keeps
+that selection across serialization and replay. Later timing coverage errors
+never switch estimator or interpolation method. A registered model's graph
+construction failure does not change SOL to direct; top-level fallback still
+follows the configured estimator ordering and policy.
 
 Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
 logical store. Rectangular grids are supported. Regression uses dynamic
@@ -313,6 +339,9 @@ allowed direct regression fallback; the migration preserves that two-mode
 order rather than adding interpolation. Legacy `forward_model: fpm` maps to
 `fpm_interpolation`, and `fallback_policy: error` maps to deny. The deprecated
 `regression` policy remains readable for these saved direct-fallback requests.
+Legacy `extra.fpm_profile` and `extra.fpm_interpolation` migrate to the full
+canonical profile and nested interpolation method; newly exported configuration
+uses only the canonical fields.
 
 Previously saved CLI timing with `forward_model` retains explicit selection
 and deny. Newly authored requests without a selection use auto. `ForwardPassPerfOptions`

@@ -311,8 +311,8 @@ impl ForwardPassPerfModel {
     /// Construct and pin one estimator. Auto searches all modes even when
     /// fallback is denied; explicit modes use the requested fallback policy.
     /// A regression model may be constructed before it has enough observations.
-    pub fn best_available(mut config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
-        config.validate()?;
+    pub fn best_available(config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+        let (mut config, registered) = config.resolve_with_registration()?;
         if let Some(path) = config
             .estimator_config
             .fpm_interpolation
@@ -327,6 +327,15 @@ impl ForwardPassPerfModel {
         let mut failures = Vec::new();
         let mut last_error = None;
         for mode in config.candidate_modes() {
+            if mode == EstimationMode::OpLevel && registered == Some(false) {
+                let error = AicError::UnsupportedModel(format!(
+                    "op-level timing requires a registered architecture for {:?}",
+                    config.model,
+                ));
+                failures.push(format!("{mode:?}: {error}"));
+                last_error = Some(error);
+                continue;
+            }
             if config.speculation.is_some() && mode != EstimationMode::OpLevel {
                 let error =
                     AicError::UnsupportedModel("ngram speculation requires op_level timing".into());

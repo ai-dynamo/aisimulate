@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
@@ -42,6 +43,7 @@ def _per_rank_capacity_tokens(
     max_batch_size: int,
     memory_fraction: float,
     nextn: int,
+    fpm_profile_json: str | None = None,
     model_controls: tuple[tuple[str, str | int | bool], ...] = (),
 ) -> int:
     tokens = estimate_kv_tokens(
@@ -55,6 +57,7 @@ def _per_rank_capacity_tokens(
         max_batch_size=max_batch_size,
         memory_fraction=memory_fraction,
         nextn=nextn,
+        **({"fpm_profile": json.loads(fpm_profile_json)} if fpm_profile_json is not None else {}),
         **({"model_controls": dict(model_controls)} if model_controls else {}),
     )
     if tokens is None:
@@ -94,6 +97,7 @@ def _role_capacity_tokens(
             roots = [resolved["systems_path"]]
         if not roots:
             roots = sample.get("systems_paths")
+        profile = resolved.get("fpm_profile", sample.get("fpm_profile"))
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,
             model_name=str(resolved.get("model", resolved.get("model_path", sample["model_name"]))),
@@ -104,6 +108,7 @@ def _role_capacity_tokens(
             max_num_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
             max_batch_size=int(sample[f"{role}_max_num_seqs"]),
             memory_fraction=float(sample[f"{role}_gpu_memory_utilization"]),
+            fpm_profile_json=json.dumps(profile, sort_keys=True) if profile is not None else None,
             nextn=int(resolved.get("nextn", sample.get("aic_nextn")) or 0),
             model_controls=tuple(
                 (name, resolved.get(name, sample.get(name)))

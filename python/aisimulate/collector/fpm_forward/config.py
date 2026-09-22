@@ -405,6 +405,12 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         "Whole-model forward-pass planning, execution, and publication.",
     )
     group.add_argument(
+        "--fpm-model-profile",
+        default=None,
+        metavar="PATH",
+        help="JSON or YAML FPM model profile with exact deployment identities and rank-local resource bounds.",
+    )
+    group.add_argument(
         "--fpm-enforce-eager",
         action="store_true",
         default=None,
@@ -651,6 +657,7 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_weight_quantizations",
         "fpm_kv_cache_dtypes",
         "fpm_model_config",
+        "fpm_model_profile",
         "fpm_tp_sizes",
         "fpm_pp_sizes",
         "fpm_dp_sizes",

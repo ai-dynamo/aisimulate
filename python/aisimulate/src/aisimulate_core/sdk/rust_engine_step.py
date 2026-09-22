@@ -108,6 +108,7 @@ class ForwardPassPerfModelConfig:
     backend: str
     worker_type: str
     backend_version: str | None = None
+    fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
     tp: int = 1
     pp: int = 1
     attention_dp: int = 1
@@ -266,20 +267,14 @@ class RustForwardPassPerfModel:
         """
         import aisimulate_core
 
-        payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
-        if payload.get("estimation_mode") != "fpm_regression" or payload.get("systems_paths"):
-            payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
-        if "transfer_policy" in payload:
-            payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
-        estimator_config = payload.get("estimator_config")
-        if isinstance(estimator_config, Mapping) and isinstance(estimator_config.get("features"), Mapping):
-            features = dict(estimator_config["features"])
-            for name in ("attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"):
-                weight = features.get(name)
-                if isinstance(weight, float) and not math.isfinite(weight):
-                    features[name] = "NaN" if math.isnan(weight) else "Infinity" if weight > 0 else "-Infinity"
-            payload["estimator_config"] = {**estimator_config, "features": features}
-        return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_json_dumps(payload)))
+        return cls(aisimulate_core.RustForwardPassPerfModel.best_available(_forward_pass_config_json(config)))
+
+    @staticmethod
+    def normalize_config(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> dict[str, Any]:
+        """Expand and validate the Rust-owned configuration without constructing a model."""
+        import aisimulate_core
+
+        return json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(_forward_pass_config_json(config)))
 
     def estimate_forward_pass_time_ms(self, metrics: dict[str, Any] | list[dict[str, Any]]) -> float | None:
         """API: ``model.estimate_forward_pass_time_ms(metrics) -> float | None``.
@@ -380,6 +375,23 @@ class RustForwardPassPerfModel:
 
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"), sort_keys=True)
+
+
+def _forward_pass_config_json(config: ForwardPassPerfModelConfig | Mapping[str, Any]) -> str:
+    payload = config.to_dict() if isinstance(config, ForwardPassPerfModelConfig) else dict(config)
+    if payload.get("estimation_mode") != "fpm_regression" or payload.get("systems_paths"):
+        payload["systems_paths"] = _resolve_forward_pass_systems_paths(tuple(payload.get("systems_paths") or ()))
+    if "transfer_policy" in payload:
+        payload["transfer_policy"] = _resolve_forward_pass_transfer_policy(payload["transfer_policy"])
+    estimator_config = payload.get("estimator_config")
+    if isinstance(estimator_config, Mapping) and isinstance(estimator_config.get("features"), Mapping):
+        features = dict(estimator_config["features"])
+        for name in ("attention_kv_weight", "prefill_attention_pair_weight", "ffn_token_weight"):
+            weight = features.get(name)
+            if isinstance(weight, float) and not math.isfinite(weight):
+                features[name] = "NaN" if math.isnan(weight) else "Infinity" if weight > 0 else "-Infinity"
+        payload["estimator_config"] = {**estimator_config, "features": features}
+    return _json_dumps(payload)
 
 
 def _optional_json_dumps(value: Mapping[str, Any] | None) -> str | None:

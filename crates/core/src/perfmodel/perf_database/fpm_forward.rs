@@ -25,6 +25,9 @@
 //! `[batch][total_prefill][total_kv]`, decode `[batch][total_kv]` — plus the
 //! per-phase axis-aligned domain bounding box and a prebuilt
 //! [`SiteIndex`](super::perf_interp::SiteIndex).
+//! Separate direct-timing curves omit every `fake_fallback` row, including
+//! healed rows, so measured-only interpolation never inherits extrapolated
+//! values or KV ceilings from the legacy SOL table.
 //!
 //! Contract notes, all mirrored from Python:
 //! - An ABSENT parquet is the soft "not collected" case: `cells()` errors only
@@ -149,6 +152,13 @@ pub struct FpmForwardCell {
     pub decode_batches: Vec<u32>,
     pub decode_rungs: Vec<u32>,
     pub decode_curve_bounds: BTreeMap<u32, (u32, u32)>,
+    /// Direct timing curves `(batch, KV) -> (prefill tokens -> latency)`.
+    /// Fake-fallback rows are excluded even when the legacy table heals them.
+    pub direct_prefill: BTreeMap<(u32, u32), BTreeMap<u32, f64>>,
+    /// Direct decode curves contain genuine measurements only; their bounds
+    /// do not inherit the fabricated rows' extrapolated KV ceilings.
+    pub direct_decode: BTreeMap<u32, BTreeMap<u32, f64>>,
+    pub direct_decode_rungs: Vec<u32>,
     /// Diagnostic state only; no change to table identity, values, or schema.
     warned_fmha_model_modes: Mutex<BTreeSet<String>>,
 }
@@ -959,6 +969,9 @@ fn load_pair(
                 decode_batches: Vec::new(),
                 decode_rungs: Vec::new(),
                 decode_curve_bounds: BTreeMap::new(),
+                direct_prefill: BTreeMap::new(),
+                direct_decode: BTreeMap::new(),
+                direct_decode_rungs: Vec::new(),
                 warned_fmha_model_modes: Mutex::new(BTreeSet::new()),
             },
         });
@@ -966,6 +979,14 @@ fn load_pair(
             building.cell.cell_ids.push(row.cell_id.clone());
         }
         if row.workload_kind == "prefill" {
+            if !row.fake_fallback {
+                building
+                    .cell
+                    .direct_prefill
+                    .entry((row.batch_size, row.total_kv_read_tokens))
+                    .or_default()
+                    .insert(row.total_prefill_tokens, row.latency_ms);
+            }
             building.cell.prefill.insert(
                 &[
                     row.batch_size,
@@ -975,6 +996,14 @@ fn load_pair(
                 row.latency_ms,
             );
         } else {
+            if !row.fake_fallback {
+                building
+                    .cell
+                    .direct_decode
+                    .entry(row.batch_size)
+                    .or_default()
+                    .insert(row.total_kv_read_tokens, row.latency_ms);
+            }
             building
                 .cell
                 .decode
@@ -986,6 +1015,15 @@ fn load_pair(
         .into_values()
         .map(|b| {
             let mut cell = b.cell;
+            cell.direct_decode_rungs = cell
+                .direct_decode
+                .keys()
+                .copied()
+                .filter(|b| {
+                    b.checked_add(1)
+                        .is_some_and(|n| cell.direct_decode.contains_key(&n))
+                })
+                .collect();
             cell.prefill_domain = domain::<3>(&cell.prefill);
             cell.decode_domain = domain::<2>(&cell.decode);
             if cell.prefill_domain.is_some() {

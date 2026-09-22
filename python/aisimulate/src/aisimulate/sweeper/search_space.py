@@ -292,6 +292,7 @@ def _heterogeneous_disagg_configs(
                 role_runtime={"agg": _role_runtime(search_space, backend, role)},
                 **_engine_memory_kwargs(search_space),
                 **_estimator_root_kwargs(search_space, role),
+                **({"fpm_profile": search_space.fpm_profile} if search_space.fpm_profile is not None else {}),
             )
         except (NoPerfDatabase, NoViableParallelConfig) as exc:
             raise type(exc)(f"{role} hardware_sku={hardware!r}: {exc}") from exc
@@ -620,6 +621,7 @@ def enumerate_branches(
                         role_runtime=_runtime_by_role(ss, backend, deployment_mode),
                         **_engine_memory_kwargs(ss),
                         **_estimator_root_kwargs(ss, "agg" if deployment_mode == "agg" else "prefill"),
+                        **({"fpm_profile": ss.fpm_profile} if ss.fpm_profile is not None else {}),
                     )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue  # backend unusable for this mode -> drop it from the search
