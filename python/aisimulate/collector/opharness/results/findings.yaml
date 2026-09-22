@@ -451,9 +451,19 @@ findings:
       errors) — a timing race in the 0.29 FA3 sparse-MLA decode chain, worth reporting upstream. Recovery is
       operational: failures are stochastic with ~75%/round retry recovery, geometric to near-zero
       (GLM gen 300->70->17->5->2 of 8832; DeepSeek 346->106->28->8) — --resume-retry-failed sweeps recover the
-      rows without touching measurement semantics. ADDENDA: (2+3) upgraded to selector-verified — serving itself
-      routes fp8-kv+head512 to FlashInferBackend whose SM90 JIT cannot run it (prefill fa2 no-fp8 assert, decode
-      module compiles SM100+ only); a vllm selector availability-check gap, upstream-worthy. (4a) VERDICT FLIPPED 2026-09-22 via live-engine probe:
+      rows without touching measurement semantics. ADDENDA: (2+3) VERDICT FLIPPED AGAIN 2026-09-22 via live-engine
+      probe — collector-specific, NOT a framework selector gap. head_dim=512 dense attention comes only from
+      Gemma-4 (global layers: global_head_dim=512, num_global_key_value_heads=2). Real vllm serving of Gemma-4 with
+      --kv-cache-dtype fp8 on SM90 GENERATES fine: Gemma4Config.verify_and_update_config
+      (model_executor/models/config.py:209-256) is a model-level hook that, for heterogeneous head dims (256/512),
+      forces FA4 for all layers (or TRITON_ATTN fallback) because default FA3 on Hopper cannot handle head_dim>256
+      — so serving NEVER routes Gemma-4 head512 to FlashInfer (resolved backend TRITON_ATTN, candidate list
+      [TRITON_ATTN]). collect_attn constructs the attention in isolation and calls the bare platform selector
+      (get_attn_backend_cls) WITHOUT running that model hook, so it picks FlashInfer whose SM90 JIT cannot compile
+      fp8+head512 -> the 1625 dsa... i.e. attention fp8 failures. Same class as DSA 4a / Gemma monolithic: the
+      collector reproduces a backend serving never selects. Fix: the collector must select the backend serving
+      actually uses for head_dim>256 (apply the Gemma4 heterogeneous-head override: FA4/Triton, never FlashInfer),
+      with the config.py:209-256 citation. Evidence facts/gemma4_fp8_probe (GENERATE OK, TRITON_ATTN). (4a) VERDICT FLIPPED 2026-09-22 via live-engine probe:
       collector-specific, NOT a framework limit. fp8-KV + num_heads<32 (the collector head-sweep emulating TP>=5)
       selects fp8 mixed mode (MIN_HEADS_FOR_BF16_PREFILL=32, flashmla_sparse.py:63/307), which runs the whole batch
       as one MQA batch through the fp8 decode kernel (head padding 16->64); the collector builds the prefill as a
