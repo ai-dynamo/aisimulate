@@ -290,6 +290,24 @@ time.
   Measures extrapolation, i.e. what happens when a release model meets traffic it was
   not trained on.
 
+### 5.1 Script path vs. the shipped CLI
+
+The tables in §7 were produced by the campaign's evaluation scripts (scikit-learn fit and
+predict on tier-windowed records). To check that the shipped path gives the same answer,
+the `fpm_learned train` → `evaluate` CLI (Rust inference, 400 trees, early stopping off,
+all records of the run including warm-up and inter-tier gaps) was run on one pair of
+capture runs per backend, training on the seed-42 run and evaluating on the seed-7 run:
+
+| Pair | decode, script | decode, CLI | prefill, script | prefill, CLI |
+| --- | --- | --- | --- | --- |
+| SGLang V4.1-Flash AgentX 42 → 7 | 1.91% | 1.92% | 2.23% | 2.73% |
+| vLLM V4-Flash AgentX 42 → 7 | 3.66% | 4.02% | 4.39% | 5.09% |
+
+Decode agrees; the CLI prefill numbers are 0.5–0.7 pp higher because the CLI scores every
+recorded step, including the ~3% of prefill steps that fall outside the concurrency
+windows (warm-up sweep, tier boundaries), which are the unusual-shape steps the tiered
+tables exclude. Both paths use the same feature definitions.
+
 ## 6. The three workloads
 
 All on one deployment: DeepSeek-V4.1-Flash, Dynamo SGLang runtime
