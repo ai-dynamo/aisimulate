@@ -2605,7 +2605,6 @@ impl VllmCore {
             // The final prefill forward already includes the output head. First
             // tokens sampled from it do not require a second full forward pass.
             let first_token_from_prefill = self.args.worker_type == WorkerType::Aggregated
-                && policy::samples_first_token_from_prefill(self.args.scheduling_policy())
                 && self.speculative_sampler.is_none()
                 && request.sequence.generated_tokens() == 0
                 && scheduled

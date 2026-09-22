@@ -984,18 +984,22 @@ impl TimingModel for RecordingTiming {
     }
 }
 
-fn recording_timing_spec() -> ReplaySpec {
-    spec(engine_config(TimingModelConfig::External {
+fn recording_timing_spec(backend: Backend) -> ReplaySpec {
+    let mut config = engine_config(TimingModelConfig::External {
         provider: "recording".to_string(),
         config: serde_json::Value::Null,
-    }))
+    });
+    config.rank.backend = backend;
+    spec(config)
 }
 
-#[test]
-fn vllm_prefill_batch_uses_the_final_prefill_forward_once() {
+#[rstest::rstest]
+fn aggregated_prefill_batch_uses_the_final_prefill_forward_once(
+    #[values(Backend::Vllm, Backend::Trtllm)] backend: Backend,
+) {
     for output_tokens in [0, 1, 2] {
         let timing = Arc::new(RecordingTiming::default());
-        let mut replay = recording_timing_spec();
+        let mut replay = recording_timing_spec(backend);
         replay.requests = vec![
             request_with_tokens("first", 0.0, vec![1, 2, 3, 4], output_tokens),
             request_with_tokens("second", 0.0, vec![5, 6, 7, 8], output_tokens),
@@ -1019,34 +1023,29 @@ fn vllm_prefill_batch_uses_the_final_prefill_forward_once() {
 }
 
 #[test]
-fn first_token_timing_fix_preserves_trtllm_and_speculative_paths() {
-    for backend in [Backend::Trtllm, Backend::Vllm] {
-        let timing = Arc::new(RecordingTiming::default());
-        let mut config = engine_config(TimingModelConfig::External {
-            provider: "recording".to_string(),
-            config: serde_json::Value::Null,
-        });
-        config.rank.backend = backend;
-        if backend == Backend::Vllm {
-            config.rank.aic_nextn = Some(1);
-            config.rank.aic_nextn_accept_rates = Some("1.0".to_string());
-        }
-        let mut replay = spec(config);
-        replay.requests = vec![request("request", 0.0, 4, 1)];
-        let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
-        assert_eq!(report.per_request[0].first_token_ms, Some(12.0));
-        assert_eq!(report.per_request[0].terminal_time_ms, 12.0);
-        assert_eq!(
-            *timing.calls.lock().unwrap(),
-            vec![TimingCall::Prefill(1, 4, 0), TimingCall::Decode(1, 4, 4),]
-        );
-    }
+fn first_token_timing_fix_preserves_speculative_verification() {
+    let timing = Arc::new(RecordingTiming::default());
+    let mut replay = recording_timing_spec(Backend::Vllm);
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
+    config.rank.aic_nextn = Some(1);
+    config.rank.aic_nextn_accept_rates = Some("1.0".to_string());
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![request("request", 0.0, 4, 1)];
+    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+    assert_eq!(report.per_request[0].first_token_ms, Some(12.0));
+    assert_eq!(report.per_request[0].terminal_time_ms, 12.0);
+    assert_eq!(
+        *timing.calls.lock().unwrap(),
+        vec![TimingCall::Prefill(1, 4, 0), TimingCall::Decode(1, 4, 4),]
+    );
 }
 
-#[test]
-fn vllm_mixed_pass_prices_only_ongoing_decoders_and_completes_together() {
+#[rstest::rstest]
+fn aggregated_mixed_pass_prices_only_ongoing_decoders_and_completes_together(
+    #[values(Backend::Vllm, Backend::Trtllm)] backend: Backend,
+) {
     let timing = Arc::new(RecordingTiming::default());
-    let mut replay = recording_timing_spec();
+    let mut replay = recording_timing_spec(backend);
     replay.requests = vec![
         request_with_tokens("decoding", 0.0, vec![1, 2, 3, 4], 2),
         request_with_tokens("prefilling", 5.0, (10..18).collect(), 1),
@@ -1079,7 +1078,7 @@ fn vllm_mixed_pass_prices_only_ongoing_decoders_and_completes_together() {
 #[test]
 fn vllm_chunked_prefill_waits_for_the_final_chunk_before_sampling() {
     let timing = Arc::new(RecordingTiming::default());
-    let mut replay = recording_timing_spec();
+    let mut replay = recording_timing_spec(Backend::Vllm);
     let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
     config.rank.max_num_batched_tokens = 4;
     replay.engine = serde_json::to_value(config).unwrap();
@@ -1098,10 +1097,17 @@ fn vllm_chunked_prefill_waits_for_the_final_chunk_before_sampling() {
     );
 }
 
-#[test]
-fn vllm_full_prefix_hit_recomputes_logits_without_an_extra_decode_forward() {
+#[rstest::rstest]
+#[case(Backend::Vllm, 4, 30.0, TimingCall::Prefill(1, 8, 4))]
+#[case(Backend::Trtllm, 8, 22.0, TimingCall::Decode(1, 8, 8))]
+fn full_prefix_hit_prices_the_forward_required_by_the_backend(
+    #[case] backend: Backend,
+    #[case] reused_input_tokens: usize,
+    #[case] completion_ms: f64,
+    #[case] reuse_forward: TimingCall,
+) {
     let timing = Arc::new(RecordingTiming::default());
-    let mut replay = recording_timing_spec();
+    let mut replay = recording_timing_spec(backend);
     replay.requests = vec![
         request_with_tokens("seed", 0.0, (1..9).collect(), 0),
         request_with_tokens("reuse", 20.0, (1..9).collect(), 1),
@@ -1112,12 +1118,12 @@ fn vllm_full_prefix_hit_recomputes_logits_without_an_extra_decode_forward() {
         .iter()
         .find(|row| row.request_id.as_deref() == Some("reuse"))
         .unwrap();
-    assert_eq!(reuse.reused_input_tokens, 4);
-    assert_eq!(reuse.first_token_ms, Some(30.0));
-    assert_eq!(reuse.terminal_time_ms, 30.0);
+    assert_eq!(reuse.reused_input_tokens, reused_input_tokens);
+    assert_eq!(reuse.first_token_ms, Some(completion_ms));
+    assert_eq!(reuse.terminal_time_ms, completion_ms);
     assert_eq!(
         *timing.calls.lock().unwrap(),
-        vec![TimingCall::Prefill(1, 8, 0), TimingCall::Prefill(1, 8, 4),]
+        vec![TimingCall::Prefill(1, 8, 0), reuse_forward]
     );
 }
 

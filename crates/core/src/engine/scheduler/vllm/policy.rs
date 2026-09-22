@@ -3,10 +3,10 @@
 
 //! Engine-specific policy for the shared vLLM/TRT-LLM scheduler core.
 //!
-//! The core stays backend-neutral and delegates these policy seams here:
+//! The core stays backend-neutral and delegates four policy seams here:
 //! request-length normalization, ordinary waiting admission, P/D destination
-//! admission/reservation, preemption, and first-token timing. Prefix accounting
-//! and no-evict headroom are implementation details of those hooks, not separate schedulers.
+//! admission/reservation, and preemption. Prefix accounting and no-evict
+//! headroom are implementation details of those hooks, not separate schedulers.
 
 use crate::engine::common::protocols::{PrefillCost, SchedulingPolicy};
 use crate::engine::kv_manager::{AllocationRequirement, DestinationReservationMode, G1Manager};
@@ -163,10 +163,6 @@ pub(super) fn generation_complete<S: PolicySequence>(
     max_model_len: Option<usize>,
 ) -> bool {
     remaining_generation_tokens(sequence, max_model_len) == 0
-}
-
-pub(super) fn samples_first_token_from_prefill(policy: SchedulingPolicy) -> bool {
-    policy == SchedulingPolicy::Vllm
 }
 
 /// Decide whether the FIFO head can enter the shared scheduler core.
