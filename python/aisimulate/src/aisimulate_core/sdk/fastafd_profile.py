@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 sgl-project
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: MIT AND Apache-2.0
+# SPDX-License-Identifier: Apache-2.0
 #
 # Adapted and modified from FastAFD:
 # https://github.com/liz-badada/FastAFD/blob/0b9bce2bdbee04ace2673cfc3118572fec484fe4/scripts/experiments/afd/summarize_megamoe_model_results.py
