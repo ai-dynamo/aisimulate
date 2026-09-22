@@ -2,11 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod admission;
+mod encoder;
 mod engine;
 mod types;
 
 pub(crate) use admission::{AdmissionQueue, ReplayReadyArrival};
 pub use admission::{NoReplayMetadata, ReplayAdmissionMetadata};
+pub(crate) use encoder::EncoderPool;
 pub(crate) use engine::EngineComponent;
 pub use types::ReplayEngineObservation;
 pub(crate) use types::ReplayMode;

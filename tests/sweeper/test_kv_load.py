@@ -330,3 +330,25 @@ def test_image_workloads_size_the_load_on_the_placeholders_the_runner_lays_out()
     # Analytical EPD (no vision tower on the language worker) sizes on the same placeholders.
     del sample["agg_vision"]
     assert concurrency() == 100_000 // (128 + 196 + 2)
+
+
+def test_disagg_prefill_vision_sizes_only_the_prefill_capacity_against_the_tower(monkeypatch):
+    controls = []
+
+    def fake_per_rank(shape, **kwargs):
+        controls.append(dict(kwargs.get("model_controls", ())))
+        return 10_000
+
+    monkeypatch.setattr("aisimulate.sweeper.kv_load._per_rank_capacity_tokens", fake_per_rank)
+    sample = {**_sample("disagg"), "backend": "sglang", "prefill_vision": {"cache_mib": 100, "encoder_parallel": "tp"}}
+    rank = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    resolve_kv_load(
+        sample,
+        workload=Workload(isl=100, osl=100, kv_load_ratio=1.0, num_request_ratio=10),
+        parallel_config=DisaggParallelConfig(prefill=rank, decode=rank),
+        ratio=1.0,
+        backend_version="v",
+    )
+    # The runtime deducts the tower and the embedding cache on the prefill rank only.
+    assert controls[0] == {"colocated_encoder": True, "reserved_bytes": 100 << 20, "encoder_parallel": "tp"}
+    assert "colocated_encoder" not in controls[1]

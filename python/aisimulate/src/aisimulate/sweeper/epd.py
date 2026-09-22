@@ -16,7 +16,7 @@ from dataclasses import asdict, replace
 
 from .config import EncoderSearch, SmartSearchConfig, Workload
 from .kv_estimate import NoPerfDatabase, resolve_backend_version
-from .replay import EncoderPoolSpec, ReplayReport, ReplaySpec
+from .replay import EncoderPoolSpec, NativeEncoderTiming, ReplayReport, ReplaySpec
 
 logger = logging.getLogger(__name__)
 
@@ -83,15 +83,26 @@ def resolve_encoder_pools(
             logger.warning("Skipping encoder backend: no encoder database for %s/%s/%s", system, backend, version)
             continue
         version = database.version
-        rows = _get_encoder_worker_candidates(
-            model_path=model_name,
-            tp_list=encoder.tp,
-            b_list=encoder.batch_size,
-            runtime_config=runtime,
-            database=database,
-            backend_name=backend,
-            latency_correction=encoder.latency_correction,
-        )
+        if encoder.mode == "native":
+            rows = _native_encoder_rows(
+                encoder,
+                model_name=model_name,
+                runtime=runtime,
+                database=database,
+                backend=backend,
+                images=images,
+                visual_tokens=visual_tokens,
+            )
+        else:
+            rows = _get_encoder_worker_candidates(
+                model_path=model_name,
+                tp_list=encoder.tp,
+                b_list=encoder.batch_size,
+                runtime_config=runtime,
+                database=database,
+                backend_name=backend,
+                latency_correction=encoder.latency_correction,
+            )
         for row in rows:
             coverage = float(row.get("power_coverage", 0.0))
             power = float(row.get("power_w", 0.0))
@@ -117,12 +128,69 @@ def resolve_encoder_pools(
                     image_count=images.count,
                     power_w=power if power > 0 and coverage > 0 else None,
                     power_coverage=coverage if power > 0 else 0.0,
+                    mode=encoder.mode,
+                    native=row.get("native"),
                 )
                 if gpu_budget is None or point.total_gpus < gpu_budget:
                     catalog[f"{backend}|tp{point.tp}|bs{point.batch_size}|w{workers}"] = point
     if not catalog:
         raise ValueError("no feasible encoder pool for the requested shape and GPU budget")
     return catalog
+
+
+def _native_encoder_rows(encoder, *, model_name, runtime, database, backend, images, visual_tokens):
+    """One row per encoder tp at the loop's batch cap, with the service terms the replay prices batches from.
+
+    The CPU preprocessing is the `process` stage measured for the Python frontend
+    (the encoder servers run the same image processor); the forward latencies come
+    from the AIC encoder model at every batch size up to the cap.
+    """
+    from aisimulate.sdk.sweep import encoder_batch_latencies, encoder_embedding_bytes_per_token
+
+    from ..config.engine import HostProfileConfig
+    from ..vl.table import resolve_frontend
+
+    (cap,) = encoder.batch_size
+    profile = HostProfileConfig.model_validate(encoder.host_profile)
+    frontend, digest = resolve_frontend(profile, model=model_name, images=images.model_dump(mode="json"), tensor=1)
+    bytes_per_request = visual_tokens * encoder_embedding_bytes_per_token(model_name)
+    rows = []
+    for tp in encoder.tp:
+        try:
+            batches = encoder_batch_latencies(
+                model_path=model_name,
+                tp=tp,
+                batch_sizes=list(range(1, cap + 1)),
+                runtime_config=runtime,
+                database=database,
+                backend_name=backend,
+                latency_correction=encoder.latency_correction,
+            )
+        except ValueError as exc:
+            logger.debug("native encoder: tp=%s rejected: %s", tp, exc)
+            continue
+        at_cap = batches[-1]
+        rows.append(
+            {
+                "encoder_latency": at_cap["encoder_latency"],
+                "seq/s": cap * 1000.0 / at_cap["encoder_latency"],
+                "tp": tp,
+                "bs": cap,
+                "memory": at_cap["memory"],
+                "power_w": at_cap["power_w"],
+                "power_coverage": at_cap["power_coverage"],
+                "native": NativeEncoderTiming(
+                    preprocess_ms=frontend.stages[0].service_ms,
+                    forward_ms_by_batch=tuple(batch["encoder_latency"] for batch in batches),
+                    transfer_bytes_per_request=bytes_per_request,
+                    transfer_bandwidth_gb_s=encoder.transfer_bandwidth_gb_per_second,
+                    host_profile_path=profile.path,
+                    host_profile_frontend=profile.frontend,
+                    host_profile_digest=digest,
+                ),
+            }
+        )
+    return rows
 
 
 def add_encoder_choices(branches, catalog):

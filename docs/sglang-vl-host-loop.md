@@ -6,12 +6,14 @@ SPDX-License-Identifier: Apache-2.0
 # SGLang VL host loop and frontend modeling
 
 Native VL replay predicts a vision-language deployment end to end on one
-aggregated SGLang worker: requests cross the serving frontend, the scheduler
-receives and batches them at iteration boundaries, the vision encoder runs
-inside the prefill forward, and outputs become visible one scheduler iteration
-later. Configure it in an `aisimulate predict` configuration by pointing the
-aggregated worker's `host_profile` at a host cost table measured on the serving
-host, next to an image workload:
+aggregated SGLang worker, or on the prefill worker of a disaggregated
+deployment (see [Disaggregated prefill](#disaggregated-prefill)): requests
+cross the serving frontend, the scheduler receives and batches them at
+iteration boundaries, the vision encoder runs inside the prefill forward, and
+outputs become visible one scheduler iteration later. Configure it in an
+`aisimulate predict` configuration by pointing the host-aware worker's
+`host_profile` at a host cost table measured on the serving host, next to an
+image workload:
 
 ```yaml
 traffic:
@@ -144,20 +146,80 @@ observing the first token). These are server-internal latencies to scheduler
 observation, not client-visible ones, and they are reported with or without
 per-request capture.
 
+## Disaggregated prefill
+
+In a disaggregated deployment the prefill worker hosts the same loop: put
+`host_loop`, `frontend` or `host_profile`, and `vision` on `workers.prefill`
+(`mode: disaggregated`, see `examples/cli/vl-predict-disaggregated.yaml`) and
+leave `workers.decode` a plain worker. The modeled path follows SGLang's PD
+prefill server: the request crosses the prefill rank's frontend stages, its
+scheduler receives it at an iteration boundary, the extend runs with the vision
+encoder, and the KV handoff to the decode rank starts when the next iteration
+observes that forward, where SGLang sends the last KV chunk and the request
+metadata while processing the batch result. A finished extend leaves the batch
+at once (`disagg_prefill_inflight_queue` keeps it out of the next batch), so the
+prefill rank never prices a ghost decode step. The decode rank keeps the
+existing PD contract: it activates the request when the transfer completes and
+its first decode step produces the first visible token.
+
+Approximations specific to this path:
+
+| Approximation | Reason |
+| --- | --- |
+| The decode rank's frontend is not modeled. SGLang's decode-side tokenizer manager repeats the image preprocessing, on another host and concurrently with the prefill rank's; the critical path is the prefill frontend, and the decode rank's registration is immediate, as for text PD. | Keeps the decode rank identical to text PD; the error is the decode rank's pickup latency, one decode iteration. |
+| The decode rank does not deduct the resident vision tower from its KV pool (SGLang loads it in pure PD; `--language-model-only` is incompatible with PD). | The tower is a small fraction of HBM for the supported models, and the decode rank needs no vision oracle. |
+| The decode rank runs without `host_loop`. | Its per-token interval is the same either way, and the one-iteration observation delay would compound the existing first-token contract, under which the first visible token comes from the decode rank's first forward rather than from SGLang's prebuilt batch. |
+| KV transfer starts after the whole prompt is extended, as for text PD. | SGLang sends KV per chunk, overlapped with later chunks; the transfer model is unchanged. |
+
+## Native encoder disaggregation
+
+`engine.workers.encoder` with `mode: native` replays SGLang's encoder
+disaggregation event by event instead of adding one batch latency to the mean
+TTFT (`mode: analytical`, the default, is unchanged). Each of the `replicas`
+encoder servers (`--encoder-only`) runs one serial loop, as `EncoderScheduler`
+does: it takes the queued requests up to `batch_size` (the loop's cap,
+`SGLANG_ENCODER_MAX_BATCH_SIZE`, default 8), runs the image processor and one
+encoder forward over the batch, then pushes each request's embeddings to the
+language rank. The push is asynchronous, so the instance takes its next batch
+when the forward ends; requests arriving at one instant share a batch because
+they are already queued when the loop collects it. A request reaches the
+language worker only when its embeddings arrived, and its time to first token
+counts the wait; the report adds `encoder_latency_ms` (mean arrival-to-delivery)
+and, per request, `encoder_ready_ms`.
+
+Service terms per request (`examples/cli/vl-predict-epd-native.yaml`):
+
+| Term | Source |
+| --- | --- |
+| CPU preprocessing | The `process` stage of the encoder host's cost table (`host_profile`, Python frontend): the encoder servers run the same HF image processor as the tokenizer manager. A batch of `k` requests costs `k` times that stage (the processor works per image; the four parallel image loaders are not modeled). |
+| Encoder forward | The AIC encoder model at the pool's `tensor` width for every batch size up to the cap, the same estimator the analytical mode uses for its single batch point. |
+| Transfer | `visual_tokens x embedding bytes per token x language tensor-parallel width` at `transfer.bandwidth_gb_per_second`: `zmq_to_scheduler` fans the embeddings out to every rank. Requests are timed independently at that bandwidth, the same precision boundary as the prefill-to-decode KV handoff, with which it shares the bytes-over-bandwidth arithmetic. |
+
+The language worker runs `--language-only`: it neither hosts the vision tower
+nor prices image frontend stages (`vision`, `frontend`, and `host_profile` are
+rejected on it), while `host_loop` still models its scheduler loop. Visual
+placeholders occupy its prompt as they do on the analytical path. Not modeled:
+`--enable-adaptive-dispatch-to-encoder` (single-image requests encoded locally,
+off by default), the mooncake GPU-direct transfer and the encoder's prefix
+embedding cache, and the resident tower weights that Qwen-VL still loads on a
+language-only rank.
+
 ## Compatibility and scope
 
-`host_loop`, `frontend`, and `vision` require `backend: sglang`, `mode: aggregated`,
-`pipeline: 1`, `attention_data: 1`, and default (AIC) timing. Image workloads
-take either this path or the analytical encoder pool (`engine.workers.encoder`),
-never both, and `min_pixels`/`max_pixels` are honored only on this path. On this
+`host_loop`, `frontend`, and `vision` require `backend: sglang`, `pipeline: 1`,
+`attention_data: 1`, and default (AIC) timing on the worker that hosts them:
+`workers.aggregated` in `mode: aggregated` or `workers.prefill` in
+`mode: disaggregated`. Image workloads
+take either this path or an encoder pool (`engine.workers.encoder`, analytical
+or native), never both, and `min_pixels`/`max_pixels` are honored only on this
+path. On this
 path `scheduler.max_batched_tokens` becomes SGLang's `chunked_prefill_size`;
 other SGLang predictions keep their existing behavior. `recommend` accepts the
 same fields as fixed data; candidates search load, scheduling, tensor
 parallelism and replicas, and their saved prediction YAML reproduces the scored
 metrics through `aisimulate predict`.
 
-Not modeled: the GPU image processor path, video, PD or EPD disaggregation
-with a host loop, speculative decoding, mixed image resolutions in one
+Not modeled: the GPU image processor path, video, speculative decoding, mixed image resolutions in one
 workload, and the output side (detokenizer and tokenizer-manager work after the
 scheduler observes a token): the reported latencies end at scheduler
 observation. Every replica is assumed to have its own, sufficient CPU for its
@@ -165,7 +227,7 @@ frontend stages; a search over TP and replicas on one shared node has no common
 CPU budget in this model.
 
 Omitted CPU costs, by decision: the scheduler thread's batch-level work is not
-priced. On a Qwen3-VL-8B H20 serving host (SGLang 0.5.19, image shapes
+priced. On a measured Qwen3-VL-8B serving host (SGLang 0.5.19, image shapes
 480²-1024² × 1-16 images, text 128) the omitted terms were small next to
 `receive`, which is kept as a frontend stage: pixel-value host-to-device copies
 before the encoder about 2% of TTFT for the largest image batches, the eager
@@ -192,7 +254,7 @@ differently and have not been measured.
 
 Support matrix: the mechanics are exercised end to end for Qwen3-VL on the
 packaged `h200_sxm` SGLang data with hand-written stages; the collector's Python
-and Rust paths were run on an H20 serving host with SGLang 0.5.19 for Qwen3-VL-8B.
+and Rust paths were run on a serving host with SGLang 0.5.19 for Qwen3-VL-8B.
 Llama 4 tile geometry and TP `2`/`4` encoder layouts are covered by contract
 tests on the geometry and the compiled tower, not by end-to-end serving
 comparisons.

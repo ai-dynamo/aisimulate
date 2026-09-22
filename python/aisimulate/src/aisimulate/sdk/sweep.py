@@ -876,15 +876,7 @@ def _get_encoder_worker_candidates(
     power_w / power_coverage``.
     """
     backend = get_backend(backend_name)
-    model_info = get_model_config_from_model_path(model_path)
-    enc_cfg = model_info.get("extra_params")
-    if isinstance(enc_cfg, common.KimiK3Config):
-        # K3 nests its generic ViT config alongside the language geometry.
-        # Other nested families may need specialized encoder builders.
-        enc_cfg = get_vision_encoder_config_from_model_info(model_info)
-    if not isinstance(enc_cfg, common.VisionEncoderConfig):
-        # Not a VL model -> EPD cannot apply (config error, not a type bug).
-        raise ValueError(f"EPD (encoder disaggregation) requested but model {model_path!r} has no vision encoder.")
+    enc_cfg = _vision_encoder_config(model_path)
     if BaseBackend._visual_context_tokens_from_encoder_config(enc_cfg, runtime_config) <= 0:
         raise ValueError(
             "EPD (encoder disaggregation) requested but the workload has no image input; "
@@ -966,6 +958,79 @@ def _get_encoder_worker_candidates(
             "(tp must divide the ViT geometry and have comm data on this system; see warnings)."
         )
     return rows
+
+
+def _vision_encoder_config(model_path: str) -> common.VisionEncoderConfig:
+    model_info = get_model_config_from_model_path(model_path)
+    enc_cfg = model_info.get("extra_params")
+    if isinstance(enc_cfg, common.KimiK3Config):
+        # K3 nests its generic ViT config alongside the language geometry.
+        # Other nested families may need specialized encoder builders.
+        enc_cfg = get_vision_encoder_config_from_model_info(model_info)
+    if not isinstance(enc_cfg, common.VisionEncoderConfig):
+        # Not a VL model -> EPD cannot apply (config error, not a type bug).
+        raise ValueError(f"EPD (encoder disaggregation) requested but model {model_path!r} has no vision encoder.")
+    return enc_cfg
+
+
+def encoder_batch_latencies(
+    *,
+    model_path: str,
+    tp: int,
+    batch_sizes: list[int],
+    runtime_config: config.RuntimeConfig,
+    database: PerfDatabase,
+    backend_name: str,
+    latency_correction: float,
+) -> list[dict]:
+    """Encode-worker batch latency at ``tp`` for every batch size, for the native encoder replay.
+
+    Same encoder-only model, OOM gate and correction as ``_get_encoder_worker_candidates``;
+    returns one ``encoder_latency / memory / power_w / power_coverage`` row per batch size,
+    raises ``ValueError`` when the ViT geometry rejects ``tp`` and ``InsufficientMemoryError``
+    when a batch does not fit.
+    """
+    backend = get_backend(backend_name)
+    enc_cfg = _vision_encoder_config(model_path)
+    if BaseBackend._visual_context_tokens_from_encoder_config(enc_cfg, runtime_config) <= 0:
+        raise ValueError("EPD (encoder disaggregation) requested but the workload has no image input.")
+    misc_spec = database.system_spec["misc"]
+    if min(tp, 8) not in misc_spec["nccl_mem"]:
+        raise ValueError(f"EPD encoder: tp={tp} has no comm data for this world size on this system")
+    mem_capacity_gib = database.system_spec["gpu"]["mem_capacity"] / (1 << 30)
+    other_mem = misc_spec["other_mem"] * (1.0 + backend.OTHERS_OVERHEAD_FRAC)
+    overhead_gib = (misc_spec["nccl_mem"][min(tp, 8)] + other_mem) / (1 << 30)
+    model = EncoderOnlyModel(
+        encoder_ops=build_encoder_ops(enc_cfg, tp, enable_encoder_dp=False),
+        encoder_config=enc_cfg,
+        config=config.ModelConfig(tp_size=tp, enable_encoder_dp=False),
+    )
+    rows: list[dict] = []
+    for b in batch_sizes:
+        latency, power_w, memory, power_coverage = backend.run_encoder_static(
+            model, database, runtime_config, b, latency_correction_scale=latency_correction
+        )
+        if memory.get("total", 0.0) + overhead_gib >= mem_capacity_gib:
+            raise InsufficientMemoryError(
+                f"EPD encoder: a batch of {b} requests does not fit in GPU memory at tp={tp}."
+            )
+        if not (latency > 0 and math.isfinite(latency)):
+            raise ValueError(f"EPD encoder: invalid batch latency ({latency}) at tp={tp} bs={b}.")
+        rows.append(
+            {
+                "encoder_latency": round(latency, 3),
+                "memory": round(memory.get("total", 0.0), 3),
+                "power_w": power_w,
+                "power_coverage": power_coverage,
+            }
+        )
+    return rows
+
+
+def encoder_embedding_bytes_per_token(model_path: str) -> int:
+    """bf16 bytes of one visual token as the encoder hands it to a language rank, deepstack layers included."""
+    enc_cfg = _vision_encoder_config(model_path)
+    return enc_cfg.out_hidden_size * (1 + len(enc_cfg.deepstack_visual_indexes)) * 2
 
 
 def _epd_e_num_candidates(

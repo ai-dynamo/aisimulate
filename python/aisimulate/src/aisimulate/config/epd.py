@@ -21,6 +21,15 @@ def encoder_prediction_fields(encoder: EncoderPoolSpec) -> dict:
         "batch_size": encoder.batch_size,
         "latency_correction": encoder.latency_correction,
         "rate_degradation": encoder.rate_degradation,
+        "mode": encoder.mode,
+        "host_profile": (
+            {"path": encoder.native.host_profile_path, "frontend": encoder.native.host_profile_frontend}
+            if encoder.native is not None
+            else None
+        ),
+        "transfer": (
+            {"bandwidth_gb_per_second": encoder.native.transfer_bandwidth_gb_s} if encoder.native is not None else None
+        ),
     }
 
 
@@ -49,18 +58,19 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
             raise ValueError("image profile changed")
         if (source.input_tokens, source.output_tokens) != (spec.workload["isl"], spec.workload["osl"]):
             raise ValueError("text lengths changed")
-        if prediction.traffic.load.concurrency != (spec.concurrency or spec.workload.get("concurrency")):
-            raise ValueError("fixed concurrency changed")
-        stop = prediction.traffic.stop
-        assert stop is not None
-        expected_count = spec.workload.get("request_count")
-        if expected_count is None:
-            expected_count = max(1, round(spec.workload["num_request_ratio"] * prediction.traffic.load.concurrency))
-        count = stop.requests
-        if count is None:
-            count = max(1, round(stop.requests_per_load_unit * prediction.traffic.load.concurrency))
-        if count != expected_count:
-            raise ValueError("request count changed")
+        if encoder.mode == "analytical":
+            if prediction.traffic.load.concurrency != (spec.concurrency or spec.workload.get("concurrency")):
+                raise ValueError("fixed concurrency changed")
+            stop = prediction.traffic.stop
+            assert stop is not None
+            expected_count = spec.workload.get("request_count")
+            if expected_count is None:
+                expected_count = max(1, round(spec.workload["num_request_ratio"] * prediction.traffic.load.concurrency))
+            count = stop.requests
+            if count is None:
+                count = max(1, round(stop.requests_per_load_unit * prediction.traffic.load.concurrency))
+            if count != expected_count:
+                raise ValueError("request count changed")
         deployment = spec.backend_deployment
         mode = "agg" if engine.mode == "aggregated" else "disagg"
         if mode != deployment.deployment_mode:
@@ -74,6 +84,13 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
         # Compare the same engine descriptors the runner executes, not a second list
         # of scheduler/cache/timing fields that can drift from the actual consumer.
         compiled = prediction_to_replay_spec(prediction)
+        if encoder.mode == "native":
+            # Event-level replay: the whole traffic definition matters, as for native VL.
+            from .vl import _differences, _execution_traffic
+
+            mine, scored = _execution_traffic(compiled), _execution_traffic(spec)
+            if mine != scored:
+                raise ValueError(f"traffic changed: {_differences(mine, scored)}")
         if _language_execution(compiled) != _language_execution(spec):
             raise ValueError("language replay settings changed")
         if _materialize_sla(compiled) != _materialize_sla(spec):

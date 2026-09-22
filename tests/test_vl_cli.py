@@ -442,3 +442,167 @@ def test_materialized_request_lists_reject_image_workloads():
     )
     with pytest.raises(InvalidRunnerError, match="workload-driver"):
         EngineReplayRunnerFactory().create(0).run(legacy)
+
+
+def _disaggregated_prediction():
+    raw = _prediction()
+    prefill = raw["engine"]["workers"].pop("aggregated")
+    prefill["scheduler"] = {"max_batched_tokens": 8192, "max_sequences": 1}
+    raw["engine"]["mode"] = "disaggregated"
+    raw["engine"]["workers"] = {
+        "prefill": prefill,
+        "decode": {
+            "parallelism": {"replicas": 1, "tensor": 1},
+            "scheduler": {"max_batched_tokens": 8192, "max_sequences": 8},
+            "kv_cache": {"capacity": {"type": "fixed", "blocks": 4096}},
+        },
+    }
+    return raw
+
+
+def test_native_vl_disaggregated_prefill_hosts_the_loop_and_the_encoder(tmp_path, capsys):
+    raw = _disaggregated_prediction()
+    deployment = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment
+    prefill, decode = deployment.prefill_engine_args, deployment.decode_engine_args
+    assert prefill["vision"] is True and prefill["sglang"]["host_loop"] is True
+    assert prefill["frontend"]["stages"][0]["service_ms"] == 3.0
+    # The decode rank neither encodes images nor runs the modeled loop: SGLang's
+    # decode-side preprocessing runs concurrently with the prefill rank's.
+    assert "vision" not in decode and "frontend" not in decode and "host_loop" not in decode.get("sglang", {})
+
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "out"
+    argv = ["predict", "-c", str(path), "--output-dir", str(output), "--format", "json", "--capture-per-request"]
+    assert main(argv) == 0
+    capsys.readouterr()
+    report = json.loads((output / "prediction.json").read_text())
+    assert report["completed_requests"] == 4
+    assert report["total_input_tokens"] == 4 * (128 + 196)
+    records = [json.loads(line) for line in (output / "requests.jsonl").read_text().splitlines()]
+    # The prefill rank's frontend deadlines wake the disaggregated replay: one
+    # pool worker serializes the two initial arrivals.
+    delays = sorted(
+        record["frontend_ready_ms"] - record["arrival_time_ms"]
+        for record in records
+        if record["arrival_time_ms"] == 0.0
+    )
+    assert delays == pytest.approx([3.0, 6.0])
+    for record in records:
+        assert (
+            record["arrival_time_ms"]
+            <= record["frontend_ready_ms"]
+            <= record["scheduler_received_ms"]
+            <= record["selected_ms"]
+            < record["prefill_complete_ms"]
+            < record["first_token_ms"]
+        )
+
+
+def test_native_vl_schema_rejects_host_fields_on_the_decode_worker():
+    raw = _disaggregated_prediction()
+    raw["engine"]["workers"]["decode"]["host_loop"] = True
+    with pytest.raises(ValidationError):
+        CorePredictionConfig.model_validate(raw)
+
+
+def test_native_vl_disaggregated_recommend_keys_the_prefill_worker(tmp_path, capsys):
+    raw = _disaggregated_prediction()
+    for role in ("prefill", "decode"):
+        raw["engine"]["workers"][role]["parallelism"] = {
+            "preset": False,
+            "replicas": 1,
+            "tensor": 1,
+            "pipeline": 1,
+            "attention_data": 1,
+            "moe_tensor": 1,
+            "moe_expert": 1,
+        }
+    raw["engine"]["workers"]["prefill"]["scheduler"]["max_batched_tokens"] = {"choices": [4096, 8192]}
+    raw["optimization"] = {"target": "throughput_per_gpu", "constraints": {"max_candidate_gpus": 2}}
+    raw["optimizer"] = {
+        "algorithm": "random",
+        "max_trials": 2,
+        "parallelism": 1,
+        "candidate_timeout_seconds": 60.0,
+        "seed": 13,
+    }
+    space = recommendation_to_sweeper(CoreRecommendationConfig.model_validate(raw)).search_space
+    assert space.prefill_host_loop is True
+    assert space.prefill_frontend["stages"][0]["service_ms"] == 3.0
+    assert space.prefill_vision["cache_mib"] == 100
+    assert space.agg_host_loop is None and space.agg_vision is None
+
+    path = tmp_path / "search.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    root = tmp_path / "recommend"
+    assert main(["recommend", "-c", str(path), "--output-dir", str(root), "--format", "json"]) == 0
+    capsys.readouterr()
+    result = SweepResult.from_json((root / "recommendation.json").read_text())
+    candidate = result.selected_candidates[0]
+    assert candidate.config["prediction_config_supported"] is True
+    assert candidate.config["prefill_host_loop"] is True
+    saved_path = root / "recommendations" / "0001.yaml"
+    saved = CorePredictionConfig.from_yaml(saved_path)
+    assert saved.engine.workers.prefill.frontend.stages[0].service_ms == 3.0
+    assert saved.engine.workers.prefill.vision.cache_mib == 100
+    assert "host_loop" not in yaml.safe_load(saved_path.read_text())["engine"]["workers"]["decode"]
+
+
+def _native_epd_prediction(table_path):
+    raw = _prediction()
+    worker = raw["engine"]["workers"]["aggregated"]
+    del worker["frontend"]
+    worker["host_loop"] = True
+    raw["engine"]["workers"]["encoder"] = {
+        "mode": "native",
+        "tensor": 1,
+        "replicas": 1,
+        "batch_size": 2,
+        "host_profile": {"path": str(table_path), "frontend": "python"},
+        "transfer": {"bandwidth_gb_per_second": 10},
+    }
+    return raw
+
+
+def test_native_encoder_pool_gates_the_language_worker(tmp_path, capsys):
+    table = tmp_path / "table.json"
+    table.write_text(json.dumps(_host_table()))
+    raw = _native_epd_prediction(table)
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    encoder = spec.backend_deployment.encoder
+    # The `process` stage of the Python frontend prices the encoder's CPU preprocessing;
+    # the forward is priced at every batch size up to the loop's cap.
+    assert encoder.mode == "native" and encoder.native.preprocess_ms == 3.0
+    assert len(encoder.native.forward_ms_by_batch) == 2
+    # The language worker runs --language-only: no tower, no image frontend stages, the loop stays.
+    args = spec.backend_deployment.agg_engine_args
+    assert "vision" not in args and "frontend" not in args and args["sglang"]["host_loop"] is True
+
+    path = tmp_path / "predict.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    output = tmp_path / "out"
+    argv = ["predict", "-c", str(path), "--output-dir", str(output), "--format", "json", "--capture-per-request"]
+    assert main(argv) == 0
+    report = json.loads(capsys.readouterr().out)
+    # The encoder mean does not depend on keeping per-request records.
+    assert main(argv[:-1] + ["--output-dir", str(tmp_path / "bounded")]) == 0
+    bounded = json.loads(capsys.readouterr().out)
+    assert bounded["encoder_latency_ms"] == report["encoder_latency_ms"] > 3.0
+    assert report["completed_requests"] == 4
+    # 448x448 -> 196 visual tokens per image occupy the language prompt.
+    assert report["total_input_tokens"] == 4 * (128 + 196)
+    records = [json.loads(line) for line in (output / "requests.jsonl").read_text().splitlines()]
+    # The two concurrent arrivals share one encoder batch and are delivered together;
+    # the scheduler receives a request only after that.
+    delivered = sorted(record["encoder_ready_ms"] for record in records if record["arrival_time_ms"] == 0.0)
+    assert delivered[0] == delivered[1] > 0.0
+    for record in records:
+        assert record["arrival_time_ms"] < record["encoder_ready_ms"] <= record["scheduler_received_ms"]
+
+
+def test_native_encoder_pool_requires_its_host_table_and_link(tmp_path):
+    raw = _native_epd_prediction(tmp_path / "table.json")
+    del raw["engine"]["workers"]["encoder"]["host_profile"]
+    with pytest.raises(ValidationError):
+        CorePredictionConfig.model_validate(raw)

@@ -45,6 +45,9 @@ pub struct ReplaySpec {
     /// Optional latency targets used to calculate goodput.
     #[serde(default, skip_serializing_if = "SlaThresholds::is_unset")]
     pub sla: SlaThresholds,
+    /// Optional encoder pool every request crosses before the language workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<EncoderSpec>,
     pub requests: Vec<ReplayRequest>,
 }
 
@@ -66,6 +69,9 @@ impl ReplaySpec {
             ));
         }
         self.sla.validate()?;
+        if let Some(encoder) = &self.encoder {
+            encoder.validate()?;
+        }
 
         let mut ids = BTreeSet::new();
         for request in &self.requests {
@@ -140,6 +146,57 @@ impl ReplayTopology {
                 validate_time("handoff_latency_ms", *handoff_latency_ms)
             }
         }
+    }
+}
+
+/// Event-level model of SGLang's dedicated encoder servers (`--encoder-only`)
+/// ahead of the language workers.
+///
+/// Each instance runs one serial loop: it takes the queued requests up to
+/// `max_batch`, preprocesses and encodes them as one batch, then hands each
+/// request's embeddings to the language rank over the network. A batch frees
+/// its instance when its GPU work ends; transfers are timed per request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EncoderSpec {
+    pub instances: usize,
+    pub max_batch: usize,
+    /// CPU preprocessing (image decode and processor) of one request.
+    pub preprocess_ms: f64,
+    /// Encoder forward of a batch of `k` requests, at index `k - 1`.
+    pub forward_ms_by_batch: Vec<f64>,
+    /// Embedding bytes one request sends to the language rank(s).
+    pub transfer_bytes_per_request: u64,
+    /// Network bandwidth in decimal gigabytes per second.
+    pub transfer_bandwidth_gb_s: f64,
+}
+
+impl EncoderSpec {
+    pub fn validate(&self) -> ReplayResult<()> {
+        if self.instances == 0 {
+            return Err(ReplayError::InvalidSpec(
+                "encoder pool must have at least one instance".to_string(),
+            ));
+        }
+        if self.max_batch == 0 || self.forward_ms_by_batch.len() != self.max_batch {
+            return Err(ReplayError::InvalidSpec(
+                "encoder forward_ms_by_batch must list one latency per batch size up to max_batch"
+                    .to_string(),
+            ));
+        }
+        validate_time("encoder preprocess_ms", self.preprocess_ms)?;
+        for (index, forward_ms) in self.forward_ms_by_batch.iter().enumerate() {
+            validate_time(
+                &format!("encoder forward_ms_by_batch[{index}]"),
+                *forward_ms,
+            )?;
+        }
+        if !self.transfer_bandwidth_gb_s.is_finite() || self.transfer_bandwidth_gb_s <= 0.0 {
+            return Err(ReplayError::InvalidSpec(format!(
+                "encoder transfer_bandwidth_gb_s must be positive and finite, got {}",
+                self.transfer_bandwidth_gb_s
+            )));
+        }
+        Ok(())
     }
 }
 

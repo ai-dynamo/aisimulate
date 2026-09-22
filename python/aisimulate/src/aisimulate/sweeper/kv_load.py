@@ -98,7 +98,7 @@ def _role_capacity_tokens(
             if resolved.get(name, sample.get(name)) is not None
             and not (name == "enable_eplb" and resolved.get(name, sample.get(name)) is False)
         }
-        vision = sample.get("agg_vision") if role == "agg" else None
+        vision = sample.get(f"{role}_vision")
         if vision is not None:
             # The runtime deducts the tower weights and the embedding cache from the
             # KV pool; load resolution must size against the same capacity.
@@ -162,9 +162,9 @@ def resolve_kv_load(
     }
     isl = int(workload.isl)
     images = getattr(workload, "images", None)
-    if images is not None and sample.get("agg_vision") is not None:
-        # Visual placeholders occupy KV like text; size the load on the geometry the
-        # workload driver lays out, processor pixel budget included.
+    if images is not None and any(sample.get(f"{role}_vision") is not None for role in role_configs):
+        # Visual placeholders occupy KV like text on every language role; size the
+        # load on the geometry the workload driver lays out, processor pixel budget included.
         from aisimulate_core.sdk.backends.base_backend import image_geometry
 
         geometry = image_geometry(

@@ -388,8 +388,8 @@ def _frontend_implies_host_loop(value: Any) -> Any:
     return value
 
 
-class AggregatedWorkerPredictionConfig(WorkerPredictionConfig):
-    """The aggregated worker can model SGLang's scheduler loop, frontend and vision encoder."""
+class HostWorkerPredictionConfig(WorkerPredictionConfig):
+    """The aggregated or prefill worker can model SGLang's scheduler loop, frontend and vision encoder."""
 
     host_loop: StrictBool = Field(
         default=False,
@@ -403,7 +403,7 @@ class AggregatedWorkerPredictionConfig(WorkerPredictionConfig):
     _implies_host_loop = model_validator(mode="before")(_frontend_implies_host_loop)
 
     @model_validator(mode="after")
-    def _validate_host_features(self) -> AggregatedWorkerPredictionConfig:
+    def _validate_host_features(self) -> HostWorkerPredictionConfig:
         if (self.frontend is not None or self.host_profile is not None) and not self.host_loop:
             raise ValueError("frontend stages run ahead of the scheduler loop; drop host_loop: false")
         if self.host_profile is not None and self.frontend is not None:
@@ -411,22 +411,67 @@ class AggregatedWorkerPredictionConfig(WorkerPredictionConfig):
         return self
 
 
-class EncoderPredictionConfig(StrictModel):
-    """Dedicated analytical encoder pool, not an event-level language worker."""
+class EncoderTransferConfig(StrictModel):
+    """Network link from the encoder servers to the language ranks (`--encoder-transfer-backend zmq_to_scheduler`)."""
 
+    bandwidth_gb_per_second: PositiveFloat
+
+
+def _native_encoder_batch_cap(value: Any) -> Any:
+    """SGLang's encoder loop batches up to `SGLANG_ENCODER_MAX_BATCH_SIZE` (8) unless told otherwise."""
+    if isinstance(value, dict) and value.get("mode") == "native" and "batch_size" not in value:
+        return {**value, "batch_size": 8}
+    return value
+
+
+class EncoderPredictionConfig(StrictModel):
+    """Dedicated encoder pool: an analytical overlay, or a native replay of SGLang's encoder servers."""
+
+    mode: Literal["analytical", "native"] = Field(
+        default="analytical",
+        description="analytical: the AIC batch latency is added to the language replay's mean TTFT; native: an "
+        "event-level encoder loop (SGLang --encoder-only) gates each request's admission to the language worker.",
+    )
     hardware: str | None = Field(default=None, min_length=1)
     backend_version: str | None = Field(default=None, min_length=1)
     tensor: PositiveInt = 1
     replicas: PositiveInt = 1
-    batch_size: Annotated[int, Field(strict=True, gt=0, le=8)] = 1
+    batch_size: Annotated[int, Field(strict=True, gt=0, le=8)] = Field(
+        default=1,
+        description="analytical: the batch the pool runs; native: the loop's cap (SGLANG_ENCODER_MAX_BATCH_SIZE).",
+    )
     latency_correction: PositiveFloat = 1.0
     rate_degradation: Fraction = 0.9
+    host_profile: HostProfileConfig | None = Field(
+        default=None,
+        description="native: the `process` stage of this host cost table prices the encoder's CPU preprocessing.",
+    )
+    transfer: EncoderTransferConfig | None = Field(
+        default=None, description="native: embedding transfer from the encoder to the language rank."
+    )
+
+    _batch_cap = model_validator(mode="before")(_native_encoder_batch_cap)
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> EncoderPredictionConfig:
+        _validate_encoder_mode(self)
+        return self
+
+
+def _validate_encoder_mode(encoder: EncoderPredictionConfig | EncoderRecommendationConfig) -> None:
+    if encoder.mode == "native":
+        if encoder.host_profile is None or encoder.transfer is None:
+            raise ValueError("native encoder replay requires host_profile and transfer.bandwidth_gb_per_second")
+        if encoder.host_profile.frontend != "python":
+            raise ValueError("the encoder servers run the Python image processor; host_profile.frontend must be python")
+    elif encoder.host_profile is not None or encoder.transfer is not None:
+        raise ValueError("host_profile and transfer apply to encoder mode=native only")
 
 
 class WorkersPredictionConfig(StrictModel):
     encoder: EncoderPredictionConfig | None = None
-    aggregated: AggregatedWorkerPredictionConfig | None = None
-    prefill: WorkerPredictionConfig | None = None
+    aggregated: HostWorkerPredictionConfig | None = None
+    prefill: HostWorkerPredictionConfig | None = None
     decode: WorkerPredictionConfig | None = None
 
     @model_validator(mode="after")
@@ -739,7 +784,7 @@ class WorkerRecommendationConfig(StrictModel):
     startup_seconds: float = Field(default=0.0, ge=0.0)
 
 
-class AggregatedWorkerRecommendationConfig(WorkerRecommendationConfig):
+class HostWorkerRecommendationConfig(WorkerRecommendationConfig):
     """Host-aware settings are measured data, not search dimensions; every candidate shares them."""
 
     host_loop: StrictBool = False
@@ -750,7 +795,7 @@ class AggregatedWorkerRecommendationConfig(WorkerRecommendationConfig):
     _implies_host_loop = model_validator(mode="before")(_frontend_implies_host_loop)
 
     @model_validator(mode="after")
-    def _validate_host_features(self) -> AggregatedWorkerRecommendationConfig:
+    def _validate_host_features(self) -> HostWorkerRecommendationConfig:
         if (self.frontend is not None or self.host_profile is not None) and not self.host_loop:
             raise ValueError("frontend stages run ahead of the scheduler loop; drop host_loop: false")
         if self.host_profile is not None and self.frontend is not None:
@@ -761,6 +806,7 @@ class AggregatedWorkerRecommendationConfig(WorkerRecommendationConfig):
 class EncoderRecommendationConfig(StrictModel):
     """Finite encoder domains; scalar values pin a single choice."""
 
+    mode: Literal["analytical", "native"] = "analytical"
     hardware: str | None = Field(default=None, min_length=1)
     backend_version: str | None = Field(default=None, min_length=1)
     tensor: PositiveInt | Choices[PositiveInt] = 1
@@ -770,12 +816,23 @@ class EncoderRecommendationConfig(StrictModel):
     ) = 1
     latency_correction: PositiveFloat = 1.0
     rate_degradation: Fraction = 0.9
+    host_profile: HostProfileConfig | None = None
+    transfer: EncoderTransferConfig | None = None
+
+    _batch_cap = model_validator(mode="before")(_native_encoder_batch_cap)
+
+    @model_validator(mode="after")
+    def _validate_mode(self) -> EncoderRecommendationConfig:
+        _validate_encoder_mode(self)
+        if self.mode == "native" and not isinstance(self.batch_size, int):
+            raise ValueError("native encoder replay takes one batch cap, not a batch_size search")
+        return self
 
 
 class WorkersRecommendationConfig(StrictModel):
     encoder: EncoderRecommendationConfig | None = None
-    aggregated: AggregatedWorkerRecommendationConfig | None = None
-    prefill: WorkerRecommendationConfig | None = None
+    aggregated: HostWorkerRecommendationConfig | None = None
+    prefill: HostWorkerRecommendationConfig | None = None
     decode: WorkerRecommendationConfig | None = None
 
 
@@ -883,7 +940,7 @@ def _validate_prediction_scheduler_backend(engine: EnginePredictionConfig) -> No
 
 
 def require_native_vl_parallelism(
-    worker: AggregatedWorkerPredictionConfig | AggregatedWorkerRecommendationConfig,
+    worker: HostWorkerPredictionConfig | HostWorkerRecommendationConfig,
 ) -> None:
     """The host loop and the colocated vision encoder run on one pipeline stage without attention DP.
 
@@ -891,10 +948,10 @@ def require_native_vl_parallelism(
     enable the encoder implicitly, so spelling the defaults out changes nothing.
     """
     parallel = worker.parallelism
-    if isinstance(worker, AggregatedWorkerPredictionConfig):
+    if isinstance(worker, HostWorkerPredictionConfig):
         if parallel.pipeline != 1 or parallel.attention_data != 1:
             raise ValueError(
-                "native VL replay requires workers.aggregated.parallelism with pipeline=1 and attention_data=1"
+                "native VL replay requires the host-aware worker's parallelism with pipeline=1 and attention_data=1"
             )
         return
     if (
@@ -903,22 +960,22 @@ def require_native_vl_parallelism(
         or parallel.attention_data not in (None, 1)
     ):
         raise ValueError(
-            "native VL recommendation requires workers.aggregated.parallelism with preset: false, pipeline=1 and "
-            "attention_data=1"
+            "native VL recommendation requires the host-aware worker's parallelism with preset: false, pipeline=1 "
+            "and attention_data=1"
         )
 
 
 def _validate_prediction_host(engine: EnginePredictionConfig) -> None:
-    worker = engine.workers.aggregated
-    if worker is None or (not worker.host_loop and worker.vision is None):
-        return
-    if engine.backend != "sglang":
-        raise ValueError(
-            "workers.aggregated.host_loop and workers.aggregated.vision are supported only for backend=sglang"
-        )
-    if engine.mode != "aggregated":
-        raise ValueError("workers.aggregated.host_loop and workers.aggregated.vision require engine.mode='aggregated'")
-    require_native_vl_parallelism(worker)
+    """The aggregated or the prefill worker hosts the loop; `_validate_worker_roles` ties each to its mode."""
+    for role in ("aggregated", "prefill"):
+        worker = getattr(engine.workers, role)
+        if worker is None or (not worker.host_loop and worker.vision is None):
+            continue
+        if engine.backend != "sglang":
+            raise ValueError(
+                f"workers.{role}.host_loop and workers.{role}.vision are supported only for backend=sglang"
+            )
+        require_native_vl_parallelism(worker)
 
 
 def _validate_prediction_afd(engine: EnginePredictionConfig) -> None:
@@ -1007,14 +1064,15 @@ def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) ->
 
 
 def _validate_recommendation_host(engine: EngineRecommendationConfig, *, modes: set[str], backends: set[str]) -> None:
-    worker = engine.workers.aggregated
-    if worker is None or (not worker.host_loop and worker.vision is None):
-        return
-    if modes != {"aggregated"}:
-        raise ValueError("host recommendation requires concrete mode=aggregated")
-    if backends != {"sglang"}:
-        raise ValueError("host recommendation requires concrete backend=sglang")
-    require_native_vl_parallelism(worker)
+    for role, mode in (("aggregated", "aggregated"), ("prefill", "disaggregated")):
+        worker = getattr(engine.workers, role)
+        if worker is None or (not worker.host_loop and worker.vision is None):
+            continue
+        if modes != {mode}:
+            raise ValueError(f"host recommendation on workers.{role} requires concrete mode={mode}")
+        if backends != {"sglang"}:
+            raise ValueError("host recommendation requires concrete backend=sglang")
+        require_native_vl_parallelism(worker)
 
 
 def _validate_worker_roles(*, modes: set[str], workers, has_transfer: bool) -> None:

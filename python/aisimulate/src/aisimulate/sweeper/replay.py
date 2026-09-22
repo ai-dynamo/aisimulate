@@ -76,8 +76,38 @@ class ForwardPassEstimatorSpec:
 
 
 @dataclass(frozen=True)
+class NativeEncoderTiming:
+    """Per-request service terms of SGLang's encoder loop; the replay prices its batches from them."""
+
+    preprocess_ms: float
+    forward_ms_by_batch: tuple[float, ...]
+    # Embedding bytes for one language rank; the runner multiplies by the receiving tensor-parallel width.
+    transfer_bytes_per_request: int
+    transfer_bandwidth_gb_s: float
+    host_profile_path: str
+    host_profile_frontend: str
+    host_profile_digest: str
+
+    def __post_init__(self):
+        if not math.isfinite(self.preprocess_ms) or self.preprocess_ms < 0:
+            raise ValueError("encoder preprocess_ms must be finite and non-negative")
+        if not self.forward_ms_by_batch or any(
+            isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0
+            for value in self.forward_ms_by_batch
+        ):
+            raise ValueError("encoder forward_ms_by_batch must be positive and finite")
+        if type(self.transfer_bytes_per_request) is not int or self.transfer_bytes_per_request <= 0:
+            raise ValueError("encoder transfer_bytes_per_request must be a positive integer")
+        if not math.isfinite(self.transfer_bandwidth_gb_s) or self.transfer_bandwidth_gb_s <= 0:
+            raise ValueError("encoder transfer_bandwidth_gb_s must be positive and finite")
+
+
+@dataclass(frozen=True)
 class EncoderPoolSpec:
-    """Resolved analytical EPD pool. Missing power is unavailable, never zero watts."""
+    """Resolved encoder pool: the analytical overlay's batch point, plus the native loop's terms when replayed.
+
+    Missing power is unavailable, never zero watts.
+    """
 
     model: str
     system: str
@@ -97,8 +127,14 @@ class EncoderPoolSpec:
     power_w: float | None = None
     power_coverage: float = 0.0
     latency_correction: float = 1.0
+    mode: str = "analytical"
+    native: NativeEncoderTiming | None = None
 
     def __post_init__(self):
+        if self.mode not in ("analytical", "native") or (self.mode == "native") != (self.native is not None):
+            raise ValueError("encoder mode must be analytical, or native with its loop terms")
+        if self.native is not None and len(self.native.forward_ms_by_batch) != self.batch_size:
+            raise ValueError("native encoder forward_ms_by_batch must cover every batch size up to the cap")
         for name in ("model", "system", "backend", "backend_version"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f"encoder {name} must be nonempty")
@@ -251,6 +287,7 @@ class RunnerCapabilities:
     supported_agentic_topologies: tuple[str, ...] = ("agg", "disagg")
     agentic_qualification: str | None = None
     supports_analytical_epd: bool = False
+    supports_native_epd: bool = False
     supported_agentic_backends: tuple[str, ...] = ("*",)
     supports_agentic_host_offload: bool = True
     supports_agentic_speculative_decoding: bool = True
@@ -362,8 +399,12 @@ class RunnerCapabilities:
                     )
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
-        if deployment.encoder is not None and not self.supports_analytical_epd:
-            raise ValueError("runner does not support analytical EPD")
+        if deployment.encoder is not None:
+            supported = (
+                self.supports_native_epd if deployment.encoder.mode == "native" else self.supports_analytical_epd
+            )
+            if not supported:
+                raise ValueError(f"runner does not support {deployment.encoder.mode} EPD")
         if not self.supports_backend_topology(deployment.backend, deployment.deployment_mode):
             raise ValueError(
                 f"runner does not support backend/topology {deployment.backend!r}/{deployment.deployment_mode!r}"

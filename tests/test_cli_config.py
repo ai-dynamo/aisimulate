@@ -10,6 +10,7 @@ from aisimulate.config import CorePredictionConfig, CoreRecommendationConfig
 from aisimulate.config.common import split_config_sections
 from aisimulate.config.engine import (
     EngineRecommendationConfig,
+    HostWorkerPredictionConfig,
     WorkerPredictionConfig,
     WorkersPredictionConfig,
 )
@@ -121,7 +122,7 @@ def test_prediction_scheduler_defaults_are_role_aware() -> None:
     assert disaggregated.engine.workers.decode.scheduler.prefill_schedule_interval == 1
     assert disaggregated.engine.workers.decode.scheduler.prefill_decode_interval == 0
 
-    programmatic = WorkersPredictionConfig(prefill=WorkerPredictionConfig(), decode=WorkerPredictionConfig())
+    programmatic = WorkersPredictionConfig(prefill=HostWorkerPredictionConfig(), decode=WorkerPredictionConfig())
     assert programmatic.prefill is not None
     assert programmatic.decode is not None
     assert programmatic.prefill.scheduler.max_sequences == 1

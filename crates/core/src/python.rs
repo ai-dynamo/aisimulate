@@ -3549,6 +3549,7 @@ mod tests {
     fn json_bindings_share_report_and_retain_request_correlation() {
         let mut spec = ReplaySpec {
             version: 1,
+            encoder: None,
             topology: ReplayTopology::Aggregated {
                 workers: WorkerPoolSpec::default(),
             },

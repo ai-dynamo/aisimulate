@@ -13,12 +13,12 @@ use aisimulate_core::engine::{
     TimingModelConfig,
 };
 use aisimulate_core::replay::{
-    AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
-    ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition, ReplayDeterminism,
-    ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest, ReplayRequestPool,
-    ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot,
-    ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec, WorkerTopology, run_engine_replay,
-    run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
+    AggregatedRoundRobinPlacement, EncoderSpec, NoEngineEvents, NoReplayMetadata,
+    PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition,
+    ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest,
+    ReplayRequestPool, ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy,
+    ReplayScalingSnapshot, ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec, WorkerTopology,
+    run_engine_replay, run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
 };
 use anyhow::Result;
 use uuid::Uuid;
@@ -118,6 +118,7 @@ fn engine_config(timing_model: TimingModelConfig) -> ReplayEngineConfig {
 fn spec(config: ReplayEngineConfig) -> ReplaySpec {
     ReplaySpec {
         version: 1,
+        encoder: None,
         topology: ReplayTopology::Aggregated {
             workers: WorkerPoolSpec {
                 initial_workers: 1,
@@ -1773,4 +1774,109 @@ fn sglang_frontend_pools_delay_scheduler_receipt() {
     for record in &report.per_request {
         assert!(record.scheduler_received_ms >= record.frontend_ready_ms);
     }
+}
+
+#[test]
+fn sglang_disaggregated_prefill_frontend_pools_deliver_through_the_handoff() {
+    let timing = TimingModelConfig::Fixed {
+        prefill_ms: 20.0,
+        decode_ms: 4.0,
+    };
+    let mut prefill = role_config(Backend::Sglang, timing.clone());
+    prefill.rank.sglang = SglangConfig {
+        host_loop: true,
+        ..SglangConfig::default()
+    };
+    prefill.rank.frontend = Some(FrontendConfig {
+        stages: vec![FrontendStage {
+            workers: 1,
+            service_ms: 4.0,
+            concurrency_scale: Vec::new(),
+        }],
+    });
+    let mut replay = spec(ReplayEngineConfig {
+        prefill: Some(prefill),
+        decode: Some(role_config(Backend::Sglang, timing)),
+        ..ReplayEngineConfig::default()
+    });
+    replay.topology = ReplayTopology::Disaggregated {
+        prefill: WorkerPoolSpec::default(),
+        decode: WorkerPoolSpec::default(),
+        handoff_latency_ms: 1.0,
+    };
+    replay.requests = vec![request("first", 0.0, 4, 2), request("second", 0.0, 4, 2)];
+    let report = run_engine_replay(replay).unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 2);
+    let mut records = report
+        .per_request
+        .iter()
+        .map(|record| {
+            (
+                record.request_id.clone().unwrap(),
+                record.frontend_ready_ms,
+                record.first_token_ms,
+            )
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|a, b| a.0.cmp(&b.0));
+    // The prefill rank's single processor worker serializes the two arrivals
+    // and its frontend deadlines wake the disaggregated replay.
+    assert_eq!(records[0].1, Some(4.0));
+    assert_eq!(records[1].1, Some(8.0));
+    // Frontend, extend, handoff transfer, then one decode step on the decode rank.
+    for (_, frontend_ready_ms, first_token_ms) in &records {
+        assert!(first_token_ms.unwrap() >= frontend_ready_ms.unwrap() + 20.0 + 1.0 + 4.0);
+    }
+}
+
+#[test]
+fn encoder_pool_gates_admission_to_the_language_worker() {
+    let mut replay = spec(engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 20.0,
+        decode_ms: 4.0,
+    }));
+    replay.encoder = Some(EncoderSpec {
+        instances: 1,
+        max_batch: 2,
+        preprocess_ms: 5.0,
+        forward_ms_by_batch: vec![10.0, 15.0],
+        // 1 MB at 1 GB/s: 1 ms on the wire.
+        transfer_bytes_per_request: 1_000_000,
+        transfer_bandwidth_gb_s: 1.0,
+    });
+    replay.requests = vec![
+        request("first", 0.0, 4, 1),
+        request("second", 0.0, 4, 1),
+        request("third", 0.0, 4, 1),
+    ];
+    let report = run_engine_replay(replay).unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 3);
+    let mut records = report
+        .per_request
+        .iter()
+        .map(|record| {
+            (
+                record.request_id.clone().unwrap(),
+                record.encoder_ready_ms.unwrap(),
+                record.first_token_ms.unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|a, b| a.0.cmp(&b.0));
+    // One instance: the first two requests share a batch (2 x 5 + 15 = 25 ms) and
+    // are delivered at 26; the third starts alone at 25 (5 + 10) and lands at 41.
+    assert_eq!(
+        records.iter().map(|record| record.1).collect::<Vec<_>>(),
+        vec![26.0, 26.0, 41.0]
+    );
+    // The language worker sees a request only once its embeddings arrived.
+    for (_, encoder_ready_ms, first_token_ms) in &records {
+        assert!(*first_token_ms >= encoder_ready_ms + 20.0);
+    }
+    assert_eq!(
+        report.latency.encoder_latency_ms,
+        Some((26.0 + 26.0 + 41.0) / 3.0)
+    );
 }

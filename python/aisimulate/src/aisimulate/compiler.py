@@ -16,10 +16,10 @@ from .capacity import (
 from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
 from .config.engine import (
-    AggregatedWorkerPredictionConfig,
     EnginePredictionConfig,
     FrontendMeasurementConfig,
     FrontendPredictionConfig,
+    HostWorkerPredictionConfig,
     VisionPredictionConfig,
     WorkerPredictionConfig,
 )
@@ -61,13 +61,13 @@ def prediction_to_replay_spec(
             validate_router_prefill_hardware(adapter, config.engine.workers.prefill.hardware or config.engine.hardware)
     if config.engine.workers.encoder is not None:
         if adapter_specs or execution_mode != "offline":
-            raise ValueError("analytical EPD requires the offline engine stack without adapters")
+            raise ValueError("encoder pools require the offline engine stack without adapters")
         deployment = replace(deployment, encoder=_prediction_encoder(config, workload))
     evaluation = config.evaluation.model_dump(mode="json", exclude_none=True)
     goal: dict[str, JSONValue] = {
         "sla": evaluation.get("sla") if evaluation else None,
     }
-    if deployment.encoder is not None and goal["sla"] is not None:
+    if deployment.encoder is not None and deployment.encoder.mode == "analytical" and goal["sla"] is not None:
         goal["strict_sla"] = True
     return ReplaySpec(
         backend_deployment=deployment,
@@ -142,6 +142,11 @@ def _prediction_encoder(config: CorePredictionConfig, workload):
         workers=[encoder.replicas],
         latency_correction=encoder.latency_correction,
         rate_degradation=encoder.rate_degradation,
+        mode=encoder.mode,
+        host_profile=encoder.host_profile.model_dump(mode="json") if encoder.host_profile is not None else None,
+        transfer_bandwidth_gb_per_second=(
+            encoder.transfer.bandwidth_gb_per_second if encoder.transfer is not None else None
+        ),
     )
     pools = resolve_encoder_pools(
         model_name=engine.model,
@@ -213,13 +218,8 @@ def _deployment(
     }
     if mode == "agg":
         assert engine.workers.aggregated is not None
-        worker, vl_metadata = _resolve_host_profile(engine, engine.workers.aggregated, workload)
-        _check_frontend_measurement(engine, worker, workload)
+        worker, vl_metadata, vision = _host_worker(engine, engine.workers.aggregated, workload)
         parallel = _parallel_mapping(worker, prefix="")
-        # Images without a dedicated encoder pool are encoded on the language worker.
-        vision = None
-        if workload.get("images") is not None and engine.workers.encoder is None:
-            vision = worker.vision or VisionPredictionConfig()
         return BackendDeploymentSpec(
             parallel_config=parallel,
             performance_model_metadata={
@@ -232,7 +232,7 @@ def _deployment(
             **common,
         )
     assert engine.workers.prefill is not None and engine.workers.decode is not None
-    prefill = engine.workers.prefill
+    prefill, vl_metadata, vision = _host_worker(engine, engine.workers.prefill, workload)
     decode = engine.workers.decode
     transfer_bytes_per_token = None
     if engine.kv_transfer is not None:
@@ -248,11 +248,11 @@ def _deployment(
     return BackendDeploymentSpec(
         parallel_config=parallel,
         performance_model_metadata={
-            "prefill": _worker_performance_model_metadata(engine, prefill),
+            "prefill": {**_worker_performance_model_metadata(engine, prefill), **vl_metadata},
             "decode": _worker_performance_model_metadata(engine, decode),
         },
         prefill_engine_args=_worker_engine_args(
-            engine, prefill, "prefill", transfer_bytes_per_token=transfer_bytes_per_token
+            engine, prefill, "prefill", transfer_bytes_per_token=transfer_bytes_per_token, vision=vision
         ),
         decode_engine_args=_worker_engine_args(
             engine, decode, "decode", transfer_bytes_per_token=transfer_bytes_per_token
@@ -373,9 +373,24 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
     }
 
 
+def _host_worker(
+    engine: EnginePredictionConfig, worker: HostWorkerPredictionConfig, workload: dict[str, JSONValue]
+) -> tuple[HostWorkerPredictionConfig, dict[str, JSONValue], VisionPredictionConfig | None]:
+    """Resolve the language worker that hosts the scheduler loop: the aggregated or the prefill worker.
+
+    Images without a dedicated encoder pool are encoded on it.
+    """
+    worker, vl_metadata = _resolve_host_profile(engine, worker, workload)
+    _check_frontend_measurement(engine, worker, workload)
+    vision = None
+    if workload.get("images") is not None and engine.workers.encoder is None:
+        vision = worker.vision or VisionPredictionConfig()
+    return worker, vl_metadata, vision
+
+
 def _resolve_host_profile(
-    engine: EnginePredictionConfig, worker: AggregatedWorkerPredictionConfig, workload: dict[str, JSONValue]
-) -> tuple[AggregatedWorkerPredictionConfig, dict[str, JSONValue]]:
+    engine: EnginePredictionConfig, worker: HostWorkerPredictionConfig, workload: dict[str, JSONValue]
+) -> tuple[HostWorkerPredictionConfig, dict[str, JSONValue]]:
     """Fill the worker's frontend stages from its measured host cost table, if it names one."""
     if worker.host_profile is None:
         return worker, {}
@@ -392,7 +407,7 @@ def _resolve_host_profile(
 
 
 def _check_frontend_measurement(
-    engine: EnginePredictionConfig, worker: AggregatedWorkerPredictionConfig, workload: dict[str, JSONValue]
+    engine: EnginePredictionConfig, worker: HostWorkerPredictionConfig, workload: dict[str, JSONValue]
 ) -> None:
     """Stages measured on one model, workload and feature transport price only that combination."""
     measured = worker.frontend.measured_for if worker.frontend is not None else None
@@ -653,7 +668,7 @@ def _worker_engine_args(
         if transfer.bandwidth_gb_per_second is not None:
             payload["kv_transfer_bandwidth"] = transfer.bandwidth_gb_per_second
         payload["kv_transfer_timing_mode"] = transfer.timing_mode
-    if backend == "sglang" and isinstance(worker, AggregatedWorkerPredictionConfig):
+    if backend == "sglang" and isinstance(worker, HostWorkerPredictionConfig):
         payload.update(
             sglang_host_engine_args(
                 host_loop=worker.host_loop,

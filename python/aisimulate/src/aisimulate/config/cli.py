@@ -111,27 +111,42 @@ def _validate_epd(traffic, engine) -> None:
     encoder = engine.workers.encoder
     source = traffic.source if traffic is not None else None
     images = source.images if isinstance(source, SyntheticSource) else None
-    aggregated = engine.workers.aggregated
-    host_aware = aggregated is not None and (aggregated.host_loop or aggregated.vision is not None)
+    # The language worker that hosts the scheduler loop and the vision tower: aggregated or prefill.
+    language, mode = (
+        (engine.workers.aggregated, "aggregated")
+        if engine.workers.aggregated is not None
+        else (engine.workers.prefill, "disaggregated")
+    )
+    host_aware = language is not None and (language.host_loop or language.vision is not None)
     if encoder is not None and host_aware:
-        raise ValueError(
-            "engine.workers.encoder (analytical EPD) and the aggregated worker's host_loop or vision "
-            "(native VL replay) are exclusive"
-        )
-    if encoder is None and images is not None:
-        # Images without an encoder pool are encoded on the aggregated SGLang worker.
-        if aggregated is None or not _only(engine.backend, "sglang") or not _only(engine.mode, "aggregated"):
+        if encoder.mode == "analytical":
             raise ValueError(
-                "image workloads require engine.workers.encoder (analytical EPD) or an aggregated worker with "
-                "backend=sglang and mode=aggregated (native VL replay)"
+                "engine.workers.encoder (analytical EPD) and the language worker's host_loop or vision "
+                "(native VL replay) are exclusive"
             )
-        if aggregated.timing.type != "default":
+        if language.vision is not None or language.frontend is not None or language.host_profile is not None:
+            raise ValueError(
+                "with a native encoder pool the language worker runs --language-only: it neither hosts the vision "
+                "tower nor prices image frontend stages; only host_loop applies"
+            )
+    if encoder is None and images is not None:
+        # Images without an encoder pool are encoded on the aggregated or the prefill SGLang worker.
+        if language is None or not _only(engine.backend, "sglang") or not _only(engine.mode, mode):
+            raise ValueError(
+                "image workloads require engine.workers.encoder (analytical EPD) or an aggregated or prefill worker "
+                f"with backend=sglang and concrete mode={mode} (native VL replay)"
+            )
+        if language.timing.type != "default":
             raise ValueError("native VL replay requires default timing")
-        require_native_vl_parallelism(aggregated)
+        require_native_vl_parallelism(language)
         return
     if (encoder is None) != (images is None):
         raise ValueError("EPD requires both traffic.source.images and engine.workers.encoder")
     if encoder is None:
+        return
+    if encoder.mode == "native":
+        if not _only(engine.backend, "sglang"):
+            raise ValueError("native encoder replay requires backend=sglang")
         return
     if images.min_pixels is not None or images.max_pixels is not None:
         raise ValueError("images.min_pixels and max_pixels are honored only by native VL replay, not by analytical EPD")

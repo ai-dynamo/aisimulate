@@ -307,13 +307,22 @@ def test_recommendation_domains_lower_without_loss():
         "batch_size": [1, 8],
         "latency_correction": 1.25,
         "rate_degradation": 0.8,
+        "mode": "analytical",
+        "host_profile": None,
+        "transfer_bandwidth_gb_per_second": None,
     }
     assert lowered.workload.source_type == "synthetic"
     assert lowered.workload.images.height == 448
 
 
-@pytest.mark.parametrize("flag", ["--capture-per-request", "--online"])
-def test_cli_rejects_unsupported_outputs_before_touching_output(tmp_path, capsys, flag):
+@pytest.mark.parametrize(
+    ("flag", "message"),
+    [
+        ("--capture-per-request", "analytical EPD cannot capture per-request"),
+        ("--online", "encoder pools require offline"),
+    ],
+)
+def test_cli_rejects_unsupported_outputs_before_touching_output(tmp_path, capsys, flag, message):
     path = tmp_path / "prediction.yaml"
     path.write_text(yaml.safe_dump(_prediction()))
     output = tmp_path / "existing"
@@ -322,7 +331,7 @@ def test_cli_rejects_unsupported_outputs_before_touching_output(tmp_path, capsys
     sentinel.write_text("keep me")
     with pytest.raises(SystemExit, match="2"):
         main(["predict", "-c", str(path), "--output-dir", str(output), "--overwrite", flag])
-    assert "analytical EPD requires offline" in capsys.readouterr().err
+    assert message in capsys.readouterr().err
     assert sentinel.read_text() == "keep me"
 
 

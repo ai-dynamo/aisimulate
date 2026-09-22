@@ -727,9 +727,9 @@ def _materialize_one(
 
             validate_epd_prediction_mapping(prediction_config, replay_spec)
             sample["prediction_config_supported"] = True
-        elif (
-            sample.get("agg_vision") is not None or sample.get("agg_host_loop")
-        ) and prediction_config_factory is not None:
+        elif prediction_config_factory is not None and any(
+            sample.get(f"{role}_vision") is not None or sample.get(f"{role}_host_loop") for role in ("agg", "prefill")
+        ):
             from ..config.vl import validate_vl_prediction_mapping
 
             validate_vl_prediction_mapping(prediction_config, replay_spec)
@@ -1138,8 +1138,10 @@ class Sweeper:
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
         encoder_catalog = None
         if config.search_space.encoder is not None:
-            if not capabilities.supports_analytical_epd:
-                raise ValueError("runner does not support analytical EPD")
+            mode = config.search_space.encoder.mode
+            supported = capabilities.supports_native_epd if mode == "native" else capabilities.supports_analytical_epd
+            if not supported:
+                raise ValueError(f"runner does not support {mode} EPD")
             encoder_catalog = resolve_encoder_catalog(config)
 
         # Preserve the legacy preflight order: reject an impossible backend/topology

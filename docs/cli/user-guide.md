@@ -1005,11 +1005,14 @@ engine:
 | `engine.backend_version` | `null` | `x` | `-` | Fixed when set. |
 | `engine.speculation` | Omitted (disabled) | `x` | `-` | Optional ngram draft count, conditional acceptance rates, and sampling seed; see [prompt lookup](#prompt-lookup-ngram-speculative-decoding). |
 | `engine.context_length` | `"max"` | `x` | `-` | `"max"` derives the effective maximum from the resolved Hugging Face model config; a concrete value must be positive. |
-| `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional analytical `encoder` pool. |
+| `engine.workers` | Mode-dependent | `x` | `-` | Aggregated role; prefill plus decode roles; or the optional opposite-phase companion for AFD+P/D. Aggregated and disaggregated modes also support an optional `encoder` pool, analytical or native. |
 | `engine.workers.prefill.hardware`, `.decode.hardware` | Inherit `engine.hardware` | `x` | `-` | Concrete nonempty SKU; no `auto` or search domain. Disaggregated roles only; aggregated workers and AFD companions reject hardware overrides. Saved recommendations retain the overrides. |
 | `engine.workers.encoder.tensor`, `.replicas`, `.batch_size` | `1` | Scalar or finite `choices` | `encoder` | Positive; batch size at most 8. Not a language-worker parallelism preset. |
 | `engine.workers.encoder.hardware`, `.backend_version` | Inherit/resolve | `x` | `-` | Encoder hardware and performance data; backend follows language backend. Saved prediction YAML pins resolved values. |
 | `engine.workers.encoder.latency_correction`, `.rate_degradation` | `1.0`, `0.9` | `x` | `-` | Finite positive factors; degradation at most 1. See [EPD CLI semantics](../sweeper/epd.md#unified-cli). |
+| `engine.workers.encoder.mode` | `analytical` | `x` | `-` | `analytical`: the AIC batch latency is added to the language replay's mean TTFT. `native`: SGLang's `--encoder-only` servers are replayed event by event and gate each request's admission to the language worker; `batch_size` is then the loop's cap (default 8) and must be a scalar. SGLang only. See [Native encoder disaggregation](../sglang-vl-host-loop.md#native-encoder-disaggregation). |
+| `engine.workers.encoder.host_profile` | Unset | `x` | `-` | `mode: native` only, required: `{path, frontend: python}`; the table's `process` stage prices the encoder's CPU preprocessing. |
+| `engine.workers.encoder.transfer.bandwidth_gb_per_second` | Unset | `x` | `-` | `mode: native` only, required: encoder-to-language-rank link; embeddings fan out to every tensor-parallel rank. |
 | `engine.workers.<role>.parallelism.preset` | `default` in `recommend` | `auto` | `-` | Generated default space, complete mapping list, `false`, or `{}`. |
 | `engine.workers.<role>.parallelism.replicas` | `1` | Feasible positive values within GPU budget | `parallelism` | Positive. |
 | `engine.workers.<role>.parallelism.tensor` | `1` | Feasible registry values | `parallelism` | Positive and model/backend compatible. |
@@ -1020,11 +1023,11 @@ engine:
 | `engine.workers.<role>.scheduler.max_batched_tokens` | Aggregated/prefill/decode: `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | `predict` only. Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
-| `engine.workers.aggregated.host_loop` | `false` | `x` | `-` | Model each pass as one SGLang overlap-scheduler iteration (requests received at iteration boundaries, outputs visible one iteration later); aggregated SGLang only. Implied by `frontend` and `host_profile`. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
-| `engine.workers.aggregated.frontend` | Unset | `x` | `-` | Ordered frontend `stages` (`workers`, `service_ms`, `concurrency_scale`) and the optional `measured_for` workload they apply to. |
-| `engine.workers.aggregated.host_profile` | Unset | `x` | `-` | `{path, frontend}`: take the frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; exclusive with explicit `frontend`. |
-| `engine.workers.aggregated.vision.cache_mib` | `100` | `x` | `-` | Positive MiB; SGLang multimodal embedding cache for image workloads encoded on the language worker. |
-| `engine.workers.aggregated.vision.encoder_parallel` | `tp` | `x` | `-` | `tp` (SGLang default: the tower is sharded over the tensor-parallel group) or `dp` (`--mm-enable-dp-encoder`); sets encoder timing, collectives, and per-rank tower weights. |
+| `engine.workers.{aggregated,prefill}.host_loop` | `false` | `x` | `-` | Model each pass as one SGLang overlap-scheduler iteration (requests received at iteration boundaries, outputs visible one iteration later); SGLang only, on the aggregated worker in aggregated mode or the prefill worker in disaggregated mode. Implied by `frontend` and `host_profile`. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
+| `engine.workers.{aggregated,prefill}.frontend` | Unset | `x` | `-` | Ordered frontend `stages` (`workers`, `service_ms`, `concurrency_scale`) and the optional `measured_for` workload they apply to. |
+| `engine.workers.{aggregated,prefill}.host_profile` | Unset | `x` | `-` | `{path, frontend}`: take the frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; exclusive with explicit `frontend`. |
+| `engine.workers.{aggregated,prefill}.vision.cache_mib` | `100` | `x` | `-` | Positive MiB; SGLang multimodal embedding cache for image workloads encoded on the language worker. |
+| `engine.workers.{aggregated,prefill}.vision.encoder_parallel` | `tp` | `x` | `-` | `tp` (SGLang default: the tower is sharded over the tensor-parallel group) or `dp` (`--mm-enable-dp-encoder`); sets encoder timing, collectives, and per-rank tower weights. |
 | `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. Defaults are backend-specific, not version-specific. |
 | `engine.workers.<role>.kv_cache.prefix_caching` | `true` | `x` | `-` | Backend-supported. |
 | `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
@@ -1406,7 +1409,11 @@ model the request path before the scheduler. With `host_loop` (implied by a
 frontend) each pass becomes one iteration of SGLang's overlap scheduler loop,
 so time to first token includes frontend processing, scheduler receipt, batch
 selection, the vision encoder, and the one-iteration delay before results are
-observed.
+observed. In a disaggregated deployment the same fields go on `workers.prefill`
+(`examples/cli/vl-predict-disaggregated.yaml`); the decode worker stays a plain
+PD decode rank. With `engine.workers.encoder.mode: native`
+(`examples/cli/vl-predict-epd-native.yaml`) the encoder servers are replayed
+ahead of a `--language-only` worker instead; see the linked page.
 
 ```yaml
 # vl-prediction.yaml

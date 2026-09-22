@@ -74,6 +74,11 @@ pub(crate) struct SglangCore {
     host: Option<HostLoop>,
     /// Worker pools a request crosses before it reaches the scheduler inbox.
     frontend: Option<FrontendRuntime>,
+    /// Prefill-rank requests whose extend finished under the host loop but whose
+    /// result the scheduler has not observed yet (`disagg_prefill_inflight_queue`):
+    /// they leave the batch at once and are handed off when the next iteration
+    /// observes that forward.
+    inflight_source: Vec<SglangRequest>,
     /// Device time of the forward the last pass launched under the host loop.
     last_forward_ms: Option<f64>,
     /// Encoder outputs retained across prefill batches.
@@ -194,6 +199,7 @@ impl SglangCore {
             lifecycle_events: Vec::new(),
             host,
             frontend,
+            inflight_source: Vec::new(),
             last_forward_ms: None,
             vision_cache,
         }
@@ -239,15 +245,6 @@ impl SglangCore {
         allow_destination_admission: bool,
         now_ms: Option<f64>,
     ) -> anyhow::Result<SchedulerCommandEffects> {
-        if self.host.is_some()
-            && matches!(
-                command,
-                SchedulerCommand::SubmitHandoffPrefill { .. }
-                    | SchedulerCommand::ReserveDestination { .. }
-            )
-        {
-            anyhow::bail!("sglang.host_loop is supported only for aggregated ranks");
-        }
         match command {
             SchedulerCommand::Submit(mut request) => {
                 let uuid = request.uuid.unwrap_or_else(Uuid::new_v4);
@@ -467,6 +464,10 @@ impl SglangCore {
                 .any(|request| request.uuid == uuid)
             || self.running.iter().any(|request| request.uuid == uuid)
             || self
+                .inflight_source
+                .iter()
+                .any(|request| request.uuid == uuid)
+            || self
                 .host
                 .as_ref()
                 .is_some_and(|host| host.holds_request(uuid))
@@ -630,6 +631,12 @@ impl SglangCore {
             .position(|request| request.uuid == request_id)
         {
             Some(self.running.remove(index))
+        } else if let Some(index) = self
+            .inflight_source
+            .iter()
+            .position(|request| request.uuid == request_id)
+        {
+            Some(self.inflight_source.remove(index))
         } else if let Some(request) = self
             .host
             .as_mut()
@@ -686,6 +693,7 @@ impl SglangCore {
         self.waiting.is_empty()
             && self.prebuilt_ready.is_empty()
             && self.running.is_empty()
+            && self.inflight_source.is_empty()
             && self.host.as_ref().is_none_or(HostLoop::is_idle)
     }
 
@@ -892,6 +900,7 @@ impl SglangCore {
             .running
             .iter()
             .filter(|request| request.pending_terminal)
+            .chain(&self.inflight_source)
             .map(|request| request.uuid)
             .collect::<Vec<_>>();
         self.deliver_frontend(now_ms);
@@ -1151,6 +1160,14 @@ impl SglangCore {
             self.running = stalled;
         }
 
+        if self.host.is_some() && self.config.worker_type == WorkerType::Prefill {
+            // `process_batch_result_disagg_prefill` moves a finished extend to the
+            // inflight queue: it is not a member of the next batch.
+            self.inflight_source.extend(
+                self.running
+                    .extract_if(.., |request| request.pending_terminal),
+            );
+        }
         for request in decode.completed_requests.drain(..) {
             self.complete_source(request);
         }
@@ -1161,7 +1178,7 @@ impl SglangCore {
                     forward || decode.output_signals.is_empty(),
                     "an iteration without a batch launches no forward"
                 );
-                let forward_ms = forward.then(|| decode.end_ms - selected_ms);
+                let forward_ms = forward.then_some(decode.end_ms - selected_ms);
                 let (timing, observed) = host.plan(
                     selected_ms,
                     forward_ms.map(|forward_ms| {
@@ -1202,10 +1219,14 @@ impl SglangCore {
                         cache_prefix_through(request, &mut self.kv_manager, &self.config, tokens);
                     }
                 }
-                let terminals = self
+                let mut terminals = self
                     .running
                     .extract_if(.., |request| observed_terminals.contains(&request.uuid))
                     .collect::<Vec<_>>();
+                terminals.extend(
+                    self.inflight_source
+                        .extract_if(.., |request| observed_terminals.contains(&request.uuid)),
+                );
                 for request in terminals {
                     self.complete_source(request);
                 }

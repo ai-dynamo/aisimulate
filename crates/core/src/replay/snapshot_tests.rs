@@ -47,6 +47,7 @@ fn run(
     };
     let spec = ReplaySpec {
         version: 1,
+        encoder: None,
         topology: ReplayTopology::aggregated(1),
         engine: serde_json::to_value(engine).unwrap(),
         adapters: ReplayAdapters::default(),

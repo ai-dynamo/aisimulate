@@ -52,8 +52,11 @@ def validate_vl_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
 
     try:
         prediction = CorePredictionConfig.model_validate(value)
-        if prediction.engine.workers.encoder is not None or prediction.engine.workers.aggregated is None:
-            raise ValueError("aggregated worker was dropped")
+        engine = prediction.engine
+        mode = "agg" if engine.mode == "aggregated" else "disagg"
+        host_role = "aggregated" if mode == "agg" else "prefill"
+        if engine.workers.encoder is not None or getattr(engine.workers, host_role) is None:
+            raise ValueError(f"{host_role} worker was dropped")
         compiled = prediction_to_replay_spec(prediction)
         # Compare what the runner executes, in both directions: a stop condition or
         # seed that the saved prediction drops is as much a change as one it adds.
@@ -62,11 +65,13 @@ def validate_vl_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
         if mine != scored:
             raise ValueError(f"traffic changed: {_differences(mine, scored)}")
         deployment = spec.backend_deployment
-        if deployment.deployment_mode != "agg":
+        if deployment.deployment_mode != mode:
             raise ValueError("language layout changed")
-        parallel = _parallel_mapping(prediction.engine.workers.aggregated, prefix="")
-        if any(deployment.parallel_config.get(key) != val for key, val in parallel.items()):
-            raise ValueError("language GPU topology changed")
+        roles = (("aggregated", ""),) if mode == "agg" else (("prefill", "prefill_"), ("decode", "decode_"))
+        for role, prefix in roles:
+            parallel = _parallel_mapping(getattr(engine.workers, role), prefix=prefix)
+            if any(deployment.parallel_config.get(key) != val for key, val in parallel.items()):
+                raise ValueError("language GPU topology changed")
         # The engine descriptors carry the host, frontend and vision tables.
         if _language_execution(compiled) != _language_execution(spec):
             raise ValueError("language replay settings changed")

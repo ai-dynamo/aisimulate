@@ -99,10 +99,8 @@ class ForwardPassEstimatorResolver:
             systems_paths=resolve_systems_paths(self._search_space.systems_paths_for(role)),
             fallback_policy=controls.get("fallback_policy", self._search_space.fallback_policy),
             estimator_config=estimator_config,
-            # An aggregated worker hosting the vision tower prices encoder calls too.
-            encoder_parallel=sample["agg_vision"]["encoder_parallel"]
-            if role == "agg" and sample.get("agg_vision") is not None
-            else None,
+            # A language worker hosting the vision tower prices encoder calls too.
+            encoder_parallel=(sample.get(f"{role}_vision") or {}).get("encoder_parallel"),
         )
 
     def _resolve(self, request: ForwardPassPerfModelConfig, role: str) -> ForwardPassEstimatorSpec:

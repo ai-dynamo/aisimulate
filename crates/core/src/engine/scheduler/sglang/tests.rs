@@ -682,6 +682,60 @@ mod source_holds {
     }
 
     #[test]
+    fn host_loop_prefill_rank_hands_off_when_the_next_iteration_observes_the_extend() {
+        // Replay caps a prefill-rank request at one output token; under the host
+        // loop the finished extend joins SGLang's inflight queue instead of the
+        // next batch, and the hold follows the observation one iteration later.
+        let mut core = SglangCore::new(
+            MockEngineArgs::builder()
+                .engine_type(EngineType::Sglang)
+                .num_gpu_blocks(16)
+                .block_size(4)
+                .max_num_seqs(Some(2))
+                .worker_type(crate::engine::common::protocols::WorkerType::Prefill)
+                .speedup_ratio(0.0)
+                .sglang(Some(SglangArgs {
+                    page_size: Some(4),
+                    chunked_prefill_size: Some(16),
+                    host_loop: true,
+                    ..Default::default()
+                }))
+                .build()
+                .unwrap(),
+        );
+        let request_id = Uuid::from_u128(304);
+        let handoff_id = HandoffId::from(Uuid::from_u128(404));
+        core.apply_command(SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: DirectRequest {
+                max_output_tokens: 1,
+                ..request(request_id)
+            },
+        })
+        .unwrap();
+
+        let launched = execute(&mut core, 0.0);
+        assert!(launched.output_signals.is_empty());
+        assert!(
+            core.running.is_empty(),
+            "a finished extend leaves the batch at once"
+        );
+        assert!(!core.source_is_held(handoff_id));
+
+        // The next iteration only waits for that forward: no ghost decode batch.
+        let observed = execute(&mut core, launched.end_ms);
+        assert_eq!(core.last_forward_ms(), Some(0.0));
+        assert!(observed.output_signals[0].completed);
+        assert!(observed.lifecycle_events.iter().any(|event| matches!(
+            event,
+            SchedulerLifecycleEvent::SourceHeld { handoff_id: held, request_id: held_request, .. }
+                if *held == handoff_id && *held_request == request_id
+        )));
+        assert!(core.source_is_held(handoff_id));
+        assert!(core.is_empty());
+    }
+
+    #[test]
     fn cancel_and_early_release_cleanup_exactly_once() {
         let mut core = SglangCore::new(args());
         let first_id = HandoffId::from(Uuid::from_u128(402));

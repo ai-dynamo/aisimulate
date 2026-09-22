@@ -58,6 +58,7 @@ fn aggregated_spec(
     };
     ReplaySpec {
         version: 1,
+        encoder: None,
         topology: ReplayTopology::Aggregated {
             workers: WorkerPoolSpec {
                 initial_workers: workers,

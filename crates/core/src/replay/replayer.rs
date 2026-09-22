@@ -453,7 +453,8 @@ impl<C: ReplayComposition> Replayer<C> {
                 .with_per_request_records(
                     self.spec.record_per_request || self.capture.effective_per_request(),
                 )
-                .with_max_sim_time_ms(self.spec.max_sim_time_ms);
+                .with_max_sim_time_ms(self.spec.max_sim_time_ms)
+                .with_encoder(self.spec.encoder.clone());
                 if let Some(sink) = artifact_sink {
                     runtime = runtime.with_artifact_sink(sink);
                 }
@@ -528,7 +529,8 @@ impl<C: ReplayComposition> Replayer<C> {
                 .with_per_request_records(
                     self.spec.record_per_request || self.capture.effective_per_request(),
                 )
-                .with_max_sim_time_ms(self.spec.max_sim_time_ms);
+                .with_max_sim_time_ms(self.spec.max_sim_time_ms)
+                .with_encoder(self.spec.encoder.clone());
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
                 }
@@ -841,6 +843,7 @@ mod tests {
     fn replay_spec_lowering_preserves_correlation_routing_and_prompt_provenance() {
         let spec = ReplaySpec {
             version: 1,
+            encoder: None,
             topology: ReplayTopology::Aggregated {
                 workers: WorkerPoolSpec::default(),
             },
@@ -914,6 +917,7 @@ mod tests {
     fn random_lowering_does_not_use_ordinal_request_uuids() {
         let spec = ReplaySpec {
             version: 1,
+            encoder: None,
             topology: ReplayTopology::aggregated(1),
             engine: serde_json::Value::Null,
             adapters: ReplayAdapters::default(),
@@ -994,6 +998,7 @@ mod generated_replay_tests {
         };
         ReplaySpec {
             version: 1,
+            encoder: None,
             topology: if disagg {
                 ReplayTopology::Disaggregated {
                     prefill: WorkerPoolSpec {

@@ -42,6 +42,9 @@ use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
 use uuid::Uuid;
 
+use super::components::EncoderPool;
+use super::spec::EncoderSpec;
+
 const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -61,6 +64,8 @@ where
     next_event_seq: u64,
     next_scaling_tick_ordinal: u64,
     admission: AdmissionQueue<Metadata>,
+    /// Encoder pool every arrival crosses before the language workers, if any.
+    encoder: Option<EncoderPool<ReplayReadyArrival<Metadata>>>,
     requests: FxHashMap<Uuid, AggRequestState>,
     engine: EngineComponent<Observation>,
     collector: TraceCollector,
@@ -168,6 +173,7 @@ where
             drive_started: false,
             drive_finalized: false,
             profile_observers_started: false,
+            encoder: None,
         })
     }
 
@@ -181,6 +187,12 @@ where
     /// have `per_request` populated. Default `false` (cheap).
     pub(crate) fn with_per_request_records(mut self, capture: bool) -> Self {
         self.collector.set_capture_per_request(capture);
+        self
+    }
+
+    /// Route every arrival through an encoder pool before the language workers.
+    pub(crate) fn with_encoder(mut self, spec: Option<EncoderSpec>) -> Self {
+        self.encoder = spec.map(EncoderPool::new);
         self
     }
 
@@ -241,7 +253,9 @@ where
 
     /// Count all requests currently consuming cluster capacity, including router-queued ones.
     pub(crate) fn cluster_in_flight(&self) -> usize {
-        self.engine.in_flight() + self.placement.pending_count()
+        self.engine.in_flight()
+            + self.placement.pending_count()
+            + self.encoder.as_ref().map_or(0, EncoderPool::parked_count)
     }
 
     /// Preserve the live `(worker_id, dp_rank)` identity when forwarding a
@@ -456,7 +470,12 @@ where
         } else {
             next_event_ms
         };
-        let next_internal_deadline_ms = self.engine.next_internal_deadline_ms();
+        let next_internal_deadline_ms = choose_next_timestamp(
+            self.engine.next_internal_deadline_ms(),
+            self.encoder
+                .as_ref()
+                .and_then(EncoderPool::next_deadline_ms),
+        );
         (
             choose_next_timestamp(
                 choose_next_timestamp(next_arrival_ms, next_event_ms),
@@ -657,7 +676,8 @@ where
         )
     }
 
-    /// Release every admission made ready by the shared admission queue.
+    /// Release every admission made ready by the shared admission queue. With an
+    /// encoder pool the language workers see a request once its embeddings arrive.
     fn release_ready_arrivals(&mut self) -> anyhow::Result<bool> {
         let mut released_any = false;
         let cluster_in_flight = self.cluster_in_flight();
@@ -666,43 +686,67 @@ where
             cluster_in_flight,
             self.artifact_sink.is_some(),
         )? {
-            let ReplayReadyArrival {
-                request,
-                arrival_time_ms,
-                scheduled_ready_at_ms,
-                authored_request_id,
-                play_id,
-                dispatched_at_ms,
-                metadata,
-                replay_hashes,
-                session_id,
-                turn_index,
-            } = ready;
-            let input_length = request.input_length();
-            let output_length = request.metadata().effective_max_output_tokens();
-            let session_metadata = session_id.clone().zip(turn_index);
-            let uuid = self.assign_request(request, arrival_time_ms, metadata, session_id)?;
-            if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
-                self.collector
-                    .on_agentic_metadata(uuid, request_id, play_id, dispatched_at_ms);
-            }
-            if let Some(sink) = &self.artifact_sink {
-                sink.record_request(ReplayArtifactRequest {
-                    request_id: uuid,
-                    observed_at_ms: self.now_ms,
-                    scheduled_ready_at_ms,
-                    input_length,
-                    output_length,
-                    replay_hashes,
-                })?;
-            }
-            if let Some((session_id, turn_index)) = session_metadata {
-                self.collector
-                    .on_session_metadata(uuid, session_id, turn_index);
+            if let Some(encoder) = &mut self.encoder {
+                encoder.submit(ready);
+            } else {
+                self.admit_ready(ready)?;
             }
             released_any = true;
         }
         Ok(released_any)
+    }
+
+    /// Admit the requests whose embeddings the encoder pool delivered by now.
+    fn release_encoded_arrivals(&mut self) -> anyhow::Result<bool> {
+        let ready = match &mut self.encoder {
+            Some(encoder) => encoder.take_ready(self.now_ms),
+            None => return Ok(false),
+        };
+        let released_any = !ready.is_empty();
+        for (arrival, ready_ms) in ready {
+            let uuid = self.admit_ready(arrival)?;
+            self.collector.on_encoder_ready(uuid, ready_ms);
+        }
+        Ok(released_any)
+    }
+
+    /// Admit one ready arrival into the collector, router, and worker pool.
+    fn admit_ready(&mut self, ready: ReplayReadyArrival<Metadata>) -> anyhow::Result<Uuid> {
+        let ReplayReadyArrival {
+            request,
+            arrival_time_ms,
+            scheduled_ready_at_ms,
+            authored_request_id,
+            play_id,
+            dispatched_at_ms,
+            metadata,
+            replay_hashes,
+            session_id,
+            turn_index,
+        } = ready;
+        let input_length = request.input_length();
+        let output_length = request.metadata().effective_max_output_tokens();
+        let session_metadata = session_id.clone().zip(turn_index);
+        let uuid = self.assign_request(request, arrival_time_ms, metadata, session_id)?;
+        if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
+            self.collector
+                .on_agentic_metadata(uuid, request_id, play_id, dispatched_at_ms);
+        }
+        if let Some(sink) = &self.artifact_sink {
+            sink.record_request(ReplayArtifactRequest {
+                request_id: uuid,
+                observed_at_ms: self.now_ms,
+                scheduled_ready_at_ms,
+                input_length,
+                output_length,
+                replay_hashes,
+            })?;
+        }
+        if let Some((session_id, turn_index)) = session_metadata {
+            self.collector
+                .on_session_metadata(uuid, session_id, turn_index);
+        }
+        Ok(uuid)
     }
 
     /// Start passes on every idle worker that can make progress at the current timestamp.
@@ -874,6 +918,7 @@ where
             changed |= self.apply_worker_ready_events()?;
             changed |= self.admission.flush_agentic_runtime_feedback(self.now_ms)?;
             changed |= self.finish_agentic_preparation()?;
+            changed |= self.release_encoded_arrivals()?;
             changed |= self.release_ready_arrivals()?;
             if self.defer_drive && self.step_freed_slot {
                 self.drive_pending = true;

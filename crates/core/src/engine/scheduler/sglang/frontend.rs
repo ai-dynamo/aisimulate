@@ -18,7 +18,7 @@
 //! `concurrency_scale`. The tokenizer-manager loop's synchronous send and the
 //! scheduler's receive preparation are single-worker pools: they serialize
 //! requests but do not stall the dispatch of arrivals into earlier stages as
-//! the real loop thread does; on the measured H20 grid that simplification
+//! the real loop thread does; on the measured serving-host grid that simplification
 //! moved TTFT by at most a few percent at eight concurrent requests. The
 //! queueing arithmetic is independently implemented.
 //!

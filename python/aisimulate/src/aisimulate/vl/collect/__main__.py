@@ -53,13 +53,14 @@ def _show(path: Path) -> int:
 
 
 def _from_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    """Fill unset arguments from a prediction YAML's aggregated worker and image workload."""
+    """Fill unset arguments from a prediction YAML's host-aware worker (aggregated or prefill) and image workload."""
     raw = load_yaml(args.config)
     try:
-        worker = raw["engine"]["workers"]["aggregated"]
+        workers = raw["engine"]["workers"]
+        worker = workers.get("aggregated") or workers["prefill"]
         images = raw["traffic"]["source"]["images"]
-    except (KeyError, TypeError):
-        parser.error(f"{args.config} has no aggregated worker with an image workload")
+    except (KeyError, TypeError, AttributeError):
+        parser.error(f"{args.config} has no aggregated or prefill worker with an image workload")
     profile = worker.get("host_profile") or {}
     if not profile and (args.table is None or args.frontend is None):
         parser.error(f"{args.config} has no host_profile; pass --table and --frontend explicitly")

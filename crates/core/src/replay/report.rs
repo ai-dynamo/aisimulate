@@ -278,12 +278,16 @@ pub struct TraceLatencyStats {
     /// Mean time to first token split by scheduler-thread stage; present when a
     /// host-aware engine reported stages for completed requests.
     pub ttft_milestones: Option<TraceTtftStageStats>,
+    /// Mean arrival-to-embeddings-delivered time of the completed requests that
+    /// crossed the encoder pool; `None` without one.
+    pub encoder_latency_ms: Option<f64>,
 }
 
 /// Mean per-request time spent in each host stage on the way to the first token.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TraceTtftStageStats {
-    /// Arrival to leaving the frontend pools; zero without a frontend.
+    /// Arrival, or the encoder pool's delivery, to leaving the frontend pools;
+    /// zero without a frontend.
     pub mean_frontend_ms: f64,
     /// Frontend exit (or arrival) to the scheduler receiving the request.
     pub mean_scheduler_inbox_wait_ms: f64,
@@ -575,6 +579,9 @@ impl Serialize for ReplayReport {
                 &stages.mean_result_observation_delay_ms,
             )?;
         }
+        if let Some(encoder_latency_ms) = self.latency.encoder_latency_ms {
+            map.serialize_entry("encoder_latency_ms", &encoder_latency_ms)?;
+        }
         serialize_rate_distribution(
             &mut map,
             "output_token_throughput_per_user",
@@ -657,6 +664,8 @@ struct TraceRequestStats {
     metadata: Value,
     /// Scheduler-thread stages of a host-aware engine; all `None` otherwise.
     ttft_milestones: TtftMilestoneTimes,
+    /// When the encoder pool delivered this request's embeddings, if it crossed one.
+    encoder_ready_ms: Option<f64>,
     agentic: Option<AgenticRuntimeIdentity>,
     detail: Option<Box<PerRequestDetail>>,
 }
@@ -928,6 +937,9 @@ pub struct PerRequestRecord {
     pub prefill_worker_idx: Option<usize>,
     pub decode_worker_idx: Option<usize>,
     pub prefill_admit_ms: Option<f64>,
+    /// When the encoder pool delivered the embeddings; absent without an encoder pool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder_ready_ms: Option<f64>,
     /// Host-aware scheduler stages; absent unless the engine models its scheduler thread.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frontend_ready_ms: Option<f64>,
@@ -1343,6 +1355,7 @@ impl TraceCollector {
                 agentic: None,
                 first_admission_reused_input_tokens: 0,
                 ttft_milestones: TtftMilestoneTimes::default(),
+                encoder_ready_ms: None,
                 detail: self
                     .capture_per_request
                     .then(|| Box::new(PerRequestDetail::default())),
@@ -1553,6 +1566,13 @@ impl TraceCollector {
                 TtftMilestone::PrefillComplete => &mut stages.prefill_complete_ms,
             };
             slot.get_or_insert(at_ms);
+        }
+    }
+
+    /// The encoder pool delivered the request's embeddings to the language rank.
+    pub(crate) fn on_encoder_ready(&mut self, uuid: Uuid, at_ms: f64) {
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            stats.encoder_ready_ms.get_or_insert(at_ms);
         }
     }
 
@@ -1906,6 +1926,8 @@ impl TraceCollector {
         let mut ttfts = Vec::with_capacity(request_count);
         let mut ttft_stage_sums = [0.0f64; 5];
         let mut ttft_stage_samples = 0usize;
+        let mut encoder_sum_ms = 0.0f64;
+        let mut encoder_samples = 0usize;
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
@@ -1936,6 +1958,10 @@ impl TraceCollector {
             };
 
             completed_requests += 1;
+            if let Some(encoder_ready_ms) = stats.encoder_ready_ms {
+                encoder_sum_ms += (encoder_ready_ms - stats.arrival_time_ms).max(0.0);
+                encoder_samples += 1;
+            }
             total_input_tokens += stats.input_length;
             let output_length = stats.actual_output_length();
             total_output_tokens += output_length;
@@ -1957,10 +1983,12 @@ impl TraceCollector {
             let e2e_ms = (last_token_ms - stats.arrival_time_ms).max(0.0);
             ttfts.push(ttft_ms);
             e2e_latencies.push(e2e_ms);
-            if let Some(spans) = stats
-                .ttft_milestones
-                .stage_spans(stats.arrival_time_ms, first_token_ms)
-            {
+            // The host stages start where the language rank received the request:
+            // after the encoder pool's delivery when there is one.
+            if let Some(spans) = stats.ttft_milestones.stage_spans(
+                stats.encoder_ready_ms.unwrap_or(stats.arrival_time_ms),
+                first_token_ms,
+            ) {
                 for (sum, value) in ttft_stage_sums.iter_mut().zip(spans) {
                     *sum += value;
                 }
@@ -2060,6 +2088,8 @@ impl TraceCollector {
                     &ttft_stage_sums,
                     ttft_stage_samples,
                 ),
+                encoder_latency_ms: (encoder_samples > 0)
+                    .then(|| encoder_sum_ms / encoder_samples as f64),
             },
             trajectories,
             agentic_graph,
@@ -2131,6 +2161,7 @@ impl TraceCollector {
                 prefill_worker_idx: stats.prefill_worker_idx,
                 decode_worker_idx: stats.decode_worker_idx,
                 prefill_admit_ms: detail.prefill_admit_ms,
+                encoder_ready_ms: stats.encoder_ready_ms,
                 frontend_ready_ms: stats.ttft_milestones.frontend_ready_ms,
                 scheduler_received_ms: stats.ttft_milestones.scheduler_received_ms,
                 selected_ms: stats.ttft_milestones.selected_ms,

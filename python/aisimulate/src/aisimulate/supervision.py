@@ -361,15 +361,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             core_raw, adapter_raw = split_config_sections(raw, command=args.command)
             config_type = CorePredictionConfig if args.command == "predict" else CoreRecommendationConfig
             config = config_type.model_validate(core_raw)
-            if config.engine.workers.encoder is not None:
-                if args.command == "predict" and (
-                    args.stack != "engine" or args.online or args.capture_per_request or adapter_raw
-                ):
-                    raise ValueError(
-                        "analytical EPD requires offline --stack engine without adapters or per-request capture"
-                    )
+            encoder = config.engine.workers.encoder
+            if encoder is not None:
+                if args.command == "predict" and (args.stack != "engine" or args.online or adapter_raw):
+                    raise ValueError("encoder pools require offline --stack engine without adapters")
+                if args.command == "predict" and encoder.mode == "analytical" and args.capture_per_request:
+                    raise ValueError("analytical EPD cannot capture per-request records")
                 if args.command == "recommend" and (args.stack != "engine" or adapter_raw):
-                    raise ValueError("analytical EPD requires --stack engine without adapters")
+                    raise ValueError("encoder pools require --stack engine without adapters")
         except (ValueError, TypeError, AttributeError) as exc:
             parser.error(f"{args.config}: {exc}")
     event_output = None

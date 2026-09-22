@@ -226,6 +226,9 @@ def recommendation_to_sweeper(
             "batch_size": _choices(encoder["batch_size"], default=[1]),
             "latency_correction": encoder["latency_correction"],
             "rate_degradation": encoder["rate_degradation"],
+            "mode": encoder.get("mode", "analytical"),
+            "host_profile": encoder.get("host_profile"),
+            "transfer_bandwidth_gb_per_second": (encoder.get("transfer") or {}).get("bandwidth_gb_per_second"),
         }
     transfer = engine.get("kv_transfer")
     if isinstance(transfer, dict):
@@ -466,44 +469,50 @@ def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str,
     is resolved here once per feature transport the tensor-parallel candidates
     need, so candidates score rows that matched the workload shape and never a
     file that may change later; only the vision tower needs an image workload.
+    The aggregated or the prefill worker hosts the loop, keyed by its legacy role.
+    A native encoder pool leaves the loop on the language worker and takes the tower.
     """
-    worker = config.engine.workers.aggregated
-    aggregated = workers.get("aggregated") if isinstance(workers, dict) else None
-    if worker is None or not isinstance(aggregated, dict) or config.engine.workers.encoder is not None:
+    encoder = config.engine.workers.encoder
+    if encoder is not None and encoder.mode == "analytical":
         return {}
-    source = config.traffic.source if config.traffic is not None else None
-    images = getattr(source, "images", None)
     result: dict[str, Any] = {}
-    if images is not None:
-        from .config.engine import VisionPredictionConfig
+    for public_role, role in (("aggregated", "agg"), ("prefill", "prefill")):
+        worker = getattr(config.engine.workers, public_role)
+        raw = workers.get(public_role) if isinstance(workers, dict) else None
+        if worker is None or not isinstance(raw, dict):
+            continue
+        source = config.traffic.source if config.traffic is not None else None
+        images = getattr(source, "images", None)
+        if images is not None and encoder is None:
+            from .config.engine import VisionPredictionConfig
 
-        result["agg_vision"] = (worker.vision or VisionPredictionConfig()).model_dump(mode="json")
-    if worker.host_loop:
-        result["agg_host_loop"] = True
-    if worker.frontend is not None:
-        result["agg_frontend"] = worker.frontend.model_dump(mode="json", exclude_none=True)
-    if worker.host_profile is None:
-        return result
-    if images is None:
-        raise ValueError("host_profile requires an image workload")
-    from .config.engine import feature_transport
-    from .vl.table import resolve_frontend
+            result[f"{role}_vision"] = (worker.vision or VisionPredictionConfig()).model_dump(mode="json")
+        if worker.host_loop:
+            result[f"{role}_host_loop"] = True
+        if worker.frontend is not None:
+            result[f"{role}_frontend"] = worker.frontend.model_dump(mode="json", exclude_none=True)
+        if worker.host_profile is None:
+            continue
+        if images is None:
+            raise ValueError("host_profile requires an image workload")
+        from .config.engine import feature_transport
+        from .vl.table import resolve_frontend
 
-    # The transport only depends on whether a candidate runs on one rank, so the
-    # domain's members (a log range contributes its bounds) decide which rows exist.
-    tensors, log_range = _integer_domain((aggregated.get("parallelism") or {}).get("tensor"), default=[1, 2, 4, 8])
-    tensors = set(tensors) | set(log_range or ())
-    by_tensor = {feature_transport(worker.host_profile.frontend, tensor): tensor for tensor in sorted(tensors)}
-    by_transport: dict[str, Any] = {}
-    for transport, tensor in sorted(by_tensor.items()):
-        frontend, digest = resolve_frontend(
-            worker.host_profile,
-            model=config.engine.model,
-            images=images.model_dump(mode="json"),
-            tensor=tensor,
-        )
-        by_transport[transport] = {"frontend": frontend.model_dump(mode="json"), "digest": digest}
-    result["agg_frontend_by_transport"] = by_transport
+        # The transport only depends on whether a candidate runs on one rank, so the
+        # domain's members (a log range contributes its bounds) decide which rows exist.
+        tensors, log_range = _integer_domain((raw.get("parallelism") or {}).get("tensor"), default=[1, 2, 4, 8])
+        tensors = set(tensors) | set(log_range or ())
+        by_tensor = {feature_transport(worker.host_profile.frontend, tensor): tensor for tensor in sorted(tensors)}
+        by_transport: dict[str, Any] = {}
+        for transport, tensor in sorted(by_tensor.items()):
+            frontend, digest = resolve_frontend(
+                worker.host_profile,
+                model=config.engine.model,
+                images=images.model_dump(mode="json"),
+                tensor=tensor,
+            )
+            by_transport[transport] = {"frontend": frontend.model_dump(mode="json"), "digest": digest}
+        result[f"{role}_frontend_by_transport"] = by_transport
     return result
 
 
@@ -968,20 +977,20 @@ def _candidate_prediction(
         }
         if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
             engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
-        if role == "agg":
+        if role in ("agg", "prefill"):
             from .sweeper.deploy import sample_frontend
 
             rendered = engine["workers"][public_role]
             # The stages are written out as the candidate ran them, with the workload
             # they were measured for: a saved candidate must not depend on a table
             # file that can change or disappear after scoring.
-            frontend = sample_frontend(sample)
+            frontend = sample_frontend(sample, role)
             if frontend is not None:
                 rendered["frontend"] = deepcopy(frontend)
-            elif sample.get("agg_host_loop"):
+            elif sample.get(f"{role}_host_loop"):
                 rendered["host_loop"] = True
-            if sample.get("agg_vision") is not None:
-                rendered["vision"] = deepcopy(sample["agg_vision"])
+            if sample.get(f"{role}_vision") is not None:
+                rendered["vision"] = deepcopy(sample[f"{role}_vision"])
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:
         engine["kv_transfer"] = deepcopy(raw_engine["kv_transfer"])
 
