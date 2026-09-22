@@ -81,6 +81,10 @@ Successful responses received during grace participate in the measured request
 cohort. The observation interval starts with the earliest arrival among those
 successful requests and ends with the latest successful response. It may differ from
 the configured admission duration. Throughput uses the observed request interval.
+With no successful requests, `observation_duration_ms` is `0` and
+`successful_request_throughput` is `null`. A single successful request uses its
+response time minus its arrival time; throughput is `null` only if that interval
+is zero.
 The report keeps the admission cutoff separately. A configured one-hour run can
 have a request observation interval shorter or longer than one hour.
 
