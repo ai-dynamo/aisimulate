@@ -37,7 +37,9 @@ Build and install both wheels from this same checkout:
 ```bash
 mkdir -p /tmp/agentx-quickstart
 rustup toolchain install 1.96.1 --profile minimal
-uv run --no-project --with 'maturin>=1.12,<2' python scripts/build_dynamo_policy.py \
+uv venv --python 3.12 /tmp/agentx-quickstart/build-venv
+uv pip install --python /tmp/agentx-quickstart/build-venv/bin/python 'maturin>=1.12,<2'
+/tmp/agentx-quickstart/build-venv/bin/python scripts/build_dynamo_policy.py \
   --output-dir /tmp/agentx-quickstart/wheels
 uv venv --python 3.12 /tmp/agentx-quickstart/venv
 uv pip install --python /tmp/agentx-quickstart/venv/bin/python \
