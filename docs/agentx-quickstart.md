@@ -8,7 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 This walkthrough replays a Weka agentic workload on a simulated disaggregated
 deployment: two prefill workers and four decode workers, using eight H200 GPUs
 in total. It prepares KV caches from seeded snapshots, then measures the
-remaining requests and recycles completed plays to keep 12 client lanes occupied
+remaining requests and recycles completed plays to keep two client lanes occupied
 for a 3,600-second simulated admission window. The simulator runs offline on your
 CPU; you do not need to allocate those GPUs or download model weights.
 
@@ -52,19 +52,30 @@ curl --fail --location --retry 3 \
 curl --fail --location --retry 3 \
   https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/resolve/8fecd2fc56694469f758f0afbbb6335ad3043740/README.md \
   --output /tmp/agentx-quickstart/UPSTREAM_DATASET_CARD.md
-head -n 12 /tmp/agentx-quickstart/traces.jsonl \
-  > /tmp/agentx-quickstart/plays-0000-0011.jsonl
+head -n 2 /tmp/agentx-quickstart/traces.jsonl \
+  > /tmp/agentx-quickstart/plays-0000-0001.jsonl
 ```
 
 The full download is about 569 MB. Each JSONL line is a complete source play;
-taking the first 12 lines preserves complete dependency trees, timestamps,
-lengths, and prefix hashes. This subset contains 12 plays and 1,560 model
-requests, and occupies 11,956,909 bytes. Its SHA-256 is
-`df1b8a8561dad5db8711c1fcfbd93872b52dbee383c023ad6363e30a9fccc891`.
+taking the first two lines preserves complete dependency trees, timestamps,
+lengths, and prefix hashes. This subset contains two plays and 162 model
+requests, and occupies 1,198,197 bytes. Its SHA-256 is
+`e3a34f0617457a004694be52885d58748b998b6d3c22cf344ff6572a78757d5a`.
+Verify the downloaded subset before running:
+
+```bash
+python/aisimulate/.venv/bin/python - <<'PY'
+import hashlib
+from pathlib import Path
+trace = Path("/tmp/agentx-quickstart/plays-0000-0001.jsonl")
+assert hashlib.sha256(trace.read_bytes()).hexdigest() == "e3a34f0617457a004694be52885d58748b998b6d3c22cf344ff6572a78757d5a"
+print("Weka subset verified")
+PY
+```
 
 The original trace names Claude models. This example projects its workload onto
 `Qwen/Qwen3-4B-Instruct-2507`; it does not reproduce Claude performance. The
-selected requests require up to 255,672 input-plus-output tokens, so the target
+selected requests require up to 255,034 input-plus-output tokens, so the target
 uses a 262,144-token context window.
 
 ## 3. Configure the model, GPUs, workers, and traffic
@@ -76,10 +87,11 @@ traffic:
   source:
     type: trace
     format: weka
-    paths: [/tmp/agentx-quickstart/plays-0000-0011.jsonl]
+    block_size: 64
+    paths: [/tmp/agentx-quickstart/plays-0000-0001.jsonl]
   load:
     type: trace_timestamps
-    agentic_lanes: 12
+    agentic_lanes: 2
     agentic_snapshot: {seed: 42}
     agentic_warmup: true
     agentic_profile:
@@ -111,7 +123,21 @@ engine:
         prefix_caching: true
         capacity: {type: default, memory_fraction: 0.9}
       timing: {type: default}
+execution:
+  resources:
+    memory_limit_gb: 4
 ```
+
+The trace's embedded hash blocks contain 64 tokens. The explicit
+`traffic.source.block_size: 64` keeps host resource inspection aligned with
+those blocks; it is separate from the worker KV-cache block setting.
+Use a host with at least 5 GB of available RAM: the example allows a 4 GB
+execution-process budget and keeps the default 1 GB host reserve. Initial trace
+materialization is estimated at about 2.81 GB. The full profile has no qualified
+static peak-memory bound because recycled plays retain lifecycle evidence.
+The CLI runs it under live resource supervision and can stop with
+`resource_limited` if that budget is exhausted. Increasing the duration or lane
+count does not guarantee completion within the same budget.
 
 The GPU count comes from the worker configuration:
 
@@ -121,8 +147,8 @@ The GPU count comes from the worker configuration:
 | Decode | 4 | 1 | 4 |
 | Total | 6 | | 8 |
 
-`agentic_lanes: 12` means 12 concurrent play instances, independently of worker
-or GPU counts. Here the initial lanes select each of the 12 source plays once.
+`agentic_lanes: 2` means two concurrent play instances, independently of worker
+or GPU counts. Here the initial lanes select each of the two source plays once.
 `seed: 42` makes snapshot selection reproducible for the same input and sampling
 version. Requests before each initial snapshot boundary become history; profile
 measurement starts with the remaining suffix. When a play and its descendants
@@ -131,7 +157,7 @@ corpus cursor, wrapping after the last source play. Replacement plays start at
 turn zero with fresh play, request, conversation, and cache identities.
 
 `duration_seconds: 3600` starts at the preparation barrier. Until that deadline,
-lanes can recycle repeatedly through the 12-play corpus. The default idle guards
+lanes can recycle repeatedly through the two-play corpus. The default idle guards
 cap idle waits at 300 seconds per tree and 10 seconds across the client workload,
 while preserving dependencies and relative delays.
 
@@ -210,7 +236,7 @@ configured admission duration. Preparation and canceled requests do not extend
 that interval. CPU wall time is separate from both simulated durations.
 
 Actual prefix reuse is recorded by `first_admission_prefix_cache_reused_ratio`;
-router overlap is not a substitute for cache hits. The 1,560 source requests
+router overlap is not a substitute for cache hits. The 162 source requests
 include initial snapshot history, and the corpus can be replayed repeatedly as
 lanes recycle, so this is not the expected measured request count.
 
