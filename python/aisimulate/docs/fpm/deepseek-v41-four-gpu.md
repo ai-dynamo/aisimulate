@@ -32,7 +32,7 @@ architecture and topology; a system YAML is not a live allocation receipt.
 | System | Capacity per GPU in system YAML | TP2, both profiles | TP4, both profiles |
 | --- | ---: | --- | --- |
 | `h100_sxm` | 80 GiB | Weights exceed capacity | Weights exceed capacity |
-| `h200_sxm` | 141 GiB | Weights exceed capacity | Runtime qualification required |
+| `h200_sxm` | 141 GiB | Weights exceed capacity | Native Humming required; static fraction 0.9 is insufficient |
 | `b200_sxm` | 180 GiB | Weights exceed capacity | Runtime qualification required |
 | `gb200` | 185.03 GiB | Weights exceed capacity | Runtime qualification required |
 
@@ -42,11 +42,29 @@ Increasing TP, moving Engram to host memory, or changing weight precision would
 create a different campaign identity; none is an implicit substitute for the
 requested cell.
 
-H200 TP4 also needs a framework dispatch audit. An MXFP4 checkpoint does not by
-itself establish which activation precision or MoE implementation executes on
-Hopper. Record the runtime-selected implementation and precision before admitting
-measurements. Blackwell kernel selection and its measured timings cannot qualify
-Hopper. A memory fit alone qualifies neither platform.
+H200 TP4 uses the separately qualified native Humming route with BF16
+activations. The default Hopper CUTLASS route rejects the local intermediate
+width of 576. Both Humming and Blackwell TRTLLM pad that width to 640; each stores
+2,005,401,600 bytes of routed expert weights and scales per layer and rank. This
+adds 7.47 GiB across 40 layers relative to the unpadded checkpoint accounting.
+Do not add that padding twice when comparing a native loaded model.
+
+The native module shapes, Engram tables, a conservative subset of vision
+weights, and shared RoPE buffers give a TP4 residency lower bound of 126.94 GiB.
+On the observed H200 allocation, CUDA reports 139.84 GiB total; a static memory
+fraction of 0.9 permits at most 125.86 GiB before other runtime allocations.
+That budget cannot fit the lower bound. It does not prove that the model exceeds
+physical H200 memory. A higher declared budget requires a separate native load
+diagnostic and real-KV canary; it is not collection admission.
+
+These dimensions follow SGLang
+[`1aa0e962b206102b7c439a4a0c4981cfec6e87bc`](https://github.com/sgl-project/sglang/tree/1aa0e962b206102b7c439a4a0c4981cfec6e87bc):
+[`DeepseekV4Model` and its native attention](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/models/deepseek_v4.py),
+[`EngramEmbedding`](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/layers/engram.py),
+and the [RoPE factory](https://github.com/sgl-project/sglang/blob/1aa0e962b206102b7c439a4a0c4981cfec6e87bc/python/sglang/srt/layers/rotary_embedding/factory.py).
+RoPE tables share two variants across layers, about 1 GiB combined; summing 40
+independent copies would overcount them. Actual installed source hashes and
+unique storage addresses must still accompany the runtime qualification.
 
 ## Independent collection and validation
 
