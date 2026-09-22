@@ -183,6 +183,29 @@ model = RustForwardPassPerfModel.best_available(config)
 print(model.diagnostics()["provenance"])
 ```
 
+### External whole-forward FPM data
+
+Set `estimator_config.fpm_interpolation.fpm_parquet_path` on the canonical configuration to use an external parquet and its required same-stem `.metadata.json` sidecar:
+
+```python
+config = ForwardPassPerfModelConfig(
+    model="Qwen/Qwen3-0.6B",
+    system="h200_sxm",
+    backend="vllm",
+    backend_version="0.25.1",
+    worker_type="aggregated",
+    estimation_mode="fpm_interpolation",
+    estimator_config={
+        "fpm_interpolation": {"fpm_parquet_path": "/data/reviewed-fpm.parquet"},
+    },
+)
+model = RustForwardPassPerfModel.best_available(config)
+```
+
+The parquet identity must match the requested model, hardware, backend version, topology, and quantization. The systems YAML is still required, but a backend timing-data directory is unnecessary. Relative paths bind to the working directory when the model is constructed; resolved provenance stores the absolute path. The control applies when FPM interpolation is selected; other estimators retain it in provenance without opening the file. Saved legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` inputs migrate to the same canonical control, which is preserved in replay and per-role recommendation output.
+
+`model.static_phase_latency(batch_size=1, input_tokens=512, output_tokens=4, prefill=False)` exposes the native engine's existing static integration before online correction. Prefill returns one prefill latency; decode returns total decode latency for the output sequence. This method requires a native estimator. AFD+PD uses it for an external-FPM regular companion, dividing total decode latency by `max(1, output_tokens - 1)` for TPOT. AFD attention and FFN workers retain their existing timing provider.
+
 ### Engine identity controls
 
 The canonical configuration also carries quantization overrides and
@@ -415,6 +438,21 @@ latency-only and return `None` from `evidence_summary()`. Consumers must keep
 that distinction when producing power metrics: absence of evidence is not a
 zero-watt prediction. FPM decode timing continues to query the exact total
 past-KV coordinate rather than the op-level mean-context coordinate.
+
+## Agentic report source migration (0.13)
+
+The replay report additions require the coordinated 0.13.0 wheel/crate version,
+aligned with main's release preparation in PR #268. They must not be released
+as a 0.12 patch. Downstream exhaustive Rust `ReplayReport` literals must supply
+`agentic_phases: None` for a cold run (or its prepared phase evidence).
+Exhaustive `PerRequestRecord` literals must supply `agentic_phase: None` for
+cold replay, or `Some(AgenticReplayPhase::Profile)` for measured warmed requests.
+Exhaustive destructuring must name these fields or use `..`.
+
+The external-consumer compile fixture `rebuild_replay_report_literals` constructs
+both public structs exhaustively against this boundary. JSON consumers retain
+the existing cold shape: absent optional phase evidence is not serialized.
+This source migration does not change the engine-config/spec or FPM wire schemas.
 
 ## Compatibility rules
 

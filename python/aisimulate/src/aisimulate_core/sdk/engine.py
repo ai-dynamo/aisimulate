@@ -173,6 +173,7 @@ def _fpm_spec_dict(op: FPMForwardOp) -> dict:
             "phase": op._phase,
             "model_path": op._model_path,
             "match_identity": list(op._match_identity),
+            "original_fmha_quant_mode": op._original_fmha_quant_mode,
             "weight_bytes": op._weight_bytes,
             # Speculative verify width for the equivalent-AR decode mapping
             # (1 = plain AR). Set by the fpm hybrid rewrite in models when a
@@ -308,6 +309,7 @@ def _engine_config_dict(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> dict:
     """Build the ``EngineConfig`` JSON (matches the Rust modularised struct).
 
@@ -335,7 +337,9 @@ def _engine_config_dict(
         # Always a literal version directory name, never a slot alias — the
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
+        "fpm_parquet_path": fpm_parquet_path,
         "kv_block_size": kv_block_size,
+        "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
         # ParallelMapping (flattened)
         "tp_size": int(cfg.tp_size or 1),
@@ -348,6 +352,7 @@ def _engine_config_dict(
         "weight_dtype": _rust_quant_to_dtype(getattr(cfg, "gemm_quant_mode", None)),
         "moe_dtype": _rust_moe_quant_to_dtype(getattr(cfg, "moe_quant_mode", None)),
         "activation_dtype": _rust_quant_to_dtype(getattr(cfg, "fmha_quant_mode", None)),
+        "fpm_fmha_dtype": _rust_quant_to_dtype(getattr(cfg, "fpm_fmha_quant_mode", None)),
         "kv_cache_dtype": _rust_quant_to_dtype(getattr(cfg, "kvcache_quant_mode", None)),
         # Shared-layer policy bits only (schema v13): the engine resolves
         # per-op sources itself (`perf_database/source_resolution.rs`), so the
@@ -433,6 +438,7 @@ def compile_engine(
     moe_quant_mode: str | None = None,
     kvcache_quant_mode: str | None = None,
     fmha_quant_mode: str | None = None,
+    fpm_fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
     moe_backend: str | None = None,
@@ -451,6 +457,7 @@ def compile_engine(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -475,6 +482,11 @@ def compile_engine(
         )
     if type(cp_size) is not int or cp_size != 1:
         raise ValueError("cp_size must be the integer 1; this SDK entry point does not support context parallelism")
+    if fpm_parquet_path is not None:
+        if not fpm_parquet_path:
+            raise ValueError("fpm_parquet_path cannot be empty")
+        if forward_model != "fpm":
+            raise ValueError("fpm_parquet_path requires forward_model='fpm'")
     profile = load_fpm_profile(fpm_profile) if fpm_profile is not None else None
     if fpm_interpolation not in (None, "sol", "direct") or (profile is not None and fpm_interpolation is None):
         raise InvalidEngineConfigurationError("FPM compilation requires a resolved method from best_available(config)")
@@ -519,6 +531,8 @@ def compile_engine(
                 shared_layer=shared_layer,
                 transfer_policy=transfer_policy,
                 strict_provenance=strict_provenance,
+                fpm_parquet_path=fpm_parquet_path,
+                fpm_fmha_quant_mode=fpm_fmha_quant_mode,
             )
             return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
         gemm_quant_mode = deployment.gemm_quant_mode
@@ -545,6 +559,7 @@ def compile_engine(
             gemm_quant_mode=gemm_quant_mode,
             kvcache_quant_mode=kvcache_quant_mode,
             fmha_quant_mode=fmha_quant_mode,
+            fpm_fmha_quant_mode=fpm_fmha_quant_mode,
             moe_quant_mode=moe_quant_mode,
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,
@@ -565,7 +580,10 @@ def compile_engine(
         if not check_is_moe(model_path):
             raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
     model_config.decoder_replay = decoder_replay
-    resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
+    try:
+        resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)
+    except (ValueError, TypeError, KeyError) as exc:
+        raise InvalidEngineConfigurationError(str(exc)) from exc
     if deployment is not None:
         model_config.moe_backend = None if deployment.moe_backend == "auto" else deployment.moe_backend
 
@@ -580,8 +598,13 @@ def compile_engine(
         )
     model = get_model(model_path, model_config, backend)
     if deployment is not None and forward_model == "fpm":
+        from aisimulate_core.sdk.fpm_identity import LEGACY_EXECUTION_IDENTITY
+
+        expected_identity = deployment.match_identity() + list(LEGACY_EXECUTION_IDENTITY)
+        if fpm_fmha_quant_mode is not None:
+            expected_identity[2] = fpm_fmha_quant_mode
         for op in (*model.context_ops, *model.generation_ops):
-            if not isinstance(op, FPMForwardOp) or list(op._match_identity) != deployment.match_identity():
+            if not isinstance(op, FPMForwardOp) or list(op._match_identity) != expected_identity:
                 raise InvalidEngineConfigurationError(
                     "registered SOL construction does not preserve the requested FPM profile identity"
                 )
@@ -610,6 +633,7 @@ def compile_engine(
         shared_layer=shared_layer,
         transfer_policy=transfer_policy,
         strict_provenance=strict_provenance,
+        fpm_parquet_path=fpm_parquet_path,
     )
 
     if profile is not None:
@@ -633,10 +657,20 @@ def _direct_fpm_spec_json(
     shared_layer: bool | None,
     transfer_policy: str | list[str] | None,
     strict_provenance: bool | None,
+    fpm_parquet_path: str | None = None,
+    fpm_fmha_quant_mode: str | None = None,
 ) -> str:
     """Build whole-forward timing operations from metadata, without a graph."""
     if _database_mode_name(None, database_mode) != "SILICON":
         raise ValueError("direct FPM interpolation requires database_mode='SILICON'; it has no analytical SOL model")
+    identity = deployment.match_identity()
+    if fpm_fmha_quant_mode is not None:
+        if fpm_fmha_quant_mode not in {"bfloat16", "fp8", "fp8_block"}:
+            raise ValueError("fpm_fmha_quant_mode must be bfloat16, fp8, or fp8_block")
+        identity[2] = fpm_fmha_quant_mode
+    controls = {"method": "direct"}
+    if fpm_parquet_path is not None:
+        controls["fpm_parquet_path"] = fpm_parquet_path
     engine = {
         "schema_version": ENGINE_CONFIG_SCHEMA_VERSION,
         "model_name": profile.model,
@@ -645,6 +679,8 @@ def _direct_fpm_spec_json(
         "backend": deployment.backend,
         "backend_version": deployment.backend_version,
         "forward_model": "fpm",
+        "fpm_parquet_path": fpm_parquet_path,
+        "fpm_fmha_dtype": _rust_quant_to_dtype(fpm_fmha_quant_mode),
         "kv_block_size": kv_block_size,
         "tp_size": deployment.tp,
         "pp_size": deployment.pp,
@@ -662,7 +698,7 @@ def _direct_fpm_spec_json(
         "transfer_policy": _transfer_policy_tokens(None, transfer_policy),
         "extra": {
             "fpm_profile": profile.model_dump_json(),
-            "estimator_config": json.dumps({"fpm_interpolation": {"method": "direct"}}),
+            "estimator_config": json.dumps({"fpm_interpolation": controls}),
         },
     }
 
@@ -672,7 +708,8 @@ def _direct_fpm_spec_json(
                 "name": f"fpm_forward_{phase}",
                 "phase": phase,
                 "model_path": profile.model,
-                "match_identity": deployment.match_identity(),
+                "match_identity": identity,
+                "original_fmha_quant_mode": deployment.fmha_quant_mode if fpm_fmha_quant_mode is not None else None,
                 "weight_bytes": deployment.resources.weights_bytes,
                 "verify_width": 1,
                 "sol_ops": [],
@@ -762,6 +799,7 @@ def build_engine_spec_json(
     shared_layer: bool | None = None,
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
+    fpm_parquet_path: str | None = None,
 ) -> str:
     """Walk a built model's op lists into an ``EngineSpec`` JSON string.
 
@@ -809,6 +847,7 @@ def build_engine_spec_json(
             shared_layer=shared_layer,
             transfer_policy=transfer_policy,
             strict_provenance=strict_provenance,
+            fpm_parquet_path=fpm_parquet_path,
         ),
         "context_ops": context_ops,
         "generation_ops": generation_ops,

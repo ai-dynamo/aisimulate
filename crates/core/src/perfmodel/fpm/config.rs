@@ -108,6 +108,9 @@ pub struct ForwardPassPerfModelConfig {
     pub moe_quant_mode: Option<String>,
     #[serde(default, alias = "fmha_dtype")]
     pub fmha_quant_mode: Option<String>,
+    /// Exact recorded FPM table label; does not override model arithmetic.
+    #[serde(default, alias = "fpm_fmha_dtype")]
+    pub fpm_fmha_quant_mode: Option<String>,
     #[serde(default, alias = "kv_cache_dtype")]
     pub kvcache_quant_mode: Option<String>,
     #[serde(default, alias = "comm_dtype")]
@@ -173,6 +176,7 @@ impl ForwardPassPerfModelConfig {
             gemm_quant_mode: None,
             moe_quant_mode: None,
             fmha_quant_mode: None,
+            fpm_fmha_quant_mode: None,
             kvcache_quant_mode: None,
             comm_quant_mode: None,
             nextn: 0,
@@ -366,6 +370,18 @@ impl ForwardPassPerfModelConfig {
                 "estimation_mode='fpm_interpolation' does not support MTP speculative decoding",
             ));
         }
+        if let Some(selector) = self.fpm_fmha_quant_mode.as_deref() {
+            if self.estimation_mode != EstimationMode::FpmInterpolation {
+                return Err(invalid_config(
+                    "fpm_fmha_quant_mode requires estimation_mode='fpm_interpolation'",
+                ));
+            }
+            if !matches!(selector, "bfloat16" | "fp8" | "fp8_block") {
+                return Err(invalid_config(
+                    "fpm_fmha_quant_mode must be bfloat16, fp8, or fp8_block",
+                ));
+            }
+        }
         TransferPolicy::from_wire(self.transfer_policy.as_deref()).map_err(invalid_config)?;
         for root in &self.systems_paths {
             if root.to_str().is_none() {
@@ -434,6 +450,33 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn fpm_selector_is_validated_and_preserved_in_canonical_identity() {
+        let cfg = config(serde_json::json!({
+            "estimation_mode": "fpm_interpolation", "fpm_fmha_quant_mode": "fp8"
+        }));
+        cfg.validate().unwrap();
+        let restored: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(restored, cfg);
+        assert_eq!(restored.fpm_fmha_quant_mode.as_deref(), Some("fp8"));
+        for mode in ["auto", "op_level", "fpm_regression"] {
+            let invalid =
+                config(serde_json::json!({"estimation_mode": mode, "fpm_fmha_quant_mode": "fp8"}));
+            assert!(
+                invalid
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("requires estimation_mode='fpm_interpolation'")
+            );
+        }
+        let invalid = config(
+            serde_json::json!({"estimation_mode": "fpm_interpolation", "fpm_fmha_quant_mode": "bogus"}),
+        );
+        assert!(invalid.validate().is_err());
     }
 
     #[test]

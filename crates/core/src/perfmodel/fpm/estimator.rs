@@ -3,6 +3,8 @@
 
 //! Typed estimator-specific controls. Defaults preserve the existing algorithms.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use super::options::{ForwardPassPerfOptions, validate_options};
@@ -26,6 +28,9 @@ pub struct OpLevelConfig {}
 #[serde(default, deny_unknown_fields)]
 pub struct FpmInterpolationConfig {
     pub method: FpmInterpolationMethod,
+    /// External parquet and its same-stem metadata sidecar.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fpm_parquet_path: Option<PathBuf>,
 }
 
 /// Construction-time interpolation selection. Native operators receive only
@@ -226,6 +231,10 @@ impl EstimatorConfig {
     }
 
     pub(crate) fn validate(&self) -> Result<(), AicError> {
+        crate::config::validate_fpm_parquet_path(
+            self.fpm_interpolation.fpm_parquet_path.as_deref(),
+            true,
+        )?;
         let ridge = self.fpm_regression.fit.singular_ridge_scale;
         if !ridge.is_finite() || ridge < 0.0 {
             return Err(AicError::InvalidEngineConfig("estimator_config.fpm_regression.fit.singular_ridge_scale must be finite and nonnegative".into()));

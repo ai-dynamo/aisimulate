@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 FPM_FORWARD_OP = "fpm_forward"
 FPM_WARMUP_ITERATIONS = 5
@@ -47,6 +50,46 @@ def _optional_size_list(values: list[int] | None) -> tuple[int, ...] | None:
     if values is None:
         return None
     return tuple(sorted(set(values)))
+
+
+def _freeze_benchmark_points(path: str) -> tuple[str, str]:
+    """Freeze validated coordinates; native Dynamo owns execution/row admission."""
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate benchmark-points field: {key}")
+            result[key] = value
+        return result
+
+    payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"), object_pairs_hook=unique_object)
+    if not isinstance(payload, dict) or set(payload) != {"schema_version", "prefill", "decode"}:
+        raise ValueError("benchmark-points manifest requires schema_version, prefill and decode")
+    if type(payload["schema_version"]) is not int or payload["schema_version"] not in (1, 2, 3):
+        raise ValueError("benchmark-points schema_version must be 1, 2 or 3")
+    for phase in ("prefill", "decode"):
+        if not isinstance(payload[phase], list) or any(not isinstance(point, dict) for point in payload[phase]):
+            raise ValueError(f"benchmark-points {phase} must be a list of point objects")
+        for point in payload[phase]:
+            required = {"batch_size": 1, "total_kv_read_tokens": 0}
+            if phase == "prefill":
+                required["total_prefill_tokens"] = 1
+            elif "total_prefill_tokens" in point:
+                required["total_prefill_tokens"] = 0
+            for field, minimum in required.items():
+                value = point.get(field)
+                if type(value) is not int or value < minimum:
+                    raise ValueError(f"benchmark-points {phase} {field} must be an integer >= {minimum}")
+            token_field = "total_prefill_tokens" if phase == "prefill" else "total_kv_read_tokens"
+            if point[token_field] < point["batch_size"]:
+                raise ValueError(f"benchmark-points {phase} {token_field} must be >= batch_size")
+            if phase == "decode" and point.get("total_prefill_tokens", 0) != 0:
+                raise ValueError("benchmark-points decode total_prefill_tokens must be zero")
+    if not payload["prefill"] and not payload["decode"]:
+        raise ValueError("benchmark-points manifest must contain at least one point")
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return canonical, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _powers_of_two_up_to(limit: int) -> tuple[int, ...]:
@@ -201,7 +244,15 @@ class FPMCollectionOptions:
     vllm_max_model_len: int = VLLM_AUTO_FIT_MAX_MODEL_LEN
     max_prefill_isl: int = FPM_MAX_PREFILL_ISL
     max_prefill_batch_size: int | None = None
+    max_decode_batch_size: int | None = None
     max_prefill_cudagraph_size: int = FPM_MAX_PREFILL_CUDAGRAPH_SIZE
+    decoder_replay: bool = False
+    enforce_eager: bool = False
+    benchmark_points_json: str | None = None
+    benchmark_points_sha256: str | None = None
+    executor: str = "kubernetes"
+    slurm_container_image: str = ""
+    slurm_container_mounts: tuple[str, ...] = ()
 
     @property
     def prefill_sampling(self) -> PrefillSamplingProfile:
@@ -247,7 +298,28 @@ class FPMCollectionOptions:
         if {"pp", "cp"}.intersection(requested_axes):
             raise ValueError("FPM typical-matrix V1 does not vary PP or CP")
 
+        executor = getattr(args, "fpm_executor", None) or "kubernetes"
+        image = getattr(args, "fpm_slurm_container_image", None) or ""
+        mounts = tuple(getattr(args, "fpm_slurm_container_mount", None) or ())
+        if executor == "slurm" and not image:
+            raise ValueError("--fpm-executor slurm requires --fpm-slurm-container-image")
+        if executor != "slurm" and (image or mounts):
+            raise ValueError("Slurm container options require --fpm-executor slurm")
+
+        model_len = getattr(args, "fpm_max_model_len", None)
+        if model_len is not None and model_len != -1 and model_len < 1:
+            raise ValueError("--fpm-max-model-len must be positive or -1 for auto-fit")
+
+        points_path = getattr(args, "fpm_benchmark_points_file", None)
+        points_json = points_sha256 = None
+        if points_path is not None:
+            if getattr(args, "smoke", False):
+                raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
+            points_json, points_sha256 = _freeze_benchmark_points(points_path)
+
         return cls(
+            benchmark_points_json=points_json,
+            benchmark_points_sha256=points_sha256,
             max_gpus=max_gpus,
             gpu_counts=tuple(counts),
             parallel_presets=requested_presets,
@@ -271,15 +343,26 @@ class FPMCollectionOptions:
                 if getattr(args, "fpm_warmup_iterations", None) is None
                 else args.fpm_warmup_iterations
             ),
+            vllm_max_model_len=model_len if model_len is not None else VLLM_AUTO_FIT_MAX_MODEL_LEN,
+            max_decode_batch_size=getattr(args, "fpm_max_decode_batch_size", None),
             max_prefill_isl=getattr(args, "fpm_max_prefill_isl", None) or FPM_MAX_PREFILL_ISL,
             max_prefill_batch_size=getattr(args, "fpm_max_prefill_batch_size", None),
             max_prefill_cudagraph_size=(
                 getattr(args, "fpm_max_prefill_cudagraph_size", None) or FPM_MAX_PREFILL_CUDAGRAPH_SIZE
             ),
+            decoder_replay=bool(getattr(args, "fpm_decoder_replay", False)),
+            enforce_eager=bool(getattr(args, "fpm_enforce_eager", False)),
+            executor=executor,
+            slurm_container_image=image,
+            slurm_container_mounts=mounts,
         )
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload = {
+            "decoder_replay": self.decoder_replay,
+            "executor": self.executor,
+            "slurm_container_image": self.slurm_container_image,
+            "slurm_container_mounts": list(self.slurm_container_mounts),
             "max_gpus": self.max_gpus,
             "gpu_counts": list(self.gpu_counts),
             "parallel_presets": list(self.parallel_presets),
@@ -298,11 +381,20 @@ class FPMCollectionOptions:
             "cp_sizes": list(self.cp_sizes) if self.cp_sizes is not None else None,
             "global_warmup_iterations": self.warmup_iterations,
             "vllm_max_model_len": self.vllm_max_model_len,
+            "max_decode_batch_size": self.max_decode_batch_size,
             "warmup_repeats": 0,
             "measurement_repeats": FPM_MEASUREMENT_REPEATS,
             "point_source": "dynamo_native_self_benchmark",
             "prefill_sampling": self.prefill_sampling.to_dict(),
         }
+        if self.enforce_eager:
+            payload["enforce_eager"] = True
+        if self.benchmark_points_json is not None:
+            payload["benchmark_points"] = {
+                "payload": json.loads(self.benchmark_points_json),
+                "sha256": self.benchmark_points_sha256,
+            }
+        return payload
 
 
 def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
@@ -317,6 +409,33 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         default=None,
         metavar="PATH",
         help="JSON or YAML FPM model profile with exact deployment identities and rank-local resource bounds.",
+    )
+    group.add_argument(
+        "--fpm-enforce-eager",
+        action="store_true",
+        default=None,
+        help="Require native eager execution with CUDA graphs disabled; included in the frozen plan.",
+    )
+    group.add_argument(
+        "--fpm-benchmark-points-file",
+        metavar="PATH",
+        default=None,
+        help="Freeze a native Dynamo point manifest into the plan; cannot be combined with --smoke.",
+    )
+    group.add_argument(
+        "--fpm-decoder-replay",
+        action="store_true",
+        default=None,
+        help="Use true bounded decoder replay; requires verified runtime support.",
+    )
+    group.add_argument(
+        "--fpm-max-model-len", type=int, default=None, help="vLLM context limit; positive or -1 for runtime auto-fit."
+    )
+    group.add_argument(
+        "--fpm-max-decode-batch-size",
+        type=_positive_int,
+        default=None,
+        help="Optional native decode max-num-seqs bound.",
     )
     group.add_argument(
         "--fpm-max-gpus",
@@ -472,6 +591,23 @@ def add_fpm_generator_arguments(parser: argparse.ArgumentParser) -> None:
 
     group = parser.add_argument_group("FPM deployment inputs")
     group.add_argument(
+        "--fpm-executor",
+        choices=["kubernetes", "slurm"],
+        default=None,
+        help="Execution transport; Slurm runs inside an existing allocation.",
+    )
+    group.add_argument(
+        "--fpm-slurm-container-image",
+        default=None,
+        help="Immutable Pyxis image reference or staged squashfs for Slurm.",
+    )
+    group.add_argument(
+        "--fpm-slurm-container-mount",
+        action="append",
+        default=None,
+        help="Pyxis SOURCE:TARGET mount; repeat for checkpoint/runtime/cache paths.",
+    )
+    group.add_argument(
         "--generator-config",
         default=None,
         help="Deployment-only YAML containing supported K8sConfig fields.",
@@ -539,6 +675,14 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_max_prefill_batch_size",
         "fpm_max_prefill_cudagraph_size",
         "fpm_artifact_root",
+        "fpm_max_model_len",
+        "fpm_max_decode_batch_size",
+        "fpm_decoder_replay",
+        "fpm_enforce_eager",
+        "fpm_benchmark_points_file",
+        "fpm_executor",
+        "fpm_slurm_container_image",
+        "fpm_slurm_container_mount",
         "fpm_database_root",
         "fpm_publish_partial",
         # Deployment-only Generator inputs are registered unconditionally on

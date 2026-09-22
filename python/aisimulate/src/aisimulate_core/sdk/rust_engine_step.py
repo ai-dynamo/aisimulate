@@ -108,7 +108,7 @@ class ForwardPassPerfModelConfig:
     backend: str
     worker_type: str
     backend_version: str | None = None
-    fpm_profile: dict[str, Any] | None = None
+    fpm_profile: dict[str, Any] | None = dataclass_field(default=None, kw_only=True)
     tp: int = 1
     pp: int = 1
     attention_dp: int = 1
@@ -117,6 +117,7 @@ class ForwardPassPerfModelConfig:
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
     fmha_quant_mode: str | None = None
+    fpm_fmha_quant_mode: str | None = dataclass_field(default=None, kw_only=True)
     kvcache_quant_mode: str | None = None
     comm_quant_mode: str | None = None
     nextn: int = 0
@@ -303,6 +304,14 @@ class RustForwardPassPerfModel:
         to one iteration.
         """
         self._inner.tune_with_fpms(_json_dumps(_normalize_tuning_iterations(iterations)))
+
+    def static_phase_latency(self, *, batch_size: int, input_tokens: int, output_tokens: int, prefill: bool) -> float:
+        """Native static latency in ms, before online correction.
+
+        Decode returns total latency across the generated tokens, using the
+        engine's static integration. Regression estimators are unsupported.
+        """
+        return self._inner.static_phase_latency(batch_size, input_tokens, output_tokens, prefill)
 
     def static_phase_diagnostics(
         self, *, batch_size: int, context_length: int, prefill: bool, prefix: int = 0
@@ -1187,6 +1196,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
         "weight_dtype": _quant_to_dtype(getattr(model_config, "gemm_quant_mode", None)),
         "moe_dtype": _moe_quant_to_dtype(getattr(model_config, "moe_quant_mode", None)),
         "activation_dtype": _quant_to_dtype(getattr(model_config, "fmha_quant_mode", None)),
+        "fpm_fmha_dtype": _quant_to_dtype(getattr(model_config, "fpm_fmha_quant_mode", None)),
         "kv_cache_dtype": _quant_to_dtype(getattr(model_config, "kvcache_quant_mode", None)),
         "kv_block_size": None,
         "nextn": int(nextn) if nextn is not None else None,

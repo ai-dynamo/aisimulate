@@ -1045,6 +1045,7 @@ struct EngineBuildRequest {
     moe_quant_mode: Option<String>,
     kvcache_quant_mode: Option<String>,
     fmha_quant_mode: Option<String>,
+    fpm_fmha_quant_mode: Option<String>,
     comm_quant_mode: Option<String>,
     attention_backend: Option<String>,
     moe_backend: Option<String>,
@@ -1058,6 +1059,7 @@ struct EngineBuildRequest {
     fpm_profile: Option<String>,
     fpm_interpolation: Option<String>,
     cp_size: u32,
+    fpm_parquet_path: Option<String>,
     decoder_replay: bool,
     database_mode: Option<String>,
     shared_layer: Option<bool>,
@@ -1097,6 +1099,7 @@ impl AicEngineBuilder {
                 moe_quant_mode: None,
                 kvcache_quant_mode: None,
                 fmha_quant_mode: None,
+                fpm_fmha_quant_mode: None,
                 comm_quant_mode: None,
                 attention_backend: None,
                 moe_backend: None,
@@ -1110,6 +1113,7 @@ impl AicEngineBuilder {
                 fpm_profile: None,
                 fpm_interpolation: None,
                 cp_size: 1,
+                fpm_parquet_path: None,
                 decoder_replay: false,
                 database_mode: None,
                 shared_layer: None,
@@ -1123,6 +1127,12 @@ impl AicEngineBuilder {
     /// Python's default (op_level).
     pub fn forward_model(mut self, forward_model: &str) -> Self {
         self.request.forward_model = Some(forward_model.to_owned());
+        self
+    }
+
+    /// Use an external FPM parquet and its adjacent `.metadata.json` sidecar.
+    pub fn fpm_parquet_path(mut self, path: impl Into<String>) -> Self {
+        self.request.fpm_parquet_path = Some(path.into());
         self
     }
 
@@ -1205,6 +1215,12 @@ impl AicEngineBuilder {
         self
     }
 
+    /// Select a whole-forward FPM cell without changing the SOL arithmetic.
+    pub fn fpm_fmha_dtype(mut self, value: impl Into<String>) -> Self {
+        self.request.fpm_fmha_quant_mode = Some(value.into());
+        self
+    }
+
     /// Override the FMHA quantization mode.
     pub fn fmha_quant_mode(mut self, value: impl Into<String>) -> Self {
         self.request.fmha_quant_mode = Some(value.into());
@@ -1263,6 +1279,7 @@ mod builder_tests {
         assert!(builder.request.moe_ep_size.is_none());
         assert!(builder.request.attention_backend.is_none());
         assert!(builder.request.kv_block_size.is_none());
+        assert!(builder.request.fpm_parquet_path.is_none());
         assert!(builder.request.database_mode.is_none());
         assert!(builder.request.shared_layer.is_none());
         assert!(builder.request.transfer_policy.is_none());
@@ -1284,6 +1301,7 @@ mod builder_tests {
             .strict_provenance(true)
             .speculative_decoding(2)
             .kv_block_size(16)
+            .fpm_parquet_path("/artifacts/reviewed-fpm.parquet")
             .systems_path("/tmp/systems");
         assert_eq!(builder.request.backend, "sglang");
         assert_eq!(builder.request.backend_version.as_deref(), Some("0.5.9"));
@@ -1304,6 +1322,10 @@ mod builder_tests {
         assert_eq!(builder.request.nextn, 2);
         assert_eq!(builder.request.kv_block_size, Some(16));
         assert_eq!(
+            builder.request.fpm_parquet_path.as_deref(),
+            Some("/artifacts/reviewed-fpm.parquet")
+        );
+        assert_eq!(
             builder.request.systems_path.as_deref(),
             Some("/tmp/systems")
         );
@@ -1317,6 +1339,8 @@ mod builder_tests {
             "system_name": "system",
             "backend": "vllm",
             "backend_version": "0.25.1",
+            "forward_model": "fpm",
+            "fpm_parquet_path": "/artifacts/reviewed-fpm.parquet",
             "kv_block_size": null,
             "tp_size": 4,
             "pp_size": 1,
@@ -1324,6 +1348,8 @@ mod builder_tests {
             "weight_dtype": null,
             "moe_dtype": null,
             "activation_dtype": null,
+            "fpm_fmha_dtype": "fp8",
+            "forward_model": "fpm",
             "kv_cache_dtype": null,
             "database_mode": "EMPIRICAL",
             "enable_shared_layer": true,
@@ -1333,9 +1359,11 @@ mod builder_tests {
         }))
         .expect("deserialize engine config");
 
-        let request = engine_build_request(&config, None);
+        let request = engine_build_request(&config, None).unwrap();
 
         assert_eq!(request.database_mode.as_deref(), Some("EMPIRICAL"));
+        assert_eq!(request.fpm_fmha_quant_mode.as_deref(), Some("fp8"));
+        assert_eq!(request.fmha_quant_mode, None);
         assert_eq!(request.shared_layer, Some(true));
         assert_eq!(
             request.transfer_policy.as_deref(),
@@ -1345,6 +1373,23 @@ mod builder_tests {
         assert_eq!(request.fpm_profile.as_deref(), Some(r#"{"model":"model"}"#));
         assert_eq!(request.fpm_interpolation.as_deref(), Some("direct"));
         assert_eq!(request.cp_size, 1);
+        assert_eq!(
+            request.fpm_parquet_path.as_deref(),
+            Some("/artifacts/reviewed-fpm.parquet")
+        );
+    }
+
+    #[test]
+    fn builder_rejects_invalid_fpm_paths_before_entering_python() {
+        for (path, model) in [("", "fpm"), ("/missing/fpm.parquet", "op_level")] {
+            let result = AicEngineBuilder::new("model", "system", BackendKind::Vllm)
+                .forward_model(model)
+                .fpm_parquet_path(path)
+                .build();
+            assert!(
+                matches!(result, Err(AicError::InvalidEngineConfig(message)) if message.contains("fpm_parquet_path"))
+            );
+        }
     }
 
     #[test]
@@ -1358,6 +1403,15 @@ mod builder_tests {
             Err(AicError::InvalidEngineConfig(message))
                 if message.contains("SOL_FULL") && message.contains("per-call diagnostic")
         ));
+    }
+
+    #[test]
+    fn builder_rejects_fpm_selector_without_fpm_before_loading_python() {
+        let result = AicEngineBuilder::new("model", "system", BackendKind::Vllm)
+            .fpm_fmha_dtype("fp8")
+            .build();
+        assert!(matches!(result, Err(AicError::InvalidEngineConfig(message))
+            if message.contains("requires forward_model='fpm'")));
     }
 }
 
@@ -1380,6 +1434,17 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
                 .to_string(),
         ));
     }
+    if request.fpm_fmha_quant_mode.is_some() && request.forward_model.as_deref() != Some("fpm") {
+        return Err(AicError::InvalidEngineConfig(
+            "fpm_fmha_dtype requires forward_model='fpm'".into(),
+        ));
+    }
+
+    crate::config::validate_fpm_parquet_path(
+        request.fpm_parquet_path.as_deref().map(Path::new),
+        request.forward_model.as_deref() == Some("fpm"),
+    )?;
+
     if request.database_mode.as_deref() == Some(DatabaseMode::SolFull.as_str()) {
         return Err(AicError::InvalidEngineConfig(
             "database mode SOL_FULL is a per-call diagnostic and cannot be an engine default; use SOL instead"
@@ -1407,6 +1472,10 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("moe_quant_mode", request.moe_quant_mode.as_deref())?;
         kwargs.set_item("kvcache_quant_mode", request.kvcache_quant_mode.as_deref())?;
         kwargs.set_item("fmha_quant_mode", request.fmha_quant_mode.as_deref())?;
+        kwargs.set_item(
+            "fpm_fmha_quant_mode",
+            request.fpm_fmha_quant_mode.as_deref(),
+        )?;
         kwargs.set_item("comm_quant_mode", request.comm_quant_mode.as_deref())?;
         kwargs.set_item("attention_backend", request.attention_backend.as_deref())?;
         kwargs.set_item("moe_backend", request.moe_backend.as_deref())?;
@@ -1416,6 +1485,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("fpm_profile", request.fpm_profile.as_deref())?;
         kwargs.set_item("fpm_interpolation", request.fpm_interpolation.as_deref())?;
         kwargs.set_item("cp_size", request.cp_size)?;
+        kwargs.set_item("fpm_parquet_path", request.fpm_parquet_path.as_deref())?;
         kwargs.set_item("decoder_replay", request.decoder_replay)?;
         kwargs.set_item("database_mode", request.database_mode.as_deref())?;
         kwargs.set_item("shared_layer", request.shared_layer)?;
@@ -1528,6 +1598,11 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         moe_quant_mode: config.moe_quant_mode.clone(),
         kvcache_quant_mode: config.kvcache_quant_mode.clone(),
         fmha_quant_mode: config.fmha_quant_mode.clone(),
+        fpm_fmha_quant_mode: if forward_model == "fpm" {
+            config.fpm_fmha_quant_mode.clone()
+        } else {
+            None
+        },
         comm_quant_mode: config.comm_quant_mode.clone(),
         attention_backend: config.attention_backend.clone(),
         moe_backend: config.moe_backend.clone(),
@@ -1551,6 +1626,19 @@ pub(crate) fn compile_forward_pass_model_to_engine(
                 .to_owned(),
         ),
         cp_size: 1,
+        fpm_parquet_path: if config.estimation_mode == crate::EstimationMode::FpmInterpolation {
+            crate::config::validate_fpm_parquet_path(
+                config
+                    .estimator_config
+                    .fpm_interpolation
+                    .fpm_parquet_path
+                    .as_deref(),
+                true,
+            )?
+            .map(str::to_owned)
+        } else {
+            None
+        },
         decoder_replay: config.decoder_replay,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
@@ -1574,7 +1662,14 @@ pub(crate) fn compile_engine_to_engine(
     config: &EngineConfig,
     systems_path: Option<&str>,
 ) -> Result<Engine, AicError> {
-    let mut request = engine_build_request(config, systems_path);
+    if config.quantization.fpm_fmha_dtype.is_some()
+        && fmha_quant_name(config.quantization.fpm_fmha_dtype.as_ref()).is_none()
+    {
+        return Err(AicError::InvalidEngineConfig(
+            "fpm_fmha_dtype must be bfloat16, fp8, or fp8_block".into(),
+        ));
+    }
+    let mut request = engine_build_request(config, systems_path)?;
     if let Some(value) = config.extra.get("estimator_config") {
         let controls: crate::EstimatorConfig = serde_json::from_str(value)
             .map_err(|error| AicError::InvalidEngineConfig(format!("estimator_config: {error}")))?;
@@ -1606,13 +1701,16 @@ pub(crate) fn fpm_profile_quantization(
         .extract()
 }
 
-fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> EngineBuildRequest {
+fn engine_build_request(
+    config: &EngineConfig,
+    systems_path: Option<&str>,
+) -> Result<EngineBuildRequest, AicError> {
     let nextn = config
         .speculative
         .as_ref()
         .and_then(|s| s.nextn)
         .unwrap_or(0);
-    EngineBuildRequest {
+    Ok(EngineBuildRequest {
         model_path: config.model_name.clone(),
         system: config.system_name.clone(),
         backend: config.backend.as_str().to_owned(),
@@ -1629,6 +1727,8 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
             .map(str::to_owned),
         fmha_quant_mode: fmha_quant_name(config.quantization.activation_dtype.as_ref())
             .map(str::to_owned),
+        fpm_fmha_quant_mode: fmha_quant_name(config.quantization.fpm_fmha_dtype.as_ref())
+            .map(str::to_owned),
         // Comm quant is not carried on EngineConfig; let Python default it.
         comm_quant_mode: None,
         // Attention backend is not carried on EngineConfig; let Python resolve it.
@@ -1644,12 +1744,17 @@ fn engine_build_request(config: &EngineConfig, systems_path: Option<&str>) -> En
         fpm_profile: config.extra.get("fpm_profile").cloned(),
         fpm_interpolation: config.extra.get("fpm_interpolation").cloned(),
         cp_size: config.parallel.cp_size.unwrap_or(1),
+        fpm_parquet_path: crate::config::validate_fpm_parquet_path(
+            config.fpm_parquet_path.as_deref(),
+            config.forward_model.as_deref() == Some("fpm"),
+        )?
+        .map(str::to_owned),
         decoder_replay: config.decoder_replay,
         database_mode: Some(config.database_mode.as_str().to_owned()),
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
         strict_provenance: Some(config.strict_provenance),
-    }
+    })
 }
 
 /// `DataType` → `GEMMQuantMode` enum name. `None` (auto-infer) for DataTypes
@@ -1797,7 +1902,8 @@ impl PyForwardPassPerfModel {
         let mut request = engine_build_request(
             &legacy,
             legacy.systems_path.as_ref().and_then(|path| path.to_str()),
-        );
+        )
+        .map_err(aic_to_py)?;
         if legacy.extra.contains_key("fpm_profile") {
             let mut modes = Python::with_gil(|py| fpm_profile_quantization(py, &legacy))?;
             request.gemm_quant_mode = modes.remove("gemm_quant_mode");
@@ -1831,6 +1937,18 @@ impl PyForwardPassPerfModel {
             }
             estimator_config.fpm_interpolation.method = method;
         }
+        if let Some(path) = request.fpm_parquet_path.as_ref() {
+            let configured = &mut estimator_config.fpm_interpolation.fpm_parquet_path;
+            if configured
+                .as_ref()
+                .is_some_and(|existing| existing != Path::new(path))
+            {
+                return Err(PyValueError::new_err(
+                    "conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path",
+                ));
+            }
+            *configured = Some(PathBuf::from(path));
+        }
         let worker_type = serde_json::from_value(serde_json::Value::String(worker_type.to_owned()))
             .map_err(|e| PyValueError::new_err(format!("invalid worker_type: {e}")))?;
         let estimation_mode = match request.forward_model.as_deref().unwrap_or("op_level") {
@@ -1862,6 +1980,7 @@ impl PyForwardPassPerfModel {
             gemm_quant_mode: request.gemm_quant_mode,
             moe_quant_mode: request.moe_quant_mode,
             fmha_quant_mode: request.fmha_quant_mode,
+            fpm_fmha_quant_mode: request.fpm_fmha_quant_mode,
             kvcache_quant_mode: request.kvcache_quant_mode,
             comm_quant_mode: request.comm_quant_mode,
             nextn: request.nextn,
@@ -1909,6 +2028,22 @@ impl PyForwardPassPerfModel {
             .map_err(|e| PyValueError::new_err(format!("invalid tuning iterations JSON: {e}")))?;
         py.allow_threads(|| self.inner.tune_with_fpms(&iterations))
             .map_err(aic_to_py)
+    }
+
+    /// Native static phase latency before online correction, in milliseconds.
+    fn static_phase_latency(
+        &self,
+        py: Python<'_>,
+        batch_size: u32,
+        input_tokens: u32,
+        output_tokens: u32,
+        prefill: bool,
+    ) -> PyResult<f64> {
+        py.allow_threads(|| {
+            self.inner
+                .static_phase_latency(batch_size, input_tokens, output_tokens, prefill)
+        })
+        .map_err(aic_to_py)
     }
 
     /// Static operation evidence from the canonical model, as JSON.
@@ -2109,6 +2244,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
             kv_block_size: None,
             parallel: ParallelMapping {
@@ -2123,6 +2259,7 @@ mod tests {
                 weight_dtype: None,
                 moe_dtype: None,
                 activation_dtype: None,
+                fpm_fmha_dtype: None,
                 kv_cache_dtype: None,
             },
             speculative: None,
@@ -2133,6 +2270,36 @@ mod tests {
             transfer_policy: None,
             extra: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn legacy_engine_rejects_invalid_fpm_paths() {
+        for path in ["", "/missing/fpm.parquet"] {
+            let mut config = fixture_engine_config();
+            config.fpm_parquet_path = Some(path.into());
+            let result = compile_engine_to_engine(&config, None);
+            assert!(
+                matches!(result, Err(AicError::InvalidEngineConfig(message)) if message.contains("fpm_parquet_path"))
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_model_rejects_non_utf8_fpm_path() {
+        use std::os::unix::ffi::OsStringExt;
+        let mut config = crate::ForwardPassPerfModelConfig::new(
+            TEST_MODEL,
+            "b200_sxm",
+            BackendKind::Vllm,
+            crate::ForwardPassWorkerType::Aggregated,
+        );
+        config.estimator_config.fpm_interpolation.fpm_parquet_path =
+            Some(std::ffi::OsString::from_vec(b"/data/invalid-\xff.parquet".to_vec()).into());
+        let result = crate::ForwardPassPerfModel::best_available(config);
+        assert!(
+            matches!(result, Err(AicError::InvalidEngineConfig(message)) if message.contains("fpm_parquet_path must be valid UTF-8"))
+        );
     }
 
     /// Build bincoded `EngineSpec` bytes from hand-built op lists. The lists

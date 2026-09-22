@@ -124,11 +124,14 @@ def test_glm_cli_plans_without_model_classes_or_any_timing_data(
 
     output = json.loads(capsys.readouterr().out)
     assert output["counts"]["cells"] == 4
+    assert output["schema_version"] == 11
+    # Schema11 adds the explicit legacy execution/cache/input identity and the
+    # native point source to cell IDs even for non-DeepSeek-V4.1 campaigns.
     assert {cell["cell_id"] for cell in output["cells"]} == {
-        "fpm-6efe9f97155a97e4",
-        "fpm-093958a8e9575a8a",
-        "fpm-272431d375ba264f",
-        "fpm-8ccaea64a44c2882",
+        "fpm-340a2e34da72dc11",
+        "fpm-cd10cc816446953a",
+        "fpm-be0eb714954d0f58",
+        "fpm-dd91802723ac733f",
     }
     assert {cell["parallel_strategy"] for cell in output["cells"]} == {"dep", "tep"}
     assert {cell["resolved_dtypes"]["fmha_quant_mode"] for cell in output["cells"]} == {"fp8"}

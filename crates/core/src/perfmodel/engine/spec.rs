@@ -643,6 +643,7 @@ mod tests {
             weight_bytes: 1.5e10,
             // Non-default on purpose: the round-trip must preserve the field.
             verify_width: 8,
+            original_fmha_quant_mode: Some("fp8".into()),
             sol_ops: vec![
                 OpSpec::Gemm(gemm()),
                 OpSpec::ContextAttention(context_attention()),
@@ -750,12 +751,6 @@ mod tests {
                 hc_mult: 4,
                 tp_size: 4,
             }),
-            OpSpec::Dsv41Linear(Dsv41LinearOp {
-                name: "v41_linear".into(),
-                n: 1152,
-                k: 5120,
-                quant_mode: GemmQuantMode::Fp8Block,
-            }),
             OpSpec::Dsv41Stage(Dsv41StageOp {
                 name: "v41_stage".into(),
                 is_context: true,
@@ -763,6 +758,12 @@ mod tests {
                 bounded: true,
                 window_size: 128,
                 children: vec![OpSpec::Gemm(gemm())],
+            }),
+            OpSpec::Dsv41Linear(Dsv41LinearOp {
+                name: "v41_linear".into(),
+                n: 1152,
+                k: 5120,
+                quant_mode: GemmQuantMode::Fp8Block,
             }),
         ];
 
@@ -825,6 +826,7 @@ mod tests {
             backend: crate::BackendKind::Trtllm,
             backend_version: Some("1.0.0rc3".into()),
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
@@ -839,6 +841,7 @@ mod tests {
                 weight_dtype: Some(DataType::Fp8),
                 moe_dtype: Some(DataType::Fp8),
                 activation_dtype: Some(DataType::Fp8),
+                fpm_fmha_dtype: None,
                 kv_cache_dtype: Some(DataType::Fp8),
             },
             speculative: Some(SpeculativeConfig { nextn: Some(1) }),
@@ -902,8 +905,7 @@ mod tests {
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
         // Keep the main-branch TokenScale index; V41 variants append after it.
-        let mut appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
-        appended.sort();
+        let appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
         assert_eq!(
             appended,
             vec![36, 37, 38, 39, 40],
@@ -1052,24 +1054,25 @@ mod tests {
     }
 
     #[test]
-    fn fpm_interpolation_round_trip_and_schema19_rejection() {
+    fn fpm_interpolation_round_trip_and_schema20_rejection() {
         let mut op = fpm_forward();
         op.interpolation = crate::operators::fpm_forward::FpmInterpolation::Direct;
         op.sol_ops.clear();
+        op.original_fmha_quant_mode = None;
         let spec = EngineSpec::new(sample_engine_config(), vec![], vec![OpSpec::FpmForward(op)]);
         let mut bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-        // Main's schema19 FPM payload ends with an empty sol_ops vector,
-        // without the four-byte interpolation enum immediately before it.
-        let selector = bytes.len() - 12;
+        // Main's schema20 payload has an empty sol_ops vector and trailing
+        // original-FMHA None (one byte), without the interpolation enum.
+        let selector = bytes.len() - 13;
         assert_eq!(&bytes[selector..selector + 4], &1u32.to_le_bytes());
         bytes.drain(selector..selector + 4);
-        bytes[..4].copy_from_slice(&19u32.to_le_bytes());
+        bytes[..4].copy_from_slice(&20u32.to_le_bytes());
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
             Err(AicError::UnsupportedSchemaVersion {
                 kind: "EngineSpec",
-                got: 19,
+                got: 20,
                 expected: ENGINE_SPEC_SCHEMA_VERSION,
             })
         ));
@@ -1135,7 +1138,7 @@ mod tests {
                 expected: ENGINE_SPEC_SCHEMA_VERSION
             })
         ));
-        // A false current-version stamp cannot silently use the JSON-only default.
+        // A false current-schema stamp cannot silently use the JSON-only default.
         bytes[..4].copy_from_slice(&ENGINE_SPEC_SCHEMA_VERSION.to_le_bytes());
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
@@ -1289,6 +1292,29 @@ mod tests {
             Err(AicError::UnsupportedSchemaVersion {
                 got: 17,
                 expected: ENGINE_SPEC_SCHEMA_VERSION,
+                ..
+            })
+        ));
+    }
+    #[test]
+    fn fpm_selector_json_default_and_schema19_rejection() {
+        let selected = fpm_forward();
+        assert_eq!(selected.original_fmha_quant_mode.as_deref(), Some("fp8"));
+        let mut json = serde_json::to_value(selected).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("original_fmha_quant_mode");
+        let legacy: crate::operators::FpmForwardOp = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.original_fmha_quant_mode, None);
+        let mut bytes = handshake_spec().to_bincode().unwrap();
+        bytes[..4].copy_from_slice(&19u32.to_le_bytes());
+        bytes.truncate(4);
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                got: 19,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+
                 ..
             })
         ));
