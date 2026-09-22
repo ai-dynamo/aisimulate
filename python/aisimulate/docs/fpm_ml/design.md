@@ -515,23 +515,33 @@ JSON and parses it in Rust on every call.
 
 ![Estimator latency, native vs GBDT, Rust layer and Python layer](figs/estimator_latency_native_vs_gbdt.png)
 
-| µs per estimate | native, Rust | GBDT, Rust | native, Python | GBDT, Python |
-| --- | --- | --- | --- | --- |
-| decode bs 1, context 32k | 1.4 | 3.3 | 9.1 | 11.1 |
-| decode bs 16, context 32k | 1.4 | 4.3 | 12.0 | 15.0 |
-| decode bs 64, context 128k | 3.7 | 5.1 | 23.2 | 24.7 |
-| decode bs 256, context 128k | 3.6 | 6.9 | 55.8 | 58.7 |
-| prefill 4096 tokens, prefix 0 | 1.1 | 6.5 | 8.8 | 14.0 |
-| prefill 4096 tokens, prefix 64k | 3.5 | 4.5 | 11.4 | 12.2 |
-| model construction | 2.1 s (decode), 0.9 s (prefill) | 5–8 ms | | |
+| | native: ops per estimate¹ | native, Rust µs | GBDT: ops per estimate² | GBDT, Rust µs | native, Python µs | GBDT, Python µs |
+| --- | --- | --- | --- | --- | --- | --- |
+| decode bs 1, context 32k | ~0.5–1.5 k | 1.4 | 1,682 (1,239 comparisons + 400 adds + ~42 feature ops) | 3.3 | 9.1 | 11.1 |
+| decode bs 16, context 32k | ~0.5–1.5 k | 1.4 | 2,072 (1,449 + 400 + ~222) | 4.3 | 12.0 | 15.0 |
+| decode bs 64, context 128k | ~1.5–4 k | 3.7 | 2,736 (1,537 + 400 + ~798) | 5.1 | 23.2 | 24.7 |
+| decode bs 256, context 128k | ~1.5–4 k | 3.6 | 5,040 (1,537 + 400 + ~3,102) | 6.9 | 55.8 | 58.7 |
+| prefill 4096 tokens, prefix 0 | ~0.5–1.5 k | 1.1 | 2,772 (2,329 + 400 + ~42) | 6.5 | 8.8 | 14.0 |
+| prefill 4096 tokens, prefix 64k | ~1.5–4 k | 3.5 | 1,948 (1,505 + 400 + ~42) | 4.5 | 11.4 | 12.2 |
+| model construction | | 2.1 s (decode), 0.9 s (prefill) | | 5–8 ms | | |
+
+¹ Estimated from the interpolation code, not instrumented: 16 operator evaluations, each 1–2
+perf-table lookups; an exact-key hit is a map lookup (~10 operations), a miss recurses over
+the 2–3 table axes (binary search of ~6 comparisons per visited node, 2 neighbours per axis,
+4–8 leaves, one linear blend of ~4 operations per internal node), i.e. roughly 30–120
+arithmetic operations per lookup, plus the attention/MoE modules' closed-form SOL terms.
+The two plateaus in the measured time (1.4 µs vs 3.5 µs) match the hit-vs-miss split.
+² Exact, counted by walking the trained artifact on the same synthetic inputs: internal
+nodes visited across the 400 trees (comparisons; mean leaf depth 3.1–5.8 for these inputs),
+400 leaf additions, plus the 18-feature build (~12 operations per request + ~30).
 
 What each side does per step: the native model evaluates 16 operators (10 top-level ops
 with the 43-layer count folded in as a scale factor: embedding, mHC pre/post, norms, two
 compressed-attention variants, MoE + shared-expert overlap, logits), each a 1–2 table lookup
 with grid interpolation over 2–3 axes; it is flat in batch size with two plateaus (1.4 µs
 and 3.5 µs) that correspond to different interpolation regions. The GBDT walks 400 trees of
-~61 nodes (about 2.8 k comparisons) after building 18 features from the per-request lists,
-which is the mild growth with batch size. **The native model is 1.1–2.7× faster in pure
+~61 nodes (1.2–2.3 k comparisons on these inputs) after building 18 features from the
+per-request lists, which is the mild growth with batch size. **The native model is 1.1–2.7× faster in pure
 compute**; both are a few microseconds, and at the Python boundary the JSON marshalling
 (6–39 µs, linear in batch size because of the two per-request lists) dominates both, so a
 Python caller sees them within 0.3–5 µs of each other. A million-step simulation spends
