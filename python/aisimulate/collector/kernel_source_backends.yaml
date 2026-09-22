@@ -29,7 +29,7 @@
 # observable from the label), triton_fused_moe, marlin, flashinfer_cutlass,
 # flashinfer_cutedsl, flashinfer_trtllm_gen, deepep, causal_conv1d,
 # fla_triton, tilelang, custom_allreduce, nccl, nvlink_one_sided,
-# nvlink_two_sided, dsa_nsa, unverified.
+# nvlink_two_sided, dsa_nsa, humming, unverified.
 
 schema_version: 1
 
@@ -98,6 +98,19 @@ mappings:
   - {framework: sglang, kernel_source: SGLang_CustomAllReduce_eager, backend: custom_allreduce, source: "collector/network/collect_all_reduce.py"}
   - {framework: sglang, kernel_source: SGLang_CustomAllReduce_graph, backend: custom_allreduce, source: "collector/network/collect_all_reduce.py (CUDA-graph launch)"}
   - {framework: sglang, kernel_source: TRTLLM, backend: custom_allreduce, source: "collector/network/collect_all_reduce.py (trtllm AR rows stored under sglang dir)"}
+
+  # DeepSeek V4.1 at SGLang 1aa0e962b206102b7c439a4a0c4981cfec6e87bc.
+  # Composite module labels identify observed serving boundaries, not a single
+  # inner kernel library. Keep their unsplit backend identity explicit instead
+  # of assigning all SM/shape dispatches to one guessed implementation.
+  - {framework: sglang, kernel_source: sglang_mxfp4_humming_moe, backend: humming, source: "sglang@1aa0e962 python/sglang/srt/layers/quantization/fp8.py:414-419 + mxfp4_humming_moe.py:18-26; collector/sglang/dsv41_humming.py qualifies actual fused Humming w13/w2 BF16 calls"}
+  - {framework: sglang, kernel_source: sglang.srt.layers.engram.Engram.apply_gate+sglang.srt.layers.engram.EngramEmbedding._owned_rows+sglang.srt.layers.linear.ReplicatedLinear.forward/sglang.srt.layers.quantization.fp8.Fp8LinearMethod, backend: unverified, source: "sglang@1aa0e962 python/sglang/srt/layers/engram.py:923-942; collector/sglang/dsv41_native_runner.py observes lookup/projection/gate; compound label does not split internal kernel libraries"}
+  - {framework: sglang, kernel_source: sglang.srt.layers.linear.MergedColumnParallelLinear.forward/sglang.srt.layers.quantization.fp8.Fp8LinearMethod, backend: unverified, source: "collector/sglang/dsv41_isolated_runner.py collect_linear invokes native shared_experts at sglang@1aa0e962; Fp8LinearMethod identity does not distinguish its internal GEMM dispatch"}
+  - {framework: sglang, kernel_source: sglang.srt.layers.linear.RowParallelLinear.forward/sglang.srt.layers.quantization.fp8.Fp8LinearMethod, backend: unverified, source: "collector/sglang/dsv41_isolated_runner.py collect_linear invokes native shared_experts at sglang@1aa0e962; Fp8LinearMethod identity does not distinguish its internal GEMM dispatch"}
+  - {framework: sglang, kernel_source: sglang.srt.layers.vocab_parallel_embedding.ParallelLMHead.quant_method.apply/sglang.srt.layers.quantization.unquant.UnquantizedEmbeddingMethod, backend: unverified, source: "collector/sglang/dsv41_native_runner.py collect_baselines invokes the loaded native LM-head quant method at sglang@1aa0e962; method label does not attest the underlying BLAS provider"}
+  - {framework: sglang, kernel_source: sglang.srt.models.deepseek_v2.MoEGate.forward, backend: unverified, source: "sglang@1aa0e962 python/sglang/srt/models/deepseek_v2.py:519-568 dispatches tiny_gemm_bf16 or linear_bf16_fp32 by shape; unsplit module label cannot identify one backend"}
+  - {framework: sglang, kernel_source: sglang.srt.models.deepseek_v4.DeepseekV4DecoderLayer._hc_mix_and_combine+sglang.srt.models.deepseek_v4.DeepseekV4DecoderLayer.hc_post, backend: unverified, source: "sglang@1aa0e962 python/sglang/srt/models/deepseek_v4.py:2734-2785; collector/sglang/dsv41_isolated_runner.py collect_mhc measures both native mix/post sites; composite label does not split inner kernels"}
+  - {framework: sglang, kernel_source: sglang.srt.models.deepseek_v4.MQALayer.forward, backend: unverified, source: "sglang@1aa0e962 python/sglang/srt/models/deepseek_v4.py:957-1090,2078-2082; collector/sglang/dsv41_attention_runner.py retains projections/compressor/indexer/attention in the module boundary, including native SM-dependent inner dispatch"}
 
   # --- sglang 0.5.14 upgrade labels (PR #1342: serving-truth per-row labels;
   # constructions in the PR branch's collector/sglang/*). Pre-staged so the
