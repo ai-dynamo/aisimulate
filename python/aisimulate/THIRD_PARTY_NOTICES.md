@@ -469,6 +469,7 @@ SGLang's serving architecture at immutable commit
 - `python/sglang/srt/layers/attention/deepseek_v4_backend.py`
 - `python/sglang/srt/mem_cache/deepseek_v4_memory_pool.py`
 - `python/sglang/kernels/ops/attention/dsv4_attn_metadata_kernels.py`
+- `python/sglang/kernels/ops/attention/dsv4/sm90_fp4_indexer.py`
 - `python/sglang/benchmark/one_batch.py`
 
 The original integration adapter
@@ -486,6 +487,10 @@ implementations or represent the isolated stack as the complete model.
 The matching loaded-dimension guards in `collector/sglang/dsv41_contract.py`
 and their CPU fixtures in `tests/unit/collector/test_dsv41_contract.py` are
 modified analytical adaptations of the indexer layout in `dsv41_sparse.py`.
+The SM90 index-score arithmetic and query-width formulas in
+`crates/core/src/perfmodel/operators/dsv41.rs`, their Rust regression tests,
+and `docs/deepseek-v41-storage.md` are independently expressed, modified
+analytical adaptations of those same pinned BF16 indexer contracts.
 
 The measured operator databases and adjacent documentation under
 `src/aisimulate_core/systems/profiles/dsv41/` contain AISimulate timings

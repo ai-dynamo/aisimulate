@@ -1306,6 +1306,84 @@ mod tests {
         assert!((b - blend).abs() < 1e-12, "{b}");
     }
 
+    #[test]
+    fn hopper_dsv41_roofline_supports_fpm_site_transfer_without_fp4_hardware() {
+        use crate::operators::Dsv41AttentionOp;
+        use crate::operators::dsv41::Dsv41KvCacheLayout;
+
+        // Synthetic table-selection fixture, not measured Hopper timings.
+        let tmp = tempfile::tempdir().unwrap();
+        write_pair(tmp.path(), &default_rows());
+        let hardware =
+            std::fs::read_to_string(std::path::Path::new(SYSTEMS_ROOT).join("h200_sxm.yaml"))
+                .unwrap();
+        let hardware_db = |known_sm: bool| {
+            let root = tmp.path().join(if known_sm { "hopper" } else { "unknown" });
+            std::fs::create_dir_all(&root).unwrap();
+            let mut yaml: serde_yaml::Value = serde_yaml::from_str(&hardware).unwrap();
+            if !known_sm {
+                yaml["gpu"].as_mapping_mut().unwrap().remove("sm_version");
+            }
+            std::fs::write(
+                root.join("h200_sxm.yaml"),
+                serde_yaml::to_string(&yaml).unwrap(),
+            )
+            .unwrap();
+            let mut db = PerfDatabase::load_with_sources_opts(
+                &root,
+                "h200_sxm",
+                "sglang",
+                "dev-test",
+                &Default::default(),
+                true,
+            )
+            .unwrap();
+            db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                "vllm",
+                "0.25.1",
+            ));
+            db
+        };
+        let db = hardware_db(true);
+        assert_eq!(db.system_spec.gpu.sm_version, Some(90));
+        assert!(db.system_spec.gpu.fp4_tc_flops.is_none());
+        let mut o = op(FpmPhase::Decode);
+        o.sol_ops = vec![Op::Dsv41Attention(Dsv41AttentionOp {
+            name: "native_hopper_attention".into(),
+            is_context: false,
+            role: "reindex".into(),
+            compress_ratio: 1,
+            hidden_size: 5120,
+            num_heads: 32,
+            head_dim: 512,
+            q_lora_rank: 1280,
+            o_lora_rank: 1024,
+            o_groups: 4,
+            index_n_heads: 32,
+            index_head_dim: 128,
+            index_topk: 512,
+            window_size: 128,
+            candidate_limit: 0,
+            is_candidate_source: false,
+            bounded_prefill: false,
+            gemm_quant_mode: crate::common::enums::GemmQuantMode::Fp8Block,
+            fmha_quant_mode: crate::common::enums::FmhaQuantMode::Fp8,
+            kv_cache_layout: Dsv41KvCacheLayout::SglangFp8Bf16,
+        })];
+        assert_eq!(o.query(&db, &ctx(8, 512, 0)).unwrap().latency_ms, 7.0);
+        // Batch12 is absent, so this exercises the SOL-dependent site path.
+        let result = o.query(&db, &ctx(12, 512, 0)).unwrap();
+        assert!(result.latency_ms.is_finite() && result.latency_ms > 0.0);
+        assert_eq!(result.source, Source::Silicon);
+        // An unspecified architecture must not silently acquire SM90 support.
+        let db = hardware_db(false);
+        assert_eq!(o.query(&db, &ctx(8, 512, 0)).unwrap().latency_ms, 7.0);
+        let error = o.query(&db, &ctx(12, 512, 0)).unwrap_err();
+        assert!(error.to_string().contains("fp4_tc_flops"), "{error}");
+    }
+
     /// SOL support is lazy (mirrors Python, whose SOL view answers every op
     /// family): an unported family (e.g. the MLA-BMM module used below)
     /// must NOT block exact hits or in-curve lerps — only sol-dependent
