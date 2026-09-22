@@ -524,6 +524,12 @@ The native VL replay path models sgl-project/sglang v0.5.19 at immutable commit
   `BaseMultimodalProcessor` and the Rust multimodal workers' feature transport
   (`RustMmProcessor._use_feature_shm`) as performance models. They do not execute
   or copy the upstream implementation.
+- `crates/core/src/engine/scheduler/sglang/core.rs` (disaggregated prefill) and
+  `crates/core/src/replay/components/encoder.rs` likewise re-implement the
+  observed behavior of `disaggregation/prefill.py` (`SchedulerDisaggregationPrefillMixin`)
+  and of `disaggregation/encoder/{runtime,server,receiver,preprocessor}.py`
+  (`EncoderScheduler`, `_assign_items_by_modality`, `zmq_to_scheduler`) as
+  performance models, without copying the upstream implementation.
 - `python/aisimulate/src/aisimulate/vl/collect/` instantiates the pinned
   upstream frontend objects unmodified on the serving host and times them from
   the outside; it does not copy or modify their implementations.

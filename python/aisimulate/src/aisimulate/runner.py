@@ -12,7 +12,7 @@ import logging
 import math
 import random
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
@@ -587,12 +587,22 @@ class EngineReplayRunner:
         if encoder is not None:
             if encoder.mode == "analytical":
                 normalized = apply_encoder_overlay(normalized, original_spec)
+            else:
+                from .sweeper.epd import language_gpus
+
+                # The pool's GPUs are in the replay's gpu_hours; publish the totals
+                # the analytical overlay reports so the two modes stay comparable.
+                total_gpus = language_gpus(spec.backend_deployment) + encoder.total_gpus
+                normalized = ReplayReport(
+                    metrics={**normalized.metrics, "total_gpus": float(total_gpus)},
+                    metadata={**normalized.metadata, "encoder": asdict(encoder), "total_gpus": total_gpus},
+                )
             if memory_diagnostics is not None:
                 memory_diagnostics["encoder"] = {
                     "scope": "capacity_estimate_per_rank",
                     "stage": "before_native_capacity_adjustments",
                     "status": "unavailable",
-                    "unavailable_reason": "analytical EPD does not export an encoder memory component estimate",
+                    "unavailable_reason": "encoder pools do not export an encoder memory component estimate",
                 }
                 # Capacity estimates remain valid across the overlay. Raw language
                 # timing/records do not describe the combined EPD workload.
@@ -1157,10 +1167,13 @@ def _native_encoder_spec(encoder: EncoderPoolSpec, deployment: BackendDeployment
     return {
         "instances": encoder.workers,
         "max_batch": encoder.batch_size,
-        "preprocess_ms": native.preprocess_ms,
-        "forward_ms_by_batch": list(native.forward_ms_by_batch),
-        "transfer_bytes_per_request": native.transfer_bytes_per_request * tensor,
+        "gpus_per_instance": encoder.tp,
+        "images_per_request": encoder.image_count,
+        "shape": dict(native.shape),
+        "preprocess_ms_per_image": native.preprocess_ms_per_image,
+        "transfer_bytes_per_image": native.transfer_bytes_per_image * tensor,
         "transfer_bandwidth_gb_s": native.transfer_bandwidth_gb_s,
+        "timing_model": native.timing_model,
     }
 
 

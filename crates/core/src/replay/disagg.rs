@@ -7,8 +7,11 @@ use crate::engine::{Backend, Command, CommandResult, LifecycleEvent};
 use anyhow::{Context, Result, anyhow, bail};
 use uuid::Uuid;
 
+use std::sync::Arc;
+
 use super::components::EncoderPool;
 use super::spec::EncoderSpec;
+use crate::engine::TimingModel;
 
 #[cfg(test)]
 use super::components::NoReplayMetadata;
@@ -627,6 +630,7 @@ impl DisaggFlowState {
         arrival_time_ms: f64,
         replay_hashes: Option<ReplayRequestHashes>,
         session_id: Option<String>,
+        registered: bool,
         collector: &mut TraceCollector,
     ) -> Result<Uuid> {
         let uuid = request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
@@ -635,9 +639,12 @@ impl DisaggFlowState {
         request.metadata_mut().uuid = Some(uuid);
         request.metadata_mut().arrival_timestamp_ms = Some(arrival_time_ms);
 
-        collector.try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
-        if let Some(context) = request.metadata().replay_context.as_ref() {
-            collector.on_request_context(uuid, context);
+        // A request parked in the encoder pool was registered when it arrived.
+        if !registered {
+            collector.try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
+            if let Some(context) = request.metadata().replay_context.as_ref() {
+                collector.on_request_context(uuid, context);
+            }
         }
         if self.requests.contains_key(&uuid) {
             bail!("offline disagg replay request {uuid} is already active");
@@ -1117,8 +1124,15 @@ where
     }
 
     /// Route every arrival through an encoder pool before the language workers.
-    pub(crate) fn with_encoder(mut self, spec: Option<EncoderSpec>) -> Self {
-        self.encoder = spec.map(EncoderPool::new);
+    pub(crate) fn with_encoder(
+        mut self,
+        encoder: Option<(EncoderSpec, Arc<dyn TimingModel>)>,
+    ) -> Self {
+        if let Some((spec, timing)) = encoder {
+            self.collector
+                .set_encoder_gpus(spec.instances * spec.gpus_per_instance);
+            self.encoder = Some(EncoderPool::new(spec, timing));
+        }
         self
     }
 
@@ -1906,15 +1920,19 @@ where
         arrival_time_ms: f64,
         replay_hashes: Option<ReplayRequestHashes>,
         session_id: Option<String>,
+        registered: bool,
     ) -> Result<Uuid> {
         let uuid = self.flow.on_external_arrival(
             request,
             arrival_time_ms,
             replay_hashes,
             session_id,
+            registered,
             &mut self.collector,
         )?;
-        self.traffic.on_arrival();
+        if !registered {
+            self.traffic.on_arrival();
+        }
         Ok(uuid)
     }
 
@@ -2287,35 +2305,65 @@ where
     fn release_ready_arrivals(&mut self) -> Result<bool> {
         let mut released_any = false;
         let cluster_in_flight = self.cluster_in_flight();
-        for ready in
+        for mut ready in
             CoreAdmissionSource::drain_ready(&mut self.admission, self.now_ms, cluster_in_flight)?
         {
-            if let Some(encoder) = &mut self.encoder {
-                encoder.submit(ready);
+            if self.encoder.is_some() {
+                self.register_parked_arrival(&mut ready)?;
+                self.encoder
+                    .as_mut()
+                    .expect("encoder pool checked")
+                    .submit(ready);
             } else {
-                self.admit_ready(ready)?;
+                self.admit_ready(ready, false)?;
             }
             released_any = true;
         }
         Ok(released_any)
     }
 
+    /// A request entering the encoder pool has arrived: the collector and the
+    /// traffic statistics see it now, not when its embeddings are delivered.
+    fn register_parked_arrival(
+        &mut self,
+        ready: &mut ReadyArrival<ReplayRequestPayload, Metadata>,
+    ) -> Result<()> {
+        let uuid = ready.request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
+        ready.request.metadata_mut().uuid = Some(uuid);
+        self.collector.try_on_arrival(
+            uuid,
+            ready.arrival_time_ms,
+            ready.request.input_length(),
+            ready.request.metadata().effective_max_output_tokens(),
+        )?;
+        if let Some(context) = ready.request.metadata().replay_context.as_ref() {
+            self.collector.on_request_context(uuid, context);
+        }
+        self.traffic.on_arrival();
+        Ok(())
+    }
+
     /// Admit the requests whose embeddings the encoder pool delivered by now.
     fn release_encoded_arrivals(&mut self) -> Result<bool> {
         let ready = match &mut self.encoder {
-            Some(encoder) => encoder.take_ready(self.now_ms),
+            Some(encoder) => encoder.take_ready(self.now_ms)?,
             None => return Ok(false),
         };
         let released_any = !ready.is_empty();
         for (arrival, ready_ms) in ready {
-            let uuid = self.admit_ready(arrival)?;
+            let uuid = self.admit_ready(arrival, true)?;
             self.collector.on_encoder_ready(uuid, ready_ms);
         }
         Ok(released_any)
     }
 
-    /// Admit one ready arrival: it enters the handoff flow at its arrival instant.
-    fn admit_ready(&mut self, ready: ReadyArrival<ReplayRequestPayload, Metadata>) -> Result<Uuid> {
+    /// Admit one ready arrival: it enters the handoff flow at its arrival instant;
+    /// `registered` marks a request the encoder pool already registered.
+    fn admit_ready(
+        &mut self,
+        ready: ReadyArrival<ReplayRequestPayload, Metadata>,
+        registered: bool,
+    ) -> Result<Uuid> {
         let ReadyArrival {
             request,
             arrival_time_ms,
@@ -2327,8 +2375,13 @@ where
             turn_index,
         } = ready;
         let session_metadata = session_id.clone().zip(turn_index);
-        let uuid =
-            self.on_external_arrival(request, arrival_time_ms, metadata.into_hashes(), session_id)?;
+        let uuid = self.on_external_arrival(
+            request,
+            arrival_time_ms,
+            metadata.into_hashes(),
+            session_id,
+            registered,
+        )?;
         if let Some((session_id, turn_index)) = session_metadata {
             self.collector
                 .on_session_metadata(uuid, session_id, turn_index);

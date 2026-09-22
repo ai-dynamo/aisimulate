@@ -117,10 +117,13 @@ pub struct TraceThroughputStats {
     /// DP topology); the runtime sets it on the collector. 0 when not set.
     pub prefill_gpus_per_worker: usize,
     pub decode_gpus_per_worker: usize,
-    /// GPU-hours = Σ_role `worker_seconds × gpus_per_worker / 3600` — the
-    /// deployment's provisioned GPU-time (already including the startup ramp and
-    /// drain tail, since `*_worker_seconds` do). Computed in `finish()` straight
-    /// from the mocker's own worker parallelism, so it needs no external config.
+    /// GPUs of the static encoder pool ahead of the language workers; 0 without one.
+    pub encoder_gpus: usize,
+    /// GPU-hours = Σ_role `worker_seconds × gpus_per_worker / 3600` plus the
+    /// encoder pool's `encoder_gpus × duration / 3600` — the deployment's
+    /// provisioned GPU-time (already including the startup ramp and drain tail,
+    /// since `*_worker_seconds` do). Computed in `finish()` straight from the
+    /// mocker's own worker parallelism, so it needs no external config.
     pub gpu_hours: f64,
 }
 
@@ -295,13 +298,17 @@ pub struct TraceTtftStageStats {
     pub mean_receive_to_admit_ms: f64,
     /// Selected to the prompt's last forward finishing on the device.
     pub mean_prefill_elapsed_ms: f64,
-    /// Device completion to the scheduler observing the first token.
+    /// Device completion to the scheduler observing the result: the KV source
+    /// hold on a prefill rank, the first token elsewhere.
     pub mean_result_observation_delay_ms: f64,
+    /// KV handoff and the decode rank's first step on a disaggregated path;
+    /// zero when the observing scheduler emits the first token itself.
+    pub mean_handoff_to_first_token_ms: f64,
 }
 
 impl TraceTtftStageStats {
     /// Means over `samples` requests of the per-stage sums, `None` without samples.
-    fn from_sums(sums: &[f64; 5], samples: usize) -> Option<Self> {
+    fn from_sums(sums: &[f64; 6], samples: usize) -> Option<Self> {
         (samples > 0).then(|| {
             let mean = |index: usize| sums[index] / samples as f64;
             Self {
@@ -310,6 +317,7 @@ impl TraceTtftStageStats {
                 mean_receive_to_admit_ms: mean(2),
                 mean_prefill_elapsed_ms: mean(3),
                 mean_result_observation_delay_ms: mean(4),
+                mean_handoff_to_first_token_ms: mean(5),
             }
         })
     }
@@ -500,6 +508,9 @@ impl Serialize for ReplayReport {
             "decode_gpus_per_worker",
             &self.throughput.decode_gpus_per_worker,
         )?;
+        if self.throughput.encoder_gpus > 0 {
+            map.serialize_entry("encoder_gpus", &self.throughput.encoder_gpus)?;
+        }
         map.serialize_entry("gpu_hours", &self.throughput.gpu_hours)?;
         if let Some(goodput) = &self.goodput {
             map.serialize_entry("goodput_completed_requests", &goodput.completed_requests)?;
@@ -577,6 +588,10 @@ impl Serialize for ReplayReport {
             map.serialize_entry(
                 "mean_result_observation_delay_ms",
                 &stages.mean_result_observation_delay_ms,
+            )?;
+            map.serialize_entry(
+                "mean_handoff_to_first_token_ms",
+                &stages.mean_handoff_to_first_token_ms,
             )?;
         }
         if let Some(encoder_latency_ms) = self.latency.encoder_latency_ms {
@@ -677,23 +692,29 @@ struct TtftMilestoneTimes {
     scheduler_received_ms: Option<f64>,
     selected_ms: Option<f64>,
     prefill_complete_ms: Option<f64>,
+    /// A prefill rank observed the finished extend and holds the KV source.
+    source_held_ms: Option<f64>,
 }
 
 impl TtftMilestoneTimes {
     /// Time spent in each stage on the way to the first token, in the order of
     /// [`TraceTtftStageStats`]; `None` until every scheduler stage was reached.
-    fn stage_spans(&self, arrival_ms: f64, first_token_ms: f64) -> Option<[f64; 5]> {
+    fn stage_spans(&self, arrival_ms: f64, first_token_ms: f64) -> Option<[f64; 6]> {
         let received = self.scheduler_received_ms?;
         let selected = self.selected_ms?;
         let prefill_complete = self.prefill_complete_ms?;
         let frontend_exit = self.frontend_ready_ms.unwrap_or(arrival_ms);
+        // On a prefill rank the scheduler observes the result when it holds the
+        // KV source; the handoff and the decode rank's first step follow.
+        let observed = self.source_held_ms.unwrap_or(first_token_ms);
         Some(
             [
                 frontend_exit - arrival_ms,
                 received - frontend_exit,
                 selected - received,
                 prefill_complete - selected,
-                first_token_ms - prefill_complete,
+                observed - prefill_complete,
+                first_token_ms - observed,
             ]
             .map(|span| span.max(0.0)),
         )
@@ -1104,6 +1125,8 @@ pub struct TraceCollector {
     /// `finish()` to turn worker-seconds into gpu_hours.
     prefill_gpus_per_worker: usize,
     decode_gpus_per_worker: usize,
+    /// GPUs of the static encoder pool, charged for the whole duration.
+    encoder_gpus: usize,
     runtime_evidence: crate::replay::OfflineRuntimeEvidence,
     agentic_trajectory: Option<AgenticTrajectorySnapshot>,
     agentic_graph: Option<AgenticGraphIdentity>,
@@ -1317,6 +1340,11 @@ impl TraceCollector {
 
     /// Set GPUs-per-worker per role (from the mocker engine parallelism). Used
     /// in `finish()` to derive gpu_hours from the worker-seconds.
+    /// GPUs of the encoder pool ahead of the language workers.
+    pub(crate) fn set_encoder_gpus(&mut self, gpus: usize) {
+        self.encoder_gpus = gpus;
+    }
+
     pub fn set_gpus_per_worker(&mut self, prefill: usize, decode: usize) {
         self.prefill_gpus_per_worker = prefill;
         self.decode_gpus_per_worker = decode;
@@ -1550,8 +1578,11 @@ impl TraceCollector {
     }
 
     pub(crate) fn on_source_held(&mut self, uuid: Uuid, at_ms: f64) {
-        if let Some(detail) = self.detail_mut(uuid) {
-            detail.source_held_ms.get_or_insert(at_ms);
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            stats.ttft_milestones.source_held_ms.get_or_insert(at_ms);
+            if let Some(detail) = stats.detail.as_deref_mut() {
+                detail.source_held_ms.get_or_insert(at_ms);
+            }
         }
     }
 
@@ -1828,6 +1859,7 @@ impl TraceCollector {
             static_worker_count: self.static_worker_count,
             prefill_gpus_per_worker: self.prefill_gpus_per_worker,
             decode_gpus_per_worker: self.decode_gpus_per_worker,
+            encoder_gpus: self.encoder_gpus,
             ..Default::default()
         };
         if self.batch_reporting {
@@ -1890,6 +1922,7 @@ impl TraceCollector {
         let accumulated_decode_worker_seconds = self.decode_worker_seconds;
         let prefill_gpus_per_worker = self.prefill_gpus_per_worker;
         let decode_gpus_per_worker = self.decode_gpus_per_worker;
+        let encoder_gpus = self.encoder_gpus;
         let runtime_evidence = self.runtime_evidence;
         let agentic_graph = self.agentic_graph;
         let agentic_snapshots = self.agentic_snapshots;
@@ -1924,7 +1957,7 @@ impl TraceCollector {
         let requests = self.requests;
         let request_count = requests.len();
         let mut ttfts = Vec::with_capacity(request_count);
-        let mut ttft_stage_sums = [0.0f64; 5];
+        let mut ttft_stage_sums = [0.0f64; 6];
         let mut ttft_stage_samples = 0usize;
         let mut encoder_sum_ms = 0.0f64;
         let mut encoder_samples = 0usize;
@@ -2024,9 +2057,11 @@ impl TraceCollector {
             ),
         };
         // GPU-hours straight from the mocker's own worker parallelism (no
-        // external GPU-count config). 0 when gpus_per_worker was not set.
+        // external GPU-count config). 0 when gpus_per_worker was not set. The
+        // encoder pool is static, so it is charged for the whole duration.
         let gpu_hours = (prefill_worker_seconds * prefill_gpus_per_worker as f64
-            + decode_worker_seconds * decode_gpus_per_worker as f64)
+            + decode_worker_seconds * decode_gpus_per_worker as f64
+            + duration_s * encoder_gpus as f64)
             / 3600.0;
         // Goodput only when an SLA was supplied; otherwise it is undefined.
         let goodput = sla.is_set().then(|| TraceGoodputStats {
@@ -2059,6 +2094,7 @@ impl TraceCollector {
                 decode_worker_seconds,
                 prefill_gpus_per_worker,
                 decode_gpus_per_worker,
+                encoder_gpus,
                 gpu_hours,
             },
             prefix_cache_reused_ratio: if total_input_tokens == 0 {

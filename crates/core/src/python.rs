@@ -11,7 +11,7 @@ use crate::engine::{
     TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
 use crate::replay::{
-    POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
+    EncoderSpec, POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
     ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
     ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
     ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
@@ -969,6 +969,35 @@ fn role_capacity_is_explicit(engine_value: &serde_json::Value, role: Option<&str
         })
 }
 
+/// Resolve the encoder pool's timing model the way a rank's is resolved: the
+/// canonical model compiled with its vision tower at the pool's tensor width.
+/// Built-in models return `None`; the Replayer then rejects the spec.
+fn resolve_encoder_timing(
+    encoder: &EncoderSpec,
+    capture_performance_diagnostics: bool,
+) -> Result<Option<Arc<dyn TimingModel>>> {
+    let Some(TimingModelConfig::External { provider, config }) = encoder.timing_model.clone()
+    else {
+        return Ok(None);
+    };
+    ensure!(
+        provider == "aic",
+        "native timing provider {provider:?} is not installed; only \"aic\" is \
+         available in the AISimulate runtime"
+    );
+    let mut config: AicTimingConfig =
+        serde_json::from_value(config).context("invalid encoder AIC timing configuration")?;
+    ensure!(
+        usize::try_from(config.tp).ok() == Some(encoder.gpus_per_instance),
+        "encoder gpus_per_instance must equal the timing model's tensor-parallel width"
+    );
+    let mut timing = AicTimingModel::build(&mut config, ForwardPassWorkerType::Prefill, true)?;
+    if !capture_performance_diagnostics {
+        timing.diagnostic_model = None;
+    }
+    Ok(Some(Arc::new(timing)))
+}
+
 fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
@@ -1826,11 +1855,25 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         serde_json::from_value(spec.engine.clone())
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
+    let encoder_timing = spec
+        .encoder
+        .as_ref()
+        .map(|encoder| resolve_encoder_timing(encoder, capture_performance_diagnostics))
+        .transpose()?
+        .flatten();
     let expected_power_sources = match &spec.topology {
         ReplayTopology::Aggregated { .. } => 1,
         ReplayTopology::Disaggregated { .. } => 2,
-    };
+    } + usize::from(encoder_timing.is_some());
     let mut power_sources = Vec::with_capacity(expected_power_sources);
+    if let Some(timing) = &encoder_timing {
+        // The encoder pool's forwards join the power evidence like a rank's.
+        power_sources.push(TimingPowerSource {
+            timing: Arc::clone(timing),
+            prefill_speedup_ratio: 1.0,
+            decode_speedup_ratio: 1.0,
+        });
+    }
 
     let (mut report, artifacts, resolved_weka_timestamp_basis) = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
@@ -1878,10 +1921,13 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
             let input = built_input.map(|built| built.input);
-            let factory = timing.map_or_else(
+            let mut factory = timing.map_or_else(
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
+            if let Some(timing) = &encoder_timing {
+                factory = factory.with_encoder_timing(Arc::clone(timing));
+            }
             run_with_input(spec, factory, input, capture_artifacts)
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
@@ -1998,15 +2044,12 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
             let input = built_input.map(|built| built.input);
-            run_with_input(
-                spec,
-                ReplayEngineFactory::with_optional_role_timing_models(
-                    prefill_timing,
-                    decode_timing,
-                ),
-                input,
-                capture_artifacts,
-            )
+            let mut factory =
+                ReplayEngineFactory::with_optional_role_timing_models(prefill_timing, decode_timing);
+            if let Some(timing) = &encoder_timing {
+                factory = factory.with_encoder_timing(Arc::clone(timing));
+            }
+            run_with_input(spec, factory, input, capture_artifacts)
             .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
     }
@@ -2144,7 +2187,7 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use crate::engine::{EngineConfig, TimingModelConfig};
     use crate::replay::{
-        ProviderSpec, ReplayAdapters, ReplayEngineConfig, ReplayRequest, ReplaySpec,
+        EncoderSpec, ProviderSpec, ReplayAdapters, ReplayEngineConfig, ReplayRequest, ReplaySpec,
         ReplayTopology, WorkerPoolSpec,
     };
 

@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig, CoreRecommendationConfig
+from aisimulate.config.epd import validate_epd_prediction_mapping
 from aisimulate.config.vl import validate_vl_prediction_mapping
 from aisimulate.main import main
 from aisimulate.recommend import recommendation_to_sweeper
@@ -571,10 +572,15 @@ def test_native_encoder_pool_gates_the_language_worker(tmp_path, capsys):
     raw = _native_epd_prediction(table)
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
     encoder = spec.backend_deployment.encoder
-    # The `process` stage of the Python frontend prices the encoder's CPU preprocessing;
-    # the forward is priced at every batch size up to the loop's cap.
-    assert encoder.mode == "native" and encoder.native.preprocess_ms == 3.0
-    assert len(encoder.native.forward_ms_by_batch) == 2
+    native = encoder.native
+    # The `process` stage of the Python frontend, per image, extrapolates the encoder's CPU
+    # preprocessing; the forward is priced at replay by the canonical timing model at the pool's width.
+    assert encoder.mode == "native" and native.preprocess_ms_per_image == 3.0
+    assert native.preprocess_source == "frontend_process_extrapolated"
+    assert native.shape["output_tokens"] == 196 and native.transfer_bytes_per_image > 0
+    assert native.timing_model["config"]["tp"] == 1 and native.timing_model["config"]["encoder_parallel"] == "tp"
+    metadata = spec.backend_deployment.performance_model_metadata["encoder"]
+    assert metadata["host_profile_digest"] == native.host_profile_digest
     # The language worker runs --language-only: no tower, no image frontend stages, the loop stays.
     args = spec.backend_deployment.agg_engine_args
     assert "vision" not in args and "frontend" not in args and args["sglang"]["host_loop"] is True
@@ -589,6 +595,11 @@ def test_native_encoder_pool_gates_the_language_worker(tmp_path, capsys):
     assert main(argv[:-1] + ["--output-dir", str(tmp_path / "bounded")]) == 0
     bounded = json.loads(capsys.readouterr().out)
     assert bounded["encoder_latency_ms"] == report["encoder_latency_ms"] > 3.0
+    # The pool's GPU joins the language worker's in the totals, and is charged for the
+    # whole duration in gpu_hours on top of the language worker's uptime.
+    assert report["encoder_gpus"] == 1 and report["total_gpus"] == 2
+    duration_hours = report["duration_ms"] / 3_600_000
+    assert 2 * duration_hours <= report["gpu_hours"] < 3 * duration_hours
     assert report["completed_requests"] == 4
     # 448x448 -> 196 visual tokens per image occupy the language prompt.
     assert report["total_input_tokens"] == 4 * (128 + 196)
@@ -606,3 +617,94 @@ def test_native_encoder_pool_requires_its_host_table_and_link(tmp_path):
     del raw["engine"]["workers"]["encoder"]["host_profile"]
     with pytest.raises(ValidationError):
         CorePredictionConfig.model_validate(raw)
+
+
+def test_native_encoder_pool_honors_the_pixel_budget(tmp_path):
+    table = tmp_path / "table.json"
+    table.write_text(json.dumps(_host_table()))
+    default = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(_native_epd_prediction(table))
+    ).backend_deployment
+    row = _host_row()
+    row["measured_for"]["max_pixels"] = 65536
+    table.write_text(json.dumps(_host_table(rows=[row])))
+    raw = _native_epd_prediction(table)
+    raw["traffic"]["source"]["images"]["max_pixels"] = 65536
+    encoder = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw)).backend_deployment.encoder
+    # 448x448 rescaled into a 256x256 budget: the 64 visual tokens are what the prompt
+    # holds, the encoder forwards and the transfer carries.
+    assert encoder.visual_tokens == 64 and encoder.native.shape["output_tokens"] == 64
+    assert encoder.native.transfer_bytes_per_image < default.encoder.native.transfer_bytes_per_image
+
+
+def test_native_encoder_pool_recommend_yaml_predict_roundtrip(tmp_path, capsys):
+    table = tmp_path / "table.json"
+    table.write_text(json.dumps(_host_table()))
+    raw = _recommendation()
+    worker = raw["engine"]["workers"]["aggregated"]
+    del worker["frontend"]
+    worker["host_loop"] = True
+    raw["engine"]["workers"]["encoder"] = {
+        "mode": "native",
+        "tensor": 1,
+        "replicas": {"choices": [1, 2]},
+        "batch_size": 2,
+        "host_profile": {"path": str(table), "frontend": "python"},
+        "transfer": {"bandwidth_gb_per_second": 10},
+    }
+    raw["optimization"]["constraints"]["max_candidate_gpus"] = 4
+    path = tmp_path / "search.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    root = tmp_path / "recommend"
+    assert main(["recommend", "-c", str(path), "--output-dir", str(root), "--format", "json"]) == 0
+    capsys.readouterr()
+    result = SweepResult.from_json((root / "recommendation.json").read_text())
+    candidate = result.selected_candidates[0]
+    encoder = candidate.config["encoder"]
+    assert encoder["native"]["preprocess_ms_per_image"] == 3.0
+    # Encoder GPUs are in the candidate's totals and in gpu_hours, so throughput_per_gpu
+    # ranks encoder replicas against language workers.
+    assert candidate.used_gpus == 1 + encoder["tp"] * encoder["workers"] == candidate.metrics["total_gpus"]
+    duration_hours = candidate.metrics["duration_ms"] / 3_600_000
+    assert (
+        candidate.used_gpus * duration_hours
+        <= candidate.metrics["gpu_hours"]
+        < (candidate.used_gpus + 1) * duration_hours
+    )
+
+    saved = root / "recommendations" / "0001.yaml"
+    concrete = CorePredictionConfig.from_yaml(saved)
+    assert concrete.engine.workers.encoder.mode == "native"
+    output = tmp_path / "predict"
+    assert main(["predict", "-c", str(saved), "--output-dir", str(output), "--format", "json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    for key in ("mean_ttft_ms", "encoder_latency_ms", "gpu_hours"):
+        assert report[key] == pytest.approx(candidate.metrics[key])
+
+    spec = prediction_to_replay_spec(concrete)
+    raw_saved = concrete.model_dump(mode="python", exclude_none=True)
+    validate_epd_prediction_mapping(raw_saved, spec)
+    # A host table that changed underneath the saved recommendation no longer reproduces it.
+    table.write_text(json.dumps(_host_table(rows=[_host_row(service_ms=1.0)])))
+    with pytest.raises(ValueError, match="encoder cost terms changed"):
+        validate_epd_prediction_mapping(raw_saved, spec)
+
+
+@pytest.mark.parametrize("case", ["constant_rate", "kv_capacity_fraction", "fixed_timing"])
+def test_prediction_mapping_accepts_the_scored_spellings(case):
+    """The callback compares resolved execution meaning, not the compiler's derived keys."""
+    raw = _prediction()
+    if case == "constant_rate":
+        raw["traffic"]["load"] = {"type": "constant_rate", "requests_per_second": 4.0}
+    elif case == "fixed_timing":
+        del raw["traffic"]["source"]["images"]
+        raw["engine"]["workers"]["aggregated"]["timing"] = {"type": "fixed", "prefill_ms": 5.0, "decode_ms": 1.0}
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    if case == "kv_capacity_fraction":
+        # The sweeper resolves a KV-capacity load into this concurrency before scoring.
+        spec = dataclasses.replace(
+            spec,
+            concurrency=spec.workload["concurrency"],
+            workload={**spec.workload, "load_type": "kv_capacity_fraction"},
+        )
+    validate_vl_prediction_mapping(raw, spec)

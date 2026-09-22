@@ -3659,6 +3659,37 @@ mod frontend_pools {
     }
 
     #[test]
+    fn cancelling_a_pending_source_settles_the_pools_at_the_command_instant() {
+        let mut core = core();
+        for (uuid, handoff, tokens) in [(1u128, 11u128, 0u32..16), (2, 12, 100..116)] {
+            core.apply_command_effects_at(
+                SchedulerCommand::SubmitHandoffPrefill {
+                    handoff_id: HandoffId::from(Uuid::from_u128(handoff)),
+                    request: DirectRequest {
+                        uuid: Some(Uuid::from_u128(uuid)),
+                        ..direct_request(tokens.collect(), 1)
+                    },
+                },
+                true,
+                Some(0.0),
+            )
+            .unwrap();
+        }
+        // The first request has run 2 of its 4 ms on the single worker; cancelling
+        // it at 2 hands the worker to the second request there, not at the
+        // pool's last settled clock (0), which would finish it at 4.
+        core.apply_command_effects_at(
+            SchedulerCommand::CancelSource {
+                handoff_id: HandoffId::from(Uuid::from_u128(11)),
+            },
+            true,
+            Some(2.0),
+        )
+        .unwrap();
+        assert_eq!(core.next_internal_deadline_ms(), Some(6.0));
+    }
+
+    #[test]
     fn requests_reach_the_scheduler_when_they_leave_the_pools() {
         let mut core = core();
         let first = core.receive(direct_request((0..16).collect(), 1));

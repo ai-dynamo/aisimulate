@@ -42,8 +42,11 @@ use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
 use uuid::Uuid;
 
+use std::sync::Arc;
+
 use super::components::EncoderPool;
 use super::spec::EncoderSpec;
+use crate::engine::TimingModel;
 
 const MAX_CONSECUTIVE_INTERNAL_STEPS: usize = 1024;
 
@@ -191,8 +194,15 @@ where
     }
 
     /// Route every arrival through an encoder pool before the language workers.
-    pub(crate) fn with_encoder(mut self, spec: Option<EncoderSpec>) -> Self {
-        self.encoder = spec.map(EncoderPool::new);
+    pub(crate) fn with_encoder(
+        mut self,
+        encoder: Option<(EncoderSpec, Arc<dyn TimingModel>)>,
+    ) -> Self {
+        if let Some((spec, timing)) = encoder {
+            self.collector
+                .set_encoder_gpus(spec.instances * spec.gpus_per_instance);
+            self.encoder = Some(EncoderPool::new(spec, timing));
+        }
         self
     }
 
@@ -341,6 +351,7 @@ where
         arrival_time_ms: f64,
         metadata: Metadata,
         session_id: Option<String>,
+        registered: bool,
     ) -> anyhow::Result<Uuid> {
         let uuid = request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
         let input_length = request.input_length();
@@ -361,12 +372,15 @@ where
                 placement.request_id
             );
         }
-        self.collector
-            .try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
-        if let Some(context) = request.metadata().replay_context.as_ref() {
-            self.collector.on_request_context(uuid, context);
+        // A request parked in the encoder pool was registered when it arrived.
+        if !registered {
+            self.collector
+                .try_on_arrival(uuid, arrival_time_ms, input_length, output_length)?;
+            if let Some(context) = request.metadata().replay_context.as_ref() {
+                self.collector.on_request_context(uuid, context);
+            }
+            self.traffic.on_arrival();
         }
-        self.traffic.on_arrival();
         match effects.decision {
             PlacementDecision::Immediate(placement) => {
                 self.record_placement(placement);
@@ -681,37 +695,67 @@ where
     fn release_ready_arrivals(&mut self) -> anyhow::Result<bool> {
         let mut released_any = false;
         let cluster_in_flight = self.cluster_in_flight();
-        for ready in self.admission.drain_ready_compact(
+        for mut ready in self.admission.drain_ready_compact(
             self.now_ms,
             cluster_in_flight,
             self.artifact_sink.is_some(),
         )? {
-            if let Some(encoder) = &mut self.encoder {
-                encoder.submit(ready);
+            if self.encoder.is_some() {
+                self.register_parked_arrival(&mut ready)?;
+                self.encoder
+                    .as_mut()
+                    .expect("encoder pool checked")
+                    .submit(ready);
             } else {
-                self.admit_ready(ready)?;
+                self.admit_ready(ready, false)?;
             }
             released_any = true;
         }
         Ok(released_any)
     }
 
+    /// A request entering the encoder pool has arrived: the collector and the
+    /// traffic statistics see it now, not when its embeddings are delivered.
+    fn register_parked_arrival(
+        &mut self,
+        ready: &mut ReplayReadyArrival<Metadata>,
+    ) -> anyhow::Result<()> {
+        let uuid = ready.request.metadata().uuid.unwrap_or_else(Uuid::new_v4);
+        ready.request.metadata_mut().uuid = Some(uuid);
+        self.collector.try_on_arrival(
+            uuid,
+            ready.arrival_time_ms,
+            ready.request.input_length(),
+            ready.request.metadata().effective_max_output_tokens(),
+        )?;
+        if let Some(context) = ready.request.metadata().replay_context.as_ref() {
+            self.collector.on_request_context(uuid, context);
+        }
+        self.traffic.on_arrival();
+        Ok(())
+    }
+
     /// Admit the requests whose embeddings the encoder pool delivered by now.
     fn release_encoded_arrivals(&mut self) -> anyhow::Result<bool> {
         let ready = match &mut self.encoder {
-            Some(encoder) => encoder.take_ready(self.now_ms),
+            Some(encoder) => encoder.take_ready(self.now_ms)?,
             None => return Ok(false),
         };
         let released_any = !ready.is_empty();
         for (arrival, ready_ms) in ready {
-            let uuid = self.admit_ready(arrival)?;
+            let uuid = self.admit_ready(arrival, true)?;
             self.collector.on_encoder_ready(uuid, ready_ms);
         }
         Ok(released_any)
     }
 
-    /// Admit one ready arrival into the collector, router, and worker pool.
-    fn admit_ready(&mut self, ready: ReplayReadyArrival<Metadata>) -> anyhow::Result<Uuid> {
+    /// Admit one ready arrival into the collector, router, and worker pool;
+    /// `registered` marks a request the encoder pool already registered.
+    fn admit_ready(
+        &mut self,
+        ready: ReplayReadyArrival<Metadata>,
+        registered: bool,
+    ) -> anyhow::Result<Uuid> {
         let ReplayReadyArrival {
             request,
             arrival_time_ms,
@@ -727,7 +771,8 @@ where
         let input_length = request.input_length();
         let output_length = request.metadata().effective_max_output_tokens();
         let session_metadata = session_id.clone().zip(turn_index);
-        let uuid = self.assign_request(request, arrival_time_ms, metadata, session_id)?;
+        let uuid =
+            self.assign_request(request, arrival_time_ms, metadata, session_id, registered)?;
         if let (Some(request_id), Some(play_id)) = (authored_request_id, play_id) {
             self.collector
                 .on_agentic_metadata(uuid, request_id, play_id, dispatched_at_ms);
@@ -2475,6 +2520,7 @@ where
             arrival_time_ms,
             Metadata::from_hashes(None),
             None,
+            false,
         )?;
         if self.defer_drive {
             self.drive_pending = true;

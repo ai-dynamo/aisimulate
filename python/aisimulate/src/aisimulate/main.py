@@ -150,7 +150,6 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             native["memory_diagnostics"] = native["metadata"].pop("memory_diagnostics")
         # JSON stdout, like prediction.json, must identify the approximation.
         native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
-        native["summary"]["total_gpus"] = report.metadata["total_gpus"]
     # The aggregated or the prefill worker hosts the measured frontend stages.
     for role in ("aggregated", "prefill"):
         vl = (spec.backend_deployment.performance_model_metadata.get(role) or {}).get("vl")
@@ -158,6 +157,9 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             native = {**native, "vl": vl}
     summary = prediction_summary(native)
     summary.update(normalize_power_summary(report.metrics))
+    if encoder is not None:
+        # Both tiers' GPUs, reported alike by the analytical overlay and the native pool.
+        summary["total_gpus"] = report.metadata["total_gpus"]
     if "summary" in native:
         native = {**native, "summary": summary}
     else:

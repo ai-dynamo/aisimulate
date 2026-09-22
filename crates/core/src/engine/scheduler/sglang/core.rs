@@ -302,7 +302,7 @@ impl SglangCore {
                 })
             }
             SchedulerCommand::CancelSource { handoff_id } => {
-                let (applied, retired) = self.cancel_source(handoff_id);
+                let (applied, retired) = self.cancel_source(handoff_id, now_ms);
                 let result = if applied {
                     SchedulerCommandResult::Applied
                 } else {
@@ -594,7 +594,13 @@ impl SglangCore {
         }
     }
 
-    fn cancel_source(&mut self, handoff_id: HandoffId) -> (bool, Option<Uuid>) {
+    /// Cancel a handoff source at `now_ms`: a pending request leaves its frontend
+    /// pool at the command's instant, not at the pool's last settled clock.
+    fn cancel_source(
+        &mut self,
+        handoff_id: HandoffId,
+        now_ms: Option<f64>,
+    ) -> (bool, Option<Uuid>) {
         match self.source_holds.remove(handoff_id) {
             RemovedSource::Held(payload) => {
                 let request_id = payload.request.uuid;
@@ -603,7 +609,7 @@ impl SglangCore {
                 (true, Some(request_id))
             }
             RemovedSource::Pending { request_id } => {
-                self.cancel_active_request(request_id, None);
+                self.cancel_active_request(request_id, now_ms);
                 (true, Some(request_id))
             }
             RemovedSource::Missing => (false, None),

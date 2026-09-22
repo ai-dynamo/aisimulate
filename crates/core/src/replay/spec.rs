@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::engine::{EncoderShape, TimingModelConfig};
 use crate::replay::{ReplayError, ReplayResult, SlaThresholds};
 
 pub const CURRENT_REPLAY_SPEC_VERSION: u32 = 1;
@@ -152,49 +153,78 @@ impl ReplayTopology {
 /// Event-level model of SGLang's dedicated encoder servers (`--encoder-only`)
 /// ahead of the language workers.
 ///
-/// Each instance runs one serial loop: it takes the queued requests up to
-/// `max_batch`, preprocesses and encodes them as one batch, then hands each
-/// request's embeddings to the language rank over the network. A batch frees
-/// its instance when its GPU work ends; transfers are timed per request.
+/// A request's images are spread over the instances; each instance runs one
+/// serial loop that takes the queued parts up to `max_batch`, preprocesses and
+/// encodes them as one batch, then pushes each part's embeddings to the language
+/// rank. A batch frees its instance when its GPU work ends; transfers are timed
+/// per part, and the request is admitted when its last part arrived.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EncoderSpec {
     pub instances: usize,
+    /// Parts one batch takes at most (`SGLANG_ENCODER_MAX_BATCH_SIZE`).
     pub max_batch: usize,
-    /// CPU preprocessing (image decode and processor) of one request.
-    pub preprocess_ms: f64,
-    /// Encoder forward of a batch of `k` requests, at index `k - 1`.
-    pub forward_ms_by_batch: Vec<f64>,
-    /// Embedding bytes one request sends to the language rank(s).
-    pub transfer_bytes_per_request: u64,
+    /// GPUs one instance occupies (its tensor-parallel width).
+    pub gpus_per_instance: usize,
+    pub images_per_request: u32,
+    /// Geometry of one image as the encoder forward sees it.
+    pub shape: EncoderShape,
+    /// CPU preprocessing (image decode and processor) per image; a batch costs
+    /// its image count times this.
+    pub preprocess_ms_per_image: f64,
+    /// Embedding bytes one image sends to the language rank(s).
+    pub transfer_bytes_per_image: u64,
     /// Network bandwidth in decimal gigabytes per second.
     pub transfer_bandwidth_gb_s: f64,
+    /// Timing model pricing the encoder forward, resolved by the runner like a
+    /// rank's; `None` shares the language workers' model (tests).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_model: Option<TimingModelConfig>,
 }
 
 impl EncoderSpec {
     pub fn validate(&self) -> ReplayResult<()> {
-        if self.instances == 0 {
+        for (name, value) in [
+            ("instances", self.instances),
+            ("max_batch", self.max_batch),
+            ("gpus_per_instance", self.gpus_per_instance),
+            ("images_per_request", self.images_per_request as usize),
+        ] {
+            if value == 0 {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "encoder {name} must be positive"
+                )));
+            }
+        }
+        let shape = &self.shape;
+        if [
+            shape.sequences,
+            shape.patch_tokens,
+            shape.transformer_tokens,
+            shape.output_tokens,
+        ]
+        .contains(&0)
+        {
             return Err(ReplayError::InvalidSpec(
-                "encoder pool must have at least one instance".to_string(),
+                "encoder shape counts must be positive".to_string(),
             ));
         }
-        if self.max_batch == 0 || self.forward_ms_by_batch.len() != self.max_batch {
-            return Err(ReplayError::InvalidSpec(
-                "encoder forward_ms_by_batch must list one latency per batch size up to max_batch"
-                    .to_string(),
-            ));
-        }
-        validate_time("encoder preprocess_ms", self.preprocess_ms)?;
-        for (index, forward_ms) in self.forward_ms_by_batch.iter().enumerate() {
-            validate_time(
-                &format!("encoder forward_ms_by_batch[{index}]"),
-                *forward_ms,
-            )?;
-        }
+        validate_time(
+            "encoder preprocess_ms_per_image",
+            self.preprocess_ms_per_image,
+        )?;
         if !self.transfer_bandwidth_gb_s.is_finite() || self.transfer_bandwidth_gb_s <= 0.0 {
             return Err(ReplayError::InvalidSpec(format!(
                 "encoder transfer_bandwidth_gb_s must be positive and finite, got {}",
                 self.transfer_bandwidth_gb_s
             )));
+        }
+        if let Some(TimingModelConfig::Fixed { .. } | TimingModelConfig::Polynomial) =
+            &self.timing_model
+        {
+            return Err(ReplayError::InvalidSpec(
+                "encoder timing_model must price vision batches; fixed and polynomial models do not"
+                    .to_string(),
+            ));
         }
         Ok(())
     }

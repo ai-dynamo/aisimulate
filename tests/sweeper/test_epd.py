@@ -666,7 +666,7 @@ def test_epd_rejects_afd_search_before_materialization(mode):
         deployment_mode=[mode],
         afd_batch_size_candidates=[16],
     )
-    with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
+    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
         SmartSearchConfig.model_validate(payload)
 
 
@@ -675,7 +675,7 @@ def test_epd_rejects_afd_direct_deployment_and_replay(mode):
     from aisimulate.sweeper.deploy import build_backend_deployment
 
     encoder = _encoder()
-    with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
+    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
         build_backend_deployment({"deployment_mode": mode}, backend_version="test", encoder=encoder)
     spec = ReplaySpec(
         backend_deployment=BackendDeploymentSpec(
@@ -691,7 +691,7 @@ def test_epd_rejects_afd_direct_deployment_and_replay(mode):
         supported_backend_topologies=(("*", "*"),),
         supports_analytical_epd=True,
     )
-    with pytest.raises(ValueError, match="EPD supports only agg/disagg.*AFD is unsupported"):
+    with pytest.raises(ValueError, match="encoder pools support only agg/disagg.*AFD is unsupported"):
         capabilities.require_compatible(spec)
 
 

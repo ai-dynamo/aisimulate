@@ -147,6 +147,10 @@ def _validate_epd(traffic, engine) -> None:
     if encoder.mode == "native":
         if not _only(engine.backend, "sglang"):
             raise ValueError("native encoder replay requires backend=sglang")
+        for role in ("aggregated", "prefill", "decode"):
+            worker = getattr(engine.workers, role)
+            if worker is not None and worker.startup_seconds != 0:
+                raise ValueError("encoder pools require static worker pools")
         return
     if images.min_pixels is not None or images.max_pixels is not None:
         raise ValueError("images.min_pixels and max_pixels are honored only by native VL replay, not by analytical EPD")
@@ -159,7 +163,7 @@ def _validate_epd(traffic, engine) -> None:
         if worker.timing.type != "default" or worker.timing.forward_model != "op_level":
             raise ValueError("analytical EPD requires default op_level language timing")
         if worker.startup_seconds != 0:
-            raise ValueError("analytical EPD requires static worker pools")
+            raise ValueError("encoder pools require static worker pools")
 
 
 def prediction_mapping(

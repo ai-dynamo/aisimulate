@@ -245,7 +245,7 @@ def build_backend_deployment(
     forward_pass_estimators = dict(forward_pass_estimators or {})
     mode = sample["deployment_mode"]
     if encoder is not None and mode not in {"agg", "disagg"}:
-        raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
+        raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
     if mode in {"afd", "afd+pd"}:
         parallel_config = {
             "afd": sample["afd"],
@@ -347,6 +347,10 @@ def build_backend_deployment(
             "host_profile_digest": row["digest"],
             "frontend": row["frontend"]["measured_for"]["frontend"],
         }
+    if encoder is not None and encoder.native is not None:
+        from ..config.epd import encoder_metadata
+
+        common["performance_model_metadata"]["encoder"] = encoder_metadata(encoder)
     if mode == "agg":
         return BackendDeploymentSpec(
             agg_engine_args=_engine_args_payload(

@@ -407,6 +407,17 @@ impl<C: ReplayComposition> Replayer<C> {
             None
         };
         let telemetry = self.telemetry.take();
+        let encoder = match &self.spec.encoder {
+            None => None,
+            Some(encoder) => {
+                let timing = self.factory.encoder_timing().ok_or_else(|| {
+                    ReplayError::InvalidSpec(
+                        "an encoder pool requires a timing model that prices vision batches".into(),
+                    )
+                })?;
+                Some((encoder.clone(), timing.clone()))
+            }
+        };
 
         let collector = match &self.spec.topology {
             ReplayTopology::Aggregated { workers } => {
@@ -454,7 +465,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     self.spec.record_per_request || self.capture.effective_per_request(),
                 )
                 .with_max_sim_time_ms(self.spec.max_sim_time_ms)
-                .with_encoder(self.spec.encoder.clone());
+                .with_encoder(encoder.clone());
                 if let Some(sink) = artifact_sink {
                     runtime = runtime.with_artifact_sink(sink);
                 }
@@ -530,7 +541,7 @@ impl<C: ReplayComposition> Replayer<C> {
                     self.spec.record_per_request || self.capture.effective_per_request(),
                 )
                 .with_max_sim_time_ms(self.spec.max_sim_time_ms)
-                .with_encoder(self.spec.encoder.clone());
+                .with_encoder(encoder.clone());
                 if let Some(policy) = scaling {
                     runtime = runtime.with_scaling_policy(Box::new(ScalingPolicyBoundary(policy)));
                 }

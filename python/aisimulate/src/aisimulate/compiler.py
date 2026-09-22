@@ -62,7 +62,13 @@ def prediction_to_replay_spec(
     if config.engine.workers.encoder is not None:
         if adapter_specs or execution_mode != "offline":
             raise ValueError("encoder pools require the offline engine stack without adapters")
-        deployment = replace(deployment, encoder=_prediction_encoder(config, workload))
+        pool = _prediction_encoder(config, workload)
+        metadata = dict(deployment.performance_model_metadata)
+        if pool.native is not None:
+            from .config.epd import encoder_metadata
+
+            metadata["encoder"] = encoder_metadata(pool)
+        deployment = replace(deployment, encoder=pool, performance_model_metadata=metadata)
     evaluation = config.evaluation.model_dump(mode="json", exclude_none=True)
     goal: dict[str, JSONValue] = {
         "sla": evaluation.get("sla") if evaluation else None,

@@ -142,9 +142,12 @@ request), `mean_receive_to_admit_ms` (received to selected, the waiting-queue
 time when the batch budget is full), `mean_prefill_elapsed_ms` (selected to the
 prompt's last forward finishing on the device, across all its chunks), and
 `mean_result_observation_delay_ms` (device completion to the scheduler
-observing the first token). These are server-internal latencies to scheduler
-observation, not client-visible ones, and they are reported with or without
-per-request capture.
+observing the result: the first token on an aggregated rank, the prefill rank
+releasing the request to the KV handoff in disaggregated prefill), and
+`mean_handoff_to_first_token_ms` (that release to the decode rank's first
+token; zero on an aggregated rank). The six spans sum to the mean TTFT. These
+are server-internal latencies to scheduler observation, not client-visible
+ones, and they are reported with or without per-request capture.
 
 ## Disaggregated prefill
 
@@ -179,26 +182,37 @@ TTFT (`mode: analytical`, the default, is unchanged). Each of the `replicas`
 encoder servers (`--encoder-only`) runs one serial loop, as `EncoderScheduler`
 does: it takes the queued requests up to `batch_size` (the loop's cap,
 `SGLANG_ENCODER_MAX_BATCH_SIZE`, default 8), runs the image processor and one
-encoder forward over the batch, then pushes each request's embeddings to the
-language rank. The push is asynchronous, so the instance takes its next batch
-when the forward ends; requests arriving at one instant share a batch because
-they are already queued when the loop collects it. A request reaches the
-language worker only when its embeddings arrived, and its time to first token
-counts the wait; the report adds `encoder_latency_ms` (mean arrival-to-delivery)
-and, per request, `encoder_ready_ms`.
+encoder forward over the batch, then pushes each part's embeddings to the
+language rank. The language side splits a request's images evenly over the
+encoder servers before sending (`_assign_items_by_modality`; its random server
+order becomes a rotation over the arrival sequence), so a multi-image request
+encodes in parallel and is admitted once its last part arrived. The push is
+asynchronous, so the instance takes its next batch when the forward ends;
+requests arriving at one instant share a batch because they are already queued
+when the loop collects it. A request reaches the language worker only when its
+embeddings arrived, and its time to first token counts the wait; the report
+adds `encoder_latency_ms` (mean arrival-to-delivery), `encoder_gpus`,
+`total_gpus`, and, per request, `encoder_ready_ms`. The pool's GPUs count in
+`gpu_hours`, so `throughput_per_gpu` ranks encoder replicas and language
+workers on the same footing. Requests still parked in the pool when
+`max_sim_time_ms` cuts a run short are reported as arrived and incomplete.
 
-Service terms per request (`examples/cli/vl-predict-epd-native.yaml`):
+Service terms per image (`examples/cli/vl-predict-epd-native.yaml`); the
+image geometry, including `min_pixels`/`max_pixels`, is the one the language
+worker's own tower would see:
 
 | Term | Source |
 | --- | --- |
-| CPU preprocessing | The `process` stage of the encoder host's cost table (`host_profile`, Python frontend): the encoder servers run the same HF image processor as the tokenizer manager. A batch of `k` requests costs `k` times that stage (the processor works per image; the four parallel image loaders are not modeled). |
-| Encoder forward | The AIC encoder model at the pool's `tensor` width for every batch size up to the cap, the same estimator the analytical mode uses for its single batch point. |
-| Transfer | `visual_tokens x embedding bytes per token x language tensor-parallel width` at `transfer.bandwidth_gb_per_second`: `zmq_to_scheduler` fans the embeddings out to every rank. Requests are timed independently at that bandwidth, the same precision boundary as the prefill-to-decode KV handoff, with which it shares the bytes-over-bandwidth arithmetic. |
+| CPU preprocessing | Extrapolated from the `process` stage of the encoder host's cost table (`host_profile`, Python frontend), divided by the images that stage was measured with: the encoder servers run the same HF image processor as the tokenizer manager, so a batch of `n` images costs `n` times the per-image term. The report labels it `preprocess_source: frontend_process_extrapolated`; the encoder's own batch preprocessing and its four parallel image loaders are not measured. |
+| Encoder forward | The canonical timing model at the pool's `tensor` width prices one forward over the batch's images (`predict_vision_ms`), the same oracle a language rank uses for its vision tower; the pool's power evidence enters the report like a language rank's. |
+| Transfer | `embedding bytes per image x language tensor-parallel width` at `transfer.bandwidth_gb_per_second`: `zmq_to_scheduler` fans the embeddings out to every rank. Parts are timed independently at that bandwidth from the end of their batch, the same precision boundary as the prefill-to-decode KV handoff, with which it shares the bytes-over-bandwidth arithmetic. The device-to-host copy SGLang makes before the push is not modeled. |
 
 The language worker runs `--language-only`: it neither hosts the vision tower
 nor prices image frontend stages (`vision`, `frontend`, and `host_profile` are
 rejected on it), while `host_loop` still models its scheduler loop. Visual
-placeholders occupy its prompt as they do on the analytical path. Not modeled:
+placeholders occupy its prompt as they do on the analytical path. A saved
+recommendation pins the resolved encoder terms and the host table's digest, so
+`predict` rejects it when the table changed underneath. Not modeled:
 `--enable-adaptive-dispatch-to-encoder` (single-image requests encoded locally,
 off by default), the mooncake GPU-direct transfer and the encoder's prefix
 embedding cache, and the resident tower weights that Qwen-VL still loads on a
@@ -211,8 +225,8 @@ language-only rank.
 `workers.aggregated` in `mode: aggregated` or `workers.prefill` in
 `mode: disaggregated`. Image workloads
 take either this path or an encoder pool (`engine.workers.encoder`, analytical
-or native), never both, and `min_pixels`/`max_pixels` are honored only on this
-path. On this
+or native), never both; `min_pixels`/`max_pixels` are honored on this path and
+by native encoder pools, not by the analytical overlay. On this
 path `scheduler.max_batched_tokens` becomes SGLang's `chunked_prefill_size`;
 other SGLang predictions keep their existing behavior. `recommend` accepts the
 same fields as fixed data; candidates search load, scheduling, tensor

@@ -24,11 +24,23 @@ def _execution_traffic(spec: ReplaySpec) -> dict[str, Any]:
     """
     from ..sweeper.config import Workload
 
-    traffic = Workload.model_validate(spec.workload).model_dump(mode="json")
+    workload = dict(spec.workload)
+    # The compiler spells a constant-rate load as the interval it derives from the rate,
+    # which the workload model does not know; validate it as the rate.
+    interval = workload.pop("arrival_interval_ms", None)
+    if interval is not None and workload.get("request_rate") is None:
+        workload["request_rate"] = 1_000.0 / float(interval)
+    traffic = Workload.model_validate(workload).model_dump(mode="json")
     for key in _SEARCH_ONLY_TRAFFIC:
         traffic.pop(key, None)
+    rate = traffic.pop("request_rate", None)
+    if rate is not None:
+        # Compared as the interval, computed as the compiler computes it.
+        traffic["arrival_interval_ms"] = interval if interval is not None else 1_000.0 / float(rate)
     if spec.concurrency is not None:
+        # A KV-capacity or searched load resolved to this concurrency before scoring.
         traffic["concurrency"] = spec.concurrency
+        traffic["load_type"] = "concurrency"
     traffic.pop("kv_load_ratio", None)
     ratio = traffic.pop("num_request_ratio", None)
     if traffic.get("request_count") is None and ratio is not None:

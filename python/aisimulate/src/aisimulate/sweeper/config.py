@@ -1240,9 +1240,9 @@ class SmartSearchConfig(BaseModel):
         if encoder.mode == "analytical" and (search.agg_host_loop or search.prefill_host_loop):
             raise ValueError("analytical search_space.encoder and a host loop on the language worker are exclusive")
         if any(mode not in {"agg", "disagg"} for mode in self.search_space.deployment_mode):
-            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
+            raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
         if self.adapters:
-            raise ValueError("analytical EPD does not support adapters")
+            raise ValueError("encoder pools do not support adapters")
         if self.search_space.min_gpu_budget is not None:
             raise ValueError("EPD currently supports gpu_budget only, not min_gpu_budget")
         if encoder.backend_version is not None and len(set(self.search_space.backend)) != 1:
@@ -1253,14 +1253,15 @@ class SmartSearchConfig(BaseModel):
                 raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
             workload.require_fixed_epd()
         for role in ("agg", "prefill", "decode"):
-            if getattr(self.search_space, f"{role}_forward_model") != "op_level":
-                raise ValueError("EPD requires op_level forward models")
-            if getattr(self.search_space, f"{role}_timing_model") is not None:
-                raise ValueError("EPD does not support custom language timing")
+            if encoder.mode == "analytical":
+                if getattr(self.search_space, f"{role}_forward_model") != "op_level":
+                    raise ValueError("analytical EPD requires op_level forward models")
+                if getattr(self.search_space, f"{role}_timing_model") is not None:
+                    raise ValueError("analytical EPD does not support custom language timing")
             if getattr(self.search_space, f"{role}_startup_time") not in (None, 0.0):
-                raise ValueError("analytical EPD requires static worker pools")
+                raise ValueError("encoder pools require static worker pools")
         if self.search_space.startup_time not in (None, 0.0):
-            raise ValueError("analytical EPD requires static worker pools")
+            raise ValueError("encoder pools require static worker pools")
         return self
 
     @model_validator(mode="before")

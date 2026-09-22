@@ -786,6 +786,10 @@ impl EngineConfig {
             self.backend == Backend::Sglang || !self.sglang.host_loop,
             "sglang.host_loop is supported only for backend=sglang"
         );
+        ensure!(
+            !self.sglang.host_loop || self.worker_type != WorkerType::Decode,
+            "sglang.host_loop is not modeled on a decode rank; the decode rank is the text-PD decode rank"
+        );
         if let Some(frontend) = &self.frontend {
             ensure!(
                 self.backend == Backend::Sglang && self.sglang.host_loop,

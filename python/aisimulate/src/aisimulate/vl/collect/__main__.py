@@ -53,14 +53,21 @@ def _show(path: Path) -> int:
 
 
 def _from_config(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    """Fill unset arguments from a prediction YAML's host-aware worker (aggregated or prefill) and image workload."""
+    """Fill unset arguments from a prediction YAML's host profile and image workload.
+
+    The profile sits on the host-aware language worker (aggregated or prefill) or,
+    for a native encoder pool, on `workers.encoder`.
+    """
     raw = load_yaml(args.config)
     try:
         workers = raw["engine"]["workers"]
-        worker = workers.get("aggregated") or workers["prefill"]
+        worker = workers.get("aggregated") or workers.get("prefill") or {}
         images = raw["traffic"]["source"]["images"]
     except (KeyError, TypeError, AttributeError):
-        parser.error(f"{args.config} has no aggregated or prefill worker with an image workload")
+        parser.error(f"{args.config} has no language worker with an image workload")
+    encoder = workers.get("encoder") or {}
+    if not worker.get("host_profile") and encoder.get("host_profile"):
+        worker = {"host_profile": encoder["host_profile"], "parallelism": {"tensor": 1}}
     profile = worker.get("host_profile") or {}
     if not profile and (args.table is None or args.frontend is None):
         parser.error(f"{args.config} has no host_profile; pass --table and --frontend explicitly")
@@ -135,8 +142,16 @@ def main(argv=None) -> int:
     )
     if args.recording is not None:
         recording = json.loads(Path(args.recording).read_text())
+        # A kept recording is lowered under the measurement it was taken for, never relabeled.
+        measured_for = recording.get("measured_for")
+        if measured_for is None:
+            raise SystemExit(f"{args.recording} carries no measurement identity; measure again instead of lowering it")
+        if measured_for != measurement.model_dump(mode="json"):
+            taken_for = FrontendMeasurementConfig.model_validate(measured_for).describe()
+            raise SystemExit(f"{args.recording} was measured for {taken_for}; this run names {measurement.describe()}")
     else:
         recording = _measure(args, measurement)
+        recording["measured_for"] = measurement.model_dump(mode="json")
     try:
         row = frontend_row(recording, measurement)
     except ValueError as exc:

@@ -75,31 +75,45 @@ class ForwardPassEstimatorSpec:
         return ""
 
 
+_ENCODER_SHAPE_FIELDS = ("sequences", "patch_tokens", "transformer_tokens", "output_tokens")
+
+
 @dataclass(frozen=True)
 class NativeEncoderTiming:
-    """Per-request service terms of SGLang's encoder loop; the replay prices its batches from them."""
+    """Terms of SGLang's encoder loop the replay prices batches from.
 
-    preprocess_ms: float
-    forward_ms_by_batch: tuple[float, ...]
+    The forward itself is priced at replay time by the canonical timing model
+    (`timing_model`, a prefill-shaped rank at the pool's tensor width whose model
+    compiles the vision tower). `preprocess_ms_per_image` extrapolates the tokenizer
+    manager's measured `process` stage (`preprocess_source`) until the encoder's own
+    batch preprocessing is measured.
+    """
+
+    preprocess_ms_per_image: float
+    preprocess_source: str
+    # Geometry of one image as the encoder forward sees it.
+    shape: dict[str, int]
     # Embedding bytes for one language rank; the runner multiplies by the receiving tensor-parallel width.
-    transfer_bytes_per_request: int
+    transfer_bytes_per_image: int
     transfer_bandwidth_gb_s: float
+    timing_model: dict[str, Any]
     host_profile_path: str
     host_profile_frontend: str
     host_profile_digest: str
 
     def __post_init__(self):
-        if not math.isfinite(self.preprocess_ms) or self.preprocess_ms < 0:
-            raise ValueError("encoder preprocess_ms must be finite and non-negative")
-        if not self.forward_ms_by_batch or any(
-            isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0
-            for value in self.forward_ms_by_batch
+        if not math.isfinite(self.preprocess_ms_per_image) or self.preprocess_ms_per_image < 0:
+            raise ValueError("encoder preprocess_ms_per_image must be finite and non-negative")
+        if set(self.shape) != set(_ENCODER_SHAPE_FIELDS) or any(
+            type(value) is not int or value <= 0 for value in self.shape.values()
         ):
-            raise ValueError("encoder forward_ms_by_batch must be positive and finite")
-        if type(self.transfer_bytes_per_request) is not int or self.transfer_bytes_per_request <= 0:
-            raise ValueError("encoder transfer_bytes_per_request must be a positive integer")
+            raise ValueError(f"encoder shape must hold positive {', '.join(_ENCODER_SHAPE_FIELDS)}")
+        if type(self.transfer_bytes_per_image) is not int or self.transfer_bytes_per_image <= 0:
+            raise ValueError("encoder transfer_bytes_per_image must be a positive integer")
         if not math.isfinite(self.transfer_bandwidth_gb_s) or self.transfer_bandwidth_gb_s <= 0:
             raise ValueError("encoder transfer_bandwidth_gb_s must be positive and finite")
+        if self.timing_model.get("type") != "external" or self.timing_model.get("provider") != "aic":
+            raise ValueError("encoder timing_model must be the canonical external provider")
 
 
 @dataclass(frozen=True)
@@ -133,8 +147,6 @@ class EncoderPoolSpec:
     def __post_init__(self):
         if self.mode not in ("analytical", "native") or (self.mode == "native") != (self.native is not None):
             raise ValueError("encoder mode must be analytical, or native with its loop terms")
-        if self.native is not None and len(self.native.forward_ms_by_batch) != self.batch_size:
-            raise ValueError("native encoder forward_ms_by_batch must cover every batch size up to the cap")
         for name in ("model", "system", "backend", "backend_version"):
             if not isinstance(getattr(self, name), str) or not getattr(self, name).strip():
                 raise ValueError(f"encoder {name} must be nonempty")
@@ -398,7 +410,7 @@ class RunnerCapabilities:
                         "runner does not support state_cache; select a stack that advertises this capability"
                     )
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
-            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
+            raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None:
             supported = (
                 self.supports_native_epd if deployment.encoder.mode == "native" else self.supports_analytical_epd
