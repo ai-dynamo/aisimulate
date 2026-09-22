@@ -3,14 +3,26 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
-from aisimulate.config.common import ResourceConfig
+from aisimulate.config import CoreRecommendationConfig
+from aisimulate.config.common import ResourceConfig, split_config_sections
 from aisimulate.resource_scheduler import InterruptedEvaluation, evaluate_waves
-from aisimulate.resources import GB, GuardedRunnerFactory, HostResources, ResourceEstimate, ResourceLimitError
+from aisimulate.resources import (
+    GB,
+    GuardedRunnerFactory,
+    HostResources,
+    ResourceEstimate,
+    ResourceLimitError,
+    workload_bounds,
+)
 
 
 @dataclass
@@ -48,6 +60,46 @@ def test_admission_splits_waves_and_skips_only_oversized_candidates():
     assert results[2].resource_limited
     assert results[3] == {"id": 3}
     assert factory.admitted == [[0, 1], [3]]
+
+
+def _reported_replay_sentinel(spec):
+    assert spec.concurrency == 8, "oversized reported candidate reached replay"
+    return spec.concurrency
+
+
+@pytest.mark.parametrize("concurrencies", [(64_512,), (8, 64_512), (64_512, 8)])
+def test_reported_mac_sweep_refuses_largest_and_keeps_fitting_candidates(monkeypatch, concurrencies):
+    from aisimulate import resources
+
+    path = Path(__file__).parent / "e2e/configs/resource_safety/reported-mac-sweep.yaml"
+    raw = yaml.safe_load(path.read_text())
+    assert hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()).hexdigest() == (
+        "af1a9d53df52c5eab2c07f9be20b69457e51ddd4c43933c42bcca7e489698577"
+    )
+    core, _ = split_config_sections(raw, command="recommend")
+    specs = []
+    for concurrency in concurrencies:
+        core["traffic"]["load"]["concurrency"] = concurrency
+        bounds = workload_bounds(CoreRecommendationConfig.model_validate(core))
+        specs.append(SimpleNamespace(concurrency=concurrency, workload=bounds))
+
+    monkeypatch.setattr(resources, "discover_host", lambda: HostResources(32 * GB, 16 * GB, 8))
+    factory = GuardedRunnerFactory(object(), "dynamo", ResourceConfig(memory_limit_gb=2.0, cpu_limit=1))
+    results = dict(
+        evaluate_waves(
+            specs, factory=factory, initializer=_init, evaluate=_reported_replay_sentinel, workers=8, timeout=10
+        )
+    )
+    assert len(results) == len(specs)
+    for index, concurrency in enumerate(concurrencies):
+        result = results[index]
+        if concurrency == 64_512:
+            assert isinstance(result, InterruptedEvaluation)
+            assert result.resource_limited
+            assert result.metadata["estimate"]["request_count"] == 6_451_200
+            assert result.metadata["estimate"]["allocation_model"] == "dynamo-eager-u32-v1"
+        else:
+            assert result == concurrency
 
 
 def test_checkpoint_failure_stops_before_workers_without_reclassifying_candidates(monkeypatch):
