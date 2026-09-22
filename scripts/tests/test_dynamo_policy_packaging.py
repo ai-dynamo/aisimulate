@@ -182,6 +182,31 @@ class PolicyPackagingTests(unittest.TestCase):
                     if plugin:
                         check_policy_dependency(self.root)
 
+    def test_stamp_rejects_missing_or_duplicate_python_base_pins(self) -> None:
+        for replacement, count in [
+            ("", 0),
+            ('"aisimulate>=0.13.0"', 0),
+            ('"aisimulate==0.13.0", "aisimulate==0.12.0"', 2),
+        ]:
+            with self.subTest(replacement=replacement):
+                self.source_tree()
+                relative = "python/aisimulate-dynamo-policy/pyproject.toml"
+                self.replace(relative, '"aisimulate==0.13.0"', replacement)
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(ROOT / "scripts/apply_dev_version.py"),
+                        ".dev202609220000001234",
+                        str(self.root),
+                    ],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"expected one exact aisimulate pin in {self.root / relative}", result.stderr)
+                self.assertIn(f"found {count}", result.stderr)
+                self.assertNotIn('"aisimulate==0.13.0.dev', (self.root / relative).read_text())
+
     def foreign_packages(self) -> dict[str, list[dict]]:
         return {
             str(path.relative_to(self.root)): [

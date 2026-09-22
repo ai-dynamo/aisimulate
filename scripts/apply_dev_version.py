@@ -92,7 +92,10 @@ def main() -> int:
         plugin_native = root / "crates/dynamo-policy/Cargo.toml"
         stamped.append(rewrite(plugin_py, args.suffix))
         stamped.append(rewrite(plugin_native, semver(args.suffix)))
-        plugin_py.write_text(re.sub(r'"aisimulate==[^"]+"', f'"aisimulate=={stamped[0]}"', plugin_py.read_text()))
+        plugin_text, count = re.subn(r'"aisimulate==[^"]+"', f'"aisimulate=={stamped[0]}"', plugin_py.read_text())
+        if count != 1:
+            raise SystemExit(f"expected one exact aisimulate pin in {plugin_py}, found {count}")
+        plugin_py.write_text(plugin_text)
         native_text, count = re.subn(
             r'(aisimulate-core\s*=\s*\{[^\n]*version\s*=\s*")=[^"]+("[^\n]*\})',
             rf"\g<1>={stamped[2]}\2",
