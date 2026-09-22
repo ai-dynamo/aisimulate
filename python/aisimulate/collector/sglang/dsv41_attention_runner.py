@@ -394,7 +394,7 @@ def collect_workloads(
     return qualifications
 
 
-def aggregate_attention_records(output, plan_path, manifest_path, workloads_path):
+def aggregate_attention_records(output, plan_path, manifest_path, workloads_path, *, bounded_owner_evidence=None):
     """Check all ranks/cases/samples and prohibit silent whole-model collisions."""
     from .collect_dsv41_module import aggregate_rank_records
 
@@ -498,6 +498,19 @@ def aggregate_attention_records(output, plan_path, manifest_path, workloads_path
         if actual != expected:
             raise ValueError("incomplete native attention coverage")
     collisions = collision_owners(manifest, workloads)
+    if bounded_owner_evidence is not None:
+        from .collect_dsv41_module import aggregate_bounded_attention_records
+
+        if (plan["warmup"], plan["iterations"]) != (2, 5):
+            raise ValueError("bounded owner policy requires the audited sample plan")
+        return aggregate_bounded_attention_records(
+            [output / f"rank-{rank}.jsonl" for rank in range(plan["tp_size"])],
+            plan["tp_size"],
+            manifest,
+            workloads,
+            producer_kind="native_attention_isolated",
+            evidence_path=bounded_owner_evidence,
+        )
     if collisions:
         raise ValueError(
             "different invocations share attention keys; source equivalence audit required: "
@@ -685,9 +698,22 @@ def main():
         parser.add_argument("--" + option, type=Path)
     parser.add_argument("--runtime-digest")
     parser.add_argument("--admit", type=Path, help="write a new table after strict calibration admission")
+    parser.add_argument(
+        "--bounded-owner-mean-evidence",
+        type=Path,
+        help="explicit eight-group empirical owner policy; save new evidence, without claiming timing equivalence",
+    )
     args = parser.parse_args()
+    if args.bounded_owner_mean_evidence and not args.admit:
+        parser.error("bounded-owner-mean-evidence requires admit")
     if args.admit:
-        rows = aggregate_attention_records(args.output, args.plan, args.manifest, args.workloads)
+        rows = aggregate_attention_records(
+            args.output,
+            args.plan,
+            args.manifest,
+            args.workloads,
+            bounded_owner_evidence=args.bounded_owner_mean_evidence,
+        )
         # Exclusive creation rejects whole-model tables and accidental reruns.
         with args.admit.open("xb") as destination:
             write_parquet(rows, destination)

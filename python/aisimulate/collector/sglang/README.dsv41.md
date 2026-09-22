@@ -231,12 +231,40 @@ All requested cases and rank samples are retained. `aggregate_attention_records`
 checks exact plan, actual-output qualification and per-case/rank/sample coverage;
 it rejects smoke/heldout promotion and whole-model rows mixed into its raw stream.
 Different invocations sharing a physical key are reported with every owner and
-remain a publication gate pending a source equivalence audit. They are never
-silently dropped or merged, even for canonical bounded-tail collisions. Full
+rejected by default. They are never silently dropped or merged. Full
 and bounded outputs remain separate. `--admit NEW_TABLE` writes only a fresh
 destination after those gates; it refuses to overwrite an existing whole-model
 or isolated table. The ordinary consumer contract and provenance checks still
 apply before publishing any measured profile.
+
+An explicit `--bounded-owner-mean-evidence NEW_JSON` with `--admit` enables the
+audited eight-group empirical policy at this exact runtime/source/configuration.
+It checks every original owner, rank and sample before computing each owner's
+median of five sample rank maxima, then the equal-weight arithmetic mean of all
+owner estimates. The evidence retains every owner ID, rank sample, individual
+estimate and raw-file hash. Owner layer/sample multiplicity does not change its
+weight. The corresponding
+`collect_dsv41_module.aggregate_bounded_attention_records` API also accepts
+independently qualified whole-checkpoint raw records with their original native
+invocation numbering; it does not replace whole-model runtime/output admission.
+
+The scoped collisions are ratio-1 `reuse` and `reindex` attention, TP2 or TP4,
+eager bounded context, tail length128. Each row below represents both roles:
+
+| Batch | Physical prefix | Original owners `(query, prefix)` |
+| --- | --- | --- |
+| 1 | 384 | `(256,256)`, `(512,0)` |
+| 1 | 640 | `(256,512)`, `(512,256)`, `(768,0)` |
+| 2 | 256 | `(128,256)`, `(384,0)` |
+| 2 | 640 | `(256,512)`, `(768,0)` |
+
+Source, native dispatch and request/page-mapping audits establish the scope of
+this empirical policy; they do not establish identical tensor contents,
+allocator locality or timing distributions. The reducer does not choose a
+favorable owner, impose a post-hoc equivalence threshold, or assert accuracy
+acceptance. Another source/runtime, missing owner or additional collision is
+rejected. Original raw evidence and independent heldout validation remain
+required before publishing data.
 
 Native tensor population references at the pinned SGLang commit:
 
