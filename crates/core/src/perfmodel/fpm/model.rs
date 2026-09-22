@@ -312,8 +312,18 @@ impl ForwardPassPerfModel {
     /// Construct and pin one estimator. Auto searches all modes even when
     /// fallback is denied; explicit modes use the requested fallback policy.
     /// A regression model may be constructed before it has enough observations.
-    pub fn best_available(config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
+    pub fn best_available(mut config: ForwardPassPerfModelConfig) -> Result<Self, AicError> {
         config.validate()?;
+        if let Some(path) = config
+            .estimator_config
+            .fpm_interpolation
+            .fpm_parquet_path
+            .as_mut()
+        {
+            *path = std::path::absolute(&*path).map_err(|error| {
+                AicError::InvalidEngineConfig(format!("cannot resolve fpm_parquet_path: {error}"))
+            })?;
+        }
         let requested_estimation_mode = config.estimation_mode;
         let mut failures = Vec::new();
         let mut last_error = None;
@@ -620,6 +630,25 @@ impl ForwardPassPerfModel {
     /// Description: return the immutable tuning options used by this model.
     pub fn options(&self) -> &ForwardPassPerfOptions {
         &self.options
+    }
+
+    /// Static phase latency before online correction, using the native engine's
+    /// existing integration. Decode returns the total for all generated tokens.
+    pub fn static_phase_latency(
+        &self,
+        batch_size: u32,
+        input_tokens: u32,
+        output_tokens: u32,
+        prefill: bool,
+    ) -> Result<f64, AicError> {
+        let engine = self.native_engine().ok_or_else(|| {
+            AicError::InvalidEngineConfig("static phase latency requires a native estimator".into())
+        })?;
+        if prefill {
+            engine.predict_prefill_latency(batch_size, input_tokens, 0)
+        } else {
+            engine.predict_decode_latency(batch_size, input_tokens, output_tokens)
+        }
     }
 
     /// Native operation evidence for one static prefill or decode step. Values

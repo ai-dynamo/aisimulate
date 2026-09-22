@@ -331,6 +331,13 @@ impl Engine {
     /// caller (`AicEngineBuilder` / `from_spec_bytes`) is responsible for
     /// having loaded the matching `PerfDatabase` from `spec.engine`'s identity.
     pub fn build(spec: EngineSpec, db: Arc<PerfDatabase>) -> Result<Engine, AicError> {
+        if spec.engine.quantization.fpm_fmha_dtype.is_some()
+            && spec.engine.forward_model.as_deref() != Some("fpm")
+        {
+            return Err(AicError::InvalidEngineConfig(
+                "fpm_fmha_dtype requires forward_model='fpm'".into(),
+            ));
+        }
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         Self::validate_engine_database_mode(db.database_mode)?;
         if spec.engine.database_mode != db.database_mode {
@@ -339,6 +346,24 @@ impl Engine {
                 spec.engine.database_mode, db.database_mode
             )));
         }
+        let nextn = spec
+            .engine
+            .speculative
+            .as_ref()
+            .and_then(|s| s.nextn)
+            .unwrap_or(0);
+        Self::validate_fpm_spec(&spec)?;
+        Ok(Engine {
+            context_ops: spec.context_ops,
+            generation_ops: spec.generation_ops,
+            db,
+            nextn,
+            vision: spec.vision,
+            tp_size: spec.engine.parallel.tp_size,
+        })
+    }
+
+    fn validate_fpm_spec(spec: &EngineSpec) -> Result<(), AicError> {
         let nextn = spec
             .engine
             .speculative
@@ -365,7 +390,10 @@ impl Engine {
             })
         }
         let any_fpm = contains_fpm(&spec.context_ops) || contains_fpm(&spec.generation_ops);
-        if any_fpm {
+        if any_fpm
+            || spec.engine.fpm_parquet_path.is_some()
+            || spec.engine.forward_model.as_deref() == Some("fpm")
+        {
             // Hybrid speculative shape: the FIRST op of each phase is the
             // whole-model FpmForward (target), optionally followed by
             // op-level DRAFT ops (the Python rewrite keeps a scheme's
@@ -380,6 +408,10 @@ impl Engine {
                 Some(Op::FpmForward(d)) if d.phase == FpmPhase::Decode
             ) && !contains_fpm(&spec.context_ops[1..])
                 && !contains_fpm(&spec.generation_ops[1..]);
+            crate::config::validate_fpm_parquet_path(
+                spec.engine.fpm_parquet_path.as_deref(),
+                shape_ok,
+            )?;
             if !shape_ok {
                 return Err(AicError::InvalidEngineConfig(
                     "forward_model='fpm' spec must contain exactly one FpmForward op per phase \
@@ -414,14 +446,7 @@ impl Engine {
                 ));
             }
         }
-        Ok(Engine {
-            context_ops: spec.context_ops,
-            generation_ops: spec.generation_ops,
-            db,
-            nextn,
-            vision: spec.vision,
-            tp_size: spec.engine.parallel.tp_size,
-        })
+        Ok(())
     }
 
     /// Whether this engine compiled a vision tower.
@@ -510,6 +535,7 @@ impl Engine {
         systems_root: &std::path::Path,
     ) -> Result<Engine, AicError> {
         let spec = EngineSpec::from_bincode(bytes)?;
+        Self::validate_fpm_spec(&spec)?;
         Self::validate_engine_database_mode(spec.engine.database_mode)?;
         let version = spec.engine.backend_version.as_deref().ok_or_else(|| {
             AicError::InvalidEngineConfig(
@@ -527,7 +553,7 @@ impl Engine {
         // engines would lazily re-parse the same parquet files on its first
         // query (~0.5s per engine on data-rich systems). Mode/policy, memo
         // caches, and the provenance accumulator stay per-engine.
-        let db = PerfDatabase::load_resolved_shared(
+        let db = PerfDatabase::load_resolved_shared_with_fpm(
             systems_root,
             &spec.engine.system_name,
             spec.engine.backend.as_str(),
@@ -552,6 +578,7 @@ impl Engine {
                 spec.engine.database_mode,
                 DatabaseMode::Empirical | DatabaseMode::Sol
             ) || spec.engine.tolerate_dirless_version,
+            spec.engine.fpm_parquet_path.as_deref(),
         )?
         .with_mode(spec.engine.database_mode, transfer_policy);
         Engine::build(spec, Arc::new(db))
@@ -2066,6 +2093,35 @@ impl Engine {
         let has_prefill = sched.sum_prefill_tokens > 0;
         let has_decode = sched.num_decode_requests > 0 || sched.sum_decode_kv_tokens > 0;
 
+        // The whole-forward rewrite retains the original stage graph in
+        // sol_ops. Apply the same replay restriction before its table lookup
+        // can return early. FPM v1 variance describes whole prompt lengths,
+        // not the current extends: even equal prompts can have different
+        // cached prefixes or previously completed chunks. Only one prefill
+        // request has identifiable (query, prefix) geometry in this input.
+        let replay_ops = self
+            .fpm_ops()
+            .map_or(self.context_ops.as_slice(), |(prefill, _)| {
+                prefill.sol_ops.as_slice()
+            });
+        if has_prefill
+            && replay_ops.iter().any(|op| {
+                matches!(op,
+                    Op::Dsv41Stage(stage) if stage.decoder_replay && stage.bounded)
+            })
+        {
+            if !sched.var_prefill_length.is_finite() || sched.var_prefill_length < 0.0 {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "V4.1 Decoder replay requires finite nonnegative prefill variance".into(),
+                ));
+            }
+            if sched.num_prefill_requests > 1 {
+                return Err(AicError::InvalidForwardPassMetrics(
+                    "V4.1 Decoder replay requires per-request extend lengths; FPM v1 aggregates with multiple prefill requests cannot identify the tails, even when prompt-length variance is zero".into(),
+                ));
+            }
+        }
+
         // FPM engines never enter the three-pass mix composition (its op-name
         // filters cannot see a whole-model op). Prefill-only and decode-only
         // dispatch through the same shared free fns as op-level (the FpmForward
@@ -2132,26 +2188,10 @@ impl Engine {
         }
 
         if self.has_dsv41_stages() {
-            if has_prefill
-                && sched.num_prefill_requests > 1
-                && self.context_ops.iter().any(|op| {
-                    matches!(op,
-                    Op::Dsv41Stage(stage) if stage.decoder_replay && stage.bounded)
-                })
-            {
-                return Err(AicError::InvalidForwardPassMetrics(
-                    "V4.1 Decoder replay requires per-request extend lengths; FPM v1 aggregates with multiple prefill requests cannot identify the tails, even when prompt-length variance is zero".into(),
-                ));
-            }
-            // FPM v1 variance measures complete prompt lengths, not this
-            // iteration's extends. Equal prompts can have different cached
-            // prefixes or completed chunks, so even zero variance cannot prove
-            // homogeneous tails. Bounded replay only accepts one prefill here;
-            // explicitly grouped static/mixed workloads keep their own paths.
             // Retain every scheduled token in balanced aggregate telemetry;
             // integer averages alone discard the remainder. FPM v1 does not
-            // carry individual extend lengths; this approximation is only used
-            // for multiple prefills when decoder replay does not bound them.
+            // carry individual extend lengths; multiple bounded-replay
+            // prefills were rejected before the whole-forward dispatch above.
             let mut prefills = Vec::new();
             if has_prefill {
                 let n = sched.num_prefill_requests;
@@ -2340,6 +2380,7 @@ mod tests {
             backend: BackendKind::Vllm,
             backend_version: Some("0.24.0".to_string()),
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
             kv_block_size: None,
             parallel: ParallelMapping {
@@ -2354,6 +2395,7 @@ mod tests {
                 weight_dtype: None,
                 moe_dtype: None,
                 activation_dtype: None,
+                fpm_fmha_dtype: None,
                 kv_cache_dtype: None,
             },
             speculative: nextn.map(|n| crate::SpeculativeConfig { nextn: Some(n) }),
@@ -3255,17 +3297,25 @@ mod tests {
     /// prefill], generation = [FpmForward decode], empty sol_ops (grid-exact
     /// queries never call SOL).
     fn build_fpm_engine(tmp: &std::path::Path, nextn: Option<u32>) -> Result<Engine, AicError> {
+        let spec = build_fpm_spec(tmp, nextn);
+        Engine::from_spec_bytes(&spec.to_bincode()?, tmp)
+    }
+
+    fn build_fpm_spec(tmp: &std::path::Path, nextn: Option<u32>) -> EngineSpec {
         use crate::perf_database::fpm_forward::tests::{
             default_identity, default_rows, write_pair,
         };
-        write_pair(tmp, &default_rows());
-        let mut db = PerfDatabase::load(&systems_root(), "b200_sxm", "vllm", "0.24.0").unwrap();
-        db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
-            tmp.to_path_buf(),
-            "b200_sxm",
-            "vllm",
-            "0.25.1",
-        ));
+        let parquet = write_pair(tmp, &default_rows());
+        std::fs::copy(
+            systems_root().join("b200_sxm.yaml"),
+            tmp.join("b200_sxm.yaml"),
+        )
+        .unwrap();
+        let mut config = fixture_engine_config(nextn);
+        config.backend_version = Some("0.25.1".into());
+        config.forward_model = Some("fpm".into());
+        config.fpm_parquet_path = Some(parquet);
+        config.systems_path = Some(tmp.to_path_buf());
         let fpm_op = |phase: FpmPhase| {
             Op::FpmForward(FpmForwardOp {
                 name: format!("fpm_forward_{}", phase.as_str()),
@@ -3274,15 +3324,59 @@ mod tests {
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
                 verify_width: 1,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })
         };
-        let spec = EngineSpec::new(
-            fixture_engine_config(nextn),
+        EngineSpec::new(
+            config,
             vec![fpm_op(FpmPhase::Prefill)],
             vec![fpm_op(FpmPhase::Decode)],
-        );
-        Engine::build(spec, Arc::new(db))
+        )
+    }
+
+    #[test]
+    fn external_fpm_engines_share_tables_without_backend_data() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = build_fpm_engine(tmp.path(), None).unwrap();
+        let second = build_fpm_engine(tmp.path(), None).unwrap();
+        assert!(!tmp.path().join("data").exists());
+        assert!(Arc::ptr_eq(
+            first.database().tables_arc(),
+            second.database().tables_arc()
+        ));
+    }
+
+    #[test]
+    fn external_fpm_rejects_invalid_specs_before_database_loading() {
+        let tmp = tempfile::tempdir().unwrap();
+        for path in ["", "/missing/reviewed-fpm.parquet"] {
+            let mut config = fixture_engine_config(None);
+            config.fpm_parquet_path = Some(path.into());
+            let spec = EngineSpec::new(config, context_ops(), generation_ops());
+            let err = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap_err();
+            assert!(matches!(err, AicError::InvalidEngineConfig(_)), "{err}");
+            assert!(err.to_string().contains("fpm_parquet_path"), "{err}");
+        }
+    }
+
+    #[test]
+    fn external_fpm_invalid_artifacts_fail_on_first_query() {
+        for missing_parquet in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let spec = build_fpm_spec(tmp.path(), None);
+            let path = spec.engine.fpm_parquet_path.as_ref().unwrap();
+            let expected = if missing_parquet {
+                std::fs::remove_file(path).unwrap();
+                "does not exist"
+            } else {
+                std::fs::write(path.with_extension("metadata.json"), "not JSON").unwrap();
+                "metadata"
+            };
+            let engine = Engine::from_spec_bytes(&spec.to_bincode().unwrap(), tmp.path()).unwrap();
+            let err = engine.predict_prefill_latency(1, 512, 0).unwrap_err();
+            assert!(err.to_string().contains(expected), "{err}");
+        }
     }
 
     #[test]
@@ -3301,6 +3395,7 @@ mod tests {
             match_identity: default_identity(4),
             weight_bytes: 0.0,
             verify_width: 1,
+            original_fmha_quant_mode: None,
             sol_ops: vec![],
         });
         let spec = EngineSpec::new(
@@ -3358,6 +3453,7 @@ mod tests {
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
                 verify_width: 1,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })
         };
@@ -3367,6 +3463,241 @@ mod tests {
             vec![fpm_op(FpmPhase::Decode)],
         );
         Engine::build(spec, Arc::new(db))
+    }
+
+    fn fpm_replay_guard_probe(tmp: &std::path::Path, replay: bool) -> Engine {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
+        let rows = [
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 2,
+                total_prefill_tokens: 511,
+                total_kv_read_tokens: 0,
+                latency_ms: 23.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 2,
+                total_prefill_tokens: 257,
+                total_kv_read_tokens: 513,
+                latency_ms: 31.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 2,
+                total_prefill_tokens: 1024,
+                total_kv_read_tokens: 1024,
+                latency_ms: 43.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "prefill",
+                batch_size: 1,
+                total_prefill_tokens: 129,
+                total_kv_read_tokens: 513,
+                latency_ms: 17.0,
+                ..RowSpec::default()
+            },
+            RowSpec {
+                workload_kind: "decode",
+                batch_size: 8,
+                total_prefill_tokens: 0,
+                total_kv_read_tokens: 4096,
+                latency_ms: 7.0,
+                ..RowSpec::default()
+            },
+        ];
+        let mut engine = build_fpm_engine_with_rows(tmp, &rows).unwrap();
+        let Op::FpmForward(prefill) = &mut engine.context_ops[0] else {
+            unreachable!()
+        };
+        // The real Python FPM rewrite retains the original V4.1 stage graph.
+        prefill.sol_ops = dsv41_probe_engine(replay).context_ops;
+        engine
+    }
+
+    fn fpm_replay_guard_metrics(variance: f64) -> ForwardPassMetrics {
+        ForwardPassMetrics {
+            scheduled_requests: crate::ScheduledRequestMetrics {
+                num_prefill_requests: 2,
+                sum_prefill_tokens: 511,
+                // Prompt-length variance does not identify current extends;
+                // these totals also address the balanced [256, 255] row.
+                var_prefill_length: variance,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_before_balanced_table_lookup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        for variance in [0.0, 16512.25, 0.25, -1.0, f64::NAN, f64::INFINITY] {
+            let result = engine.forward_pass_time_ms(&[fpm_replay_guard_metrics(variance)]);
+            assert!(
+                matches!(result, Err(AicError::InvalidForwardPassMetrics(_))),
+                "bounded replay variance {variance:?} must not query a balanced table: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_mixed_prefill_before_table_composition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.num_decode_requests = 8;
+        metrics.scheduled_requests.sum_decode_kv_tokens = 4096;
+        assert!(matches!(
+            engine.forward_pass_time_ms(&[metrics]),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+    }
+
+    #[test]
+    fn fpm_replay_guard_requires_a_bounded_stage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut engine = fpm_replay_guard_probe(tmp.path(), true);
+        let Op::FpmForward(prefill) = &mut engine.context_ops[0] else {
+            unreachable!()
+        };
+        for op in &mut prefill.sol_ops {
+            let Op::Dsv41Stage(stage) = op else {
+                unreachable!()
+            };
+            stage.bounded = false;
+        }
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(&[fpm_replay_guard_metrics(16512.25)])
+                .unwrap(),
+            23.0
+        );
+    }
+
+    #[test]
+    fn fpm_replay_guard_preserves_off_and_ordinary_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut engine = fpm_replay_guard_probe(tmp.path(), false);
+        let metrics = fpm_replay_guard_metrics(16512.25);
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            23.0
+        );
+        let Op::FpmForward(prefill) = &mut engine.context_ops[0] else {
+            unreachable!()
+        };
+        prefill.sol_ops.clear();
+        assert_eq!(engine.forward_pass_time_ms(&[metrics]).unwrap(), 23.0);
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_zero_variance_remainders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.sum_prefill_tokens = 257;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        assert!(matches!(
+            engine.forward_pass_time_ms(&[metrics]),
+            Err(AicError::InvalidForwardPassMetrics(_))
+        ));
+    }
+
+    #[test]
+    fn fpm_replay_guard_rejects_equal_prompt_heterogeneous_extends() {
+        // Both prompts have 1024 tokens, but their (new, prefix) pairs are
+        // (1, 1023) and (1023, 1). The bounded tails total 129 tokens, while
+        // the same aggregate addresses a balanced table cell with 256 tails.
+        let requests = [(1024, 1, 1023), (1024, 1023, 1)];
+        assert!(
+            requests
+                .iter()
+                .all(|&(prompt, query, prefix)| { prompt == 1024 && query + prefix == prompt })
+        );
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.sum_prefill_tokens = requests.iter().map(|r| r.1).sum();
+        metrics.scheduled_requests.sum_prefill_kv_tokens = requests.iter().map(|r| r.2).sum();
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        // Exercise both the whole-forward rewrite and direct stage engine.
+        for probe in [&engine, &dsv41_probe_engine(true)] {
+            let error = probe
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap_err();
+            assert!(matches!(error, AicError::InvalidForwardPassMetrics(_)));
+            assert!(error.to_string().contains("multiple prefill requests"));
+        }
+        // OFF still consumes exactly the table cell that ON must not borrow.
+        let off = fpm_replay_guard_probe(tmp.path(), false);
+        assert_eq!(off.forward_pass_time_ms(&[metrics]).unwrap(), 43.0);
+    }
+
+    #[test]
+    fn fpm_replay_guard_preserves_single_prefill_and_rejects_invalid_variance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(0.0);
+        metrics.scheduled_requests.num_prefill_requests = 1;
+        metrics.scheduled_requests.sum_prefill_tokens = 129;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        assert_eq!(
+            engine
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap(),
+            17.0
+        );
+        for variance in [-1.0, f64::NAN, f64::INFINITY] {
+            metrics.scheduled_requests.var_prefill_length = variance;
+            let error = engine
+                .forward_pass_time_ms(std::slice::from_ref(&metrics))
+                .unwrap_err();
+            assert!(matches!(error, AicError::InvalidForwardPassMetrics(_)));
+            assert!(error.to_string().contains("finite nonnegative"));
+        }
+    }
+
+    #[test]
+    fn fpm_replay_guard_preserves_explicit_static_geometry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        // Static input explicitly declares two identical (new, prefix)
+        // pairs. It is not the ambiguous FPM v1 telemetry entry point.
+        let mut input = runtime(2, 1024, 1);
+        input.prefix = 512;
+        assert_eq!(
+            engine
+                .run_static(&input, StaticMode::Context, 32)
+                .unwrap()
+                .context_ms,
+            43.0
+        );
+    }
+
+    #[test]
+    fn fpm_replay_guard_ignores_prefill_metadata_without_compute() {
+        let tmp = tempfile::tempdir().unwrap();
+        let engine = fpm_replay_guard_probe(tmp.path(), true);
+        let mut metrics = fpm_replay_guard_metrics(16512.25);
+        metrics.scheduled_requests.sum_prefill_tokens = 0;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 513;
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            0.0
+        );
+        metrics.scheduled_requests.num_decode_requests = 8;
+        metrics.scheduled_requests.sum_decode_kv_tokens = 4096;
+        assert_eq!(
+            engine.forward_pass_time_ms(&[metrics.clone()]).unwrap(),
+            7.0
+        );
+        metrics.scheduled_requests.num_prefill_requests = 0;
+        metrics.scheduled_requests.sum_prefill_kv_tokens = 0;
+        assert_eq!(engine.forward_pass_time_ms(&[metrics]).unwrap(), 7.0);
     }
 
     fn cliff_rows() -> Vec<crate::perf_database::fpm_forward::tests::RowSpec> {
@@ -3667,6 +3998,7 @@ mod tests {
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
                 verify_width: 1,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })],
             vec![],
@@ -3984,6 +4316,7 @@ mod tests {
             match_identity: default_identity(4),
             weight_bytes: 0.0,
             verify_width: 8,
+            original_fmha_quant_mode: None,
             sol_ops: vec![],
         };
         // 8 requests x width 8 arrive as batch = 8 widened tokens with ...
@@ -4029,6 +4362,7 @@ mod tests {
                 match_identity: default_identity(4),
                 weight_bytes: 0.0,
                 verify_width: width,
+                original_fmha_quant_mode: None,
                 sol_ops: vec![],
             })
         };

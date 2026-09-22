@@ -507,6 +507,7 @@ mod tests {
                 backend: BackendKind::Vllm,
                 backend_version: Some("test-version".to_string()),
                 forward_model: None,
+                fpm_parquet_path: None,
                 decoder_replay: false,
                 kv_block_size: None,
                 parallel: ParallelMapping {
@@ -521,6 +522,7 @@ mod tests {
                     weight_dtype: None,
                     moe_dtype: None,
                     activation_dtype: None,
+                    fpm_fmha_dtype: None,
                     kv_cache_dtype: None,
                 },
                 speculative: None,

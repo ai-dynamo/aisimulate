@@ -12,9 +12,31 @@
 //! root, so `crate::EngineConfig`, `crate::BackendKind`, ... resolve unchanged.
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// Validate an explicit FPM input before loading data or entering Python.
+pub(crate) fn validate_fpm_parquet_path(
+    path: Option<&Path>,
+    is_fpm: bool,
+) -> Result<Option<&str>, crate::AicError> {
+    let Some(path) = path else { return Ok(None) };
+    let path = path.to_str().ok_or_else(|| {
+        crate::AicError::InvalidEngineConfig("fpm_parquet_path must be valid UTF-8".into())
+    })?;
+    if path.is_empty() {
+        return Err(crate::AicError::InvalidEngineConfig(
+            "fpm_parquet_path cannot be empty".into(),
+        ));
+    }
+    if !is_fpm {
+        return Err(crate::AicError::InvalidEngineConfig(
+            "fpm_parquet_path requires forward_model='fpm' with exactly one FpmForward op per phase".into(),
+        ));
+    }
+    Ok(Some(path))
+}
 
 pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // bincode op payloads are positional, so a producer/consumer skew is only
@@ -83,11 +105,14 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
 //   separating physical backend KV payload from attention arithmetic precision.
 //   Its appended enum changes positional bincode layout; old JSON defaults only.
-// - 20 (SGLang VL host loop): `EngineSpec` gained the optional `vision`
+// - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
+//   for selector diagnostics. This appends a positional field after the schema-19
+//   release; serde defaults support legacy JSON, not legacy bincode.
+// - 21 (SGLang VL host loop): `EngineSpec` gained the optional `vision`
 //   section (encoder parallelism plus the tower's ops grouped by the token
 //   count they run on), appended to the bincode wire so a VL estimator can
 //   price encoder calls through the canonical model.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 20;
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 21;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -121,6 +146,12 @@ pub struct EngineConfig {
     /// predictor API (additive-optional: absent in older payloads).
     #[serde(default)]
     pub forward_model: Option<String>,
+
+    /// Optional external FPM parquet used when `forward_model == "fpm"`.
+    /// The required metadata sidecar is resolved by replacing the parquet
+    /// extension with `.metadata.json`.
+    #[serde(default)]
+    pub fpm_parquet_path: Option<PathBuf>,
 
     /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
     #[serde(default)]
@@ -230,6 +261,9 @@ pub struct QuantizationConfig {
     #[serde(default)]
     pub moe_dtype: Option<DataType>,
     pub activation_dtype: Option<DataType>,
+    /// FPM cell selector only; does not override model arithmetic or memory.
+    #[serde(default)]
+    pub fpm_fmha_dtype: Option<DataType>,
     pub kv_cache_dtype: Option<DataType>,
 }
 

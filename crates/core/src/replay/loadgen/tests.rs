@@ -328,6 +328,119 @@ fn compatible_agentic_loader_preserves_legacy_rows_and_independent_plays() {
 }
 
 #[test]
+fn legacy_snapshot_preserves_recorded_starts_without_adding_execution_gates() {
+    for timestamp_field in ["timestamp", "created_time"] {
+        let mut root = serde_json::json!({
+            "request_id": "z-root", "input_length": 4,
+            "output_length": 1, "hash_ids": [1]
+        });
+        let mut child = serde_json::json!({
+            "request_id": "a-child", "wait_for": ["z-root"], "delay_ms": 25.0,
+            "input_length": 4, "output_length": 1, "hash_ids": [1]
+        });
+        root[timestamp_field] = 1000.0.into();
+        child[timestamp_field] = 2000.0.into();
+        let file = write_trace(&[root, child]);
+        let graph = load_agentic_mooncake(file.path(), 4).unwrap();
+        // Canonical sorting reverses input order; provenance must follow IDs.
+        assert_eq!(graph.nodes()[0].request_id(), "a-child");
+        assert_eq!(graph.nodes()[0].not_before_ms(), 0.0);
+        assert_eq!(graph.nodes()[1].not_before_ms(), 1000.0);
+        let mut cold = WorkloadDriver::new_agentic_trace(graph.clone(), 4).unwrap();
+        for (id, at_ms) in [("z-root", 1000.0), ("a-child", 1035.0)] {
+            assert_eq!(cold.next_ready_time_ms(), Some(at_ms));
+            let ready = cold.pop_ready(at_ms, 1).pop().unwrap();
+            assert_eq!(ready.authored_request_id.as_deref(), Some(id));
+            cold.on_complete(ready.request_uuid, at_ms + 10.0).unwrap();
+        }
+        assert!(cold.is_drained());
+
+        let prepared = graph
+            .prepare_snapshots(1, AgenticSnapshotOptions { seed: 0 })
+            .unwrap();
+        let snapshot = &prepared.snapshots()[0];
+        assert!((1250.0..1750.0).contains(&snapshot.t_star_ms));
+        assert_eq!(snapshot.recorded_start_ms, 1000.0);
+        assert_eq!(snapshot.recorded_last_start_ms, 2000.0);
+        assert_eq!(snapshot.requests[0].recorded_start_ms, 2000.0);
+        assert!(!snapshot.requests[0].historical);
+        assert_eq!(snapshot.requests[1].recorded_start_ms, 1000.0);
+        assert!(snapshot.requests[1].historical);
+        assert!(
+            snapshot
+                .requests
+                .iter()
+                .all(|r| r.recorded_end_ms.is_none())
+        );
+        assert_eq!(snapshot.primers[0].source_request_id, "z-root");
+        let mut suffix = WorkloadDriver::new_agentic_snapshots(prepared, 4, true, 1.0).unwrap();
+        assert_eq!(suffix.total_turns(), 1);
+        assert_eq!(suffix.next_ready_time_ms(), Some(0.0));
+        let ready = suffix.pop_ready(0.0, 1).pop().unwrap();
+        assert_eq!(ready.authored_request_id.as_deref(), Some("a-child"));
+        suffix.on_complete(ready.request_uuid, 10.0).unwrap();
+        assert!(suffix.is_drained());
+
+        let mut without_provenance = graph.clone();
+        for node in &mut without_provenance.nodes {
+            node.recorded_interval_ms = None;
+        }
+        assert_eq!(
+            serde_json::to_value(graph.nodes()).unwrap(),
+            serde_json::to_value(without_provenance.nodes()).unwrap()
+        );
+        assert_eq!(
+            graph.speed_up_timing(1.0).unwrap().identity(),
+            without_provenance.speed_up_timing(1.0).unwrap().identity()
+        );
+    }
+}
+
+#[test]
+fn legacy_snapshot_retains_missing_times_and_rejects_invalid_recorded_starts() {
+    for timestamp in [None, Some(-1.0)] {
+        let root = serde_json::json!({
+            "request_id": "root", "input_length": 4,
+            "output_length": 1, "hash_ids": [1]
+        });
+        let mut child = serde_json::json!({
+            "request_id": "child", "wait_for": ["root"],
+            "input_length": 4, "output_length": 1, "hash_ids": [1]
+        });
+        if let Some(timestamp) = timestamp {
+            child["timestamp"] = timestamp.into();
+        }
+        let file = write_trace(&[root, child]);
+        let graph = load_agentic_mooncake(file.path(), 4).unwrap();
+        assert!(graph.nodes().iter().all(|node| node.not_before_ms() == 0.0));
+        let mut cold = WorkloadDriver::new_agentic_trace(graph.clone(), 4).unwrap();
+        for now_ms in [0.0, 10.0] {
+            let ready = cold.pop_ready(now_ms, 1).pop().unwrap();
+            cold.on_complete(ready.request_uuid, now_ms + 10.0).unwrap();
+        }
+        assert!(cold.is_drained());
+        let prepared = graph.prepare_snapshots(1, AgenticSnapshotOptions { seed: 0 });
+        if timestamp.is_some() {
+            assert!(
+                prepared
+                    .unwrap_err()
+                    .to_string()
+                    .contains("recorded API interval overflow or invalid interval")
+            );
+        } else {
+            let prepared = prepared.unwrap();
+            let snapshot = &prepared.snapshots()[0];
+            assert_eq!(snapshot.t_star_ms, 0.0);
+            assert!(snapshot.requests.iter().all(|request| {
+                request.recorded_start_ms == 0.0
+                    && request.recorded_end_ms.is_none()
+                    && !request.historical
+            }));
+        }
+    }
+}
+
+#[test]
 fn compatible_agentic_loader_lowers_multi_root_join_to_one_typed_play() {
     let file = write_trace(&[
         serde_json::json!({

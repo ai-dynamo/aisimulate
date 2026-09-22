@@ -1,0 +1,34 @@
+#!/bin/bash
+{#
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+#}
+#SBATCH --job-name={{ cfg.job_name }}-{{ operation }}
+#SBATCH --account={{ cfg.account }}
+#SBATCH --partition={{ cfg.partition }}
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:{{ gpus }}
+#SBATCH --cpus-per-task={{ cfg.cpus_per_task }}
+#SBATCH --mem={{ cfg.memory }}
+#SBATCH --time={{ cfg.time }}
+#SBATCH --no-requeue
+#SBATCH --signal=B:TERM@30
+
+set -euo pipefail
+cd "${SLURM_SUBMIT_DIR:?Submit from the generated bundle directory}"
+source ./environment.sh
+bundle_dir=$PWD
+scontrol show job "${SLURM_JOB_ID}" > "allocation-${SLURM_JOB_ID}.txt"
+export ENROOT_CACHE_PATH="$bundle_dir/enroot/cache"
+export ENROOT_DATA_PATH="$bundle_dir/enroot/data"
+export ENROOT_TEMP_PATH="$bundle_dir/enroot/tmp"
+mkdir -p "$ENROOT_CACHE_PATH" "$ENROOT_DATA_PATH" "$ENROOT_TEMP_PATH"
+mounts="$bundle_dir:/work${AIC_SLURM_MOUNTS:+,$AIC_SLURM_MOUNTS}"
+srun --ntasks=1 --gpus-per-task={{ gpus }} --kill-on-bad-exit=1 \
+    --container-image="$AIC_SLURM_IMAGE" --container-mounts="$mounts" \
+    --container-workdir=/work --no-container-mount-home --no-container-entrypoint \
+    python3 /work/slurm_runtime.py {{ operation }} &
+step_pid=$!
+trap 'kill -TERM "$step_pid" 2>/dev/null || true; wait "$step_pid" || true' TERM INT
+wait "$step_pid"

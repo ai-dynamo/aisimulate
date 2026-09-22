@@ -28,7 +28,7 @@ pub use common::speculative::normalize_conditional_accept_rates;
 pub use config::{
     Backend, CostFn, EngineConfig, FrontendConfig, FrontendResource, FrontendStage,
     G3OffloadConfig, G3Scope, NativeHostOffloadConfig, PreemptionMode, SglangConfig,
-    SglangSchedulePolicy, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
+    SglangSchedulePolicy, StateCacheConfig, TrtllmCapacityPolicy, TrtllmConfig, WorkerType,
 };
 pub use g3_offload::{G3IoStats, G3Stats};
 pub use handoff::{HandoffId, HandoffTransferTiming, TransferTimingMode, prefill_handoff_delay_ms};

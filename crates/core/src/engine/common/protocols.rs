@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use crate::engine::common::hashing::Token;
 use crate::engine::common::perf_model::PerfModel;
-use crate::engine::config::NativeHostOffloadConfig;
+use crate::engine::config::{NativeHostOffloadConfig, StateCacheConfig};
 use crate::engine::{FrontendConfig, ImageSpec, KvEvent};
 
 /// Sink for neutral KV-cache events emitted by a rank.
@@ -217,6 +217,8 @@ pub(crate) struct MockEngineArgs {
     pub kv_cache_bytes_per_token: Option<usize>,
     #[builder(default = "None")]
     pub native_host_offload: Option<NativeHostOffloadConfig>,
+    #[builder(default = "None")]
+    pub state_cache: Option<StateCacheConfig>,
     #[builder(default = "None")]
     pub kv_transfer_bandwidth: Option<f64>,
     #[builder(default = "KvTransferTimingMode::FullPrompt")]

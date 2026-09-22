@@ -3,6 +3,7 @@
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use rand::SeedableRng;
@@ -11,13 +12,17 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::phase::{AgenticPhaseEvidence, AgenticPreparation, AgenticPreparationTransition};
 use super::trace::{synthesize_validated_trace_tokens, validate_synthesizable_prompt};
 use super::types::{
     AgenticDependencyRelation, AgenticDependencyTrigger, AgenticGraphIdentity, AgenticPlayOutcome,
     AgenticPlayStatus, AgenticTrace, AgenticTrajectorySnapshot, CompactReadyTurn, ReadyTurn,
     ReplayRequestHashes, ReplayRequestPayload, Trace,
 };
-use super::{SYNTHETIC_OUTPUT_SEED, planned_output_token_ids};
+use super::{
+    AgenticPlay, AgenticReplayContext, AgenticSnapshotEvidence, PreparedAgenticSnapshots,
+    SYNTHETIC_OUTPUT_SEED, planned_output_token_ids,
+};
 use crate::engine::ImageSpec;
 use crate::engine::belady::{SequenceHash, input_sequence_hashes};
 use crate::replay::ReplayTerminalStatus;
@@ -271,6 +276,27 @@ impl PromptTokens {
             Self::Materialized(tokens) => tokens,
         }
     }
+}
+
+pub(super) fn deferred_request_with_hashes(
+    metadata: DirectRequest,
+    input_length: usize,
+    hash_ids: Vec<u32>,
+    trace_block_size: usize,
+    engine_block_size: Option<u32>,
+) -> (ReplayRequestPayload, Option<ReplayRequestHashes>) {
+    let request =
+        ReplayRequestPayload::deferred(metadata, input_length, hash_ids, trace_block_size);
+    // The router needs engine-block hashes at arrival, but it does not need to
+    // retain the expanded prompt. Materialize transiently for hashing, then
+    // keep only the compact payload until worker admission.
+    // TODO: Derive engine-block hashes directly from compact trace blocks so
+    // immediate dispatch does not materialize once for routing and again for
+    // admission. Preserve `ReplayRequestHashes::from_tokens` semantics when
+    // trace and engine block sizes differ.
+    let replay_hashes = engine_block_size
+        .map(|block_size| ReplayRequestHashes::from_tokens(&request.prompt_tokens(), block_size));
+    (request, replay_hashes)
 }
 
 #[derive(Debug)]
@@ -774,6 +800,9 @@ pub struct WorkloadDriver {
     engine_block_size: u32,
     include_replay_hashes: bool,
     agentic_graph_identity: Option<AgenticGraphIdentity>,
+    agentic_replay_context: Option<Arc<AgenticReplayContext>>,
+    agentic_snapshots: Option<Vec<AgenticSnapshotEvidence>>,
+    agentic_preparation: Option<AgenticPreparation>,
     sessions: Vec<SessionRuntime>,
     in_flight: FxHashMap<Uuid, InFlightTurn>,
     agentic_settling: FxHashMap<Uuid, usize>,
@@ -781,6 +810,256 @@ pub struct WorkloadDriver {
 }
 
 impl WorkloadDriver {
+    /// Warm full snapshot prefixes without advancing the saved request graph.
+    /// Each lane runs its primers then ten one-output-token prefix requests.
+    /// The runtime must call [`Self::finish_agentic_preparation`] at its settled
+    /// timestamp boundary before admitting any profiling work.
+    pub fn new_agentic_warmup(
+        prepared: PreparedAgenticSnapshots,
+        engine_block_size: usize,
+        include_replay_hashes: bool,
+        speedup: f64,
+    ) -> Result<Self> {
+        let preparation = AgenticPreparation::new(
+            &prepared,
+            u32::try_from(engine_block_size).context("engine block size exceeds u32")?,
+            include_replay_hashes,
+        )?;
+        let mut driver = Self::new_agentic_snapshots(
+            prepared,
+            engine_block_size,
+            include_replay_hashes,
+            speedup,
+        )?;
+        driver.agentic_preparation = Some(preparation);
+        Ok(driver)
+    }
+
+    pub fn is_agentic_preparing(&self) -> bool {
+        self.agentic_preparation
+            .as_ref()
+            .is_some_and(|phase| phase.transition().is_none())
+    }
+
+    pub fn knows_preparation_request(&self, uuid: Uuid) -> bool {
+        self.agentic_preparation
+            .as_ref()
+            .is_some_and(|phase| phase.contains(uuid))
+    }
+
+    pub fn agentic_phase_evidence(&self) -> Option<AgenticPhaseEvidence> {
+        self.agentic_preparation
+            .as_ref()
+            .map(AgenticPreparation::evidence)
+    }
+
+    pub fn preparation_request_ids(&self) -> Vec<Uuid> {
+        self.agentic_preparation
+            .as_ref()
+            .map(AgenticPreparation::dispatched_ids)
+            .unwrap_or_default()
+    }
+
+    pub fn record_preparation_admission(
+        &mut self,
+        uuid: Uuid,
+        at_ms: f64,
+        reused_input_tokens: usize,
+    ) -> Result<()> {
+        self.agentic_preparation
+            .as_mut()
+            .context("driver has no agentic preparation")?
+            .record_admission(uuid, at_ms, reused_input_tokens)
+    }
+
+    /// Open profiling only after all preparation requests succeed and settle,
+    /// or finish an aborted preparation after its submitted server work drains.
+    /// This does not change the saved graph's frontier or dependency delays.
+    pub fn finish_agentic_preparation(
+        &mut self,
+        now_ms: f64,
+    ) -> Result<Option<AgenticPreparationTransition>> {
+        self.finish_agentic_preparation_with(now_ms, || Ok(()))
+    }
+
+    /// Validate the boundary before resetting native measurement state, then
+    /// commit the phase transition only if that reset succeeded.
+    pub(crate) fn finish_agentic_preparation_with(
+        &mut self,
+        now_ms: f64,
+        reset_measurements: impl FnOnce() -> Result<()>,
+    ) -> Result<Option<AgenticPreparationTransition>> {
+        let Some(preparation) = &self.agentic_preparation else {
+            return Ok(None);
+        };
+        let Some(transition) = preparation.ready_transition(now_ms)? else {
+            return Ok(None);
+        };
+        if let SchedulingPolicy::Agentic(state) = &self.policy
+            && state
+                .last_runtime_feedback_at_ms
+                .is_some_and(|last| now_ms < last)
+        {
+            bail!("agentic preparation boundary precedes runtime feedback");
+        }
+        if transition == AgenticPreparationTransition::OpenProfile {
+            let SchedulingPolicy::Agentic(state) = &self.policy else {
+                unreachable!()
+            };
+            // Validate every addition before changing any scheduler state.
+            if state
+                .ready_after_ms
+                .iter()
+                .any(|at| !(at + now_ms).is_finite())
+                || self
+                    .sessions
+                    .iter()
+                    .filter_map(|session| session.next_ready_at_ms)
+                    .any(|at| !(at + now_ms).is_finite())
+                || self
+                    .ready_sessions
+                    .iter()
+                    .any(|ready| !(ready.ready_at_ms + now_ms).is_finite())
+            {
+                bail!("agentic profile activation overflows saved snapshot timing");
+            }
+        }
+        reset_measurements()?;
+        if transition == AgenticPreparationTransition::OpenProfile {
+            let SchedulingPolicy::Agentic(state) = &mut self.policy else {
+                unreachable!()
+            };
+            for at in &mut state.ready_after_ms {
+                *at += now_ms;
+            }
+            for session in &mut self.sessions {
+                if let Some(at) = &mut session.next_ready_at_ms {
+                    *at += now_ms;
+                }
+            }
+            self.ready_sessions = std::mem::take(&mut self.ready_sessions)
+                .into_iter()
+                .map(|mut ready| {
+                    ready.ready_at_ms += now_ms;
+                    ready
+                })
+                .collect();
+            for play in &mut state.plays {
+                play.root_dispatch_ms = Some(now_ms);
+            }
+        }
+        self.agentic_preparation
+            .as_mut()
+            .unwrap()
+            .finish(transition, now_ms);
+        Ok(Some(transition))
+    }
+
+    /// Execute the retained request suffix with a cold runtime. This consumes
+    /// prepared logical state; it does not execute primers or restore native KV.
+    /// Source history was compiled before this view and is never submitted.
+    pub fn new_agentic_snapshots(
+        prepared: PreparedAgenticSnapshots,
+        engine_block_size: usize,
+        include_replay_hashes: bool,
+        speedup: f64,
+    ) -> Result<Self> {
+        if !speedup.is_finite() || speedup <= 0.0 {
+            bail!("snapshot speedup must be finite and greater than zero");
+        }
+        let context = Arc::clone(&prepared.context);
+        let mut view = AgenticTrace {
+            block_size: context.graph.block_size,
+            source: context.graph.source.clone(),
+            graph_digest: context.graph.graph_digest.clone(),
+            nodes: Vec::new(),
+            plays: Vec::new(),
+        };
+        let mut source_nodes = Vec::new();
+        for (cohort_index, snapshot) in prepared.plays.iter().enumerate() {
+            let mut nodes = Vec::new();
+            let mut root_nodes = Vec::new();
+            for request in &snapshot.evidence.requests {
+                if request.historical {
+                    continue;
+                }
+                let source_index = snapshot.source_index(&request.source_request_id)?;
+                let mut node = context.graph.nodes[source_index].clone();
+                node.request_id = request.identity.request_id.clone();
+                node.play_id = snapshot.evidence.play_id.clone();
+                node.source_play_ordinal = Some(cohort_index);
+                node.session_id = request.identity.conversation_id.clone();
+                node.not_before_ms = request.remaining_delay_ms / speedup;
+                node.dependencies.retain(|edge| {
+                    request
+                        .pending_dependencies
+                        .contains(&snapshot.instance_request_id(&edge.request_id))
+                });
+                for edge in &mut node.dependencies {
+                    edge.request_id = snapshot.instance_request_id(&edge.request_id);
+                    edge.delay_ms /= speedup;
+                }
+                if !node.not_before_ms.is_finite()
+                    || node.dependencies.iter().any(|e| !e.delay_ms.is_finite())
+                {
+                    bail!("snapshot speedup overflows replay timing");
+                }
+                let index = view.nodes.len();
+                if node.dependencies.is_empty() {
+                    root_nodes.push(index);
+                }
+                nodes.push(index);
+                view.nodes.push(node);
+                source_nodes.push((cohort_index, source_index));
+            }
+            if nodes.is_empty() || root_nodes.is_empty() {
+                bail!("snapshot has no executable request frontier");
+            }
+            view.plays.push(AgenticPlay {
+                play_id: snapshot.evidence.play_id.clone(),
+                source_play_ordinal: Some(cohort_index),
+                nodes,
+                root_nodes,
+            });
+        }
+        // The existing executor compiles the retained dependency structure. Its
+        // temporary numbering is replaced by the full prepared context below.
+        // No lane activation may renormalize the restored initial timers.
+        let mut driver = Self::new_agentic_trace_with_options(
+            view,
+            engine_block_size,
+            include_replay_hashes,
+            None,
+        )?;
+        let SchedulingPolicy::Agentic(state) = &mut driver.policy else {
+            unreachable!()
+        };
+        for (index, (cohort, source_index)) in source_nodes.into_iter().enumerate() {
+            let snapshot = &prepared.plays[cohort];
+            let source = &context.graph.nodes[source_index];
+            let turn = &mut driver.sessions[index].turns[0];
+            turn.prompt_tokens = PromptTokens::deferred(
+                source.input_length,
+                snapshot.token_ids(source_index)?,
+                context.graph.block_size,
+            )?;
+            turn.output_token_ids = Some(context.outputs[source_index].clone());
+            turn.deterministic_request_id = Some(snapshot.request_uuid(source_index)?);
+            // Keep authored correlation separate from incarnation identity.
+            turn.request_id = Some(source.request_id.clone());
+            state.identities[index] = snapshot.identity_at(source_index);
+        }
+        for play in &mut state.plays {
+            // Suffix duration is anchored at activation, even for a rootless
+            // background frontier. No historical dispatch event is fabricated.
+            play.root_dispatch_ms = Some(0.0);
+        }
+        driver.agentic_graph_identity = Some(context.graph.identity());
+        driver.agentic_snapshots = Some(prepared.snapshots().to_vec());
+        driver.agentic_replay_context = Some(context);
+        Ok(driver)
+    }
+
     pub fn is_agentic(&self) -> bool {
         matches!(self.policy, SchedulingPolicy::Agentic(_))
     }
@@ -1132,6 +1411,9 @@ impl WorkloadDriver {
             engine_block_size: engine_block_size_u32,
             include_replay_hashes,
             agentic_graph_identity: Some(agentic_graph_identity),
+            agentic_replay_context: None,
+            agentic_snapshots: None,
+            agentic_preparation: None,
             sessions,
             in_flight: FxHashMap::default(),
             agentic_settling: FxHashMap::default(),
@@ -1243,6 +1525,9 @@ impl WorkloadDriver {
             engine_block_size: engine_block_size_u32,
             include_replay_hashes,
             agentic_graph_identity: None,
+            agentic_replay_context: None,
+            agentic_snapshots: None,
+            agentic_preparation: None,
             sessions,
             in_flight: FxHashMap::default(),
             agentic_settling: FxHashMap::default(),
@@ -1262,6 +1547,11 @@ impl WorkloadDriver {
     }
 
     pub(crate) fn set_deterministic_request_ids(&mut self, first_id: u128) {
+        // Prepared UUIDs address the complete play, including omitted history.
+        // Canonical replay must not renumber the retained suffix or a new play.
+        if self.agentic_replay_context.is_some() {
+            return;
+        }
         let mut next_id = first_id;
         for session in &mut self.sessions {
             for turn in &mut session.turns {
@@ -1368,6 +1658,10 @@ impl WorkloadDriver {
     /// deadlocking: `pop_ready` skips sessions with `in_flight.is_some()`, so a
     /// leaked session would leave `is_drained` stuck at `false` forever.
     pub fn release_cap_slot(&mut self, request_uuid: Uuid, now_ms: f64) {
+        if self.knows_preparation_request(request_uuid) {
+            let _ = self.on_terminal(request_uuid, now_ms, ReplayTerminalStatus::Canceled);
+            return;
+        }
         let Ok(Some(resolution)) = self.resolve_turn(request_uuid, now_ms, TurnOutcome::Cancelled)
         else {
             return;
@@ -1384,6 +1678,13 @@ impl WorkloadDriver {
 
     #[doc(hidden)]
     pub fn pop_ready_compact(&mut self, now_ms: f64, limit: usize) -> Vec<CompactReadyTurn> {
+        if let Some(preparation) = &mut self.agentic_preparation {
+            match preparation.transition() {
+                None => return preparation.pop_ready(now_ms, limit, self.emit_session_metadata),
+                Some(AgenticPreparationTransition::Aborted) => return Vec::new(),
+                Some(AgenticPreparationTransition::OpenProfile) => {}
+            }
+        }
         let effective_limit = self.policy.dispatch_limit(limit, self.in_flight.len());
         if effective_limit == 0 {
             return Vec::new();
@@ -1455,26 +1756,13 @@ impl WorkloadDriver {
                         replay_context: replay_context.clone(),
                         images: turn.images.clone(),
                     };
-                    let request = ReplayRequestPayload::deferred(
+                    deferred_request_with_hashes(
                         request_metadata,
                         input_length,
                         hash_ids,
                         self.trace_block_size,
-                    );
-                    // The router needs engine-block hashes at arrival, but it
-                    // does not need to retain the expanded prompt. Materialize
-                    // once transiently for hashing, then keep only the compact
-                    // payload until a worker admission.
-                    // TODO: Derive engine-block hashes directly from the compact
-                    // trace blocks so immediate dispatch does not materialize
-                    // the prompt once for routing and again for admission.
-                    // Preserve `ReplayRequestHashes::from_tokens` semantics when
-                    // trace and engine block sizes differ.
-                    let replay_hashes = self.include_replay_hashes.then(|| {
-                        let request_tokens = request.prompt_tokens();
-                        ReplayRequestHashes::from_tokens(&request_tokens, self.engine_block_size)
-                    });
-                    (request, replay_hashes)
+                        self.include_replay_hashes.then_some(self.engine_block_size),
+                    )
                 }
                 PromptMode::DeltaCumulative => {
                     session
@@ -1539,6 +1827,13 @@ impl WorkloadDriver {
     }
 
     pub fn on_output_token(&mut self, request_uuid: Uuid, token_id: u32) -> Result<()> {
+        if self.knows_preparation_request(request_uuid) {
+            return self
+                .agentic_preparation
+                .as_mut()
+                .unwrap()
+                .on_output(request_uuid);
+        }
         if self.prompt_mode == PromptMode::Full {
             return Ok(());
         }
@@ -1581,6 +1876,17 @@ impl WorkloadDriver {
     }
 
     fn agentic_node_ordinal(&self, request_uuid: Uuid) -> Result<usize> {
+        if let Some(ordinal) = self
+            .agentic_preparation
+            .as_ref()
+            .and_then(|phase| phase.ordinal(request_uuid))
+        {
+            return self
+                .sessions
+                .len()
+                .checked_add(ordinal)
+                .context("agentic feedback ordinal overflow");
+        }
         self.in_flight
             .get(&request_uuid)
             .map(|turn| turn.session_index)
@@ -1615,6 +1921,10 @@ impl WorkloadDriver {
                 "agentic runtime feedback timestamp regressed from {last_at_ms} ms to {} ms",
                 feedback.at_ms
             );
+        }
+
+        if let Some(preparation) = &self.agentic_preparation {
+            preparation.validate_feedback(&feedback)?;
         }
 
         let ordinal_by_uuid = feedback
@@ -1675,6 +1985,9 @@ impl WorkloadDriver {
         debug_assert_eq!(self.prompt_mode, PromptMode::Full);
         let mut becoming_terminal = FxHashSet::default();
         for terminal in &feedback.causal_terminals {
+            if self.knows_preparation_request(terminal.request_uuid) {
+                continue;
+            }
             let outcome = match terminal.status {
                 ReplayTerminalStatus::Completed => TurnOutcome::Completed,
                 ReplayTerminalStatus::Rejected => TurnOutcome::Rejected,
@@ -1694,6 +2007,9 @@ impl WorkloadDriver {
             becoming_terminal.insert(terminal.request_uuid);
         }
         for request_uuid in &feedback.quiescent_requests {
+            if self.knows_preparation_request(*request_uuid) {
+                continue;
+            }
             if !self.agentic_settling.contains_key(request_uuid)
                 && !becoming_terminal.contains(request_uuid)
             {
@@ -1747,6 +2063,13 @@ impl WorkloadDriver {
         now_ms: f64,
         status: ReplayTerminalStatus,
     ) -> Result<()> {
+        if self.knows_preparation_request(request_uuid) {
+            return self.agentic_preparation.as_mut().unwrap().on_terminal(
+                request_uuid,
+                now_ms,
+                status,
+            );
+        }
         let outcome = match status {
             ReplayTerminalStatus::Completed => TurnOutcome::Completed,
             ReplayTerminalStatus::Rejected => TurnOutcome::Rejected,
@@ -1775,6 +2098,13 @@ impl WorkloadDriver {
 
     /// Mark an already-terminal agentic request free of runtime-owned state.
     pub fn on_quiescent(&mut self, request_uuid: Uuid, now_ms: f64) -> Result<()> {
+        if self.knows_preparation_request(request_uuid) {
+            return self
+                .agentic_preparation
+                .as_mut()
+                .unwrap()
+                .on_quiescent(request_uuid, now_ms);
+        }
         let SchedulingPolicy::Agentic(state) = &mut self.policy else {
             return Ok(());
         };
@@ -1926,6 +2256,13 @@ impl WorkloadDriver {
     }
 
     pub fn next_ready_time_ms(&mut self) -> Option<f64> {
+        if let Some(preparation) = &self.agentic_preparation {
+            match preparation.transition() {
+                None => return preparation.next_ready_time_ms(),
+                Some(AgenticPreparationTransition::Aborted) => return None,
+                Some(AgenticPreparationTransition::OpenProfile) => {}
+            }
+        }
         if self.policy.at_dispatch_capacity(self.in_flight.len()) {
             return None;
         }
@@ -1944,6 +2281,13 @@ impl WorkloadDriver {
     }
 
     pub fn is_drained(&self) -> bool {
+        if let Some(preparation) = &self.agentic_preparation {
+            match preparation.transition() {
+                None => return false,
+                Some(AgenticPreparationTransition::Aborted) => return true,
+                Some(AgenticPreparationTransition::OpenProfile) => {}
+            }
+        }
         self.in_flight.is_empty()
             && self.agentic_settling.is_empty()
             // Failed plays can leave queued entries for skipped nodes. Only a
@@ -1974,6 +2318,14 @@ impl WorkloadDriver {
 
     pub fn agentic_graph_identity(&self) -> Option<AgenticGraphIdentity> {
         self.agentic_graph_identity.clone()
+    }
+
+    pub fn agentic_snapshot_evidence(&self) -> Option<&[AgenticSnapshotEvidence]> {
+        self.agentic_snapshots.as_deref()
+    }
+
+    pub fn agentic_replay_context(&self) -> Option<&Arc<AgenticReplayContext>> {
+        self.agentic_replay_context.as_ref()
     }
 
     pub fn agentic_play_outcomes(&self) -> Option<Vec<AgenticPlayOutcome>> {
@@ -2334,16 +2686,24 @@ mod tests {
 
     #[test]
     fn compact_dispatch_does_not_retain_materialized_prompt() {
-        let mut driver = WorkloadDriver::new_trace(two_session_trace(), 1).unwrap();
+        for include_hashes in [false, true] {
+            let mut driver = if include_hashes {
+                WorkloadDriver::new_trace(two_session_trace(), 1)
+            } else {
+                WorkloadDriver::new_trace_without_replay_hashes(two_session_trace(), 1, false)
+            }
+            .unwrap();
+            let mut ready = driver.pop_ready_compact(0.0, 1);
 
-        let mut ready = driver.pop_ready_compact(0.0, 1);
-
-        assert_eq!(ready.len(), 1);
-        let request = ready.pop().expect("one compact request").request;
-        assert_eq!(request.input_length(), 2);
-        assert!(request.metadata().tokens.is_empty());
-        assert!(request.materialized_tokens().is_none());
-        assert_eq!(request.into_direct_request().tokens, vec![1, 2]);
+            assert_eq!(ready.len(), 1);
+            let ready = ready.pop().expect("one compact request");
+            assert_eq!(ready.replay_hashes.is_some(), include_hashes);
+            let request = ready.request;
+            assert_eq!(request.input_length(), 2);
+            assert!(request.metadata().tokens.is_empty());
+            assert!(request.materialized_tokens().is_none());
+            assert_eq!(request.into_direct_request().tokens, vec![1, 2]);
+        }
     }
 
     #[test]

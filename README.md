@@ -14,6 +14,12 @@ configurations offline, without bringing up a GPU serving cluster.
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/) ·
 [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 
+Whole-forward FPM data is supplied at runtime rather than shipped in this
+repository. Supply both the Parquet file and its adjacent, same-stem
+`.metadata.json` sidecar (for example, `reviewed-fpm.parquet` and
+`reviewed-fpm.metadata.json`). Set `estimation_mode="fpm_interpolation"` and
+`estimator_config.fpm_interpolation.fpm_parquet_path` in the canonical Python or Rust configuration. Prediction/recommendation YAML also accepts the legacy `timing.forward_model: fpm` and `timing.fpm_parquet_path` fields; see the [core API guide](docs/core-api.md#external-whole-forward-fpm-data).
+
 AISimulate is the successor to the
 [AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
 repository. It brings the complete AIC application and estimator into one
@@ -128,6 +134,10 @@ The CLI prints a concise summary and writes the selected runner's complete
 report to `<output-dir>/prediction.json`. Add `--capture-per-request` to also
 write `requests.jsonl`, or use `--format json` for machine-readable standard
 output.
+
+For agentic trace replay, follow the [AgentX simulation quickstart](docs/agentx-quickstart.md).
+It includes a Weka workload, a complete eight-GPU prefill/decode configuration,
+KV cache warmup, and commands for running and inspecting the simulation.
 
 ## Recommend a deployment
 
@@ -401,6 +411,20 @@ See the [CI guide](docs/ci.md) for the Fast/Full/Nightly hierarchy, code review,
 complete test coverage, and release gates. Use [DEVELOPMENT.md](DEVELOPMENT.md)
 for environment and local test details and [CONTRIBUTING.md](CONTRIBUTING.md)
 before sending a change.
+
+Direct Python `ReplaySpec.workload` synthetic workloads accept
+`length_sampler: numpy_random_state` for InferenceX-compatible seeded token
+lengths in Gym replay. The public prediction/recommendation YAML and CLI, and
+the Sweeper `Workload` schema, do not expose this option and reject it.
+The supported direct path must omit `source_type`; all workload-driver inputs
+with `source_type` reject `length_sampler` at the common runner entrypoint,
+including AFD and AFD+PD. Materialized trace replay rejects
+non-default samplers. The default `python_random`
+preserves existing workloads. Both sample the full input vector before output
+lengths; unknown sampler names are rejected. NumPy seeds must fit an unsigned
+32-bit integer; the Python sampler retains unsigned 64-bit seed support.
+Each replay initializes its own seeded sampler, so independent runs reproduce
+the same request lengths.
 
 ### FPM accuracy overview
 
