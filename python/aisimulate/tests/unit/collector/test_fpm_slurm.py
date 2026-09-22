@@ -548,3 +548,103 @@ def test_darwin_cleanup_waits_for_communicate_owner_to_reap(monkeypatch):
     assert not failures
     assert results[0].returncode == -signal.SIGTERM
     assert denied[:2] == [signal.SIGTERM, 0]
+
+
+@pytest.mark.parametrize("actual_version", ["0.25.1", "0.24.0"])
+def test_profile_campaign_observes_slurm_version_before_native_collection(tmp_path, monkeypatch, actual_version):
+    """Run the real profile campaign; only external Slurm/container operations are faked."""
+    from dataclasses import replace
+    from pathlib import Path
+
+    from collector.fpm_forward import cli
+    from collector.fpm_forward import runner as campaign
+    from collector.fpm_forward.config import FPMCollectionOptions
+
+    from .test_fpm_profile_collection import _argv, _plan, _profile
+    from .test_fpm_runner import _native_payload
+
+    profile = _profile()
+    options = FPMCollectionOptions.from_args(
+        cli._parser().parse_args(
+            [
+                *_argv(profile),
+                "--fpm-executor",
+                "slurm",
+                "--fpm-slurm-container-image",
+                "image@sha256:synthetic",
+            ]
+        )
+    )
+    plan = _plan(profile, options=replace(options, parallel_presets=("tep",)))
+    commands = []
+    executed = []
+    monkeypatch.setenv("SLURM_JOB_ID", "1234")
+    monkeypatch.setattr("collector.fpm_forward.slurm.shutil.which", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(campaign.time, "sleep", lambda _seconds: None)
+    import importlib.metadata
+
+    real_version = importlib.metadata.version
+    monkeypatch.setattr(
+        importlib.metadata, "version", lambda name: actual_version if name == "vllm" else real_version(name)
+    )
+
+    def command(args, **_kwargs):
+        commands.append(args)
+        stdout = ""
+        if args[0] == "scontrol":
+            stdout = "JobId=1234 JobState=RUNNING NodeList=test-node" if "job" in args else "test-node"
+        elif args[0] == "squeue":
+            pass
+        else:
+            assert args[0] == "srun", args
+            assert "--jobid=1234" in args and "--gpus-per-node=8" in args
+            assert "--container-image=image@sha256:synthetic" in args
+            mounts = next(value.split("=", 1)[1] for value in args if value.startswith("--container-mounts="))
+            raw = Path(
+                next(value.removesuffix(":/results") for value in mounts.split(",") if value.endswith(":/results"))
+            )
+            assert raw.name == "node0000"
+            program = args[args.index("env") + 3 :]
+            if program[:2] == ["python3", "-c"]:
+                # Execute the emitted program with the container's result mount mapped to disk.
+                with monkeypatch.context() as patch:
+                    patch.setattr(sys, "argv", ["-c", *program[3:]])
+                    try:
+                        exec(program[2].replace("/results", str(raw)), {})
+                    except RuntimeError as error:
+                        raise subprocess.CalledProcessError(1, args, output="prepared", stderr=str(error)) from error
+            else:
+                assert program == ["bash", "/tmp/fpm-bench/fpm_exec.sh"]
+                cell = next(item for item in plan.cells if item.cell_id == raw.parent.parent.name)
+                executed.append(cell.cell_id)
+                (raw / "benchmark.json").write_text(json.dumps(_native_payload(phase=cell.workload_kind, rank=0, dp=1)))
+        return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(campaign, "_run_command", command)
+    errors = campaign.run_collection(
+        plan,
+        generator_overrides={},
+        checkpoint_dir=str(tmp_path / "checkpoints"),
+        artifact_root=str(tmp_path / "artifacts"),
+        database_root=str(tmp_path / "data"),
+        resume=False,
+        retry_failed=False,
+    )
+    checkpoint = json.loads((tmp_path / "checkpoints/fpm_forward.json").read_text())
+    if actual_version == "0.25.1":
+        assert errors == []
+        assert executed == [cell.cell_id for cell in plan.cells]
+        assert checkpoint["database"]["status"] == "passed"
+        assert {entry["status"] for entry in checkpoint["cells"].values()} == {"passed"}
+    else:
+        assert len(errors) == 2 and all(error["classification"] == "campaign_cell_failed" for error in errors)
+        assert executed == [] and "database" not in checkpoint
+        for entry in checkpoint["cells"].values():
+            failures = list(Path(entry["artifact_dir"]).glob("logs/transport-failures/*/stderr.log"))
+            assert len(failures) == 1 and "FPM profile runtime mismatch" in failures[0].read_text()
+    for cell in plan.cells:
+        entry = checkpoint["cells"][cell.cell_id]
+        provenance = json.loads((Path(entry["artifact_dir"]) / "raw/node0000/collector-provenance.json").read_text())
+        assert provenance["runtime"] == {"backend": "vllm", "backend_version": actual_version}
+        assert provenance["plan_sha256"] == plan.sha256 and provenance["attempt_id"] == entry["attempt_id"]
+    assert all(args[0] in {"srun", "squeue", "scontrol"} for args in commands)

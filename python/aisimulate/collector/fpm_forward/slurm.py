@@ -171,25 +171,25 @@ class SlurmCellRunner:
             timeout=timeout,
         )
 
-    def prepare_attempt(self, pods: list[str], *, cell_id: str, plan_sha256: str, attempt_id: str) -> None:
-        from .native_artifact import COLLECTOR_PROVENANCE_FILENAME
+    def prepare_attempt(
+        self,
+        pods: list[str],
+        *,
+        cell_id: str,
+        plan_sha256: str,
+        attempt_id: str,
+        expected_backend_version: str | None = None,
+    ) -> None:
+        from .runner import _attempt_provenance_command
 
-        payload = json.dumps(
-            {
-                "schema_name": "aic_fpm_collector_provenance",
-                "schema_version": 1,
-                "cell_id": cell_id,
-                "plan_sha256": plan_sha256,
-                "attempt_id": attempt_id,
-            }
-        )
-        script = (
-            "import importlib.metadata,json,pathlib,sys; p=json.loads(sys.argv[1]); "
-            "p['runtime']={'backend':'vllm','backend_version':importlib.metadata.version('vllm')}; "
-            "pathlib.Path('/results',sys.argv[2]).write_text(json.dumps(p,sort_keys=True)+'\\n')"
+        command = _attempt_provenance_command(
+            cell_id=cell_id,
+            plan_sha256=plan_sha256,
+            attempt_id=attempt_id,
+            expected_backend_version=expected_backend_version,
         )
         for unit in pods:
-            self._exec(unit, ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME], timeout=300)
+            self._exec(unit, command, timeout=300)
 
     def execute(self, pods: list[str], timeout_seconds: int = 14400) -> None:
         from .runner import CommandScope, _cancel_preserving_interrupt
