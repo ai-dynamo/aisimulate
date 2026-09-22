@@ -198,11 +198,7 @@ impl BoundedSummary {
         Ok(())
     }
 
-    pub(super) fn finish(
-        self,
-        mut report: ReplayReport,
-        static_worker_count: Option<(usize, usize)>,
-    ) -> Result<ReplayReport> {
+    pub(super) fn finish(self, mut report: ReplayReport) -> Result<ReplayReport> {
         report.request_counts = TraceRequestCounts {
             num_requests: self.total,
             completed_requests: self.completed,
@@ -220,17 +216,8 @@ impl BoundedSummary {
                 .then_some(self.completed as f64 * 1000.0 / throughput.duration_ms);
         }
         let seconds = (throughput.duration_ms / 1000.0).max(1e-9);
-        // The base report has no retained request rows, so its profile cohort
-        // has zero duration. Recompute static provisioned time using the final
-        // observation interval; runtime-integrated worker time stays intact.
-        if let Some((prefill, decode)) = static_worker_count {
-            throughput.prefill_worker_seconds = prefill as f64 * seconds;
-            throughput.decode_worker_seconds = decode as f64 * seconds;
-            throughput.gpu_hours = (throughput.prefill_worker_seconds
-                * throughput.prefill_gpus_per_worker as f64
-                + throughput.decode_worker_seconds * throughput.decode_gpus_per_worker as f64)
-                / 3600.0;
-        }
+        // Provisioned worker time is already based on the reporting epoch in
+        // the base collector. The success-only cohort affects throughput only.
         throughput.request_throughput_rps = self.completed as f64 / seconds;
         throughput.input_throughput_tok_s = self.input as f64 / seconds;
         throughput.output_throughput_tok_s = self.output as f64 / seconds;

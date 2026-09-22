@@ -1788,8 +1788,10 @@ mod agentic_warmup_tests {
         }
     }
 
-    #[test]
-    fn profile_grace_includes_return_and_zero_grace_cancels_busy_pass() {
+    #[rstest::rstest]
+    fn profile_grace_includes_return_and_zero_grace_cancels_busy_pass(
+        #[values(0.0, 10.0)] cancel_drain_seconds: f64,
+    ) {
         for backend in [Backend::Vllm, Backend::Sglang] {
             for grace in [0.0, 0.03] {
                 let mut replay = runtime(backend, 1024, 20.0);
@@ -1798,12 +1800,21 @@ mod agentic_warmup_tests {
                     .enable_agentic_profile(crate::replay::loadgen::AgenticProfileOptions {
                         duration_seconds: 0.051,
                         response_grace_seconds: grace,
+                        cancel_drain_seconds,
                         ..Default::default()
                     })
                     .unwrap();
                 let report = replay.run().unwrap().0.finish();
                 let profile = report.agentic_profile.as_ref().unwrap();
                 assert_eq!(report.per_request.len(), 1);
+                assert!(!profile.cancel_drain_timed_out);
+                assert_eq!(profile.client_in_flight_requests, 0);
+                assert_eq!(
+                    profile.cancel_drain_deadline_ms,
+                    profile
+                        .response_grace_deadline_ms
+                        .map(|at| at + cancel_drain_seconds * 1000.0)
+                );
                 if grace == 0.0 {
                     assert_eq!(
                         report.per_request[0].terminal_status,
