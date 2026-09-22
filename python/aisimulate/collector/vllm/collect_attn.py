@@ -140,8 +140,29 @@ def run_attention_torch(
         use_sparse=False,
         use_mm_prefix=False,
     )
+    # Backend selection for head_dim > 256 mirrors the framework's own
+    # heterogeneous-head-dim policy. head_dim > 256 is reachable only from
+    # Gemma-4 (global layers, global_head_dim=512), whose model-level config
+    # hook (Gemma4Config.verify_and_update_config,
+    # model_executor/models/config.py:209-256) forces a UNIFORM backend across
+    # its mixed 256/512 heads to avoid the FA3/FA4 mixed penalty. That policy,
+    # plus the per-group validity of head-512, resolves as follows on SM90
+    # (live-engine kernel probe, 2026-09-22, gemma-4-26B-A4B + kv fp8/auto):
+    #   bf16-KV -> FLASH_ATTN (FA4 cute flash_fwd_sm90) — the bare selector
+    #             already returns this, so no override is needed.
+    #   fp8-KV  -> TRITON_ATTN (kernel_unified_attention). No FA/FlashInfer
+    #             path compiles fp8+head512 on SM90, so the uniform-backend
+    #             policy lands on Triton. The bare platform selector, lacking
+    #             the model-level heterogeneous-head context, instead picks
+    #             FlashInfer (whose SM90 fp8+head512 JIT cannot compile) — the
+    #             attention fp8 collection failures. Force the serving backend.
+    # This is not a per-model special case: it reproduces the framework's own
+    # config-hook branch keyed on head_dim, with the metadata-parity citation.
+    selected_backend = None
+    if head_dim > 256 and use_fp8_kv_cache:
+        selected_backend = AttentionBackendEnum.TRITON_ATTN
     backend_path = current_platform.get_attn_backend_cls(
-        None,
+        selected_backend,
         attn_selector_config,
         num_heads=num_heads,
     )
