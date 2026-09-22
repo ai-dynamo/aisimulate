@@ -304,6 +304,62 @@ def test_preflight_rejects_runtime_without_kvwarm_capability(tmp_path, monkeypat
     assert audit["missing_methods"] == ["_kvwarm_warm_eligible"]
 
 
+@pytest.mark.parametrize(
+    ("phase", "setting", "native_capability", "adapter", "accepted"),
+    [
+        ("prefill", "on", False, False, False),
+        ("agg", "true", False, False, False),
+        ("prefill", "on", True, False, True),
+        ("prefill", "off", False, False, True),
+        ("prefill", "0", False, False, True),
+        ("decode", "on", False, False, True),
+        ("prefill", "on", False, True, True),
+    ],
+)
+def test_preflight_checks_requested_prefill_seeding_before_model_load(
+    tmp_path, monkeypatch, phase, setting, native_capability, adapter, accepted
+):
+    import sys
+    from types import ModuleType
+
+    from collector.fpm_forward.runtime import preflight
+
+    def no_initialization(*_args, **_kwargs):
+        pytest.fail("preflight must inspect capabilities without constructing the model or scheduler")
+
+    methods = {name: lambda self: None for name in preflight.GRAPH_AWARE_METHODS}
+    methods["__init__"] = no_initialization
+    if native_capability:
+        methods["_bench_realseed_on"] = lambda self: True
+    scheduler = type("InstrumentedScheduler", (), methods)
+    module = ModuleType("dynamo.vllm.instrumented_scheduler")
+    module.BenchmarkPoint = type(
+        "BenchmarkPoint", (), {"__dataclass_fields__": {name: object() for name in preflight.GRAPH_AWARE_FIELDS}}
+    )
+    module.InstrumentedScheduler = scheduler
+    monkeypatch.setitem(sys.modules, "dynamo.vllm.instrumented_scheduler", module)
+    monkeypatch.setenv("FPM_BENCHMARK_MODE", phase)
+    monkeypatch.setenv("DYN_BENCH_PREFILL_REAL_SEED", setting)
+    monkeypatch.delenv("DYN_FPM_DSV41_REAL_KV", raising=False)
+    if adapter:
+        adapter_module = ModuleType("dsv41_scheduler")
+        adapter_module.DeepseekV41RealKVScheduler = scheduler
+        monkeypatch.setitem(sys.modules, "dsv41_scheduler", adapter_module)
+        monkeypatch.setenv("DYN_FPM_DSV41_REAL_KV", "1")
+    audit_path = tmp_path / "runtime-preflight.json"
+    monkeypatch.setattr(preflight, "_AUDIT_PATH", audit_path)
+
+    if accepted:
+        preflight.main()
+    else:
+        with pytest.raises(RuntimeError, match="_bench_realseed_on"):
+            preflight.main()
+    audit = json.loads(audit_path.read_text())
+    assert audit["status"] == ("passed" if accepted else "failed")
+    assert audit["missing_methods"] == ([] if accepted else ["_bench_realseed_on"])
+    assert audit["prefill_real_seed_requested"] == (phase in {"prefill", "agg"} and setting in {"on", "true"})
+
+
 def test_fpm_exec_propagates_fail_closed_env_source(tmp_path):
     """fpm_env.sh exits 2 on incomplete multinode discovery; sourcing must
     terminate fpm_exec.sh with the same status before any resource starts."""

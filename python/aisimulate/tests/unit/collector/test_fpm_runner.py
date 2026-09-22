@@ -1153,6 +1153,7 @@ def test_native_collection_validation_accepts_balanced_total_points(tmp_path):
         "measured_batch_size_axis_count": 1,
         "measured_kv_read_axis_count": 1,
         "measured_new_token_axis_count": 1,
+        "native_kv_seed_regime_counts": {"unreported": 1},
     }
 
     second_rank = tmp_path / "pod-1" / "benchmark_dp1.json"
@@ -1161,6 +1162,70 @@ def test_native_collection_validation_accepts_balanced_total_points(tmp_path):
     second_rank.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="different run identities"):
         _validate_runtime_collection(cell, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("phase", "regime", "stamp", "kv_tokens"),
+    [
+        ("prefill", "real_prefix", "prefill_real_seed", 128),
+        ("prefill", "fake_prefix", "prefill_fake_prefix", 128),
+        ("prefill", "not_applicable", None, 0),
+        ("decode", "real_kv", "kvwarm_real_kv", 128),
+        ("decode", "fake_fallback", "kvwarm_fake_fallback", 128),
+        ("decode", "skip:dense_model", None, 128),
+    ],
+)
+def test_native_seed_diagnostics_report_observed_regime(tmp_path, phase, regime, stamp, kv_tokens):
+    cell = _cell(phase=phase, strategy="dense_tp")
+    payload = _native_payload(phase=phase, rank=0, dp=1)
+    row = payload["results"][0]
+    row["kv_seed_regime"] = regime
+    row["point"]["total_kv_read_tokens"] = kv_tokens
+    if stamp:
+        row["point"]["sample_reasons"].append(stamp)
+    if phase == "prefill":
+        row["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = kv_tokens
+    if regime.startswith("skip:"):
+        payload["kvwarm"] = {"enabled": True, "warm_eligible": False, "skip_reason": "dense_model"}
+    pod = tmp_path / "pod-0"
+    pod.mkdir()
+    _write_provenance(pod / "collector-provenance.json", cell_id=cell.cell_id)
+    (pod / "benchmark.json").write_text(json.dumps(payload))
+
+    summary = _runtime_collection_summary(cell, tmp_path)
+    assert summary["native_kv_seed_regime_counts"] == {regime: 1}
+    if phase == "decode":
+        assert summary["native_kvwarm"] == payload["kvwarm"]
+
+
+@pytest.mark.parametrize("regime", ["real_prefix", "fake_prefix", "not_applicable"])
+def test_native_seed_diagnostics_reject_contradictory_injection_evidence(tmp_path, regime):
+    cell = _cell()
+    payload = _native_payload(phase="prefill", rank=0, dp=1)
+    payload["results"][0]["kv_seed_regime"] = regime
+    if regime != "real_prefix":
+        payload["results"][0]["point"]["sample_reasons"].append("prefill_real_seed")
+    pod = tmp_path / "pod-0"
+    pod.mkdir()
+    _write_provenance(pod / "collector-provenance.json", cell_id=cell.cell_id)
+    (pod / "benchmark.json").write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="kv_seed_regime disagrees"):
+        _runtime_collection_summary(cell, tmp_path)
+
+
+def test_native_seed_diagnostics_reject_rank_evidence_disagreement(tmp_path):
+    cell = _cell(dp=2)
+    for rank in range(2):
+        path = tmp_path / f"pod-{rank}" / ("benchmark.json" if rank == 0 else "benchmark_dp1.json")
+        path.parent.mkdir()
+        payload = _native_payload(phase="prefill", rank=rank, dp=2)
+        payload["results"][0]["point"]["sample_reasons"].append("prefill_real_seed")
+        if rank == 0:
+            payload["results"][0]["kv_seed_regime"] = "real_prefix"
+        _write_provenance(path.parent / "collector-provenance.json", cell_id=cell.cell_id)
+        path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="DP ranks disagree on per-point KV seed regime"):
+        _runtime_collection_summary(cell, tmp_path)
 
 
 def test_native_collection_validation_accepts_execution_order_decoupled_from_ids(tmp_path):
@@ -1728,6 +1793,62 @@ def test_typed_generator_render_uses_collector_prefill_axis(tmp_path):
     assert "export FPM_BENCHMARK_MODE=prefill" in env_script
     subprocess.run(["bash", "-n", str(tmp_path / "run.sh")], check=True)
     subprocess.run(["bash", "-n", str(tmp_path / "fpm_env.sh")], check=True)
+
+
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+@pytest.mark.parametrize("explicit", [None, "off", "0", "false", "TRUE"])
+def test_rendered_kv_warmup_defaults_and_overrides_reach_startup_and_engine(tmp_path, phase, explicit):
+    cell = _cell(phase=phase)
+    base = {"K8sConfig": {"k8s_image": "nvcr.io/nvidia/ai-dynamo/vllm-runtime:test"}}
+    names = ("DYN_BENCH_KV_WARMUP", "DYN_BENCH_PREFILL_REAL_SEED")
+    if explicit is not None:
+        base["K8sConfig"]["extra_env"] = [{"name": name, "value": explicit} for name in names]
+    _render_cell(_plan(cell), cell, tmp_path, base)
+
+    expected = explicit if explicit is not None else "on"
+    run_script = (tmp_path / "run.sh").read_text()
+    for name in names:
+        assert f"export {name}={expected}" in run_script
+    # Both executors stage this exact startup file before preflight; Slurm
+    # does not inherit Pod environment, and run.sh has not executed yet.
+    actual = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$1/fpm_env.sh"; source "$1/collector-runtime-env.sh"; '
+            'printf "%s\\n%s\\n%s\\n" "$FPM_BENCHMARK_MODE" "$DYN_BENCH_KV_WARMUP" '
+            '"$DYN_BENCH_PREFILL_REAL_SEED"',
+            "bash",
+            str(tmp_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert actual.stdout.splitlines() == [phase, expected, expected]
+
+
+def test_backend_policy_kv_warmup_override_is_preserved():
+    cell = dataclasses.replace(
+        _cell(),
+        backend_policy=BackendPolicy(
+            "explicit-seeding",
+            {"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "off"}]}},
+            {},
+        ),
+    )
+    overrides = _cell_generator_overrides(_plan(cell), cell, {})
+    environment = {item["name"]: item["value"] for item in overrides["K8sConfig"]["extra_env"]}
+    assert environment["DYN_BENCH_PREFILL_REAL_SEED"] == "off"
+    assert environment["DYN_BENCH_KV_WARMUP"] == "on"
+
+
+@pytest.mark.parametrize("name", ["DYN_BENCH_KV_WARMUP", "DYN_BENCH_PREFILL_REAL_SEED"])
+@pytest.mark.parametrize("value", [True, 1, "maybe", " on ", "${CHOICE}"])
+def test_kv_warmup_switches_require_explicit_boolean_strings(name, value):
+    cell = _cell()
+    with pytest.raises(ValueError, match=f"{name} must be a literal"):
+        _cell_generator_overrides(_plan(cell), cell, {"K8sConfig": {"extra_env": [{"name": name, "value": value}]}})
 
 
 @pytest.mark.parametrize(

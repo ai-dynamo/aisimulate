@@ -436,6 +436,39 @@ def test_plan_contains_only_cell_matrix_and_native_point_contract(tmp_path, expl
     assert "runtime_overlay" not in payload
 
 
+def test_kv_warmup_defaults_are_frozen_in_plan_identity():
+    options = FPMCollectionOptions.from_args(
+        _args(fpm_parallel_axes=["dp", "moe_ep"], fpm_dp_sizes=[4], fpm_moe_ep_sizes=[4])
+    )
+    kwargs = {
+        "backend": "vllm",
+        "model_path": "nvidia/GLM-5.2-NVFP4",
+        "system": "b200_sxm",
+        "selected_ops": {"dsa_context_module", "dsa_generation_module"},
+        "options": options,
+    }
+    default = build_collection_plan(**kwargs)
+    explicit_on = build_collection_plan(
+        **kwargs,
+        generator_overrides={
+            "K8sConfig": {
+                "extra_env": [
+                    {"name": "DYN_BENCH_KV_WARMUP", "value": "on"},
+                    {"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "on"},
+                ]
+            }
+        },
+    )
+    old_policy = build_collection_plan(
+        **kwargs,
+        generator_overrides={"K8sConfig": {"extra_env": [{"name": "DYN_BENCH_PREFILL_REAL_SEED", "value": "off"}]}},
+    )
+    assert default.aic_revision == explicit_on.aic_revision == old_policy.aic_revision
+    assert default.sha256 == explicit_on.sha256
+    assert default.generator_config_sha256 != old_policy.generator_config_sha256
+    assert default.sha256 != old_policy.sha256
+
+
 def test_backend_policy_is_deeply_immutable():
     source = {"nested": {"values": [1, 2]}}
     policy = BackendPolicy("baseline", source, {"runtime.mode": "FULL"})

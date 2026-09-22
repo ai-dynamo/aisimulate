@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 import zlib
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, suppress
 from dataclasses import replace
@@ -45,6 +46,7 @@ from aisimulate.fpm_contract import (
     fpm_workload_node_count,
 )
 
+from .config import FPM_KV_WARMUP_DEFAULTS, with_kv_warmup_defaults
 from .native_artifact import COLLECTOR_PROVENANCE_FILENAME, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan
 from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
@@ -1400,6 +1402,7 @@ def _cell_generator_overrides(
         raise ValueError(f"{READINESS_TIMEOUT_ENV} must be an integer from 1 through 3600")
     resolved_env[READINESS_TIMEOUT_ENV] = {"name": READINESS_TIMEOUT_ENV, "value": str(readiness)}
     merged.setdefault("K8sConfig", {})["extra_env"] = list(resolved_env.values())
+    merged = with_kv_warmup_defaults(merged)
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
     if observe_memory and any(
@@ -1514,6 +1517,7 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
     # this Collector-owned file because Slurm does not start a Kubernetes Pod
     # with extra_env, and run.sh's exports happen after the preflight process.
     names = {
+        *FPM_KV_WARMUP_DEFAULTS,
         READINESS_TIMEOUT_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
@@ -1614,7 +1618,7 @@ def _runtime_collection_summary(
     *,
     expected_plan_sha256: str | None = None,
     expected_attempt_id: str | None = None,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Return auditable unique-axis counts from a validated native grid."""
 
     collection = validate_native_collection(
@@ -1628,7 +1632,12 @@ def _runtime_collection_summary(
         "measured_point_count": len(points),
         "measured_batch_size_axis_count": len({int(point["batch_size"]) for point in points}),
         "measured_kv_read_axis_count": len({int(point["total_kv_read_tokens"]) for point in points}),
+        "native_kv_seed_regime_counts": dict(
+            Counter(measurement.kv_seed_regime or "unreported" for measurement in collection.points)
+        ),
     }
+    if collection.kvwarm_meta is not None:
+        summary["native_kvwarm"] = collection.kvwarm_meta
     if cell.workload_kind == "prefill":
         summary["measured_new_token_axis_count"] = len({int(point["total_prefill_tokens"]) for point in points})
     return summary

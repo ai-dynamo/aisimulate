@@ -29,11 +29,41 @@ COLLECTOR_PROVENANCE_FILENAME = "collector-provenance.json"
 class NativePointMeasurement:
     point: dict[str, Any]
     rank_wall_times: tuple[tuple[int, float], ...]
+    # Keep native row provenance for diagnostics, without reinterpreting the
+    # formal database's historical prefill kv_seed_regime contract.
+    kv_seed_regime: str | None = None
 
 
 # Distinguishes "no artifact seen yet" from a legitimately absent (legacy)
 # kvwarm block during cross-rank consistency checking.
 _KVWARM_UNSEEN = object()
+
+
+def _validate_seed_regime(row: dict[str, Any], path: Path) -> str | None:
+    regime = row.get("kv_seed_regime")
+    if regime is None:
+        return None  # Historical artifacts did not report a row-level regime.
+    if not isinstance(regime, str) or not regime:
+        raise ValueError(f"native kv_seed_regime must be a non-empty string: {path}")
+    # Dynamo's _kvwarm_seed_regime reports these point-injection stamps:
+    # https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/instrumented_scheduler.py#L4721
+    stamps = {
+        "real_prefix": "prefill_real_seed",
+        "fake_prefix": "prefill_fake_prefix",
+        "real_kv": "kvwarm_real_kv",
+        "fake_fallback": "kvwarm_fake_fallback",
+    }
+    reasons = set(row["point"].get("sample_reasons") or [])
+    observed_stamps = reasons.intersection(stamps.values())
+    if regime in stamps and observed_stamps != {stamps[regime]}:
+        raise ValueError(f"native kv_seed_regime disagrees with point injection stamps: {path}")
+    if regime in {"real_prefix", "fake_prefix"} and (
+        row["point"]["point_type"] != "prefill" or row["point"]["total_kv_read_tokens"] <= 0
+    ):
+        raise ValueError(f"native prefix seed regime requires cached prefill: {path}")
+    if regime not in stamps and observed_stamps:
+        raise ValueError(f"native kv_seed_regime disagrees with point injection stamps: {path}")
+    return regime
 
 
 def _validate_kvwarm_contract(cell: FPMCell, kvwarm: object, path: Path) -> dict[str, Any] | None:
@@ -381,6 +411,7 @@ def validate_native_collection(
     kvwarm_seen: object = _KVWARM_UNSEEN
     input_provenance: dict[str, Any] | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
+    seed_regimes: dict[int, str | None] = {}
     rank_timings: list[tuple[int, float, float]] = []
 
     for path, payload in rank_payloads:
@@ -502,6 +533,17 @@ def validate_native_collection(
             if not isinstance(fpms, list) or len(fpms) != 1:
                 raise ValueError(f"native point must contain exactly one local FPM: {path}")
             _validate_fpm(point, fpms[0], rank=rank)
+            seed_regime = _validate_seed_regime(row, path)
+            if (
+                seed_regime == "real_kv"
+                and cell.workload_kind == "decode"
+                and kvwarm is not None
+                and (not kvwarm["enabled"] or not kvwarm["warm_eligible"])
+            ):
+                raise ValueError(f"native real KV seed regime disagrees with warm-up eligibility: {path}")
+            if benchmark_id in seed_regimes and seed_regimes[benchmark_id] != seed_regime:
+                raise ValueError(f"native DP ranks disagree on per-point KV seed regime: {path}")
+            seed_regimes[benchmark_id] = seed_regime
             local_fpms[(benchmark_id, rank)] = fpms[0]
             points.append(point)
         # The engine writes results in execution order, and KV warm-up's
@@ -568,7 +610,11 @@ def validate_native_collection(
         ):
             raise ValueError(f"native iteration wall_time mismatch for benchmark_id={benchmark_id}")
         measured_iteration_seconds += group_wall_time
-        measurements.append(NativePointMeasurement(point=dict(point), rank_wall_times=tuple(wall_times)))
+        measurements.append(
+            NativePointMeasurement(
+                point=dict(point), rank_wall_times=tuple(wall_times), kv_seed_regime=seed_regimes[benchmark_id]
+            )
+        )
 
     for rank, _elapsed, measured in rank_timings:
         if not math.isclose(measured, measured_iteration_seconds, rel_tol=1e-9, abs_tol=1e-12):

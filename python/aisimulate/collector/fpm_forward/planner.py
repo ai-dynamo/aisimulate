@@ -23,7 +23,13 @@ from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION
 from aisimulate_core.sdk.fpm_profile import FpmDeploymentProfile, FpmModelProfile, load_fpm_profile
 
 from .capabilities import ModelCapabilityProfile, ResolvedDTypeProfile, resolve_model_capability
-from .config import FPM_MAX_PREFILL_ISL, PARALLEL_AXES, VLLM_AUTO_FIT_MAX_MODEL_LEN, FPMCollectionOptions
+from .config import (
+    FPM_MAX_PREFILL_ISL,
+    PARALLEL_AXES,
+    VLLM_AUTO_FIT_MAX_MODEL_LEN,
+    FPMCollectionOptions,
+    with_kv_warmup_defaults,
+)
 from .memory_admission import TopologyMemoryDecision, filter_memory_infeasible_topologies
 from .runtime.fpm_memory_observer import SUPPORTED_VERSION as MEMORY_OBSERVER_VERSION
 from .topology import enumerate_fpm_topologies, topology_strategy
@@ -670,7 +676,9 @@ def build_collection_plan(
                     f"{system}/{backend}; found {sorted(versions)}"
                 )
             collector_config["aic_database_version"] = next(iter(versions))
-    generator_config_sha256 = _canonical_hash(generator_overrides or {})
+    # Freeze resolved warm-up defaults as well as explicit deployment inputs;
+    # changing the default must not resume a campaign under its old plan hash.
+    generator_config_sha256 = _canonical_hash(with_kv_warmup_defaults(generator_overrides or {}))
     capability = resolve_model_capability(
         backend=backend,
         model_path=model_path,

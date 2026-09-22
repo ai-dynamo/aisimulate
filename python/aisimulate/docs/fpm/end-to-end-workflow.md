@@ -193,6 +193,18 @@ The sampling settings have distinct meanings:
   Published `latency_ms` uses the maximum rank wall time, converted to ms;
   it is not a mean or median over repeated measurements.
 
+KV preparation is separate from those global warm-up iterations. New campaigns
+default `DYN_BENCH_PREFILL_REAL_SEED=on` and `DYN_BENCH_KV_WARMUP=on`. Cached
+prefill computes its prefix outside the measured forward pass; zero-KV prefill
+has no prefix to seed. Prefill preflight rejects a runtime lacking the requested
+real-seeding capability. Decode still follows native warm-up eligibility and
+capacity, so inspect raw per-point `kv_seed_regime` and the `kvwarm` envelope
+before claiming real KV was used. Ordinary prefill rows in the formal table
+retain `n/a`; their raw artifacts distinguish `real_prefix` and `fake_prefix`.
+Explicit deployment environment overrides remain explicit and are subject to
+existing protocol checks. The resolved defaults participate in the collection
+identity; preserve existing results and use a fresh campaign for a new policy.
+
 The complete option list is available from `python3 -m collector.fpm_forward
 --help` and [its argument definitions](../../collector/fpm_forward/config.py).
 

@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 FPM_FORWARD_OP = "fpm_forward"
 FPM_WARMUP_ITERATIONS = 5
@@ -21,8 +23,38 @@ FPM_MAX_PREFILL_ISL = 8192
 FPM_MAX_PREFILL_CUDAGRAPH_SIZE = 2048
 VLLM_AUTO_FIT_MAX_MODEL_LEN = -1
 
+# Dynamo 1.5.0: components/src/dynamo/vllm/instrumented_scheduler.py,
+# _kvwarm_flag_on / _bench_realseed_on at b83b1d9304ebfc624709ac46db32b1b6f1ff1615:
+# https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/instrumented_scheduler.py
+# Decode uses the runtime's eligibility gate; cached prefill has a separate
+# real-prefix seeding switch. Dynamo retains ownership of point generation
+# and feasibility.
+FPM_KV_WARMUP_DEFAULTS = {"DYN_BENCH_KV_WARMUP": "on", "DYN_BENCH_PREFILL_REAL_SEED": "on"}
+
 PARALLEL_AXES = ("tp", "pp", "dp", "moe_tp", "moe_ep", "cp")
 PARALLEL_PRESETS = ("auto", "tp", "tep", "dep", "pure_tp")
+
+
+def with_kv_warmup_defaults(overrides: dict[str, Any]) -> dict[str, Any]:
+    """Resolve declared warm-up switches without replacing explicit choices."""
+
+    resolved = copy.deepcopy(overrides)
+    k8s = resolved.setdefault("K8sConfig", {})
+    environment = k8s.setdefault("extra_env", [])
+    if environment is None:
+        environment = k8s["extra_env"] = []
+    declared = set()
+    for item in environment:
+        name = item["name"]
+        if name in FPM_KV_WARMUP_DEFAULTS:
+            value = item.get("value")
+            if not isinstance(value, str) or value.lower() not in {"on", "1", "true", "off", "0", "false"}:
+                raise ValueError(f"{name} must be a literal on/off, 1/0 or true/false string")
+            declared.add(name)
+    environment.extend(
+        {"name": name, "value": value} for name, value in FPM_KV_WARMUP_DEFAULTS.items() if name not in declared
+    )
+    return resolved
 
 
 def _positive_int(value: str) -> int:
