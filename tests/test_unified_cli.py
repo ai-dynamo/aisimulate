@@ -12,7 +12,9 @@ import pytest
 import yaml
 
 import aisimulate.main as cli
+from aisimulate.config.cli import CorePredictionConfig
 from aisimulate.output import prepare_output_directory
+from aisimulate.predict import PredictionExecutionError, PredictionResult, run_prediction
 from aisimulate.sweeper.config import Candidate
 from aisimulate.sweeper.provider import AdapterReplaySpec, AdapterSearchPlan
 from aisimulate.sweeper.replay import ReplayReport, RunnerCapabilities
@@ -263,6 +265,50 @@ def test_predict_is_the_single_concrete_cli(tmp_path, monkeypatch, capsys) -> No
     assert json.loads((output / "prediction.json").read_text())["summary"]["completed_requests"] == 1
     assert json.loads((output / "requests.jsonl").read_text())["request_id"] == "synthetic-0"
     assert json.loads(capsys.readouterr().out)["completed_requests"] == 1
+
+
+def _prediction_config() -> CorePredictionConfig:
+    return CorePredictionConfig.model_validate(
+        {
+            "engine": {
+                "model": "example/model",
+                "hardware": "h200_sxm",
+                "context_length": 4096,
+                "workers": {"aggregated": {}},
+            }
+        }
+    )
+
+
+def test_run_prediction_returns_structured_result() -> None:
+    # The library entry point (sibling of run_recommendation) that the predict
+    # CLI delegates to: compile -> run -> summarize on an injected runner.
+    runner = _Runner()
+    result = run_prediction(_prediction_config(), stack="engine", runner_factory=_Factory(runner))
+
+    assert isinstance(result, PredictionResult)
+    assert result.summary["completed_requests"] == 1
+    # summary is merged back into the native report.
+    assert result.native["summary"]["completed_requests"] == 1
+    assert result.replay_spec is runner.spec
+    # execution_mode defaults to offline; a non-EPD run defaults to raw report only.
+    assert runner.spec.execution_mode == "offline"
+    assert runner.output_requirements.include_raw_report is True
+    assert runner.output_requirements.capture_per_request is False
+    assert runner.closed is True
+
+
+def test_run_prediction_wraps_runner_failure() -> None:
+    class _FailingRunner(_Runner):
+        def run(self, spec, *, output_requirements=None):
+            self.spec = spec
+            raise RuntimeError("boom")
+
+    runner = _FailingRunner()
+    with pytest.raises(PredictionExecutionError, match="RuntimeError: boom"):
+        run_prediction(_prediction_config(), stack="engine", runner_factory=_Factory(runner))
+    # The runner is closed even when the run raises.
+    assert runner.closed is True
 
 
 def test_predict_online_is_forwarded_through_replay_spec(tmp_path, monkeypatch, capsys) -> None:
