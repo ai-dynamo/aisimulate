@@ -108,7 +108,8 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
 //   for selector diagnostics. This appends a positional field after the schema-19
 //   release; serde defaults support legacy JSON, not legacy bincode.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 20;
+// - 21: FastAfdMoeStage was appended for exact measured MoE-stage lookup.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 21;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].

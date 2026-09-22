@@ -48,8 +48,9 @@ use crate::operators::attention::default_lane_order;
 use crate::operators::dsa::DsaProjectionQuants;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, ElementwiseOp, EmbeddingOp,
-    EncoderAttentionOp, GemmOp, GenerationAttentionOp, GenerationMlaOp, MhcModuleOp, MlaBmmOp,
-    MlaModuleOp, NcclOp, Op, P2POp,
+    EncoderAttentionOp, FastAfdMoeStageOp, FastAfdMoeStagePoint, GemmOp,
+    GenerationAttentionOp, GenerationMlaOp, MhcModuleOp, MlaBmmOp, MlaModuleOp, NcclOp, Op,
+    P2POp,
 };
 
 // ---------------------------------------------------------------------------
@@ -149,6 +150,7 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         Op::MoeAllToAll(_) => wrap!(PyMoEAllToAll),
         Op::MoeExpertCompute(_) => wrap!(PyMoEExpertCompute),
         Op::Dsv4MegaMoe(_) => wrap!(PyDeepSeekV4MegaMoEModule),
+        Op::FastAfdMoeStage(_) => wrap!(PyFastAfdMoeStage),
         Op::DsaContext(_) => wrap!(PyContextDSAModule),
         Op::DsaGeneration(_) => wrap!(PyGenerationDSAModule),
         Op::MsaContext(_) => wrap!(PyContextMSAModule),
@@ -276,6 +278,13 @@ inner_accessor!(
 inner_accessor!(nccl, nccl_mut, Nccl, NcclOp, "NCCL");
 inner_accessor!(p2p, p2p_mut, P2P, P2POp, "P2P");
 inner_accessor!(mhc, mhc_mut, Mhc, MhcModuleOp, "DeepSeekV4MHCModule");
+inner_accessor!(
+    fastafd_moe_stage,
+    fastafd_moe_stage_mut,
+    FastAfdMoeStage,
+    FastAfdMoeStageOp,
+    "FastAfdMoeStage"
+);
 
 impl PyOperation {
     /// The MLA module struct regardless of phase variant.
@@ -4063,6 +4072,81 @@ dsv4_class!(
 );
 
 // ---------------------------------------------------------------------------
+// FastAFD measured MoE stage
+// ---------------------------------------------------------------------------
+
+#[pyclass(extends = PyOperation, subclass, name = "FastAfdMoeStage", module = "aisimulate_core._native")]
+pub struct PyFastAfdMoeStage;
+
+#[pymethods]
+impl PyFastAfdMoeStage {
+    #[classattr]
+    #[allow(non_upper_case_globals)]
+    const _CP_AWARE: bool = false;
+
+    #[classattr]
+    #[allow(non_upper_case_globals)]
+    const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
+
+    #[new]
+    fn new(
+        name: String,
+        points: Vec<(u32, f64)>,
+        profile_sha256: String,
+    ) -> PyResult<(Self, PyOperation)> {
+        let inner = FastAfdMoeStageOp {
+            name,
+            points: points
+                .into_iter()
+                .map(|(num_tokens, latency_ms)| FastAfdMoeStagePoint {
+                    num_tokens,
+                    latency_ms,
+                })
+                .collect(),
+            profile_sha256,
+        };
+        inner.validate().map_err(PyValueError::new_err)?;
+        Ok((
+            PyFastAfdMoeStage,
+            PyOperation {
+                inner: Op::FastAfdMoeStage(inner),
+            },
+        ))
+    }
+
+    fn __getnewargs_ex__<'py>(
+        slf: PyRef<'py, Self>,
+        py: Python<'py>,
+    ) -> PyResult<(Bound<'py, PyTuple>, Bound<'py, PyDict>)> {
+        let op = slf.as_super().fastafd_moe_stage()?;
+        let points: Vec<_> = op
+            .points
+            .iter()
+            .map(|point| (point.num_tokens, point.latency_ms))
+            .collect();
+        let args = (op.name.clone(), points, op.profile_sha256.clone()).into_pyobject(py)?;
+        Ok((args, PyDict::new(py)))
+    }
+
+    #[getter(_points)]
+    fn points(slf: PyRef<'_, Self>) -> PyResult<Vec<(u32, f64)>> {
+        Ok(slf
+            .as_super()
+            .fastafd_moe_stage()?
+            .points
+            .iter()
+            .map(|point| (point.num_tokens, point.latency_ms))
+            .collect())
+    }
+
+    #[getter(_profile_sha256)]
+    fn profile_sha256(slf: PyRef<'_, Self>) -> PyResult<String> {
+        Ok(slf.as_super().fastafd_moe_stage()?.profile_sha256.clone())
+    }
+
+}
+
+// ---------------------------------------------------------------------------
 // Composites
 // ---------------------------------------------------------------------------
 
@@ -4239,6 +4323,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyMoEAllToAll>()?;
     m.add_class::<PyMoEExpertCompute>()?;
     m.add_class::<PyDeepSeekV4MegaMoEModule>()?;
+    m.add_class::<PyFastAfdMoeStage>()?;
     m.add_class::<PyDeepSeekV4MHCModule>()?;
     m.add_class::<PyContextDSAModule>()?;
     m.add_class::<PyGenerationDSAModule>()?;

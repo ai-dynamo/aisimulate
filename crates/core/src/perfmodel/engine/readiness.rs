@@ -288,7 +288,8 @@ impl Availability<'_> {
                     _ => Ok(()),
                 }
             }
-            Overlap(_) | Fallback(_) | TokenScale(_) | FpmForward(_) | Dsv41Stage(_) => Ok(()),
+            Overlap(_) | Fallback(_) | TokenScale(_) | FpmForward(_) | Dsv41Stage(_)
+            | FastAfdMoeStage(_) => Ok(()),
         }
     }
 }

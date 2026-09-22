@@ -168,9 +168,10 @@ mod tests {
     use crate::operators::{
         ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp,
         Dsv4ModuleOp, Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp,
-        ElementwiseOp, EmbeddingOp, EncoderAttentionOp, GdnOp, GemmOp, GenerationAttentionOp,
-        GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
-        MoeAllToAllOp, MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp,
+        ElementwiseOp, EmbeddingOp, EncoderAttentionOp, FastAfdMoeStageOp,
+        FastAfdMoeStagePoint, GdnOp, GemmOp, GenerationAttentionOp, GenerationMlaOp, KdaOp,
+        Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp, MoeAllToAllOp,
+        MoeExpertComputeOp, MoeOp, NcclOp, P2POp, VisionEncoderOp,
         WideEpContextMlaOp, WideEpGenerationMlaOp,
     };
     use crate::perf_database::dsv4::AttnKind;
@@ -764,6 +765,14 @@ mod tests {
                 k: 5120,
                 quant_mode: GemmQuantMode::Fp8Block,
             }),
+            OpSpec::FastAfdMoeStage(FastAfdMoeStageOp {
+                name: "generation_fastafd_moe_stage".into(),
+                points: vec![FastAfdMoeStagePoint {
+                    num_tokens: 8,
+                    latency_ms: 2.5,
+                }],
+                profile_sha256: "a".repeat(64),
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -810,7 +819,8 @@ mod tests {
                 | OpSpec::Dsv41Engram(_)
                 | OpSpec::Dsv41Stage(_)
                 | OpSpec::Dsv41Linear(_)
-                | OpSpec::TokenScale(_) => {}
+                | OpSpec::TokenScale(_)
+                | OpSpec::FastAfdMoeStage(_) => {}
             }
         }
         ops
@@ -907,11 +917,11 @@ mod tests {
         let appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
         assert_eq!(
             appended,
-            vec![36, 37, 38, 39, 40],
-            "V41 appended indices moved"
+            vec![36, 37, 38, 39, 40, 41],
+            "appended indices moved"
         );
         assert_eq!(
-            TOKEN_SCALE_INDEX as usize + 6,
+            TOKEN_SCALE_INDEX as usize + 7,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
