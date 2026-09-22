@@ -252,8 +252,9 @@ def test_yaml_selects_native_dynamo_with_real_affinity_and_cache(installed_cli, 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 @pytest.mark.parametrize("topology", ["aggregated", "disaggregated"])
-def test_snapshot_warmup_and_duration_share_the_installed_policy(installed_cli, tmp_path, backend, topology):
-    config = _config(tmp_path, backend, topology, "sibling_group")
+@pytest.mark.parametrize("affinity", ["session", "sibling_group"])
+def test_snapshot_warmup_and_duration_share_the_installed_policy(installed_cli, tmp_path, backend, topology, affinity):
+    config = _config(tmp_path, backend, topology, affinity)
     config["traffic"]["load"].update(
         agentic_lanes=2,
         agentic_snapshot={"seed": 42},
@@ -261,7 +262,7 @@ def test_snapshot_warmup_and_duration_share_the_installed_policy(installed_cli, 
         agentic_profile={"duration_seconds": 0.8},
     )
     report = _run(installed_cli, tmp_path, config, name="duration")
-    _assert_native_routing(report, topology, "sibling_group")
+    _assert_native_routing(report, topology, affinity)
     phases = report["agentic_phases"]
     profile = report["agentic_profile"]
     assert phases["profile_start_ms"] > 0
