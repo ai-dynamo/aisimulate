@@ -13,6 +13,26 @@ distributed with those packages.
 Unless otherwise stated, AISimulate file paths in this document are relative
 to `python/aisimulate/` in the repository source tree.
 
+## FastAFD measured MoE-stage profile contract
+
+`src/aiconfigurator/sdk/fastafd_moe_profile.py` and its unit test implement a
+strict reader for the measured-stage profile contract published by FastAFD.
+They are adapted and modified from the profile producer at
+`scripts/experiments/afd/summarize_megamoe_model_results.py` in
+`liz-badada/FastAFD` commit `0b9bce2bdbee04ace2673cfc3118572fec484fe4`.
+No FastAFD timing profile or raw benchmark result is distributed by
+AISimulate; callers provide a profile explicitly and the reader preserves its
+source commit, tree hash, and result path.
+
+Upstream source:
+https://github.com/liz-badada/FastAFD/blob/0b9bce2bdbee04ace2673cfc3118572fec484fe4/scripts/experiments/afd/summarize_megamoe_model_results.py
+
+Copyright (c) 2026 sgl-project.
+
+The upstream material is licensed under the MIT License. The upstream license
+at the identified revision is available at:
+https://github.com/liz-badada/FastAFD/blob/0b9bce2bdbee04ace2673cfc3118572fec484fe4/LICENSE
+
 ## AIConfigurator
 
 The repository-root `.coderabbit.yaml` is adapted and modified from

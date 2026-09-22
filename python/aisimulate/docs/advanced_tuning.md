@@ -24,6 +24,23 @@
 These are performance-model selectors. They are separate from runtime-server
 backend names such as TRT-LLM `CUTLASS` or `WIDEEP`.
 
+## FastAFD measured MoE profiles
+
+`aiconfigurator.sdk.fastafd_moe_profile.FastAFDMoEStageProfile` reads the
+versioned `aic.afd-moe-stage-profile.v3` JSON contract exported by FastAFD.
+It accepts only stable measurements and performs exact matching over model,
+system, AGG/AFD topology, source-rank batch, MTP width, microbatches, MoE
+layers, top-k, precision, and backend. It preserves the source commit, tree
+hash, and raw-result path for every measurement.
+
+A profile is an external complete-stage measurement, not an AIC silicon
+performance table. Do not place a profile into `systems/data/` or use it to
+fill missing `dsv4_megamoe_module_perf.parquet` rows. The operator boundary,
+communication overlap, and hardware topology differ. A later opt-in alignment
+override may consume an exactly matching profile while retaining that
+provenance in its result; it must never silently interpolate or transfer a
+B200 result to another system.
+
 In aiconfigurator, the inference framework and serving modeling is relatively complicated compared with the most simplified CLI entrypoint.  
 For example, behind the command,
 ```bash
