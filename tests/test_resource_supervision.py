@@ -410,6 +410,82 @@ def test_public_cli_runs_small_native_prediction_with_resource_evidence(tmp_path
     assert any(event["event"] == "resource_plan" for event in events)
 
 
+@pytest.mark.parametrize("profile", [{}, {"duration_seconds": 86400}])
+def test_public_cli_profile_uses_unqualified_supervised_resource_plan(tmp_path, profile):
+    import subprocess
+
+    trace = tmp_path / "play.json"
+    trace.write_text(
+        json.dumps(
+            {
+                "id": "play",
+                "models": ["model"],
+                "block_size": 4,
+                "hash_id_scope": "local",
+                "requests": [{"t": 0, "type": "s", "model": "model", "in": 4, "out": 1, "hash_ids": [1]}],
+            }
+        )
+    )
+    config = tmp_path / "profile.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {
+                "engine": {
+                    "model": "example/model",
+                    "hardware": "h200_sxm",
+                    "context_length": 1024,
+                    "workers": {
+                        "aggregated": {
+                            "kv_cache": {"block_size": 4, "capacity": {"type": "fixed", "blocks": 128}},
+                            "timing": {"type": "fixed", "prefill_ms": 600000, "decode_ms": 1},
+                        }
+                    },
+                },
+                "traffic": {
+                    "source": {"type": "trace", "format": "weka", "paths": [str(trace)]},
+                    "load": {
+                        "type": "trace_timestamps",
+                        "agentic_lanes": 1,
+                        "agentic_snapshot": {"seed": 42},
+                        "agentic_profile": profile,
+                    },
+                },
+            }
+        )
+    )
+    output = tmp_path / "output"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "predict",
+            "--config",
+            str(config),
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    runtime = json.loads((output / "resource-runtime.json").read_text())
+    assert runtime["status"] == "completed"
+    assert runtime["peak_observed_rss_bytes"] > 0
+    events = [json.loads(line) for line in (output / "execution-events.jsonl").read_text().splitlines()]
+    plan = next(event["value"] for event in events if event["event"] == "resource_plan")
+    assert plan["effective_parallelism"] == 1
+    assert plan["estimate"]["estimated_peak_bytes"] is None
+    assert plan["estimate"]["allocation_model"] == "agentic-profile-unqualified-v1"
+    report = json.loads((output / "prediction.json").read_text())["agentic_profile"]
+    assert report["options"]["duration_seconds"] == profile.get("duration_seconds", 3600)
+    assert report["plays_started"] > 1
+    assert report["successful_responses"] > 0
+
+
 def test_sdk_recommendation_is_supervised_and_refuses_oversized_input():
     from aisimulate.config import CoreRecommendationConfig
     from aisimulate.recommend import run_recommendation

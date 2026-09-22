@@ -89,7 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
         "trace_timestamps and positive agentic_lanes. The offline engine stack supports "
         "aggregated and P/D vLLM/SGLang, HBM-only, speculative decoding disabled. "
         "agentic_snapshot selects seeded starts; agentic_warmup primes saved prefixes; "
-        "agentic_profile enables duration controls. Results are functional_only; "
+        "agentic_profile enables duration controls on the offline engine or optional dynamo-policy stack; "
+        "legacy --stack dynamo does not support profiles. Results are functional_only; "
         "hardware accuracy and complete AgentX recipe parity are not qualified."
     )
     subparsers.choices["predict"].add_argument(

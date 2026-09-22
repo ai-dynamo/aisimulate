@@ -1440,6 +1440,8 @@ def test_energy_detail_reports_missing_adapter_export(tmp_path, monkeypatch, cap
 
 @pytest.mark.parametrize("profile", [False, True])
 def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monkeypatch, capsys, profile) -> None:
+    import os
+
     from aisimulate.runner import EngineReplayRunnerFactory
 
     class SnapshotFactory(_Factory):
@@ -1469,6 +1471,22 @@ def test_snapshot_seed_override_reaches_the_existing_predict_path(tmp_path, monk
     )
     runner = _Runner()
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda stack: SnapshotFactory(runner))
+    if profile:
+        # This unit test calls the internal child entry point directly. Model
+        # its supervisor context; public-process supervision is tested separately.
+        monkeypatch.setenv(
+            "_AISIMULATE_SUPERVISED_BUDGET",
+            json.dumps(
+                {
+                    "supervisor_pid": os.getpid(),
+                    "memory_limit_bytes": 4_000_000_000,
+                    "cpu_limit": 1,
+                    "reserved_host_memory_bytes": 1_000_000_000,
+                    "events_path": str(tmp_path / "events.jsonl"),
+                    "ready_path": str(tmp_path / "ready"),
+                }
+            ),
+        )
     assert (
         cli.main(
             [
