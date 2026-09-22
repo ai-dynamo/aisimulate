@@ -8,8 +8,12 @@ import pytest
 import aisimulate_core
 from aisimulate.config import EnginePredictionConfig
 from aisimulate.config.engine import TimingConfig
+from aisimulate_core.sdk.config_builders import build_model_config
 from aisimulate_core.sdk.engine import InvalidEngineConfigurationError, compile_engine
+from aisimulate_core.sdk.fastafd_backend import apply_fastafd_moe_profile
 from aisimulate_core.sdk.fastafd_profile import FASTAFD_PROFILE_SCHEMA
+from aisimulate_core.sdk.models import get_model
+from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch
 
 pytestmark = pytest.mark.unit
 
@@ -74,6 +78,35 @@ def test_fastafd_stage_runs_end_to_end_and_matches_composition(tmp_path):
 def test_fastafd_profile_rejects_cross_system_use(tmp_path):
     with pytest.raises(InvalidEngineConfigurationError, match="no FastAFD AGG measurements match"):
         _compile(_profile(tmp_path, system="gb200"))
+
+
+def test_fastafd_stage_preserves_generation_weights(tmp_path):
+    config = build_model_config(
+        tp_size=1,
+        pp_size=1,
+        attention_dp_size=8,
+        moe_tp_size=1,
+        moe_ep_size=8,
+        forward_model="op_level",
+    )
+    model_path = "deepseek-ai/DeepSeek-V4-Flash"
+    resolve_dsv4_moe_arch(config, model_path, system_name="b200_sxm", backend_name="sglang")
+    model = get_model(model_path, config, "sglang")
+    before = sum(op.get_weights() for op in model.generation_ops)
+
+    apply_fastafd_moe_profile(
+        model,
+        model_path=model_path,
+        system="b200_sxm",
+        backend="sglang",
+        nextn=0,
+        profile_path=_profile(tmp_path),
+        profile_backend="megamoe",
+    )
+
+    stage = next(op for op in model.generation_ops if op._name == "generation_fastafd_moe_stage")
+    assert stage.get_weights() > 0
+    assert sum(op.get_weights() for op in model.generation_ops) == pytest.approx(before)
 
 
 def test_fastafd_timing_requires_a_backend_and_op_level():

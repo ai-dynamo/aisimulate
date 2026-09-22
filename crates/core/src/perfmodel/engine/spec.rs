@@ -772,6 +772,7 @@ mod tests {
                     latency_ms: 2.5,
                 }],
                 profile_sha256: "a".repeat(64),
+                weight_bytes: 1024.0,
             }),
         ];
 

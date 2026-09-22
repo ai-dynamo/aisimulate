@@ -77,12 +77,12 @@ def apply_fastafd_moe_profile(
     if len({tokens for tokens, _ in points}) != len(points):
         raise ValueError("FastAFD AGG measurements contain duplicate runtime token counts")
 
-    stage = ops.FastAfdMoeStage(
-        "generation_fastafd_moe_stage",
+    _replace_generation_moe(
+        model,
         points,
         profile.profile_sha256,
+        measured_layers=measured_layers,
     )
-    _replace_generation_moe(model, stage, measured_layers=measured_layers)
     return {
         "provider": "fastafd",
         "profile_path": str(profile.source),
@@ -95,9 +95,24 @@ def apply_fastafd_moe_profile(
     }
 
 
-def _replace_generation_moe(model: Any, stage: Any, *, measured_layers: int) -> None:
+def _replace_generation_moe(
+    model: Any,
+    points: list[tuple[int, float]],
+    profile_sha256: str,
+    *,
+    measured_layers: int,
+) -> None:
     generation_ops = list(model.generation_ops)
     residual_layers = model._num_layers - measured_layers
+    measured_ratio = measured_layers / model._num_layers
+
+    def stage(weight_bytes: float) -> Any:
+        return ops.FastAfdMoeStage(
+            "generation_fastafd_moe_stage",
+            points,
+            profile_sha256,
+            weight_bytes,
+        )
 
     overlap_indexes = [
         index
@@ -112,14 +127,14 @@ def _replace_generation_moe(model: Any, stage: Any, *, measured_layers: int) -> 
         routers = [op for op in overlap._group_a if op._name == "generation_router_gemm"]
         if len(routers) != 1:
             raise ValueError("FastAFD requires one generation router outside the measured stage")
-        replacement = [routers[0], stage]
+        routed = [op for op in overlap._group_a if op._name != "generation_router_gemm"]
+        shared = list(overlap._group_b)
+        replaced_weight_bytes = sum(op.get_weights() for op in routed + shared)
+        replacement = [routers[0], stage(replaced_weight_bytes * measured_ratio)]
         if residual_layers:
             ratio = residual_layers / model._num_layers
-            routed = _scaled_ops(
-                [op for op in overlap._group_a if op._name != "generation_router_gemm"],
-                ratio,
-            )
-            shared = _scaled_ops(overlap._group_b, ratio)
+            routed = _scaled_ops(routed, ratio)
+            shared = _scaled_ops(shared, ratio)
             replacement.append(
                 ops.OverlapOp(
                     "generation_dense_ffn_approximation",
@@ -139,7 +154,11 @@ def _replace_generation_moe(model: Any, stage: Any, *, measured_layers: int) -> 
         end += 1
     if end == router_index + 1:
         raise ValueError("FastAFD could not identify the generation MoE span")
-    model.generation_ops = generation_ops[: router_index + 1] + [stage] + generation_ops[end:]
+    replaced = generation_ops[router_index + 1 : end]
+    replacement = [stage(sum(op.get_weights() for op in replaced) * measured_ratio)]
+    if residual_layers:
+        replacement.extend(_scaled_ops(replaced, residual_layers / model._num_layers))
+    model.generation_ops = generation_ops[: router_index + 1] + replacement + generation_ops[end:]
 
 
 def _scaled_ops(items: list[Any], ratio: float) -> list[Any]:

@@ -17,6 +17,7 @@ pub struct FastAfdMoeStageOp {
     pub name: String,
     pub points: Vec<FastAfdMoeStagePoint>,
     pub profile_sha256: String,
+    pub weight_bytes: f64,
 }
 
 impl FastAfdMoeStageOp {
@@ -34,6 +35,9 @@ impl FastAfdMoeStageOp {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             return Err("FastAFD profile_sha256 must be a lowercase SHA-256".into());
+        }
+        if !self.weight_bytes.is_finite() || self.weight_bytes < 0.0 {
+            return Err("FastAFD MoE stage weight_bytes must be finite and non-negative".into());
         }
         let mut previous = 0;
         for point in &self.points {
@@ -84,6 +88,7 @@ mod tests {
                 },
             ],
             profile_sha256: "a".repeat(64),
+            weight_bytes: 1024.0,
         }
     }
 

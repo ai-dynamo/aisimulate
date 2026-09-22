@@ -4093,6 +4093,7 @@ impl PyFastAfdMoeStage {
         name: String,
         points: Vec<(u32, f64)>,
         profile_sha256: String,
+        weight_bytes: f64,
     ) -> PyResult<(Self, PyOperation)> {
         let inner = FastAfdMoeStageOp {
             name,
@@ -4104,6 +4105,7 @@ impl PyFastAfdMoeStage {
                 })
                 .collect(),
             profile_sha256,
+            weight_bytes,
         };
         inner.validate().map_err(PyValueError::new_err)?;
         Ok((
@@ -4124,7 +4126,13 @@ impl PyFastAfdMoeStage {
             .iter()
             .map(|point| (point.num_tokens, point.latency_ms))
             .collect();
-        let args = (op.name.clone(), points, op.profile_sha256.clone()).into_pyobject(py)?;
+        let args = (
+            op.name.clone(),
+            points,
+            op.profile_sha256.clone(),
+            op.weight_bytes,
+        )
+        .into_pyobject(py)?;
         Ok((args, PyDict::new(py)))
     }
 
@@ -4144,6 +4152,10 @@ impl PyFastAfdMoeStage {
         Ok(slf.as_super().fastafd_moe_stage()?.profile_sha256.clone())
     }
 
+    #[getter(_weight_bytes)]
+    fn weight_bytes(slf: PyRef<'_, Self>) -> PyResult<f64> {
+        Ok(slf.as_super().fastafd_moe_stage()?.weight_bytes)
+    }
 }
 
 // ---------------------------------------------------------------------------

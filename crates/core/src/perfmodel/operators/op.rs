@@ -281,7 +281,7 @@ impl Op {
             Op::Dsv41Engram(o) => o.weight_bytes(),
             Op::Dsv41Stage(o) => o.weight_bytes(),
             Op::Dsv41Linear(o) => o.weight_bytes(),
-            Op::FastAfdMoeStage(_) => 0.0,
+            Op::FastAfdMoeStage(o) => o.weight_bytes,
             Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
