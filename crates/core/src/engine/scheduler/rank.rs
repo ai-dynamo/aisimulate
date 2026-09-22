@@ -431,6 +431,7 @@ fn core_args(config: &EngineConfig, timing: Arc<dyn TimingModel>) -> MockEngineA
         kv_cache_bytes_per_token: config.kv_cache_bytes_per_token,
         native_host_offload: config.native_host_offload,
         state_cache: config.state_cache,
+        prefix_match_unit: config.prefix_match_unit,
         kv_transfer_bandwidth: config.kv_transfer_bandwidth,
         kv_transfer_timing_mode: match config.kv_transfer_timing_mode {
             TransferTimingMode::FullPrompt => KvTransferTimingMode::FullPrompt,

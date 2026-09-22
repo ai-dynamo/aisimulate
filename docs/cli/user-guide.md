@@ -1182,6 +1182,92 @@ It cannot be combined with host/G3 offload or disaggregated mode, and is not ava
 `recommend`. `block_size` must be explicitly set to at least two and `bytes_per_token`
 must be a positive integer, not `auto`.
 
+For align-mode prefill **without internal prefill checkpoints or periodic
+retention**, explicitly set `prefix_match_unit` alongside the physical
+`block_size`. Prefix hashes can be finer than allocation pages: the positive
+match unit must divide the physical block size. An explicit unit currently
+requires manually sized aggregated vLLM G1 state caching. Omitting it preserves
+legacy state-cache behavior; token-only configurations are unchanged.
+
+The following worker configuration reproduces the K3 boundary example. Here
+`A = 16` bytes/token and `state bytes = 1536 * A` are **illustrative memory
+assumptions**, not measured K3 sizing or automatic TP8/DCP8 geometry:
+
+```yaml
+scheduler:
+  max_batched_tokens: 8192
+kv_cache:
+  block_size: 1536
+  prefix_match_unit: 128
+  bytes_per_token: 16
+  capacity: {type: fixed, blocks: 64}
+  state_cache: {bytes_per_request: 24576}
+```
+
+Each physical pool block is 24576 bytes and one state copy occupies one block.
+`capacity: {type: fixed, bytes: 1572864}` is equivalent. There is no separate
+`prefill_block_size` or configurable state `blocks_per_request`. State block count
+is derived by rounding state bytes up to physical pool blocks. For real sizing,
+provide actual per-rank token bytes, total state bytes and available G1 capacity;
+single-layer vLLM page equivalence does not imply the same ratio for rank totals.
+
+A cold 24,300-token prompt computes through 7680, 15360, 23040, 24192 and finally
+24300. The final 108 tokens require another forward pass. Early chunk states
+are real physical allocations even though they are not published for cross-request
+prefix reuse. Moving to a new state slot allocates a new working state and keeps
+the previous state as input. The old input is released before that request's next
+allocation, once its earlier forward has completed. Default retention publishes
+only actually executed full replay and partial prompt-tail
+checkpoints: 23040 and 24192. Interior 1536-token boundaries that were not
+executed never acquire state. A KV match between the retained points resumes at
+23040. Decode does not replace these prompt checkpoints.
+
+With sufficient capacity, the example has this state-page lifecycle (one state
+copy per page, no internal checkpoints, serial forwards):
+
+| Forward | Resident state pages | What is retained |
+|---|---:|---|
+| 0 → 7680 | 1 | Working state |
+| 7680 → 15360 | 2 | Previous input plus new working state |
+| 15360 → 23040 | 2 | Previous input plus state at 23040 |
+| 23040 → 24192 | 2 | State at 23040 plus new partial-tail state |
+| 24192 → 24300 | 3 | Working state plus checkpoints at 23040 and 24192 |
+| Decode through 24576 | 3 | Same working slot plus the two checkpoints |
+| 24576 → 24577 | 4 | Previous input, new working slot, two checkpoints |
+| 24577 → 24578 | 3 | Previous input released, two checkpoints retained |
+| Completion | 2 | Only the two cached checkpoints remain |
+
+At prompt completion, this is 16 KV pages plus three state pages. Prefix hashes
+do not allocate 128-token pages. A partial-page prefix hit retains its source KV
+and state pages through the entire scheduling pass while copying to private
+destinations. The producer's partial-tail preservation copy has the same lifetime.
+These copy references are released at the next pass boundary; full state restore
+sources follow the per-request previous-input lifetime instead. Copies count
+against the shared pool, including their temporary peaks, and cancellation releases
+only the cancelled request's references. Missing capacity cannot silently overwrite
+a source or publish a checkpoint for unexecuted work. With prefix caching disabled,
+this align policy is inactive and working state retains the legacy private behavior. Cached
+pages and all their partial-prefix aliases are evicted together. Either state
+checkpoint may be evicted under pressure.
+
+This contract follows the no-internal-checkpoint path of
+[vLLM v0.29.0](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/sched/scheduler.py).
+It does not expose `kda_prefill_backend` or `prefix-cache-retention-interval`, nor
+model FlashKDA internal checkpoints, shared-prefix junction retention, or native
+per-cache-group DCP layout or overlapping asynchronous forwards. The lifetime
+boundaries above model the engine's serial per-rank passes. Speculative decoding, KV event export and Belady
+eviction with explicit `prefix_match_unit` are rejected. Use the default LRU
+eviction policy; the current Belady oracle indexes full physical-page hashes and
+cannot rank fine-grained state keys or partial-page aliases. The example's upstream
+scheduler block size 12288 constrains periodic retention; it is not the prefill alignment of 1536.
+
+Dynamo callers need to pass `prefix_match_unit`, `block_size`, the complete
+`state_cache`, per-rank byte geometry, capacity and batch budget through the
+existing engine adapter. No separate mocker scheduler/cache is needed. KV-event
+routing integration remains unsupported for this fine-grained path. A Dynamo
+test branch can pin the AISimulate fix commit and rebuild without waiting for a
+release, for execution paths that do not require KV event export.
+
 <a id="prompt-lookup-ngram-speculative-decoding"></a>
 
 ### Prompt-lookup (ngram) speculative decoding

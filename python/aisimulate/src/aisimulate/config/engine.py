@@ -146,7 +146,7 @@ def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> in
 
 
 class StateCacheConfig(StrictModel):
-    """Only recurrent-state storage belongs here; token geometry lives on kv_cache."""
+    """One complete state copy per rank; token pool geometry lives on kv_cache."""
 
     bytes_per_request: PositiveU64
 
@@ -159,6 +159,7 @@ class StateCacheConfig(StrictModel):
 
 class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
+    prefix_match_unit: PositiveU64 | None = None
     prefix_caching: bool = True
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
@@ -174,6 +175,11 @@ class KvCachePredictionConfig(StrictModel):
 
     @model_validator(mode="after")
     def _validate_manual_geometry(self) -> KvCachePredictionConfig:
+        if self.prefix_match_unit is not None:
+            if self.state_cache is None:
+                raise ValueError("prefix_match_unit currently requires state_cache")
+            if self.block_size is None or self.block_size % self.prefix_match_unit:
+                raise ValueError("prefix_match_unit must be a positive divisor of block_size")
         if self.capacity.bytes is not None or self.state_cache is not None:
             block_bytes = manual_block_bytes(self.block_size, self.bytes_per_token)
             if self.capacity.type != "fixed":
@@ -788,6 +794,8 @@ def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
         worker = getattr(engine.workers, role)
         if worker is None or worker.kv_cache.state_cache is None:
             continue
+        if worker.kv_cache.prefix_match_unit is not None and engine.speculation is not None:
+            raise ValueError("prefix_match_unit does not support speculative decoding")
         if engine.backend != "vllm" or engine.mode != "aggregated" or role != "aggregated":
             raise ValueError("state_cache requires backend=vllm and mode=aggregated (G1 only)")
 
