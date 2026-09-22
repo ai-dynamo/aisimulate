@@ -5,10 +5,13 @@
 
 Invoked by nightly CI before `scripts/build_release_artifacts.py`. Takes one
 argument -- a PEP 440 suffix like '.dev202609170000001234' -- and rewrites:
-  - [project].version in python/aisimulate/pyproject.toml (PEP 440 form)
+  - [project].version in Python package manifests (PEP 440 form)
   - [package].version in crates/core/Cargo.toml and
     [workspace.package].version in Cargo.toml (SemVer form: dash instead of
     dot, so '0.13.0-dev.202609170000001234' -- cargo rejects the PEP 440 spelling)
+  - optional policy package versions and exact base-package dependency pins
+  - local package versions in committed Cargo lockfiles, so --locked builds
+    retain the same resolved third-party dependencies after stamping
 
 The suffix is the UTC creation date followed by a ten-digit workflow run
 number; legacy date-only suffixes remain accepted. The crate form keeps the
@@ -55,6 +58,19 @@ def rewrite(path: Path, tail: str) -> str:
     return str(VERSION_LINE_RE.search(new_text).group(2))
 
 
+def rewrite_lock(path: Path, package_versions: dict[str, str]) -> None:
+    """Stamp only local package records, preserving every resolved dependency."""
+    if not path.is_file():
+        return  # Historical release fixtures may not contain a lockfile.
+    text = path.read_text()
+    for name, version in package_versions.items():
+        pattern = re.compile(r'(\[\[package\]\]\nname = "' + re.escape(name) + r'"\nversion = ")[^"]+("\n)')
+        text, count = pattern.subn(lambda match: f"{match.group(1)}{version}{match.group(2)}", text)
+        if count != 1:
+            raise SystemExit(f"expected one local {name} package in {path}, found {count}")
+    path.write_text(text)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("suffix", help="e.g. .dev20260827 (empty = no-op)")
@@ -70,6 +86,25 @@ def main() -> int:
     root = Path(args.root).resolve()
     stamped = [rewrite(root / PYPROJECT, args.suffix)]
     stamped += [rewrite(root / path, semver(args.suffix)) for path in CARGO_MANIFESTS]
+    rewrite_lock(root / "Cargo.lock", {"aisimulate-core": stamped[2]})
+    plugin_py = root / "python/aisimulate-dynamo-policy/pyproject.toml"
+    if plugin_py.is_file():
+        plugin_native = root / "crates/dynamo-policy/Cargo.toml"
+        stamped.append(rewrite(plugin_py, args.suffix))
+        stamped.append(rewrite(plugin_native, semver(args.suffix)))
+        plugin_py.write_text(re.sub(r'"aisimulate==[^"]+"', f'"aisimulate=={stamped[0]}"', plugin_py.read_text()))
+        native_text, count = re.subn(
+            r'(aisimulate-core\s*=\s*\{[^\n]*version\s*=\s*")=[^"]+("[^\n]*\})',
+            rf"\g<1>={stamped[2]}\2",
+            plugin_native.read_text(),
+        )
+        if count != 1:
+            raise SystemExit(f"expected one exact aisimulate-core pin in {plugin_native}")
+        plugin_native.write_text(native_text)
+        rewrite_lock(
+            root / "crates/dynamo-policy/Cargo.lock",
+            {"aisimulate-core": stamped[2], "aisimulate-dynamo-policy": stamped[-1]},
+        )
     print(f"apply_dev_version: {', '.join(stamped)}", file=sys.stderr)
     return 0
 

@@ -307,6 +307,10 @@ jobs:
           cargo-deny -L error --all-features \
             --manifest-path crates/tests/public-api/Cargo.toml \
             check licenses bans --config deny.toml
+          rustup toolchain install 1.96.1 --profile minimal
+          RUSTUP_TOOLCHAIN=1.96.1 cargo-deny -L error --all-features \
+            --manifest-path crates/dynamo-policy/Cargo.toml \
+            check licenses bans --config deny.toml
 
   rust:
     name: Rust (${{ matrix.arch }})
@@ -905,6 +909,14 @@ jobs:
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
 
+  dynamo-policy:
+    name: Optional Dynamo Policy
+    needs: [fast-ci, select-full-ci]
+    if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
+    uses: ./.github/workflows/dynamo-policy.yml
+    with:
+      expected_sha: ${{ github.sha }}
+
   readiness:
     name: Full CI Success
     if: ${{ always() }}
@@ -926,6 +938,7 @@ jobs:
       - python-compatibility
       - engine-golden-regression
       - release-artifact-contract
+      - dynamo-policy
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -952,6 +965,7 @@ jobs:
               "python-compliance": "application_wheel",
               "application-test-wheel": "application_tests",
               "application-tests": "application_tests",
+              "dynamo-policy": "application_tests",
               "python-compatibility": "python_compatibility",
               "engine-golden-regression": "engine_golden_regression",
               "release-artifact-contract": "release_artifact_contract",

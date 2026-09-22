@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build and verify the only two approved AISimulate release artifacts."""
+"""Build and verify the base wheel/crate; validate the optional policy package."""
 
 from __future__ import annotations
 
@@ -47,8 +47,12 @@ def check_manifests() -> tuple[str, str]:
     pyprojects = {
         path: str(_toml(path)["project"]["name"]) for path in ROOT.rglob("pyproject.toml") if _is_source_manifest(path)
     }
-    assert pyprojects == EXPECTED_PYTHON_PROJECTS, (
-        f"publishable Python manifest set changed:\nexpected={EXPECTED_PYTHON_PROJECTS}\nactual={pyprojects}"
+    expected_projects = dict(EXPECTED_PYTHON_PROJECTS)
+    plugin_path = ROOT / "python" / "aisimulate-dynamo-policy" / "pyproject.toml"
+    if plugin_path.is_file():
+        expected_projects[plugin_path] = "aisimulate-dynamo-policy"
+    assert pyprojects == expected_projects, (
+        f"publishable Python manifest set changed:\nexpected={expected_projects}\nactual={pyprojects}"
     )
 
     publishable_crates: dict[Path, str] = {}
@@ -76,6 +80,31 @@ def check_manifests() -> tuple[str, str]:
     assert crate_version == expected_crate_version, (
         f"crate version {crate_version} does not match wheel version {py_version} (expected {expected_crate_version})"
     )
+    assert _toml(ROOT / "Cargo.toml")["workspace"]["package"]["version"] == crate_version, (
+        "workspace version differs from the core crate"
+    )
+    if plugin_path.is_file():
+        plugin = _toml(plugin_path)["project"]
+        native = _toml(ROOT / "crates" / "dynamo-policy" / "Cargo.toml")
+        assert plugin["version"] == py_version, "optional adapter wheel version differs from base"
+        assert plugin["dependencies"] == [f"aisimulate=={py_version}"], "adapter must pin its base wheel"
+        assert native["package"]["version"] == crate_version, "optional adapter native version differs from core"
+        assert native["dependencies"]["aisimulate-core"]["version"] == f"={crate_version}", (
+            "adapter must pin its core crate"
+        )
+        for relative, names in (
+            ("Cargo.lock", {"aisimulate-core"}),
+            ("crates/dynamo-policy/Cargo.lock", {"aisimulate-core", "aisimulate-dynamo-policy"}),
+        ):
+            packages = _toml(ROOT / relative)["package"]
+            for name in names:
+                local = [package for package in packages if package["name"] == name]
+                assert len(local) == 1 and local[0]["version"] == crate_version and "source" not in local[0], (
+                    f"{relative} must contain the matching local {name} version"
+                )
+        assert not any(package["name"].startswith("dynamo-") for package in _toml(ROOT / "Cargo.lock")["package"]), (
+            "the base package must remain independent of Dynamo"
+        )
     optional_dependencies = app.get("optional-dependencies", {})
     dependencies = [
         *app["dependencies"],

@@ -115,6 +115,10 @@ def test_representative_routing_contract() -> None:
         MAINTAINERS,
     }
     assert _owners("crates/core/src/replay/event.rs") == {REPLAY, MAINTAINERS}
+    assert _owners("crates/dynamo-policy/src/lib.rs") == {REPLAY, MAINTAINERS}
+    assert _owners("python/aisimulate-dynamo-policy/src/aisimulate_dynamo_policy/runner.py") == {REPLAY, MAINTAINERS}
+    assert _owners("crates/dynamo-policy/Cargo.toml") == {REPLAY, INFRA, MAINTAINERS}
+    assert _owners("python/aisimulate-dynamo-policy/pyproject.toml") == {REPLAY, INFRA, MAINTAINERS}
     assert _owners("crates/core/src/engine/scheduler/vllm/core.rs") == {
         MOCKER,
         MAINTAINERS,
@@ -190,6 +194,7 @@ def test_dependency_policy_covers_every_rust_manifest_root() -> None:
     for manifest in (
         "Cargo.toml",
         "crates/tests/public-api/Cargo.toml",
+        "crates/dynamo-policy/Cargo.toml",
     ):
         assert f"--manifest-path {manifest}" in workflow
 
@@ -328,6 +333,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "python-compatibility",
         "engine-golden-regression",
         "release-artifact-contract",
+        "dynamo-policy",
         "application-wheel",
         "python-compliance",
     }

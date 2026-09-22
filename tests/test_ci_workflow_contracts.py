@@ -1662,6 +1662,35 @@ def test_selective_full_ci_keeps_the_aggregate_fail_closed() -> None:
     assert "needs.select-full-ci.result == 'success'" in wheel_condition
 
 
+def test_optional_policy_runs_installed_cli_under_existing_full_ci_admission() -> None:
+    jobs = _workflow("ci.yml")["jobs"]
+    job = jobs["dynamo-policy"]
+    assert set(job["needs"]) == {"fast-ci", "select-full-ci"}
+    assert job["if"] == "${{ needs.select-full-ci.outputs.application_tests == 'true' }}"
+    assert job["uses"] == "./.github/workflows/dynamo-policy.yml"
+    assert job["with"]["expected_sha"] == "${{ github.sha }}"
+    workflow = _workflow("dynamo-policy.yml")
+    assert set(workflow["on"]) == {"workflow_call"}
+    assert workflow["permissions"] == {"contents": "read"}
+    native = workflow["jobs"]["native-and-cli"]
+    assert native["runs-on"] == "ubuntu-latest"
+    assert native["env"]["RUSTUP_TOOLCHAIN"] == "1.96.1"
+    commands = _run_commands(native)
+    assert 'test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"' in commands
+    assert "scripts/build_dynamo_policy.py --debug --output-dir policy-wheels" in commands
+    assert "policy-smoke/bin/python -m pip install policy-wheels/*.whl" in commands
+    assert "cargo test --manifest-path crates/dynamo-policy/Cargo.toml --locked" in commands
+    assert "--confcutdir=python/aisimulate-dynamo-policy/tests python/aisimulate-dynamo-policy/tests" in commands
+    assert "PYTHONPATH" not in commands
+    assert "pip install -e" not in commands
+    plan = dict.fromkeys(COMPONENTS, "true")
+    results = dict.fromkeys(jobs["readiness"]["needs"], "success")
+    results["dynamo-policy"] = "failure"
+    failed = _run_full_ci_aggregate(results, plan)
+    assert failed.returncode != 0
+    assert "dynamo-policy=failure, expected success" in failed.stdout
+
+
 def test_full_ci_selector_uses_the_complete_exact_head_pr_change_set() -> None:
     selector = _workflow("ci.yml")["jobs"]["select-full-ci"]
     commands = _run_commands(selector)
@@ -1795,6 +1824,7 @@ def test_full_ci_aggregate_accepts_only_explicit_na_results() -> None:
             for component in COMPONENTS
         },
         "application-test-wheel": "success",
+        "dynamo-policy": "success",
     }
 
     passed = _run_full_ci_aggregate(results, plan)
@@ -1822,6 +1852,7 @@ def test_full_ci_aggregate_rejects_missing_selection_output() -> None:
         "python-compliance": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
+        "dynamo-policy": "skipped",
     }
 
     result = _run_full_ci_aggregate(results, plan)
@@ -1838,6 +1869,7 @@ def test_full_ci_aggregate_rejects_missing_dependency() -> None:
         "python-compliance": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
+        "dynamo-policy": "skipped",
     }
     del results["collector-data"]
 

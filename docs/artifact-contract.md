@@ -1,6 +1,6 @@
 # AISimulate artifact contract
 
-AISimulate 0.13.0 has one product version and exactly two release artifacts:
+AISimulate 0.13.0 has one product version and two base release artifacts:
 
 | Artifact | Build manifest | Public purpose |
 | --- | --- | --- |
@@ -15,8 +15,8 @@ The legacy `aiconfigurator` executable uses `aisimulate.legacy_cli`; the old
 Python import namespaces are removed. See the [migration guide](python-source-migration.md).
 
 `scripts/build_release_artifacts.py` validates the manifest set before it
-builds and validates the output directory afterward. A release build fails if
-an additional wheel, source distribution, or crate appears.
+builds and validates the output directory afterward. The base release build
+fails if an additional wheel, source distribution, or crate appears in its output.
 
 Both artifacts use version `0.13.0`. The wheel builds its native extension from
 the same Rust source as the published crate; it does not install a second core
@@ -26,11 +26,37 @@ For published versions, wheel platform tags, source installation, and internal
 nightly consumption, see the [installation guide](installation.md). The product
 version in a manifest does not establish publication on an index.
 
+## Optional Dynamo policy wheel
+
+`aisimulate-dynamo-policy` is a separately installed adapter, built from
+`python/aisimulate-dynamo-policy/pyproject.toml`. Its native crate at
+`crates/dynamo-policy/` is `publish = false`, excluded from the core workspace,
+and has a separate lockfile. The base wheel and crate have no Dynamo dependency.
+
+The supported source build uses `scripts/build_dynamo_policy.py` to produce
+matching base and adapter wheels from one checkout. Python package versions,
+Rust package versions and exact dependency pins must agree; both native modules
+must report the same core source digest and serialized replay contract. The
+adapter imports the existing public APIs of immutable, merged Dynamo commit
+`d9eb42db1168131fdae318eef77255637e4d3495`, without a local override. Both
+wheels build with Rust 1.96.1 and committed Cargo lockfiles. The builder verifies
+wheel metadata and legal files and records source identity and artifact hashes
+in `manifest.json`. Archive/container builds require an explicit source SHA and
+record source cleanliness as unknown because Git metadata is absent.
+
+This adapter is source-built until matching wheels are published. The existing
+base release and nightly jobs continue to emit their two base artifacts; they
+do not publish the adapter. The optional Full CI job builds and installs a
+matching pair, then exercises native policy lifecycle and real YAML CLI tests.
+See the [AgentX quickstart](agentx-quickstart.md) for installation and supported
+routing configurations.
+
 ## Packaged license files
 
 The root `LICENSE` and `THIRD_PARTY_NOTICES.md` are the canonical repository
-legal files. The wheel build is rooted at `python/aisimulate/`, so exact copies
-are retained there and declared as wheel license files by `pyproject.toml`.
+legal files. The base and optional adapter wheel builds are rooted at their
+respective Python package directories, so exact copies are retained in both
+and declared as wheel license files by each `pyproject.toml`.
 Both are installed under the wheel's distribution metadata; the nested copies
 do not create a separate licensing boundary. `scripts/check_packaged_legal_files.py`
 fails CI if either packaging copy differs byte-for-byte from its root original,
@@ -44,6 +70,9 @@ numerically). The wheel form follows the ai-dynamo/dynamo nightly
 convention. The release script accepts only this suffix pair and still
 anchors both artifacts to the one product version; any other version shape
 fails the build.
+The same stamp updates the optional adapter's package versions, exact base pins,
+and local package records in both Cargo lockfiles while retaining resolved
+third-party dependency versions.
 
 The bundled performance database makes the unified wheel about 164 MiB, above
 the default 100 MiB per-file upload limit on PyPI and TestPyPI. Before the first

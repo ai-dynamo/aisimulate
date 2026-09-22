@@ -964,3 +964,22 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 - Modified: development-only two-predictor evaluation, public overview export,
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility. No Plotly assets included.
+
+## Dynamo optional policy adapter
+
+Repository-root file `crates/dynamo-policy/src/events.rs` is a modified protocol
+conversion derived from `ai-dynamo/dynamo`, revision
+`d9eb42db1168131fdae318eef77255637e4d3495`, original path
+`lib/mocker/src/engine_observations.rs`. It adapts physical AISimulate engine KV
+events to native Dynamo events, adding checked conversions and the public
+observation batch interface. Routing, affinity, hashing and index algorithms
+remain imported dependencies and are not copied into AISimulate.
+
+Source: https://github.com/ai-dynamo/dynamo/blob/d9eb42db1168131fdae318eef77255637e4d3495/lib/mocker/src/engine_observations.rs
+
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache License 2.0. Upstream license:
+https://github.com/ai-dynamo/dynamo/blob/d9eb42db1168131fdae318eef77255637e4d3495/LICENSE
+
+The optional Python wheel carries these canonical notices and the Apache-2.0
+license. `crates/dynamo-policy/README.md` records the source and modifications.

@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "aisimulate-dynamo-policy"
+version = "0.13.0"
+publish = false
+edition = "2024"
+license = "Apache-2.0"
+description = "Optional native Dynamo policy composition for AISimulate replay"
+
+[workspace]
+
+[lib]
+name = "_native"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+aisimulate-core = { package = "aisimulate-core", path = "../core", version = "=0.13.0", features = ["python"] }
+anyhow = "1"
+async-trait = "0.1"
+blake3 = "1"
+dynamo-kv-router = { git = "https://github.com/ai-dynamo/dynamo", rev = "d9eb42db1168131fdae318eef77255637e4d3495", default-features = false, features = ["standalone-selection"] }
+pyo3 = { version = "0.23.4", features = ["abi3-py311"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "time", "test-util"] }
+uuid = "1"
