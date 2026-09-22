@@ -528,7 +528,16 @@ def build_ops(facts: dict) -> tuple[list[dict], list[str]]:
         ops.append({"phase": "generate", "op": "all", "quant": None, "api": None,
                     "kernels": kerns, "calls": 1, "backends": sorted(labels) or None,
                     "unclassified_kernels": sorted(unmatched) or None})
-    orphans: list[str] = []
+    # Orphan kernels are those the span attribution missed — critically, the
+    # cudagraph-replayed attention kernels (no CPU launch event, so no span),
+    # which live only in the device-stream prefill/decode tables. Keep the
+    # top-40 by DEVICE TIME, never an alphabetical [:15]: the significant
+    # attention kernels (flash_fwd_splitkv_mla_fp8_sparse, fmhaSm10x, ...)
+    # sort late alphabetically and were being truncated away, so the fp8
+    # attention path never reached records.jsonl and path_diff saw an empty
+    # serving signal (found by the fp8-KV probe sweep 2026-09-23; the B300
+    # rerun hit the same bug independently).
+    orphans_t: dict[str, float] = {}
     for tbl in ("prefill_kernels", "decode_kernels"):
         for k in (trace.get(tbl) or []):
             name = k.get("kernel", "")
@@ -537,8 +546,9 @@ def build_ops(facts: dict) -> tuple[list[dict], list[str]]:
                 continue  # spans, phase markers, custom-op launchers — not kernels
             n = normalize_kernel(name)
             if n and n not in attributed:
-                orphans.append(n)
-    return ops, sorted(set(orphans))[:15]
+                orphans_t[n] = orphans_t.get(n, 0.0) + float(k.get("us") or 0.0)
+    top = sorted(orphans_t.items(), key=lambda kv: -kv[1])[:40]
+    return ops, sorted(n for n, _ in top)
 
 
 def compress_error(stage: str, tb: str) -> dict:
