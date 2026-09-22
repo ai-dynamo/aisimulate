@@ -17,7 +17,7 @@ from typing import Any
 from aisimulate.fpm_profile import FpmResourceProfile
 
 from .plan import _plan_documents, check_plan, plan_lock, request_id
-from .schema import SupportRequest
+from .schema import FPMDeployment, SupportRequest
 
 _SCHEMA = "aisimulate-onboarding-finalization/v1"
 
@@ -198,10 +198,20 @@ def _verify_collection(
 
     # Normalize the reviewed inputs through the same local collector options
     # parser. This does not resolve a model or regenerate Dynamo's runtime grid.
-    reviewed_options = FPMCollectionOptions.from_args(
-        _parser().parse_args(fpm_cli_args(request, output_dir=root, plan_only=True)[3:])
-    ).to_dict()
     saved_options = dict(payload["options"])
+    # Deployment is selected at collection, after the request is saved. Retain
+    # its verified frozen values while deriving runtime/grid limits from the
+    # reviewed request. Parsing these values never invokes either executor.
+    collection_deployment = FPMDeployment(
+        executor=saved_options.get("executor", "kubernetes"),
+        image=saved_options.get("slurm_container_image") or None,
+        container_mount=saved_options.get("slurm_container_mounts", []),
+    )
+    reviewed_options = FPMCollectionOptions.from_args(
+        _parser().parse_args(
+            fpm_cli_args(request, output_dir=root, plan_only=True, deployment=collection_deployment)[3:]
+        )
+    ).to_dict()
     for options in (reviewed_options, saved_options):
         options.setdefault("gpu_memory_utilization", request.collection.memory_fraction)
     if saved_options != reviewed_options:

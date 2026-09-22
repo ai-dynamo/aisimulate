@@ -1055,12 +1055,15 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
     def make_root(name, kind):
         root = tmp_path / name
         root.mkdir()
-        packaged = Path(aisimulate_core.__file__).parent / "systems/h200_sxm.yaml"
-        (root / packaged.name).write_bytes(packaged.read_bytes())
         identity = load_fpm_profile(profile_dict).deployments[0].model_dump(mode="json", exclude={"resources"})
+        system = identity["system"]
+        packaged = Path(aisimulate_core.__file__).parent / "systems" / f"{system}.yaml"
+        (root / packaged.name).write_bytes(packaged.read_bytes())
         coordinates = []
-        if kind in {"genuine", "mixed"}:
+        if kind in {"genuine", "mixed", "coverage"}:
             coordinates.extend([("prefill", 0, "real_kv", 2.0), ("decode", 1, "real_kv", 3.0)])
+        if kind == "coverage":
+            coordinates.append(("prefill", 16, "real_kv", 4.0))
         if kind in {"fake", "mixed"}:
             coordinates.append(("decode", 64, "fake_fallback", 99.0))
         rows = [
@@ -1079,7 +1082,7 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
             }
             for phase, kv, regime, latency in coordinates
         ]
-        path = root / "data/h200_sxm/vllm/0.25.1/fpm_forward_perf.parquet"
+        path = root / "data" / system / "vllm/0.25.1/fpm_forward_perf.parquet"
         path.parent.mkdir(parents=True)
         pq.write_table(pa.Table.from_pylist(rows), path)
         path.with_suffix(".metadata.json").write_text(
@@ -1089,7 +1092,7 @@ def measured_profile_roots(profile_dict, tmp_path, monkeypatch):
                     "schema_version": 6,
                     "coordinate_system": "iteration_totals_balanced_v1",
                     "measurement_policy": "dynamo_native_single_sample_v1",
-                    "system": "h200_sxm",
+                    "system": system,
                     "backend": "vllm",
                     "backend_version": "0.25.1",
                     "row_count": len(rows),
@@ -1186,18 +1189,13 @@ def test_direct_coverage_rejects_estimator_fallback(profile_dict, field, value):
     ],
     ids=["tp4", "dep8", "tep8"],
 )
-def test_coverage_wrappers_preserve_existing_engine_queries_on_real_cells(
-    profile_dict, monkeypatch, model_id, system, tp, dp, moe_tp, moe_ep, gemm, fmha
+def test_coverage_wrappers_preserve_existing_engine_queries_on_external_cells(
+    profile_dict, measured_profile_roots, model_id, system, tp, dp, moe_tp, moe_ep, gemm, fmha
 ):
-    import pyarrow.parquet as pq
-
     import aisimulate_core
 
-    # Retained real timing identity; synthetic resource bounds isolate this
-    # regression from GPU memory qualification and analytical model classes.
-    monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
-    monkeypatch.setattr(engine, "get_model", _fail_graph)
-    monkeypatch.setattr(engine, "build_model_config", _fail_graph)
+    # Synthetic external timings exercise TP/DEP/TEP routing parity, not model
+    # accuracy or GPU memory qualification. No bundled FPM data is required.
     profile_dict["model"] = model_id
     profile_dict["deployments"][0].update(
         system=system,
@@ -1208,8 +1206,10 @@ def test_coverage_wrappers_preserve_existing_engine_queries_on_real_cells(
         gemm_quant_mode=gemm,
         moe_quant_mode=gemm,
         fmha_quant_mode=fmha,
+        attention_backend="auto",
     )
-    config = _request(profile_dict, "direct")
+    root = measured_profile_roots("external", "coverage")
+    config = _request(profile_dict, "direct", systems_paths=[root])
     config["estimator_config"]["fpm_interpolation"]["collect_coverage"] = True
     covered = RustForwardPassPerfModel.best_available(config)
     original = aisimulate_core.AicEngine.from_spec(
@@ -1225,24 +1225,15 @@ def test_coverage_wrappers_preserve_existing_engine_queries_on_real_cells(
             forward_model="fpm",
             fpm_profile=profile_dict,
             fpm_interpolation="direct",
+            systems_path=root,
         )
     )
-    data = Path(aisimulate_core.__file__).parent / "systems/data" / system / "vllm/0.25.1/fpm_forward_perf.parquet"
-    rows = pq.read_table(
-        data, filters=[("model_path", "=", model_id), ("tp", "=", tp), ("dp", "=", dp), ("batch_size", "=", 1)]
-    ).to_pylist()
-    for cached in (False, True):
-        row = next(
-            row for row in rows if row["workload_kind"] == "prefill" and bool(row["total_kv_read_tokens"]) == cached
+    for prefix, latency in ((0, 2.0), (16, 4.0)):
+        assert covered.predict_prefill_latency(1, 1 + prefix, prefix) == original.predict_prefill_latency(
+            1, 1 + prefix, prefix
         )
-        prefix = row["total_kv_read_tokens"]
-        isl = row["total_prefill_tokens"] + prefix
-        assert covered.predict_prefill_latency(1, isl, prefix) == original.predict_prefill_latency(1, isl, prefix)
-        assert covered.predict_prefill_latency(1, isl, prefix) == pytest.approx(row["latency_ms"])
-    row = next(row for row in rows if row["workload_kind"] == "decode" and row["kv_seed_regime"] != "fake_fallback")
-    assert covered.predict_decode_latency_total(
-        1, row["total_kv_read_tokens"]
-    ) == original.predict_decode_latency_total(1, row["total_kv_read_tokens"])
+        assert covered.predict_prefill_latency(1, 1 + prefix, prefix) == latency
+    assert covered.predict_decode_latency_total(1, 1) == original.predict_decode_latency_total(1, 1) == 3.0
     assert covered.predict_decode_latency_total(0, 0) == original.predict_decode_latency_total(0, 0) == 0.0
     assert covered.fpm_decode_kv_ceiling() == original.fpm_decode_kv_ceiling()
     report = covered.fpm_query_coverage()

@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -192,20 +195,7 @@ def _memory(provenance, phase, model, revision):
     return worker, scheduler
 
 
-def build_completed_collection(
-    tmp_path: Path, *, extra_init_args: tuple[str, ...] = (), plan_changes: dict | None = None
-) -> tuple[SupportRequest, Path]:
-    """Reusable CPU-only fixture for source and installed-wheel CLI checks.
-
-    Timings and cache allocations are synthetic test declarations, not measured
-    silicon. The production validator/resolver and formal publisher run unchanged.
-    """
-    from collector.fpm_forward import cli as collector_cli
-    from collector.fpm_forward.config import FPMCollectionOptions
-    from collector.fpm_forward.database import aggregate_cell, write_formal_database
-    from collector.fpm_forward.planner import build_collection_plan
-    from collector.fpm_forward.runner import CHECKPOINT_SCHEMA
-
+def _prepare_collection(tmp_path: Path, extra_init_args: tuple[str, ...] = ()) -> tuple[SupportRequest, Path]:
     source = tmp_path / "config.json"
     _write(
         source,
@@ -276,6 +266,25 @@ def build_completed_collection(
     assert cli.main(["onboard", "plan", "--config", str(original), "--output-dir", str(root)]) == 0
     request = SupportRequest.from_yaml(root / "request.yaml")
     assert request.profile_deployment().resources.memory_source == "pending"
+    return request, root
+
+
+def build_completed_collection(
+    tmp_path: Path, *, extra_init_args: tuple[str, ...] = (), plan_changes: dict | None = None
+) -> tuple[SupportRequest, Path]:
+    """Reusable CPU-only fixture for source and installed-wheel CLI checks.
+
+    Timings and cache allocations are synthetic test declarations, not measured
+    silicon. The production validator/resolver and formal publisher run unchanged.
+    """
+    from collector.fpm_forward import cli as collector_cli
+    from collector.fpm_forward.config import FPMCollectionOptions
+    from collector.fpm_forward.database import aggregate_cell, write_formal_database
+    from collector.fpm_forward.planner import build_collection_plan
+    from collector.fpm_forward.runner import CHECKPOINT_SCHEMA
+
+    request, root = _prepare_collection(tmp_path, extra_init_args)
+    source = tmp_path / "config.json"
     manifest = json.loads((root / "support-plan.json").read_text())
     args = collector_cli._parser().parse_args(manifest["fpm"]["plan_command"][3:])
     plan = build_collection_plan(
@@ -340,7 +349,7 @@ def build_completed_collection(
     )
     # Finalization must use immutable saved inputs, never refetch/rederive config.
     source.unlink()
-    overrides.unlink()
+    (tmp_path / "overrides.json").unlink()
     return request, root
 
 
@@ -352,11 +361,21 @@ def _snapshot(root):
     "plan_changes",
     [{}, {"max_prefill_cudagraph_size": 32}, {"max_prefill_isl": 32}, {"warmup_iterations": 2}],
 )
-def test_public_finalize_binds_reviewed_collection_options(tmp_path, capsys, plan_changes):
+@pytest.mark.parametrize("executor", ["kubernetes", "slurm"])
+def test_public_finalize_binds_reviewed_collection_options(tmp_path, capsys, plan_changes, executor):
+    deployment = (
+        {
+            "executor": "slurm",
+            "slurm_container_image": "image@sha256:synthetic",
+            "slurm_container_mounts": ("/cache:/cache",),
+        }
+        if executor == "slurm"
+        else {}
+    )
     _request, root = build_completed_collection(
         tmp_path,
         extra_init_args=("--prefill-cudagraph-policy", "explicit", "--max-prefill-cudagraph-size", "64"),
-        plan_changes=plan_changes,
+        plan_changes={**deployment, **plan_changes},
     )
     target = tmp_path / "resolved"
     before = _snapshot(root)
@@ -382,6 +401,117 @@ def test_public_finalize_binds_reviewed_collection_options(tmp_path, capsys, pla
         assert not target.exists()
     else:
         assert SupportRequest.from_yaml(target / "request.yaml").collection.max_prefill_cudagraph_size == 64
+
+
+@pytest.mark.parametrize("tamper", [None, "image", "mounts", "executor", "worker"])
+def test_public_slurm_collect_to_finalize_preserves_frozen_deployment(tmp_path, monkeypatch, capsys, tamper):
+    """Real CLI, Slurm campaign and finalizer; only cluster/runtime output is synthetic."""
+    from collector.fpm_forward import runner
+
+    request, root = _prepare_collection(tmp_path, ("--model", str(tmp_path)))
+    image = "registry.example/fpm@sha256:" + "a" * 64
+    commands = []
+
+    def cluster_command(args, **_kwargs):
+        commands.append(args)
+        if args[0] == "scontrol":
+            output = "JobId=1234 JobState=RUNNING NodeList=node-a" if "job" in args else "node-a"
+            return subprocess.CompletedProcess(args, 0, stdout=output, stderr="")
+        if args[0] == "squeue":
+            return subprocess.CompletedProcess(args, 0, stdout="1234.99|unrelated-job", stderr="")
+        assert args[0] == "srun", args
+        assert "--jobid=1234" in args and "--gpus-per-node=1" in args
+        assert f"--container-image={image}" in args
+        mounts = next(value.split("=", 1)[1] for value in args if value.startswith("--container-mounts="))
+        assert mounts.startswith("/cache:/cache,/models:/models,")
+        raw = Path(next(value.rsplit(":", 1)[0] for value in mounts.split(",") if value.endswith(":/results")))
+        command = args[args.index("env") + 3 :]
+        if command[:2] == ["python3", "-c"]:
+            with monkeypatch.context() as patch:
+                patch.setattr(sys, "argv", ["-c", *command[3:]])
+                patch.setattr(importlib.metadata, "version", lambda _name: "0.27.0")
+                exec(command[2].replace("/results", str(raw)), {})
+        else:
+            assert command == ["bash", "/tmp/fpm-bench/fpm_exec.sh"]
+            cell = json.loads((raw.parent.parent / "cell.json").read_text())
+            provenance = json.loads((raw / "collector-provenance.json").read_text())
+            _write(raw / "benchmark.json", _native(cell["workload_kind"]))
+            worker, scheduler = _memory(
+                provenance, cell["workload_kind"], request.identity.model, request.identity.model_revision
+            )
+            _write(raw / "fpm-memory-worker-dp0-tp0-pp0.json", worker)
+            _write(raw / "fpm-memory-scheduler-dp0.json", scheduler)
+        return subprocess.CompletedProcess(args, 0, stdout="synthetic Slurm runtime", stderr="")
+
+    monkeypatch.setenv("SLURM_JOB_ID", "1234")
+    monkeypatch.setattr("collector.fpm_forward.slurm.shutil.which", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(runner, "_run_command", cluster_command)
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "collect-fpm",
+                "--config",
+                str(root / "request.yaml"),
+                "--output-dir",
+                str(root),
+                "--executor",
+                "slurm",
+                "--image",
+                image,
+                "--container-mount",
+                "/cache:/cache",
+                "--container-mount",
+                "/models:/models",
+                "--execute",
+            ]
+        )
+        == 0
+    )
+    collection_path = next(root.glob("fpm-artifacts/*/collection-plan.json"))
+    payload = json.loads(collection_path.read_text())
+    assert payload["options"]["executor"] == "slurm"
+    assert payload["options"]["slurm_container_image"] == image
+    assert payload["options"]["slurm_container_mounts"] == ["/cache:/cache", "/models:/models"]
+    if tamper == "worker":
+        next(root.glob("fpm-artifacts/*/cells/*/raw/node0000/fpm-memory-worker*.json")).unlink()
+    elif tamper is not None:
+        key, value = {
+            "image": ("slurm_container_image", "changed-image"),
+            "mounts": ("slurm_container_mounts", ["/different:/cache"]),
+            "executor": ("executor", "kubernetes"),
+        }[tamper]
+        payload["options"][key] = value
+        _write(collection_path, payload)
+    (tmp_path / "config.json").unlink()
+    before, calls = _snapshot(root), list(commands)
+    target = tmp_path / "resolved"
+    try:
+        status = cli.main(
+            [
+                "onboard",
+                "finalize",
+                "--config",
+                str(root / "request.yaml"),
+                "--output-dir",
+                str(root),
+                "--resolved-output-dir",
+                str(target),
+            ]
+        )
+    except SystemExit as error:
+        status = error.code
+    assert status == (2 if tamper else 0)
+    assert _snapshot(root) == before
+    assert commands == calls  # Finalization never starts or reconnects to the executor.
+    if tamper:
+        diagnostic = "worker rank evidence is incomplete" if tamper == "worker" else "SHA-256"
+        assert diagnostic in capsys.readouterr().err
+        assert not target.exists()
+    else:
+        resolved = SupportRequest.from_yaml(target / "request.yaml")
+        assert resolved.profile_deployment().resources.runtime_memory.kv_cache_bytes == 899 * 1024
+        check_plan(resolved, target)
 
 
 @pytest.mark.parametrize(
