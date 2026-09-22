@@ -1001,6 +1001,8 @@ def test_recommendation_candidate_yaml_round_trips_forward_model(path, mode, res
 
     raw = _fpm_recommendation().model_dump(mode="python", exclude_none=True)
     worker = raw["engine"]["workers"].pop("aggregated")
+    if mode != "aggregated":
+        worker.pop("host_loop", None)  # the SGLang host loop belongs to the aggregated worker only
     roles = {"aggregated": "agg"} if mode == "aggregated" else {"prefill": "prefill", "decode": "decode"}
     raw["engine"]["mode"] = mode
     for public_role in roles:

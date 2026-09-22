@@ -100,7 +100,7 @@ class ForwardPassEstimatorResolver:
             fallback_policy=controls.get("fallback_policy", self._search_space.fallback_policy),
             estimator_config=estimator_config,
             # An aggregated worker hosting the vision tower prices encoder calls too.
-            encoder_parallel=(sample["agg_vision"].get("encoder_parallel", "tp"))
+            encoder_parallel=sample["agg_vision"]["encoder_parallel"]
             if role == "agg" and sample.get("agg_vision") is not None
             else None,
         )

@@ -22,7 +22,6 @@ DEFAULT_MEM_FRACTION_STATIC = 0.88
 DEFAULT_FREE_GPU_MEMORY_FRACTION = 0.9
 
 _DEFAULT_AIC_SYSTEM = "h200_sxm"
-_DEFAULT_VLM_CACHE_BYTES = 100 << 20
 _DEFAULT_MAX_NUM_BATCHED_TOKENS = 8192
 _DEFAULT_MAX_NUM_SEQUENCES = 1
 _DEFAULT_BLOCK_SIZES = {"vllm": 64, "sglang": 1, "trtllm": 32}
@@ -215,11 +214,7 @@ def materialize_aic_num_gpu_blocks(
         systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
         colocated_encoder=bool(lowered.get("vision", False)),
-        reserved_bytes=(
-            int((lowered.get("sglang") or {}).get("vlm_cache_bytes", _DEFAULT_VLM_CACHE_BYTES))
-            if lowered.get("vision")
-            else 0
-        ),
+        reserved_bytes=int(lowered["sglang"]["vlm_cache_bytes"]) if lowered.get("vision") else 0,
         encoder_parallel=((lowered.get("timing_model") or {}).get("config") or {}).get("encoder_parallel")
         if lowered.get("vision")
         else None,

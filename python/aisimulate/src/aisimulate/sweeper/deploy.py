@@ -99,6 +99,9 @@ def _engine_args_payload(
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
+    if role == "agg" and backend == "sglang":
+        # Ahead of the capacity materialization below, which deducts the tower and cache.
+        payload.update(_native_vl_engine_args(sample))
     if sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
@@ -191,32 +194,45 @@ def _engine_args_payload(
             payload["kv_transfer_bandwidth"] = float(sample["kv_transfer_bandwidth"])
         if sample.get("kv_transfer_timing_mode") is not None:
             payload["kv_transfer_timing_mode"] = sample["kv_transfer_timing_mode"]
-    if role == "agg" and backend == "sglang":
-        payload.update(_native_vl_engine_args(sample))
     return payload
 
 
+def _frontend_row(sample: dict[str, Any]) -> dict[str, Any] | None:
+    """The measured table row a candidate's tensor-parallel width selects, if it uses one."""
+    by_transport = sample.get("agg_frontend_by_transport")
+    if not by_transport:
+        return None
+    from ..config.engine import feature_transport
+
+    frontend_kind = next(iter(by_transport.values()))["frontend"]["measured_for"]["frontend"]
+    transport = feature_transport(frontend_kind, int(sample["tp"]))
+    try:
+        return by_transport[transport]
+    except KeyError:
+        raise ValueError(
+            f"no frontend stages were resolved for feature transport {transport} (tp={sample['tp']})"
+        ) from None
+
+
+def sample_frontend(sample: dict[str, Any]) -> dict[str, Any] | None:
+    """The frontend stages a candidate runs with: its transport's measured row, or the explicit stages."""
+    row = _frontend_row(sample)
+    return row["frontend"] if row is not None else sample.get("agg_frontend")
+
+
 def _native_vl_engine_args(sample: dict[str, Any]) -> dict[str, Any]:
-    """Mirror the compiler's SGLang host-aware lowering for a sweeper candidate."""
-    host_loop = bool(sample.get("agg_host_loop"))
+    """The compiler's SGLang host-aware lowering for a sweeper candidate."""
+    from ..compiler import sglang_host_engine_args
+    from ..config.engine import FrontendPredictionConfig, VisionPredictionConfig
+
+    frontend = sample_frontend(sample)
     vision = sample.get("agg_vision")
-    max_prefill = sample.get("agg_max_prefill_tokens")
-    result: dict[str, Any] = {}
-    sglang: dict[str, Any] = {}
-    if host_loop or vision is not None or max_prefill is not None:
-        sglang["chunked_prefill_size"] = int(sample["agg_max_num_batched_tokens"])
-    if max_prefill is not None:
-        sglang["max_prefill_tokens"] = int(max_prefill)
-    if vision is not None:
-        sglang["vlm_cache_bytes"] = int(vision.get("cache_mib", 100)) << 20
-        result["vision"] = True
-    if host_loop:
-        sglang["host_loop"] = True
-    if sglang:
-        result["sglang"] = sglang
-    if sample.get("agg_frontend") is not None:
-        result["frontend"] = deepcopy(sample["agg_frontend"])
-    return result
+    return sglang_host_engine_args(
+        host_loop=bool(sample.get("agg_host_loop")),
+        vision=VisionPredictionConfig.model_validate(vision) if vision is not None else None,
+        max_batched_tokens=int(sample["agg_max_num_batched_tokens"]),
+        frontend=FrontendPredictionConfig.model_validate(frontend) if frontend is not None else None,
+    )
 
 
 def build_backend_deployment(
@@ -325,9 +341,11 @@ def build_backend_deployment(
             "config": deepcopy(estimator.config),
             "selection": deepcopy(estimator.diagnostics),
         }
-    if mode == "agg" and sample.get("agg_host_profile_digest") is not None:
+    row = _frontend_row(sample) if mode == "agg" else None
+    if row is not None:
         common["performance_model_metadata"]["aggregated"]["vl"] = {
-            "host_profile_digest": sample["agg_host_profile_digest"],
+            "host_profile_digest": row["digest"],
+            "frontend": row["frontend"]["measured_for"]["frontend"],
         }
     if mode == "agg":
         return BackendDeploymentSpec(

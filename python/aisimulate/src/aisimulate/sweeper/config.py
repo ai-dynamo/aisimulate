@@ -619,12 +619,12 @@ class SearchSpace(BaseModel):
     agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
     agg_fpm_parquet_path: str | None = None
     agg_startup_time: float | None = None
-    # Host-aware SGLang VL replay: pinned stages lowered from the public configuration.
-    agg_max_prefill_tokens: int | None = None
+    # Host-aware SGLang VL replay: pinned settings lowered from the public configuration.
     agg_host_loop: bool | None = None
     agg_frontend: dict[str, Any] | None = None
-    # Content digest of the measured table row the pinned stages were resolved from.
-    agg_host_profile_digest: str | None = None
+    # Measured rows by feature transport (`inline` for TP1 Rust frontends, `shm` otherwise),
+    # each `{"frontend": ..., "digest": ...}`; a candidate takes the row its TP needs.
+    agg_frontend_by_transport: dict[str, Any] | None = None
     agg_vision: dict[str, Any] | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
@@ -1209,14 +1209,14 @@ class SmartSearchConfig(BaseModel):
         if workload.cached_prefix_tokens and set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
             raise ValueError("cached_prefix_tokens is unsupported for AFD")
         if encoder is None and workload.images is not None:
-            if not self.search_space.agg_host_loop:
-                raise ValueError("image workloads require search_space.encoder or a host-aware aggregated worker")
+            if self.search_space.agg_vision is None:
+                raise ValueError("image workloads require search_space.encoder or search_space.agg_vision")
             return self
         if (encoder is None) != (workload.images is None):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
         if encoder is None:
             return self
-        if self.search_space.agg_host_loop:
+        if self.search_space.agg_host_loop or self.search_space.agg_vision is not None:
             raise ValueError("search_space.encoder and a host-aware aggregated worker are exclusive")
         if any(mode not in {"agg", "disagg"} for mode in self.search_space.deployment_mode):
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")

@@ -1146,6 +1146,9 @@ def estimate_kv_cache(
             or wideep_num_slots is not None
             or moe_backend not in (None, "default")
             or attention_backend is not None
+            or colocated_encoder
+            or reserved_bytes
+            or encoder_parallel is not None
         ):
             raise ValueError(
                 f"unsupported model/backend/GPU for KV-cache estimation: "

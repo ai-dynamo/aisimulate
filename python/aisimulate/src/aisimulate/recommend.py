@@ -447,8 +447,6 @@ def _role_search_space(
             )
         result[f"{legacy_role}_fpm_parquet_path"] = timing.get("fpm_parquet_path")
         result[f"{legacy_role}_startup_time"] = raw.get("startup_seconds", 0)
-        if legacy_role == "agg" and scheduler.get("max_prefill_tokens") is not None:
-            result["agg_max_prefill_tokens"] = int(scheduler["max_prefill_tokens"])
     # Remove empty internal maps so legacy serialization remains concise.
     if not result["engine_float_ranges"]:
         result.pop("engine_float_ranges")
@@ -462,45 +460,51 @@ def _role_search_space(
 
 
 def _native_vl_search_space(config: CoreRecommendationConfig, workers: dict[str, Any]) -> dict[str, Any]:
-    """Pinned host, frontend and vision tables shared by every host-aware candidate.
+    """Pinned host, frontend and vision settings shared by every host-aware candidate.
 
-    Host and frontend tables follow the worker whether or not the workload has
-    images, as predict does; only the vision tower needs an image workload. A
-    measured profile is resolved once here so candidates score the tables that
-    were checked against the workload shape, never a path that may change later.
+    Frontend stages are measured data, not search dimensions. A host cost table
+    is resolved here once per feature transport the tensor-parallel candidates
+    need, so candidates score rows that matched the workload shape and never a
+    file that may change later; only the vision tower needs an image workload.
     """
+    worker = config.engine.workers.aggregated
     aggregated = workers.get("aggregated") if isinstance(workers, dict) else None
-    if not isinstance(aggregated, dict) or config.engine.workers.encoder is not None:
+    if worker is None or not isinstance(aggregated, dict) or config.engine.workers.encoder is not None:
         return {}
     source = config.traffic.source if config.traffic is not None else None
     images = getattr(source, "images", None)
     result: dict[str, Any] = {}
     if images is not None:
-        result["agg_vision"] = deepcopy(aggregated.get("vision") or {"cache_mib": 100, "encoder_parallel": "tp"})
-    profile_config = aggregated.get("host_profile")
-    if profile_config is None:
-        if aggregated.get("host_loop"):
-            result["agg_host_loop"] = True
-        if aggregated.get("frontend") is not None:
-            result["agg_frontend"] = deepcopy(aggregated["frontend"])
+        from .config.engine import VisionPredictionConfig
+
+        result["agg_vision"] = (worker.vision or VisionPredictionConfig()).model_dump(mode="json")
+    if worker.host_loop:
+        result["agg_host_loop"] = True
+    if worker.frontend is not None:
+        result["agg_frontend"] = worker.frontend.model_dump(mode="json", exclude_none=True)
+    if worker.host_profile is None:
         return result
     if images is None:
         raise ValueError("host_profile requires an image workload")
-    from .config.engine import HostProfileConfig
+    from .config.engine import feature_transport
     from .vl.table import resolve_frontend
 
-    # Resolved once; every candidate shares the measured stages, identified by content.
-    frontend, digest = resolve_frontend(
-        HostProfileConfig.model_validate(profile_config),
-        model=config.engine.model,
-        images=images.model_dump(mode="json"),
-        text_tokens=getattr(source, "input_tokens", None),
+    tensors, log_range = _integer_domain((aggregated.get("parallelism") or {}).get("tensor"), default=[1, 2, 4, 8])
+    transports = (
+        {"inline", "shm"}
+        if log_range is not None
+        else {feature_transport(worker.host_profile.frontend, tensor) for tensor in tensors}
     )
-    result.update(
-        agg_host_loop=True,
-        agg_frontend=frontend.model_dump(mode="json"),
-        agg_host_profile_digest=digest,
-    )
+    by_transport: dict[str, Any] = {}
+    for transport in sorted(transports):
+        frontend, digest = resolve_frontend(
+            worker.host_profile,
+            model=config.engine.model,
+            images=images.model_dump(mode="json"),
+            tensor=1 if transport == "inline" else 2,
+        )
+        by_transport[transport] = {"frontend": frontend.model_dump(mode="json"), "digest": digest}
+    result["agg_frontend_by_transport"] = by_transport
     return result
 
 
@@ -966,16 +970,17 @@ def _candidate_prediction(
         if deployment.deployment_mode == "disagg" and raw_worker.get("hardware") is not None:
             engine["workers"][public_role]["hardware"] = sample[f"{role}_hardware_sku"]
         if role == "agg":
+            from .sweeper.deploy import sample_frontend
+
             rendered = engine["workers"][public_role]
-            if sample.get("agg_max_prefill_tokens") is not None:
-                rendered["scheduler"]["max_prefill_tokens"] = sample["agg_max_prefill_tokens"]
-            # The stages are written out as the runner executed them: a saved candidate
-            # must not depend on a table file that can change or disappear after scoring.
-            executed = deployment.agg_engine_args or {}
-            if (executed.get("sglang") or {}).get("host_loop"):
+            # The stages are written out as the candidate ran them, with the workload
+            # they were measured for: a saved candidate must not depend on a table
+            # file that can change or disappear after scoring.
+            frontend = sample_frontend(sample)
+            if frontend is not None:
+                rendered["frontend"] = deepcopy(frontend)
+            elif sample.get("agg_host_loop"):
                 rendered["host_loop"] = True
-            if executed.get("frontend") is not None:
-                rendered["frontend"] = deepcopy(executed["frontend"])
             if sample.get("agg_vision") is not None:
                 rendered["vision"] = deepcopy(sample["agg_vision"])
     if deployment.deployment_mode == "disagg" and raw_engine.get("kv_transfer") is not None:

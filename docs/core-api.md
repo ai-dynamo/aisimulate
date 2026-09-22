@@ -414,7 +414,7 @@ for the SGLang VL path. Latency-only providers keep the default `None`, and the
 scheduler then rejects image work instead of treating the encoder as free. The
 AIC provider asks the canonical estimator: `ForwardPassPerfModelConfig`
 carries `encoder_parallel` (`tp` or `dp`), which compiles the model's vision
-tower into the `EngineSpec` `vision` section (schema 20) under that layout, and
+tower into the `EngineSpec` `vision` section (schema 21) under that layout, and
 `ForwardPassPerfModel::vision_operations` / `predict_vision_ms` price a call
 over `EncoderImageShape` groups (`sequences`, per-sequence `patch_tokens`,
 `transformer_tokens`, `output_tokens`, `images`). Python exposes the same query

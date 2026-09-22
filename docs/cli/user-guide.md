@@ -689,7 +689,7 @@ the current SA convention.
 | `traffic.source.type` | `synthetic` | `x` | `-` | `synthetic`, `synthetic-session`, or `trace`. |
 | `traffic.source.input_tokens` | `1024` | `x` | `-` | Positive; `synthetic` only. |
 | `traffic.source.output_tokens` | `128` | `x` | `-` | Positive; `synthetic` only. |
-| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1), `encoding` (`png` or `jpeg`), `identity` (`unique` or `{pool: N}`), and optional `min_pixels`/`max_pixels` (the served processor's rescale budget; defaults to the checkpoint's); synthetic only. Requires `engine.workers.encoder` (analytical EPD) or an aggregated SGLang worker with `host` (native VL replay). |
+| `traffic.source.images` | Unset | `x` | `-` | Fixed positive `height`, `width`, `count` (default 1), `encoding` (`png` or `jpeg`), `identity` (`unique` or `{pool: N}`), and optional `min_pixels`/`max_pixels` (the served processor's rescale budget; defaults to the checkpoint's); synthetic only. Requires `engine.workers.encoder` (analytical EPD) or an aggregated SGLang worker (native VL replay); `min_pixels`/`max_pixels` are honored only by native VL replay. |
 | `traffic.source.new_input_tokens_per_turn` | `1024` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.output_tokens_per_turn` | `128` | `x` | `-` | Positive; `synthetic-session` only. |
 | `traffic.source.session.turns` | `4` | `x` | `-` | At least `2`. |
@@ -1020,10 +1020,9 @@ engine:
 | `engine.workers.<role>.scheduler.max_batched_tokens` | Aggregated/prefill/decode: `8192` | Prefill/aggregated: `{choices: [8192, 16384, 32768]}`; decode: `-` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.max_sequences` | Aggregated `256`; prefill `1`; decode `256` | Prefill: `{choices: [1, 2, 4, 8, 16, 32, 64, 128, 256]}`; aggregated/decode: `{choices: [256, 512, 1024]}` | `-` | Positive. |
 | `engine.workers.<role>.scheduler.prefill_schedule_interval` | `1` | `x` | `-` | `predict` only. Positive. Values above one throttle prefill admission only for vLLM attention-DP groups. |
-| `engine.workers.<role>.scheduler.max_prefill_tokens` | `null` | `x` | `-` | Positive; SGLang only. Token budget of one EXTEND batch across requests. |
-| `engine.workers.aggregated.host_loop` | `false` | `x` | `-` | Model each pass as one SGLang overlap-scheduler iteration (requests received at iteration boundaries, outputs visible one iteration later); aggregated SGLang only. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
-| `engine.workers.aggregated.frontend` | Unset | `x` | `-` | Ordered frontend `stages` (`resource: pool | tm_loop`, `workers`, `cost`, `concurrency_scale`); requires `host_loop`. |
-| `engine.workers.aggregated.host_profile` | Unset | `x` | `-` | `{path, frontend}`: take the frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; implies `host_loop`; exclusive with explicit `frontend`. |
+| `engine.workers.aggregated.host_loop` | `false` | `x` | `-` | Model each pass as one SGLang overlap-scheduler iteration (requests received at iteration boundaries, outputs visible one iteration later); aggregated SGLang only. Implied by `frontend` and `host_profile`. See [Native SGLang VL prediction](#native-sglang-vl-prediction). |
+| `engine.workers.aggregated.frontend` | Unset | `x` | `-` | Ordered frontend `stages` (`workers`, `service_ms`, `concurrency_scale`) and the optional `measured_for` workload they apply to. |
+| `engine.workers.aggregated.host_profile` | Unset | `x` | `-` | `{path, frontend}`: take the frontend stages from a host cost table written by `python -m aisimulate.vl.collect`; exclusive with explicit `frontend`. |
 | `engine.workers.aggregated.vision.cache_mib` | `100` | `x` | `-` | Positive MiB; SGLang multimodal embedding cache for image workloads encoded on the language worker. |
 | `engine.workers.aggregated.vision.encoder_parallel` | `tp` | `x` | `-` | `tp` (SGLang default: the tower is sharded over the tensor-parallel group) or `dp` (`--mm-enable-dp-encoder`); sets encoder timing, collectives, and per-rank tower weights. |
 | `engine.workers.<role>.kv_cache.block_size` | vLLM `64`; SGLang `1`; TensorRT-LLM `32` | `-` | `-` | Positive and backend-supported. Defaults are backend-specific, not version-specific. |
@@ -1401,13 +1400,13 @@ G3 byte counters do not resolve that difference.
 
 ### 12.3 Native SGLang VL prediction
 
-Image workloads can be predicted without an analytical encoder pool: an
-aggregated SGLang worker that models its scheduler thread (`host`) encodes the
-images itself, and optional `frontend` pools model the request path before the
-scheduler. Each pass becomes one iteration of SGLang's overlap scheduler loop,
+Image workloads can be predicted without an analytical encoder pool: the
+aggregated SGLang worker encodes the images itself, and its `frontend` stages
+model the request path before the scheduler. With `host_loop` (implied by a
+frontend) each pass becomes one iteration of SGLang's overlap scheduler loop,
 so time to first token includes frontend processing, scheduler receipt, batch
-selection, kernel launches, the vision encoder, and the one-iteration delay
-before results are observed.
+selection, the vision encoder, and the one-iteration delay before results are
+observed.
 
 ```yaml
 # vl-prediction.yaml
@@ -1433,24 +1432,29 @@ engine:
 ```
 
 ```bash
-aisimulate predict --stack engine --config vl-prediction.yaml --capture-per-request
+python -m aisimulate.vl.collect --config vl-prediction.yaml --sglang-python <serving venv python>
+aisimulate predict --stack engine --config vl-prediction.yaml
 ```
 
-Frontend costs are measured data: run `python -m aisimulate.vl.collect --table
-host-costs.json --model <model> --frontend python|rust --images HxWxN --encoding
-png|jpeg --text-tokens N --sglang-python <serving venv python>` once per
-workload shape on the serving host (no GPU needed), then reuse the table from
-`host_profile` in every prediction and recommendation. A shape, model,
-frontend, or SGLang revision the table has no row for fails closed and prints
-the `collect` command that adds it. Explicit `frontend.stages` may be written
-by hand instead. The summary adds the mean time to first
-token split by milestone, `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
-`mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, and `mean_result_observation_delay_ms`
-(server-internal, ending at scheduler observation);
-`requests.jsonl` adds `frontend_ready_ms`, `scheduler_received_ms`, `selected_ms`,
-and `prefill_complete_ms`. `recommend` accepts the same worker fields as fixed
-data. Mechanics, scope, and validation are described in
-[SGLang VL host loop and frontend modeling](../sglang-vl-host-loop.md).
+Frontend costs are measured data: `collect` reads the model, images, frontend
+and tensor-parallel width from the prediction YAML, times the real SGLang
+frontend objects on the serving host (no GPU needed) and adds one row to the
+table named by `host_profile.path`; every prediction and recommendation then
+reuses that table. A row is keyed by model, frontend, feature transport (the
+Rust frontend keeps image features inline on one rank and uses shared memory
+across tensor-parallel ranks) and image shape; a workload the table has no row
+for fails closed and prints the `collect` command that adds it, and one table
+belongs to one serving environment. Explicit `frontend.stages` may be written
+by hand instead. The summary adds the mean time to first token split by
+milestone, `mean_frontend_ms`, `mean_scheduler_inbox_wait_ms`,
+`mean_receive_to_admit_ms`, `mean_prefill_elapsed_ms`, and
+`mean_result_observation_delay_ms` (server-internal, ending at scheduler
+observation); with `--capture-per-request`, `requests.jsonl` adds
+`frontend_ready_ms`, `scheduler_received_ms`, `selected_ms`, and
+`prefill_complete_ms`. `recommend` accepts the same worker fields as fixed data
+and writes the stages a candidate ran with, and the workload they were measured
+for, into its saved configuration. Mechanics, scope, and validation are
+described in [SGLang VL host loop and frontend modeling](../sglang-vl-host-loop.md).
 
 <a id="router-dynamo-adapter"></a>
 

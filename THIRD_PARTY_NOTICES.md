@@ -520,9 +520,10 @@ The native VL replay path models sgl-project/sglang v0.5.19 at immutable commit
 - `crates/core/src/engine/scheduler/sglang/{host_loop,vision,frontend}.rs` and
   their tests re-implement the observed behavior of `Scheduler.event_loop_overlap`,
   `run_batch`, `recv_requests`, `process_batch_result_prefill`,
-  `_batch_encode_per_image_misses`, `MultiModalStaticCache`, `TokenizerManager`
-  and `BaseMultimodalProcessor` as performance models. They do not execute or
-  copy the upstream implementation.
+  `_batch_encode_per_image_misses`, `MultiModalStaticCache`, `TokenizerManager`,
+  `BaseMultimodalProcessor` and the Rust multimodal workers' feature transport
+  (`RustMmProcessor._use_feature_shm`) as performance models. They do not execute
+  or copy the upstream implementation.
 - `python/aisimulate/src/aisimulate/vl/collect/` instantiates the pinned
   upstream frontend objects unmodified on the serving host and times them from
   the outside; it does not copy or modify their implementations.

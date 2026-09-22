@@ -239,7 +239,9 @@ def test_epd_language_execution_without_a_database_fails(monkeypatch):
 def test_epd_public_schema_rejects_unsupported(kind, recommend):
     raw = _recommendation() if recommend else _prediction()
     if kind == "missing_encoder":
+        # Images without an encoder pool are native VL replay, which only an aggregated SGLang worker offers.
         del raw["engine"]["workers"]["encoder"]
+        raw["engine"]["backend"] = "vllm"
     elif kind == "missing_images":
         del raw["traffic"]["source"]["images"]
     elif kind == "trace":

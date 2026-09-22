@@ -21,7 +21,7 @@ MIN_STEADY_SAMPLES = 10
 
 @dataclass(frozen=True)
 class Span:
-    """One service interval measured inside a worker, queue wait excluded."""
+    """One request's processing interval through a black-box stage, internal waits included."""
 
     started_ns: int
     ended_ns: int

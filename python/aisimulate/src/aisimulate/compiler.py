@@ -15,7 +15,14 @@ from .capacity import (
 )
 from .config.cli import CorePredictionConfig
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, omit_inactive_moe_controls
-from .config.engine import EnginePredictionConfig, WorkerPredictionConfig
+from .config.engine import (
+    AggregatedWorkerPredictionConfig,
+    EnginePredictionConfig,
+    FrontendMeasurementConfig,
+    FrontendPredictionConfig,
+    VisionPredictionConfig,
+    WorkerPredictionConfig,
+)
 from .config.traffic import SyntheticSessionSource, SyntheticSource, TraceSource
 from .sweeper.afd_parallel import AFDParallelConfig, AFDTopology
 from .sweeper.afd_perfmodel import (
@@ -207,19 +214,19 @@ def _deployment(
     if mode == "agg":
         assert engine.workers.aggregated is not None
         worker, vl_metadata = _resolve_host_profile(engine, engine.workers.aggregated, workload)
+        _check_frontend_measurement(worker, workload)
         parallel = _parallel_mapping(worker, prefix="")
+        # Images without a dedicated encoder pool are encoded on the language worker.
+        vision = None
+        if workload.get("images") is not None and engine.workers.encoder is None:
+            vision = worker.vision or VisionPredictionConfig()
         return BackendDeploymentSpec(
             parallel_config=parallel,
             performance_model_metadata={
                 "aggregated": {**_worker_performance_model_metadata(engine, worker), **vl_metadata},
             },
             agg_engine_args=_worker_engine_args(
-                engine,
-                worker,
-                "aggregated",
-                transfer_bytes_per_token=None,
-                # Images without a dedicated encoder pool are encoded on the language worker.
-                vision=workload.get("images") is not None and engine.workers.encoder is None,
+                engine, worker, "aggregated", transfer_bytes_per_token=None, vision=vision
             ),
             num_workers=worker.parallelism.replicas,
             **common,
@@ -367,8 +374,8 @@ def _parallel_mapping(worker: WorkerPredictionConfig, *, prefix: str) -> dict[st
 
 
 def _resolve_host_profile(
-    engine: EnginePredictionConfig, worker: WorkerPredictionConfig, workload: dict[str, JSONValue]
-) -> tuple[WorkerPredictionConfig, dict[str, JSONValue]]:
+    engine: EnginePredictionConfig, worker: AggregatedWorkerPredictionConfig, workload: dict[str, JSONValue]
+) -> tuple[AggregatedWorkerPredictionConfig, dict[str, JSONValue]]:
     """Fill the worker's frontend stages from its measured host cost table, if it names one."""
     if worker.host_profile is None:
         return worker, {}
@@ -378,10 +385,54 @@ def _resolve_host_profile(
     if not isinstance(images, dict):
         raise ValueError("host_profile requires an image workload")
     frontend, digest = resolve_frontend(
-        worker.host_profile, model=engine.model, images=images, text_tokens=workload.get("isl")
+        worker.host_profile, model=engine.model, images=images, tensor=worker.parallelism.tensor
     )
-    resolved = worker.model_copy(update={"host_loop": True, "frontend": frontend, "host_profile": None})
+    resolved = worker.model_copy(update={"frontend": frontend, "host_profile": None})
     return resolved, {"vl": {"host_profile_digest": digest, "frontend": worker.host_profile.frontend}}
+
+
+def _check_frontend_measurement(worker: AggregatedWorkerPredictionConfig, workload: dict[str, JSONValue]) -> None:
+    """Stages measured on one workload and feature transport price only that workload."""
+    measured = worker.frontend.measured_for if worker.frontend is not None else None
+    if measured is None:
+        return
+    images = workload.get("images")
+    if not isinstance(images, dict):
+        raise ValueError(f"frontend stages were measured for {measured.describe()}; this workload has no images")
+    needed = FrontendMeasurementConfig.for_workload(measured.frontend, images, worker.parallelism.tensor)
+    if needed != measured:
+        raise ValueError(
+            f"frontend stages were measured for {measured.describe()}; this prediction needs {needed.describe()}"
+        )
+
+
+def sglang_host_engine_args(
+    *,
+    host_loop: bool,
+    vision: VisionPredictionConfig | None,
+    max_batched_tokens: int,
+    frontend: FrontendPredictionConfig | None,
+) -> dict[str, JSONValue]:
+    """Rank arguments of the SGLang host-aware VL path, shared by predict and the sweeper.
+
+    SGLang reads its batch budget from `sglang.chunked_prefill_size`; the public
+    token knob only becomes effective on this path so other predictions keep
+    their bytes. The frontend's measurement record stays on the Python side.
+    """
+    result: dict[str, JSONValue] = {}
+    sglang: dict[str, JSONValue] = {}
+    if host_loop or vision is not None:
+        sglang["chunked_prefill_size"] = max_batched_tokens
+    if vision is not None:
+        sglang["vlm_cache_bytes"] = vision.cache_mib << 20
+        result["vision"] = True
+    if host_loop:
+        sglang["host_loop"] = True
+    if sglang:
+        result["sglang"] = sglang
+    if frontend is not None:
+        result["frontend"] = frontend.model_dump(mode="json", exclude={"measured_for"})
+    return result
 
 
 def _worker_performance_model_metadata(
@@ -429,7 +480,7 @@ def _worker_engine_args(
     role: str,
     *,
     transfer_bytes_per_token: int | None,
-    vision: bool = False,
+    vision: VisionPredictionConfig | None = None,
 ) -> dict[str, JSONValue]:
     backend = engine.backend
     parallel = worker.parallelism
@@ -555,9 +606,7 @@ def _worker_engine_args(
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
             systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
             # A rank hosting the vision tower prices encoder calls through the same estimator.
-            encoder_parallel=(worker.vision.encoder_parallel if worker.vision is not None else "tp")
-            if vision
-            else None,
+            encoder_parallel=vision.encoder_parallel if vision is not None else None,
         )
         timing_config = omit_inactive_moe_controls(canonical.to_dict())
         if timing.fpm_parquet_path is not None:
@@ -602,24 +651,15 @@ def _worker_engine_args(
         if transfer.bandwidth_gb_per_second is not None:
             payload["kv_transfer_bandwidth"] = transfer.bandwidth_gb_per_second
         payload["kv_transfer_timing_mode"] = transfer.timing_mode
-    if backend == "sglang":
-        # SGLang reads its batch budget from `sglang.*`; the public token knob only
-        # becomes effective on the host-aware VL path so existing predictions keep
-        # their bytes.
-        sglang: dict[str, JSONValue] = {}
-        if worker.host_loop or vision or worker.scheduler.max_prefill_tokens is not None:
-            sglang["chunked_prefill_size"] = worker.scheduler.max_batched_tokens
-        if worker.scheduler.max_prefill_tokens is not None:
-            sglang["max_prefill_tokens"] = worker.scheduler.max_prefill_tokens
-        if vision:
-            sglang["vlm_cache_bytes"] = (worker.vision.cache_mib if worker.vision is not None else 100) << 20
-            payload["vision"] = True
-        if worker.host_loop:
-            sglang["host_loop"] = True
-        if sglang:
-            payload["sglang"] = sglang
-        if worker.frontend is not None:
-            payload["frontend"] = worker.frontend.model_dump(mode="json")
+    if backend == "sglang" and isinstance(worker, AggregatedWorkerPredictionConfig):
+        payload.update(
+            sglang_host_engine_args(
+                host_loop=worker.host_loop,
+                vision=vision,
+                max_batched_tokens=worker.scheduler.max_batched_tokens,
+                frontend=worker.frontend,
+            )
+        )
     return payload
 
 

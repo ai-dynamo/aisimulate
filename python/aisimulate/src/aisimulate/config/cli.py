@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from .common import (
+    Choices,
     EvaluationConfig,
     ExecutionConfig,
     OptimizationConfig,
@@ -19,7 +20,7 @@ from .common import (
     StrictModel,
     load_yaml,
 )
-from .engine import EnginePredictionConfig, EngineRecommendationConfig, native_vl_worker
+from .engine import EnginePredictionConfig, EngineRecommendationConfig
 from .traffic import (
     SyntheticSource,
     TraceSource,
@@ -101,28 +102,38 @@ class CoreRecommendationConfig(StrictModel):
         return cls.model_validate(load_yaml(path))
 
 
+def _only(value: Any, expected: str) -> bool:
+    """Whether a concrete or single-choice engine field resolves to `expected`."""
+    return value == expected or (isinstance(value, Choices) and list(value.choices) == [expected])
+
+
 def _validate_epd(traffic, engine) -> None:
     encoder = engine.workers.encoder
     source = traffic.source if traffic is not None else None
     images = source.images if isinstance(source, SyntheticSource) else None
-    native_vl = native_vl_worker(engine)
-    if encoder is not None and native_vl is not None:
+    aggregated = engine.workers.aggregated
+    host_aware = aggregated is not None and (aggregated.host_loop or aggregated.vision is not None)
+    if encoder is not None and host_aware:
         raise ValueError(
-            "engine.workers.encoder (analytical EPD) and workers.aggregated.host_loop (native VL replay) are exclusive"
+            "engine.workers.encoder (analytical EPD) and the aggregated worker's host_loop or vision "
+            "(native VL replay) are exclusive"
         )
     if encoder is None and images is not None:
-        if native_vl is None:
+        # Images without an encoder pool are encoded on the aggregated SGLang worker.
+        if aggregated is None or not _only(engine.backend, "sglang") or not _only(engine.mode, "aggregated"):
             raise ValueError(
-                "image workloads require engine.workers.encoder (analytical EPD) or an aggregated SGLang worker "
-                "with host_loop enabled (native VL replay)"
+                "image workloads require engine.workers.encoder (analytical EPD) or an aggregated worker with "
+                "backend=sglang and mode=aggregated (native VL replay)"
             )
-        if native_vl.timing.type != "default":
+        if aggregated.timing.type != "default":
             raise ValueError("native VL replay requires default timing")
         return
     if (encoder is None) != (images is None):
         raise ValueError("EPD requires both traffic.source.images and engine.workers.encoder")
     if encoder is None:
         return
+    if images.min_pixels is not None or images.max_pixels is not None:
+        raise ValueError("images.min_pixels and max_pixels are honored only by native VL replay, not by analytical EPD")
     if traffic.load.type != "concurrency" or type(traffic.load.concurrency) is not int:
         raise ValueError("analytical EPD requires fixed synthetic concurrency, not rate or load search")
     for role in ("aggregated", "prefill", "decode"):

@@ -6,21 +6,23 @@
 Runs under the serving host's interpreter that has sgl-project/sglang v0.5.19
 installed (Python 3.10 or newer, standard library plus sglang). Both frontends
 are measured as black boxes at request level under a closed loop of one to
-`--levels` concurrent requests:
+`--levels` concurrent requests, each stage on the real SGLang objects:
 
-* Python frontend: the real multimodal processor of the tokenizer manager is
-  instantiated in this process with its own IO and processor pools, and each
-  request is the wall time of `process_mm_data_async`. The synchronous send
-  continuation (`wrap_shm_features` + `msgpack_encode`) and the scheduler's
-  per-request receive preparation (msgpack decode, shared-memory
-  materialization, `MultimodalInputs.from_processor_output`, placeholder
-  padding) are timed on the produced payload with the same real functions.
+* Python frontend: the tokenizer manager's multimodal processor is instantiated
+  in this process with its own IO and processor pools; `process` is the wall
+  time of `process_mm_data_async`, `send` the loop's synchronous
+  `wrap_shm_features` + `msgpack_encode`, and `receive` the scheduler's
+  per-request preparation of the produced payload (msgpack decode, shared-memory
+  materialization, `MultimodalInputs.from_processor_output`, placeholder padding).
 * Rust frontend: the embedded Rust server is launched alone (no GPU, no
-  scheduler); each request is the time from its HTTP send to the moment the
-  scheduler-side drain returns it, after which it is answered with an error.
+  scheduler) under the requested tensor-parallel width, which decides whether
+  features ride inline or through shared memory; `process` is the time from the
+  HTTP send to the moment the scheduler-side drain returns the request, and
+  `receive` the scheduler's preparation of that drained request. Each drained
+  request is then answered with an error, which the client only uses to move on.
 
 Excluded on both paths: HTTP parsing and chat templating in the Python server,
-and every scheduler cost beyond receive preparation.
+and every scheduler cost beyond receive preparation. Progress goes to stderr.
 """
 
 from __future__ import annotations
@@ -44,9 +46,10 @@ from samples import MIN_STEADY_SAMPLES, Span, steady_samples
 from workload import generate_images, image_data_url
 
 SGLANG_VERSION = "0.5.19"
+REQUEST_DEADLINE_S = 120.0
 
 
-def _check_sglang_version() -> str:
+def _sglang_version() -> str:
     from sglang.version import __version__
 
     if not str(__version__).startswith(SGLANG_VERSION):
@@ -70,6 +73,10 @@ def _threads() -> int:
         return len(os.sched_getaffinity(0))
     except AttributeError:
         return os.cpu_count() or 1
+
+
+def _progress(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def _serving_components(model, mm_process_config, port=None, image_processor_backend="pil"):
@@ -125,7 +132,16 @@ async def closed_loop(call, level, budget_per_worker=100):
                 state["stop"] = True
 
     await asyncio.gather(*(worker() for _ in range(level)))
+    _progress(f"level {level}: {len(steady_samples(spans, level))} steady of {len(spans)} samples")
     return spans
+
+
+async def measure_levels(call, levels):
+    recorded = {}
+    for level in range(1, levels + 1):
+        spans = await closed_loop(call, level)
+        recorded[str(level)] = [[span.started_ns, span.ended_ns] for span in spans]
+    return recorded
 
 
 def _feature_devices(items):
@@ -156,70 +172,94 @@ def _tokenized_request(rid, input_ids, mm_inputs):
     )
 
 
-def _mean_of_steps(prepare, steps):
-    """Mean wall time of running `steps` in order on a freshly prepared input; warm-up excluded."""
+def _mean_ms(timed, inputs, cleanup=None):
+    """Mean wall time of `timed` over fresh `inputs`; the first two runs warm up, cleanup runs after timing."""
     samples = []
-    for _ in range(MIN_STEADY_SAMPLES + 2):
-        state = prepare()
+    outputs = []
+    for state in inputs:
         started = time.perf_counter_ns()
-        for step in steps:
-            state = step(state)
+        outputs.append(timed(state))
         samples.append((time.perf_counter_ns() - started) / 1e6)
+    if cleanup is not None:
+        for output in outputs:
+            cleanup(output)
     return sum(samples[2:]) / len(samples[2:])
 
 
-def _send_continuation_ms(output):
+def _release_shm(request):
+    from sglang.srt.managers.mm_utils import ShmPointerMMData
+
+    for item in request.mm_inputs.mm_items:
+        features = item.feature if isinstance(item.feature, list) else [item.feature]
+        for feature in features:
+            if isinstance(feature, ShmPointerMMData):
+                feature.close_and_unlink()
+
+
+def _send_ms(output):
     """Tokenizer-manager loop work after the processor: shared-memory wrapping and msgpack encoding."""
     from sglang.srt.managers.io_struct import msgpack_encode
-    from sglang.srt.managers.mm_utils import ShmPointerMMData, wrap_shm_features
-
-    def prepare():
-        return _tokenized_request("collect-send", list(output.input_ids), copy.deepcopy(output))
+    from sglang.srt.managers.mm_utils import wrap_shm_features
 
     def send(request):
         wrap_shm_features(request)
-        payload = msgpack_encode(request)
-        for item in request.mm_inputs.mm_items:
-            features = item.feature if isinstance(item.feature, list) else [item.feature]
-            for feature in features:
-                if isinstance(feature, ShmPointerMMData):
-                    feature.close_and_unlink()
-        return payload
+        msgpack_encode(request)
+        return request
 
-    return _mean_of_steps(prepare, [send])
+    inputs = [
+        _tokenized_request("collect-send", list(output.input_ids), copy.deepcopy(output))
+        for _ in range(MIN_STEADY_SAMPLES + 2)
+    ]
+    return _mean_ms(send, inputs, cleanup=_release_shm)
 
 
-def _receive_ms(output):
-    """Scheduler-thread preparation of one received request, on the real payload with the real functions."""
-    from sglang.srt.managers.io_struct import msgpack_decode, msgpack_encode
-    from sglang.srt.managers.mm_utils import (
-        MultiModalityDataPaddingPatternMultimodalTokens,
-        unwrap_shm_features,
-        wrap_shm_features,
-    )
+def _receive_steps():
+    import torch
+    from sglang.srt.managers.mm_utils import MultiModalityDataPaddingPatternMultimodalTokens, unwrap_shm_features
     from sglang.srt.managers.schedule_batch import MultimodalInputs
 
-    input_ids = list(output.input_ids)
+    # The scheduler process runs torch single-threaded (`ModelRunner.load_model`
+    # sets it for GPU devices and never restores it); with the default pool the
+    # shared-memory clone thrashes on the two cores the Rust server leaves it.
+    torch.set_num_threads(1)
 
-    def prepare():
-        request = _tokenized_request("collect-receive", input_ids, copy.deepcopy(output))
-        wrap_shm_features(request)
-        return msgpack_encode(request)
+    def prepare(request):
+        unwrap_shm_features(request)
+        mm_inputs = MultimodalInputs.from_processor_output(request.mm_inputs)
+        MultiModalityDataPaddingPatternMultimodalTokens().pad_input_tokens(list(request.input_ids), mm_inputs)
+        return request
 
-    def decode(payload):
+    return prepare
+
+
+def _python_receive_ms(output):
+    """Scheduler-thread preparation of one received request, decoded from the real payload."""
+    from sglang.srt.managers.io_struct import msgpack_decode, msgpack_encode
+    from sglang.srt.managers.mm_utils import wrap_shm_features
+
+    prepare = _receive_steps()
+
+    def receive(payload):
         request = msgpack_decode(payload)
         request.unwrap_pickle_fields()
-        return request
+        return prepare(request)
 
-    def materialize(request):
-        unwrap_shm_features(request)
-        return request
+    inputs = []
+    for _ in range(MIN_STEADY_SAMPLES + 2):
+        request = _tokenized_request("collect-receive", list(output.input_ids), copy.deepcopy(output))
+        wrap_shm_features(request)
+        inputs.append(msgpack_encode(request))
+    return _mean_ms(receive, inputs)
 
-    def hash_and_pad(request):
-        mm_inputs = MultimodalInputs.from_processor_output(request.mm_inputs)
-        return MultiModalityDataPaddingPatternMultimodalTokens().pad_input_tokens(list(request.input_ids), mm_inputs)
 
-    return _mean_of_steps(prepare, [decode, materialize, hash_and_pad])
+def _environment(version):
+    return {
+        "cpu": _cpu_model(),
+        "host": platform.node(),
+        "threads": _threads(),
+        "sglang_version": version,
+        "python": sys.version.split()[0],
+    }
 
 
 async def measure_python(args, images, mm_process_config):
@@ -233,6 +273,8 @@ async def measure_python(args, images, mm_process_config):
     )
     urls = [image_data_url(encoded, args.encoding) for encoded in images]
     prompt = _prompt(processor, len(images), args.text_tokens)
+    workers = int(mm.io_executor._max_workers)
+    levels = min(args.levels or workers, workers)
     devices = set()
     try:
 
@@ -249,35 +291,33 @@ async def measure_python(args, images, mm_process_config):
             return span
 
         # Warm the pools and the processor before timing.
-        await asyncio.gather(*(one(-1 - index) for index in range(2 * args.levels)))
-        levels = {}
-        for level in range(1, args.levels + 1):
-            levels[level] = await closed_loop(one, level)
-        output = one.output
+        await asyncio.gather(*(one(-1 - index) for index in range(2 * levels)))
         if devices != {"cpu"}:
             raise SystemExit(
                 f"the Python frontend produced features on {sorted(devices)}; only the CPU path is modeled"
             )
-        tm_loop_ms = _send_continuation_ms(output)
-        receive_ms = _receive_ms(output)
+        recorded = await measure_levels(one, levels)
+        output = one.output
+        send_ms = _send_ms(output)
+        receive_ms = _python_receive_ms(output)
     finally:
         mm.shutdown()
     return {
         "frontend": "python",
-        "workers": args.levels,
-        "levels": {str(level): [[span.started_ns, span.ended_ns] for span in spans] for level, spans in levels.items()},
-        "tm_loop_ms": tm_loop_ms,
+        "workers": workers,
+        "levels": recorded,
+        "send_ms": send_ms,
         "receive_ms": receive_ms,
         "provenance": {
             "processor_class": f"{type(processor).__module__}.{type(processor).__name__}",
             "mm_processor_class": f"{type(mm).__module__}.{type(mm).__name__}",
             "image_processor_backend": mm.image_processor_backend,
-            "io_workers": mm.io_executor._max_workers,
             "processor_workers": mm.mm_processor_worker_num,
+            "text_tokens": args.text_tokens,
             "input_tokens": len(output.input_ids),
             "includes": {
-                "pool": ["BaseMultimodalProcessor.process_mm_data_async (image load, HF processor, layout)"],
-                "tm_loop": ["wrap_shm_features", "msgpack_encode(TokenizedGenerateReqInput)"],
+                "process": ["BaseMultimodalProcessor.process_mm_data_async (image load, HF processor, layout)"],
+                "send": ["wrap_shm_features", "msgpack_encode(TokenizedGenerateReqInput)"],
                 "receive": [
                     "msgpack_decode + unwrap_pickle_fields",
                     "unwrap_shm_features",
@@ -291,6 +331,8 @@ async def measure_python(args, images, mm_process_config):
 
 async def measure_rust(args, images, mm_process_config):
     import aiohttp
+    from sglang.srt.managers.io_struct import TokenizedGenerateReqInput
+    from sglang.srt.runtime_context import get_parallel
     from sglang.srt.rust_server.multimodal import RustMmProcessor
     from sglang.srt.rust_server.server import RustServer
 
@@ -298,7 +340,8 @@ async def measure_rust(args, images, mm_process_config):
         sock.bind(("127.0.0.1", 0))
         port = sock.getsockname()[1]
     server_args, model_config, processor = _serving_components(args.model, mm_process_config, port=port)
-    mm_workers = args.levels or (server_args.mm_processor_worker_num or getattr(RustMmProcessor, "AUTO_MM_WORKERS", 8))
+    workers = int(server_args.mm_processor_worker_num or getattr(RustMmProcessor, "AUTO_MM_WORKERS", 8))
+    levels = min(args.levels or workers, workers)
     descriptor = SimpleNamespace(
         server_args=server_args,
         model_config=model_config,
@@ -309,29 +352,50 @@ async def measure_rust(args, images, mm_process_config):
     prompt = _prompt(processor, len(images), args.text_tokens)
     payload_images = [image_data_url(encoded, args.encoding) for encoded in images]
     done = {}
+    kept = []
     stop = threading.Event()
+    failure = []
 
     def drain(server):
-        # The scheduler-side drain marks the worker's completion; the request is
-        # then answered with an error, which the client only uses to move on.
-        while not stop.is_set():
-            items = server.drain(256)
-            now = time.perf_counter_ns()
-            for item in items:
-                done[str(item.rid).split("#", 1)[0]] = now
-                server.server.push_error(item.rid, "aisimulate collect: frontend-only recording")
-            if not items:
-                time.sleep(0.0002)
+        # The scheduler-side drain marks the worker's completion. A few drained
+        # requests are kept to time the scheduler's receive preparation later;
+        # control messages (client aborts after our error reply) carry no work.
+        try:
+            while not stop.is_set():
+                items = server.drain(256)
+                now = time.perf_counter_ns()
+                for item in items:
+                    if not isinstance(item, TokenizedGenerateReqInput):
+                        continue
+                    done[str(item.rid).split("#", 1)[0]] = now
+                    if len(kept) < MIN_STEADY_SAMPLES + 2:
+                        kept.append(item)
+                    server.server.push_error(item.rid, "aisimulate collect: frontend-only recording")
+                if not items:
+                    time.sleep(0.0002)
+        except Exception as exc:
+            failure.append(exc)
 
-    server = RustServer.launch(descriptor)
+    # The feature transport follows the tensor-parallel width the serving host runs;
+    # `override` publishes it without a distributed init.
+    with get_parallel().override(tp_size=args.tp):
+        server = RustServer.launch(descriptor)
+    if server.mm_spec is None:
+        raise SystemExit("the Rust server did not enable its multimodal pipeline for this model")
+    feature_shm = bool(server.mm_spec.feature_shm)
+    if feature_shm != (args.tp > 1):
+        raise SystemExit(
+            f"sglang chose feature_shm={feature_shm} for tp={args.tp}; the transport model expects otherwise"
+        )
     drainer = threading.Thread(target=drain, args=(server,), daemon=True)
     drainer.start()
     try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=120)) as session:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=REQUEST_DEADLINE_S)) as session:
 
             async def one(index):
                 rid = f"collect-{index}"
                 started = time.perf_counter_ns()
+                deadline = time.monotonic() + REQUEST_DEADLINE_S
                 async with session.post(
                     f"http://127.0.0.1:{port}/generate",
                     json={
@@ -341,33 +405,49 @@ async def measure_rust(args, images, mm_process_config):
                         "sampling_params": {"max_new_tokens": 1},
                     },
                 ) as response:
-                    await response.read()
+                    body = await response.read()
+                if rid not in done and response.status != 200:
+                    raise RuntimeError(f"the Rust server rejected request {rid}: HTTP {response.status} {body[:200]!r}")
                 while rid not in done:
+                    if failure:
+                        raise RuntimeError("the scheduler-side drain failed") from failure[0]
+                    if time.monotonic() > deadline:
+                        raise TimeoutError(f"request {rid} never reached the scheduler-side drain")
                     await asyncio.sleep(0.0002)
                 return Span(started, done.pop(rid))
 
-            await asyncio.gather(*(one(-1 - index) for index in range(2 * mm_workers)))
-            levels = {}
-            for level in range(1, mm_workers + 1):
-                levels[level] = await closed_loop(one, level)
+            await asyncio.gather(*(one(-1 - index) for index in range(2 * levels)))
+            recorded = await measure_levels(one, levels)
     finally:
         stop.set()
         drainer.join(timeout=5)
         server.server.shutdown()
+    if len(kept) < MIN_STEADY_SAMPLES + 2:
+        raise SystemExit("too few drained requests were kept to time the receive preparation")
+    receive_ms = _mean_ms(_receive_steps(), kept)
     extension = sys.modules.get("sglang.srt.rust_extensions._server")
     return {
         "frontend": "rust",
-        "workers": mm_workers,
-        "levels": {str(level): [[span.started_ns, span.ended_ns] for span in spans] for level, spans in levels.items()},
+        "workers": workers,
+        "levels": recorded,
+        "receive_ms": receive_ms,
         "provenance": {
-            "mm_workers": mm_workers,
+            "tp": args.tp,
+            "feature_shm": feature_shm,
             "extension": getattr(extension, "__file__", None),
+            "text_tokens": args.text_tokens,
             "includes": {
-                "pool": [
+                "process": [
                     "HTTP receive and tokenization in the Rust server",
-                    "multimodal worker: payload, fetch, hash, decode, patchify, layout, pack",
+                    "multimodal worker: payload, fetch, hash, decode, patchify, layout, pack"
+                    + (", shared-memory publish" if feature_shm else ""),
                     "channel to the scheduler drain",
-                ]
+                ],
+                "receive": [
+                    "unwrap_shm_features",
+                    "MultimodalInputs.from_processor_output (hash_feature per item)",
+                    "MultiModalityDataPaddingPatternMultimodalTokens.pad_input_tokens",
+                ],
             },
         },
     }
@@ -384,26 +464,18 @@ def main(argv=None) -> int:
     parser.add_argument("--text-tokens", type=int, default=128)
     parser.add_argument("--min-pixels", type=int)
     parser.add_argument("--max-pixels", type=int)
-    parser.add_argument("--levels", type=int, default=0, help="highest concurrency to sample; 0 = frontend default")
+    parser.add_argument("--tp", type=int, default=1, help="tensor-parallel width of the serving host (Rust frontend)")
+    parser.add_argument("--levels", type=int, default=0, help="highest concurrency to sample; 0 = the pool width")
     args = parser.parse_args(argv)
-    version = _check_sglang_version()
-    if args.frontend == "python" and args.levels <= 0:
-        args.levels = 16
+    version = _sglang_version()
     bounds = (("min_pixels", args.min_pixels), ("max_pixels", args.max_pixels))
     image = {name: int(value) for name, value in bounds if value}
     mm_process_config = {"image": image} if image else None
     images = generate_images(args.height, args.width, args.count, args.encoding)
     measure = measure_python if args.frontend == "python" else measure_rust
     result = asyncio.run(measure(args, images, mm_process_config))
-    result["provenance"].update(
-        sampled_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        host=platform.node(),
-        sglang_version=version,
-        cpu=_cpu_model(),
-        threads=_threads(),
-        python=sys.version.split()[0],
-    )
-    result["cpu"] = _cpu_model()
+    result["environment"] = _environment(version)
+    result["provenance"]["sampled_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     json.dump(result, sys.stdout)
     sys.stdout.write("\n")
     return 0

@@ -104,8 +104,8 @@ def _role_capacity_tokens(
             # KV pool; load resolution must size against the same capacity.
             model_controls.update(
                 colocated_encoder=True,
-                reserved_bytes=int(vision.get("cache_mib", 100)) << 20,
-                encoder_parallel=str(vision.get("encoder_parallel", "tp")),
+                reserved_bytes=int(vision["cache_mib"]) << 20,
+                encoder_parallel=str(vision["encoder_parallel"]),
             )
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,

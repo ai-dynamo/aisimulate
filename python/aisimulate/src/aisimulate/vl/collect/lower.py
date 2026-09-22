@@ -7,43 +7,51 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...config.engine import CostFnConfig, FrontendStageConfig
-from ..table import FrontendRow, RowIdentity, Shape
+from ...config.engine import FrontendMeasurementConfig, FrontendStageConfig
+from ..table import FrontendRow, TableEnvironment
 from .samples import Span, steady_means
 
 
-def stage_costs(curves: dict[int, list[Span]], *, capacity: int) -> tuple[CostFnConfig, list[float]]:
-    """Constant service cost of one request plus the per-concurrency scale of sharing the resource.
+def stage_costs(curves: dict[int, list[Span]], *, capacity: int) -> tuple[float, list[float]]:
+    """Service time of one request alone plus the per-concurrency scale of sharing the pool.
 
-    Every sample processes the same shape, so the cost is a constant per job and
-    sharing shows up as a scale relative to running alone.
+    Every sample processes the same workload, so the service time is one number
+    per request and sharing shows up as a scale relative to running alone.
     """
     means = steady_means(curves, capacity)
     alone = means[1]
-    return CostFnConfig(const_ms=alone), [means[c] / alone for c in range(1, capacity + 1)]
+    return alone, [means[concurrency] / alone for concurrency in range(1, capacity + 1)]
 
 
 def _curves(levels: dict[str, list[list[int]]]) -> dict[int, list[Span]]:
     return {int(level): [Span(int(started), int(ended)) for started, ended in spans] for level, spans in levels.items()}
 
 
-def frontend_row(recording: dict[str, Any], *, identity: RowIdentity, shape: Shape) -> FrontendRow:
+def environment(recording: dict[str, Any]) -> TableEnvironment:
+    return TableEnvironment.model_validate(recording["environment"])
+
+
+def frontend_row(recording: dict[str, Any], *, model: str, measurement: FrontendMeasurementConfig) -> FrontendRow:
     """Stages of one frontend from the worker script's recording.
 
-    Python: a pool stage for the multimodal processor path (image decode, HF
-    processor, layout) whose width is the highest measured concurrency, a
-    tokenizer-manager loop stage for the synchronous send continuation, and a
-    single-worker pool for the scheduler's per-request receive preparation.
-    Rust: one pool stage the width of the multimodal worker pool.
+    Python: the multimodal processor path (image decode, HF processor, layout)
+    as a pool the width of its IO executor, the tokenizer-manager loop's
+    synchronous send as one worker, and the scheduler's per-request receive
+    preparation as one worker. Rust: the multimodal worker pool, then receive.
     """
     workers = int(recording["workers"])
-    cost, scale = stage_costs(_curves(recording["levels"]), capacity=workers)
-    stages = [FrontendStageConfig(resource="pool", workers=workers, cost=cost, concurrency_scale=scale)]
+    service_ms, scale = stage_costs(_curves(recording["levels"]), capacity=workers)
+    stages = [FrontendStageConfig(workers=workers, service_ms=service_ms, concurrency_scale=scale)]
     if recording["frontend"] == "python":
-        stages.append(
-            FrontendStageConfig(resource="tm_loop", cost=CostFnConfig(const_ms=float(recording["tm_loop_ms"])))
-        )
-        stages.append(
-            FrontendStageConfig(resource="pool", workers=1, cost=CostFnConfig(const_ms=float(recording["receive_ms"])))
-        )
-    return FrontendRow(identity=identity, shape=shape, stages=stages, provenance=dict(recording.get("provenance", {})))
+        stages.append(FrontendStageConfig(service_ms=float(recording["send_ms"])))
+    stages.append(FrontendStageConfig(service_ms=float(recording["receive_ms"])))
+    return FrontendRow(
+        model=model,
+        measured_for=measurement,
+        stages=stages,
+        provenance=dict(recording.get("provenance", {})),
+    )
+
+
+STAGE_LABELS = {"python": ("process", "send", "receive"), "rust": ("process", "receive")}
+"""Display names of the stages `frontend_row` emits, in order."""

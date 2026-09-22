@@ -662,6 +662,10 @@ def build_engine_spec_json(
             raise InvalidEngineConfigurationError(f"{model_path} has no vision encoder to compile")
         if bool(getattr(model.config, "enable_encoder_dp", False)) != (encoder_parallel == "dp"):
             raise InvalidEngineConfigurationError("the model was not built with the requested encoder_parallel")
+        if encoder_parallel == "dp" and model.architecture == "Llama4ForConditionalGeneration":
+            # sglang v0.5.19 reads `mm_enable_dp_encoder` only in its Qwen-VL, GLM, InternVL, Kimi
+            # and MiMo towers; Llama 4's vision tower is always tensor-parallel.
+            raise InvalidEngineConfigurationError("Llama 4's vision tower is tensor-parallel only in SGLang 0.5.19")
         groups: dict[str, list] = {"patch": [], "transformer": [], "output": []}
         for op in encoder_ops:
             groups[encoder_shape_class(op._name)].append(op)
