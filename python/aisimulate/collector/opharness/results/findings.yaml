@@ -403,6 +403,44 @@ findings:
     - framework:vllm-0.29.0
     - MiniMaxAI/MiniMax-M3
     - meta-llama/Meta-Llama-3.1-8B
+  pathdiff_fp8kv_coverage_complete:
+    statement: |
+      HARNESS COMPLETENESS (2026-09-23, driven by "fp8-KV must be probed and
+      compared, not skipped"): fp8-KV is now a first-class path_diff dimension
+      and the two fp8 attention paths that the collector fixes targeted are
+      verified aligned end-to-end. Getting there took THREE fixes, each a case
+      of the collector/probe losing serving context:
+        (a) probe fp8-KV as a config axis: probe_vllm --kv-cache-dtype +
+            probe_driver kv_variants=[None,fp8] (vllm), path_diff --kv-dtype
+            selects the same-kv serving record (commit a2076196).
+        (b) build_ops orphan truncation: sorted(set)[:15] alphabetical cut
+            dropped the sparse-MLA fp8 kernels (cudagraph-replayed, device
+            stream only) so serving fp8 signal was empty; now top-40 by device
+            time (commit 19ae5ea9).
+        (c) taxonomy gap: vllm kernel_unified_attention (TRITON_ATTN, the ONLY
+            fp8 head_dim>256 Gemma-4 path) was unlabeled; labeled triton_attn,
+            distinct from the infra-swallowed generic `triton` (commit
+            553c2772).
+      VERDICTS (sm90, vllm 0.29.0, kv=fp8):
+        - Gemma-4 head512 fp8 -> ALIGNED (triton_attn both sides); confirms the
+          collect_attn head_dim>256 backend override (commit 47282aa1).
+        - DSV3.2 dsa-context fp8 -> ALIGNED (dsa_nsa + flashmla + deepgemm),
+          confirming the DSA context chunked-prefill grid. NOTE the capture
+          precision must match serving: gemm_type=bfloat16 shows a false
+          fused_a-projection drift (cutlass vs serving fp8_blockscale); the
+          gemm_type=fp8_block capture aligns. path_diff compares whatever cell
+          it is handed, so fp8-serving comparisons need the fp8_block capture.
+      LESSON: path_diff only validates the config points actually captured and
+      probed; a family unlabeled or a kernel truncated is silently uncompared.
+      Evidence results/pathdiff/sm90/vllm_0290_{gemma4_attn_h512,dsv32_dsa_ctx}_fp8.json,
+      facts/pathdiff/cap_{attn_h512,dsa_ctx}_fp8*.json, facts/gemma4_fp8_serving.json.
+    applies_to:
+    - instrument:path_diff
+    - instrument:kernel_taxonomy
+    - framework:vllm-0.29.0
+    - platform:sm90
+    - google/gemma-4-26B-A4B
+    - deepseek-ai/DeepSeek-V3.2
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'NAMING DEBT: the kernel_taxonomy family "dsa_nsa" matches MiniMax-M3 sparse-attention kernels
       too (sparse_attn_fwd/_gqa_share_sparse/_merge_topk_attn_out/_decode_score are models/minimax_m3 Triton
