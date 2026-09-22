@@ -453,9 +453,19 @@ findings:
       (GLM gen 300->70->17->5->2 of 8832; DeepSeek 346->106->28->8) — --resume-retry-failed sweeps recover the
       rows without touching measurement semantics. ADDENDA: (2+3) upgraded to selector-verified — serving itself
       routes fp8-kv+head512 to FlashInferBackend whose SM90 JIT cannot run it (prefill fa2 no-fp8 assert, decode
-      module compiles SM100+ only); a vllm selector availability-check gap, upstream-worthy. (4a) localized to
-      the framework''s own q-padding in _fp8_flash_mla_kernel (pad to 64/128 heads -> (1,T,128,576) new_zeros,
-      batch stride breaks int32 at T>~29k); serving reachable only with a per-step token budget above ~29k.
+      module compiles SM100+ only); a vllm selector availability-check gap, upstream-worthy. (4a) VERDICT FLIPPED 2026-09-22 via live-engine probe:
+      collector-specific, NOT a framework limit. fp8-KV + num_heads<32 (the collector head-sweep emulating TP>=5)
+      selects fp8 mixed mode (MIN_HEADS_FOR_BF16_PREFILL=32, flashmla_sparse.py:63/307), which runs the whole batch
+      as one MQA batch through the fp8 decode kernel (head padding 16->64); the collector builds the prefill as a
+      SINGLE monolithic forward so num_actual_tokens=isl(32768) and stride = tokens*padded_heads*576 breaks int32.
+      Real-engine tests (8 GPUs idle): TP=1 native-128-heads isl=32k fp8 runs (separate bf16 splitkv path); TP=8
+      (16 heads/rank -> the SAME mixed fp8 decode kernel, padding 16->64) fed a 32768-token prompt -> GENERATE OK.
+      Serving chunks the prefill (max_num_batched_tokens), keeping per-forward num_actual_tokens well under 29k;
+      the collector does not chunk. Fix: the collector context construction should mirror serving''s chunked prefill
+      (split at max_num_batched_tokens) -- this both removes the 776 failures AND makes large-isl context rows
+      faithful to how serving actually invokes the kernel (the monolithic measurement is itself non-faithful for
+      large isl; even the passing large-isl context rows warrant review). Evidence
+      facts/ab_dsa_stride_{oneshot,tp8}.json.
       (1) msa kernel limit converted to an invocation-site guard raising a classified error with the framework
       citation (commit c0f7f035). dsv4 full-grid rerun on the merged lane, FINAL:
       22589/22604 collected (99.93%) across 6 ops — generation 3088/3088, paged_mqa_logits + hca_attn 3918/3918
