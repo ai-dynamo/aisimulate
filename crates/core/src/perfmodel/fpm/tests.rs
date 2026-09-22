@@ -2383,11 +2383,15 @@ fn learned_model_returns_none_for_kind_without_store() {
     let model =
         ForwardPassPerfModel::from_learned(&artifact, ForwardPassPerfOptions::default()).unwrap();
     assert_eq!(
-        model.estimate_forward_pass_time_ms(&[decode_fpm(3, 300, 0.0)]).unwrap(),
+        model
+            .estimate_forward_pass_time_ms(&[decode_fpm(3, 300, 0.0)])
+            .unwrap(),
         Some(5.0)
     );
     assert_eq!(
-        model.estimate_forward_pass_time_ms(&[prefill_fpm(512, 0.0)]).unwrap(),
+        model
+            .estimate_forward_pass_time_ms(&[prefill_fpm(512, 0.0)])
+            .unwrap(),
         None
     );
 }
