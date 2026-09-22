@@ -131,6 +131,7 @@ def parallel_configs_for(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     role_runtime: dict[str, tuple[int, int, float] | tuple[int, int, float, int | None]] | None = None,
+    role_max_seq_len: dict[str, int | None] | None = None,
     systems_paths: list[str] | None = None,
     fpm_profile: dict[str, Any] | None = None,
     worker_type: str = "aggregated",
@@ -219,6 +220,9 @@ def parallel_configs_for(
             raise ValueError(
                 "role_runtime values must be (tokens, batch, memory) or (tokens, batch, memory, fixed_tokens)"
             )
+        role_seq_len = (role_max_seq_len or {}).get(role, seq_len)
+        if role_seq_len is None:
+            raise ValueError(f"max_seq_len is required: {model_name} config exposes no max context length")
         grouped_shapes = set()
         if profile is not None:
             for shape in dict.fromkeys(shapes):
@@ -259,7 +263,7 @@ def parallel_configs_for(
                         systems_paths=systems_paths,
                         fpm_profile=fpm_profile,
                         worker_type=profile_role,
-                        context_length=seq_len,
+                        context_length=role_seq_len,
                         max_num_tokens=role_tokens,
                         max_batch_size=role_batch,
                         memory_fraction=role_memory,
@@ -273,7 +277,7 @@ def parallel_configs_for(
                     grouped_feasible.add(shape)
             shapes = [shape for shape in shapes if shape not in grouped_shapes]
         if fixed_tokens is not None:
-            return {shape: fixed_tokens for shape in dict.fromkeys(shapes) if fixed_tokens > seq_len}
+            return {shape: fixed_tokens for shape in dict.fromkeys(shapes) if fixed_tokens > role_seq_len}
         linear_feasible = feasible_shape_tokens(
             shapes,
             model_name=model_name,
@@ -281,7 +285,7 @@ def parallel_configs_for(
             backend=backend,
             backend_version=backend_version,
             systems_paths=systems_paths,
-            max_seq_len=seq_len,
+            max_seq_len=role_seq_len,
             max_num_tokens=role_tokens,
             max_batch_size=role_batch,
             memory_fraction=role_memory,

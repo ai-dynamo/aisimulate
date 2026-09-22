@@ -105,6 +105,9 @@ def _engine_args_payload(
         payload["systems_path"] = list(resolve_systems_paths(sample["systems_paths"]))
     if sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
+    context_length = sample.get(f"{role}_context_length") or sample.get("context_length")
+    if context_length is not None:
+        payload["max_model_len"] = int(context_length)
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
