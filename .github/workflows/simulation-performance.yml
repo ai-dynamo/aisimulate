@@ -179,8 +179,8 @@ jobs:
           fi
 
           controller_changes="$(git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- \
-            "${gate_path}" \
-            "python/aisimulate/tools/forward_perf_gate/run.py")"
+            ":(glob)${gate_path}/**/*.py" \
+            "${gate_path}/fixtures/agentx.jsonl")"
           if [[ -n "${controller_changes}" ]]; then
             echo "validate_head_controller=true" >> "${GITHUB_OUTPUT}"
           else

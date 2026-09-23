@@ -18,7 +18,6 @@ FILES = {
     "crates/core/Cargo.toml",
     "python/aisimulate/pyproject.toml",
     "python/aisimulate/uv.lock",
-    "python/aisimulate/tools/forward_perf_gate/run.py",
 }
 PREFIXES = (
     "crates/core/src/",

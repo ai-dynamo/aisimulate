@@ -5,7 +5,7 @@
 import hashlib
 import json
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 
 def digest(value: object) -> str:

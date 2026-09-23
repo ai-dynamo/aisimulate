@@ -10,7 +10,7 @@ import statistics
 from pathlib import Path
 
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
-from tools.simulation_perf_gate.worker import behavior
+from tools.simulation_perf_gate.contract import behavior, model_identity
 
 RELATIVE_THRESHOLD = 0.10
 ABSOLUTE_THRESHOLD_MS = 100.0
@@ -24,7 +24,10 @@ def difference(left: object, right: object, path: str = "") -> str | None:
     elif type(left) is type(right):
         if isinstance(left, dict):
             if left.keys() != right.keys():
-                return f"{path}: fields differ"
+                return (
+                    f"{path}: fields differ (base only: {sorted(left.keys() - right.keys())}; "
+                    f"head only: {sorted(right.keys() - left.keys())})"
+                )
             for key in sorted(left):
                 found = difference(left[key], right[key], f"{path}/{key}")
                 if found:
@@ -43,7 +46,7 @@ def difference(left: object, right: object, path: str = "") -> str | None:
     return f"{path}: {str(left)[:100]} vs {str(right)[:100]}"
 
 
-def validate(response: object, case: dict, revision: str, phase: str) -> None:
+def validate(response: object, case: dict, revision: str, phase: str) -> dict:
     if not isinstance(response, dict):
         raise ValueError("missing worker response")
     for name, expected in (
@@ -63,10 +66,13 @@ def validate(response: object, case: dict, revision: str, phase: str) -> None:
         value = response.get(name)
         if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
             raise ValueError(f"invalid {name}")
-    if not isinstance(response.get("model_identity"), dict) or not response["model_identity"]:
-        raise ValueError("missing model identity")
+    model_identity(response.get("model_identity"))
     artifact = response.get("per_request_artifact")
-    summary = behavior(response["behavior"], per_request=phase == "availability" and artifact is None)
+    summary = behavior(
+        response["behavior"],
+        per_request=phase == "availability" and artifact is None,
+        agentic=bool(case.get("trace_sha256")),
+    )
     if (
         summary["completed_requests"] != case["expected_requests"]
         or summary["num_requests"] != case["expected_requests"]
@@ -85,13 +91,14 @@ def validate(response: object, case: dict, revision: str, phase: str) -> None:
                 or not artifact.get("path")
             ):
                 raise ValueError("invalid per-request artifact evidence")
-            return
+            return summary
         rows = summary["per_request"]
         if len(rows) != case["expected_requests"] or any(
             row["terminal_status"] != "completed" or row["output_length"] != row["requested_output_length"]
             for row in rows
         ):
             raise ValueError("incomplete per-request records")
+    return summary
 
 
 def compare_case(case: dict, samples: dict, *, revisions: dict, rounds: int) -> dict:
@@ -104,9 +111,10 @@ def compare_case(case: dict, samples: dict, *, revisions: dict, rounds: int) -> 
     for label, pair in [("availability", availability), *[(str(p.get("round")), p) for p in measured]]:
         phase = "availability" if label == "availability" else "measure"
         valid = True
+        summaries = {}
         for side in ("base", "head"):
             try:
-                validate(pair.get(side), case, revisions[side], phase)
+                summaries[side] = validate(pair.get(side), case, revisions[side], phase)
                 if phase == "availability":
                     valid_availability.add(side)
             except (ValueError, TypeError, KeyError) as error:
@@ -115,10 +123,10 @@ def compare_case(case: dict, samples: dict, *, revisions: dict, rounds: int) -> 
         if not valid:
             continue
         base, head = pair["base"], pair["head"]
-        identity_diff = difference(base["model_identity"], head["model_identity"])
+        identity_diff = difference(model_identity(base["model_identity"]), model_identity(head["model_identity"]))
         if identity_diff:
             invalid.append(f"{label}: model identity changed: {identity_diff}")
-        result_diff = difference(base["behavior"], head["behavior"])
+        result_diff = difference(summaries["base"], summaries["head"])
         if result_diff:
             changed.append(f"{label}: {result_diff}")
         if phase == "availability" and (base.get("per_request_artifact") or head.get("per_request_artifact")):
@@ -130,11 +138,15 @@ def compare_case(case: dict, samples: dict, *, revisions: dict, rounds: int) -> 
             for side in ("base", "head"):
                 reference = availability.get(side, {})
                 if side in valid_availability:
-                    expected = {k: v for k, v in reference["behavior"].items() if k != "per_request"}
-                    drift = difference(expected, pair[side]["behavior"])
+                    expected = behavior(
+                        reference["behavior"], per_request=False, agentic=bool(case.get("trace_sha256"))
+                    )
+                    drift = difference(expected, summaries[side])
                     if drift:
                         invalid.append(f"{label}/{side}: differs from its equivalence pass: {drift}")
-                    if difference(reference["model_identity"], pair[side]["model_identity"]):
+                    if difference(
+                        model_identity(reference["model_identity"]), model_identity(pair[side]["model_identity"])
+                    ):
                         invalid.append(f"{label}/{side}: model identity differs from its equivalence pass")
             b, h = base["wall_time_ms"], head["wall_time_ms"]
             timings.append(
