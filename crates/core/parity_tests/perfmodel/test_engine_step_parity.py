@@ -720,24 +720,12 @@ def _static_metrics(
         "moe_quant_mode": case.moe_quant_mode,
         "attention_backend": case.attention_backend,
     }
-    ctx_result = _MemoizedCall(
-        lambda: _quiet_call(cli_estimate, mode="static_ctx", **kwargs)
-    )
-    gen_result = _MemoizedCall(
-        lambda: _quiet_call(cli_estimate, mode="static_gen", **kwargs)
-    )
-    context_ms = _safe_value(
-        lambda: ctx_result().summary.get_summary_df().iloc[0]["context_latency"]
-    )
-    generation_ms = _safe_value(
-        lambda: gen_result().summary.get_summary_df().iloc[0]["generation_latency"]
-    )
-    if isinstance(context_ms, _ErrorSentinel) or isinstance(
-        generation_ms, _ErrorSentinel
-    ):
-        total: float | _ErrorSentinel = (
-            context_ms if isinstance(context_ms, _ErrorSentinel) else generation_ms
-        )
+    ctx_result = _MemoizedCall(lambda: _quiet_call(cli_estimate, mode="static_ctx", **kwargs))
+    gen_result = _MemoizedCall(lambda: _quiet_call(cli_estimate, mode="static_gen", **kwargs))
+    context_ms = _safe_value(lambda: ctx_result().summary.get_summary_df().iloc[0]["context_latency"])
+    generation_ms = _safe_value(lambda: gen_result().summary.get_summary_df().iloc[0]["generation_latency"])
+    if isinstance(context_ms, _ErrorSentinel) or isinstance(generation_ms, _ErrorSentinel):
+        total: float | _ErrorSentinel = context_ms if isinstance(context_ms, _ErrorSentinel) else generation_ms
     else:
         total = context_ms + generation_ms
     metrics: dict[str, float | _ErrorSentinel] = {
@@ -755,12 +743,8 @@ def _static_metrics(
         metrics["gen_energy_wms"] = _safe_value(
             lambda: sum(gen_result().summary.get_generation_energy_wms_dict().values())
         )
-        metrics["ctx_power_w"] = _safe_value(
-            lambda: ctx_result().summary.get_context_power_avg()
-        )
-        metrics["gen_power_w"] = _safe_value(
-            lambda: gen_result().summary.get_generation_power_avg()
-        )
+        metrics["ctx_power_w"] = _safe_value(lambda: ctx_result().summary.get_context_power_avg())
+        metrics["gen_power_w"] = _safe_value(lambda: gen_result().summary.get_generation_power_avg())
     return metrics
 
 
@@ -960,14 +944,8 @@ def _case_model_config(case: EngineStepParityCase) -> config.ModelConfig:
         moe_tp_size=case.moe_tp_size,
         moe_ep_size=case.moe_ep_size,
         cp_size=case.cp_size,
-        moe_quant_mode=(
-            common.MoEQuantMode[case.moe_quant_mode] if case.moe_quant_mode else None
-        ),
-        kvcache_quant_mode=(
-            common.KVCacheQuantMode[case.kvcache_quant_mode]
-            if case.kvcache_quant_mode
-            else None
-        ),
+        moe_quant_mode=(common.MoEQuantMode[case.moe_quant_mode] if case.moe_quant_mode else None),
+        kvcache_quant_mode=(common.KVCacheQuantMode[case.kvcache_quant_mode] if case.kvcache_quant_mode else None),
         nextn=case.nextn,
         attention_backend=case.attention_backend,
     )
@@ -988,9 +966,7 @@ def _cp_static_ctx_ms(case: EngineStepParityCase) -> float:
         raise RuntimeError(
             f"failed to load perf database for {case.system_name}/{case.backend_name}/{case.backend_version}"
         )
-    model = _quiet_call(
-        get_model, case.model_path, _case_model_config(case), case.backend_name
-    )
+    model = _quiet_call(get_model, case.model_path, _case_model_config(case), case.backend_name)
     backend = get_backend(case.backend_name)
     runtime_config = config.RuntimeConfig(
         batch_size=case.batch_size,
@@ -1013,9 +989,7 @@ def _rust_mixed_step_ms(case: EngineStepParityCase) -> float:
         raise RuntimeError(
             f"failed to load perf database for {case.system_name}/{case.backend_name}/{case.backend_version}"
         )
-    model = _quiet_call(
-        get_model, case.model_path, _case_model_config(case), case.backend_name
-    )
+    model = _quiet_call(get_model, case.model_path, _case_model_config(case), case.backend_name)
     shape = _mix_step_shape(case)
     return rust_engine_step.estimate_mixed_step_latency_with_rust(
         model,
@@ -1060,18 +1034,14 @@ def _parity_mismatch_reason(
                 )
                 continue
             # Both errored with the same kind — symmetric. Pass.
-            rows.append(
-                f"{name:<{metric_width}} {'ERROR':>10} {'ERROR':>10} {'-':>10} {'-':>10} {'-':>10}    sym"
-            )
+            rows.append(f"{name:<{metric_width}} {'ERROR':>10} {'ERROR':>10} {'-':>10} {'-':>10} {'-':>10}    sym")
             continue
         if py_err != rs_err:
             # Asymmetric — one errored, the other didn't.
             has_mismatch = True
             py_repr = repr(python_value) if py_err else f"{python_value:.3f}"
             rs_repr = repr(rust_value) if rs_err else f"{rust_value:.3f}"
-            rows.append(
-                f"{name:<{metric_width}} {py_repr:>10} {rs_repr:>10} {'-':>10} {'-':>10} {'-':>10}  asym"
-            )
+            rows.append(f"{name:<{metric_width}} {py_repr:>10} {rs_repr:>10} {'-':>10} {'-':>10} {'-':>10}  asym")
             continue
         # Both compute — apply numeric tolerance.
         allowed = max(abs(python_value) * rtol, 1e-9)
@@ -1216,9 +1186,7 @@ def load_parity_golden(filename: str) -> dict:
     if cached is None:
         path = GOLDEN_DIR / filename
         if not path.is_file():
-            pytest.fail(
-                f"missing golden fixture {path}; {_REGENERATE_HINT}", pytrace=False
-            )
+            pytest.fail(f"missing golden fixture {path}; {_REGENERATE_HINT}", pytrace=False)
         cached = _GOLDEN_CACHE[filename] = json.loads(path.read_text())
     return cached
 
@@ -1248,9 +1216,7 @@ def _golden_python_metrics(
     metric-set change and needs regeneration.
     """
     case_id = _case_golden_id(case)
-    record = (
-        load_parity_golden("engine_step.json")["cases"].get(case_id, {}).get(surface)
-    )
+    record = load_parity_golden("engine_step.json")["cases"].get(case_id, {}).get(surface)
     if record is None:
         pytest.fail(
             f"no engine-step golden for case '{case_id}' surface '{surface}'; {_REGENERATE_HINT}",
@@ -1267,11 +1233,7 @@ def _golden_python_metrics(
             pytrace=False,
         )
     return {
-        name: (
-            _ErrorSentinel.from_kind(value["error"])
-            if isinstance(value, dict)
-            else float(value)
-        )
+        name: (_ErrorSentinel.from_kind(value["error"]) if isinstance(value, dict) else float(value))
         for name, value in values.items()
     }
 
@@ -1487,10 +1449,8 @@ class TestRustEngineHandleDatabasePolicyIdentity:
             prefix=0,
             engine_step_backend="rust",
         )
-        ctx_latency, _gen, *_ = (
-            rust_engine_step.estimate_static_latency_breakdown_with_rust(
-                model, view, rc, "static_ctx", 1, 1.0
-            )
+        ctx_latency, _gen, *_ = rust_engine_step.estimate_static_latency_breakdown_with_rust(
+            model, view, rc, "static_ctx", 1, 1.0
         )
         return float(sum(ctx_latency.values()))
 
@@ -1527,9 +1487,7 @@ class TestRustEngineHandleDatabasePolicyIdentity:
             pytest.skip("no perf database for the large-EP identity")
         return model, off, on
 
-    def test_off_warmed_cache_does_not_fail_the_shared_on_view(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_off_warmed_cache_does_not_fail_the_shared_on_view(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _prepare_rust_core(monkeypatch)  # the ONLY cache clear in this ordering
         model, off, on = self._build()
         with pytest.raises(errors.PerfDataNotAvailableError):
@@ -1537,9 +1495,7 @@ class TestRustEngineHandleDatabasePolicyIdentity:
         on_ms = self._static_ctx_ms(model, on)
         assert on_ms > 0.0 and on_ms == on_ms  # answers, finite
 
-    def test_on_warmed_cache_does_not_answer_for_the_shared_off_view(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_on_warmed_cache_does_not_answer_for_the_shared_off_view(self, monkeypatch: pytest.MonkeyPatch) -> None:
         _prepare_rust_core(monkeypatch)  # the ONLY cache clear in this ordering
         model, off, on = self._build()
         on_ms = self._static_ctx_ms(model, on)
@@ -1756,9 +1712,7 @@ class TestRustEngineStepHybridStaticParity:
     ) -> None:
         _prepare_rust_core(monkeypatch)
 
-        reason = _parity_mismatch_reason(
-            _static_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL
-        )
+        reason = _parity_mismatch_reason(_static_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL)
         assert reason is None, reason
 
 
@@ -1771,9 +1725,7 @@ class TestRustEngineStepHybridMixedStepParity:
     ) -> None:
         _prepare_rust_core(monkeypatch)
 
-        reason = _parity_mismatch_reason(
-            _mixed_step_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL
-        )
+        reason = _parity_mismatch_reason(_mixed_step_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL)
         assert reason is None, reason
 
 
@@ -1786,9 +1738,7 @@ class TestRustEngineStepHybridAggParity:
     ) -> None:
         _prepare_rust_core(monkeypatch)
 
-        reason = _parity_mismatch_reason(
-            _agg_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL
-        )
+        reason = _parity_mismatch_reason(_agg_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL)
         assert reason is None, reason
 
 
@@ -1801,9 +1751,7 @@ class TestRustEngineStepHybridDisaggParity:
     ) -> None:
         _prepare_rust_core(monkeypatch)
 
-        reason = _parity_mismatch_reason(
-            _disagg_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL
-        )
+        reason = _parity_mismatch_reason(_disagg_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL)
         assert reason is None, reason
 
 
@@ -1880,9 +1828,7 @@ class TestRustEngineStepSolStaticParity:
     ) -> None:
         _prepare_rust_core(monkeypatch)
 
-        reason = _parity_mismatch_reason(
-            _static_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL
-        )
+        reason = _parity_mismatch_reason(_static_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL)
         assert reason is None, reason
 
 
@@ -1895,9 +1841,7 @@ class TestRustEngineStepSolMixedStepParity:
     ) -> None:
         _prepare_rust_core(monkeypatch)
 
-        reason = _parity_mismatch_reason(
-            _mixed_step_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL
-        )
+        reason = _parity_mismatch_reason(_mixed_step_comparison_metrics(case), rtol=HYBRID_PARITY_RTOL)
         assert reason is None, reason
 
 
@@ -1971,9 +1915,7 @@ def _build_case_golden_ids() -> dict[EngineStepParityCase, str]:
             (case,) = param.values
             existing = mapping.get(case)
             if existing is not None and existing != param.id:
-                raise AssertionError(
-                    f"case {case!r} carries two golden ids: {existing!r} / {param.id!r}"
-                )
+                raise AssertionError(f"case {case!r} carries two golden ids: {existing!r} / {param.id!r}")
             mapping[case] = param.id
     return mapping
 
@@ -2011,9 +1953,7 @@ class TestGoldenComparisonGuards:
         monkeypatch.setattr(
             sys.modules[__name__],
             "load_parity_golden",
-            lambda filename: doctored
-            if filename == "engine_step.json"
-            else original(filename),
+            lambda filename: doctored if filename == "engine_step.json" else original(filename),
         )
         reason = _parity_mismatch_reason(_static_comparison_metrics(case))
         assert reason is not None, "5% golden drift on static_ctx was not detected"
@@ -2037,14 +1977,10 @@ class TestGoldenComparisonGuards:
         monkeypatch.setattr(
             sys.modules[__name__],
             "load_parity_golden",
-            lambda filename: doctored
-            if filename == "engine_step.json"
-            else original(filename),
+            lambda filename: doctored if filename == "engine_step.json" else original(filename),
         )
         reason = _parity_mismatch_reason(_static_comparison_metrics(case))
-        assert reason is not None, (
-            "golden-error vs rust-value asymmetry was not detected"
-        )
+        assert reason is not None, "golden-error vs rust-value asymmetry was not detected"
         assert "asym" in reason, reason
 
 
@@ -2052,9 +1988,7 @@ def _rust_static_breakdown(case: EngineStepParityCase):
     """Drive the rust engine-step bridge directly (no cli_estimate error
     wrapping) so the exception object crossing the FFI is what the test sees."""
     database = _case_database(case)
-    model = _quiet_call(
-        get_model, case.model_path, _case_model_config(case), case.backend_name
-    )
+    model = _quiet_call(get_model, case.model_path, _case_model_config(case), case.backend_name)
     runtime_config = config.RuntimeConfig(
         batch_size=case.batch_size,
         beam_width=1,
@@ -2146,9 +2080,7 @@ class TestRustTypedErrorsAcrossFfi:
         # missing-dtype on an eager op) left uncovered until the flops
         # resolution was hoisted before every load/key lookup.
         _prepare_rust_core(monkeypatch)
-        case = EngineStepParityCase(
-            model_path="nvidia/MiniMax-M2.5-NVFP4", system_name="h200_sxm"
-        )
+        case = EngineStepParityCase(model_path="nvidia/MiniMax-M2.5-NVFP4", system_name="h200_sxm")
         with pytest.raises(errors.MissingSystemFlopsError) as excinfo:
             _rust_static_breakdown(case)
         assert "missing system flops" in str(excinfo.value), str(excinfo.value)
@@ -2177,9 +2109,7 @@ class TestRustTypedErrorsAcrossFfi:
         # (generation_attn_mode) must keep those rows queryable instead of
         # demanding an fp8_tc_flops entry a100 must never define (the
         # support-matrix FP8 gate is keyed on that entry's presence).
-        database = _quiet_call(
-            perf_database.get_database, "a100_sxm", "trtllm", "1.0.0"
-        )
+        database = _quiet_call(perf_database.get_database, "a100_sxm", "trtllm", "1.0.0")
         from aisimulate_core.sdk.engine import _evaluate_single_op
         from aisimulate_core.sdk.operations.mla import GenerationMLA
 
@@ -2187,9 +2117,7 @@ class TestRustTypedErrorsAcrossFfi:
             # The retired query_generation_mla shim's exact twin (the
             # database's live SILICON view).
             op = GenerationMLA("generation_mla_query", 1.0, 64, kv_mode)
-            return _evaluate_single_op(
-                database, op, is_context=False, batch_size=1, s=65
-            )
+            return _evaluate_single_op(database, op, is_context=False, batch_size=1, s=65)
 
         fp8_kv = _gen_mla(common.KVCacheQuantMode.fp8)
         bf16_kv = _gen_mla(common.KVCacheQuantMode.bfloat16)
@@ -2427,13 +2355,9 @@ class TestRustEngineStepFpmHybridParity:
             comm_quant_mode="half",
             forward_model="fpm",
         )
-        cfg.speculation = SpeculationConfig(
-            kind="ngram", params={"num_speculative_tokens": 3}
-        )
+        cfg.speculation = SpeculationConfig(kind="ngram", params={"num_speculative_tokens": 3})
         model = get_model(_FPM_MODEL, cfg, "vllm")
-        database = _quiet_call(
-            perf_database.get_database, "b200_sxm", "vllm", _FPM_VERSION
-        )
+        database = _quiet_call(perf_database.get_database, "b200_sxm", "vllm", _FPM_VERSION)
         return model, get_backend("vllm"), database
 
     def test_hybrid_ngram_static_gen_pin(self, fpm_systems_root):
@@ -2470,10 +2394,7 @@ class TestRustEngineStepFpmHybridParity:
 class TestRustEngineStepFpmParity:
     @pytest.mark.parametrize("database_mode", ["SILICON", "HYBRID"])
     def test_auto_skips_absent_op_tables(self, fpm_systems_root, database_mode):
-        from aisimulate_core.sdk import (
-            ForwardPassPerfModelConfig,
-            RustForwardPassPerfModel,
-        )
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
         cfg = ForwardPassPerfModelConfig(
             model=_FPM_MODEL,
@@ -2501,10 +2422,7 @@ class TestRustEngineStepFpmParity:
             assert model.estimate_forward_pass_time_ms(
                 {
                     "version": 1,
-                    "scheduled_requests": {
-                        "num_decode_requests": 4,
-                        "sum_decode_kv_tokens": 4100,
-                    },
+                    "scheduled_requests": {"num_decode_requests": 4, "sum_decode_kv_tokens": 4100},
                 }
             ) == pytest.approx(4.5)
         finally:
@@ -2513,18 +2431,11 @@ class TestRustEngineStepFpmParity:
 
         from aisimulate_core.sdk.errors import PerfDataNotAvailableError
 
-        with pytest.raises(
-            PerfDataNotAvailableError, match="required op-level data unavailable"
-        ):
-            RustForwardPassPerfModel.best_available(
-                replace(cfg, estimation_mode="op_level")
-            )
+        with pytest.raises(PerfDataNotAvailableError, match="required op-level data unavailable"):
+            RustForwardPassPerfModel.best_available(replace(cfg, estimation_mode="op_level"))
 
     def test_sol_does_not_require_op_tables(self, fpm_systems_root):
-        from aisimulate_core.sdk import (
-            ForwardPassPerfModelConfig,
-            RustForwardPassPerfModel,
-        )
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
         model = RustForwardPassPerfModel.best_available(
             ForwardPassPerfModelConfig(
@@ -2539,18 +2450,12 @@ class TestRustEngineStepFpmParity:
             )
         )
         try:
-            assert (
-                model.diagnostics()["provenance"]["selected_estimation_mode"]
-                == "op_level"
-            )
+            assert model.diagnostics()["provenance"]["selected_estimation_mode"] == "op_level"
             assert (
                 model.estimate_forward_pass_time_ms(
                     {
                         "version": 1,
-                        "scheduled_requests": {
-                            "num_decode_requests": 4,
-                            "sum_decode_kv_tokens": 4100,
-                        },
+                        "scheduled_requests": {"num_decode_requests": 4, "sum_decode_kv_tokens": 4100},
                     }
                 )
                 > 0
@@ -2581,23 +2486,15 @@ class TestRustEngineStepFpmParity:
             forward_model="fpm",
         )
         model = get_model(_FPM_MODEL, cfg, "vllm")
-        database = _quiet_call(
-            perf_database.get_database, "b200_sxm", "vllm", _FPM_VERSION
-        )
+        database = _quiet_call(perf_database.get_database, "b200_sxm", "vllm", _FPM_VERSION)
         return model, get_backend("vllm"), database
 
     def _static(self, model, backend, database, mode, batch, isl, osl, prefix):
-        rc = config.RuntimeConfig(
-            batch_size=batch, beam_width=1, isl=isl, osl=osl, prefix=prefix
-        )
+        rc = config.RuntimeConfig(batch_size=batch, beam_width=1, isl=isl, osl=osl, prefix=prefix)
 
         def thunk():
             summary = backend.run_static(model, database, rc, mode=mode)
-            d = (
-                summary.get_context_latency_dict()
-                if mode == "static_ctx"
-                else summary.get_generation_latency_dict()
-            )
+            d = summary.get_context_latency_dict() if mode == "static_ctx" else summary.get_generation_latency_dict()
             return sum(d.values())
 
         return _safe_value(thunk)
@@ -2609,13 +2506,9 @@ class TestRustEngineStepFpmParity:
                 f"{point}: expected symmetric {frozen}, got {rs!r}"
             )
             return
-        assert not isinstance(rs, _ErrorSentinel), (
-            f"{point}: frozen={frozen} but live raised {rs!r}"
-        )
+        assert not isinstance(rs, _ErrorSentinel), f"{point}: frozen={frozen} but live raised {rs!r}"
         allowed = max(abs(frozen) * PARITY_RTOL, 1e-9)
-        assert abs(rs - frozen) <= allowed, (
-            f"{point}: frozen={frozen} rs={rs} delta={abs(rs - frozen)}"
-        )
+        assert abs(rs - frozen) <= allowed, f"{point}: frozen={frozen} rs={rs} delta={abs(rs - frozen)}"
 
     def test_fpm_arena_selects_the_fpm_engine(self, fpm_systems_root, monkeypatch):
         # Review finding (#1461): from_native() dropped forward_model, so the
@@ -2691,10 +2584,7 @@ class TestRustEngineStepFpmParity:
         assert spec["generation_ops"][0]["FpmForward"]["phase"] == "decode"
         assert len(ctx_op["match_identity"]) == 19
         assert ctx_op["match_identity"][-4:] == ["", "full", "none", "text"]
-        assert (
-            spec["generation_ops"][0]["FpmForward"]["match_identity"]
-            == ctx_op["match_identity"]
-        )
+        assert spec["generation_ops"][0]["FpmForward"]["match_identity"] == ctx_op["match_identity"]
         assert ctx_op["sol_ops"], "sol_ops must carry the original granular list"
 
     @pytest.mark.parametrize(
@@ -2718,9 +2608,7 @@ class TestRustEngineStepFpmParity:
             ("static_ctx", 16, 320, 1, 256),  # high KV pressure -> SOL-rescaled clamp
         ],
     )
-    def test_fpm_static_parity(
-        self, fpm_systems_root, monkeypatch, mode, batch, isl, osl, prefix
-    ):
+    def test_fpm_static_parity(self, fpm_systems_root, monkeypatch, mode, batch, isl, osl, prefix):
         _prepare_rust_core(monkeypatch)
         model, backend, database = self._build()
         rs = self._static(model, backend, database, mode, batch, isl, osl, prefix)
@@ -2743,19 +2631,13 @@ class TestRustEngineStepFpmParity:
             ),  # 16 whole prefills: certified batch clamp to the ceiling
         ],
     )
-    def test_fpm_mixed_step_parity(
-        self, fpm_systems_root, monkeypatch, ctx_tokens, gen_tokens, isl, osl
-    ):
+    def test_fpm_mixed_step_parity(self, fpm_systems_root, monkeypatch, ctx_tokens, gen_tokens, isl, osl):
         _prepare_rust_core(monkeypatch)
         model, backend, database = self._build()
 
-        rc = config.RuntimeConfig(
-            batch_size=1, beam_width=1, isl=isl, osl=osl, prefix=0
-        )
+        rc = config.RuntimeConfig(batch_size=1, beam_width=1, isl=isl, osl=osl, prefix=0)
         rs = _safe_value(
-            lambda: backend._get_mix_step_latency(
-                model, database, rc, ctx_tokens, gen_tokens, isl, osl, 0
-            )[0]
+            lambda: backend._get_mix_step_latency(model, database, rc, ctx_tokens, gen_tokens, isl, osl, 0)[0]
         )
         frozen = _FPM_MIXED_FROZEN[(ctx_tokens, gen_tokens, isl, osl)]
         self._assert_frozen(frozen, rs, f"mixed ctx={ctx_tokens} gen={gen_tokens}")
@@ -2765,9 +2647,5 @@ class TestRustEngineStepFpmParity:
         model, backend, database = self._build()
 
         rc = config.RuntimeConfig(batch_size=1, beam_width=1, isl=1024, osl=2, prefix=0)
-        rs = _safe_value(
-            lambda: backend._get_genonly_step_latency(model, database, rc, 4, 1023, 2)[
-                0
-            ]
-        )
+        rs = _safe_value(lambda: backend._get_genonly_step_latency(model, database, rc, 4, 1023, 2)[0])
         self._assert_frozen(_FPM_GENONLY_FROZEN, rs, "genonly gen=4")
