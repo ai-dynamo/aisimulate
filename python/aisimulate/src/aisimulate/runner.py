@@ -1376,7 +1376,7 @@ def _materialize_engine_role(
             if timing_config is not None and timing_config.get("backend_version") is None:
                 role_config["timing_model"] = {**timing, "config": {**timing_config, "backend_version": version}}
         if state_cache is not None:
-            role_config["state_cache"] = state_cache.model_dump(mode="json")
+            role_config["state_cache"] = state_cache.model_dump(mode="json", exclude_none=True)
         else:
             role_config = materialize_aic_num_gpu_blocks(
                 role_config,
@@ -1460,7 +1460,7 @@ def _materialize_engine_role(
     state_cache = _manual_state_cache(rank, deployment_backend, role)
     if state_cache is not None:
         num_gpu_blocks_is_explicit = True
-        rank["state_cache"] = state_cache.model_dump(mode="json")
+        rank["state_cache"] = state_cache.model_dump(mode="json", exclude_none=True)
 
     nested_cuda_graph_reserved_bytes = rank.pop("cuda_graph_reserved_bytes", None)
     if cuda_graph_reserved_bytes is not None and nested_cuda_graph_reserved_bytes is not None:
@@ -1750,6 +1750,8 @@ def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) 
     if raw is None:
         return None
     state_cache = StateCacheConfig.model_validate(raw)
+    if rank.get("prefix_match_unit") is not None and rank.get("aic_nextn") is not None:
+        raise ValueError("prefix_match_unit does not support speculative decoding")
     if backend != "vllm" or role != "aggregated":
         raise ValueError("state_cache requires backend=vllm and an aggregated G1 worker")
     if rank.get("native_host_offload") is not None:

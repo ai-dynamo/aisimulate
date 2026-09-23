@@ -187,6 +187,11 @@ impl G1Manager {
         );
     }
 
+    pub(crate) fn with_prefix_match_unit(mut self, unit: Option<usize>) -> Self {
+        self.inner.configure_prefix_match_unit(unit);
+        self
+    }
+
     pub(crate) fn allocate_native(
         &mut self,
         owner: Uuid,

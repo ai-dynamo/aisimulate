@@ -142,7 +142,20 @@ impl ReplayEngineConfig {
         role
     }
 
+    fn validate_eviction_geometry(&self, rank: &EngineConfig) -> ReplayResult<()> {
+        if self.kv_eviction_policy == KvEvictionPolicy::Belady && rank.prefix_match_unit.is_some() {
+            // The oracle hashes complete physical pages. Fine state keys and
+            // token-page aliases require a different future-demand index.
+            return Err(ReplayError::InvalidSpec(
+                "belady does not support prefix_match_unit; use lru for fine-grained state caching"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate_topology(&self, topology: &ReplayTopology) -> ReplayResult<()> {
+        self.validate_eviction_geometry(&self.rank)?;
         if self.kv_eviction_policy == KvEvictionPolicy::Belady {
             if !matches!(topology, ReplayTopology::Aggregated { .. }) || self.dp_size != 1 {
                 return Err(ReplayError::InvalidSpec(
@@ -322,6 +335,7 @@ impl ReplayEngineFactory {
         emit_kv_events: bool,
     ) -> ReplayResult<ReplayRoleFactory> {
         let mut role = config.role(stage);
+        config.validate_eviction_geometry(&role.rank)?;
         role.rank.emit_kv_events = emit_kv_events;
         let dp_size = NonZeroU32::new(role.dp_size).ok_or_else(|| {
             ReplayError::InvalidSpec("native engine dp_size must be positive".into())
@@ -487,6 +501,51 @@ fn engine_error(error: impl std::fmt::Display) -> ReplayError {
 #[cfg(test)]
 mod belady_tests {
     use super::*;
+
+    #[test]
+    fn fine_prefix_caching_rejects_belady_at_topology_and_role_entrypoints() {
+        let rank: EngineConfig = serde_json::from_value(serde_json::json!({
+            "block_size": 1536, "prefix_match_unit": 128,
+            "num_gpu_blocks": 64, "kv_cache_bytes_per_token": 16,
+            "state_cache": {"bytes_per_request": 24576}
+        }))
+        .unwrap();
+        let mut config = ReplayEngineConfig {
+            rank,
+            kv_eviction_policy: KvEvictionPolicy::Belady,
+            ..Default::default()
+        };
+        let error = config
+            .validate_topology(&ReplayTopology::aggregated(1))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("belady does not support prefix_match_unit")
+        );
+        let error = match ReplayEngineFactory::new().role_factory(
+            &config,
+            WorkerStage::Aggregated,
+            false,
+        ) {
+            Ok(_) => panic!("direct role construction must reject incompatible hash geometry"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("belady does not support prefix_match_unit")
+        );
+        config.kv_eviction_policy = KvEvictionPolicy::Lru;
+        config
+            .validate_topology(&ReplayTopology::aggregated(1))
+            .unwrap();
+        assert!(
+            ReplayEngineFactory::new()
+                .role_factory(&config, WorkerStage::Aggregated, false)
+                .is_ok()
+        );
+    }
 
     #[test]
     fn belady_direct_role_factory_cannot_silently_build_an_lru_engine() {
