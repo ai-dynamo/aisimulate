@@ -62,6 +62,9 @@ def main() -> int:
                     help="comma list of substrings; run the first --cases cases whose str(case) "
                          "contains all of them (collect.py --case-filter semantics) — picks a "
                          "representative cell (model, precision, shape) without hand-typing the tuple")
+    ap.add_argument("--case-prefix", default=None,
+                    help="literal prefix of str(case) (commas allowed, no splitting): pins the leading "
+                         "shape fields exactly, e.g. \"[1, 4096, 32, 8, 128, 0, False, False, True\"")
     ap.add_argument("--model-path", default=None, help="forwarded to get_func when it accepts model_path")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--out-dir", default=".", help="directory for the perf file (registry filename)")
@@ -90,13 +93,17 @@ def main() -> int:
     if not cases:
         raise SystemExit(f"{entry.get_func} returned 0 cases — nothing to smoke "
                          "(platform floor or empty plan; see the drop log above)")
-    if args.case_filter:
-        subs = [s.strip() for s in args.case_filter.split(",") if s.strip()]
-        matching = [c for c in cases if all(s in str(c) for s in subs)]
+    if args.case_filter or args.case_prefix:
+        subs = [s.strip() for s in (args.case_filter or "").split(",") if s.strip()]
+        matching = [c for c in cases
+                    if all(s in str(c) for s in subs)
+                    and (not args.case_prefix or str(c).startswith(args.case_prefix))]
         if not matching:
-            raise SystemExit(f"--case-filter {args.case_filter!r} matches 0/{len(cases)} cases")
+            raise SystemExit(f"--case-filter {args.case_filter!r} --case-prefix {args.case_prefix!r} "
+                             f"matches 0/{len(cases)} cases")
         picked = matching[: args.cases]
-        print(f"[op_smoke] --case-filter {args.case_filter!r}: {len(matching)}/{len(cases)} cases match")
+        print(f"[op_smoke] --case-filter {args.case_filter!r} --case-prefix {args.case_prefix!r}: "
+              f"{len(matching)}/{len(cases)} cases match")
     else:
         picked = ([cases[args.case_index]] if args.case_index is not None
                   else cases[: args.cases])

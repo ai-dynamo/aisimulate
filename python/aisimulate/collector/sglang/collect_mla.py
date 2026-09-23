@@ -161,6 +161,7 @@ class MockServerArgs:
         # The SM90 fa3 / SM100 trtllm_mla init paths never read this field.
         self.cuda_graph_config = None
         self.enable_prefill_cp = False  # sglang 0.5.16 flashattention_backend.py:51
+        self.enable_dp_attention = False  # same site: prefill-CP/DP-attention gate
 
 
 class MockModelRunner:

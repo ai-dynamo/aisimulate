@@ -198,7 +198,10 @@ mappings:
   - {framework: trtllm, kernel_source: causal_conv1d_fn, backend: causal_conv1d, source: "trtllm _torch mamba modules"}
   - {framework: trtllm, kernel_source: causal_conv1d_update, backend: causal_conv1d, source: "trtllm _torch mamba modules"}
   - {framework: trtllm, kernel_source: chunk_gated_delta_rule, backend: fla_triton, source: "trtllm _torch GDN (triton)"}
-  - {framework: trtllm, kernel_source: fused_recurrent_gated_delta_rule, backend: fla_triton, source: "trtllm _torch GDN (triton)"}
+  - {framework: trtllm, kernel_source: fused_recurrent_gated_delta_rule, backend: fla_triton, source: "trtllm _torch GDN (triton) — FLA recurrent fallback lane; serving's pure-decode entry is the fused_sigmoid_gating row below (rc23)"}
+  - {framework: trtllm, kernel_source: chunk_gated_delta_rule_flashinfer, backend: flashinfer, source: "collector/trtllm/collect_gdn.py: gdn_mixer._resolve_chunk_gated_delta_rule picked fla/flashinfer_chunk (FlashInfer cute-DSL GDN chunk, SM90/SM100; gdn_mixer.py:57-70 @1.3.0rc23)"}
+  - {framework: trtllm, kernel_source: fused_sigmoid_gating_delta_rule_update_flashinfer, backend: flashinfer, source: "collector/trtllm/collect_gdn.py:_bench_serving_decode_entry — fla/fused_sigmoid_gating_recurrent.py:452-458 dispatched to FlashInfer gdn_decode_bf16_state (kernel_cutlass_gdn_decode_*) @1.3.0rc23"}
+  - {framework: trtllm, kernel_source: fused_sigmoid_gating_delta_rule_update_triton, backend: fla_triton, source: "collector/trtllm/collect_gdn.py:_bench_serving_decode_entry — same entry, _can_use_flashinfer_gdn_decode False (non-SM90/100, K/V != 128, T != N) -> fused_sigmoid_gating_delta_rule_update_kernel (Triton)"}
   - {framework: trtllm, kernel_source: mamba_chunk_scan_combined, backend: flashinfer, source: "collector/trtllm/collect_mamba2.py:290 (mamba2 SSD chunk scan; tensorrt_llm/_torch/modules/mamba/ssd_combined.py:437-444@1.3.0rc15 flashinfer SSDCombined on SM100+ when _flashinfer_ssd_supported; Triton fallback on non-SM100 or unsupported tile sizes — no shipped row takes it: all rc15 scan rows are (chunk=128, dstate=128, headdim=64) on b200_sxm, flashinfer-eligible by construction; label split for future fallback coverage: AIC-1677)"}
 
   # Comm.
