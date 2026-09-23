@@ -13,6 +13,7 @@ use rustc_hash::FxHashMap;
 use slotmap::{SlotMap, new_key_type};
 use std::cmp::Reverse;
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 new_key_type! {
@@ -169,9 +170,11 @@ pub struct TreeNode {
     /// page identity so completed radix state does not retain token IDs.
     /// Consequently, as in router-side indexing, hash collisions are treated
     /// as identical pages rather than guarded by an exact-token comparison.
-    pub key: Vec<LocalBlockHash>,
+    /// Admission snapshots share edge contents. Copy only an edge that changes
+    /// while a snapshot is live; normal decode extensions retain their capacity.
+    pub key: Arc<Vec<LocalBlockHash>>,
     /// One physical page ID per key. Length = `key.len()`.
-    pub value: Vec<KvPageId>,
+    pub value: Arc<Vec<KvPageId>>,
     /// Walk-to-root reference count (protected when > 0).
     pub lock_ref: usize,
     /// Monotonic timestamp for LRU eviction.
@@ -231,8 +234,8 @@ impl RadixCache {
         let root = nodes.insert(TreeNode {
             children: FxHashMap::default(),
             parent: None,
-            key: Vec::new(),
-            value: Vec::new(),
+            key: Arc::default(),
+            value: Arc::default(),
             lock_ref: 0,
             last_access_time: Instant::now(),
         });
@@ -810,8 +813,8 @@ impl RadixCache {
         node.last_access_time = now;
         debug_assert!(node.children.is_empty());
         debug_assert!(node.lock_ref <= 1);
-        node.key.extend_from_slice(key);
-        node.value.extend_from_slice(value);
+        Arc::make_mut(&mut node.key).extend_from_slice(key);
+        Arc::make_mut(&mut node.value).extend_from_slice(value);
         if node.lock_ref == 0 {
             self.evictable_size += key.len() * self.page_size;
         } else {
@@ -830,10 +833,12 @@ impl RadixCache {
             let child = &mut self.nodes[child_id];
             let child_parent = child.parent;
             let original_ck = child.key[0];
-            let suffix_key = child.key.split_off(split_pos);
-            let mut prefix_key = std::mem::replace(&mut child.key, suffix_key);
-            let suffix_value = child.value.split_off(split_pos);
-            let mut prefix_value = std::mem::replace(&mut child.value, suffix_value);
+            let key = Arc::make_mut(&mut child.key);
+            let suffix_key = key.split_off(split_pos);
+            let mut prefix_key = std::mem::replace(key, suffix_key);
+            let value = Arc::make_mut(&mut child.value);
+            let suffix_value = value.split_off(split_pos);
+            let mut prefix_value = std::mem::replace(value, suffix_value);
             // The short prefix must not retain the original edge's allocation.
             prefix_key.shrink_to_fit();
             prefix_value.shrink_to_fit();
@@ -855,8 +860,8 @@ impl RadixCache {
         let intermediate = TreeNode {
             children: inter_children,
             parent: child_parent,
-            key: prefix_key,
-            value: prefix_value,
+            key: Arc::new(prefix_key),
+            value: Arc::new(prefix_value),
             lock_ref,
             last_access_time: accessed,
         };
@@ -886,8 +891,8 @@ impl RadixCache {
         let new_node = TreeNode {
             children: FxHashMap::default(),
             parent: Some(parent_id),
-            key: key.to_vec(),
-            value: value.to_vec(),
+            key: Arc::new(key.to_vec()),
+            value: Arc::new(value.to_vec()),
             lock_ref: 0,
             last_access_time: now,
         };
@@ -1015,7 +1020,7 @@ impl RadixCache {
                 let split_pos = victim_pages - eviction_pages;
                 let (nodes, page_pool) = (&mut self.nodes, &mut self.page_pool);
                 let victim_node = &mut nodes[victim_id];
-                victim_node.key.truncate(split_pos);
+                Arc::make_mut(&mut victim_node.key).truncate(split_pos);
                 let evicted_values = &victim_node.value[split_pos..];
                 if let Some(belady) = &mut self.belady {
                     for page in evicted_values {
@@ -1024,7 +1029,7 @@ impl RadixCache {
                 }
                 page_pool.free_pages(evicted_values);
                 evicted_indices.extend_from_slice(evicted_values);
-                victim_node.value.truncate(split_pos);
+                Arc::make_mut(&mut victim_node.value).truncate(split_pos);
 
                 self.evictable_size -= eviction_len;
                 evicted += eviction_len;
@@ -1044,7 +1049,7 @@ impl RadixCache {
 
             evicted_indices.extend_from_slice(&victim_node.value);
             if let Some(belady) = &mut self.belady {
-                for page in &victim_node.value {
+                for page in victim_node.value.iter() {
                     belady.page_hashes[page.index()] = None;
                 }
             }
@@ -1239,9 +1244,9 @@ mod tests {
         let (len, node) = cache.match_prefix(&[1, 2, 3, 4, 5, 9, 9]);
         assert_eq!(len, 5);
         let n = cache.node(node);
-        assert_eq!(n.key, cache.page_hashes(&[1, 2, 3, 4, 5]));
+        assert_eq!(*n.key, cache.page_hashes(&[1, 2, 3, 4, 5]));
         assert_eq!(
-            n.value,
+            *n.value,
             vec![
                 KvPageId(10),
                 KvPageId(20),
@@ -1253,7 +1258,7 @@ mod tests {
         let suffix_key = cache.page_hashes(&[6])[0];
         let &suffix_id = n.children.get(&suffix_key).unwrap();
         assert_eq!(
-            cache.node(suffix_id).value,
+            *cache.node(suffix_id).value,
             vec![KvPageId(60), KvPageId(70)]
         );
     }
@@ -1331,7 +1336,7 @@ mod tests {
         assert_eq!(extended, tail);
         assert_eq!(cache.num_nodes(), nodes_before);
         assert_eq!(
-            cache.node(tail).key,
+            *cache.node(tail).key,
             cache.page_hashes(&[1, 2, 3, 4, 5, 6, 7, 8])
         );
         assert_eq!(cache.protected_size, 8);
@@ -1356,8 +1361,8 @@ mod tests {
 
         assert_ne!(extended, tail);
         assert_eq!(cache.num_nodes(), nodes_before + 1);
-        assert_eq!(cache.node(tail).key, cache.page_hashes(&[1, 2, 3, 4]));
-        assert_eq!(cache.node(extended).key, cache.page_hashes(&[5, 6, 7, 8]));
+        assert_eq!(*cache.node(tail).key, cache.page_hashes(&[1, 2, 3, 4]));
+        assert_eq!(*cache.node(extended).key, cache.page_hashes(&[5, 6, 7, 8]));
     }
 
     #[test]
@@ -1368,7 +1373,7 @@ mod tests {
         cache.insert(&[1, 2, 3, 4, 5, 6, 7], &[0, 1, 2, 3, 4, 5, 6]);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4]).0, 4);
         let (_, node) = cache.match_prefix(&[1, 2, 3, 4]);
-        assert_eq!(cache.node(node).value, vec![KvPageId(0)]);
+        assert_eq!(*cache.node(node).value, vec![KvPageId(0)]);
 
         cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[0, 1, 2, 3, 4, 5, 6, 7]);
         assert_eq!(cache.match_prefix(&[1, 2, 3, 4, 5, 6, 7, 8]).0, 8);
@@ -1386,7 +1391,7 @@ mod tests {
         cache.insert(&[1, 2, 3, 4, 5, 6, 7, 8], &[0, 1, 2, 3, 4, 5, 6, 7]);
         cache.match_prefix(&[1, 2, 3, 4, 9, 9, 9, 9]);
         let (_, node) = cache.match_prefix(&[1, 2, 3, 4]);
-        assert_eq!(cache.node(node).value, vec![KvPageId(0)]);
+        assert_eq!(*cache.node(node).value, vec![KvPageId(0)]);
     }
 
     #[test]
@@ -1398,7 +1403,7 @@ mod tests {
 
         assert_eq!(cache.node(node).key.len(), 2);
         assert_eq!(cache.node(node).value.len(), 2);
-        assert_eq!(cache.node(node).value, vec![KvPageId(0), KvPageId(1)]);
+        assert_eq!(*cache.node(node).value, vec![KvPageId(0), KvPageId(1)]);
         assert_eq!(cache.match_prefix(&tokens).0, tokens.len());
     }
 
