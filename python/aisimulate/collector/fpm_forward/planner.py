@@ -460,7 +460,7 @@ class FPMCell:
             "execution_identity": dict(zip(EXECUTION_COLUMNS, self.execution_identity, strict=True)),
             "input_text_sha256": self.input_text_sha256,
             "workload_kind": self.workload_kind,
-            "point_source": "dynamo_native_self_benchmark",
+            "point_source": "sglang_native_scheduler" if self.backend == "sglang" else "dynamo_native_self_benchmark",
             "topology": self.topology.to_dict(),
             "parallel_strategy": self.parallel_strategy,
             "weight_quantization": self.weight_quantization,
@@ -475,6 +475,19 @@ class FPMCell:
             },
             "backend_policy": self.backend_policy.to_dict(),
         }
+
+
+def _plan_options(options: FPMCollectionOptions, *, is_glm: bool) -> dict[str, object]:
+    payload = options.to_dict()
+    if is_glm:
+        payload.update(
+            global_warmup_iterations=0,
+            warmup_repeats=5,
+            measurement_repeats=10,
+            point_source="frozen_explicit_manifest",
+            graph_policy="native_graph_policy",
+        )
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -505,11 +518,17 @@ class FPMCollectionPlan:
             "system": self.system,
             "aic_revision": self.aic_revision,
             "generator_config_sha256": self.generator_config_sha256,
-            "options": self.options.to_dict(),
+            "options": _plan_options(
+                self.options, is_glm=self.capability.architecture == "Glm5NextForConditionalGeneration"
+            ),
             "capability": self.capability.to_dict(),
             "dtype_profile": self.dtype_profile.to_dict(),
             "point_generation": {
-                "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
+                "owner": (
+                    "sglang.srt.managers.scheduler.Scheduler"
+                    if self.backend == "sglang"
+                    else "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler"
+                ),
                 "method": "native_self_benchmark",
                 "source": "frozen_explicit_manifest" if explicit_points is not None else "native_auto_grid",
                 "manifest_sha256": self.options.benchmark_points_sha256,
@@ -519,8 +538,8 @@ class FPMCollectionPlan:
                     "total_kv_read_tokens",
                 ],
                 "partition_policy": "balanced_v1",
-                "point_admission": "dynamo_live_scheduler",
-                "precondition": "vllm_engine_initialized",
+                "point_admission": "sglang_live_scheduler" if self.backend == "sglang" else "dynamo_live_scheduler",
+                "precondition": f"{self.backend}_engine_initialized",
                 "prefill_sampling": self.options.prefill_sampling.to_dict(),
                 "planned_point_count": (
                     sum(len(explicit_points.get(phase, [])) for phase in ("prefill", "decode"))
@@ -741,10 +760,10 @@ def build_collection_plan(
         "system": system,
         "aic_revision": revision,
         "generator_config_sha256": generator_config_sha256,
-        "options": options.to_dict(),
+        "options": _plan_options(options, is_glm=is_glm),
         "capability": capability.to_dict(),
         "dtype_profile": capability.dtype.to_dict(),
-        "point_generation": "dynamo_native_self_benchmark",
+        "point_generation": "sglang_native_scheduler" if backend == "sglang" else "dynamo_native_self_benchmark",
         "topology_memory_admission": [_hash_stable_admission(decision) for decision in topology_memory_admission],
         "topologies": [topology.to_dict() for topology in topologies],
         "policies": [policy.to_dict() for policy in policies],

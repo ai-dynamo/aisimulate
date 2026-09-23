@@ -1195,7 +1195,7 @@ def _cell_generator_overrides(
                 str(profile.max_kv_read_token_samples),
             ]
         )
-        if not enforce_eager:
+        if not enforce_eager and not getattr(cell, "state_protocol", ""):
             scheduler_args.extend(
                 ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
             )

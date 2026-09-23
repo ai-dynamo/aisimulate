@@ -398,7 +398,7 @@ def _glm53flash_capability(resolved_config, backend, requested_weights, requeste
         raise ValueError("GLM-5.3-Flash native FPM supports vLLM and SGLang")
     payload = resolved_config.payload
     Glm53FlashConfig.from_text_config(payload["text_config"])
-    config = resolved_config.effective_payload
+    config = _attach_inferred_quant_fields(resolved_config.effective_payload)
     inferred = _infer_quant_modes_from_raw_config(config, "Glm5NextForConditionalGeneration")
     gemm = _enum_name(inferred.get("gemm_quant_mode", common.GEMMQuantMode.bfloat16))
     moe = _enum_name(inferred.get("moe_quant_mode", common.MoEQuantMode.bfloat16))
