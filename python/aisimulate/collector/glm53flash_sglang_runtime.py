@@ -134,6 +134,9 @@ class _TraceState:
         self.sampled = {}
         self.counter = 0
         self.observer = None
+        self.purpose = os.environ.get("AISIM_GLM53_PURPOSE", "fpm")
+        self.whole_events = {}
+        self.current_invocation = None
         self.prefill_receipt = None
         self.state_layout = allocated_state_inventory(runner)
         self.state_layout_sha256 = hashlib.sha256(json.dumps(self.state_layout, sort_keys=True).encode()).hexdigest()
@@ -159,6 +162,31 @@ class _TraceState:
         else:
             runner.device_timer.add_reporter(self.on_timing)
         self.timer = runner.device_timer
+        if self.purpose == "ops_holdout":
+            import torch
+
+            if manifest is not None:
+                raise RuntimeError("whole-forward holdout cannot install module observers")
+            original_model = runner.model.forward
+
+            @functools.wraps(original_model)
+            def model_forward(*args, **kwargs):
+                invocation = self.current_invocation
+                if invocation is None or self.records[invocation]["stage"] != "measure":
+                    return original_model(*args, **kwargs)
+                if torch.cuda.is_current_stream_capturing() or invocation in self.whole_events:
+                    raise RuntimeError("whole-forward eager holdout encountered capture or a repeated forward")
+                stream = torch.cuda.current_stream()
+                start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+                start.record(stream)
+                result = original_model(*args, **kwargs)
+                end.record(stream)
+                if torch.cuda.current_stream() != stream:
+                    raise RuntimeError("whole-forward native model changed current stream")
+                self.whole_events[invocation] = start, end
+                return result
+
+            runner.model.forward = model_forward
         if manifest is not None:
             from collector.glm53flash_native_hooks import install_native_hooks
             from collector.glm53flash_observer import NativeOperationObserver
@@ -189,6 +217,7 @@ class _TraceState:
         coordinates = actual_coordinates(forward_batch)
         self.counter += 1
         invocation = self.counter
+        self.current_invocation = invocation
         snapshots = []
         history_ids = []
         # The overlap scheduler can publish the next input through FutureMap
@@ -291,6 +320,8 @@ class _TraceState:
         graph = bool(result.can_run_graph)
         mode = "FULL" if graph and record["phase"] == "generation" else "PIECEWISE" if graph else "NONE"
         record.update(used_cuda_graph=graph, runtime_mode=mode)
+        if graph and self.purpose == "ops_holdout":
+            raise RuntimeError("whole-forward eager holdout encountered actual graph dispatch")
         if graph and record["phase"] == "generation":
             native_graph = self.runner.decode_cuda_graph_runner
             key = native_graph._replay_graph_key
@@ -334,7 +365,16 @@ class _TraceState:
         for request, token in zip(record["requests"], ids, strict=True):
             request["sampled_token_id"] = int(token)
             self.sampled.setdefault(request["request_id"], []).append(int(token))
+        if self.purpose == "ops_holdout" and record["stage"] == "measure":
+            if invocation not in self.whole_events:
+                raise RuntimeError("whole-forward holdout lacks its native model interval")
+            start, end = self.whole_events.pop(invocation)
+            record["whole_forward_gpu_ms"] = start.elapsed_time(end)
+            if record["whole_forward_gpu_ms"] <= 0:
+                raise RuntimeError("whole-forward GPU interval must be positive")
+            record["whole_forward_boundary"] = "embedding_to_logits_gpu_v1"
         record.pop("_completed_tokens")
+        self.current_invocation = None
         self.append("forward", record)
         del self.records[invocation]
 

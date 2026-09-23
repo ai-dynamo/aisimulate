@@ -257,13 +257,13 @@ def main(argv=None) -> None:
     parser.add_argument("--dataset-role", choices=("calibration", "holdout"), default="calibration")
     parser.add_argument("--run-id", default=os.environ.get("DYN_FPM_RUN_ID", "glm53flash"))
     parser.add_argument("--request-timeout-seconds", type=int, default=900)
-    parser.add_argument("--observation-purpose", choices=("fpm", "ops"), default="fpm")
+    parser.add_argument("--observation-purpose", choices=("fpm", "ops", "ops_holdout"), default="fpm")
     args = parser.parse_args(argv)
     server = ServerArgs.from_cli_args(args)
     validate_server_args(server)
-    if args.observation_purpose == "ops":
+    if args.observation_purpose in ("ops", "ops_holdout"):
         if (
-            not os.environ.get("AISIM_GLM53_OPS_MANIFEST")
+            bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")) != (args.observation_purpose == "ops")
             or not server.disable_cuda_graph
             or not server.disable_piecewise_cuda_graph
         ):
@@ -317,7 +317,7 @@ def main(argv=None) -> None:
     manifest_path = output.parent / "sglang-requests.json"
     write_json(manifest_path, manifest)
     provenance = {"run_id": args.run_id, "execution_identity": identity, "telemetry_policy": TELEMETRY_POLICY}
-    if args.observation_purpose == "ops":
+    if args.observation_purpose in ("ops", "ops_holdout"):
         provenance = {
             **read_ops_provenance(
                 Path(os.environ["AISIM_GLM53_OPS_PROVENANCE"]),
@@ -331,6 +331,7 @@ def main(argv=None) -> None:
     write_json(provenance_path, provenance)
     write_json(output.parent / "sglang-resolved-config.json", server.resolved_dict())
     os.environ.update(
+        AISIM_GLM53_PURPOSE=args.observation_purpose,
         AISIM_GLM53_TRACE_DIR=str(output.parent),
         AISIM_GLM53_PROVENANCE=str(provenance_path),
         AISIM_GLM53_REQUEST_MANIFEST=str(manifest_path),
@@ -386,11 +387,12 @@ def main(argv=None) -> None:
                         + "\n"
                     )
         trace_paths = [output.parent / f"forward-rank-{rank}.jsonl" for rank in range(server.tp_size)]
-        if args.observation_purpose == "ops":
+        if args.observation_purpose in ("ops", "ops_holdout"):
             write_json(
                 output.parent / "ops-run-summary.json",
                 {
                     "status": "requests_complete",
+                    "observation_purpose": args.observation_purpose,
                     "accuracy_acceptance": "NOT_EVALUATED",
                     "requested_points": points,
                     "request_manifest": file_receipt(manifest_path),
