@@ -1027,8 +1027,8 @@ engine:
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
 | `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
-| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
-| `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of `block_size`; requires manually sized aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. Omit the byte count to infer a supported layout; see [state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of `block_size`; requires aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
 | `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
@@ -1159,7 +1159,7 @@ differ from each worker role's physical `kv_cache.bytes_per_token`.
 
 <a id="manual-state-cache-sizing"></a>
 
-#### 12.1.1 Manual state-cache sizing
+#### 12.1.1 State-cache sizing
 
 For recurrent-state models, set `state_cache.bytes_per_request` under
 `engine.workers.aggregated.kv_cache`. It is disabled by default. Supply the total state size
@@ -1174,8 +1174,53 @@ kv_cache:
 ```
 
 This gives eight 1024-byte blocks. Each request's state uses two blocks, rounded up, in
-addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator
-does not infer state size or adjust block size automatically.
+addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator does not adjust block size automatically.
+
+Use `state_cache: {}` to infer one state per rank; `bytes_per_request` overrides
+inference without loading model geometry. Omit `state_cache` or set it to `null`
+to disable it. Automatic sizing currently supports Kimi-K3/KimiLinear KDA only.
+The `auto` layout resolves to `vllm-kda-a474da28`, pinned to vLLM commit
+`a474da28131f61684849b31e29af0eebaaedc383`, independently of the timing database
+version. TP must divide the KDA heads; PP must be 1. Other model layouts and
+speculative KDA execution require an explicit byte override.
+
+KDA has three convolution history buffers and one FP32 recurrent matrix per layer.
+`model_dtype` accepts `auto` (default), `float16`, `bfloat16`, or `float32`.
+`mamba_cache_dtype` accepts `auto`, `float16`, or `float32`; auto follows model dtype.
+Changing `model_dtype` from the HF dtype also requires an explicit `mamba_cache_dtype`.
+The recurrent matrix always uses FP32, so `mamba_ssm_cache_dtype` accepts only
+`auto` or `float32` for inference. Set `model_dtype` explicitly when the model
+config lacks a dtype or uses float32, whose vLLM auto downcast depends on hardware.
+K3 uses its nested text config and 1-based KDA/MLA layer lists. The size represents
+one state, without a snapshot-slot multiplier.
+
+Supply the **resolved vLLM block geometry**: per-layer attention page size is
+`block_size * bytes_per_token / full_attention_layers`. Inference pads each
+recurrent layer to that page size and rejects geometry smaller than its tensors.
+Simulator block rounding then applies to the total per-rank state. For manually
+normalized token geometry, keep `block_size * bytes_per_token` equal to the actual
+per-rank block bytes; do not divide recurrent state by DCP again. This pinned
+vLLM version does not support hybrid DCP execution. Checkpoint copies are
+accounted for by the state manager, not this estimate. Pool-capacity estimation
+remains separate and fixed capacity is still required. `prediction.json` and saved deployment
+performance metadata report `state_cache` with `source` (`inferred`, `overridden`,
+or `disabled`), resolved bytes, padding, and rounded allocation.
+
+The reusable SDK API is `aisimulate_core.sdk.estimate_state_cache`, alongside
+`estimate_kv_cache` (also available from `aisimulate.capacity`). It accepts either
+`model_path` or a loaded HF `model_config`, plus backend/topology/dtype/block
+settings, and returns `bytes_per_request` with raw bytes and layout provenance.
+It does not require a CLI configuration or estimate pool capacity:
+
+```python
+from aisimulate_core.sdk import estimate_state_cache
+
+state = estimate_state_cache(
+    model_config=hf_config_dict, backend="vllm", tp_size=tp,
+    block_size=block_size, kv_bytes_per_token=bytes_per_token,
+)
+bytes_per_request = state["bytes_per_request"]
+```
 
 State caching currently supports `predict --stack engine` with aggregated vLLM and fixed G1 capacity.
 Other runner stacks must explicitly advertise state-cache support; unsupported stacks reject it before execution.
@@ -1186,7 +1231,10 @@ must be a positive integer, not `auto`.
 With state caching enabled, `prefix_match_unit` controls prefix-matching
 granularity while `block_size` still controls physical KV allocation. The match
 unit must be positive and divide `block_size`. Omitting it preserves existing
-state-cache behavior.
+state-cache behavior. It works with both inferred (`state_cache: {}`) and explicit
+state sizes. Changing the match unit does not change the bytes in one state copy
+or the physical block size; the state manager accounts for retained checkpoints
+and temporary restore copies separately.
 
 For example, this aggregated-worker configuration allocates 1536-token KV blocks
 and allows prefix matches at 128-token boundaries. The byte sizes are

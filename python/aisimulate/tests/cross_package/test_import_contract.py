@@ -35,6 +35,7 @@ CORE_SDK_LEAF_MODULES = [
     "fpm_identity",
     "inference_summary",
     "memory",
+    "state_memory",
     "models.base",
     "models.blocks.moe",
     "models.blocks.vit",

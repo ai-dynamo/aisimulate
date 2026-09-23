@@ -987,3 +987,25 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 - Modified: development-only two-predictor evaluation, public overview export,
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility. No Plotly assets included.
+
+## vLLM Kimi KDA state sizing
+
+`src/aisimulate_core/sdk/state_memory.py` and the cache-dtype controls in
+`src/aisimulate/config/engine.py` are adapted and modified from vLLM commit
+`a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
+`vllm/model_executor/layers/mamba/mamba_utils.py`,
+`vllm/model_executor/models/kimi_linear.py`,
+`vllm/model_executor/layers/kda.py`,
+`vllm/transformers_utils/configs/kimi_linear.py`,
+`vllm/platforms/interface.py`, `vllm/v1/kv_cache_interface.py`, and
+`vllm/config/cache.py`.
+The modified implementation uses CPU-only arithmetic, restricts supported layouts,
+and adds AISimulate validation and diagnostics.
+
+Source: https://github.com/vllm-project/vllm/tree/a474da28131f61684849b31e29af0eebaaedc383
+
+Copyright contributors to the vLLM project.
+Licensed under Apache-2.0;
+the license is included at the repository root as `LICENSE` and in the Python
+distribution. Upstream license:
+https://github.com/vllm-project/vllm/blob/a474da28131f61684849b31e29af0eebaaedc383/LICENSE

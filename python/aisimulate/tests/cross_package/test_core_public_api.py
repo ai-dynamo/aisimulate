@@ -19,7 +19,7 @@ import aisimulate_core.sdk as sdk
 from aisimulate_core.sdk.common import AttentionBackend, MoEBackend
 from aisimulate_core.sdk.config import ModelConfig, RuntimeConfig
 from aisimulate_core.sdk.engine import EngineHandle, compile_engine
-from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks
+from aisimulate_core.sdk.memory import estimate_kv_cache, estimate_num_gpu_blocks, estimate_state_cache
 from aisimulate_core.sdk.operations import ElementWise, Embedding, MoEDispatch
 from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
@@ -34,6 +34,7 @@ EXPECTED_FACADE = {
     "RustForwardPassPerfModel",
     "compile_engine",
     "estimate_kv_cache",
+    "estimate_state_cache",
     "estimate_num_gpu_blocks",
 }
 
@@ -79,6 +80,7 @@ def test_sdk_facade_exports_the_canonical_objects() -> None:
     assert sdk.RustForwardPassPerfModel is RustForwardPassPerfModel
     assert sdk.compile_engine is compile_engine
     assert sdk.estimate_kv_cache is estimate_kv_cache
+    assert sdk.estimate_state_cache is estimate_state_cache
     assert sdk.estimate_num_gpu_blocks is estimate_num_gpu_blocks
 
 
@@ -109,6 +111,9 @@ def test_stable_function_signatures() -> None:
     )
     assert "scheduler_block_size" in inspect.signature(estimate_num_gpu_blocks).parameters
     assert "memory_fraction_kind" in inspect.signature(estimate_kv_cache).parameters
+    assert {"model_config", "backend", "tp_size", "pp_size", "kv_bytes_per_token"}.issubset(
+        inspect.signature(estimate_state_cache).parameters
+    )
     assert list(inspect.signature(RustForwardPassPerfModel.best_available).parameters) == ["config"]
     assert not hasattr(RustForwardPassPerfModel, "from_regression")
     assert not hasattr(RustForwardPassPerfModel, "from_native")
@@ -388,3 +393,31 @@ def test_static_phase_diagnostics_stub_matches_native_contract() -> None:
     result = model.static_phase_diagnostics(0, 128, 0, True)
     assert isinstance(result, str)
     assert json.loads(result) == []
+
+
+def test_state_memory_api_is_standalone_in_a_fresh_interpreter() -> None:
+    script = """
+import sys
+from aisimulate_core.sdk import estimate_state_cache
+result = estimate_state_cache(
+    model_config={
+        "model_type": "kimi_linear", "dtype": "bfloat16", "num_hidden_layers": 4,
+        "linear_attn_config": {
+            "num_heads": 2, "head_dim": 8, "short_conv_kernel_size": 4,
+            "kda_layers": [1, 2, 3], "full_attn_layers": [4],
+        },
+    },
+    backend="vllm", block_size=64, kv_bytes_per_token=16,
+)
+assert result["bytes_per_request"] == 3072
+assert not {"aisimulate.config.engine", "aisimulate_core.sdk.memory", "vllm"}.intersection(sys.modules)
+"""
+    subprocess.run([sys.executable, "-c", script], check=True)
+
+
+def test_state_memory_public_paths_share_one_implementation() -> None:
+    from aisimulate import capacity
+    from aisimulate.sdk.memory import estimate_state_cache as legacy
+    from aisimulate_core.sdk.state_memory import estimate_state_cache as canonical
+
+    assert sdk.estimate_state_cache is estimate_state_cache is legacy is capacity.estimate_state_cache is canonical

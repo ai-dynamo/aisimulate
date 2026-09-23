@@ -379,8 +379,541 @@ def test_aligned_state_config_reuses_retained_native_checkpoints(
     assert result.metrics["prefix_cache_reused_ratio"] == pytest.approx(expected_reused_tokens / 48600)
 
 
+@pytest.fixture
+def inferred_prefix_payload():
+    model, tp, token_bytes, state_bytes = "moonshotai/Kimi-K3", 8, 13824, 61046784
+    payload = _public(
+        block_size=1536,
+        bytes_per_token=token_bytes,
+        prefix_match_unit=128,
+        capacity={"type": "fixed", "blocks": 512},
+        state_cache={
+            "layout": "auto",
+            "model_dtype": "auto",
+            "mamba_cache_dtype": "auto",
+            "mamba_ssm_cache_dtype": "float32",
+        },
+    )
+    payload["engine"].update(model=model, context_length=32768)
+    payload["engine"]["workers"]["aggregated"].update(
+        parallelism={"tensor": tp}, scheduler={"max_batched_tokens": 8192}
+    )
+    payload["traffic"]["source"].update(input_tokens=24300, output_tokens=2)
+    payload["traffic"]["stop"]["requests"] = 2
+    return payload, state_bytes
+
+
+@pytest.mark.parametrize(
+    "prefix_unit, shared_prefix, expected_reused",
+    [
+        pytest.param(128, 24192, 24192, id="partial-hit"),
+        pytest.param(128, 24191, 23040, id="before-partial-checkpoint"),
+        pytest.param(128, 0, 0, id="miss"),
+        pytest.param(1536, 24192, 23040, id="full-block-unit"),
+        # Without the alignment option, the 8192-token scheduler chunks do not
+        # end on physical pages, so no reusable state was actually computed.
+        pytest.param(None, 24192, 0, id="legacy-unaligned-chunks"),
+    ],
+)
+def test_inferred_state_matches_manual_partial_prefix_replay(
+    forbid_estimators, inferred_prefix_payload, prefix_unit, shared_prefix, expected_reused
+):
+    payload, state_bytes = inferred_prefix_payload
+    cache = payload["engine"]["workers"]["aggregated"]["kv_cache"]
+    cache["prefix_match_unit"] = prefix_unit
+    payload["traffic"]["source"]["cached_prefix_tokens"] = shared_prefix
+    config = CorePredictionConfig.model_validate(payload)
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    inferred = prediction_to_replay_spec(config)
+    info = inferred.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["source"] == "inferred"
+    assert info["bytes_per_request"] == state_bytes
+    assert info["state_blocks"] == 3
+    assert info["allocated_bytes_per_request"] == 3 * 1536 * cache["bytes_per_token"]
+    assert info["ssm_dtype"] == "float32"
+    args = inferred.backend_deployment.agg_engine_args
+    # Only the resolved byte size crosses the native boundary, never SDK knobs.
+    assert args["state_cache"] == {"bytes_per_request": state_bytes}
+    assert args.get("prefix_match_unit") == prefix_unit
+    cache["state_cache"] = {"bytes_per_request": state_bytes}
+    manual = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert manual.backend_deployment.agg_engine_args == args
+    observed = []
+    for spec in (inferred, manual):
+        metrics = EngineReplayRunnerFactory().create(0).run(spec).metrics
+        assert metrics["completed_requests"] == 2
+        assert metrics["total_input_tokens"] == 48600
+        assert metrics["total_output_tokens"] == 4
+        assert metrics["committed_prefill_tokens"] == 48600 - expected_reused
+        assert metrics["prefix_cache_reused_ratio"] == pytest.approx(expected_reused / 48600)
+        observed.append((metrics["committed_prefill_tokens"], metrics["prefix_cache_reused_ratio"]))
+    assert observed[0] == observed[1]
+
+
+def test_prefix_match_unit_changes_neither_inferred_geometry_nor_dtype(forbid_estimators, inferred_prefix_payload):
+    payload, state_bytes = inferred_prefix_payload
+    cache = payload["engine"]["workers"]["aggregated"]["kv_cache"]
+    by_dtype = {}
+    for dtype in ("auto", "float32"):
+        cache["state_cache"]["mamba_cache_dtype"] = dtype
+        sizes = []
+        for unit in (None, 128, 1536):
+            cache["prefix_match_unit"] = unit
+            spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+            sizes.append(spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"])
+        assert sizes[0] == sizes[1] == sizes[2]
+        assert sizes[0]["bytes_per_request"] == state_bytes
+        assert sizes[0]["state_blocks"] == 3
+        by_dtype[dtype] = sizes[0]
+    # Both dtypes fit the supplied physical page: FP32 uses more of the page
+    # without growing it. Prefix hash granularity must not enter either formula.
+    assert by_dtype["auto"]["conv_dtype"] == "bfloat16"
+    assert by_dtype["float32"]["conv_dtype"] == "float32"
+    assert by_dtype["float32"]["raw_bytes_per_request"] > by_dtype["auto"]["raw_bytes_per_request"]
+    assert by_dtype["float32"]["padding_bytes_per_request"] < by_dtype["auto"]["padding_bytes_per_request"]
+
+
 def test_prefix_match_unit_requires_state_and_old_alignment_field_is_rejected():
     with pytest.raises(ValidationError, match="requires state_cache"):
         CorePredictionConfig.model_validate(_public(state_cache=None, prefix_match_unit=16))
     with pytest.raises(ValidationError, match="Extra inputs"):
         CorePredictionConfig.model_validate(_public(state_cache={**STATE, "prefill_block_size": 1536}))
+
+
+@pytest.fixture
+def kda_model(tmp_path):
+    geometry = {
+        "model_type": "kimi_linear",
+        "num_hidden_layers": 4,
+        "dtype": "bfloat16",
+        "linear_attn_config": {
+            "num_heads": 2,
+            "head_dim": 8,
+            "short_conv_kernel_size": 4,
+            "kda_layers": [1, 2, 3],
+            "full_attn_layers": [4],
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(geometry))
+    return tmp_path, geometry
+
+
+def _auto_public(model, **sizing):
+    payload = _public(state_cache=sizing)
+    payload["engine"]["model"] = str(model)
+    return payload
+
+
+def test_inferred_size_roundtrip_and_native_wire(kda_model, forbid_estimators):
+    path, _ = kda_model
+    config = CorePredictionConfig.model_validate(_auto_public(path))
+    config = CorePredictionConfig.model_validate(config.model_dump(mode="json"))
+    assert config.engine.workers.aggregated.kv_cache.state_cache.bytes_per_request is None
+    spec = prediction_to_replay_spec(config)
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    # Three conv windows: 3*3*2*8*2=288; FP32 matrix: 2*8*8*4=512.
+    assert info["raw_bytes_per_layer"] == 800
+    assert info["padded_bytes_per_layer"] == 1024
+    assert info["bytes_per_request"] == 3072
+    assert info["source"] == "inferred"
+    assert info["state_blocks"] == 3
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec["spec"]["engine"]["rank"]["state_cache"] == {"bytes_per_request": 3072}
+
+
+@pytest.mark.parametrize(
+    "change,reason",
+    [
+        ({"model_type": "mamba2"}, "unknown model"),
+        ({"dtype": "float32"}, "set model_dtype"),
+    ],
+)
+def test_inference_fails_closed(kda_model, change, reason):
+    path, geometry = kda_model
+    (path / "config.json").write_text(json.dumps({**geometry, **change}))
+    config = CorePredictionConfig.model_validate(_auto_public(path))
+    with pytest.raises(ValueError, match=reason):
+        prediction_to_replay_spec(config)
+
+
+@pytest.mark.parametrize("parallel,reason", [({"pipeline": 2}, "PP=1"), ({"tensor": 3}, "divisible")])
+def test_inference_rejects_unsupported_parallelism(kda_model, parallel, reason):
+    payload = _auto_public(kda_model[0])
+    payload["engine"]["workers"]["aggregated"]["parallelism"] = parallel
+    with pytest.raises(ValueError, match=reason):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+
+
+def test_unknown_layout_override_and_disabled(kda_model):
+    payload = _auto_public(kda_model[0], layout="future-layout")
+    with pytest.raises(ValueError, match="unknown layout"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    payload["engine"]["model"] = "must-not-load"
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"]["bytes_per_request"] = 1500
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]["source"] == "overridden"
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"] = None
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]["source"] == "disabled"
+    assert "state_cache" not in spec.backend_deployment.agg_engine_args
+
+
+def test_inferred_capacity_validation(kda_model):
+    payload = _auto_public(kda_model[0])
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["capacity"] = {
+        "type": "fixed",
+        "blocks": 3,
+    }
+    with pytest.raises(ValueError, match="capacity must fit"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+
+
+def test_fractional_attention_geometry_rejected(kda_model):
+    path, geometry = kda_model
+    geometry["num_hidden_layers"] = 6
+    # Three attention layers cannot divide 16 bytes/token.
+    geometry["linear_attn_config"]["full_attn_layers"] = [4, 5, 6]
+    (path / "config.json").write_text(json.dumps(geometry))
+    with pytest.raises(ValueError, match="divide evenly"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(_auto_public(path)))
+
+
+def test_existing_typed_state_config_remains_accepted():
+    cache = KvCachePredictionConfig(**{**KV, "state_cache": StateCacheConfig(**STATE)})
+    assert cache.state_cache.bytes_per_request == 1500
+    payload = _public()
+    payload["engine"]["workers"]["aggregated"]["kv_cache"] = cache
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == STATE
+    assert spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]["source"] == "overridden"
+
+
+@pytest.mark.parametrize("field", ["mamba_cache_dtype", "mamba_ssm_cache_dtype"])
+def test_cache_dtype_accepts_only_pinned_vllm_cli_values(field):
+    with pytest.raises(ValidationError, match=field):
+        CorePredictionConfig.model_validate(_public(state_cache={field: "bfloat16"}))
+
+
+@pytest.mark.parametrize("tp,conv_dtype,raw_bytes", [(1, "auto", 800), (2, "auto", 400), (1, "float32", 1088)])
+def test_kda_single_working_state_geometry(kda_model, forbid_estimators, tp, conv_dtype, raw_bytes):
+    path, _ = kda_model
+    payload = _auto_public(path, mamba_cache_dtype=conv_dtype)
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {"tensor": tp}
+    worker["kv_cache"].update(bytes_per_token=48, capacity={"type": "fixed", "blocks": 8})
+    config = CorePredictionConfig.model_validate(payload)
+    config = CorePredictionConfig.model_validate(config.model_dump(mode="json"))
+    assert config.engine.workers.aggregated.kv_cache.state_cache.layout == "auto"
+    spec = prediction_to_replay_spec(config)
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["layout"] == "vllm-kda-a474da28"
+    assert info["raw_bytes_per_layer"] == raw_bytes  # Three conv windows + one FP32 matrix, not five slots.
+    assert info["ssm_dtype"] == "float32"
+    assert info["bytes_per_request"] == 9216
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 9216}
+
+
+@pytest.mark.parametrize(
+    "key,value,error",
+    [
+        ("kda_layers", [0, 1, 2], "1-based"),
+        ("kda_layers", [1, 1, 2], "duplicate"),
+        ("kda_layers", [True, 2, 3], "1-based"),
+        ("full_attn_layers", [3, 4], "partition"),
+        ("kda_layers", [1, 2], "partition"),
+        ("full_attn_layers", [], "1-based"),
+        ("num_heads", 0, "num_heads"),
+        ("head_dim", None, "head_dim"),
+        ("num_k_heads", 1, "asymmetric"),
+    ],
+)
+def test_kda_rejects_unrecognized_geometry(kda_model, key, value, error):
+    path, geometry = kda_model
+    geometry["linear_attn_config"][key] = value
+    (path / "config.json").write_text(json.dumps(geometry))
+    with pytest.raises(ValueError, match=error):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(_auto_public(path)))
+
+
+def test_kda_rejects_undersized_attention_page(kda_model):
+    payload = _auto_public(kda_model[0])
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["bytes_per_token"] = 8
+    with pytest.raises(ValueError, match="attention page is smaller"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+
+
+def test_kda_requires_fixed_fp32_recurrent_dtype(kda_model):
+    with pytest.raises(ValueError, match="always uses float32"):
+        prediction_to_replay_spec(
+            CorePredictionConfig.model_validate(_auto_public(kda_model[0], mamba_ssm_cache_dtype="float16"))
+        )
+
+
+def test_kda_rejects_unqualified_speculation(kda_model):
+    payload = _auto_public(kda_model[0])
+    payload["engine"]["speculation"] = {"kind": "ngram", "num_speculative_tokens": 2, "acceptance_rates": [0.5, 0.5]}
+    with pytest.raises(ValueError, match="speculative KDA"):
+        prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+
+
+@pytest.mark.parametrize("tp,raw_bytes", [(1, 6512640), (2, 3256320), (8, 814080)])
+def test_shipped_k3_nested_geometry(tp, raw_bytes, forbid_estimators):
+    payload = _auto_public("moonshotai/Kimi-K3")
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {"tensor": tp}
+    worker["kv_cache"].update(block_size=6144, bytes_per_token=27648, capacity={"type": "fixed", "blocks": 8})
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    info = spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["recurrent_layers_per_rank"] == 69
+    assert info["raw_bytes_per_layer"] == raw_bytes
+    assert info["bytes_per_request"] == 488374272
+    assert info["state_blocks"] == 3
+    assert info["allocated_bytes_per_request"] == 509607936  # 69/24 pages rounds up only after the per-rank sum.
+
+
+def test_k3_explicit_effective_token_geometry_does_not_reshard_state():
+    payload = _auto_public("moonshotai/Kimi-K3")
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {"tensor": 8}
+    worker["kv_cache"].update(block_size=12288, bytes_per_token=1728, capacity={"type": "fixed", "blocks": 8})
+    info = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(payload)
+    ).backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["raw_bytes_per_layer"] == 814080
+    assert info["padded_bytes_per_layer"] == 884736
+    assert info["bytes_per_request"] == 61046784
+    assert info["allocated_bytes_per_request"] == 63700992
+
+    worker["kv_cache"].update(block_size=1536, bytes_per_token=13824)
+    physical = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(payload)
+    ).backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert physical == info  # Byte-geometry normalization, not a DCP execution qualification.
+
+
+def test_kda_model_dtype_override_requires_explicit_cache_dtype(kda_model):
+    with pytest.raises(ValueError, match="explicit mamba_cache_dtype"):
+        prediction_to_replay_spec(
+            CorePredictionConfig.model_validate(_auto_public(kda_model[0], model_dtype="float16"))
+        )
+    payload = _auto_public(kda_model[0], model_dtype="float16", mamba_cache_dtype="float16")
+    payload["engine"]["workers"]["aggregated"]["kv_cache"]["bytes_per_token"] = 32
+    info = prediction_to_replay_spec(
+        CorePredictionConfig.model_validate(payload)
+    ).backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["conv_dtype"] == "float16"
+    assert info["raw_bytes_per_layer"] == 800
+
+
+def test_public_state_estimator_accepts_loaded_config_without_loader(kda_model, monkeypatch):
+    from copy import deepcopy
+    from types import MappingProxyType
+
+    from aisimulate_core.sdk import estimate_state_cache, state_memory
+
+    geometry = kda_model[1]
+    before = deepcopy(geometry)
+    monkeypatch.setattr(
+        state_memory, "_load_state_config", lambda *a, **k: pytest.fail("loaded config must not reload")
+    )
+    result = estimate_state_cache(
+        model_config=MappingProxyType(geometry), backend="vllm", block_size=64, kv_bytes_per_token=16
+    )
+    assert geometry == before
+    assert result["bytes_per_request"] == 3072
+    assert result["raw_bytes_per_request"] == 2400
+    assert result["padding_bytes_per_request"] == 672
+    assert result["backend"] == "vllm"
+    assert result["backend_revision"] == result["vllm_revision"]
+    assert "state_blocks" not in result and "allocated_bytes_per_request" not in result
+
+
+def test_public_state_estimator_path_and_config_agree(kda_model):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    path, geometry = kda_model
+    controls = {"backend": "vllm", "block_size": 64, "kv_bytes_per_token": 48}
+    assert estimate_state_cache(str(path), **controls) == estimate_state_cache(model_config=geometry, **controls)
+
+
+def test_public_state_estimator_has_no_pool_capacity_dependency(forbid_estimators, monkeypatch):
+    from aisimulate_core.sdk import estimate_state_cache, memory
+
+    monkeypatch.setattr(
+        memory, "estimate_kv_cache", lambda **k: pytest.fail("state size must not estimate pool capacity")
+    )
+    result = estimate_state_cache(
+        "moonshotai/Kimi-K3", backend="vllm", tp_size=8, block_size=768, kv_bytes_per_token=27648
+    )
+    assert result["bytes_per_request"] == 61046784
+    assert result["raw_bytes_per_request"] == 56171520
+    assert result["padding_bytes_per_request"] == 4875264
+
+
+def test_cli_passes_complete_state_controls_to_public_estimator(kda_model, monkeypatch):
+    from aisimulate import state_size
+    from aisimulate_core.sdk import estimate_state_cache
+
+    calls = []
+
+    def record(model_path, **kwargs):
+        calls.append((model_path, kwargs))
+        return estimate_state_cache(model_path, **kwargs)
+
+    monkeypatch.setattr(state_size, "estimate_state_cache", record)
+    payload = _auto_public(
+        kda_model[0],
+        layout="vllm-kda-a474da28",
+        model_dtype="bfloat16",
+        mamba_cache_dtype="float16",
+        mamba_ssm_cache_dtype="float32",
+    )
+    worker = payload["engine"]["workers"]["aggregated"]
+    worker["parallelism"] = {"tensor": 2}
+    worker["kv_cache"]["bytes_per_token"] = 32
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert calls == [
+        (
+            str(kda_model[0]),
+            {
+                "backend": "vllm",
+                "tp_size": 2,
+                "pp_size": 1,
+                "block_size": 64,
+                "kv_bytes_per_token": 32,
+                "model_dtype": "bfloat16",
+                "mamba_cache_dtype": "float16",
+                "mamba_ssm_cache_dtype": "float32",
+                "num_speculative_tokens": 0,
+                "layout": "vllm-kda-a474da28",
+                "allow_hf_config_download": True,
+            },
+        )
+    ]
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == {"bytes_per_request": 6144}
+
+
+@pytest.mark.parametrize("sizing", [None, {"bytes_per_request": 1500}])
+def test_cli_override_and_disabled_skip_public_estimator(sizing, monkeypatch):
+    from aisimulate import state_size
+
+    monkeypatch.setattr(state_size, "estimate_state_cache", lambda *a, **k: pytest.fail("inference is not requested"))
+    prediction_to_replay_spec(CorePredictionConfig.model_validate(_public(state_cache=sizing)))
+
+
+@pytest.mark.parametrize(
+    "overrides,error",
+    [
+        ({"backend": "sglang"}, "backend"),
+        ({"tp_size": True}, "tp_size"),
+        ({"tp_size": 0}, "tp_size"),
+        ({"pp_size": 2}, "PP=1"),
+        ({"block_size": 1}, "block_size"),
+        ({"kv_bytes_per_token": "16"}, "kv_bytes_per_token"),
+        ({"kv_bytes_per_token": 1 << 63}, "overflows"),
+        ({"num_speculative_tokens": -1}, "num_speculative_tokens"),
+        ({"num_speculative_tokens": True}, "num_speculative_tokens"),
+        ({"model_dtype": "fp8"}, "model_dtype"),
+        ({"mamba_cache_dtype": "bfloat16"}, "mamba_cache_dtype"),
+        ({"mamba_ssm_cache_dtype": "bfloat16"}, "mamba_ssm_cache_dtype"),
+        ({"layout": []}, "layout"),
+        ({"allow_hf_config_download": "false"}, "allow_hf_config_download"),
+    ],
+)
+def test_public_state_estimator_validates_before_loading(overrides, error, monkeypatch):
+    from aisimulate_core.sdk import estimate_state_cache, state_memory
+
+    monkeypatch.setattr(state_memory, "_load_state_config", lambda *a, **k: pytest.fail("invalid inputs must not load"))
+    args = {
+        "backend": "vllm",
+        "block_size": 64,
+        "kv_bytes_per_token": 16,
+        "allow_hf_config_download": True,
+        **overrides,
+    }
+    with pytest.raises(ValueError, match=error):
+        estimate_state_cache("must-not-load", **args)
+
+
+@pytest.mark.parametrize(
+    "sources,error",
+    [
+        ({}, "exactly one"),
+        ({"model_path": "model", "model_config": {}}, "exactly one"),
+        ({"model_config": []}, "mapping"),
+        ({"model_path": ""}, "nonempty"),
+    ],
+)
+def test_public_state_estimator_requires_one_model_source(sources, error):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    with pytest.raises(ValueError, match=error):
+        estimate_state_cache(**sources, backend="vllm", block_size=64, kv_bytes_per_token=16)
+
+
+def test_public_state_estimator_download_is_opt_in(kda_model, tmp_path, monkeypatch):
+    from aisimulate_core.sdk import estimate_state_cache, utils
+
+    calls = []
+
+    def download(name):
+        calls.append(name)
+        return kda_model[1]
+
+    monkeypatch.setenv("AICONFIGURATOR_MODEL_CONFIGS_PATH", str(tmp_path))
+    monkeypatch.setattr(utils, "_download_hf_config", download)
+    with pytest.raises(ValueError, match="cannot load"):
+        estimate_state_cache("uncached/model", backend="vllm", block_size=64, kv_bytes_per_token=16)
+    assert calls == []
+    assert (
+        estimate_state_cache(
+            "uncached/model", backend="vllm", block_size=64, kv_bytes_per_token=16, allow_hf_config_download=True
+        )["bytes_per_request"]
+        == 3072
+    )
+    assert calls == ["uncached/model"]
+
+
+def test_public_state_estimator_checks_total_u64_overflow(kda_model):
+    from aisimulate_core.sdk import estimate_state_cache
+
+    with pytest.raises(ValueError, match="bytes_per_request"):
+        estimate_state_cache(
+            model_config=kda_model[1], backend="vllm", block_size=64, kv_bytes_per_token=((1 << 64) - 1) // 64
+        )
+
+
+@pytest.mark.parametrize("allow_download", [False, True])
+def test_state_estimator_uses_cached_model_outside_fpm_default_set(tmp_path, kda_model, monkeypatch, allow_download):
+    from aisimulate_core.sdk import estimate_state_cache, utils
+    from aisimulate_core.sdk.common import DefaultHFModels
+
+    model = "coverage/new-state-model"
+    assert model not in DefaultHFModels
+    (tmp_path / "coverage--new-state-model_config.json").write_text(json.dumps(kda_model[1]))
+    monkeypatch.setenv("AICONFIGURATOR_MODEL_CONFIGS_PATH", str(tmp_path))
+    monkeypatch.setattr(utils, "_download_hf_config", lambda *a: pytest.fail("cached configuration must not download"))
+    result = estimate_state_cache(
+        model, backend="vllm", block_size=64, kv_bytes_per_token=16, allow_hf_config_download=allow_download
+    )
+    assert result["bytes_per_request"] == 3072
+
+
+def test_state_estimator_does_not_replace_invalid_cached_config(tmp_path, monkeypatch):
+    from aisimulate_core.sdk import estimate_state_cache, utils
+
+    (tmp_path / "coverage--invalid_config.json").write_text("{invalid json")
+    monkeypatch.setenv("AICONFIGURATOR_MODEL_CONFIGS_PATH", str(tmp_path))
+    monkeypatch.setattr(utils, "_download_hf_config", lambda *a: pytest.fail("invalid cached data must not fall back"))
+    with pytest.raises(ValueError):
+        estimate_state_cache(
+            "coverage/invalid", backend="vllm", block_size=64, kv_bytes_per_token=16, allow_hf_config_download=True
+        )
+
+
+def test_qwen_gdn_is_not_in_kda_estimation_scope():
+    from aisimulate_core.sdk import estimate_state_cache
+
+    with pytest.raises(ValueError, match="unknown model geometry"):
+        estimate_state_cache("Qwen/Qwen3.5-35B-A3B", backend="vllm", block_size=8192, kv_bytes_per_token=65536)

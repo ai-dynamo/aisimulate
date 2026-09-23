@@ -1004,9 +1004,67 @@ fn kda_exact_full_prompt_requires_an_actually_executed_replay_boundary() {
 
 #[test]
 fn kda_partial_restore_accounts_for_source_page_and_private_copy_atomically() {
-    let mut manager = manager(5, 6, 1, true);
+    // The K3 estimator resolves three pool blocks per working state. Admission
+    // must count every state source/destination block as well as the KV copy.
+    for state_blocks in [1, 3] {
+        let mut manager = manager(3 + 2 * state_blocks, 6, state_blocks, true);
+        manager.configure_prefix_match_unit(Some(2));
+        let owner = Uuid::from_u128(611);
+        let (mut sequence, mut lease) = fine_request(owner, 17, 6, 2, 0);
+        let mut before = 0;
+        for end in [6, 12, 16, 17] {
+            allocated(manager.allocate_lease(owner, &mut lease, end, 0));
+            manager.finalize_lease_computed_prefix(owner, &mut sequence, &mut lease, before, end);
+            manager.begin_step();
+            before = end;
+        }
+        let hash = lease.state_hash(16, 6).unwrap();
+        manager.finish_lease(owner, lease);
+        let owner = Uuid::from_u128(612);
+        let (query, mut reader) = fine_request(owner, 17, 6, 2, 0);
+        let cost = manager.get_lease_prefill_cost(&query, &reader);
+        assert_eq!(cost.cached_tokens, 16);
+        assert_eq!(
+            manager.admission_requirement(&reader, 17, &cost, 0),
+            AllocationRequirement::Impossible
+        );
+        let before = (manager.num_active_blocks(), manager.num_inactive_blocks());
+        assert!(matches!(
+            manager.allocate_lease(owner, &mut reader, 17, 8),
+            NativeAllocation::CapacityExhausted
+        ));
+        assert_eq!(
+            (manager.num_active_blocks(), manager.num_inactive_blocks()),
+            before
+        );
+        assert_eq!(reader.allocated_tokens(), 0);
+        assert_eq!(reader.resident_block_count(), 0);
+        assert!(reader.state.is_none());
+        assert!(!manager.pool.prefix_hit(hash).unwrap().is_active);
+        for slot in 0..state_blocks {
+            let hit = manager
+                .pool
+                .key_hit(CacheKey::State { prefix: hash, slot })
+                .unwrap();
+            assert!(!hit.is_active);
+        }
+        assert_eq!(
+            manager
+                .get_lease_prefill_cost(&query, &reader)
+                .cached_tokens,
+            16
+        );
+        clear_reclaimable_and_assert_empty(&mut manager);
+    }
+}
+
+#[test]
+fn kda_three_block_state_partial_restore_fits_exact_peak_and_releases_all_sources() {
+    // Three KV destinations + three working-state blocks + one partial KV
+    // source + three checkpoint source blocks must coexist during the copy.
+    let mut manager = manager(10, 6, 3, true);
     manager.configure_prefix_match_unit(Some(2));
-    let owner = Uuid::from_u128(611);
+    let owner = Uuid::from_u128(628);
     let (mut sequence, mut lease) = fine_request(owner, 17, 6, 2, 0);
     let mut before = 0;
     for end in [6, 12, 16, 17] {
@@ -1015,32 +1073,52 @@ fn kda_partial_restore_accounts_for_source_page_and_private_copy_atomically() {
         manager.begin_step();
         before = end;
     }
+    let hash = lease.state_hash(16, 6).unwrap();
+    let source_kv = lease.entries[2].copy.unwrap();
     manager.finish_lease(owner, lease);
-    let owner = Uuid::from_u128(612);
-    let (query, mut reader) = fine_request(owner, 17, 6, 2, 0);
+    let owner = Uuid::from_u128(629);
+    let (mut query, mut reader) = fine_request(owner, 17, 6, 2, 0);
     let cost = manager.get_lease_prefill_cost(&query, &reader);
     assert_eq!(cost.cached_tokens, 16);
     assert_eq!(
         manager.admission_requirement(&reader, 17, &cost, 0),
-        AllocationRequirement::Impossible
+        AllocationRequirement::Blocks(10)
     );
-    let before = (manager.num_active_blocks(), manager.num_inactive_blocks());
-    assert!(matches!(
-        manager.allocate_lease(owner, &mut reader, 17, 8),
-        NativeAllocation::CapacityExhausted
-    ));
-    assert_eq!(
-        (manager.num_active_blocks(), manager.num_inactive_blocks()),
-        before
-    );
-    assert_eq!(reader.allocated_tokens(), 0);
-    assert!(reader.state.is_none());
-    assert_eq!(
-        manager
-            .get_lease_prefill_cost(&query, &reader)
-            .cached_tokens,
-        16
-    );
+    allocated(manager.allocate_lease(owner, &mut reader, 17, 8));
+    assert_eq!(reader.computed_state_tokens(), Some(16));
+    assert_eq!(reader.resident_block_count(), 3);
+    assert_ne!(reader.entries[2].copy.unwrap(), source_kv);
+    let working = &reader.state.as_ref().unwrap().working;
+    assert_eq!(working.len(), 3);
+    assert!(working.iter().all(|&copy| manager.pool.is_private(copy)));
+    assert_eq!(manager.num_active_blocks(), 10);
+    assert_eq!(manager.num_inactive_blocks(), 0);
+
+    manager.finalize_lease_computed_prefix(owner, &mut query, &mut reader, 16, 17);
+    assert_eq!(manager.num_active_blocks(), 10);
+    assert!(manager.pool.prefix_hit(hash).unwrap().is_active);
+    for slot in 0..3 {
+        assert!(
+            manager
+                .pool
+                .key_hit(CacheKey::State { prefix: hash, slot })
+                .unwrap()
+                .is_active
+        );
+    }
+
+    manager.begin_step();
+    assert_eq!(manager.num_active_blocks(), 6);
+    assert_eq!(manager.num_inactive_blocks(), 4);
+    assert!(!manager.pool.prefix_hit(hash).unwrap().is_active);
+    for slot in 0..3 {
+        let hit = manager
+            .pool
+            .key_hit(CacheKey::State { prefix: hash, slot })
+            .unwrap();
+        assert!(!hit.is_active);
+    }
+    manager.finish_lease(owner, reader);
     clear_reclaimable_and_assert_empty(&mut manager);
 }
 
