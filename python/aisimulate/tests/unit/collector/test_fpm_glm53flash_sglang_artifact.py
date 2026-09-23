@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from collector.fpm_forward.sglang_artifact import read_observations, validate_sglang_repetitions
 from collector.fpm_forward.sglang_driver import freeze_requests, result_payload
 from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
@@ -157,3 +158,36 @@ def test_native_sglang_rejects_invalid_observations(corruption):
         selected["sampling_role"] = "warmup"
     with pytest.raises(ValueError):
         read_observations(manifest, raw(records), [point])
+
+
+def test_ops_provenance_is_bound_to_loaded_config_and_native_source(tmp_path):
+    from aisimulate_core.sdk.glm53flash import BACKEND_REVISIONS
+    from collector.fpm_forward.sglang_driver import read_ops_provenance
+
+    def sha256_json(value):
+        return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    config = {"actual": "loaded"}
+    audit = {"status": "passed", "sources": {"native.py": "a" * 64}}
+    provenance = {
+        "backend": "sglang",
+        "backend_version": "0.5.20",
+        "backend_revision": BACKEND_REVISIONS["sglang"],
+        "checkpoint_revision": "pinned-checkpoint",
+        "config_sha256": sha256_json(config),
+        "source_sha256": sha256_json(audit["sources"]),
+        "runtime_digest": "sha256:" + "b" * 64,
+    }
+    path = tmp_path / "provenance.json"
+    path.write_text(json.dumps(provenance))
+    assert (
+        read_ops_provenance(path, raw_config=config, checkpoint_revision="pinned-checkpoint", runtime_audit=audit)
+        == provenance
+    )
+    with pytest.raises(ValueError, match="differs"):
+        read_ops_provenance(
+            path, raw_config={"other": "config"}, checkpoint_revision="pinned-checkpoint", runtime_audit=audit
+        )
+    path.write_text(json.dumps({**provenance, "execution_identity": {}}))
+    with pytest.raises(ValueError, match="cannot replace"):
+        read_ops_provenance(path, raw_config=config, checkpoint_revision="pinned-checkpoint", runtime_audit=audit)
