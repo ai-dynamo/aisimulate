@@ -1350,14 +1350,6 @@
         }
       }
     },
-    "qwen3-30b-a3b-h200-vllm-afd": {
-      "afd": {
-        "values": {
-          "afd_tpot": 13.242,
-          "afd_ttft": 17.499
-        }
-      }
-    },
     "qwen3-32b-b200-trtllm-shape-prefill-heavy": {
       "agg": {
         "values": {
@@ -2640,10 +2632,6 @@
     "qwen3-30b-a3b-b60-vllm-scan-coverage::static": {
       "engine": "rust",
       "git_head": "eb4f61cb5d11f17898d7a0f1fd47def268445a6b"
-    },
-    "qwen3-30b-a3b-h200-vllm-afd::afd": {
-      "engine": "rust",
-      "git_head": "760b6c92edc00389ff79938b62b028c01bcfefdd"
     },
     "qwen3-32b-b200-trtllm-shape-prefill-heavy::agg": {
       "engine": "rust",
