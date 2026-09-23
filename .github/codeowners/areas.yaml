@@ -102,6 +102,8 @@ areas:
 # stays visible on subsystem changes without requiring every listed team to
 # approve: any listed code owner can satisfy GitHub's code-owner gate.
 shared:
+  - glob: python/aisimulate/tools/simulation_perf_gate/
+    owners: [replay, forward-pass-engine, infra, maintainers]
   - glob: pages/
     owners: [forward-pass-engine, infra, maintainers]
   - glob: tests/fpm_accuracy/

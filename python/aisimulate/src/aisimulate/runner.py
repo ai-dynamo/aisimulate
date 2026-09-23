@@ -14,7 +14,7 @@ import random
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from numbers import Real
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -354,6 +354,7 @@ class EngineReplayRunnerFactory:
     """
 
     trace_block_size: int = 512
+    determinism: Literal["random", "canonical_v1"] = field(default="random", kw_only=True)
     runtime: EngineReplayRuntime | None = field(default=None, repr=False, compare=False)
     afd_companion_model: AFDCompanionPerformanceModel | None = field(
         default=None,
@@ -394,6 +395,7 @@ class EngineReplayRunnerFactory:
             worker_id=worker_id,
             capabilities=self.capabilities(),
             trace_block_size=self.trace_block_size,
+            determinism=self.determinism,
             runtime=self.runtime,
             afd_companion_model=self.afd_companion_model,
         )
@@ -406,6 +408,7 @@ class EngineReplayRunner:
     worker_id: int
     capabilities: RunnerCapabilities
     trace_block_size: int = 512
+    determinism: Literal["random", "canonical_v1"] = field(default="random", kw_only=True)
     runtime: EngineReplayRuntime | None = None
     afd_companion_model: AFDCompanionPerformanceModel | None = None
 
@@ -440,6 +443,12 @@ class EngineReplayRunner:
         output_requirements: ReplayOutputRequirements | None = None,
     ) -> ReplayReport:
         output_requirements = output_requirements or ReplayOutputRequirements()
+        if self.determinism not in {"random", "canonical_v1"}:
+            raise ValueError(f"unsupported replay determinism: {self.determinism!r}")
+        if self.determinism != "random" and (
+            spec.backend_deployment.deployment_mode in {"afd", "afd+pd"} or spec.backend_deployment.encoder is not None
+        ):
+            raise InvalidRunnerError("canonical determinism requires native text replay")
         if output_requirements.capture_telemetry:
             raise InvalidRunnerError("EngineReplayRunner's JSON runtime does not yet expose replay telemetry")
         if spec.workload.get("source_type") is not None and "length_sampler" in spec.workload:
@@ -520,6 +529,10 @@ class EngineReplayRunner:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
             execution_spec["capture_performance_diagnostics"] = True
+        if self.determinism != "random":
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["determinism"] = self.determinism
         execution_spec_json = json.dumps(
             execution_spec,
             allow_nan=False,

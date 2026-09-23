@@ -2954,3 +2954,54 @@ def test_manual_fpe_uses_current_harness_and_selected_inventory_for_every_job():
     assert nightly["build-artifacts"]["env"]["DEV_DATE"] == "${{ needs.changes-guard.outputs.dev-version }}"
     assert "release-tooling/scripts/apply_dev_version.py" in _run_commands(nightly["build-artifacts"])
     assert "release-tooling/scripts/build_release_artifacts.py --root ." in _run_commands(nightly["build-artifacts"])
+
+
+def test_simulation_performance_rollout_and_revision_contract():
+    path = WORKFLOW_ROOT / "simulation-performance.yml"
+    workflow = yaml.safe_load(path.read_text())
+    selector = workflow["jobs"]["select"]
+    assert "vars.SIMULATION_PERF_ENABLED == 'true'" in selector["if"]
+    assert "workflow_dispatch" in selector["if"]
+    assert workflow["concurrency"]["group"].startswith("simulation-performance-")
+    assert selector["runs-on"] == "ubuntu-latest"
+    assert "python scripts/select_simulation_perf.py" in _run_commands(selector)
+    comparison = workflow["jobs"]["compare"]
+    commands = _run_commands(comparison)
+    assert 'git merge-base "${PR_HEAD_SHA}" "${base_tip}"' in commands
+    assert 'base_sha="${PR_HEAD_SHA}"' in commands
+    assert "PROTOCOL_VERSION" in commands
+    assert "**INVALID_COMPARISON**" in commands
+    assert "was not benchmarked" in commands
+    assert "repetitions=3" in commands
+    assert "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" in commands
+    assert "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" in commands
+    assert "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" in commands
+    assert "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" in commands
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("crates/core/src/replay/loadgen/weka.rs", True),
+        ("crates/core/src/engine/scheduler/vllm/core.rs", True),
+        ("python/aisimulate/src/aisimulate/traffic.py", True),
+        ("python/aisimulate/src/aisimulate/compiler.py", True),
+        ("python/aisimulate/src/aisimulate_core/systems/data/b200_sxm/gemm/vllm/0.24.0/gemm_perf.parquet", True),
+        ("python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl", True),
+        ("python/aisimulate/uv.lock", True),
+        ("python/aisimulate/tools/simulation_perf_gate/README.md", False),
+        ("docs/cli/user-guide.md", False),
+    ],
+)
+def test_simulation_performance_selects_complete_pr_files(path, expected):
+    from scripts import select_simulation_perf
+
+    pull = {"head": {"sha": "a" * 40}, "base": {"sha": "b" * 40, "ref": "main"}, "changed_files": 1}
+
+    def api(endpoint):
+        return [[{"filename": path}]] if "/files?" in endpoint else [pull]
+
+    selected = select_simulation_perf.select_comparison(
+        "owner/repo", "push", "refs/heads/pull-request/1", "a" * 40, api=api
+    )
+    assert selected["run_comparison"] == str(expected).lower()

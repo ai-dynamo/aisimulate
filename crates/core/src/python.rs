@@ -12,9 +12,9 @@ use crate::engine::{
 };
 use crate::replay::{
     POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
-    ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
-    ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
-    ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
+    ReplayCaptureOptions, ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory,
+    ReplayOperationPowerDiagnostics, ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics,
+    ReplayRoleConfig, ReplayRuntimeInput, ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
         AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec,
         SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
@@ -41,6 +41,8 @@ enum ExecutionPayload {
         traffic: Option<Box<RuntimeTraffic>>,
         #[serde(default)]
         capture_performance_diagnostics: bool,
+        #[serde(default)]
+        determinism: ReplayDeterminism,
     },
     Legacy(ReplaySpec),
 }
@@ -1266,11 +1268,16 @@ fn run_with_input(
     factory: ReplayEngineFactory,
     input: Option<ReplayRuntimeInput>,
     capture_artifacts: bool,
+    determinism: ReplayDeterminism,
 ) -> crate::replay::ReplayResult<(crate::replay::ReplayReport, Option<ReplayArtifacts>)> {
     let replayer = match input {
         Some(input) => Replayer::new(spec, factory)?.with_runtime_input(input),
         None => Replayer::new(spec, factory)?,
-    };
+    }
+    .with_capture_options(ReplayCaptureOptions {
+        determinism,
+        ..ReplayCaptureOptions::default()
+    });
     if capture_artifacts {
         let (report, artifacts) =
             replayer.run_with_artifacts(ReplayArtifactKvEventVisibility::Native)?;
@@ -1606,14 +1613,20 @@ fn infer_aic_timing_topology(engine: &mut serde_json::Value) -> Result<()> {
 }
 
 fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
-    let (mut spec, mut traffic, capture_performance_diagnostics) =
+    let (mut spec, mut traffic, capture_performance_diagnostics, determinism) =
         match serde_json::from_str(payload).context("invalid AISimulate execution ReplaySpec")? {
             ExecutionPayload::Configured {
                 spec,
                 traffic,
                 capture_performance_diagnostics,
-            } => (spec, traffic.map(|t| *t), capture_performance_diagnostics),
-            ExecutionPayload::Legacy(spec) => (spec, None, false),
+                determinism,
+            } => (
+                spec,
+                traffic.map(|t| *t),
+                capture_performance_diagnostics,
+                determinism,
+            ),
+            ExecutionPayload::Legacy(spec) => (spec, None, false, ReplayDeterminism::default()),
         };
     let agentic_input = traffic.as_ref().and_then(|traffic| {
         traffic
@@ -1699,7 +1712,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
-            run_with_input(spec, factory, input, capture_artifacts)
+            run_with_input(spec, factory, input, capture_artifacts, determinism)
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
         ReplayTopology::Disaggregated { .. } => {
@@ -1823,6 +1836,7 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 ),
                 input,
                 capture_artifacts,
+                determinism,
             )
             .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
