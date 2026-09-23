@@ -2582,6 +2582,7 @@ impl VllmCore {
         let mut ready = Vec::with_capacity(self.state.running.len());
         let mut already_complete = Vec::new();
         let mut total_length = 0usize;
+        let mut decode_count = 0usize;
         for uuid in self.state.running.iter().copied() {
             let Some(request) = self.state.requests.get(&uuid) else {
                 continue;
@@ -2601,7 +2602,18 @@ impl VllmCore {
                 continue;
             }
             ready.push(uuid);
-            total_length += request.sequence.len();
+            // The final prefill forward already includes the output head. First
+            // tokens sampled from it do not require a second full forward pass.
+            let first_token_from_prefill = self.args.worker_type == WorkerType::Aggregated
+                && self.speculative_sampler.is_none()
+                && request.sequence.generated_tokens() == 0
+                && scheduled
+                    .get(&uuid)
+                    .is_some_and(|work| work.prompt_tokens > 0);
+            if !first_token_from_prefill {
+                decode_count += 1;
+                total_length += request.sequence.len();
+            }
         }
 
         // Requests already terminal after prefill must release their running slots
@@ -2659,21 +2671,24 @@ impl VllmCore {
 
         // For prefill workers, the first decode token is produced as part of
         // the prefill forward pass — no separate decode iteration needed.
-        let (decode_time, decode_end_ms) = if self.args.worker_type == WorkerType::Prefill {
-            (Duration::ZERO, decode_start_ms)
-        } else {
-            let total_kv_tokens = self.args.num_gpu_blocks * self.args.block_size;
-            let active_kv_tokens = total_length;
-            let context_length = total_length / ready.len();
-            let decode_ms = self.args.perf_model.predict_decode_time(
-                ready.len(),
-                active_kv_tokens,
-                context_length,
-                total_kv_tokens,
-            )?;
-            let dt = scale_decode_time(decode_ms, &self.args)?;
-            (dt, decode_start_ms + dt.as_secs_f64() * 1000.0)
-        };
+        // All signals remain visible at the common pass boundary, including
+        // first tokens when ongoing decoders add work to a mixed pass.
+        let (decode_time, decode_end_ms) =
+            if self.args.worker_type == WorkerType::Prefill || decode_count == 0 {
+                (Duration::ZERO, decode_start_ms)
+            } else {
+                let total_kv_tokens = self.args.num_gpu_blocks * self.args.block_size;
+                let active_kv_tokens = total_length;
+                let context_length = total_length / decode_count;
+                let decode_ms = self.args.perf_model.predict_decode_time(
+                    decode_count,
+                    active_kv_tokens,
+                    context_length,
+                    total_kv_tokens,
+                )?;
+                let dt = scale_decode_time(decode_ms, &self.args)?;
+                (dt, decode_start_ms + dt.as_secs_f64() * 1000.0)
+            };
 
         let mut running_changed = !output_signals.is_empty();
         for uuid in ready {
