@@ -449,12 +449,15 @@ def _worker_engine_args(
         payload["aic_forward_model"] = worker.timing.forward_model
         if worker.timing.fpm_parquet_path is not None:
             payload["aic_fpm_parquet_path"] = worker.timing.fpm_parquet_path
-    if backend == "vllm" or isinstance(engine.context_length, int):
-        payload["max_model_len"] = (
-            engine.context_length
+    if backend == "vllm" or isinstance(engine.context_length, int) or worker.context_length is not None:
+        effective_context_length = (
+            worker.context_length
+            if worker.context_length is not None
+            else engine.context_length
             if isinstance(engine.context_length, int)
             else resolve_model_context_length(engine.model)
         )
+        payload["max_model_len"] = effective_context_length
     if cache.state_cache is not None:
         payload["state_cache"] = cache.state_cache.model_dump(mode="json")
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token

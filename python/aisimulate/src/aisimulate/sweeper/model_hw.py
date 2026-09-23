@@ -125,6 +125,7 @@ def parallel_configs_for(
     max_batch_size: int = DEFAULT_MAX_BATCH_SIZE,
     memory_fraction: float = DEFAULT_MEMORY_FRACTION,
     role_runtime: dict[str, tuple[int, int, float] | tuple[int, int, float, int | None]] | None = None,
+    role_max_seq_len: dict[str, int | None] | None = None,
     systems_paths: list[str] | None = None,
     model_controls: dict[str, str | int | bool] | None = None,
     nextn: int = 0,
@@ -153,9 +154,7 @@ def parallel_configs_for(
         backend=backend,
         systems_paths=systems_paths,
     )
-    seq_len = max_seq_len if max_seq_len is not None else mh.max_context
-    if seq_len is None:
-        raise ValueError(f"max_seq_len is required: {model_name} config exposes no max context length")
+    default_seq_len = max_seq_len if max_seq_len is not None else mh.max_context
 
     # Enumerate from 1 GPU/worker; the KV estimate is the sole feasibility filter.
     # MoE tensor-parallel (moe_ep == 1) is enabled for every MoE model, MLA
@@ -188,6 +187,9 @@ def parallel_configs_for(
             raise ValueError(
                 "role_runtime values must be (tokens, batch, memory) or (tokens, batch, memory, fixed_tokens)"
             )
+        seq_len = (role_max_seq_len or {}).get(role, default_seq_len)
+        if seq_len is None:
+            raise ValueError(f"max_seq_len is required: {model_name} config exposes no max context length")
         if fixed_tokens is not None:
             return {shape: fixed_tokens for shape in dict.fromkeys(shapes) if fixed_tokens > seq_len}
         return feasible_shape_tokens(
@@ -214,7 +216,7 @@ def parallel_configs_for(
         kept = [c for c in configs if c.prefill.shape in prefill_feasible and c.decode.shape in decode_feasible]
     if not kept:
         raise NoViableParallelConfig(
-            f"{model_name} on {hardware_sku}: no parallel config holds a {seq_len}-token "
+            f"{model_name} on {hardware_sku}: no parallel config holds a {default_seq_len}-token "
             f"sequence within {gpu_budget} GPUs ({backend} KV-cache estimate)"
         )
     return kept

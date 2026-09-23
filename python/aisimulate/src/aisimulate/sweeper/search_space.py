@@ -255,6 +255,19 @@ def _runtime_by_role(search_space, backend: str, mode: str) -> dict[str, tuple[i
     return {role: _role_runtime(search_space, backend, role) for role in roles}
 
 
+def _context_by_role(search_space, mode: str, max_seq_len: int | None) -> dict[str, int] | None:
+    if mode == "agg":
+        return None
+    result = {}
+    for role in ("prefill", "decode"):
+        value = getattr(search_space, f"{role}_context_length")
+        if value is not None:
+            result[role] = value
+        elif max_seq_len is not None:
+            result[role] = max_seq_len
+    return result or None
+
+
 def _heterogeneous_disagg_configs(
     search_space,
     *,
@@ -290,6 +303,11 @@ def _heterogeneous_disagg_configs(
                 min_gpu_budget=None,
                 max_seq_len=max_seq_len,
                 role_runtime={"agg": _role_runtime(search_space, backend, role)},
+                role_max_seq_len=(
+                    {"agg": getattr(search_space, f"{role}_context_length") or max_seq_len}
+                    if getattr(search_space, f"{role}_context_length") is not None or max_seq_len is not None
+                    else None
+                ),
                 **_engine_memory_kwargs(search_space),
                 **_estimator_root_kwargs(search_space, role),
             )
@@ -412,6 +430,11 @@ def _afd_branch(
                     min_gpu_budget=None,
                     max_seq_len=max_seq_len,
                     role_runtime={"agg": _role_runtime(ss, backend, companion_role)},
+                    role_max_seq_len=(
+                        {"agg": getattr(ss, f"{companion_role}_context_length") or max_seq_len}
+                        if getattr(ss, f"{companion_role}_context_length") is not None or max_seq_len is not None
+                        else None
+                    ),
                 )
             except (NoPerfDatabase, NoViableParallelConfig):
                 continue
@@ -618,6 +641,7 @@ def enumerate_branches(
                         min_gpu_budget=ss.min_gpu_budget,
                         max_seq_len=max_seq_len,
                         role_runtime=_runtime_by_role(ss, backend, deployment_mode),
+                        role_max_seq_len=_context_by_role(ss, deployment_mode, max_seq_len),
                         **_engine_memory_kwargs(ss),
                         **_estimator_root_kwargs(ss, "agg" if deployment_mode == "agg" else "prefill"),
                     )
