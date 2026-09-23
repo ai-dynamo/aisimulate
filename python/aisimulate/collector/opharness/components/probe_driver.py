@@ -439,11 +439,19 @@ FRAME_DENY = re.compile(r"_inductor/runtime|pybind11_detail|<built-in method")
 FW_FRAME = re.compile(r"(sglang|vllm|tensorrt_llm|cutlass|flashinfer|deep_gemm|sgl_kernel|flash)")
 
 
+_TRITON_TILE_SUFFIX = re.compile(r"_(?:\d+x){3}\d+(?=(?:_[a-z]\w*)?$)")
+
+
 def normalize_kernel(name: str) -> str | None:
     if KERNEL_DENY.search(name):
         return None
     if "<" not in name and " " not in name.strip():
-        return name[:80]
+        # Triton autotuned kernels (triton_kernels matmul_ogs) bake the tile
+        # config into the name — _matmul_ogs_NNT_bf16xbf16xmxfp4_16x256x128x1
+        # at M=1 vs ..._128x256x128x1 at M=4096 — the same kernel, different
+        # BLOCK sizes chosen from the token count. Identity is the kernel, not
+        # the tile: strip the suffix (an epilogue marker like _swiglu survives).
+        return _TRITON_TILE_SUFFIX.sub("", name)[:80]
     idents = re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+|[A-Za-z_][A-Za-z0-9_]{5,}", name)
     for ident in idents:
         if (ident in NAME_WRAPPERS or ident.split("::")[0] in NAME_WRAPPERS

@@ -137,6 +137,19 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
             if isl is not None and r["runtime"].get("isl") != isl:
                 continue
             candidates.append(r)
+    # Several records can match one (repo, framework, version, kv) — tp/ep
+    # variants, re-probes, older runs. Pick by EVIDENCE QUALITY, never by file
+    # order: cache-cold prefill (prefix_caching False) beats a cached
+    # residual, a record with both phase tables beats a decode-only one, a
+    # known isl beats an unknown one. Found 2026-09-23: "last match" picked a
+    # decode-only Qwen3.5 record over the cache-cold one and produced a false
+    # collector-only `flashinfer` (GDN prefill) verdict.
+    def _quality(r):
+        rt = r["runtime"]
+        return (rt.get("prefix_caching") is False,
+                bool(r.get("ops")) and any((o.get("phase") == "prefill") for o in r.get("ops") or []),
+                rt.get("isl") is not None)
+    candidates.sort(key=_quality)
     serving = candidates[-1] if candidates else None
     if len(candidates) > 1:  # several serving configs match (tp/ep/kv variants): say which one won
         print(f"[note] {len(candidates)} serving records match; using {serving['id']} "
