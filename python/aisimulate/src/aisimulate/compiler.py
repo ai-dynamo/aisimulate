@@ -455,8 +455,10 @@ def _worker_engine_args(
             if isinstance(engine.context_length, int)
             else resolve_model_context_length(engine.model)
         )
+    if cache.prefix_match_unit is not None:
+        payload["prefix_match_unit"] = cache.prefix_match_unit
     if cache.state_cache is not None:
-        payload["state_cache"] = cache.state_cache.model_dump(mode="json")
+        payload["state_cache"] = cache.state_cache.model_dump(mode="json", exclude_none=True)
         payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
         if capacity.blocks is not None:
