@@ -1,0 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+interface:
+  display_name: "AISimulate Replay Performance"
+  short_description: "Assess replay cost and required performance evidence"
+  default_prompt: "Use $aisimulate-replay-performance while implementing or reviewing this replay change to assess host cost and required evidence."
+
+policy:
+  allow_implicit_invocation: true
