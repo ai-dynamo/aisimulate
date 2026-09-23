@@ -1237,7 +1237,10 @@ must be a positive integer, not `auto`.
 With state caching enabled, `prefix_match_unit` controls prefix-matching
 granularity while `block_size` still controls physical KV allocation. The match
 unit must be positive and divide `block_size`. Omitting it preserves existing
-state-cache behavior.
+state-cache behavior. It works with both inferred (`state_cache: {}`) and explicit
+state sizes. Changing the match unit does not change the bytes in one state copy
+or the physical block size; the state manager accounts for retained checkpoints
+and temporary restore copies separately.
 
 For example, this aggregated-worker configuration allocates 1536-token KV blocks
 and allows prefix matches at 128-token boundaries. The byte sizes are

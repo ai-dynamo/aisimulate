@@ -379,6 +379,105 @@ def test_aligned_state_config_reuses_retained_native_checkpoints(
     assert result.metrics["prefix_cache_reused_ratio"] == pytest.approx(expected_reused_tokens / 48600)
 
 
+@pytest.fixture(
+    params=[
+        pytest.param(("moonshotai/Kimi-K3", 8, 13824, 61046784), id="kimi-k3-tp8"),
+        pytest.param(("Qwen/Qwen3.5-35B-A3B", 2, 10240, 47185920), id="qwen35-gdn-tp2"),
+    ]
+)
+def inferred_prefix_payload(request):
+    model, tp, token_bytes, state_bytes = request.param
+    payload = _public(
+        block_size=1536,
+        bytes_per_token=token_bytes,
+        prefix_match_unit=128,
+        capacity={"type": "fixed", "blocks": 512},
+        state_cache={
+            "layout": "auto",
+            "model_dtype": "auto",
+            "mamba_cache_dtype": "auto",
+            "mamba_ssm_cache_dtype": "float32",
+        },
+    )
+    payload["engine"].update(model=model, context_length=32768)
+    payload["engine"]["workers"]["aggregated"].update(
+        parallelism={"tensor": tp}, scheduler={"max_batched_tokens": 8192}
+    )
+    payload["traffic"]["source"].update(input_tokens=24300, output_tokens=2)
+    payload["traffic"]["stop"]["requests"] = 2
+    return payload, state_bytes
+
+
+@pytest.mark.parametrize(
+    "prefix_unit, shared_prefix, expected_reused",
+    [
+        pytest.param(128, 24192, 24192, id="partial-hit"),
+        pytest.param(128, 24191, 23040, id="before-partial-checkpoint"),
+        pytest.param(128, 0, 0, id="miss"),
+        pytest.param(1536, 24192, 23040, id="full-block-unit"),
+        # Without the alignment option, the 8192-token scheduler chunks do not
+        # end on physical pages, so no reusable state was actually computed.
+        pytest.param(None, 24192, 0, id="legacy-unaligned-chunks"),
+    ],
+)
+def test_inferred_state_matches_manual_partial_prefix_replay(
+    forbid_estimators, inferred_prefix_payload, prefix_unit, shared_prefix, expected_reused
+):
+    payload, state_bytes = inferred_prefix_payload
+    cache = payload["engine"]["workers"]["aggregated"]["kv_cache"]
+    cache["prefix_match_unit"] = prefix_unit
+    payload["traffic"]["source"]["cached_prefix_tokens"] = shared_prefix
+    config = CorePredictionConfig.model_validate(payload)
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    inferred = prediction_to_replay_spec(config)
+    info = inferred.backend_deployment.performance_model_metadata["aggregated"]["state_cache"]
+    assert info["source"] == "inferred"
+    assert info["bytes_per_request"] == state_bytes
+    assert info["state_blocks"] == 3
+    assert info["allocated_bytes_per_request"] == 3 * 1536 * cache["bytes_per_token"]
+    assert info["ssm_dtype"] == "float32"
+    args = inferred.backend_deployment.agg_engine_args
+    # Only the resolved byte size crosses the native boundary, never SDK knobs.
+    assert args["state_cache"] == {"bytes_per_request": state_bytes}
+    assert args.get("prefix_match_unit") == prefix_unit
+    cache["state_cache"] = {"bytes_per_request": state_bytes}
+    manual = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+    assert manual.backend_deployment.agg_engine_args == args
+    observed = []
+    for spec in (inferred, manual):
+        metrics = EngineReplayRunnerFactory().create(0).run(spec).metrics
+        assert metrics["completed_requests"] == 2
+        assert metrics["total_input_tokens"] == 48600
+        assert metrics["total_output_tokens"] == 4
+        assert metrics["committed_prefill_tokens"] == 48600 - expected_reused
+        assert metrics["prefix_cache_reused_ratio"] == pytest.approx(expected_reused / 48600)
+        observed.append((metrics["committed_prefill_tokens"], metrics["prefix_cache_reused_ratio"]))
+    assert observed[0] == observed[1]
+
+
+def test_prefix_match_unit_changes_neither_inferred_geometry_nor_dtype(forbid_estimators, inferred_prefix_payload):
+    payload, state_bytes = inferred_prefix_payload
+    cache = payload["engine"]["workers"]["aggregated"]["kv_cache"]
+    by_dtype = {}
+    for dtype in ("auto", "float32"):
+        cache["state_cache"]["mamba_cache_dtype"] = dtype
+        sizes = []
+        for unit in (None, 128, 1536):
+            cache["prefix_match_unit"] = unit
+            spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(payload))
+            sizes.append(spec.backend_deployment.performance_model_metadata["aggregated"]["state_cache"])
+        assert sizes[0] == sizes[1] == sizes[2]
+        assert sizes[0]["bytes_per_request"] == state_bytes
+        assert sizes[0]["state_blocks"] == 3
+        by_dtype[dtype] = sizes[0]
+    # Both dtypes fit the supplied physical page: FP32 uses more of the page
+    # without growing it. Prefix hash granularity must not enter either formula.
+    assert by_dtype["auto"]["conv_dtype"] == "bfloat16"
+    assert by_dtype["float32"]["conv_dtype"] == "float32"
+    assert by_dtype["float32"]["raw_bytes_per_request"] > by_dtype["auto"]["raw_bytes_per_request"]
+    assert by_dtype["float32"]["padding_bytes_per_request"] < by_dtype["auto"]["padding_bytes_per_request"]
+
+
 def test_prefix_match_unit_requires_state_and_old_alignment_field_is_rejected():
     with pytest.raises(ValidationError, match="requires state_cache"):
         CorePredictionConfig.model_validate(_public(state_cache=None, prefix_match_unit=16))
