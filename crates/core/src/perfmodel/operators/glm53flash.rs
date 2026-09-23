@@ -12,7 +12,7 @@
 use crate::common::enums::{DatabaseMode, GemmQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
 use crate::common::system_spec::{SystemSpec, quant_tc_flops};
-use crate::operators::base::{PerformanceResult, SolComponents};
+use crate::operators::base::{PerformanceResult, SolComponents, Source};
 use crate::operators::op::RuntimeContext;
 use crate::perf_database::PerfDatabase;
 use serde::{Deserialize, Serialize};
@@ -42,17 +42,32 @@ fn identity(backend: &str, checkpoint: &str) -> Result<(), AicError> {
     }
     Ok(())
 }
-// The Ops PR supplies the measured table. Until then explicit SILICON must
-// fail; HYBRID reports Source::Sol rather than relabelling an analytical value.
-fn analytical_only(db: &PerfDatabase, component: &str) -> Result<(), AicError> {
-    match db.database_mode {
-        DatabaseMode::Silicon => Err(AicError::PerfDatabase(format!(
-            "GLM-5.3-Flash {component} has no measured SILICON data"
-        ))),
-        DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(format!(
+// Missing measured coverage remains an error in both SILICON and HYBRID.
+fn measured<T: Serialize>(
+    db: &PerfDatabase,
+    component: &str,
+    op: &T,
+    batch: u32,
+    prefix: u32,
+    x: u32,
+) -> Result<PerformanceResult, AicError> {
+    if db.database_mode == DatabaseMode::Empirical {
+        return Err(AicError::EmpiricalNotImplemented(format!(
             "GLM-5.3-Flash {component} has no empirical anchor"
+        )));
+    }
+    if batch == 0 || x == 0 {
+        return Ok(PerformanceResult::with_energy(0.0, 0.0, Source::Silicon));
+    }
+    match db.glm53flash.query(component, op, batch, prefix, x)? {
+        Some(value) => Ok(PerformanceResult::with_energy(
+            value.latency,
+            value.energy,
+            Source::Silicon,
+        )),
+        None => Err(AicError::PerfDatabase(format!(
+            "GLM-5.3-Flash {component} has no exact measured data for geometry, batch={batch}, prefix={prefix}, x={x}"
         ))),
-        _ => Ok(()),
     }
 }
 fn weight_size(q: GemmQuantMode) -> f64 {
@@ -348,7 +363,16 @@ impl Glm53AttentionOp {
         db: &PerfDatabase,
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
-        analytical_only(db, "attention")?;
+        if !matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            return measured(
+                db,
+                "attention",
+                self,
+                ctx.batch_size,
+                if self.is_context { ctx.prefix } else { 0 },
+                ctx.s,
+            );
+        }
         self.sol(
             &db.system_spec,
             ctx.batch_size as f64,
@@ -410,8 +434,11 @@ impl Glm53MhcOp {
         ))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytical_only(db, "mhc")?;
-        self.sol(&db.system_spec, tokens as f64)
+        if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            self.sol(&db.system_spec, tokens as f64)
+        } else {
+            measured(db, "mhc", self, 1, 0, tokens)
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -446,8 +473,11 @@ impl Glm53RouterOp {
         ))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytical_only(db, "router")?;
-        self.sol(&db.system_spec, tokens as f64)
+        if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            self.sol(&db.system_spec, tokens as f64)
+        } else {
+            measured(db, "router", self, 1, 0, tokens)
+        }
     }
 }
 
@@ -554,7 +584,14 @@ pub(crate) mod tests {
             }
         }
         assert!(matches!(
-            analytical_only(&db(DatabaseMode::Silicon), "attention"),
+            measured(
+                &db(DatabaseMode::Silicon),
+                "attention",
+                &attention("kda"),
+                1,
+                0,
+                128
+            ),
             Err(AicError::PerfDatabase(_))
         ));
     }

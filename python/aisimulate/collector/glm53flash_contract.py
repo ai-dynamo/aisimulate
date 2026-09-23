@@ -59,7 +59,31 @@ def sha256_json(value: object) -> str:
 
 
 def operation_geometry(body: dict) -> str:
-    return canonical_json({key: value for key, value in body.items() if key != "name"})
+    return canonical_json({key: value for key, value in body.items() if key not in ("name", "children")})
+
+
+def build_model_manifest(backend: str, checkpoint_format: str, tp_size: int) -> dict:
+    from aisimulate_core.sdk.config import ModelConfig
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
+
+    if backend not in BACKENDS or checkpoint_format not in CHECKPOINTS or tp_size not in (1, 2, 4):
+        raise ValueError("unqualified GLM collection model configuration")
+    if tp_size == 1 and checkpoint_format != "nvfp4":
+        raise ValueError("TP1 is optional only for admitted NVFP4")
+    model_path, revision = CHECKPOINTS[checkpoint_format]
+    model = get_model(model_path, ModelConfig(tp_size=tp_size, moe_tp_size=tp_size, moe_ep_size=1), backend)
+    return {
+        **build_manifest(model),
+        "model_path": model_path,
+        "checkpoint_revision": revision,
+        "backend": backend,
+        "backend_version": BACKENDS[backend][0],
+        "backend_revision": BACKENDS[backend][1],
+        "config_sha256": sha256_json(_load_pre_downloaded_hf_config(model_path)),
+        "tp_size": tp_size,
+        "ep_size": 1,
+    }
 
 
 def build_manifest(model) -> dict:

@@ -54,6 +54,19 @@ def dispatch_identity(owner, method: str) -> str:
     quant = getattr(owner, "quant_method", None)
     if quant is not None:
         identity += f"/{type(quant).__module__}.{type(quant).__qualname__}"
+    children = getattr(owner, "named_modules", None)
+    if children is not None:
+        dispatches = set()
+        for name, module in children():
+            for attribute in ("quant_method", "moe_runner", "moe_kernel"):
+                selected = getattr(module, attribute, None)
+                if selected is not None:
+                    dispatches.add(f"{name}:{attribute}={type(selected).__module__}.{type(selected).__qualname__}")
+            selected = getattr(module, "_forward_method", None)
+            if selected is not None and hasattr(selected, "__qualname__"):
+                dispatches.add(f"{name}:forward={selected.__module__}.{selected.__qualname__}")
+        if dispatches:
+            identity += "/" + ";".join(sorted(dispatches))
     return identity
 
 
