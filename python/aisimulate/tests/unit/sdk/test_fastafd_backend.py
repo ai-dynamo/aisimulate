@@ -11,7 +11,7 @@ from aisimulate.config.engine import TimingConfig
 from aisimulate_core.sdk.config_builders import build_model_config
 from aisimulate_core.sdk.engine import InvalidEngineConfigurationError, compile_engine
 from aisimulate_core.sdk.fastafd_backend import apply_fastafd_moe_profile
-from aisimulate_core.sdk.fastafd_profile import FASTAFD_PROFILE_SCHEMA
+from aisimulate_core.sdk.fastafd_profile import FASTAFD_OFFICIAL_REPOSITORY, FASTAFD_PROFILE_SCHEMA
 from aisimulate_core.sdk.models import get_model
 from aisimulate_core.sdk.models.helpers import resolve_dsv4_moe_arch
 
@@ -20,28 +20,48 @@ pytestmark = pytest.mark.unit
 
 def _profile(tmp_path, *, system="b200_sxm", latency_ms=5.25, mtp_nextn=0):
     entry = {
-        "model_path": "deepseek-ai/DeepSeek-V4-Flash",
+        "key": {
+            "model_path": "deepseek-ai/DeepSeek-V4-Flash",
+            "system": system,
+            "stage": "agg",
+            "topology": "ep8",
+            "logical_batch_per_source_rank": 8,
+            "mtp_nextn": mtp_nextn,
+            "microbatches": 1,
+            "moe_layers": 43,
+            "routed_topk": 6,
+            "moe_precision": "w4a8_mxfp4_mxfp8",
+            "moe_backend": "megamoe",
+        },
         "model_profile": "deepseek_v4_flash_fp4",
-        "system": system,
-        "stage": "agg",
-        "topology": "ep8",
-        "logical_batch_per_source_rank": 8,
-        "mtp_nextn": mtp_nextn,
-        "microbatches": 1,
-        "moe_layers": 43,
-        "routed_topk": 6,
-        "moe_precision": "w4a8_mxfp4_mxfp8",
-        "moe_backend": "megamoe",
         "latency_ms": latency_ms,
         "validation": {"stable": True, "correctness": True, "evidence": "test"},
-        "source": {
-            "commit": "e507eacf858d2046bdc2cca02ed86c0e58bd6c60",
-            "source_tree_sha256": "a" * 64,
-            "result": "raw/point.json",
+        "measurement": {
+            "scope": "complete_moe_stage",
+            "method": "nsight-systems-cupti",
+            "method_version": "2025.5.2",
+            "statistic": "p50",
+            "sample_count": 10,
+            "procedure": "docs/profile-procedure.md",
+            "procedure_sha256": "a" * 64,
+            "raw_artifact": "raw/trace.nsys-rep",
+            "raw_sha256": "b" * 64,
         },
     }
     path = tmp_path / "fastafd.json"
-    path.write_text(json.dumps({"schema": FASTAFD_PROFILE_SCHEMA, "lookup_policy": "exact-only", "entries": [entry]}))
+    path.write_text(
+        json.dumps(
+            {
+                "schema": FASTAFD_PROFILE_SCHEMA,
+                "lookup_policy": "exact-only",
+                "source": {
+                    "repository": FASTAFD_OFFICIAL_REPOSITORY,
+                    "commit": "3c7161949310b6d59d6b4cf9bf997a4935c8113b",
+                },
+                "entries": [entry],
+            }
+        )
+    )
     return path
 
 
@@ -106,7 +126,7 @@ def test_fastafd_stage_preserves_generation_weights(tmp_path):
     model = get_model(model_path, config, "sglang")
     before = sum(op.get_weights() for op in model.generation_ops)
 
-    apply_fastafd_moe_profile(
+    metadata = apply_fastafd_moe_profile(
         model,
         model_path=model_path,
         system="b200_sxm",
@@ -119,6 +139,10 @@ def test_fastafd_stage_preserves_generation_weights(tmp_path):
     stage = next(op for op in model.generation_ops if op._name == "generation_fastafd_moe_stage")
     assert stage.get_weights() > 0
     assert sum(op.get_weights() for op in model.generation_ops) == pytest.approx(before)
+    assert metadata["source_repository"] == FASTAFD_OFFICIAL_REPOSITORY
+    assert metadata["source_commit"] == "3c7161949310b6d59d6b4cf9bf997a4935c8113b"
+    assert metadata["measurement_method"] == "nsight-systems-cupti"
+    assert metadata["measurement_method_version"] == "2025.5.2"
 
 
 def test_fastafd_timing_requires_a_backend_and_op_level():

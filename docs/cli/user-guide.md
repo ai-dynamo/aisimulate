@@ -1139,7 +1139,9 @@ with the matching measured AGG stage while retaining the router and all non-MoE 
 available only for an aggregated SGLang worker with `pipeline: 1`, `moe_tensor: 1`, and exact profile
 coverage. Lookup is exact-only: unsupported systems, topologies, backends, or runtime token counts
 fail instead of interpolating or projecting measurements across hardware generations. The engine
-spec records the profile path and SHA-256 digest for reproducibility. Set `engine.moe_quant_mode`
+spec records the profile path, SHA-256 digest, official FastAFD source commit, and measurement
+method. The profile must use AISimulate's [measured-stage contract](../../python/aisimulate/docs/fastafd-profile.md);
+FastAFD is not a runtime dependency. Set `engine.moe_quant_mode`
 when the model's default does not match the profile's `moe_precision`; a mismatch fails closed.
 
 ```yaml
