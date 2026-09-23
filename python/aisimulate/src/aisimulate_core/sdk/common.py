@@ -14,6 +14,7 @@ from packaging.version import InvalidVersion, Version
 
 from aisimulate_core.sdk.deepseek_v41 import DeepSeekV41Config as DeepSeekV41Config
 from aisimulate_core.sdk.errors import MissingSystemFlopsError
+from aisimulate_core.sdk.glm53flash import Glm53FlashConfig as Glm53FlashConfig
 
 
 def parse_support_matrix_version(version: str | None) -> Version | None:
@@ -815,6 +816,7 @@ ModelFamily = {
     "DEEPSEEKV32",
     "DEEPSEEKV4",
     "DEEPSEEKV41",
+    "GLM53FLASH",
     "KIMIK25",
     "KIMIK3",
     "NEMOTRONNAS",
@@ -841,6 +843,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "GlmMoeDsaForCausalLM": "DEEPSEEKV32",
     "DeepseekV4ForCausalLM": "DEEPSEEKV4",
     "DeepseekV41ForCausalLM": "DEEPSEEKV41",
+    "Glm5NextForConditionalGeneration": "GLM53FLASH",
     "KimiK25ForConditionalGeneration": "KIMIK25",
     "KimiK3ForConditionalGeneration": "KIMIK3",
     "NemotronForCausalLM": "NEMOTRONNAS",
@@ -876,6 +879,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
 # _parse_hf_config_json will flatten these before parsing.
 MULTIMODAL_TEXT_CONFIG_KEY = {
     "DeepseekV41ForCausalLM": "text_config",
+    "Glm5NextForConditionalGeneration": "text_config",
     "KimiK25ForConditionalGeneration": "text_config",
     "KimiK3ForConditionalGeneration": "text_config",
     # Step-3.7/3.5-Flash ship a vision tower and nest the whole decoder under

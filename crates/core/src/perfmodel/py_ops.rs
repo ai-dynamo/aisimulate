@@ -170,6 +170,9 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         | Op::Dsv41Mhc(_)
         | Op::Dsv41Engram(_)
         | Op::Dsv41Stage(_)
+        | Op::Glm53Attention(_)
+        | Op::Glm53Mhc(_)
+        | Op::Glm53Router(_)
         | Op::Dsv41Linear(_)
         | Op::TokenScale(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
         // Vision is never wrapped: compile decomposes it into child ops.
