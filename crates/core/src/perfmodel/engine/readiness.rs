@@ -278,21 +278,23 @@ impl Availability<'_> {
             }
             Embedding(_) | Elementwise(_) | P2P(_) | CustomAllReduce(_) | Nccl(_)
             | MoeDispatch(_) => Ok(()),
-            Glm53Attention(_) | Glm53Mhc(_) | Glm53Router(_) | Glm53Ffn(_) => match self.db.database_mode {
-                DatabaseMode::Silicon | DatabaseMode::Hybrid => {
-                    if self.db.glm53flash.has_measurements()? {
-                        Ok(())
-                    } else {
-                        Err(AicError::PerfDatabase(
-                            "GLM-5.3-Flash measured module tables are unavailable".into(),
-                        ))
+            Glm53Attention(_) | Glm53Mhc(_) | Glm53Router(_) | Glm53Ffn(_) => {
+                match self.db.database_mode {
+                    DatabaseMode::Silicon | DatabaseMode::Hybrid => {
+                        if self.db.glm53flash.has_measurements()? {
+                            Ok(())
+                        } else {
+                            Err(AicError::PerfDatabase(
+                                "GLM-5.3-Flash measured module tables are unavailable".into(),
+                            ))
+                        }
                     }
+                    DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(
+                        "GLM-5.3-Flash has no empirical anchor".into(),
+                    )),
+                    _ => Ok(()),
                 }
-                DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(
-                    "GLM-5.3-Flash has no empirical anchor".into(),
-                )),
-                _ => Ok(()),
-            },
+            }
 
             Dsv41Attention(_) | Dsv41Mhc(_) | Dsv41Engram(_) | Dsv41Linear(_) => {
                 match self.db.database_mode {

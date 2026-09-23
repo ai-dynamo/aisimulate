@@ -46,6 +46,10 @@ def sample_row():
         "sample": 0,
         "invocation": 1,
         "tp_rank": 0,
+        "stage": "measure",
+        "benchmark_id": 0,
+        "repetition": 0,
+        "sampling_role": "measurement",
     }
 
 
@@ -88,18 +92,30 @@ def rank_files(tmp_path, rows):
 
 
 def test_rank_max_then_median_and_complete_layer_evidence(tmp_path):
-    # Two invocations on two ranks: maxima are 3 and 7 ms; median is 5 ms.
     first = sample_row()
-    second = {**first, "sample": 1, "invocation": 2}
-    paths = rank_files(
-        tmp_path,
-        [[{**first, "latency": 1}, {**second, "latency": 7}], [{**first, "latency": 3}, {**second, "latency": 5}]],
-    )
+
+    def repetitions(rank):
+        return [
+            {
+                **first,
+                "sample": rep,
+                "repetition": rep,
+                "invocation": rep + 1,
+                "sampling_role": "warmup" if rep < 5 else "measurement",
+                "latency": 1000 if rep < 5 else (1 if rank == 0 else 3) if rep < 10 else (7 if rank == 0 else 5),
+            }
+            for rep in range(15)
+        ]
+
+    paths = rank_files(tmp_path, [repetitions(0), repetitions(1)])
     rows = aggregate_rank_records(paths, 2, manifest(first))
     assert rows[0]["latency"] == 5
-    assert rows[0]["sample_count"] == 2
+    assert rows[0]["sample_count"] == 10
     with pytest.raises(ValueError, match="incomplete native context graph"):
         aggregate_rank_records(paths, 2, manifest(first, second_layer=True))
+    paths = rank_files(tmp_path, [repetitions(0)[:14], repetitions(1)[:14]])
+    with pytest.raises(ValueError, match="five warmups and ten"):
+        aggregate_rank_records(paths, 2, manifest(first))
 
 
 def test_rank_and_source_mismatch_cannot_be_repaired_by_merge(tmp_path):

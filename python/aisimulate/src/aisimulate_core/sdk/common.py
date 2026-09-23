@@ -1358,6 +1358,7 @@ class PerfDataFilename(Enum):
     msa_generation_module = "msa_generation_module_perf.parquet"
     mhc_module = "mhc_module_perf.parquet"
     dsv41_module = "dsv41_module_perf.parquet"
+    glm53flash_module = "glm53flash_module_perf.parquet"
     # DeepSeek-V4 module-level data — one file per (attn_kind ∈ {csa, hca},
     # mode ∈ {context, generation}) = 4 files. Each file contains all
     # (tp_size, gemm_type, b, s) rows for that kind+mode.  SWA layers are

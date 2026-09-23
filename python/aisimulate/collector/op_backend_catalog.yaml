@@ -109,6 +109,9 @@ families:
   - family: dsv41
     op_files: [dsv41_module_perf]
 
+  - family: glm53flash
+    op_files: [glm53flash_module_perf]
+
   - family: sparse_attention
     op_files:
       - dsa_context_module_perf

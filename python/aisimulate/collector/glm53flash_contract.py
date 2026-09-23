@@ -17,7 +17,7 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
-COMPONENTS = {"Glm53Attention": "attention", "Glm53Mhc": "mhc", "Glm53Router": "router"}
+COMPONENTS = {"Glm53Attention": "attention", "Glm53Mhc": "mhc", "Glm53Router": "router", "Glm53Ffn": "ffn"}
 BACKENDS = {
     "vllm": ("0.30.0", "ced6857afa0ea7b2e3f0846a62e1394e90f15607"),
     "sglang": ("0.5.20", "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"),
@@ -125,7 +125,12 @@ def validate_row(row: dict) -> None:
     if row.get("component") not in COMPONENTS.values():
         raise ValueError("unknown GLM-5.3-Flash component")
     shape = json.loads(row["geometry"])
-    if not isinstance(shape, dict) or "name" in shape or canonical_json(shape) != row["geometry"]:
+    if (
+        not isinstance(shape, dict)
+        or "name" in shape
+        or "children" in shape
+        or canonical_json(shape) != row["geometry"]
+    ):
         raise ValueError("geometry must be canonical JSON excluding the display name")
     checkpoint_format = shape.get("checkpoint_format")
     if checkpoint_format not in CHECKPOINTS:
@@ -190,6 +195,12 @@ def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict) -> l
         for line in path.read_text().splitlines():
             row = json.loads(line)
             validate_row(row)
+            if row.get("stage") != "measure" or row.get("sampling_role") not in ("warmup", "measurement"):
+                raise ValueError("formal native measurements require frozen target and sampling roles")
+            for label in ("benchmark_id", "repetition"):
+                _uint32(row[label], label)
+            if row["sample"] != row["repetition"]:
+                raise ValueError("native sample and frozen repetition disagree")
             if row["tp_rank"] != expected_rank or isinstance(row["tp_rank"], bool):
                 raise ValueError("rank record does not belong to its evidence file")
             for key in ("sample", "invocation"):
@@ -213,16 +224,21 @@ def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict) -> l
         if len({tuple(row[key] for key in PROVENANCE_COLUMNS) for row in rows}) != 1:
             raise ValueError("incompatible native invocations collide on one physical key")
         samples = defaultdict(dict)
+        repetitions = defaultdict(lambda: defaultdict(set))
         for row in rows:
-            sample = samples[(row["phase"], row["sample"], row["invocation"], row["name"])]
+            repetitions[row["benchmark_id"]][row["sampling_role"]].add(row["repetition"])
+            sample = samples[(row["phase"], row["sample"], row["invocation"], row["name"], row["sampling_role"])]
             if row["tp_rank"] in sample:
                 raise ValueError("duplicate rank within one native invocation")
             sample[row["tp_rank"]] = row["latency"]
         if any(set(sample) != set(range(tp_size)) for sample in samples.values()):
             raise ValueError("incomplete TP rank set within a native invocation")
+        if any(len(roles["warmup"]) < 5 or len(roles["measurement"]) < 10 for roles in repetitions.values()):
+            raise ValueError("each frozen native point requires at least five warmups and ten measured repetitions")
+        measured = [sample for key, sample in samples.items() if key[-1] == "measurement"]
         result = {key: rows[0][key] for key in ROW_COLUMNS}
-        result["latency"] = statistics.median(max(sample.values()) for sample in samples.values())
-        result["sample_count"] = len(samples)
+        result["latency"] = statistics.median(max(sample.values()) for sample in measured)
+        result["sample_count"] = len(measured)
         output.append(result)
     return output
 

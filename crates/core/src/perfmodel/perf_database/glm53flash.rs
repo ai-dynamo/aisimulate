@@ -15,7 +15,7 @@ use super::SourceResolver;
 use super::parquet_loader::PerfReader;
 use super::perf_interp::LeafValue;
 use crate::common::error::AicError;
-use crate::operators::glm53flash::{Glm53AttentionOp, Glm53MhcOp, Glm53RouterOp};
+use crate::operators::glm53flash::{Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53RouterOp};
 
 const BASENAME: &str = "glm53flash_module_perf.parquet";
 
@@ -46,11 +46,12 @@ pub fn geometry<T: Serialize>(op: &T) -> Result<String, AicError> {
         .as_object_mut()
         .ok_or_else(|| invalid("GLM53 geometry must be an object"))?;
     object.remove("name");
+    object.remove("children");
     serde_json::to_string(&object.iter().collect::<BTreeMap<_, _>>())
         .map_err(|e| invalid(e.to_string()))
 }
 
-fn validate_body<T: DeserializeOwned + Serialize>(value: &Value) -> Result<(), AicError> {
+fn validate_body<T: DeserializeOwned + Serialize>(value: &Value) -> Result<T, AicError> {
     let mut named = value.clone();
     named
         .as_object_mut()
@@ -62,15 +63,16 @@ fn validate_body<T: DeserializeOwned + Serialize>(value: &Value) -> Result<(), A
     if &round_trip != value {
         return Err(invalid("GLM53 geometry has unknown or noncanonical fields"));
     }
-    Ok(())
+    Ok(op)
 }
 
 fn validate_geometry(component: &str, encoded: &str) -> Result<Value, AicError> {
     let value: Value = serde_json::from_str(encoded).map_err(|e| invalid(e.to_string()))?;
     match component {
-        "attention" => validate_body::<Glm53AttentionOp>(&value)?,
-        "mhc" => validate_body::<Glm53MhcOp>(&value)?,
-        "router" => validate_body::<Glm53RouterOp>(&value)?,
+        "attention" => validate_body::<Glm53AttentionOp>(&value)?.validate()?,
+        "mhc" => validate_body::<Glm53MhcOp>(&value)?.validate()?,
+        "ffn" => validate_body::<Glm53FfnOp>(&value)?.validate_physical()?,
+        "router" => validate_body::<Glm53RouterOp>(&value)?.validate()?,
         _ => return Err(invalid("unknown GLM53 component")),
     }
     let sorted: BTreeMap<_, _> = value.as_object().expect("typed object").iter().collect();

@@ -109,9 +109,9 @@ def install_native_hooks(model, observer: NativeOperationObserver, backend: str)
                     observer.wrap(communicator, "qkv_latent_func", f"attention_{index}")
                 if bool(getattr(layer.self_attn.o_proj, "reduce_results", False)):
                     raise RuntimeError("SGLang native attention collective ownership changed")
-            if index >= 3:
-                # Projection only. Scoring/top-k stays in the measured MoE op.
-                observer.wrap(layer.mlp.gate, "forward", f"router_{index}")
+            # One native FFN includes routing, clamp10, shared and routed experts.
+            # Nested generic GEMM/MoE identities cannot certify these semantics.
+            observer.wrap(layer.mlp, "forward", f"ffn_{index}")
             inventory.append(
                 {
                     "layer": index,
