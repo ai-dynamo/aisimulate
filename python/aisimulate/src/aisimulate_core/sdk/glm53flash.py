@@ -48,6 +48,11 @@ class Glm53FlashConfig:
     n_shared_experts: int
     num_experts_per_tok: int
     swiglu_limit: float
+    scoring_func: str
+    routed_scaling_factor: float
+    n_group: int
+    topk_group: int
+    norm_topk_prob: bool
 
     @classmethod
     def from_text_config(cls, config: dict) -> Glm53FlashConfig:
@@ -86,6 +91,14 @@ class Glm53FlashConfig:
             raise ValueError("GLM-5.3-Flash requires the native FP32 sigmoid router")
         if not config["mhc"] or result.gate_lower_bound != -5.0 or result.conv_kernel != 4:
             raise ValueError("GLM-5.3-Flash requires the pinned mHC and KDA contract")
+        if (
+            result.swiglu_limit != 10.0
+            or result.routed_scaling_factor != 2.5
+            or result.n_group != 1
+            or result.topk_group != 1
+            or not result.norm_topk_prob
+        ):
+            raise ValueError("GLM-5.3-Flash requires native sigmoid routing and clamp10 FFN")
         return result
 
     def to_dict(self) -> dict:

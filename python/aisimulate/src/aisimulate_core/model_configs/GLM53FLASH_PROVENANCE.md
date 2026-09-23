@@ -36,7 +36,8 @@ Execution grouping and analytical adaptations reference vLLM
 `vllm/models/glm5next/nvidia/{model,attention,kda}.py` and
 `vllm/model_executor/layers/sparse_attn_indexer_kpool.py`, and SGLang
 `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`,
-`python/sglang/srt/models/glm5_next.py` and
+`python/sglang/srt/models/glm5_next.py`, `python/sglang/srt/models/deepseek_v2.py`,
+`python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py`, and
 `python/sglang/srt/layers/communicator_mhc.py`. These projects use Apache-2.0;
 see the canonical root THIRD_PARTY_NOTICES.md and packaged identical notice.
 The source implementations are not copied into the model.
