@@ -582,6 +582,69 @@ findings:
     - Qwen/Qwen3.5-0.8B
     - deepseek-ai/DeepSeek-V3
     - deepseek-ai/DeepSeek-R1
+  unalignable_ops_followup_2026_09_24:
+    statement: |
+      Follow-up on the "no serving reference" ops (owner 2026-09-24: "if running
+      it produces evidence, run it; if load crashes, try to fix it").
+      - encoder_attention: FIXED without a multimodal prompt. Engine construction
+        runs vLLM's own profile_run (full-model dummy forward; for VL models it
+        pushes max-size dummy images through the vision tower). probe_vllm now
+        records that run as profile_run_kernels and build_ops counts it as
+        identity evidence. Qwen3-VL-2B ViT: FlashAttnFwdSm90 x24 layers in
+        serving; collector encoder_attention (FLASH_ATTN for vit attention,
+        head_dim 64) -> ALIGNED.
+      - DeepSeek-V4 on vllm: the load crash is the rendered
+        --max-num-batched-tokens 6012 (cutedsl compress asserts 64-byte
+        slot-mapping alignment). The harness golden renderer runs the aic/
+        checkout of aiconfigurator, not aisimulate, so the fix branch
+        (fix/generator-round-vllm-batched-tokens) never reached it. Mirrored
+        the rounding into aic/ (a71f27955: rule_plugin/vllm.rule,
+        benchmark/vllm.rule, backend_config_mapping.yaml); the 24 planned DSV4
+        goldens re-render at 6016 and are being re-probed. Planning via
+        probe_driver is currently blocked by the roster gate ("no fetched
+        config for zai-org/GLM-5.3-FP8 — OWNER DECISION NEEDED"); the goldens
+        were rendered through render_golden() on the existing plan entries.
+        The product fix still needs the aisimulate branch merged.
+      - Kimi-K3: vllm 0.29.0 ships K3 natively (KimiK3ForConditionalGeneration,
+        vllm/models/kimi_k3/nvidia/kda importable) — the collect_kda docstring
+        ("kimi-k3 preview image") is stale. K3 0.29 records exist with kernel
+        tables; their kernels were unlabeled (FlashKDA _flash_kda_fwd_*,
+        kda_decode_fusion_many_heads, attn_res, layer_norm_gated, situ_and_mul)
+        — taxonomy rules added under the vocabulary names (flashkda,
+        vllm_kernel). K3 records are being re-probed cache-cold; the kda op
+        capture follows.
+      - bf16-gemm MLA cells: CONSUMED. The MLA module tables carry a gemm_quant
+        axis (crates/core/src/perfmodel/perf_database/mla.rs: query_context_module /
+        query_generation_module take GemmQuantMode); any aisimulate run that
+        models an MLA architecture with gemm_quant_mode=bfloat16 reads them
+        (readiness.rs even tests DeepseekV4 + bfloat16). They measure vLLM's
+        own bf16-weight dispatch (fused_a_gemm at num_tokens<=16) — faithful
+        to what vLLM would run, just with no deployed checkpoint to cross-check.
+      sglang/trtllm evidence: 45 length-conditional records re-probed with the
+      fixed probes (isl 4096, cache-cold, phase tables). sglang DSA prefill at
+      isl 32 was dense FA3 (SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD:
+      use_mha when max_kv_len is short, dsa_backend.py:2999-3012 @0.5.16);
+      at 4096 it is sparse_attn_fwd — the old sglang prefill evidence was
+      the dense fallback. The old sglang fp8-KV decode evidence (flashmla_kv)
+      came from a retired probe injection (--kv-dtype fp8_e4m3): the golden
+      sglang CLI for fp8 profiles renders NO kv dtype, so current serving
+      truth is bf16 KV (dsa prefill flashmla_sparse, decode fa3). Added the
+      kv variant to sglang planning (fp8_e4m3) so the fp8-KV DSA/MLA paths are
+      probed as a separate, labeled config. 5 trtllm records were probed on
+      trtllm-probe:1.3.0rc20-onnxfix, an image no longer present — not
+      re-probed. 8 DSV4 sglang runs exhausted the probe's fixed 16384-token
+      KV pool at isl 4096 (multi-cache-group) — pool now scales with isl;
+      rerun in progress.
+    applies_to:
+    - instrument:probe_vllm
+    - instrument:probe_sglang
+    - instrument:render_golden
+    - framework:vllm-0.29.0
+    - framework:sglang-0.5.16
+    - platform:sm90
+    - family:dsv4
+    - moonshotai/Kimi-K3
+    - Qwen/Qwen3-VL-2B-Instruct
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.

@@ -223,7 +223,16 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                         continue
                     for version in versions:
                         for topo in topos:
-                            kv_variants = [None, "fp8"] if backend == "vllm" else [None]
+                            # kv-cache dtype is a first-class serving-config axis
+                            # the collector sweeps; probe it on every backend
+                            # whose probe can override it (vllm --kv-cache-dtype,
+                            # sglang --kv-dtype; trtllm takes it from the engine
+                            # yaml). The golden sglang CLI for fp8 profiles does
+                            # NOT render a kv dtype, so without this variant the
+                            # sglang fp8-KV DSA/MLA paths were never probed
+                            # (found 2026-09-24: the old records' fp8 KV came
+                            # from a retired probe injection, not the generator).
+                            kv_variants = {"vllm": [None, "fp8"], "sglang": [None, "fp8_e4m3"]}.get(backend, [None])
                             for kv in kv_variants:
                                 rid = hashlib.sha1(
                                     f"{ck['repo']}|{variant}|{backend}|{version}|{ck['profile']}|tp{topo['tp']}|kv{kv or 'rendered'}".encode()
@@ -291,8 +300,9 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             run["engine_cli"] = cli
             run["engine_args_fidelity"] = "cli-golden"
             run["golden_dir"] = str(art)
+            _kv = f" --kv-dtype {run['kv_dtype']}" if run.get("kv_dtype") else ""
             cmd = (head + f"{run['image']} python3 {WORK}/probe/probe_sglang.py "
-                   f"--model {run['model_dir']} --engine-cli {shlex.quote(cli)} --trace "
+                   f"--model {run['model_dir']} --engine-cli {shlex.quote(cli)} --trace{_kv} "
                    f"--out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}")
         elif run["backend"] == "vllm":  # golden fpm run.sh, consumed verbatim
             art = render_golden(run)

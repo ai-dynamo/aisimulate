@@ -125,6 +125,7 @@ def main() -> None:
     rec["cuda_graph_fields_disabled"] = sorted(graph_off)
     rec["probe_isl"] = args.isl
     rec["probe_prefix_caching"] = False  # disable_radix_cache on both construction paths
+    rec["probe_kv_cache_dtype"] = args.kv_dtype  # kv-variant probes (fp8_e4m3); records key on it
     if args.override:
         rec["json_model_override_args"] = args.override
     rec["server_args_resolved"] = dump_server_args(sa)
