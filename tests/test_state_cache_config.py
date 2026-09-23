@@ -347,7 +347,17 @@ def test_aligned_state_config_allows_zero_nextn_through_engine_handoff(forbid_es
     assert rank["prefix_match_unit"] == 16
 
 
-def test_aligned_state_config_runs_through_native_replay(forbid_estimators):
+@pytest.mark.parametrize(
+    "shared_prefix_tokens, expected_reused_tokens",
+    [
+        pytest.param(24192, 24192, id="partial-checkpoint-hit"),
+        pytest.param(24191, 23040, id="one-token-before-checkpoint"),
+        pytest.param(0, 0, id="no-shared-prefix"),
+    ],
+)
+def test_aligned_state_config_reuses_retained_native_checkpoints(
+    forbid_estimators, shared_prefix_tokens, expected_reused_tokens
+):
     raw = _public(
         block_size=1536,
         prefix_match_unit=128,
@@ -355,13 +365,18 @@ def test_aligned_state_config_runs_through_native_replay(forbid_estimators):
         state_cache={"bytes_per_request": 1536 * 16},
     )
     raw["engine"]["context_length"] = 32768
-    raw["traffic"]["source"].update(input_tokens=24300, output_tokens=2)
+    raw["engine"]["workers"]["aggregated"]["scheduler"] = {"max_batched_tokens": 8192}
+    raw["traffic"]["source"].update(input_tokens=24300, output_tokens=2, cached_prefix_tokens=shared_prefix_tokens)
     raw["traffic"]["stop"]["requests"] = 2
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
     result = EngineReplayRunnerFactory().create(0).run(spec)
     assert result.metrics["completed_requests"] == 2
     assert result.metrics["total_input_tokens"] == 48600
     assert result.metrics["total_output_tokens"] == 4
+    # The first request is cold. Only the second can reuse a retained checkpoint;
+    # a positive hit ratio alone would also accept an incorrect full-block hit.
+    assert result.metrics["committed_prefill_tokens"] == 48600 - expected_reused_tokens
+    assert result.metrics["prefix_cache_reused_ratio"] == pytest.approx(expected_reused_tokens / 48600)
 
 
 def test_prefix_match_unit_requires_state_and_old_alignment_field_is_rejected():
