@@ -529,15 +529,29 @@ Dynamo relay files recorded in parallel were complete and are the only source us
 
 ## 8. Speed
 
-**Inference** (`sglang18` artifact, 400 trees, one prediction = one `ForwardPassMetrics`
-step; single Grace core, release build; details and the native-model comparison in §8.1):
+Two machines appear in this section. All inference latencies and the per-run training
+times were measured on an AI Hub (aws-cmh-slurm-1) login node: NVIDIA Grace, Arm
+Neoverse V2, 96 cores at one thread per core, 2 MiB L2 per core, 36 MiB L3, 370 GB RAM,
+aarch64, release build (`cargo test --release`), the benchmark pinned to one core with
+`taskset`. The pooled ten-run training time was measured on a dlcluster login node: AMD
+EPYC 7232P, 8 cores / 16 threads, 125 GB RAM, x86_64.
 
-| decode batch size | GBDT alone (Rust call) | through the Python wrapper |
+**Inference** (`sglang18` artifact, 400 trees, one prediction = one `ForwardPassMetrics`
+step; one Grace core; details and the native-model comparison in §8.1):
+
+| step | GBDT alone (Rust call) | through the Python wrapper |
 | --- | --- | --- |
-| 1 | 3.4 µs | 11 µs |
-| 16 | 4.2 µs | 15 µs |
-| 64 | 4.9 µs | 25 µs |
-| 256 | 5.6 µs | 59 µs |
+| decode, batch 1 | 3.4 µs | 11 µs |
+| decode, batch 16 | 4.2 µs | 15 µs |
+| decode, batch 64 | 4.9 µs | 25 µs |
+| decode, batch 256 | 5.6 µs | 59 µs |
+| prefill, 1 request × 512 tokens, no prefix | 4.7 µs | 12 µs |
+| prefill, 1 request × 4096 tokens, no prefix | 6.3 µs | 14 µs |
+| prefill, 1 request × 4096 tokens, 64k prefix | 4.5 µs | 12 µs |
+| prefill, 4 requests × 4096 tokens, 16k prefix each | 4.8 µs | 13 µs |
+
+Prefill is flat at 4.5–6.3 µs whatever the chunk size, prefix or request count (the full
+grid is in §8.1); decode grows mildly with batch size.
 
 The GBDT itself is nearly flat in batch size: the tree walk is a few microseconds, and the
 18-feature build over the per-request lists adds about 8 ns per request (2 µs at batch
@@ -548,20 +562,22 @@ column is the wrapper serialising the FPM dict to JSON and Rust parsing it, whic
 in the length of the two per-request lists. The simulator calls the Rust path directly, so
 a million-step run spends a few seconds in the model.
 
-**Training** (scikit-learn, CPU, 16 threads, log target, 400 trees, pooled 10 runs):
+**Training** (scikit-learn on the dlcluster AMD EPYC 7232P login node, 16 threads, log
+target, 400 trees, the ten GB300 SGLang runs of §7.1 pooled):
 
 | store | rows | fit time |
 | --- | --- | --- |
 | decode | 2,732,395 | 25 s (400 trees) |
 | prefill | 79,261 | 1 s (116 trees, early-stopped) |
 
-Loading and featurizing the FPM stream (gzip JSON lines) dominates: 204 s for the 2.7M decode records against 25 s of fitting; both are one-off offline costs. scikit-learn's own batched `predict` runs at 2.5 µs per row on the same machine, the Rust single-step path above is what the simulator uses. Artifacts are 100–450 KB of JSON.
+Loading and featurizing the FPM stream (gzip JSON lines) dominates: 204 s for the 2.7M decode records against 25 s of fitting; both are one-off offline costs. On the Grace node, a single capture run (302,603 decode steps) trains in 54 s with 16 OpenMP threads and its 5,245 prefill steps in 20 s (the user guide §5 has the step-by-step timing). scikit-learn's own batched `predict` runs at 2.5 µs per row on the EPYC node; the Rust single-step path above is what the simulator uses. Artifacts are 100–450 KB of JSON.
 
 ### 8.1 Cost against the native op-level model
 
 Time to compute one estimate, native op-level analytic model vs. learned GBDT, same
 deployment (DeepSeek-V4-Flash, GB300, vLLM 0.24.0 tables, TP4/EP4), synthetic steps on a
-grid of decode batch sizes, single Grace core, release build. Two layers were measured:
+grid of decode batch sizes, one core of the Grace node described at the top of §8, release
+build. Two layers were measured:
 the pure Rust call `ForwardPassPerfModel::estimate_forward_pass_time_ms` on a prebuilt
 struct (what the simulator pays), and the Python wrapper, which serialises the FPM dict to
 JSON and parses it in Rust on every call.

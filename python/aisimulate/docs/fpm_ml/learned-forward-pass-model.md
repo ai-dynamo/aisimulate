@@ -389,10 +389,11 @@ again matches every single-workload model on its own workload.
 
 ## 5. Training and inference time
 
-Measured with this branch on a 16-core CPU node (`OMP_NUM_THREADS=16`), DeepSeek-V4.1-Flash
-SGLang AgentX captures: the seed-42 run trains, the seed-7 run is predicted. Inference
-does not use scikit-learn; it is the Rust tree walk in `learned.rs`, called here once per
-step through the PyO3 binding, which is how the simulator uses it.
+Measured with this branch on an AI Hub login node (NVIDIA Grace, Arm Neoverse V2, 96
+cores, 370 GB RAM, aarch64; training with `OMP_NUM_THREADS=16`, inference on one core),
+DeepSeek-V4.1-Flash SGLang AgentX captures: the seed-42 run trains, the seed-7 run is
+predicted. Inference does not use scikit-learn; it is the Rust tree walk in `learned.rs`,
+called here once per step through the PyO3 binding, which is how the simulator uses it.
 
 | Step | Data | Time |
 | --- | --- | --- |
@@ -402,14 +403,26 @@ step through the PyO3 binding, which is how the simulator uses it.
 | predict decode, Rust, one call per step (through the Python wrapper) | 196,585 steps | 3.78 s (19 µs / step, mean batch 10, max 35) |
 | predict prefill, Rust, one call per step (through the Python wrapper) | 3,803 steps | 0.08 s (22 µs / step, mean batch 1.2) |
 
-The GBDT itself costs 3.4–5.6 µs per prediction from decode batch 1 to 256 and
-4.5–6.3 µs for prefill (Rust call on a prebuilt struct, nearly flat: the tree walk is a
-few microseconds, the 18-feature build is one pass over the per-request lists at about
-8 ns per request). The per-step numbers above and their growth with batch size (9–59 µs
-from batch 1 to 256) come from the Python wrapper, which serialises the FPM dict to JSON
-and parses it in Rust on every call; the simulator calls the Rust path directly. Training the pooled ten-run set (2.7M decode steps) took 25 s on another
-16-thread machine; loading the compressed stream (204 s) dominates there.
-Artifacts are 100–450 KB of JSON.
+The GBDT itself, measured as a Rust call on a prebuilt struct on one Grace core
+(release build, `taskset` pinned):
+
+| step | GBDT alone (Rust) | through the Python wrapper |
+| --- | --- | --- |
+| decode, batch 1 | 3.4 µs | 11 µs |
+| decode, batch 16 | 4.2 µs | 15 µs |
+| decode, batch 256 | 5.6 µs | 59 µs |
+| prefill, 1 × 512 tokens, no prefix | 4.7 µs | 12 µs |
+| prefill, 1 × 4096 tokens, no prefix | 6.3 µs | 14 µs |
+| prefill, 1 × 4096 tokens, 64k prefix | 4.5 µs | 12 µs |
+| prefill, 4 × 4096 tokens, 16k prefix each | 4.8 µs | 13 µs |
+
+The tree walk is a few microseconds and the 18-feature build is one pass over the
+per-request lists at about 8 ns per request, so prefill is flat and decode grows mildly.
+The per-step numbers in the first table and the Python column here include the wrapper
+serialising the FPM dict to JSON and parsing it in Rust on every call; the simulator calls
+the Rust path directly. Training the pooled ten-run set (2.7M decode steps) took 25 s on
+a dlcluster login node (AMD EPYC 7232P, 8 cores / 16 threads, x86_64); loading the
+compressed stream (204 s) dominates there. Artifacts are 100–450 KB of JSON.
 
 ## Limitations
 
