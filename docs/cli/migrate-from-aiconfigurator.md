@@ -732,15 +732,9 @@ consumes the role hardware, or a non-AIC prefill load model.
 
 ### 4.9 AFD translation
 
-**Before — AIC runs a bounded search for decode-side AFD with a regular prefill companion:**
-
-```bash
-aiconfigurator cli default \
-  --model-path Qwen/Qwen3-32B --system h200_sxm --backend trtllm \
-  --serving-mode afd --total-gpus 32 --isl 1024 --osl 128 \
-  --afd-max-a-batch-size 128 --afd-max-candidates 32 --afd-candidate-overflow truncate \
-  --ttft 800 --tpot 30 --strict-sla
-```
+**Before — the legacy compatibility CLI no longer offers AFD.** `aiconfigurator cli estimate
+--estimate-mode afd` and `aiconfigurator cli default --serving-mode afd`, including the AFD leg of
+`--serving-mode all`, are removed. AFD is available only through the unified CLI.
 
 **After — search the same topology intent with the analytical AFD engine.** Save as
 `afd-recommendation.yaml`:
@@ -790,13 +784,16 @@ aisimulate predict --config ./afd-search/recommendations/0001.yaml --output-dir 
 `afd-selected/afd-replay-spec.json` and `afd-selected/afd-qualification.json` record the analytical
 inputs and GPU accounting.
 
-**What changed:** `engine.afd` makes the decode-side AFD and prefill-companion topology explicit.
+**What changed:** AFD has no compatibility command left to translate from; the unified CLI is its
+only entry point. `engine.afd` makes the decode-side AFD and prefill-companion topology explicit.
 The GPU budget includes attention, FFN, and companion pools. The search uses an explicit request
-rate and throughput/GPU objective. The AIC example caps attention batch size at 128 and explicitly
-truncates enumeration to 32 topologies; the AISimulate YAML fixes attention batch size at 128.
-These searches do not cover identical operating points. Native
+rate and throughput/GPU objective. The removed AIC search capped attention batch size at 128 and
+explicitly truncated enumeration to 32 topologies; the AISimulate YAML fixes attention batch size
+at 128. These searches do not cover identical operating points. Native
 AFD deployment generation remains unavailable. Use fixed-length synthetic traffic with an
-absolute load; see [AFD topology and limits](../sweeper/afd-topology.md).
+absolute load; see [AFD topology and limits](../sweeper/afd-topology.md). The AFD modeling engine is
+unchanged: `AFDInferenceSession`, `AFDConfig`, and the `aisimulate/sweeper/afd_*` modules still back
+both commands above.
 
 ### 4.10 Inspect prediction details
 
@@ -1615,7 +1612,7 @@ feature's restrictions before migrating:
 | Feature | Current AISimulate boundary |
 |---|---|
 | [Analytical EPD](#predict-and-search-analytical-epd) | Fixed synthetic images and concurrency; no event-level encoder queueing or embedding transfer. |
-| [AFD](#afd-translation) | Analytical fixed-length synthetic traffic; no native AFD deployment generation. |
+| [AFD](#afd-translation) | Unified CLI only; the compatibility CLI no longer offers AFD. Analytical fixed-length synthetic traffic; no native AFD deployment generation. |
 | [Heterogeneous P/D hardware](#migrate-heterogeneous-pd-hardware-with-sweeper) | Unified `predict` / `recommend` and Sweeper; P/D roles can override hardware but share one model, backend, and backend version. |
 | [Native host offload](#model-cache-capacity-and-host-offload) | Aggregated vLLM with attention DP=1 and prefix caching; recommendation requires `preset: false` and fixed `attention_data: 1`, while other supported parallelism fields may be searched. |
 
