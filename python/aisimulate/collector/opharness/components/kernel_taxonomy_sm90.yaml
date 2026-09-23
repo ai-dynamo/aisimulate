@@ -83,8 +83,28 @@ rules:
   # ---------------------------------------------------------------- gemm
   - {backend: deepgemm, role: gemm,
      match: "^deep_gemm::sm90_fp8_gemm|^deep_gemm::fp8_gemm|^deep_gemm::transpose"}
+  # DSA/DSV4 indexer: DeepGEMM logits (prefill mqa_logits, decode
+  # paged_mqa_logits + its sched metadata, fp4 variant) and the DSV4 top-k /
+  # compressor kernels (vllm/models/deepseek_v4/nvidia/ops: cute-DSL
+  # sparse_attn_compress, fused_indexer_q, dequant_gather_k; Triton
+  # _dsv4_topk, c128a metadata, swa/global index building). Same DeepSeek
+  # sparse-attention family as the DSV3.2 indexer -> dsa_nsa. Added 2026-09-24
+  # from the first DSV4 serving evidence (6016 budget).
   - {backend: dsa_nsa, role: dsa_indexer,
-     match: "^deep_gemm::sm90_fp8_paged_mqa_logits"}
+     match: "^deep_gemm::sm90_fp8(_fp4)?_(paged_)?mqa_logits|^deep_gemm::sched::sm90_paged_mqa_logits_metadata|^_dsv4_topk_kernel|^_build_c128a_topk_metadata|^_compute_global_topk_indices|^_compute_swa_indices|^_fill_short_context_topk|deepseek_v4nvidiaops(sparse_attn_compre|fused_indexer_q|dequant_gather_k)"}
+  # DSV4 manifold hyper-connections (mHC): TileLang kernels + the DeepGEMM
+  # tf32 prenorm gemm. Vocabulary: vllm.model_executor.kernels.mhc.tilelang.* -> tilelang.
+  - {backend: tilelang, role: mhc,
+     match: "^mhc_.*_tilelang_kernel|^hc_head_fuse_tilelang_kernel"}
+  - {backend: deepgemm, role: mhc,
+     match: "^deep_gemm::sm90_tf32_hc_prenorm_gemm"}
+  # vLLM's own cute-DSL linear kernels (model_executor/kernels/linear/cute_dsl:
+  # skinny / low-latency bf16 gemm seen in Kimi-K3 and DSV4 decode) — vllm_kernel.
+  - {backend: vllm_kernel, role: gemm,
+     match: "vllmmodel_executorkernelslinearcute_dsl"}
+  # DSV4 fused norm/rope/quant/insert kernels are framework-native glue.
+  - {backend: framework_native, role: norm_rope,
+     match: "^_fused_kv_compress_norm_rope_insert_indexer_attn|fusedDeepseekV4QNormRopeKVRopeQuantInsert|^_fused_inv_rope_fp8_quant_per_head"}
   - {backend: cutlass, role: gemm,
      match: "cutlass_3x_gemm_sm90_fp8|fp8_blockscale_gemm|^fused_a_gemm_kernel"}
   - {backend: marlin, role: gemm,
@@ -141,3 +161,8 @@ rules:
   # ----------------------------------------------------------------- infra
   - {backend: infra, role: infra,
      match: "^cuda[A-Z]|^cuLaunch|^Activity$|^Buffer$|^at_cuda_detail::|^_ragged_tensor_metadata|computeSeqAndPaddingOffsets|^get_num_kv_splits|^namespace$|^operator$|^_reduce$|vectorized_gather|DeviceScan|sglang\\.vlm\\.|^tensorrt_llm::_v1::kernels$"}
+  # vLLM v1 model-runner / sampler Triton glue (0.29): input prep, slot
+  # mappings, block tables, sampling, spec-decode bookkeeping, mamba state
+  # alignment. Present in every record; carries no path identity.
+  - {backend: infra, role: infra,
+     match: "^_gumbel_sample_kernel|^_combine_sampled_and_draft_tokens|^_get_num_sampled_and_rejected|^_post_update_kernel|^_prepare_pos_seq_lens|^_prepare_prefill_inputs|^_prepare_rope_positions|^_zero_kv_blocks_kernel|^_gather_block_tables_kernel|^_apply_write_kernel|^_compute_slot_mappings_kernel|^_compressed_slot_mapping_kernel|^_save_partial_states_kernel|^_scatter_num_accepted|^_gather_initial_states_kernel|^(pre|post)(copy|process)_mamba_(align_)?fused_kernel"}
