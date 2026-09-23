@@ -20,7 +20,7 @@ formal targets; TP1 acceptance requires measured allocator admission.
 TensorRT-LLM fails explicitly. No new estimator constructor is introduced.
 
 The appended native variants are `Glm53Attention`, `Glm53Mhc`, and
-`Glm53Router`. Their serialized bodies include `backend` and
+`Glm53Router` (diagnostic), and `Glm53Ffn`. Their serialized bodies include `backend` and
 `checkpoint_format`; the display name is not physical geometry. Attention
 also identifies `is_context`, `layer_kind`, TP-local heads and dimensions,
 replicated indexer geometry, projection dtype and cache dtype. Rust owns
@@ -32,16 +32,24 @@ NCCL operators model FFN compute and explicit output reductions.
   norm, or NoPE sparse MLA and its IndexPool. Block input norm and output
   collective are outside this boundary. `index_topk=2048` selects 512 pools
   of four tokens, with the unfinished tail retained. Short-context index score
-  work is skipped by the pinned vLLM implementation. KDA uses BF16 projections
+  work is skipped by the pinned vLLM implementation; SGLang skips it only
+  for short prefill and also omits index query/head-gate projections there. KDA uses BF16 projections
   and FP32 recurrent state. vLLM also materializes sparse MLA projections in
   BF16; SGLang retains FP8 main sparse projections for the native FP8 checkpoint.
-- mHC `pre` includes input RMSNorm. vLLM emits one pre, 89 fused post/pre,
+- mHC requires explicit `tp_size` in its native identity: TP1/2/4 cannot
+  borrow one another's measured dispatch. Its replicated local SOL work is
+  unchanged by this identity field. Missing TP metadata is rejected.
+  mHC `pre` includes input RMSNorm. vLLM emits one pre, 89 fused post/pre,
   and one post, plus expand/contract. SGLang emits 90 pre and 90 post, plus
   expand/contract. A collector must include SGLang's fallback RMSNorm if its
   native pre reports that normalization was not fused.
-- Router means only the FP32 GateLinear projection. Sigmoid selection, top-k,
-  routing weights and SwiGLU clamp belong to the native FFN/MoE boundaries.
-  This avoids billing native MoE routing twice.
+- Production FFN is the complete local native MLP, including router/gate,
+  sigmoid/top-k, routed/shared experts and SwiGLU clamp. Its output collective
+  is outside the boundary. `Glm53Ffn` records the routing/clamp/precision
+  contract explicitly; generic MoE measurements cannot satisfy it. Rust
+  analytical children supply SOL only and are excluded from the measured
+  identity. The diagnostic `Glm53Router` means FP32 GateLinear alone and is
+  nested inside FFN, never emitted as an additional production measured op.
 - NVFP4 dense and routed FFNs use W4A4 group16. Shared experts and all
   attention remain BF16. The FP8 checkpoint quantizes shared experts.
 

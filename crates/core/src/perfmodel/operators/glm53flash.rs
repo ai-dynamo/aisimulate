@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+// SPDX-FileCopyrightText: Modifications Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Independently expressed GLM-5.3-Flash analytical operator contracts.
 //!
@@ -9,11 +9,11 @@
 //! python/sglang/srt/models/glm5_next.py (Apache-2.0). See THIRD_PARTY_NOTICES.md.
 //! These are payload/roofline bounds, not allocator or kernel-launch predictions.
 
-use crate::common::enums::{DatabaseMode, GemmQuantMode, KvCacheQuantMode};
+use crate::common::enums::{DatabaseMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode};
 use crate::common::error::AicError;
 use crate::common::system_spec::{SystemSpec, quant_tc_flops};
 use crate::operators::base::{PerformanceResult, SolComponents};
-use crate::operators::op::RuntimeContext;
+use crate::operators::op::{Op, RuntimeContext};
 use crate::perf_database::PerfDatabase;
 use serde::{Deserialize, Serialize};
 
@@ -79,8 +79,8 @@ fn gemm(
 }
 
 /// Prefix sum over integer query positions plus the next position's fractional
-/// weight. Index scoring is skipped for <=topk tokens; selected attention is
-/// dense there. Above topk, completed pools plus the uncompressed tail are used.
+/// weight. The caller applies its native short-context score-skip predicate.
+/// Selected attention is dense up to topk, then uses completed pools and tail.
 fn sparse_pairs(start: f64, end: f64, pool: u32, topk: u32) -> (f64, f64) {
     let (r, k) = (pool as f64, topk as f64);
     let floor_sum = |n: f64| {
@@ -92,8 +92,7 @@ fn sparse_pairs(start: f64, end: f64, pool: u32, topk: u32) -> (f64, f64) {
         let n = v.max(0.0).floor();
         let frac = v.max(0.0) - n;
         let pools = ((n + 1.0) / r).floor();
-        let score =
-            floor_sum(n) - floor_sum(n.min(k)) + frac * if n + 1.0 > k { pools } else { 0.0 };
+        let score = floor_sum(n) + frac * pools;
         let capped = floor_sum(n.min(k)) + (n - k).max(0.0) * (k / r);
         let cycles = (n / r).floor();
         let tail = n - cycles * r;
@@ -204,8 +203,19 @@ impl Glm53AttentionOp {
                 self.index_head_dim as f64,
             );
             (h * (q + k) + q * n * d + n * v * h) * weight_size(self.projection_quant_mode)
-                + 2.0 * (k * n * (d + v) + q * i * j + h * (2.0 * j + i) + q + k + 2.0 * j)
+                + 2.0
+                    * (k * n * (d + v)
+                        + q * i * j
+                        + h * (2.0 * j + if self.backend == "vllm" { i } else { 0.0 })
+                        + q
+                        + k
+                        + 2.0 * j)
                 + 4.0 * (h * i + self.index_pool as f64 * j)
+                + if self.backend == "sglang" {
+                    4.0 * j
+                } else {
+                    0.0
+                }
         }
     }
     /// Same f64 oracle is used by op queries and FPM interpolation. Sparse
@@ -296,16 +306,21 @@ impl Glm53AttentionOp {
                 bf16,
             ));
             result = result.plus(gemm(spec, x, h, n * v, quant)?);
-            result = result.plus(gemm(spec, x, i * j, q, GemmQuantMode::Bfloat16)?);
-            result = result.plus(gemm(spec, x, j + i, h, GemmQuantMode::Bfloat16)?);
-            result = result.plus(gemm(spec, x, j, h, GemmQuantMode::Bfloat16)?);
-            result = result.plus(leaf(
-                spec,
-                2.0 * x * h * i,
-                4.0 * h * i + 2.0 * x * (h + i),
-                fp32,
-            ));
             let end = if self.is_context { prefix + s } else { s };
+            let short_prefill = self.is_context && end <= self.index_topk as f64;
+            let skip_query = self.backend == "sglang" && short_prefill;
+            if !skip_query {
+                result = result.plus(gemm(spec, x, i * j, q, GemmQuantMode::Bfloat16)?);
+                result = result.plus(leaf(
+                    spec,
+                    2.0 * x * h * i,
+                    4.0 * h * i + 4.0 * x * (h + i),
+                    fp32,
+                ));
+            }
+            let key_width = j + if self.backend == "vllm" { i } else { 0.0 };
+            result = result.plus(gemm(spec, x, key_width, h, GemmQuantMode::Bfloat16)?);
+            result = result.plus(gemm(spec, x, j, h, GemmQuantMode::Bfloat16)?);
             let start = if self.is_context {
                 prefix
             } else {
@@ -313,12 +328,22 @@ impl Glm53AttentionOp {
             };
             let (pooled_pairs, selected_pairs) =
                 sparse_pairs(start, end, self.index_pool, self.index_topk);
-            let (pooled_pairs, selected_pairs) = (batch * pooled_pairs, batch * selected_pairs);
+            let skip_scores = short_prefill
+                || (self.backend == "vllm" && !self.is_context && end <= self.index_topk as f64);
+            let (pooled_pairs, selected_pairs) = (
+                if skip_scores {
+                    0.0
+                } else {
+                    batch * pooled_pairs
+                },
+                batch * selected_pairs,
+            );
             let fp8 = quant_tc_flops(spec, GemmQuantMode::Fp8.mapping())?;
+            let query_width = if skip_query { 0.0 } else { i * j };
             result = result.plus(leaf(
                 spec,
                 2.0 * pooled_pairs * i * j,
-                pooled_pairs * (j + 4.0) + 2.0 * x * i * j,
+                pooled_pairs * (j + 4.0) + 2.0 * x * query_width,
                 fp8,
             ));
             // Top-k, pool expansion and NoPE latent attention, KV publication.
@@ -336,8 +361,8 @@ impl Glm53AttentionOp {
             ));
             result = result.plus(leaf(
                 spec,
-                x * (5.0 * (q + k) + 12.0 * j + 7.0 * i * j),
-                x * (4.0 * (q + k) + 12.0 * j + 4.0 * i * j + k),
+                x * (5.0 * (q + k) + 12.0 * j + 7.0 * query_width),
+                x * (4.0 * (q + k) + 12.0 * j + 4.0 * query_width + k),
                 fp32,
             ));
         }
@@ -364,6 +389,8 @@ pub struct Glm53MhcOp {
     pub role: String,
     pub backend: String,
     pub checkpoint_format: String,
+    /// Native invocation identity, even though the local SOL work is replicated.
+    pub tp_size: u32,
     pub hidden_size: u32,
     pub hc_mult: u32,
     pub sinkhorn_iters: u32,
@@ -380,9 +407,9 @@ impl Glm53MhcOp {
     pub fn sol(&self, spec: &SystemSpec, x: f64) -> Result<PerformanceResult, AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
         let (h, c) = (self.hidden_size as f64, self.hc_mult as f64);
-        if c != 4.0 || self.sinkhorn_iters != 20 {
+        if c != 4.0 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4) {
             return Err(AicError::ModelConfig(
-                "GLM mHC requires multiplier4 and20 Sinkhorn iterations".into(),
+                "GLM mHC requires TP1/2/4, multiplier4 and20 Sinkhorn iterations".into(),
             ));
         }
         if x <= 0.0 {
@@ -448,6 +475,142 @@ impl Glm53RouterOp {
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
         analytical_only(db, "router")?;
         self.sol(&db.system_spec, tokens as f64)
+    }
+}
+
+/// Native local FFN boundary, including gate/router, routed and shared experts,
+/// clamp and activation; excluding the final separately modeled collective.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Glm53FfnOp {
+    pub name: String,
+    pub backend: String,
+    pub checkpoint_format: String,
+    pub is_context: bool,
+    pub is_dense: bool,
+    pub hidden_size: u32,
+    pub intermediate_size: u32,
+    pub num_experts: u32,
+    pub topk: u32,
+    pub tp_size: u32,
+    pub n_shared_experts: u32,
+    pub swiglu_limit: f64,
+    pub scoring_func: String,
+    pub routed_scaling_factor: f64,
+    pub n_group: u32,
+    pub topk_group: u32,
+    pub norm_topk_prob: bool,
+    pub gemm_quant_mode: GemmQuantMode,
+    pub shared_quant_mode: GemmQuantMode,
+    pub moe_quant_mode: MoeQuantMode,
+    /// Analytical composition only; measured identity excludes this list and
+    /// uses the explicit physical fields above. Child display names vary by layer.
+    #[serde(default)]
+    pub children: Vec<Op>,
+}
+impl Glm53FfnOp {
+    pub fn validate(&self) -> Result<(), AicError> {
+        identity(&self.backend, &self.checkpoint_format)?;
+        if !matches!(self.tp_size, 1 | 2 | 4)
+            || self.hidden_size != 4096
+            || self.swiglu_limit != 10.0
+            || self.scoring_func != "sigmoid"
+            || self.routed_scaling_factor != 2.5
+            || self.n_group != 1
+            || self.topk_group != 1
+            || !self.norm_topk_prob
+            || self.n_shared_experts != 1
+            || self.num_experts != 288
+            || self.topk != 8
+            || self.intermediate_size != if self.is_dense { 12288 } else { 2048 }
+            || self.children.len() != if self.is_dense { 3 } else { 5 }
+            || self.children.iter().any(|op| {
+                !matches!(
+                    op,
+                    Op::Gemm(_) | Op::Elementwise(_) | Op::Moe(_) | Op::Glm53Router(_)
+                )
+            })
+        {
+            return Err(AicError::ModelConfig(
+                "GLM-5.3-Flash FFN requires the native sigmoid/top8/clamp10 pure-TP contract"
+                    .into(),
+            ));
+        }
+        let (gemm_quant, shared_quant, moe_quant) = if self.checkpoint_format == "fp8" {
+            (
+                GemmQuantMode::Fp8Block,
+                GemmQuantMode::Fp8Block,
+                MoeQuantMode::Fp8Block,
+            )
+        } else {
+            (
+                GemmQuantMode::Nvfp4,
+                GemmQuantMode::Bfloat16,
+                MoeQuantMode::Nvfp4,
+            )
+        };
+        if self.gemm_quant_mode != gemm_quant
+            || self.shared_quant_mode != shared_quant
+            || self.moe_quant_mode != moe_quant
+        {
+            return Err(AicError::ModelConfig(
+                "GLM FFN checkpoint precision partition disagrees with its geometry".into(),
+            ));
+        }
+        let width = self.intermediate_size / self.tp_size;
+        let quant = if self.is_dense {
+            gemm_quant
+        } else {
+            shared_quant
+        };
+        let gemm_matches = |op: &Op, n: u32, k: u32| {
+            matches!(op,Op::Gemm(g)
+            if g.n==n && g.k==k && g.quant_mode==quant && g.scale_factor==1.0
+            && g.scale_num_tokens==1 && g.seq_split==1)
+        };
+        let valid = gemm_matches(&self.children[0], 2 * width, self.hidden_size)
+            && matches!(&self.children[1],Op::Elementwise(e) if e.scale_factor==1.0
+                && e.bytes_per_token==6.0*f64::from(width) && e.scale_num_tokens==1 && e.seq_split==1)
+            && gemm_matches(&self.children[2], self.hidden_size, width)
+            && (self.is_dense
+                || (matches!(&self.children[3],Op::Glm53Router(r)
+                if r.backend==self.backend && r.checkpoint_format==self.checkpoint_format
+                && r.hidden_size==self.hidden_size && r.num_experts==self.num_experts && r.topk==self.topk)
+                    && matches!(&self.children[4],Op::Moe(m) if m.hidden_size==self.hidden_size
+                && m.inter_size==self.intermediate_size && m.topk==self.topk && m.num_experts==self.num_experts
+                && m.moe_tp_size==self.tp_size && m.moe_ep_size==1 && m.attention_dp_size==1
+                && m.quant_mode==self.moe_quant_mode && m.scale_factor==1.0 && m.is_gated)));
+        if !valid {
+            return Err(AicError::ModelConfig(
+                "GLM FFN analytical children disagree with its measured geometry".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub fn weight_bytes(&self) -> f64 {
+        self.children.iter().map(Op::weight_bytes).sum()
+    }
+    pub fn sol(
+        &self,
+        db: &PerfDatabase,
+        ctx: &RuntimeContext,
+    ) -> Result<PerformanceResult, AicError> {
+        self.validate()?;
+        // Generic tables are never formal GLM evidence. Even HYBRID fallback
+        // evaluates analytical children, so a generic MoE row cannot leak in.
+        let sol_db = db.sol_full_view();
+        self.children.iter().try_fold(
+            zero(),
+            |sum, child| Ok(sum.plus(child.query(&sol_db, ctx)?)),
+        )
+    }
+    pub fn query(
+        &self,
+        db: &PerfDatabase,
+        ctx: &RuntimeContext,
+    ) -> Result<PerformanceResult, AicError> {
+        self.validate()?;
+        analytical_only(db, "ffn")?;
+        self.sol(db, ctx)
     }
 }
 
@@ -521,7 +684,7 @@ pub(crate) mod tests {
         assert_eq!(sparse_pairs(4095.0, 4096.0, 4, 2048), (1024.0, 2048.0));
         assert_eq!(sparse_pairs(4096.0, 4097.0, 4, 2048), (1024.0, 2049.0));
         assert_eq!(sparse_pairs(4097.0, 4098.0, 4, 2048), (1024.0, 2050.0));
-        assert_eq!(sparse_pairs(0.0, 4.0, 4, 2048), (0.0, 10.0));
+        assert_eq!(sparse_pairs(0.0, 4.0, 4, 2048), (1.0, 10.0));
         assert_eq!(sparse_pairs(4096.0, 4096.5, 4, 2048), (512.0, 1024.5));
     }
     #[test]
