@@ -639,6 +639,74 @@ scikit-learn `HistGradientBoostingRegressor`, log target, 400 trees, 16 OpenMP t
 Loading the gzip JSON-lines stream dominates; both are one-off offline costs. Artifacts
 are 100–450 KB of JSON.
 
+### 8.6 More cores, and a second CPU
+
+Everything above is one thread on one core, because one estimate is a 1–6 µs call and
+the simulator asks for one step at a time. This section answers two follow-up questions:
+what more cores buy, and how a different CPU compares. Two machines, same binary source
+(branch at c4e101e), same artifacts:
+
+| | Grace | AMD |
+| --- | --- | --- |
+| machine | AI Hub `cpu` partition compute node cpu-0088, NVIDIA Grace (Arm Neoverse V2), 96 cores, exclusive allocation, load 0.6 | dlcluster login node, AMD EPYC 7313P, 16 cores / 32 threads (SMT), shared, load 30–70 during the run, boost on (3.6–3.7 GHz), no pinning |
+| conditions | clean | noisy; numbers are upper bounds |
+
+**One thread, one estimate (µs):**
+
+| step | op-level, Grace | GBDT, Grace | op-level, AMD | GBDT, AMD |
+| --- | --- | --- | --- | --- |
+| decode, batch 16, context 32k | 1.40 | 4.32 | 1.52 | 5.22 |
+| decode, batch 256, context 128k | 3.58 | 5.71 | 4.35 | 7.80 |
+| prefill, 1 × 4096 tokens, no prefix | 1.05 | 6.29 | 1.21 | 9.08 |
+
+The quiet Grace node reproduces the login-node numbers of §8.1 within 0.1 µs. The loaded
+AMD node is 1.1–1.5× slower on both models; with the load it carried, that is not a
+statement about the CPU.
+
+**Many independent estimates in parallel** (N threads, each looping on its own step with
+the same read-only model; the case of many simulations or a batched caller). Aggregate
+throughput in million estimates per second, and per-call latency seen by each thread:
+
+| threads | GBDT decode bs 16 | GBDT decode bs 256 | GBDT prefill | op-level decode bs 16 | op-level decode bs 256 | op-level prefill |
+| --- | --- | --- | --- | --- | --- | --- |
+| Grace 1 | 0.23 (4.3 µs) | 0.18 (5.7 µs) | 0.16 (6.3 µs) | 0.71 (1.4 µs) | 0.28 (3.6 µs) | 0.95 (1.1 µs) |
+| Grace 8 | 1.85 (4.3 µs) | 1.40 (5.7 µs) | 1.27 (6.3 µs) | 4.67 (1.7 µs) | 2.04 (3.9 µs) | 3.64 (2.2 µs) |
+| Grace 16 | 3.68 (4.4 µs) | 2.81 (5.7 µs) | 2.53 (6.3 µs) | 4.01 (4.0 µs) | 4.06 (3.9 µs) | 3.54 (4.6 µs) |
+| Grace 32 | 7.35 (4.4 µs) | 5.61 (5.7 µs) | 5.06 (6.3 µs) | 3.38 (9.5 µs) | 3.56 (9.1 µs) | 3.50 (9.3 µs) |
+| Grace 96 | 21.9 (4.4 µs) | 16.7 (5.8 µs) | 15.2 (6.3 µs) | 2.58 (42 µs) | 2.81 (47 µs) | 3.32 (31 µs) |
+| AMD 16 | 2.68 (6.1 µs) | 1.65 (10.1 µs) | 1.39 (11.9 µs) | 5.05 (3.2 µs) | 2.43 (6.9 µs) | 5.33 (3.1 µs) |
+| AMD 32 | 3.25 (10.0 µs) | 1.96 (16.5 µs) | 1.91 (17.2 µs) | 5.12 (6.4 µs) | 3.17 (10.3 µs) | 8.41 (3.9 µs) |
+
+The GBDT is read-only after loading and scales linearly to all 96 Grace cores with the
+per-call latency unchanged (22 M decode estimates per second at batch 16). The op-level
+model stops scaling at 8–16 threads and its per-call latency then grows with the thread
+count (1.4 → 42 µs at 96), which is the signature of contended shared state; the
+op-level path keeps mutex-guarded lookup caches in the perf-database and operator layers
+(`perf_database/source_resolution.rs`, `perf_database/dsa.rs`,
+`operators/util_empirical.rs`), not instrumented here. On the AMD node the GBDT stops
+scaling at 16 threads because the machine has 16 cores and was already loaded; the same
+op-level plateau is visible.
+
+**Splitting one estimate across cores.** To see whether a single prediction could be made
+faster with threads, K pinned workers each walk a 400/K-tree artifact for the same step
+behind a spin barrier and the caller's wall time per estimate is measured (the workers
+spin while idle, so this buys latency with K busy cores):
+
+| K workers | Grace, decode bs 16 | Grace, decode bs 256 | AMD, decode bs 16 | AMD, decode bs 256 |
+| --- | --- | --- | --- | --- |
+| 1 (400 trees, no barrier) | 4.31 µs | 5.71 µs | 4.98 µs | 10.3 µs |
+| 2 × 200 trees | 2.50 µs | 3.60 µs | 3.12 µs | 4.93 µs |
+| 4 × 100 trees | 1.67 µs | 2.50 µs | 2.39 µs | 3.97 µs |
+| 8 × 50 trees | 1.38 µs | 2.06 µs | 2.04 µs | 5.78 µs |
+
+On the quiet Grace node the split reaches 3.1× at 8 workers (4.3 → 1.4 µs), i.e. one
+cross-core barrier costs about 0.7 µs and the rest divides. It is not implemented in the
+estimator: it needs K cores spinning per simulation to save 3 µs per step, and the
+simulator's steps are sequential, so the same cores are better spent running more
+simulations in parallel (previous table). The measurement is here so the option is
+quantified, not guessed. Raw data: `estimator_threads_grace_node.csv`,
+`estimator_threads_amd_login.csv` in the playground `reports/`.
+
 ## 9. Limitations and follow-ups
 
 - **Coverage.** No workload in the set has decode batches above ~43 at contexts above

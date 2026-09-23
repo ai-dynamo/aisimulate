@@ -414,8 +414,9 @@ wrapper, which serialises the FPM dict to JSON and parses it in Rust on every ca
 
 The Rust cost is a 400-tree walk of about 3.3 µs plus one pass over the per-request lists
 (about 8 ns per request); the rest of the Python column is JSON marshalling. The full grid,
-the comparison with the native op-level model and the pooled ten-run training time are in
-`design.md` §8. Artifacts are 100–450 KB of JSON.
+the comparison with the native op-level model, multi-core scaling (the GBDT is read-only and
+scales linearly to 96 cores; 22 M decode estimates per second on a Grace node) and the
+pooled ten-run training time are in `design.md` §8. Artifacts are 100–450 KB of JSON.
 
 ## Limitations
 
