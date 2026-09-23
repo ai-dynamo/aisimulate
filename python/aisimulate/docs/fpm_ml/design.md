@@ -574,7 +574,8 @@ Loading and featurizing the FPM stream (gzip JSON lines) dominates: 204 s for th
 
 ### 8.1 Cost against the native op-level model
 
-Time to compute one estimate, native op-level analytic model vs. learned GBDT, same
+Time to compute one estimate, native op-level analytic model vs. learned GBDT, both
+columns from the same benchmark run on the optimised branch (c4e101e), same
 deployment (DeepSeek-V4-Flash, GB300, vLLM 0.24.0 tables, TP4/EP4), synthetic steps on a
 grid of decode batch sizes, one core of the Grace node described at the top of §8, release
 build. Two layers were measured:
@@ -598,18 +599,18 @@ Prefill worker, one request unless stated (µs per estimate, same machine and me
 
 | extend (tokens) | past (KV) | op-level, Rust | learned GBDT, Rust | op-level, Python | learned GBDT, Python |
 | --- | --- | --- | --- | --- | --- |
-| 512 | 0 | 1.06 | 4.70 | 8.8 | 12.4 |
-| 4096 | 0 | 1.06 | 6.33 | 8.8 | 14.2 |
-| 16384 | 0 | 1.05 | 6.07 | 8.8 | 13.7 |
-| 512 | 16,384 | 1.62 | 4.70 | 9.5 | 12.4 |
-| 4096 | 16,384 | 1.62 | 4.75 | 9.5 | 12.7 |
-| 4096 | 65,536 | 3.51 | 4.47 | 11.5 | 12.3 |
-| 16384 | 65,536 | 3.63 | 4.62 | 11.6 | 12.6 |
-| 2 requests × 4096 | 16,384 each | 1.62 | 4.62 | 9.6 | 12.7 |
-| 4 requests × 4096 | 16,384 each | 1.61 | 4.77 | 10.1 | 13.1 |
+| 512 | 0 | 1.05 | 4.70 | 8.8 | 12.4 |
+| 4096 | 0 | 1.04 | 6.33 | 8.8 | 14.2 |
+| 16384 | 0 | 1.04 | 6.07 | 8.8 | 13.7 |
+| 512 | 16,384 | 1.61 | 4.70 | 9.5 | 12.4 |
+| 4096 | 16,384 | 1.60 | 4.75 | 9.5 | 12.7 |
+| 4096 | 65,536 | 3.47 | 4.47 | 11.5 | 12.3 |
+| 16384 | 65,536 | 3.66 | 4.62 | 11.6 | 12.6 |
+| 2 requests × 4096 | 16,384 each | 1.61 | 4.62 | 9.6 | 12.7 |
+| 4 requests × 4096 | 16,384 each | 1.62 | 4.77 | 10.1 | 13.1 |
 
 The op-level cost does not depend on the chunk size or the number of prefill requests,
-only on the prefix length (1.1 µs at 0, 1.6 µs at 16k, 3.5–4.7 µs at 64k: different
+only on the prefix length (1.0 µs at 0, 1.6 µs at 16k, 3.5–4.7 µs at 64k: different
 interpolation regions of the attention table). The GBDT is flat at 4.5–6.3 µs.
 
 ¹ Op-level (native analytic) model, estimated from the interpolation code, not instrumented: 16 operator evaluations, each 1–2
