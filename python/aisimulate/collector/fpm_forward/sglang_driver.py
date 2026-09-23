@@ -210,6 +210,34 @@ def result_payload(
     }
 
 
+def read_ops_provenance(path: Path, *, raw_config: dict, checkpoint_revision: str, runtime_audit: dict) -> dict:
+    """Bind operation rows to the loaded config and verified native source files."""
+    import re
+
+    from aisimulate_core.sdk.glm53flash import BACKEND_REVISIONS
+
+    def sha256_json(value):
+        raw = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    supplied = json.loads(path.read_text())
+    expected = {
+        "backend": "sglang",
+        "backend_version": "0.5.20",
+        "backend_revision": BACKEND_REVISIONS["sglang"],
+        "checkpoint_revision": checkpoint_revision,
+        "config_sha256": sha256_json(raw_config),
+        "source_sha256": sha256_json(runtime_audit["sources"]),
+    }
+    if runtime_audit.get("status") != "passed" or any(supplied.get(key) != value for key, value in expected.items()):
+        raise ValueError("Ops provenance differs from loaded config/checkpoint or verified native source")
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", supplied.get("runtime_digest", "")):
+        raise ValueError("Ops requires an immutable runtime platform digest")
+    if any(key in supplied for key in ("run_id", "execution_identity", "telemetry_policy")):
+        raise ValueError("Ops provenance cannot replace the native driver's execution identity")
+    return {**expected, "runtime_digest": supplied["runtime_digest"]}
+
+
 def main(argv=None) -> None:
     from sglang import Engine
     from sglang.srt.server_args import ServerArgs
@@ -289,6 +317,16 @@ def main(argv=None) -> None:
     manifest_path = output.parent / "sglang-requests.json"
     write_json(manifest_path, manifest)
     provenance = {"run_id": args.run_id, "execution_identity": identity, "telemetry_policy": TELEMETRY_POLICY}
+    if args.observation_purpose == "ops":
+        provenance = {
+            **read_ops_provenance(
+                Path(os.environ["AISIM_GLM53_OPS_PROVENANCE"]),
+                raw_config=raw_config,
+                checkpoint_revision=args.tokenizer_revision,
+                runtime_audit=json.loads((output.parent / "runtime-preflight.json").read_text()),
+            ),
+            **provenance,
+        }
     provenance_path = output.parent / "sglang-provenance.json"
     write_json(provenance_path, provenance)
     write_json(output.parent / "sglang-resolved-config.json", server.resolved_dict())
