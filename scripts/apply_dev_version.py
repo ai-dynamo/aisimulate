@@ -9,7 +9,7 @@ argument -- a PEP 440 suffix like '.dev202609170000001234' -- and rewrites:
   - [package].version in crates/core/Cargo.toml and
     [workspace.package].version in Cargo.toml (SemVer form: dash instead of
     dot, so '0.13.0-dev.202609170000001234' -- cargo rejects the PEP 440 spelling)
-  - optional policy package versions and exact base-package dependency pins
+  - Python binding crate version and its exact core dependency pin
   - local package versions in the shared Cargo.lock, so --locked builds
     retain the same resolved third-party dependencies after stamping
 
@@ -90,24 +90,18 @@ def main() -> int:
     stamped = [stage_version(root / PYPROJECT, args.suffix, changes)]
     stamped += [stage_version(root / path, semver(args.suffix), changes) for path in CARGO_MANIFESTS]
     package_versions = {"aisimulate-core": stamped[2]}
-    plugin_py = root / "python/aisimulate-dynamo-policy/pyproject.toml"
-    if plugin_py.is_file():
-        plugin_native = root / "crates/dynamo-policy/Cargo.toml"
-        stamped.append(stage_version(plugin_py, args.suffix, changes))
-        stamped.append(stage_version(plugin_native, semver(args.suffix), changes))
-        plugin_text, count = re.subn(r'"aisimulate==[^"]+"', f'"aisimulate=={stamped[0]}"', changes[plugin_py])
-        if count != 1:
-            raise SystemExit(f"expected one exact aisimulate pin in {plugin_py}, found {count}")
-        changes[plugin_py] = plugin_text
+    binding = root / "crates/python/Cargo.toml"
+    if binding.is_file():
+        stamped.append(stage_version(binding, semver(args.suffix), changes))
         native_text, count = re.subn(
             r'(aisimulate-core\s*=\s*\{[^\n]*version\s*=\s*")=[^"]+("[^\n]*\})',
             rf"\g<1>={stamped[2]}\2",
-            changes[plugin_native],
+            changes[binding],
         )
         if count != 1:
-            raise SystemExit(f"expected one exact aisimulate-core pin in {plugin_native}")
-        changes[plugin_native] = native_text
-        package_versions["aisimulate-dynamo-policy"] = stamped[-1]
+            raise SystemExit(f"expected one exact aisimulate-core pin in {binding}")
+        changes[binding] = native_text
+        package_versions["aisimulate-python"] = stamped[-1]
     stage_lock(root / "Cargo.lock", package_versions, changes)
     for path, text in changes.items():
         path.write_text(text)

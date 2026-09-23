@@ -102,8 +102,14 @@ build-backend = "maturin"
 aisimulate = "aisimulate.supervision:main"
 aiconfigurator = "aisimulate.legacy_cli.entrypoint:main"
 
+[project.entry-points."aisimulate.runner_factories"]
+dynamo-policy = "aisimulate.dynamo:DynamoPolicyRunnerFactory"
+
+[project.entry-points."aisimulate.config_adapters"]
+"dynamo-policy.router" = "aisimulate.dynamo:DynamoPolicyConfigAdapter"
+
 [tool.maturin]
-manifest-path = "../../crates/core/Cargo.toml"
+manifest-path = "../../crates/python/Cargo.toml"
 module-name = "aisimulate._runtime"
 python-source = "src"
 python-packages = [

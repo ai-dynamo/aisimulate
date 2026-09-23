@@ -4,7 +4,7 @@
 [workspace]
 members = [
     "crates/core",
-    "crates/dynamo-policy",
+    "crates/python",
 ]
 default-members = ["crates/core"]
 exclude = ["crates/tests/public-api"]

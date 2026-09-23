@@ -1986,7 +1986,8 @@ where
     serde_json::to_string(&output).context("serializing AISimulate replay output")
 }
 
-fn replay_python_error(error: anyhow::Error) -> PyErr {
+/// Preserve resource exhaustion and error context across Python replay bindings.
+pub fn replay_python_error(error: anyhow::Error) -> PyErr {
     if error.chain().any(|cause| {
         matches!(
             cause.downcast_ref::<crate::replay::ReplayError>(),
@@ -2013,24 +2014,10 @@ fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<Str
         .map_err(replay_python_error)
 }
 
-/// AISimulate native runtime module.
-#[pyfunction(name = "native_replay_contract")]
-fn python_native_replay_contract(py: Python<'_>) -> PyResult<Py<PyAny>> {
-    let value = crate::native_replay_contract();
-    let result = PyDict::new(py);
-    result.set_item("api_version", value["api_version"].as_u64().unwrap())?;
-    result.set_item("core_version", value["core_version"].as_str().unwrap())?;
-    result.set_item(
-        "core_source_sha256",
-        value["core_source_sha256"].as_str().unwrap(),
-    )?;
-    Ok(result.into_any().unbind())
-}
-
-/// AISimulate native runtime module.
-#[pymodule]
-fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_function(wrap_pyfunction!(python_native_replay_contract, module)?)?;
+/// Register the core Python API in a consumer-owned extension or embedded module.
+/// The binding crate owns the module initializer so linking the core cannot
+/// introduce a second `PyInit__runtime` symbol.
+pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
     crate::perfmodel::register_python(module)?;

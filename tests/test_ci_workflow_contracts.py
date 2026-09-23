@@ -622,6 +622,15 @@ def test_platform_wheels_require_the_installed_fpe_exercise() -> None:
     )
     assert "if" not in verification
     assert "--exercise-engine --exercise-fpe" in verification["run"]
+    routing = next(
+        step
+        for step in action["runs"]["steps"]
+        if step.get("name") == "Exercise installed native Dynamo routing from YAML"
+    )
+    assert "if" not in routing
+    assert "--noconftest" in routing["run"]
+    assert "tests/sweeper/test_dynamo_policy.py" in routing["run"]
+    assert "tests/sweeper/test_dynamo_policy_cli.py" in routing["run"]
 
 
 def test_restored_workflows_are_active_at_repository_root() -> None:
@@ -651,9 +660,13 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert jobs["platform-wheels"]["uses"] == "./.github/workflows/validate-platform-wheels.yml"
     assert jobs["collector-data"]["uses"] == "./.github/workflows/collector-check.yml"
     assert jobs["prediction-regression"]["uses"] == "./.github/workflows/prediction-regression-gate.yml"
+    rust_commands = _run_commands(jobs["rust"])
+    assert "cargo test -p aisimulate-core --locked" in rust_commands
+    assert "cargo test -p aisimulate-python --locked" in rust_commands
+    assert "--workspace" not in rust_commands
 
     application_test_wheel = jobs["application-test-wheel"]
-    assert application_test_wheel["timeout-minutes"] == "10"
+    assert application_test_wheel["timeout-minutes"] == "30"
     assert {"fast-ci", "select-full-ci"}.issubset(application_test_wheel["needs"])
     assert "application-test-wheel" in jobs["application-tests"]["needs"]
     assert {shard["suite"] for shard in jobs["application-tests"]["strategy"]["matrix"]["shard"]} == {
@@ -931,7 +944,7 @@ def test_linux_release_wheels_are_repaired_for_manylinux_2_28() -> None:
     assert '"build_manylinux_wheel.py"' in release_builder
 
     dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
-    assert 'MATURIN_PEP517_ARGS="--auditwheel skip"' in dockerfile
+    assert 'MATURIN_PEP517_ARGS="--locked --auditwheel skip"' in dockerfile
     assert "auditwheel repair" in dockerfile
     assert "auditwheel show /workspace/dist/aisimulate-*.whl" in dockerfile
     assert "--compatibility manylinux_2_28" not in dockerfile
@@ -993,7 +1006,18 @@ def test_manylinux_build_repairs_the_exact_raw_wheel_then_audits_it(tmp_path, mo
     assert list(output.iterdir()) == [repaired]
     assert calls == [
         (
-            (sys.executable, "-m", "maturin", "build", "--release", "--auditwheel", "skip", "--out", raw_output),
+            (
+                sys.executable,
+                "-m",
+                "maturin",
+                "build",
+                "--locked",
+                "--release",
+                "--auditwheel",
+                "skip",
+                "--out",
+                raw_output,
+            ),
             manylinux_builder.PYTHON_PROJECT,
         ),
         (
@@ -1662,35 +1686,6 @@ def test_selective_full_ci_keeps_the_aggregate_fail_closed() -> None:
     assert "needs.select-full-ci.result == 'success'" in wheel_condition
 
 
-def test_optional_policy_runs_installed_cli_under_existing_full_ci_admission() -> None:
-    jobs = _workflow("ci.yml")["jobs"]
-    job = jobs["dynamo-policy"]
-    assert set(job["needs"]) == {"fast-ci", "select-full-ci"}
-    assert job["if"] == "${{ needs.select-full-ci.outputs.application_tests == 'true' }}"
-    assert job["uses"] == "./.github/workflows/dynamo-policy.yml"
-    assert job["with"]["expected_sha"] == "${{ github.sha }}"
-    workflow = _workflow("dynamo-policy.yml")
-    assert set(workflow["on"]) == {"workflow_call"}
-    assert workflow["permissions"] == {"contents": "read"}
-    native = workflow["jobs"]["native-and-cli"]
-    assert native["runs-on"] == "ubuntu-latest"
-    assert native["env"]["RUSTUP_TOOLCHAIN"] == "1.96.1"
-    commands = _run_commands(native)
-    assert 'test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"' in commands
-    assert "scripts/build_dynamo_policy.py --debug --output-dir policy-wheels" in commands
-    assert "policy-smoke/bin/python -m pip install policy-wheels/*.whl" in commands
-    assert "cargo test -p aisimulate-dynamo-policy --locked" in commands
-    assert "--confcutdir=python/aisimulate-dynamo-policy/tests python/aisimulate-dynamo-policy/tests" in commands
-    assert "PYTHONPATH" not in commands
-    assert "pip install -e" not in commands
-    plan = dict.fromkeys(COMPONENTS, "true")
-    results = dict.fromkeys(jobs["readiness"]["needs"], "success")
-    results["dynamo-policy"] = "failure"
-    failed = _run_full_ci_aggregate(results, plan)
-    assert failed.returncode != 0
-    assert "dynamo-policy=failure, expected success" in failed.stdout
-
-
 def test_full_ci_selector_uses_the_complete_exact_head_pr_change_set() -> None:
     selector = _workflow("ci.yml")["jobs"]["select-full-ci"]
     commands = _run_commands(selector)
@@ -1824,7 +1819,6 @@ def test_full_ci_aggregate_accepts_only_explicit_na_results() -> None:
             for component in COMPONENTS
         },
         "application-test-wheel": "success",
-        "dynamo-policy": "success",
     }
 
     passed = _run_full_ci_aggregate(results, plan)
@@ -1852,7 +1846,6 @@ def test_full_ci_aggregate_rejects_missing_selection_output() -> None:
         "python-compliance": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
-        "dynamo-policy": "skipped",
     }
 
     result = _run_full_ci_aggregate(results, plan)
@@ -1869,7 +1862,6 @@ def test_full_ci_aggregate_rejects_missing_dependency() -> None:
         "python-compliance": "skipped",
         **{component.replace("_", "-"): "skipped" for component in COMPONENTS},
         "application-test-wheel": "skipped",
-        "dynamo-policy": "skipped",
     }
     del results["collector-data"]
 
@@ -2731,7 +2723,7 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
         "GH_RUN_ATTEMPT": "1",
         "GH_EVENT_NAME": event,
         "GH_SERVER_URL": "https://github.com",
-        "RUST_TOOLCHAIN": "1.98.0",
+        "RUST_TOOLCHAIN": "1.96.1",
         "UV_VERSION": "0.12.6",
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
         "GITHUB_OUTPUT": str(tmp_path / "output"),

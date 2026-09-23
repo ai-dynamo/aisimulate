@@ -38,9 +38,9 @@ The built-in engine supports offline vLLM and SGLang with aggregated or separate
 prefill/decode workers, HBM-only KV cache, and speculative decoding disabled.
 Weka, Agentic Mooncake, and agentic Dynamo traces share this path. Online execution,
 other backends, and Dynamo-owned routing need their own qualified integration.
-For the separately installed native Dynamo policy integration, see the
-[AgentX quickstart](agentx-quickstart.md), including the matching-package build
-and the supported duration-plus-routing paths.
+For built-in native Dynamo routing, see the [AgentX quickstart](agentx-quickstart.md),
+including the combined source installation, duration-plus-routing configuration
+and its validation status.
 
 ## Lanes and virtual time
 

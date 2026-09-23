@@ -330,7 +330,9 @@ jobs:
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - run: cargo test -p aisimulate-core --locked
+      - run: |
+          cargo test -p aisimulate-core --locked
+          cargo test -p aisimulate-python --locked
 
   rust-feature-modes:
     name: Rust feature modes
@@ -602,7 +604,8 @@ jobs:
             # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
             container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
-    timeout-minutes: 10
+    # The unified wheel now also compiles Dynamo and its native ZeroMQ dependency.
+    timeout-minutes: 30
     container:
       image: ${{ matrix.container_image }}
       env:
@@ -906,14 +909,6 @@ jobs:
       - run: release-smoke/bin/aisimulate --help
       - run: release-smoke/bin/aiconfigurator version
 
-  dynamo-policy:
-    name: Optional Dynamo Policy
-    needs: [fast-ci, select-full-ci]
-    if: ${{ needs.select-full-ci.outputs.application_tests == 'true' }}
-    uses: ./.github/workflows/dynamo-policy.yml
-    with:
-      expected_sha: ${{ github.sha }}
-
   readiness:
     name: Full CI Success
     if: ${{ always() }}
@@ -935,7 +930,6 @@ jobs:
       - python-compatibility
       - engine-golden-regression
       - release-artifact-contract
-      - dynamo-policy
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -962,7 +956,6 @@ jobs:
               "python-compliance": "application_wheel",
               "application-test-wheel": "application_tests",
               "application-tests": "application_tests",
-              "dynamo-policy": "application_tests",
               "python-compatibility": "python_compatibility",
               "engine-golden-regression": "engine_golden_regression",
               "release-artifact-contract": "release_artifact_contract",

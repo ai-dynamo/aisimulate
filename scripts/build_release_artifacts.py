@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Build and verify the base wheel/crate; validate the optional policy package."""
+"""Build and verify the unified AISimulate wheel and engine-neutral core crate."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 VERSION = "0.13.0"
+DYNAMO_REVISION = "d9eb42db1168131fdae318eef77255637e4d3495"
 # Nightly CI stamps a dev suffix via scripts/apply_dev_version.py:
 # PEP 440 `0.13.0.devYYYYMMDD` in the wheel, SemVer `0.13.0-dev.YYYYMMDD` in
 # the crate, optionally followed by a ten-digit run number in both formats.
@@ -47,12 +48,8 @@ def check_manifests() -> tuple[str, str]:
     pyprojects = {
         path: str(_toml(path)["project"]["name"]) for path in ROOT.rglob("pyproject.toml") if _is_source_manifest(path)
     }
-    expected_projects = dict(EXPECTED_PYTHON_PROJECTS)
-    plugin_path = ROOT / "python" / "aisimulate-dynamo-policy" / "pyproject.toml"
-    if plugin_path.is_file():
-        expected_projects[plugin_path] = "aisimulate-dynamo-policy"
-    assert pyprojects == expected_projects, (
-        f"publishable Python manifest set changed:\nexpected={expected_projects}\nactual={pyprojects}"
+    assert pyprojects == EXPECTED_PYTHON_PROJECTS, (
+        f"publishable Python manifest set changed:\nexpected={EXPECTED_PYTHON_PROJECTS}\nactual={pyprojects}"
     )
 
     publishable_crates: dict[Path, str] = {}
@@ -83,21 +80,38 @@ def check_manifests() -> tuple[str, str]:
     assert _toml(ROOT / "Cargo.toml")["workspace"]["package"]["version"] == crate_version, (
         "workspace version differs from the core crate"
     )
-    if plugin_path.is_file():
-        plugin = _toml(plugin_path)["project"]
-        native = _toml(ROOT / "crates" / "dynamo-policy" / "Cargo.toml")
-        assert plugin["version"] == py_version, "optional adapter wheel version differs from base"
-        assert plugin["dependencies"] == [f"aisimulate=={py_version}"], "adapter must pin its base wheel"
-        assert native["package"]["version"] == crate_version, "optional adapter native version differs from core"
+    binding = ROOT / "crates" / "python" / "Cargo.toml"
+    if binding.is_file():
+        native = _toml(binding)
+        assert native["package"]["version"] == crate_version, "Python binding version differs from core"
         assert native["dependencies"]["aisimulate-core"]["version"] == f"={crate_version}", (
-            "adapter must pin its core crate"
+            "Python binding must pin its core crate"
         )
+        dependency = native["dependencies"]["dynamo-kv-router"]
+        assert dependency == {
+            "git": "https://github.com/ai-dynamo/dynamo",
+            "rev": DYNAMO_REVISION,
+            "default-features": False,
+            "features": ["standalone-selection"],
+        }, "Dynamo must use the immutable standalone-selection pin without an override"
+        for path in (ROOT / "Cargo.toml", EXPECTED_CRATE, binding):
+            manifest = _toml(path)
+            assert not manifest.get("patch") and not manifest.get("replace"), "Dynamo overrides are forbidden"
         packages = _toml(ROOT / "Cargo.lock")["package"]
-        for name in ("aisimulate-core", "aisimulate-dynamo-policy"):
+        for name in ("aisimulate-core", "aisimulate-python"):
             local = [package for package in packages if package["name"] == name]
             assert len(local) == 1 and local[0]["version"] == crate_version and "source" not in local[0], (
                 f"Cargo.lock must contain the matching local {name} version"
             )
+        dynamo = [package for package in packages if package["name"].startswith("dynamo-")]
+        assert {package["name"] for package in dynamo} == {
+            "dynamo-kv-router",
+            "dynamo-tokens",
+            "dynamo-kv-hashing",
+            "dynamo-truthy",
+        }, "binding must not import Dynamo runtime, LLM or Mocker"
+        source = f"git+https://github.com/ai-dynamo/dynamo?rev={DYNAMO_REVISION}#{DYNAMO_REVISION}"
+        assert all(package.get("source") == source for package in dynamo), "Dynamo lock source differs from the pin"
         # Workspace members share a lockfile, not their dependency graphs.
         # Traverse names conservatively across any locked versions without
         # running Cargo or fetching metadata during release preflight checks.
@@ -111,9 +125,9 @@ def check_manifests() -> tuple[str, str]:
             for package in packages:
                 if package["name"] == name:
                     pending.extend(dependency.split()[0] for dependency in package.get("dependencies", []))
-        assert not any(name.startswith("dynamo-") for name in core_dependencies), (
-            "the base package must remain independent of Dynamo"
-        )
+        assert "aisimulate-python" not in core_dependencies and not any(
+            name.startswith("dynamo-") for name in core_dependencies
+        ), "the core crate must remain independent of Python bindings and Dynamo"
     optional_dependencies = app.get("optional-dependencies", {})
     dependencies = [
         *app["dependencies"],
@@ -154,6 +168,7 @@ def build(output: Path, py_version: str, crate_version: str) -> None:
             "-m",
             "maturin",
             "build",
+            "--locked",
             "--release",
             "--out",
             str(output),
@@ -165,6 +180,7 @@ def build(output: Path, py_version: str, crate_version: str) -> None:
         _run(
             "cargo",
             "package",
+            "--locked",
             "--manifest-path",
             str(EXPECTED_CRATE),
             "--allow-dirty",

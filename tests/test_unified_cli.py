@@ -616,7 +616,7 @@ def test_prediction_selects_stack_from_router_only_when_not_explicit(
     assert loaded == [selected]
 
 
-def test_prediction_router_override_selects_optional_plugin(tmp_path, monkeypatch) -> None:
+def test_prediction_router_override_selects_native_policy(tmp_path, monkeypatch) -> None:
     path = tmp_path / "routing.yaml"
     path.write_text("engine: {}\n")
     loaded = []
@@ -626,7 +626,7 @@ def test_prediction_router_override_selects_optional_plugin(tmp_path, monkeypatc
     assert loaded == ["dynamo-policy"]
 
 
-def test_prediction_router_missing_plugin_is_configuration_error(tmp_path, monkeypatch, capsys) -> None:
+def test_prediction_router_missing_integration_is_configuration_error(tmp_path, monkeypatch, capsys) -> None:
     from aisimulate.stack import resolve_runner_factory
 
     path = tmp_path / "routing.yaml"
@@ -635,7 +635,7 @@ def test_prediction_router_missing_plugin_is_configuration_error(tmp_path, monke
     with pytest.raises(SystemExit, match="2"):
         cli.main(["predict", "--config", str(path)])
     error = capsys.readouterr().err
-    assert "aisimulate-dynamo-policy" in error
+    assert "does not provide native Dynamo routing" in error
     assert "pip install" in error
     assert "will not fall back" in error
 

@@ -65,8 +65,8 @@ jobs:
         run: |
           python -m unittest discover -s scripts/tests -p test_documentation_links.py
           python scripts/check_documentation_links.py
-      - name: Check optional policy packaging contracts
-        run: python -m unittest discover -s scripts/tests -p test_dynamo_policy_packaging.py
+      - name: Check release packaging contracts
+        run: python -m unittest discover -s scripts/tests -p test_release_packaging.py
       - name: Check CODEOWNERS policy and generated artifacts
         run: |
           python -m pytest -c /dev/null .github/codeowners/test_*.py -q \
@@ -124,7 +124,6 @@ jobs:
           ruff check
           --config python/aisimulate/pyproject.toml
           python/aisimulate/src/aisimulate
-          python/aisimulate-dynamo-policy
           python/aisimulate/tests/e2e/cli/test_cli_experiments.py
           python/aisimulate/tests/e2e/cli/test_cli_recommend.py
           tests
@@ -133,7 +132,6 @@ jobs:
           ruff format --check
           --config python/aisimulate/pyproject.toml
           python/aisimulate/src/aisimulate
-          python/aisimulate-dynamo-policy
           python/aisimulate/tests/e2e/cli/test_cli_experiments.py
           python/aisimulate/tests/e2e/cli/test_cli_recommend.py
           tests
@@ -141,7 +139,6 @@ jobs:
         run: >-
           python -m compileall -q
           python/aisimulate/src
-          python/aisimulate-dynamo-policy/src
           python/aisimulate/tests/e2e/cli/test_cli_recommend.py
           tests
       - name: Check changed-line whitespace

@@ -86,16 +86,17 @@ For features documented on `main`, use a source checkout and record its commit:
 git clone https://github.com/ai-dynamo/aisimulate.git
 cd aisimulate
 git rev-parse HEAD
-uv sync --project python/aisimulate --extra dev
+rustup toolchain install 1.96.1 --profile minimal
+RUSTUP_TOOLCHAIN=1.96.1 uv sync --project python/aisimulate --extra dev
 source python/aisimulate/.venv/bin/activate
 aisimulate --help
 ```
 
-Install `uv`, a Rust toolchain with Cargo, and a C/C++ compiler plus platform
+Install `uv`, Rust 1.96.1 with Cargo, and a C/C++ compiler plus platform
 linker before syncing: Maturin compiles the native extension. On macOS, install
 the Xcode Command Line Tools (`xcode-select --install`); Linux builds need
-the equivalent compiler and linker tools. The workspace uses Rust edition
-2024; the current macOS wheel job pins Rust 1.96.0. See the
+the equivalent compiler and linker tools, `pkg-config`, OpenSSL development
+headers and CMake. The workspace uses Rust edition 2024. See the
 [build action](../.github/actions/build-platform-wheel/action.yml) for CI's
 toolchain choices and [DEVELOPMENT.md](../DEVELOPMENT.md) for validation.
 
@@ -128,48 +129,47 @@ Replace that illustrative filename with the actual wheel filename. Retain the
 source SHA, workflow run URL, wheel filename and SHA-256 with your results.
 The [artifact contract](artifact-contract.md) describes wheel/crate versioning.
 
-## Optional Dynamo integration
+<a id="optional-dynamo-integration"></a>
 
-The built-in engine stack does not require Dynamo. There are two optional
-integrations with separate packages, router schemas and runtime capabilities.
+## Dynamo routing and integration
+
+The application wheel includes both the `engine` and `dynamo-policy` stacks.
 Explicit `--stack` always wins. Without it, a `router` key after `--set` selects
 `dynamo-policy`, while no `router` selects `engine`; the selected adapter then
-validates the configuration. A Planner-only YAML needs explicit `--stack dynamo`.
+validates the configuration. A Planner-only YAML needs explicit `--stack dynamo`
+and the separate full Dynamo integration.
 See [execution-stack selection](cli/user-guide.md#choose-an-execution-stack).
 
-### Native Dynamo policy plugin
+<a id="native-dynamo-policy-plugin"></a>
+
+### Built-in native Dynamo policy
 
 For `aisimulate predict` with `router.policy: kv_router` and optional
-`session` or `sibling_group` affinity, install the separate
-`aisimulate-dynamo-policy` plugin together with the matching base `aisimulate`
-wheel. This integration supports offline aggregated/P-D vLLM/SGLang prediction,
-including AgentX snapshots, warmup and duration profiles. It does not provide
-Planner, dynamic scaling, online execution or routing recommendation.
+`session` or `sibling_group` affinity, install the single `aisimulate` package
+from the combined routing/duration source in the
+[AgentX quickstart](agentx-quickstart.md#1-install-from-source). Native selection
+runs in `aisimulate._runtime`, using the pinned Dynamo router without a separate
+policy wheel, full `ai-dynamo` installation or running service. The Rust core
+remains independent of Dynamo; the application's native binding owns this
+integration. See the [artifact contract](artifact-contract.md#native-dynamo-routing-in-the-application-wheel).
 
-The plugin is currently source-built; the base release and nightly jobs do not
-publish it. Follow the [AgentX quickstart installation](agentx-quickstart.md#1-install-from-source)
-for the combined source checkout, Rust 1.96.1 prerequisites, clean paired-wheel
-build/install commands and optional container. Initial adapter qualification is
-Linux x86-64. The builder records source revision and wheel hashes in
-`manifest.json`. Both native modules must agree on package version, replay API
-and core source digest, and the adapter checks its immutable merged Dynamo
-revision. Even equal package versions from different core source trees are
-rejected; see the [optional artifact contract](artifact-contract.md#optional-dynamo-policy-wheel).
+If reusing an environment from earlier #306 builds, uninstall
+`aisimulate-dynamo-policy` before upgrading `aisimulate`; the old package registers
+duplicate stack entry points. Fresh environments need only `aisimulate`.
 
-This plugin imports existing native Dynamo policy APIs without a full
-`ai-dynamo` installation or a running Dynamo service. Installing `ai-dynamo`
-does not install `aisimulate-dynamo-policy`, and the historical AISimulate 0.12
-pairing below is not a compatible substitute for the current paired source
-build. Missing or incompatible plugins fail explicitly, without falling back to
-round-robin. A source feature being merged does not establish that its matching
-plugin wheel is published on a package index.
+The supported configuration covers offline aggregated/P-D vLLM/SGLang prediction,
+including AgentX snapshots, warmup and duration profiles. It has no Planner,
+dynamic scaling, online execution or routing recommendation. Unsupported options
+or an unavailable native capability fail explicitly, without round-robin fallback.
+Source availability does not establish a published release; the quickstart
+records the single-wheel validation scope.
 
 ### Legacy full Dynamo stack
 
 For explicit `--stack dynamo`, install a Dynamo distribution that supplies its
 runner and legacy Router/Planner adapters into the same environment. The legacy
-Router tuning and recommendation schemas remain separate from the native policy
-plugin; keep `--stack dynamo` when predicting YAML saved by that stack's
+Router tuning and recommendation schemas remain separate from the built-in native policy
+stack; keep `--stack dynamo` when predicting YAML saved by that stack's
 recommendation run. The verified **source** pairing on September 14, 2026 is:
 
 | Dynamo source | Declared AISimulate dependency | Integration registration |

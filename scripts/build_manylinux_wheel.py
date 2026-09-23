@@ -65,6 +65,7 @@ def build(output: Path) -> Path:
             "-m",
             "maturin",
             "build",
+            "--locked",
             "--release",
             "--auditwheel",
             "skip",

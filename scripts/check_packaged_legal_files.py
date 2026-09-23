@@ -15,18 +15,13 @@ LEGAL_FILES = ("LICENSE", "THIRD_PARTY_NOTICES.md")
 
 def main() -> int:
     mismatched: list[str] = []
-    packages = [PACKAGE_ROOT]
-    plugin = ROOT / "python" / "aisimulate-dynamo-policy"
-    if plugin.is_dir():
-        packages.append(plugin)
-    for package in packages:
-        for name in LEGAL_FILES:
-            canonical = ROOT / name
-            packaged = package / name
-            if not canonical.is_file() or not packaged.is_file():
-                mismatched.append(f"{package.name}/{name}: canonical or packaging copy is missing")
-            elif canonical.read_bytes() != packaged.read_bytes():
-                mismatched.append(f"{package.name}/{name}: packaged copy differs from root")
+    for name in LEGAL_FILES:
+        canonical = ROOT / name
+        packaged = PACKAGE_ROOT / name
+        if not canonical.is_file() or not packaged.is_file():
+            mismatched.append(f"{name}: canonical or packaging copy is missing")
+        elif canonical.read_bytes() != packaged.read_bytes():
+            mismatched.append(f"{name}: packaged copy differs from root")
 
     if mismatched:
         for message in mismatched:

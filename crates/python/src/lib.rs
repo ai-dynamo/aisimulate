@@ -1,10 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
-//! Optional composition: AISimulate owns simulation; unmodified Dynamo owns policy.
+//! AISimulate's Python module: the core owns simulation; Dynamo owns routing policy.
 mod events;
 
 use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -31,6 +31,7 @@ use dynamo_kv_router::services::selection::{
 };
 use dynamo_kv_router::{KvRouterConfig, RoutingPartitionId, WorkerType};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::runtime::Runtime;
@@ -67,7 +68,7 @@ impl RouterConfig {
             serde_json::from_str(input).context("invalid Dynamo router configuration")?;
         ensure!(
             config.policy == "kv_router",
-            "Dynamo plugin supports router.policy: kv_router only"
+            "Dynamo routing supports router.policy: kv_router only"
         );
         if let Some(affinity) = &config.affinity {
             ensure!(
@@ -154,11 +155,11 @@ impl ReplayComposition for Composition {
                     spec.adapters.placement.provider.as_str(),
                     "round_robin" | "dynamo_kv_router"
                 ),
-                "unsupported placement descriptor for Dynamo plugin"
+                "unsupported placement descriptor for Dynamo routing"
             );
             ensure!(
                 spec.adapters.scaling.provider == "none",
-                "Dynamo policy plugin does not provide dynamic scaling"
+                "Dynamo routing does not provide dynamic scaling"
             );
             let engine = if spec.engine.is_null() {
                 ReplayEngineConfig::default()
@@ -243,7 +244,6 @@ impl ReplayComposition for Composition {
 }
 
 struct ActiveRequest {
-    group_key: Option<String>,
     hold: Option<Hold>,
     lease: Option<AffinityLease>,
     target: WorkerAffinityTarget,
@@ -269,11 +269,6 @@ pub struct NativePlacement {
     active: HashMap<Uuid, ActiveRequest>,
     pending: VecDeque<PendingRequest>,
     pending_ready: bool,
-    bindings: HashMap<String, WorkerAffinityTarget>,
-    // This index only supports membership invalidation. Native affinity owns
-    // expiration; periodically discard index entries it no longer considers live.
-    binding_prune_interval: Duration,
-    next_binding_prune: Option<Duration>,
     now: Duration,
     // Preserve the replay instant for same-time wakeups; Duration quantizes it.
     replay_now_ms: f64,
@@ -350,12 +345,6 @@ impl NativePlacement {
                 return Err(error);
             }
         };
-        let binding_prune_interval = config
-            .affinity
-            .as_ref()
-            .map_or(Duration::from_secs(60), |affinity| {
-                Duration::from_secs_f64(affinity.ttl_seconds.min(60.0))
-            });
         let mut placement = Self {
             runtime,
             stop_clock_guard: Some(stop),
@@ -370,9 +359,6 @@ impl NativePlacement {
             active: HashMap::new(),
             pending: VecDeque::new(),
             pending_ready: false,
-            bindings: HashMap::new(),
-            binding_prune_interval,
-            next_binding_prune: Some(binding_prune_interval),
             now: Duration::ZERO,
             replay_now_ms: 0.0,
             role,
@@ -397,13 +383,6 @@ impl NativePlacement {
             self.now = next;
         }
         self.replay_now_ms = now_ms;
-        if self
-            .next_binding_prune
-            .is_some_and(|deadline| self.now >= deadline)
-        {
-            self.prune_bindings()?;
-            self.next_binding_prune = self.now.checked_add(self.binding_prune_interval);
-        }
         Ok(())
     }
     fn add_worker(&mut self, worker: WorkerTopology) -> Result<()> {
@@ -479,46 +458,6 @@ impl NativePlacement {
         }
         Ok(())
     }
-    fn prune_bindings(&mut self) -> Result<()> {
-        let Some(table) = &self.affinity else {
-            return Ok(());
-        };
-        self.runtime.block_on(async {
-            let mut error = None;
-            self.bindings
-                .retain(|key, _| match table.query_target(key, None) {
-                    Ok(target) => target.is_some(),
-                    Err(failure) => {
-                        error = Some(failure);
-                        true
-                    }
-                });
-            error.map_or(Ok(()), |error| Err(error.into()))
-        })
-    }
-    fn invalidate_worker_bindings(&mut self, worker_id: usize) -> Result<()> {
-        let keys = self
-            .bindings
-            .iter()
-            .filter(|(_, target)| target.worker_id == worker_id as u64)
-            .map(|(key, _)| key.clone())
-            .collect::<Vec<_>>();
-        self.runtime.block_on(async {
-            if let Some(table) = &self.affinity {
-                for key in &keys {
-                    if let AcquireStep::Held(hold) = table.try_acquire(key, None)? {
-                        hold.invalidate();
-                    }
-                }
-            }
-            Ok::<_, anyhow::Error>(())
-        })?;
-        for key in keys {
-            self.bindings.remove(&key);
-        }
-        self.pending_ready = true;
-        Ok(())
-    }
     fn retry_pending(&mut self) -> Result<Vec<Placement>> {
         self.pending_ready = false;
         let mut released = Vec::new();
@@ -568,11 +507,11 @@ impl PlacementPolicy<ReplayRequestPayload> for NativePlacement {
         ensure!(
             request_meta.preferred_dp_rank.is_none()
                 && request_meta.preferred_prefill_dp_rank.is_none(),
-            "native Dynamo policy plugin does not support authored DP pins; affinity selects and binds the native worker/DP pair"
+            "native Dynamo routing does not support authored DP pins; affinity selects and binds the native worker/DP pair"
         );
         ensure!(
             request_meta.policy_class.is_none(),
-            "native Dynamo policy plugin does not provide custom policy classes"
+            "native Dynamo routing does not provide custom policy classes"
         );
         ensure!(
             !request_meta.replay_context.as_ref().is_some_and(
@@ -661,12 +600,7 @@ impl PlacementPolicy<ReplayRequestPayload> for NativePlacement {
                     session: SessionBinding::None,
                     affinity_target,
                     pinned_worker: None,
-                    allowed_worker_ids: Some(
-                        self.topology
-                            .keys()
-                            .map(|&id| id as u64)
-                            .collect::<HashSet<_>>(),
-                    ),
+                    allowed_worker_ids: None,
                     routing_constraints: RoutingConstraints::default(),
                     admission: SelectionAdmission::Book {
                         selection_id: id.to_string(),
@@ -693,7 +627,6 @@ impl PlacementPolicy<ReplayRequestPayload> for NativePlacement {
         self.active.insert(
             id,
             ActiveRequest {
-                group_key: group_key.clone(),
                 hold,
                 lease: None,
                 target: worker.into(),
@@ -761,11 +694,6 @@ impl PlacementPolicy<ReplayRequestPayload> for NativePlacement {
                     .block_on(async { table.commit(hold, active.target) })?,
             );
         }
-        if let Some(active) = self.active.get(&id)
-            && let Some(key) = &active.group_key
-        {
-            self.bindings.insert(key.clone(), active.target);
-        }
         self.pending_ready = true;
         Ok(())
     }
@@ -806,24 +734,14 @@ impl PlacementPolicy<ReplayRequestPayload> for NativePlacement {
     fn pending_count(&self) -> usize {
         self.pending.len()
     }
-    fn worker_ready(&mut self, worker: WorkerTopology, now: f64) -> Result<Vec<Placement>> {
-        self.advance(now)?;
-        self.add_worker(worker)?;
-        Ok(Vec::new())
+    fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> Result<Vec<Placement>> {
+        bail!("Dynamo routing does not support dynamic worker membership")
     }
-    fn worker_draining(&mut self, worker: WorkerTopology, now: f64) -> Result<Vec<Placement>> {
-        self.advance(now)?;
-        self.topology.remove(&worker.worker_id);
-        self.invalidate_worker_bindings(worker.worker_id)?;
-        Ok(Vec::new())
+    fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> Result<Vec<Placement>> {
+        bail!("Dynamo routing does not support dynamic worker membership")
     }
-    fn worker_removed(&mut self, worker: WorkerTopology, now: f64) -> Result<Vec<Placement>> {
-        self.advance(now)?;
-        self.topology.remove(&worker.worker_id);
-        self.invalidate_worker_bindings(worker.worker_id)?;
-        self.runtime
-            .block_on(self.core.delete_worker(worker.worker_id as u64))?;
-        Ok(Vec::new())
+    fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> Result<Vec<Placement>> {
+        bail!("Dynamo routing does not support dynamic worker membership")
     }
     fn topology_settled(&mut self, now: f64) -> Result<Vec<Placement>> {
         self.advance(now)?;
@@ -852,25 +770,28 @@ pub fn execute(payload: &str, router_config: &str) -> Result<String> {
     Ok(serde_json::to_string(&result)?)
 }
 #[pyfunction]
-fn run_replay_json(
+fn run_dynamo_replay_json(
     py: Python<'_>,
     payload: String,
     router_config_json: String,
 ) -> PyResult<String> {
     py.allow_threads(move || execute(&payload, &router_config_json))
-        .map_err(|error| pyo3::exceptions::PyRuntimeError::new_err(format!("{error:#}")))
+        .map_err(aisimulate_core::replay_python_error)
 }
 #[pyfunction]
-fn native_contract() -> String {
-    let mut value = aisimulate_core::native_replay_contract();
-    value["plugin_version"] = json!(env!("CARGO_PKG_VERSION"));
-    value["dynamo_revision"] = json!(DYNAMO_REVISION);
-    value.to_string()
+fn native_replay_contract(py: Python<'_>) -> PyResult<Bound<'_, PyDict>> {
+    let value = PyDict::new(py);
+    value.set_item("api_version", 1)?;
+    value.set_item("core_version", aisimulate_core::CORE_VERSION)?;
+    value.set_item("binding_version", env!("CARGO_PKG_VERSION"))?;
+    value.set_item("dynamo_revision", DYNAMO_REVISION)?;
+    Ok(value)
 }
 #[pymodule]
-fn _native(module: &Bound<'_, PyModule>) -> PyResult<()> {
-    module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
-    module.add_function(wrap_pyfunction!(native_contract, module)?)?;
+fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
+    aisimulate_core::register_python(module)?;
+    module.add_function(wrap_pyfunction!(run_dynamo_replay_json, module)?)?;
+    module.add_function(wrap_pyfunction!(native_replay_contract, module)?)?;
     Ok(())
 }
 
@@ -881,6 +802,55 @@ mod tests {
     use aisimulate_core::replay::{
         AgenticConversationLineage, AgenticRuntimeIdentity, DirectRequest, ReplayRequestContext,
     };
+
+    #[test]
+    fn one_python_module_registers_core_and_dynamo_apis() {
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let module = PyModule::new(py, "_runtime").unwrap();
+            _runtime(&module).unwrap();
+            for name in [
+                "run_replay_json",
+                "run_replay_with_artifacts_json",
+                "run_dynamo_replay_json",
+                "RustForwardPassPerfModel",
+            ] {
+                assert!(module.getattr(name).unwrap().is_callable(), "{name}");
+            }
+            let contract: HashMap<String, Bound<'_, PyAny>> = module
+                .getattr("native_replay_contract")
+                .unwrap()
+                .call0()
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(contract.len(), 4);
+            assert_eq!(contract["api_version"].extract::<u32>().unwrap(), 1);
+            assert_eq!(
+                contract["core_version"].extract::<String>().unwrap(),
+                aisimulate_core::CORE_VERSION
+            );
+            assert_eq!(
+                contract["binding_version"].extract::<String>().unwrap(),
+                env!("CARGO_PKG_VERSION")
+            );
+            assert_eq!(
+                contract["dynamo_revision"].extract::<String>().unwrap(),
+                DYNAMO_REVISION
+            );
+            let error = module
+                .getattr("run_dynamo_replay_json")
+                .unwrap()
+                .call1(("{}", r#"{"policy":"unsupported"}"#))
+                .unwrap_err();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+            assert!(
+                error
+                    .to_string()
+                    .contains("supports router.policy: kv_router only")
+            );
+        });
+    }
 
     fn placement(mode: &str) -> NativePlacement {
         let rank = EngineConfig {
@@ -1068,27 +1038,11 @@ mod tests {
             PlacementDecision::Queued
         ));
         assert_eq!(policy.pending_count(), 1);
-        // Remove the rejected tentative worker. The waiter must select a live
-        // worker instead of inheriting a binding that was never dispatched.
-        let rejected_worker = *policy
-            .topology
-            .iter()
-            .find(|(_, schedulers)| schedulers.contains(&tentative.scheduler_id))
-            .unwrap()
-            .0;
         policy.dispatch_aborted(tentative.request_id, 0.0).unwrap();
-        policy
-            .worker_draining(
-                WorkerTopology {
-                    worker_id: rejected_worker,
-                    scheduler_ids: vec![],
-                },
-                0.0,
-            )
-            .unwrap();
+        assert!(!policy.active.contains_key(&tentative.request_id));
         let released = policy.advance_clock(0.0).unwrap();
         assert_eq!(released.len(), 1);
-        assert_ne!(released[0].scheduler_id / 2, tentative.scheduler_id / 2);
+        assert_eq!(released[0].request_id, sibling.metadata().uuid.unwrap());
         assert!(policy.runtime.block_on(async {
             policy
                 .affinity
@@ -1115,7 +1069,7 @@ mod tests {
             .unwrap();
     }
     #[test]
-    fn cancelled_initializer_waiter_stays_cancelled_and_removed_binding_reinitializes() {
+    fn cancelled_initializer_waiter_stays_cancelled() {
         let mut policy = placement("session");
         let first = request("session", None);
         let waiting = request("session", None);
@@ -1132,29 +1086,12 @@ mod tests {
         policy.dispatch_committed(selected.request_id, 0.0).unwrap();
         assert!(policy.advance_clock(0.0).unwrap().is_empty());
         policy.request_terminal(selected.request_id, 1.0).unwrap();
-        let retired = *policy
-            .topology
-            .iter()
-            .find(|(_, schedulers)| schedulers.contains(&selected.scheduler_id))
-            .unwrap()
-            .0;
-        policy
-            .worker_removed(
-                WorkerTopology {
-                    worker_id: retired,
-                    scheduler_ids: vec![],
-                },
-                1.0,
-            )
-            .unwrap();
-        let replacement = choose(&mut policy, &request("session", None), 1.0);
-        assert_ne!(replacement.scheduler_id / 2, selected.scheduler_id / 2);
-        policy
-            .dispatch_committed(replacement.request_id, 1.0)
-            .unwrap();
-        policy
-            .request_terminal(replacement.request_id, 2.0)
-            .unwrap();
+        let next = choose(&mut policy, &request("session", None), 1.0);
+        assert_eq!(next.scheduler_id, selected.scheduler_id);
+        policy.dispatch_committed(next.request_id, 1.0).unwrap();
+        policy.request_terminal(next.request_id, 2.0).unwrap();
+        assert_eq!(policy.pending_count(), 0);
+        assert!(policy.next_wakeup_ms().is_none());
     }
     #[test]
     fn invalid_router_and_affinity_inputs_fail_explicitly() {
@@ -1256,32 +1193,21 @@ mod tests {
         assert_eq!(next.cache_sample.unwrap().best_available_overlap_blocks, 0);
     }
     #[test]
-    fn binding_index_prunes_native_expired_entries_but_preserves_active_leases() {
-        let mut policy = placement("session");
-        let live = request("live", None);
-        let idle = request("idle", None);
-        let live_key = policy.group_key(&live, None).unwrap().unwrap();
-        let idle_key = policy.group_key(&idle, None).unwrap().unwrap();
-        let live = choose(&mut policy, &live, 0.0);
-        policy.dispatch_committed(live.request_id, 0.0).unwrap();
-        let idle = choose(&mut policy, &idle, 0.0);
-        policy.dispatch_committed(idle.request_id, 0.0).unwrap();
-        policy.request_terminal(idle.request_id, 0.0).unwrap();
-        assert_eq!(policy.bindings.len(), 2);
-        policy.advance(9_000.0).unwrap();
-        assert_eq!(policy.bindings.len(), 2);
-        policy.advance(11_000.0).unwrap();
-        assert!(policy.bindings.contains_key(&live_key));
-        assert!(!policy.bindings.contains_key(&idle_key));
-        assert_eq!(policy.bindings.len(), 1);
-        policy.request_terminal(live.request_id, 11_000.0).unwrap();
-        policy.advance(22_000.0).unwrap();
-        assert!(policy.bindings.is_empty());
-        assert_eq!(policy.pending_count(), 0);
-        assert!(
-            policy.next_wakeup_ms().is_none(),
-            "idle housekeeping cannot prolong replay"
-        );
+    fn dynamic_scaling_fails_before_replay_in_both_topologies() {
+        for topology in [
+            json!({"kind":"aggregated","workers":{"initial_workers":2}}),
+            json!({"kind":"disaggregated","prefill":{"initial_workers":2},"decode":{"initial_workers":2}}),
+        ] {
+            let payload = json!({"topology":topology,
+                "adapters":{"scaling":{"provider":"custom"}},
+                "requests":[{"id":"request","arrival_time_ms":0.0,
+                    "input_tokens":4,"input_token_ids":[1,2,3,4],"output_tokens":1}]});
+            let error = execute(&payload.to_string(), r#"{"policy":"kv_router"}"#).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("does not provide dynamic scaling"),
+                "{error:#}"
+            );
+        }
     }
     #[test]
     fn routing_evidence_respects_request_capture_and_preserves_bounded_counters() {

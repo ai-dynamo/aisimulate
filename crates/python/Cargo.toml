@@ -1,15 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 [package]
-name = "aisimulate-dynamo-policy"
+name = "aisimulate-python"
 version = "0.13.0"
 publish = false
 edition = "2024"
 license = "Apache-2.0"
-description = "Optional native Dynamo policy composition for AISimulate replay"
+description = "AISimulate Python bindings and native Dynamo policy composition"
 
 [lib]
-name = "_native"
+name = "_runtime"
 crate-type = ["cdylib", "rlib"]
 
 [features]

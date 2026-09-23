@@ -45,8 +45,8 @@ areas:
     path_globs:
       - crates/core/examples/
       - crates/core/src/replay/
-      - crates/dynamo-policy/
-      - python/aisimulate-dynamo-policy/
+      - crates/python/
+      - python/aisimulate/src/aisimulate/dynamo.py
       - python/aisimulate/src/aisimulate/replay/
       - python/aisimulate/src/aisimulate/runner.py
       - python/aisimulate/src/aisimulate/traffic.py
@@ -160,18 +160,12 @@ shared:
     owners: [sweeper, maintainers]
   - glob: tests/sweeper/
     owners: [sweeper, maintainers]
-  - glob: crates/dynamo-policy/
+  - glob: crates/python/
+    owners: [replay, forward-pass-engine, maintainers]
+  - glob: python/aisimulate/src/aisimulate/dynamo.py
     owners: [replay, maintainers]
-  - glob: python/aisimulate-dynamo-policy/
-    owners: [replay, maintainers]
-  - glob: crates/dynamo-policy/Cargo.toml
-    owners: [replay, infra, maintainers]
-  - glob: python/aisimulate-dynamo-policy/pyproject.toml
-    owners: [replay, infra, maintainers]
-  - glob: python/aisimulate-dynamo-policy/Dockerfile
-    owners: [replay, infra, maintainers]
-  - glob: crates/core/build.rs
-    owners: [replay, infra, maintainers]
+  - glob: crates/python/Cargo.toml
+    owners: [replay, forward-pass-engine, infra, maintainers]
   - glob: crates/core/src/replay/
     owners: [replay, maintainers]
   - glob: crates/core/examples/

@@ -1,12 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Acceptance against installed matching wheels, through the actual CLI process.
+"""Acceptance through the actual CLI from an installed AISimulate wheel.
 
-Run with the Python interpreter from a fresh venv containing both built wheels:
-    python -m pytest -c /dev/null -p no:cacheprovider -q \
-        --confcutdir=python/aisimulate-dynamo-policy/tests \
-        python/aisimulate-dynamo-policy/tests/test_cli_native.py
+Run in a fresh environment containing the built wheel:
+    python -m pytest -q tests/sweeper/test_dynamo_policy_cli.py
 
 The trace below is self-authored. Fixed engine timing qualifies routing and
 cache behavior without downloading a model or implying hardware accuracy.
@@ -32,18 +30,19 @@ DYNAMO_REVISION = "d9eb42db1168131fdae318eef77255637e4d3495"
 @pytest.fixture(scope="session")
 def installed_cli() -> Path:
     """Never accidentally qualify an editable checkout or a different CLI."""
-    for name in ("aisimulate", "aisimulate-dynamo-policy"):
-        distribution = importlib.metadata.distribution(name)
-        direct = distribution.read_text("direct_url.json")
-        assert not direct or not json.loads(direct).get("dir_info", {}).get("editable"), name
-        assert Path(distribution.locate_file("")).resolve().is_relative_to(Path(sys.prefix).resolve()), name
-    assert importlib.metadata.version("aisimulate") == importlib.metadata.version("aisimulate-dynamo-policy")
-    for name in ("aisimulate", "aisimulate_dynamo_policy"):
+    distribution = importlib.metadata.distribution("aisimulate")
+    direct = distribution.read_text("direct_url.json")
+    assert not direct or not json.loads(direct).get("dir_info", {}).get("editable")
+    assert Path(distribution.locate_file("")).resolve().is_relative_to(Path(sys.prefix).resolve())
+    # Routing must work with the main distribution alone.
+    with pytest.raises(importlib.metadata.PackageNotFoundError):
+        importlib.metadata.distribution("aisimulate-dynamo-policy")
+    for name in ("aisimulate", "aisimulate._runtime"):
         spec = importlib.util.find_spec(name)
         assert spec is not None and spec.origin is not None, name
         assert Path(spec.origin).resolve().is_relative_to(Path(sys.prefix).resolve()), spec.origin
     cli = Path(sys.executable).parent / "aisimulate"
-    assert cli.is_file(), f"Install the matching wheels into this interpreter's venv: {cli}"
+    assert cli.is_file(), f"Install the aisimulate wheel into this interpreter's venv: {cli}"
     return cli
 
 
@@ -135,16 +134,28 @@ def _config(tmp_path: Path, backend: str, topology: str, affinity: str) -> dict:
     }
 
 
-def _invoke(cli: Path, tmp_path: Path, config: dict, *, name: str, stack: str | None = None):
+def _invoke(
+    cli: Path,
+    tmp_path: Path,
+    config: dict,
+    *,
+    name: str,
+    stack: str | None = None,
+    capture_per_request: bool = True,
+    env_overrides: dict[str, str] | None = None,
+):
     config_path = tmp_path / f"{name}.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
     output = tmp_path / f"{name}-output"
-    command = [str(cli), "predict", "--config", str(config_path), "--capture-per-request", "--format", "json"]
+    command = [str(cli), "predict", "--config", str(config_path), "--format", "json"]
+    if capture_per_request:
+        command += ["--capture-per-request"]
     command += ["--output-dir", str(output)]
     if stack is not None:
         command += ["--stack", stack]
     env = {key: value for key, value in os.environ.items() if key not in {"PYTHONPATH", "PYTHONHOME"}}
     env.update(PYTHONNOUSERSITE="1", HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+    env.update(env_overrides or {})
     process = subprocess.run(command, cwd=tmp_path, env=env, text=True, capture_output=True, timeout=120)
     return process, output
 
@@ -335,3 +346,27 @@ def test_native_policy_rejects_oversized_trace_before_materialization(installed_
     assert plan["estimate"]["estimated_peak_bytes"] > plan["budget"]["memory_limit_bytes"]
     reason = plan["estimate"]["reason"]
     assert ("before metadata parsing" if oversized == "storage" else "initial") in reason
+
+
+def test_native_report_storage_failure_retains_resource_limit_exit(installed_cli, tmp_path):
+    config = _config(tmp_path, "vllm", "aggregated", "session")
+    config["router"] = {"policy": "kv_router"}
+    config["traffic"] = {
+        "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 2},
+        "load": {"type": "concurrency", "concurrency": 1},
+        "stop": {"requests": 4100},
+    }
+    # Exact summary samples spill after 4096 observations. Fail actual native
+    # temporary storage, without changing the parent process or mocking routing.
+    process, output = _invoke(
+        installed_cli,
+        tmp_path,
+        config,
+        name="storage-failure",
+        capture_per_request=False,
+        env_overrides={"TMPDIR": str(tmp_path / "missing-temp-directory")},
+    )
+    assert process.returncode == 3, process.stderr
+    assert "report storage" in process.stderr
+    assert not (output / "prediction.json").exists()
+    assert json.loads((output / "resource-runtime.json").read_text())["status"] == "resource_limited"

@@ -39,7 +39,7 @@ ENV RUSTUP_HOME=/opt/rust/rustup \
 # exit status); pin the toolchain for reproducible release wheels.
 RUN curl --proto '=https' --tlsv1.2 -sSf --retry 5 --retry-connrefused --retry-delay 2 \
         https://sh.rustup.rs -o /tmp/rustup-init.sh \
-    && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.96.0 \
+    && sh /tmp/rustup-init.sh -y --profile minimal --default-toolchain 1.96.1 \
     && rm /tmp/rustup-init.sh
 
 # Pin to the image's CPython 3.13 so uv/maturin never fetch a standalone one.
@@ -71,7 +71,7 @@ RUN set -e; \
 # policy older than the glibc symbols in the native extension.
 RUN cd /workspace/python/aisimulate && \
     mkdir -p /workspace/unrepaired-dist && \
-    MATURIN_PEP517_ARGS="--auditwheel skip" \
+    MATURIN_PEP517_ARGS="--locked --auditwheel skip" \
         uv build --wheel --out-dir /workspace/unrepaired-dist && \
     set -- /workspace/unrepaired-dist/aisimulate-*.whl && \
     [ "$#" -eq 1 ] && [ -f "$1" ] && \

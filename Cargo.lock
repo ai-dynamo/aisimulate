@@ -66,7 +66,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "aisimulate-dynamo-policy"
+name = "aisimulate-python"
 version = "0.13.0"
 dependencies = [
  "aisimulate-core",

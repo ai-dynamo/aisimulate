@@ -10,10 +10,10 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-from aisimulate_dynamo_policy import runner as plugin
-from aisimulate_dynamo_policy.provider import PROVIDER, DynamoPolicyConfigAdapter
 
+from aisimulate import dynamo as plugin
 from aisimulate.config_adapter import PredictionAdapterContext, validate_config_adapter
+from aisimulate.dynamo import PROVIDER, DynamoPolicyConfigAdapter
 from aisimulate.runner import InvalidRunnerError
 from aisimulate.sweeper.provider import AdapterReplaySpec, RuntimeHookSpec
 from aisimulate.sweeper.replay import BackendDeploymentSpec, ReplayOutputRequirements, ReplaySpec
@@ -94,20 +94,21 @@ def test_recommendation_is_explicitly_unsupported():
 
 @pytest.fixture
 def native_contracts(monkeypatch):
-    core_contract = {"api_version": 1, "core_version": "0.13.0", "core_source_sha256": "a" * 64}
-    plugin_contract = {**core_contract, "plugin_version": "0.13.0", "dynamo_revision": plugin.DYNAMO_REVISION}
-    native = SimpleNamespace(native_contract=lambda: json.dumps(plugin_contract), run_replay_json=lambda *_: "{}")
-    core = SimpleNamespace(native_replay_contract=lambda: core_contract)
-    versions = {"aisimulate": "0.13.0", "aisimulate-dynamo-policy": "0.13.0"}
-    monkeypatch.setattr(
-        plugin.importlib, "import_module", lambda name: core if name == "aisimulate._runtime" else native
-    )
+    contract = {
+        "api_version": 1,
+        "core_version": "0.13.0",
+        "binding_version": "0.13.0",
+        "dynamo_revision": plugin.DYNAMO_REVISION,
+    }
+    native = SimpleNamespace(native_replay_contract=lambda: contract, run_dynamo_replay_json=lambda *_: "{}")
+    versions = {"aisimulate": "0.13.0"}
+    monkeypatch.setattr(plugin.importlib, "import_module", lambda name: native)
     monkeypatch.setattr(plugin.importlib.metadata, "version", versions.__getitem__)
-    return core_contract, plugin_contract, versions, native
+    return contract, versions, native
 
 
 def test_matching_native_and_python_contracts(native_contracts):
-    assert plugin._load_native() is native_contracts[3]
+    assert plugin._load_native() is native_contracts[2]
     factory = plugin.DynamoPolicyRunnerFactory()
     assert factory.capabilities().supports_backend_topology("sglang", "disagg")
     assert not factory.capabilities().supports_execution_mode("online")
@@ -120,14 +121,11 @@ def test_matching_native_and_python_contracts(native_contracts):
     ("target", "key", "value", "message"),
     [
         (0, "api_version", True, "API version"),
-        (1, "api_version", 2, "API version"),
-        (0, "core_source_sha256", "b" * 64, "different AISimulate core sources"),
-        (1, "core_source_sha256", None, "different AISimulate core sources"),
-        (1, "core_version", "0.12.0", "mismatched"),
-        (1, "plugin_version", "0.12.0", "mismatched"),
-        (2, "aisimulate", "0.12.0", "mismatched"),
-        (2, "aisimulate-dynamo-policy", "0.14.0", "mismatched"),
-        (1, "dynamo_revision", "unknown", "Dynamo revision"),
+        (0, "api_version", 2, "API version"),
+        (0, "core_version", "0.12.0", "Mismatched"),
+        (0, "binding_version", "0.12.0", "Mismatched"),
+        (1, "aisimulate", "0.12.0", "Mismatched"),
+        (0, "dynamo_revision", "unknown", "Dynamo revision"),
     ],
 )
 def test_mixed_builds_fail_closed(native_contracts, target, key, value, message):
@@ -136,25 +134,25 @@ def test_mixed_builds_fail_closed(native_contracts, target, key, value, message)
         plugin._load_native()
 
 
-def test_missing_native_has_paired_install_message(monkeypatch):
+def test_missing_native_has_single_wheel_install_message(monkeypatch):
     def missing(name):
         raise ImportError(name)
 
     monkeypatch.setattr(plugin.importlib, "import_module", missing)
-    with pytest.raises(InvalidRunnerError, match="matching aisimulate and aisimulate-dynamo-policy wheels"):
+    with pytest.raises(InvalidRunnerError, match="Reinstall or rebuild the aisimulate wheel"):
         plugin._load_native()
 
 
-@pytest.mark.parametrize("value", [None, "not-json", "[]", {"core_version": "invalid"}])
-def test_invalid_native_contract_has_paired_install_message(native_contracts, value):
-    native_contracts[3].native_contract = lambda: value
-    with pytest.raises(InvalidRunnerError, match="matching aisimulate and aisimulate-dynamo-policy wheels"):
+@pytest.mark.parametrize("value", [None, "not-json", [], {"core_version": "invalid"}])
+def test_invalid_native_contract_has_install_message(native_contracts, value):
+    native_contracts[2].native_replay_contract = lambda: value
+    with pytest.raises(InvalidRunnerError, match="Reinstall or rebuild the aisimulate wheel"):
         plugin._load_native()
 
 
 def test_missing_native_executor_is_rejected(native_contracts):
-    del native_contracts[3].run_replay_json
-    with pytest.raises(InvalidRunnerError, match="missing run_replay_json"):
+    del native_contracts[2].run_dynamo_replay_json
+    with pytest.raises(InvalidRunnerError, match="missing run_dynamo_replay_json"):
         plugin._load_native()
 
 
@@ -167,7 +165,7 @@ def test_runner_uses_canonical_materializer_and_native_policy_seam():
             {"completed_requests": 1, "mean_ttft_ms": 2.0, "dynamo_policy": {"native_policy": "dynamo.SelectionCore"}}
         )
 
-    native = SimpleNamespace(run_replay_json=run_replay_json)
+    native = SimpleNamespace(run_dynamo_replay_json=run_replay_json)
     replay = plugin.DynamoPolicyReplayRunner(0, 4, native)
     report = replay.run(_spec(), output_requirements=ReplayOutputRequirements(include_raw_report=True))
     assert len(calls) == 1
@@ -180,7 +178,7 @@ def test_runner_uses_canonical_materializer_and_native_policy_seam():
 
 
 def test_runner_does_not_drop_incompatible_or_unconfigured_hooks():
-    native = SimpleNamespace(run_replay_json=lambda *_: pytest.fail("invalid hook must not execute"))
+    native = SimpleNamespace(run_dynamo_replay_json=lambda *_: pytest.fail("invalid hook must not execute"))
     replay = plugin.DynamoPolicyReplayRunner(0, 4, native)
     with pytest.raises(ValueError, match="exactly one router"):
         replay.run(replace(_spec(), adapters={}))

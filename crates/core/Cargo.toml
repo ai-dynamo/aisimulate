@@ -14,7 +14,7 @@ readme = "README.md"
 
 [lib]
 name = "aisimulate_core"
-crate-type = ["rlib", "cdylib"]
+crate-type = ["rlib"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -54,6 +54,3 @@ replay-bench = []
 
 [dev-dependencies]
 rstest = "0.18.2"
-
-[build-dependencies]
-sha2 = "0.10"

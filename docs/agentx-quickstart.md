@@ -15,11 +15,13 @@ CPU; you do not need to allocate those GPUs or download model weights.
 Use the combined source checkout from
 [PR #306](https://github.com/ai-dynamo/aisimulate/pull/306), which includes the
 continuous profiles from [PR #307](https://github.com/ai-dynamo/aisimulate/pull/307)
-and the optional native Dynamo routing adapter. A checkout containing only #307
-does not provide the routing integration used below. Build its matching core and
-plugin wheels together; this guide does not assume a published plugin release.
-Run the commands below from the repository root. This path is experimental and
-qualified for functional behavior, not hardware performance accuracy.
+and native Dynamo routing in the `aisimulate` wheel. A checkout containing only
+#307 does not provide the routing integration used below. This guide requires
+that combined source; it does not assume the feature is available in a published
+release. Run commands from the repository root. The single-wheel installation and
+CLI were exercised locally on Linux x86-64 with Python 3.12 and Rust 1.96.1;
+platform release checks are tracked on the PR. Functional validation does not
+establish hardware performance accuracy.
 
 The YAML below sets `traffic.load.agentic_profile.duration_seconds: 3600`.
 This controls simulated time for issuing profile requests, not CPU wall time.
@@ -30,47 +32,25 @@ See [continuous agentic profiles](agentic-profile.md) for the detailed contract.
 You need Python 3.11–3.13, `uv`, Rust 1.96.1, and a C/C++ compiler and linker.
 On Linux, install the build tools, `pkg-config`, OpenSSL development headers and
 CMake. See [source installation](installation.md#use-current-source) for platform
-details. The optional adapter is initially qualified on Linux x86-64.
-
-Build and install both wheels from this same checkout:
+details. Build and install the single application package:
 
 ```bash
 mkdir -p /tmp/agentx-quickstart
 rustup toolchain install 1.96.1 --profile minimal
-uv venv --python 3.12 /tmp/agentx-quickstart/build-venv
-uv pip install --python /tmp/agentx-quickstart/build-venv/bin/python 'maturin>=1.12,<2'
-/tmp/agentx-quickstart/build-venv/bin/python scripts/build_dynamo_policy.py \
-  --output-dir /tmp/agentx-quickstart/wheels
 uv venv --python 3.12 /tmp/agentx-quickstart/venv
-uv pip install --python /tmp/agentx-quickstart/venv/bin/python \
-  /tmp/agentx-quickstart/wheels/aisimulate-*.whl \
-  /tmp/agentx-quickstart/wheels/aisimulate_dynamo_policy-*.whl
+RUSTUP_TOOLCHAIN=1.96.1 uv pip install \
+  --python /tmp/agentx-quickstart/venv/bin/python ./python/aisimulate
 uv pip check --python /tmp/agentx-quickstart/venv/bin/python
+git rev-parse HEAD
 ```
 
-Use a new wheel output directory when rebuilding. The build records wheel hashes,
-source revision and the immutable Dynamo dependency in `wheels/manifest.json`.
-The loader checks matching Python/native versions, replay API and core source
-hash. Mixing wheels built from different core source trees is rejected, even at
-the same package version. No local Cargo override or full `ai-dynamo`
-installation is needed.
-
-The adapter imports the existing public APIs from already-merged Dynamo revision
-`d9eb42db1168131fdae318eef77255637e4d3495`. Dynamo #15149 is not a prerequisite.
+The wheel includes native Dynamo routing in `aisimulate._runtime`; no separate
+policy wheel, full `ai-dynamo` installation or running Dynamo service is needed.
+The build uses the shared Cargo lockfile and public APIs from already-merged
+Dynamo revision `d9eb42db1168131fdae318eef77255637e4d3495`, without a local override.
+Dynamo #15149 is not a prerequisite. Keep the source SHA with your results.
 Internet access is needed for initial dependencies, trace download and model
 metadata. Simulation itself runs offline on your CPU.
-
-For a container built from the same source and paired dependency contract:
-
-```bash
-docker build -f python/aisimulate-dynamo-policy/Dockerfile \
-  --build-arg AISIMULATE_SOURCE_REVISION="$(git rev-parse HEAD)" \
-  -t aisimulate-dynamo-policy .
-```
-
-Mount the trace/config/output paths when running the container; its entry point
-is `aisimulate`. Container construction builds the same two wheels and checks
-their installed contract. It does not consume an unrelated published Dynamo image.
 
 ## 2. Download a reproducible Weka workload
 
@@ -99,7 +79,7 @@ requests, and occupies 1,198,197 bytes. Its SHA-256 is
 Verify the downloaded subset before running:
 
 ```bash
-python/aisimulate/.venv/bin/python - <<'PY'
+/tmp/agentx-quickstart/venv/bin/python - <<'PY'
 import hashlib
 from pathlib import Path
 trace = Path("/tmp/agentx-quickstart/plays-0000-0001.jsonl")
@@ -172,18 +152,17 @@ execution:
 independently selects the binding key: `session` binds each conversation, while
 `sibling_group` binds children of the same parent conversation together. Parents
 keep their own keys, and separate plays cannot share an affinity key. Bindings
-include the worker and attention-DP rank in each routing pool. The plugin uses
+include the worker and attention-DP rank in each routing pool. The integration uses
 native hard affinity and commits a binding only after the engine accepts dispatch.
 The TTL starts when the last active request releases its lease, using simulated
 time; supported TTL values are 1 through 31,536,000 seconds, including fractions.
 
-YAML with `router` automatically selects the installed `dynamo-policy` stack.
+YAML with `router` automatically selects the built-in `dynamo-policy` stack.
 Explicit `--stack dynamo-policy` selects the same integration; explicit
 `--stack dynamo` keeps the existing full Dynamo provider and its own capabilities.
-An incompatible explicit stack, missing plugin or invalid routing option fails
-with an error. With no routing section and no explicit stack, the engine default
-is unchanged. The two separately versioned Dynamo packages need not be installed
-together.
+An incompatible explicit stack, unavailable native capability or invalid routing
+option fails with an error. With no routing section and no explicit stack, the
+engine default is unchanged.
 
 The trace's embedded hash blocks contain 64 tokens. The explicit
 `traffic.source.block_size: 64` keeps host resource inspection aligned with
@@ -305,16 +284,15 @@ router overlap is not a substitute for cache hits. The 162 source requests
 include initial snapshot history, and the corpus can be replayed repeatedly as
 lanes recycle, so this is not the expected measured request count.
 
-The configuration above was exercised with matching source-built core/plugin
-wheels, the pinned two-play subset, and default AIC timing for both 600-second
-and 3,600-second admission windows. One 3,600-second run recorded 219 successful
+A local single-wheel debug build ran the exact YAML above with this pinned
+subset and default AIC timing. The 3,600-second run recorded 219 successful
 responses, zero canceled or unsettled requests, four started plays, and 95.65%
-first-admission prefix reuse. Its native policy recorded 482 P/D decisions,
-including preparation, and 3,042 physical KV events. The supervised process
-peaked at about 258 MB RSS within the configured 4 GB budget. These are
-functional validation observations, not fixed expected counts, a general
-memory bound, or hardware accuracy claims; native stochastic selection can
-change the results.
+first-admission prefix reuse. All 438 measured and 44 preparation P/D decisions
+matched worker/DP bindings across 14 group/pool pairs; 4,053 physical KV events
+were observed. The supervised process peaked at about 270 MB RSS within the
+configured 4 GB budget. These are functional observations, not fixed expected
+counts, a general memory bound, or hardware accuracy claims; native stochastic
+selection can change the results.
 
 To compare against a cold snapshot, repeat the command with a separate output
 directory and add:
@@ -338,7 +316,7 @@ including attention DP, seeded snapshots, saved-frontier warmup and duration
 profiles. Workload/snapshot seeds remain supported; the existing public Dynamo
 SelectionCore uses native stochastic selection, so an explicit selector seed is
 rejected. Authored DP pins, custom policy classes, online routing, dynamic scaling,
-and routing-aware recommendation are not implemented by this optional adapter.
+and routing-aware recommendation are not implemented by this integration.
 
 The KV index receives physical simulated engine store/remove events. Cache reuse
 is still simulated behavior, not measured GPU performance. The existing

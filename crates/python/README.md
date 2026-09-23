@@ -3,21 +3,25 @@ SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All 
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Native Dynamo policy plugin
+# AISimulate Python bindings
 
-This private Rust crate is compiled into the optional `aisimulate-dynamo-policy`
-Python wheel. It consumes the unmodified, merged ai-dynamo/dynamo revision
+This private `aisimulate-python` crate builds the single `aisimulate._runtime`
+extension in the existing AISimulate wheel. It registers the core Python API,
+including `run_replay_json`, and adds `run_dynamo_replay_json` for routing. It
+consumes the unmodified, merged ai-dynamo/dynamo revision
 `d9eb42db1168131fdae318eef77255637e4d3495` through Cargo's immutable Git dependency.
 It does not depend on Dynamo PR #15149, a development AISimulate commit from
 Dynamo, or a local dependency override.
 
 The crate is a member of AISimulate's root Cargo workspace and uses the root
 `Cargo.lock`. The core remains the default member and does not depend on Dynamo;
-the adapter depends on both the core and Dynamo's standalone router. Build the
-adapter explicitly with `cargo build -p aisimulate-dynamo-policy --locked`.
+the binding depends on both the core and Dynamo's standalone router. Install the
+application from the repository root with `uv pip install ./python/aisimulate`.
+There is no separate policy wheel. `native_replay_contract()` reports the replay
+API version, linked core version, binding version, and Dynamo revision.
 
 AISimulate's canonical replay bridge constructs workloads, performance models,
-engines and reports. The plugin supplies a `ReplayComposition` whose policies use
+engines and reports. The binding supplies a `ReplayComposition` whose policies use
 Dynamo's public `SelectionServiceBuilder`, `SelectionCore`, native worker-selection
 policy, native `SessionAffinity`, and native booking lifecycle. Affinity holds stay tentative until the engine accepts
 dispatch; siblings waiting on initialization remain queued and can be cancelled.
