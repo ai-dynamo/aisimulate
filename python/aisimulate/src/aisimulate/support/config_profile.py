@@ -1179,3 +1179,78 @@ def derive_profile(
         }
     )
     return ProfileDraft(profile, values, {}, sources)
+
+
+def profile_from_observations(
+    config: ModelConfig,
+    request: SupportRequest,
+    precision: Mapping[str, Any],
+    resources: Mapping[str, Any],
+    overrides: Mapping[str, Any] | None = None,
+) -> FpmModelProfile:
+    """Combine validated model metadata with independently observed cache groups.
+
+    Runtime grouping need not match config-derived planning groups. No estimated
+    geometry or non-KV byte declaration is substituted for the observation.
+    """
+    supplied = validate_overrides(overrides)
+    metadata = {key: config.suggestions[key] for key in _MODEL_FIELDS if key in config.suggestions}
+    for key in _MODEL_FIELDS:
+        if key in supplied:
+            if key in metadata and (
+                supplied[key] > metadata[key] if key == "context_length" else supplied[key] != metadata[key]
+            ):
+                raise ValueError(f"{key} override conflicts with the source config")
+            metadata[key] = supplied[key]
+    missing = set(_MODEL_FIELDS) - metadata.keys()
+    if missing:
+        raise ValueError("model metadata remains unresolved: " + ", ".join(sorted(missing)))
+    _validate_architecture(
+        config.raw,
+        config.decoder_architecture or metadata["architecture"],
+        metadata["num_experts"],
+        inkling=metadata["architecture"] == _INKLING_ARCHITECTURE,
+    )
+    _geometry(config, config.decoder_architecture or metadata["architecture"], request)
+    for key in ("cache_layout", "cache_groups", "kv_bytes_per_token", "max_num_tokens", "max_batch_size"):
+        if key in supplied and supplied[key] != resources.get(key):
+            raise ValueError(
+                f"resource_overrides.{key} differs from observed runtime; a compatible fresh probe is required"
+            )
+    for key in _DEPLOYMENT_FIELDS:
+        if key in supplied and supplied[key] != precision.get(key):
+            raise ValueError(f"resource_overrides.{key} differs from observed precision")
+    parallel = request.parallelism()
+    return FpmModelProfile.model_validate(
+        {
+            "schema_version": 1,
+            "model": request.identity.model,
+            "model_revision": request.identity.model_revision,
+            **metadata,
+            "provenance": json.dumps(
+                {
+                    "method": "validated runtime resources with local model configuration metadata",
+                    "config_sha256": config.sha256,
+                    "config_notes": config.notes,
+                    "user_overrides": {
+                        key: {"value": value, "source": "user assumption"} for key, value in supplied.items()
+                    },
+                    "source_profile_provenance": request.fpm_profile.provenance if request.fpm_profile else None,
+                },
+                sort_keys=True,
+            ),
+            "deployments": [
+                {
+                    "system": request.identity.gpu,
+                    "backend": request.identity.framework,
+                    "backend_version": request.identity.framework_version,
+                    "tp": parallel["tensor"],
+                    "dp": parallel["attention_data"],
+                    "moe_tp": parallel["moe_tensor"],
+                    "moe_ep": parallel["moe_expert"],
+                    **precision,
+                    "resources": dict(resources),
+                }
+            ],
+        }
+    )

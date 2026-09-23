@@ -31,6 +31,9 @@ def fpm_cli_args(
     if checkpoint != root / "fpm-checkpoint" and root / "fpm-checkpoint" not in checkpoint.parents:
         raise ValueError("checkpoint_dir must stay within the plan's fpm-checkpoint directory")
     profile = request.profile_deployment()
+    from .runtime import runtime_collection_inputs
+
+    runtime_arguments, deployment = runtime_collection_inputs(request, deployment)
     scheduler = request.scheduler_limits()
     max_prefill_tokens = scheduler["max_batched_tokens"]
     max_prefill_batch = scheduler["max_sequences"]
@@ -69,6 +72,7 @@ def fpm_cli_args(
         "--fpm-database-root",
         str(root / "systems/data"),
     ]
+    command.extend(runtime_arguments)
     if "prefill_cudagraph_policy" in request.collection.model_fields_set:
         command.extend(("--fpm-prefill-cudagraph-policy", request.collection.prefill_cudagraph_policy))
     if request.collection.max_prefill_cudagraph_size is not None:
@@ -189,6 +193,9 @@ def run_fpm(
         print(shlex.join(command))
         return 0
     check_plan(request, root)
+    from .runtime import runtime_probe_manifest, verify_collection_runtime, verify_runtime_acceptance
+
+    verify_runtime_acceptance(request)
     with plan_lock(root):
         check_plan(request, root)
         _check_campaign_outputs(root, smoke=smoke, resume=resume, checkpoint_dir=checkpoint_dir)
@@ -197,7 +204,18 @@ def run_fpm(
         # The collector reports input/plan failures through argparse before
         # entering run_resolved; only execution failures escape this call.
         try:
-            return fpm_main(command[3:])
+            status = fpm_main(command[3:])
+            if status == 0 and not smoke and runtime_probe_manifest(request) is not None:
+                selected_checkpoint = (
+                    Path(checkpoint_dir).expanduser().resolve() if checkpoint_dir else root / "fpm-checkpoint"
+                )
+                payload = json.loads((selected_checkpoint / "fpm_forward.json").read_text(encoding="utf-8"))
+                index = Path(payload["runtime_observations"])
+                if not index.resolve().is_relative_to(root):
+                    raise ValueError("formal runtime observation index must stay inside the collection directory")
+                observed = verify_collection_runtime(request, index, collection_checkpoint=payload)
+                (root / "runtime-compatibility.json").write_text(json.dumps(observed, indent=2, sort_keys=True) + "\n")
+            return status
         except Exception as exc:
             print(f"aisimulate onboard collect-fpm failed: {exc}", file=sys.stderr)
             return 1

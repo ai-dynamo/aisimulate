@@ -1,0 +1,40 @@
+{
+  "schema_version": "aisimulate-runtime-instrumentation/v1",
+  "runtime": {
+    "framework": "vllm",
+    "version": "0.27.0",
+    "source_revision": "4bdc8a788d2e2ce9165d552b3d4d8b72604626bf",
+    "source_files": {
+      "vllm/v1/worker/gpu_worker.py": "50134ca3a147f5470e556437cbd40a13ea05b098efbac6553d5ea2f3e5f7ff57",
+      "vllm/v1/worker/gpu_model_runner.py": "993f2c926012241bcb8cc7f568c8e82968e4d81ca125641c831ecf501aac02ac",
+      "vllm/v1/core/kv_cache_utils.py": "0ab5385925f660395612e3f69030cad3b18c2e0bd6fb61d3ff43072a6cefb74f",
+      "vllm/v1/core/sched/scheduler.py": "c67bda2886b52865ddafabaae7d797c359e930752f374421a33e537d94a5f45a",
+      "vllm/v1/core/block_pool.py": "51cad2fd425128a0ff433ca4685acfc022e40659153ea5d7180fc586e1eebb6c",
+      "vllm/v1/kv_cache_interface.py": "bfbd62f02d900faf043ce0aeb46de0a10d7ce531351fced789805a6b817a7f80",
+      "vllm/version.py": "bd7a42776b630b611e2f5fa4698bc97e1f4f2583c35ccb246ec2e7bd43c83313",
+      "vllm/v1/worker/gpu/attn_utils.py": "5f889b6694eb83cdfa1f2d099e646e2c985d5213a68168edc821038de58946a0",
+      "vllm/v1/core/single_type_kv_cache_manager.py": "8c9030040cbc3b7176e228e10ff6491c3cf6c3e95bdfb573532fcf75f5385ebd",
+      "vllm/v1/attention/backends/flash_attn.py": "03017560e89dffc5453b6525bf76940e143b38939022ff5f74f872119fe12e48",
+      "vllm/v1/core/kv_cache_manager.py": "70f7f608c0963af155540630a5633483e5c19c0c0280dfd621760d5db2a419a6",
+      "vllm/v1/attention/backends/flashinfer.py": "758acb584792328cb20b05373ec8cab93aee76b48562baf1b40f8f4a55c5d054",
+      "vllm/v1/attention/backend.py": "14803680d6f0f3fcf04dd48def6b961c5dae70c061287610c8f0e1bbc82cb471",
+      "vllm/config/model.py": "d14c60ce1b2a7d9c47983ef0df0c10c4f8083ced5bc45935e8ababfe59f22736",
+      "vllm/transformers_utils/config.py": "17b57bfe69ba076cc5e01e3fefdc86e5023a1f85a759a99c16bef49569828dff",
+      "dynamo/vllm/instrumented_scheduler.py": "443255313134f32331c6b40cfc90fe72064f207e089c8d95867f8963c22e20a4",
+      "vllm/v1/worker/utils.py": "8bdd2c60ee6443092cc0ea60e62343fd1ae6ad9a94888925bd7a83d5b4ae110d"
+    }
+  },
+  "files": [
+    "fpm_memory_observer.py",
+    "instrumentation/__init__.py",
+    "instrumentation/observer.py",
+    "instrumentation/hooks.py",
+    "instrumentation/vllm_027.py",
+    "instrumentation/vllm-0.27.0.md",
+    "instrumentation/README.md"
+  ],
+  "worker_class": "instrumentation.vllm_027.ObservedWorker",
+  "scheduler_class": "instrumentation.vllm_027.ObservedInstrumentedScheduler",
+  "observation_schema": "aisimulate-runtime-observation/v1",
+  "source_notes": "instrumentation/vllm-0.27.0.md"
+}

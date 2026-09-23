@@ -195,6 +195,9 @@ def _verify_collection(
         raise ValueError("saved collection runtime version differs from onboarding")
     scheduler = request.scheduler_limits()
     from .fpm import fpm_cli_args
+    from .runtime import runtime_probe_manifest, verify_collection_runtime
+
+    probe_manifest = runtime_probe_manifest(request)
 
     # Normalize the reviewed inputs through the same local collector options
     # parser. This does not resolve a model or regenerate Dynamo's runtime grid.
@@ -207,6 +210,11 @@ def _verify_collection(
         image=saved_options.get("slurm_container_image") or None,
         container_mount=saved_options.get("slurm_container_mounts", []),
     )
+    if probe_manifest is not None:
+        source_index = _json(Path(probe_manifest["observations_index"]))
+        collection_deployment = FPMDeployment.model_validate(
+            source_index["configurations"][probe_manifest["configuration"]]["launch"]["deployment"]
+        )
     reviewed_options = FPMCollectionOptions.from_args(
         _parser().parse_args(
             fpm_cli_args(request, output_dir=root, plan_only=True, deployment=collection_deployment)[3:]
@@ -277,20 +285,40 @@ def _verify_collection(
             if path.is_file():
                 snapshots[path] = _digest(path.read_bytes())
         rows.extend(aggregate_cell(frozen, cell, cell_dir, expected_attempt_id=attempt))
-        observations.append(
-            resolve_runtime_resources(
-                cell,
-                cell_dir / "raw",
-                expected_plan_sha256=sha,
-                expected_attempt_id=attempt,
-                expected_backend_version=request.identity.framework_version,
-                expected_context_length=request.search.context_length,
-                expected_max_num_tokens=scheduler["max_batched_tokens"],
-                expected_max_batch_size=scheduler["max_sequences"],
-                expected_gpu_memory_utilization=request.collection.memory_fraction,
-                expected_model_revision=request.identity.model_revision,
+        if probe_manifest is None:
+            observations.append(
+                resolve_runtime_resources(
+                    cell,
+                    cell_dir / "raw",
+                    expected_plan_sha256=sha,
+                    expected_attempt_id=attempt,
+                    expected_backend_version=request.identity.framework_version,
+                    expected_context_length=request.search.context_length,
+                    expected_max_num_tokens=scheduler["max_batched_tokens"],
+                    expected_max_batch_size=scheduler["max_sequences"],
+                    expected_gpu_memory_utilization=request.collection.memory_fraction,
+                    expected_model_revision=request.identity.model_revision,
+                )
             )
-        )
+    runtime_compatibility = None
+    if probe_manifest is not None:
+        if not isinstance(checkpoint.get("runtime_observations"), str):
+            raise ValueError("formal collection is missing its runtime observation index")
+        index = _inside(Path(checkpoint["runtime_observations"]), root)
+        observed = verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
+        observations.append(observed["resources"])
+        runtime_compatibility = observed["compatibility"]
+        snapshots[index] = _digest(index.read_bytes())
+        evidence = observed["provenance"]
+        for reference in [*evidence["launch_artifacts"], *evidence["artifacts"], *evidence["runtime_artifacts"]]:
+            path = _inside(index.parent / reference["path"], root)
+            snapshots[path] = _digest(path.read_bytes())
+        from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+        bundle_path = _inside(index.parent / evidence["instrumentation"]["manifest"], root)
+        bundle = load_instrumentation(bundle_path)
+        for path in [bundle_path, *(bundle.root / relative for relative in bundle.files)]:
+            snapshots[_inside(path, root)] = _digest(path.read_bytes())
     import pyarrow.parquet as pq
 
     actual = pq.read_table(parquet).to_pylist()
@@ -312,6 +340,9 @@ def _verify_collection(
             {"relative_path": str(path), "sha256": _digest(content)} for path, content in sorted(files.items())
         ],
     }
+    if runtime_compatibility is not None:
+        manifest["runtime_probe"] = probe_manifest
+        manifest["runtime_compatibility"] = runtime_compatibility
     return observations, manifest, files, snapshots
 
 

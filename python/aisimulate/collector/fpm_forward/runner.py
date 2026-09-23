@@ -127,6 +127,8 @@ _MEMORY_OBSERVER_FILES = ("fpm_memory_observer.py", "fpm_memory_worker.py", "fpm
 
 
 def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
+    if getattr(plan, "runtime_instrumentation", None) is not None:
+        return True
     if getattr(plan, "fpm_profile", None) is None:
         return False
     deployment = plan.deployment_profile(cell)
@@ -138,6 +140,8 @@ def _observe_runtime_memory(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
 
 
 def _observe_runtime_execution(plan: FPMCollectionPlan, cell: FPMCell) -> bool:
+    if getattr(plan, "runtime_instrumentation", None) is not None:
+        return False
     return (
         getattr(getattr(plan, "capability", None), "aic_database_version", None) in EXECUTION_SUPPORTED_VERSIONS
         and not cell.execution_identity[0]
@@ -1279,6 +1283,25 @@ def _cell_generator_overrides(
                     "2",
                 ]
             )
+    probe_sampling = getattr(plan, "probe_sampling", None)
+    if probe_sampling is not None:
+        sampling_flags = (
+            {
+                "--prefill-max-new-token-samples": probe_sampling["max_new_token_samples"],
+                "--prefill-max-kv-read-token-samples": probe_sampling["max_kv_read_token_samples"],
+                "--prefix-max-batch-size-samples": probe_sampling["max_batch_size_samples"],
+            }
+            if cell.workload_kind == "prefill"
+            else {
+                "--decode-max-kv-read-token-samples": probe_sampling["max_kv_read_token_samples"],
+                "--decode-max-batch-size-samples": probe_sampling["max_batch_size_samples"],
+            }
+        )
+        for flag, value in sampling_flags.items():
+            if flag in scheduler_args:
+                scheduler_args[scheduler_args.index(flag) + 1] = str(value)
+            else:
+                scheduler_args.extend([flag, str(value)])
     # Native point generation sees the runtime bounds before any cases are
     # queued. Each flag is emitted once, after resolving the phase's bounds.
     if max_num_tokens is not None:
@@ -1308,6 +1331,7 @@ def _cell_generator_overrides(
     ]
     observe_memory = _observe_runtime_memory(plan, cell)
     observe_execution = _observe_runtime_execution(plan, cell)
+    instrumentation = getattr(plan, "runtime_instrumentation", None)
     if observe_memory:
         if cell.workload_kind == "decode":
             # Use the prefill collection requirement for both phases when
@@ -1317,13 +1341,26 @@ def _cell_generator_overrides(
         model_args.extend(
             [
                 "--worker-cls",
-                "fpm_memory_worker.FpmResourceWorker",
+                instrumentation.manifest["worker_class"]
+                if instrumentation is not None
+                else "fpm_memory_worker.FpmResourceWorker",
                 "--scheduler-cls",
-                "fpm_memory_scheduler.FpmResourceInstrumentedScheduler",
+                instrumentation.manifest["scheduler_class"]
+                if instrumentation is not None
+                else "fpm_memory_scheduler.FpmResourceInstrumentedScheduler",
             ]
         )
     elif observe_execution:
         model_args.extend(["--worker-cls", "fpm_memory_worker.FpmExecutionWorker"])
+    if instrumentation is not None:
+        env.extend(
+            {"name": name, "value": value}
+            for name, value in {
+                "AISIMULATE_RUNTIME_CONTEXT": f"{REMOTE_WORKDIR}/runtime-probe-context.json",
+                "AISIMULATE_RUNTIME_INSTRUMENTATION": f"{REMOTE_WORKDIR}/runtime-instrumentation/manifest.json",
+                "AISIMULATE_RUNTIME_OBSERVATION_DIR": FPM_RESULTS_DIR,
+            }.items()
+        )
     if architecture == "DeepseekV41ForCausalLM":
         from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
 
@@ -1533,6 +1570,9 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
         "DYN_FPM_DSV41_REAL_KV",
         "DYN_FPM_INPUT_TEXT",
         "DYN_FPM_TOKENIZER_REVISION",
+        "AISIMULATE_RUNTIME_CONTEXT",
+        "AISIMULATE_RUNTIME_INSTRUMENTATION",
+        "AISIMULATE_RUNTIME_OBSERVATION_DIR",
     }
     lines = ["# Generated Collector startup environment; engine settings remain in run.sh."]
     for item in overrides["K8sConfig"]["extra_env"]:
@@ -1954,8 +1994,51 @@ def _run_collection_impl(
     checkpoint_name = "fpm_forward_smoke.json" if smoke else "fpm_forward.json"
     checkpoint_path = Path(checkpoint_dir).expanduser().resolve() / checkpoint_name
     checkpoint = _load_checkpoint(checkpoint_path, plan, resume)
+    instrumentation = getattr(plan, "runtime_instrumentation", None)
+    observation_attempt_id = None
+    if instrumentation is not None:
+        from .runtime_probe import prepare_collection_observations
+
+        observation_attempt_id = checkpoint.setdefault("runtime_observation_attempt_id", uuid.uuid4().hex)
+        instrumentation = prepare_collection_observations(plan, root, observation_attempt_id)
+        _atomic_json(checkpoint_path, checkpoint)
     errors: list[dict[str, object]] = []
     run_attempts: list[dict[str, Any]] = []
+    observation_archive_failed: set[str] = set()
+
+    def archive_observations(cell, record) -> bool:
+        if instrumentation is None:
+            return True
+        from .runtime_probe import record_collection_observations
+
+        try:
+            observation_index = record_collection_observations(
+                plan,
+                root,
+                observation_attempt_id,
+                cell,
+                record["attempt_id"],
+                root / "cells" / cell.cell_id,
+                record["status"],
+            )
+            checkpoint["runtime_observations"] = str(observation_index)
+            record.pop("observation_error", None)
+            return True
+        except Exception as error:
+            record["status"] = "failed"
+            record["observation_error"] = str(error)
+            observation_archive_failed.add(cell.cell_id)
+            errors.append(
+                {
+                    "module": "fpm_forward",
+                    "cell_id": cell.cell_id,
+                    "error_type": type(error).__name__,
+                    "error_message": str(error),
+                    "classification": "runtime_observation_archive_failed",
+                }
+            )
+            return False
+
     runtime_exec = Path(__file__).resolve().parent / "runtime" / "fpm_exec.sh"
     runtime_preflight = Path(__file__).resolve().parent / "runtime" / "preflight.py"
     target_cells = plan.cells[: (cell_limit or (1 if smoke else len(plan.cells)))]
@@ -2004,8 +2087,11 @@ def _run_collection_impl(
             recovered = _recover_completed_attempt(plan, cell, root, entry)
             if recovered is None:
                 continue
+            archived = archive_observations(cell, recovered)
             checkpoint["cells"][cell.cell_id] = recovered
             checkpoint_changed = True
+            if not archived:
+                continue
             logger.info(
                 "Recovered completed FPM cell %s from strictly validated artifacts for attempt %s",
                 cell.cell_id,
@@ -2019,6 +2105,12 @@ def _run_collection_impl(
         entry = checkpoint["cells"].get(cell.cell_id)
         if not isinstance(entry, dict) or entry.get("status") != "passed":
             continue
+        if instrumentation is not None:
+            # Native recovery and older checkpoints can precede observation
+            # archival. Repair the index before this passed cell is skipped.
+            checkpoint_changed = True
+            if not archive_observations(cell, entry):
+                continue
         # A validated terminal database no longer depends on retained raw
         # receipts. Unpublished cells still need them before publication.
         if not formal_database_terminal and _frozen_points(plan) is not None:
@@ -2062,6 +2154,8 @@ def _run_collection_impl(
 
     for cell in target_cells:
         previous = checkpoint["cells"].get(cell.cell_id, {})
+        if cell.cell_id in observation_archive_failed:
+            continue
         if resume and previous.get("status") == "passed":
             continue
         if resume and previous.get("status") in {"failed", "cleanup_failed"} and not retry_failed:
@@ -2096,6 +2190,10 @@ def _run_collection_impl(
         if cell_dir.exists() and not resume:
             shutil.rmtree(cell_dir)
         cell_dir.mkdir(parents=True, exist_ok=True)
+        # Preserve abruptly interrupted attempts before replacing raw files.
+        if instrumentation is not None and previous.get("attempt_id") and not archive_observations(cell, previous):
+            _atomic_json(checkpoint_path, checkpoint)
+            continue
         for stale_dir in (cell_dir / "raw", cell_dir / "logs"):
             if stale_dir.exists():
                 shutil.rmtree(stale_dir)
@@ -2154,6 +2252,16 @@ def _run_collection_impl(
             pods = resource.wait_ready(_expected_nodes(manifest))
             phase_marks["schedule_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
+            instrumentation_files = []
+            if instrumentation is not None:
+                from .runtime_probe import launch_context, stage_runtime_instrumentation
+
+                context = launch_context(
+                    plan, cell, configuration=plan.runtime_configuration, attempt_id=observation_attempt_id
+                )
+                context["collector_attempt_id"] = attempt_id
+                context["cell_id"] = cell.cell_id
+                instrumentation_files = stage_runtime_instrumentation(instrumentation, cell_dir, context)
             resource.stage(
                 pods,
                 [
@@ -2164,9 +2272,11 @@ def _run_collection_impl(
                     runtime_preflight,
                     *(
                         [runtime_exec.parent / filename for filename in _MEMORY_OBSERVER_FILES]
-                        if _observe_runtime_memory(plan, cell) or _observe_runtime_execution(plan, cell)
+                        if instrumentation is None
+                        and (_observe_runtime_memory(plan, cell) or _observe_runtime_execution(plan, cell))
                         else []
                     ),
+                    *instrumentation_files,
                     *_stage_points_file(plan, cell_dir),
                     *(
                         [
@@ -2265,6 +2375,8 @@ def _run_collection_impl(
             record["collector_phase_seconds"] = dict(phase_marks)
             record["completed_at"] = _utc_now()
             record["duration_seconds"] = round(time.monotonic() - cell_started, 3)
+            if instrumentation is not None:
+                archive_observations(cell, record)
             run_attempts.append(_run_manifest_attempt(cell, record))
             _atomic_json(checkpoint_path, checkpoint)
     # R16 §3 run manifest: the machine-readable timing map for the speed-up

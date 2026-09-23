@@ -168,6 +168,22 @@ from replay's cross-request prefix reuse; preserve the collector's phase-specifi
 protocol and inspect skipped/fallback evidence instead of copying replay cache
 flags into benchmark launches.
 
+When runtime-dependent geometry or capacity remains unresolved, follow
+[runtime probing](docs/fpm-self-service.md#resolve-cache-geometry-with-a-runtime-probe).
+Use compatible verified evidence or the bundled observer; when no bundle matches,
+inspect the exact pinned runtime and vendor patches, proactively author a
+campaign-local adapter with source mappings and semantic checks, then preview
+and execute within the existing authorized campaign. A missing bundled adapter
+does not require an upstream merge or a runtime downgrade. Cover every selected
+configuration and both phases, preserve native runtime behavior, and retain
+failed attempts and raw worker/scheduler evidence. Import with
+`onboard import-observations` before proposing resolved geometry or capacity.
+Save bundle/source/evidence/validation progress in the existing checkpoint after
+meaningful changes. Review and accept each resulting draft independently;
+observed memory establishes neither timing coverage nor serving accuracy.
+Ask only for missing access, unresolved user choices or a concrete runtime or
+resource constraint that needs a decision.
+
 Do not ask users for activation, runtime, communication or aggregate non-KV
 memory bounds. Fresh config-derived profiles keep memory pending, even when
 planning estimates exist. Only an explicitly supplied complete four-field

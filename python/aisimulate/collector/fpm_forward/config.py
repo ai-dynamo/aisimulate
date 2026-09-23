@@ -572,6 +572,24 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
         help="JSON or YAML FPM model profile with exact deployment identities and rank-local resource bounds.",
     )
     group.add_argument(
+        "--fpm-runtime-instrumentation",
+        default=None,
+        metavar="PATH",
+        help="Frozen instrumentation manifest for verifying collection against accepted runtime observations.",
+    )
+    group.add_argument(
+        "--fpm-runtime-launch",
+        default=None,
+        metavar="PATH",
+        help="JSON launch facts from the accepted runtime probe; requires runtime instrumentation and configuration.",
+    )
+    group.add_argument(
+        "--fpm-runtime-configuration",
+        default=None,
+        metavar="KEY",
+        help="Checkpoint configuration key for runtime observations; requires instrumentation and launch facts.",
+    )
+    group.add_argument(
         "--fpm-enforce-eager",
         action="store_true",
         default=None,
@@ -849,6 +867,9 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_kv_cache_dtypes",
         "fpm_model_config",
         "fpm_model_profile",
+        "fpm_runtime_instrumentation",
+        "fpm_runtime_launch",
+        "fpm_runtime_configuration",
         "fpm_tp_sizes",
         "fpm_pp_sizes",
         "fpm_dp_sizes",

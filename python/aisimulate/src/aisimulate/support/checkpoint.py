@@ -54,6 +54,7 @@ class Configuration(StrictModel):
     progress: Progress = Field(default_factory=lambda: Progress(stage=3))
     artifacts: dict[str, Artifact] = Field(default_factory=dict)
     acceptance: Acceptance | None = None
+    history: list[dict[str, JsonValue]] = Field(default_factory=list)
 
 
 class Checkpoint(StrictModel):
@@ -179,6 +180,10 @@ def _canonical_request(config: Configuration, *, require_complete: bool = False)
         if request.fpm_profile is None:
             raise ValueError("acceptance requires a complete draft_request with fpm_profile")
         request.scheduler_limits()
+        if require_complete:
+            from .runtime import verify_runtime_profile
+
+            verify_runtime_profile(request)
         return request.model_dump(mode="json", exclude_none=True)
     except ValueError:
         if require_complete:
@@ -317,9 +322,12 @@ def report(state: Checkpoint, target: Path) -> dict[str, Any]:
         if accepted:
             try:
                 _canonical_request(config, require_complete=True)
+                from .runtime import verify_checkpoint_runtime
+
+                verify_checkpoint_runtime(state, name, target)
                 if config.acceptance.sha256 != _context(state, config, "acceptance"):
                     raise ValueError("accepted inputs or draft no longer match; review and accept again")
-            except ValueError as exc:
+            except (OSError, ValueError) as exc:
                 accepted = False
                 local_issues.append({"configuration": name, "artifact": None, "detail": str(exc)})
         accepted &= not input_invalid
@@ -417,6 +425,16 @@ def save_checkpoint(
         _check_patch(patch)
         state = Checkpoint.model_validate(_merge(old.model_dump(mode="json"), patch))
         state.revision = old.revision + 1
+        for name, config in state.configurations.items():
+            previous = old.configurations.get(name)
+            if (
+                previous is not None
+                and previous.draft_request != config.draft_request
+                and previous.draft_request.get("fpm_profile") is not None
+            ):
+                from .runtime import preserve_runtime_overrides
+
+                config.draft_request = preserve_runtime_overrides(previous.draft_request, config.draft_request)
         _capture_refs(state, old, target)
         for name, config in state.configurations.items():
             previous = old.configurations.get(name)
@@ -425,9 +443,25 @@ def save_checkpoint(
             changed = _context(state, config, "acceptance") != _context(old, previous, "acceptance")
             collection_changed = _context(state, config, "collection") != _context(old, previous, "collection")
             validation_changed = _context(state, config, "validation") != _context(old, previous, "validation")
+            draft_changed = previous.draft_request != config.draft_request
+            if draft_changed or (changed and previous.acceptance is not None):
+                config.history.append(
+                    {
+                        "event": "draft_replaced" if draft_changed else "acceptance_invalidated",
+                        "revision": old.revision,
+                        "draft_request": deepcopy(previous.draft_request),
+                        "inputs": deepcopy(previous.inputs),
+                        "shared_inputs": deepcopy(old.inputs),
+                        "acceptance": previous.acceptance.model_dump(mode="json") if previous.acceptance else None,
+                        "artifacts": {key: ref.model_dump(mode="json") for key, ref in previous.artifacts.items()},
+                        "shared_artifacts": {key: ref.model_dump(mode="json") for key, ref in old.artifacts.items()},
+                    }
+                )
             if changed:
                 config.acceptance = None
-                if config.progress.stage >= 3:
+                progress_patch = patch.get("configurations", {}).get(name, {}).get("progress")
+                explicit_blockers = isinstance(progress_patch, dict) and progress_patch.get("status") == "blocked"
+                if config.progress.stage >= 3 and not explicit_blockers:
                     config.progress = Progress(stage=3, next_action="Review and accept the changed draft.")
             elif validation_changed and not collection_changed and config.progress.stage >= 6:
                 config.progress = Progress(stage=6, next_action="Repeat validation with the changed validation inputs.")
@@ -436,6 +470,9 @@ def save_checkpoint(
                 raise ValueError(f"unknown configuration {name!r}")
             config = state.configurations[name]
             _canonical_request(config, require_complete=True)
+            from .runtime import verify_checkpoint_runtime
+
+            verify_checkpoint_runtime(state, name, target)
             source_refs = [(ref, None) for ref in state.artifacts.values()] + [
                 (ref, config) for ref in config.artifacts.values() if ref.scope == "input"
             ]

@@ -204,11 +204,24 @@ def add_support_parser(subparsers: Any) -> None:
     )
     collect.add_argument("--resume", action="store_true", help="Resume the existing collector checkpoint.")
     collect.add_argument("--checkpoint-dir", help="Checkpoint directory inside the plan's fpm-checkpoint directory.")
-    deployment = collect.add_argument_group("Collector deployment")
+    add_deployment_arguments(collect)
+    from .finalization import add_finalization_parser
+    from .runtime import add_runtime_parsers
+    from .validation import add_validation_parser
+    from .validation_workflow import add_quality_parsers
+
+    add_validation_parser(actions)
+    add_quality_parsers(actions)
+    add_finalization_parser(actions)
+    add_runtime_parsers(actions)
+
+
+def add_deployment_arguments(parser: Any, *, default_executor: str | None = "kubernetes") -> None:
+    deployment = parser.add_argument_group("Collector deployment")
     deployment.add_argument(
         "--executor",
         choices=("kubernetes", "slurm"),
-        default="kubernetes",
+        default=default_executor,
         help="Collection executor (default: kubernetes); Slurm uses an existing sbatch/salloc allocation.",
     )
     deployment.add_argument("--dynamo-version", help="Target Dynamo release used to resolve collector templates.")
@@ -227,13 +240,6 @@ def add_support_parser(subparsers: Any) -> None:
         "--transport", choices=("nvlink", "ib", "efa"), help="GPU networking transport, independent of the executor."
     )
     deployment.add_argument("--image-pull-secret", help="Kubernetes secret for pulling the collector image.")
-    from .finalization import add_finalization_parser
-    from .validation import add_validation_parser
-    from .validation_workflow import add_quality_parsers
-
-    add_validation_parser(actions)
-    add_quality_parsers(actions)
-    add_finalization_parser(actions)
 
 
 def _values(args: argparse.Namespace, model: Any) -> dict[str, Any]:
@@ -1171,6 +1177,10 @@ def _plan(args: argparse.Namespace) -> int:
 
 
 def run_support_command(args: argparse.Namespace) -> int:
+    if args.support_action in {"probe-runtime", "import-observations"}:
+        from .runtime import run_runtime_command
+
+        return run_runtime_command(args)
     if args.support_action in {"validate-collection", "validate-serving"}:
         from .validation_workflow import validate_collection, validate_serving
 

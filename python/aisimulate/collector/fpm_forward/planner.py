@@ -38,7 +38,17 @@ from .types import ParallelTopology
 logger = logging.getLogger(__name__)
 
 
-def _runtime_memory_policy(profile: FpmModelProfile | None, backend_version: str) -> dict[str, object] | None:
+def _runtime_memory_policy(
+    profile: FpmModelProfile | None, backend_version: str, runtime_observation: dict[str, Any] | None = None
+) -> dict[str, object] | None:
+    if runtime_observation is not None:
+        return {
+            "source": "runtime_instrumentation",
+            "observation": "enabled",
+            "selected_vllm_version": backend_version,
+            "bundle_sha256": runtime_observation["bundle_sha256"],
+            "async_scheduling": False,
+        }
     if profile is None or not any(
         deployment.resources.memory_source == "pending" for deployment in profile.deployments
     ):
@@ -518,6 +528,27 @@ class FPMCollectionPlan:
     cells: tuple[FPMCell, ...]
     sha256: str
     _fpm_profile_json: str | None = field(default=None, repr=False)
+    _runtime_observation_json: str | None = field(default=None, repr=False)
+
+    @property
+    def runtime_instrumentation(self):
+        if self._runtime_observation_json is None:
+            return None
+        from .runtime_instrumentation import load_instrumentation
+
+        reference = json.loads(self._runtime_observation_json)
+        bundle = load_instrumentation(reference["manifest"], expected_version=self.capability.aic_database_version)
+        if bundle.sha256 != reference["bundle_sha256"]:
+            raise ValueError("formal collection instrumentation changed after planning")
+        return bundle
+
+    @property
+    def runtime_launch(self) -> dict[str, Any] | None:
+        return json.loads(self._runtime_observation_json)["launch"] if self._runtime_observation_json else None
+
+    @property
+    def runtime_configuration(self) -> str | None:
+        return json.loads(self._runtime_observation_json)["configuration"] if self._runtime_observation_json else None
 
     @property
     def fpm_profile(self) -> FpmModelProfile | None:
@@ -606,9 +637,14 @@ class FPMCollectionPlan:
         }
         if self._fpm_profile_json is not None:
             payload["fpm_profile"] = json.loads(self._fpm_profile_json)
-        memory_policy = _runtime_memory_policy(self.fpm_profile, self.capability.aic_database_version)
+        runtime_observation = json.loads(self._runtime_observation_json) if self._runtime_observation_json else None
+        memory_policy = _runtime_memory_policy(
+            self.fpm_profile, self.capability.aic_database_version, runtime_observation
+        )
         if memory_policy is not None:
             payload["runtime_memory_policy"] = memory_policy
+        if runtime_observation is not None:
+            payload["runtime_observation"] = runtime_observation
         return payload
 
 
@@ -654,6 +690,9 @@ def build_collection_plan(
     fpm_profile: FpmModelProfile | dict[str, Any] | None = None,
     collector_config: dict[str, Any] | None = None,
     generator_overrides: dict[str, Any] | None = None,
+    runtime_instrumentation=None,
+    runtime_launch: dict[str, Any] | None = None,
+    runtime_configuration: str = "collection",
 ) -> FPMCollectionPlan:
     if backend != "vllm":
         raise ValueError("FPM Generator V1 currently supports only backend=vllm")
@@ -850,7 +889,43 @@ def build_collection_plan(
     if profile is not None:
         canonical["fpm_profile"] = profile.model_dump(mode="json")
         profile_json = json.dumps(canonical["fpm_profile"], sort_keys=True, separators=(",", ":"))
-    memory_policy = _runtime_memory_policy(profile, capability.aic_database_version)
+    runtime_observation_json = None
+    if runtime_instrumentation is not None:
+        from .runtime_instrumentation import load_instrumentation
+        from .runtime_probe import normalize_probe_launch, validate_collection_probe_launch
+
+        if runtime_launch is None:
+            raise ValueError("formal runtime instrumentation requires the accepted probe launch facts")
+        bundle = (
+            load_instrumentation(runtime_instrumentation, expected_version=capability.aic_database_version)
+            if isinstance(runtime_instrumentation, (str, Path))
+            else runtime_instrumentation
+        )
+        launch = normalize_probe_launch(runtime_launch)
+        validate_collection_probe_launch(
+            launch,
+            bundle,
+            model_path=model_path,
+            system=system,
+            backend=backend,
+            backend_version=capability.aic_database_version,
+            cells=cells,
+            options=options,
+            profile=profile,
+            generator_overrides=generator_overrides or {},
+        )
+        canonical["runtime_observation"] = {
+            "manifest": str(bundle.manifest_path),
+            "bundle_sha256": bundle.sha256,
+            "launch": launch,
+            "configuration": runtime_configuration,
+        }
+        runtime_observation_json = json.dumps(canonical["runtime_observation"], sort_keys=True)
+    elif runtime_launch is not None:
+        raise ValueError("accepted probe launch facts require runtime instrumentation for formal collection")
+    memory_policy = _runtime_memory_policy(
+        profile, capability.aic_database_version, canonical.get("runtime_observation")
+    )
     if memory_policy is not None:
         canonical["runtime_memory_policy"] = memory_policy
     return FPMCollectionPlan(
@@ -868,6 +943,7 @@ def build_collection_plan(
         cells=cells,
         sha256=_canonical_hash(canonical),
         _fpm_profile_json=profile_json,
+        _runtime_observation_json=runtime_observation_json,
     )
 
 

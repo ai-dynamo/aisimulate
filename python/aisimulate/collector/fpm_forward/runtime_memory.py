@@ -125,6 +125,8 @@ def validate_saved_plan(payload: dict[str, Any]) -> None:
             canonical["fpm_profile"] = payload["fpm_profile"]
         if "runtime_memory_policy" in payload:
             canonical["runtime_memory_policy"] = payload["runtime_memory_policy"]
+        if "runtime_observation" in payload:
+            canonical["runtime_observation"] = payload["runtime_observation"]
         for item in payload["cells"]:
             present = _CELL_EXECUTION_FIELDS.intersection(item)
             required = _CELL_EXECUTION_FIELDS if payload["schema_version"] == 11 else frozenset()
@@ -479,6 +481,55 @@ def _normalized_groups(cache: dict[str, Any], scheduler_cache: dict[str, Any], p
     return groups
 
 
+def validate_shared_pool_accounting(cache: dict[str, Any], scheduled: dict[str, Any]) -> dict[str, int]:
+    """Recompute the physical cost and usable count of one shared HBM block pool.
+
+    Used by strict historical finalization and the independent observation
+    importer. Runtime-specific view/source/retention checks remain with callers.
+    """
+    count = _positive(cache.get("num_blocks"), "worker cache block count")
+    free = _positive(scheduled.get("initial_free_blocks"), "initial free block count")
+    if (
+        type(scheduled.get("num_blocks")) is not int
+        or scheduled["num_blocks"] != count
+        or scheduled.get("pool_count") != 1
+        or type(scheduled.get("pool_count")) is not int
+        or scheduled.get("watermark_blocks") != 0
+        or type(scheduled.get("watermark_blocks")) is not int
+        or free >= count
+        or scheduled.get("reserved_blocks") != count - free
+        or type(scheduled.get("reserved_blocks")) is not int
+        or type(scheduled.get("null_block_id")) is not int
+        or not 0 <= scheduled["null_block_id"] < count
+    ):
+        raise ValueError("scheduler block pool capacity/reservations are unsupported or inconsistent")
+    allocated = _positive(cache.get("allocated_cache_bytes"), "physical cache bytes")
+    available = _positive(cache.get("available_cache_bytes"), "profiled cache budget")
+    storages = cache.get("storages")
+    if not isinstance(storages, list) or not storages:
+        raise ValueError("runtime memory evidence lacks physical storage accounting")
+    keys = [(item.get("device"), item.get("pointer")) for item in storages]
+    if (
+        len(keys) != len(set(keys))
+        or len({device for device, _pointer in keys}) != 1
+        or any(
+            not isinstance(device, str) or not device.startswith("cuda:") or type(pointer) is not int or pointer <= 0
+            for device, pointer in keys
+        )
+        or sum(_positive(item.get("size_bytes"), "storage bytes") for item in storages) != allocated
+    ):
+        raise ValueError("physical runtime cache storage accounting is inconsistent")
+    if allocated > available or allocated % count:
+        raise ValueError("physical cache allocation exceeds its budget or has a non-integral pool page size")
+    return {
+        "num_blocks": count,
+        "initial_free_blocks": free,
+        "allocated_cache_bytes": allocated,
+        "available_cache_bytes": available,
+        "page_size_bytes": allocated // count,
+    }
+
+
 def resolve_runtime_resources(
     cell: FPMCell,
     raw_root: Path,
@@ -604,43 +655,10 @@ def resolve_runtime_resources(
         scheduled = schedulers[dp].get("cache")
         if not isinstance(cache, dict) or not isinstance(scheduled, dict):
             raise ValueError("runtime memory evidence lacks cache allocation")
-        count = _positive(cache.get("num_blocks"), "worker cache block count")
-        free = _positive(scheduled.get("initial_free_blocks"), "initial free block count")
-        if (
-            type(scheduled.get("num_blocks")) is not int
-            or scheduled["num_blocks"] != count
-            or scheduled.get("pool_count") != 1
-            or type(scheduled.get("pool_count")) is not int
-            or scheduled.get("watermark_blocks") != 0
-            or type(scheduled.get("watermark_blocks")) is not int
-            or free >= count
-            or scheduled.get("reserved_blocks") != count - free
-            or type(scheduled.get("reserved_blocks")) is not int
-            or type(scheduled.get("null_block_id")) is not int
-            or not 0 <= scheduled["null_block_id"] < count
-        ):
-            raise ValueError("scheduler block pool capacity/reservations are unsupported or inconsistent")
-        allocated = _positive(cache.get("allocated_cache_bytes"), "physical cache bytes")
-        available = _positive(cache.get("available_cache_bytes"), "profiled cache budget")
-        storages = cache.get("storages")
-        if not isinstance(storages, list) or not storages:
-            raise ValueError("runtime memory evidence lacks physical storage accounting")
-        keys = [(item.get("device"), item.get("pointer")) for item in storages]
-        if (
-            len(keys) != len(set(keys))
-            or len({device for device, _pointer in keys}) != 1
-            or any(
-                not isinstance(device, str)
-                or not device.startswith("cuda:")
-                or type(pointer) is not int
-                or pointer <= 0
-                for device, pointer in keys
-            )
-            or sum(_positive(item.get("size_bytes"), "storage bytes") for item in storages) != allocated
-        ):
-            raise ValueError("physical runtime cache storage accounting is inconsistent")
-        if allocated > available or allocated % count:
-            raise ValueError("physical cache allocation exceeds its budget or has a non-integral pool page size")
+        accounting = validate_shared_pool_accounting(cache, scheduled)
+        count = accounting["num_blocks"]
+        free = accounting["initial_free_blocks"]
+        allocated = accounting["allocated_cache_bytes"]
         groups = _normalized_groups(cache, scheduled, allocated // count)
         geometry = [{key: value for key, value in group.items() if key != "layer_classes"} for group in cache["groups"]]
         if canonical_groups is None:
