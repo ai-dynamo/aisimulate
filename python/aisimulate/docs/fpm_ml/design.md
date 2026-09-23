@@ -302,10 +302,15 @@ ABI), and `missing_left` is optional per tree. Typical size 100–450 KB.
 
 `crates/core/src/perfmodel/fpm/learned.rs`:
 
-1. `IterationFeatureVector::from_metrics(&[ForwardPassMetrics])` builds the 135-slot
-   vector from all ranks of one step, walking the per-request lists once, and records
-   whether request lists were present and consistent.
-2. `predict_ms` selects the store by workload kind, walks each tree (NaN follows
+1. `IterationFeatureVector::from_metrics_with(&[ForwardPassMetrics], fill_slots)` builds
+   the 135-slot vector from all ranks of one step. All `req_*` sums, extremes and cross
+   terms come out of one pass over the `(extend, past)` pairs; the requests are sorted by
+   past and copied into the 32 HiSim slots only when `fill_slots` is set, which
+   `learned_base_ms` derives from the artifact (`needs_slot_features()`), so a `sglang18`
+   artifact never pays for the sort. It also records whether request lists were present
+   and consistent.
+2. `predict_ms` gathers the artifact's features into a fixed-size stack array (no
+   per-call allocation), selects the store by workload kind, walks each tree (NaN follows
    `missing_left`, `<=` threshold goes left), sums leaf values onto `baseline`, and
    applies `exp` for the `log_ms` target. A kind without a store returns `None`; a
    non-finite result is an error.
@@ -315,7 +320,7 @@ ABI), and `missing_left` is optional per tree. Typical size 100–450 KB.
    learned path (`classify_regression_workload` is weight-independent).
 
 The online correction grid (`tune_with_fpms`) sits on top of the learned base exactly
-as on top of the native model, so a constant boot-to-boot offset is absorbed at run
+as on top of the native model, so a constant run-to-run offset is absorbed at run
 time.
 
 ## 5. Evaluation method
