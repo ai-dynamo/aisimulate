@@ -17,10 +17,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from tools.forward_perf_gate.run import THREAD_ENV
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
 from tools.simulation_perf_gate.cases import expand_cases
 from tools.simulation_perf_gate.compare import difference, validate, write_report
+
+THREAD_ENV = {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "RAYON_NUM_THREADS": "1",
+    "PYTHONHASHSEED": "0",
+}
 
 
 def invoke(
@@ -45,20 +52,26 @@ def invoke(
     # Never allow an inherited Python path to substitute another revision's package.
     environment.pop("PYTHONPATH", None)
     environment.pop("PYTHONHOME", None)
-    start = time.perf_counter()
+    elapsed_ms = 0.0
     try:
+        payload = json.dumps(request)
         with log.open("w") as stderr:
-            completed = subprocess.run(
-                ["taskset", "--cpu-list", str(cpu), str(python), str(worker)],
-                input=json.dumps(request),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=stderr,
-                cwd=worker.parents[4],
-                env=environment,
-                timeout=timeout,
-                check=True,
-            )
+            start = time.perf_counter()
+            try:
+                completed = subprocess.run(
+                    ["taskset", "--cpu-list", str(cpu), str(python), str(worker)],
+                    input=payload,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=stderr,
+                    cwd=worker.parents[4],
+                    env=environment,
+                    timeout=timeout,
+                    check=True,
+                )
+            finally:
+                # Stop before controller-side JSON parsing and validation.
+                elapsed_ms = (time.perf_counter() - start) * 1000
         parsed = json.loads(completed.stdout)
         if not isinstance(parsed, dict):
             raise ValueError("worker response must be a JSON object")
@@ -66,7 +79,17 @@ def invoke(
         response = parsed
     except (subprocess.SubprocessError, OSError, ValueError) as error:
         response["error"] = {"type": type(error).__name__, "message": str(error)}
-    response["worker_elapsed_ms"] = (time.perf_counter() - start) * 1000
+    if response.get("status") == "ERROR":
+        if not isinstance(response.get("error"), dict):
+            response["error"] = {"type": "ValueError", "message": "worker error must be a JSON object"}
+        response["error"]["log"] = str(log)
+        try:
+            with log.open("rb") as source:
+                source.seek(max(0, source.seek(0, os.SEEK_END) - 4096))
+                response["error"]["stderr_tail"] = source.read().decode(errors="replace")
+        except OSError:
+            pass  # Preserve the original launch/log error.
+    response["worker_elapsed_ms"] = elapsed_ms
     return response
 
 
@@ -76,18 +99,19 @@ def retain_request_artifacts(pair: dict, case: dict, revisions: dict, output: Pa
     for side in ("base", "head"):
         response = pair[side]
         try:
-            validate(response, case, revisions[side], "availability")
+            summary = validate(response, case, revisions[side], "availability")
         except (KeyError, TypeError, ValueError):
             continue
-        rows[side] = response["behavior"].pop("per_request")
+        rows[side] = summary["per_request"]
+        full_records = response["behavior"].pop("per_request")
         name = f"{case['case_id']}-{side}-requests.json.gz"
-        encoded = json.dumps(rows[side], separators=(",", ":"), allow_nan=False).encode()
+        encoded = json.dumps(full_records, separators=(",", ":"), allow_nan=False).encode()
         with gzip.open(output / name, "wb", compresslevel=1) as destination:
             destination.write(encoded)
         response["per_request_artifact"] = {
             "path": name,
             "records": len(rows[side]),
-            "sha256": digest(rows[side]),
+            "sha256": digest(full_records),
             "complete": True,
         }
     if len(rows) == 2:

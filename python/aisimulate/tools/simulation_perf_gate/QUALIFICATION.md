@@ -1,5 +1,8 @@
 # Local simulation-performance qualification
 
+The full-suite measurements below were collected with protocol v1. The protocol
+v2 review checks are recorded at the end; they do not replace CI qualification.
+
 All 12 cases passed three complete same-revision comparisons using separate
 release-wheel installations. These are local results, not acceptance on the
 `prod-aisimulate-default-amd64-v1` CI runner. Automatic CI remains disabled.
@@ -80,3 +83,24 @@ file checks, packaged legal-file checks, and diff whitespace checks passed.
 Before enabling `SIMULATION_PERF_ENABLED`, repeat qualification and controls
 on the CI runner. See [README.md](README.md) for the protocol, commands, and
 manual workflow dispatch. The local pass does not remove this rollout gate.
+
+## Protocol v2 review validation
+
+The fixed comparison fields were checked against all retained request records
+and summaries from the three local qualifications and both controls. All 38
+case comparisons kept their expected classifications: 36 `PASS`, one
+`PERFORMANCE_REGRESSION`, and one `BEHAVIOR_CHANGED`. The audit converted the
+protocol tag in memory to exercise v2 validation on the old evidence; production
+comparisons still reject protocol mismatches. These are not new measurements.
+
+A live check used the updated controller and worker with the two existing
+release-wheel installations. Dense vLLM, MLA multiworker DP, P/D SGLang, and
+AgentX P/D SGLang all passed one equivalence pass and one paired measurement
+round. Total elapsed time was 79.8 seconds. This is a smoke check, not the
+five-round full-suite qualification or CI runner acceptance.
+
+Validation: 324 focused benchmark and workflow tests passed. Ruff lint/format,
+actionlint, and diff whitespace checks passed. Evidence remains under
+`build/simulation-perf/review-{tests.log,recheck.json,recheck.log,smoke/}`.
+Automatic comparisons remain disabled pending qualification on the CI runner
+with the final implementation and unchanged workloads and thresholds.

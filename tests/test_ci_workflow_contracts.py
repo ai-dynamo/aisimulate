@@ -2990,6 +2990,7 @@ def test_simulation_performance_rollout_and_revision_contract():
         ("python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl", True),
         ("python/aisimulate/uv.lock", True),
         ("python/aisimulate/tools/simulation_perf_gate/README.md", False),
+        ("python/aisimulate/tools/forward_perf_gate/run.py", False),
         ("docs/cli/user-guide.md", False),
     ],
 )
@@ -3005,3 +3006,47 @@ def test_simulation_performance_selects_complete_pr_files(path, expected):
         "owner/repo", "push", "refs/heads/pull-request/1", "a" * 40, api=api
     )
     assert selected["run_comparison"] == str(expected).lower()
+
+
+@pytest.mark.parametrize(
+    "path,expected",
+    [
+        ("contract.py", True),
+        ("worker.py", True),
+        ("fixtures/agentx.jsonl", True),
+        ("README.md", False),
+        ("QUALIFICATION.md", False),
+        ("fixtures/README.md", False),
+        ("fixtures/LICENSE", False),
+        ("fixtures/DATASET_CARD.md", False),
+    ],
+)
+def test_simulation_perf_controller_change_detection(tmp_path, path, expected):
+    steps = _workflow("simulation-performance.yml")["jobs"]["compare"]["steps"]
+    revisions = next(step for step in steps if step.get("id") == "revisions")["run"]
+    detection = "controller_changes=" + revisions.split("controller_changes=", 1)[1].split("git worktree prune", 1)[0]
+    gate = "python/aisimulate/tools/simulation_perf_gate"
+    _git(tmp_path, "init", "--quiet")
+    base = _commit_file(tmp_path, "base", "base\n")
+    # A runtime change selects the normal comparison; only benchmark code/input
+    # changes should add a second run using the head controller.
+    runtime = "crates/core/src/replay.rs"
+    (tmp_path / runtime).parent.mkdir(parents=True)
+    _commit_file(tmp_path, runtime, "changed\n")
+    changed = f"{gate}/{path}"
+    (tmp_path / changed).parent.mkdir(parents=True, exist_ok=True)
+    head = _commit_file(tmp_path, changed, "changed\n")
+    output = tmp_path / "output"
+    subprocess.run(
+        ["bash", "-euc", detection],
+        cwd=tmp_path,
+        check=True,
+        env={
+            **os.environ,
+            "base_sha": base,
+            "PR_HEAD_SHA": head,
+            "gate_path": gate,
+            "GITHUB_OUTPUT": str(output),
+        },
+    )
+    assert output.read_text() == f"validate_head_controller={str(expected).lower()}\n"

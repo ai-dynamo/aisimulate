@@ -12,7 +12,9 @@ The checked metric is the native report's `wall_time_ms`. Its boundary starts in
 aggregation, and stops before Python report normalization. Model construction and
 trace loading performed before that boundary are excluded. The controller also
 records process-start-to-exit `worker_elapsed_ms`, including imports, setup, JSON
-serialization, and output transfer. Their difference is not a trace-loading timer.
+serialization, and output transfer. Only the controller owns this timer; it stops
+before controller-side response parsing and validation. Their difference is not
+a trace-loading timer.
 
 One equivalence pass captures per-request records and validates completion. Five
 measured rounds use normal summary capture. Each case and side starts a fresh
@@ -27,16 +29,22 @@ path. Ordinary callers retain `random`. Canonical mode is restricted to native
 text replay; there is no new CLI flag.
 
 The versioned worker protocol hashes the full controller-supplied case. A worker
-checks its local trace hash and reports the canonical model configuration passed
-to each role. Every role requires real op-level timing, fallback denied, SILICON
+checks its local trace hash and reports a fixed model identity for each role:
+model, system, backend/version, worker type, parallelism, attention backend,
+quantization, KV block size, and the installation-relative packaged data root.
+The complete configuration remains in `model_provenance`; additional configuration
+metadata does not affect equivalence. Every role requires real op-level timing, fallback denied, SILICON
 data, and shared-layer reuse. Missing data is an invalid comparison on either side.
 
-Protocol v1 uses one JSON request on stdin and one JSON response on stdout. Logs
+Protocol v2 uses one JSON request on stdin and one JSON response on stdout. Logs
 go to stderr. The request contains `protocol_version`, `revision`, `case`, and
 `phase` (`availability` or `measure`). The response echoes the version, revision,
 phase, `case_id`, and SHA-256 `case_hash`, then adds `status`, elapsed times,
 `model_identity`, `model_provenance`, `behavior`, and `coverage`. An unsuccessful
-worker returns `status="ERROR"` and an `error` with its type and message. Keep
+worker returns `status="ERROR"` and an `error` with its type and message. The
+controller adds `worker_elapsed_ms` to the saved response. For errors, crashes,
+and timeouts it includes the log path and last 4 KiB of stderr; full logs remain
+in the artifact. Keep
 protocol changes explicit; each revision must adapt its own public APIs.
 
 ## Coverage
@@ -84,8 +92,20 @@ These counts need qualification on the CI runner before automatic rollout.
 All three non-pass results fail the advisory check; it is not a required check.
 Counts and identities compare exactly. Floating-point values use `rtol=1e-9` and
 `atol=1e-6`. Host timing and host throughput are excluded from behavior
-comparison. Per-request records are compared once, compressed into separate
-artifacts, and referenced from the small checkpoints. Model identity changes are
+comparison. `contract.py` fixes the compared fields: completion/token and committed
+prefill counts, cache reuse, duration, latency distributions/sample counts, and
+AgentX trajectory counts/latency and play outcomes. Request comparisons include
+identities, lengths, terminal state, simulated times, cache work, admission and
+routing results, worker placement, and P/D milestones. Nested records use fixed
+fields too. Required fields cannot be missing; additional diagnostics, power,
+and provenance do not affect the verdict. The same projection applies to each
+revision's equivalence-versus-measurement checks.
+
+Complete per-request records are retained, compared once using this projection,
+compressed into separate artifacts, and referenced from the small checkpoints.
+An artifact's `sha256` hashes the full records encoded as canonical JSON (sorted
+keys and compact separators), not the compressed file or its decompressed bytes.
+Model identity changes are
 invalid; results from different model configurations must not be timed as peers.
 
 Artifacts include input cases/hashes, raw paired results, separate worker/replay
@@ -124,8 +144,10 @@ verifies that the trusted `pull-request/<N>` copy matches the current PR head.
 Self-comparison builds/installs that head twice and runs three full qualifications.
 It does not use an older merge base that lacks the benchmark adapter.
 
-Normal comparisons use the merge base's controller/matrix. Changes to this tool,
-its fixtures, or the reused thread policy also run the head controller separately.
+Normal comparisons use the merge base's controller/matrix. Changes to benchmark
+Python code or `fixtures/agentx.jsonl` also run the head controller separately.
+Documentation and license changes do not add a second benchmark run. Thread
+limits are defined locally; the controller does not import the forward gate.
 An older base without the adapter produces an explicit **not benchmarked**
 summary. Missing head support, or differing or malformed protocol versions,
 fail with `INVALID_COMPARISON` before builds.
@@ -138,6 +160,8 @@ runner, plus a detected controlled slowdown and correctly classified behavior
 change. Do not remove cases, weaken thresholds, or enable automatic runs to hide
 a qualification failure. Hosted qualification remains required even if local
 qualification passes.
+CPU affinity selects the same CPU for both sides; it does not establish exclusive
+CPU ownership. Runner isolation remains a qualification requirement.
 
 See [QUALIFICATION.md](QUALIFICATION.md) for the initial local measurements,
 coverage checks, and failure controls. CI runner qualification is still pending.

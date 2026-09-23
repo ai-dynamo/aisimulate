@@ -3,12 +3,23 @@
 
 import hashlib
 import json
+import subprocess
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 from tools.simulation_perf_gate import PROTOCOL_VERSION, cases, digest
 from tools.simulation_perf_gate.compare import compare_case, difference
+from tools.simulation_perf_gate.contract import (
+    COUNTS,
+    METRICS,
+    MODEL_FIELDS,
+    REQUEST_FIELDS,
+    ROUTING_FIELDS,
+    TRAJECTORY_COUNTS,
+    TRAJECTORY_METRICS,
+    behavior,
+)
 
 pytestmark = pytest.mark.unit
 CASE = {"case_id": "case", "expected_requests": 1, "expected_output_tokens": 2}
@@ -16,6 +27,8 @@ CASE = {"case_id": "case", "expected_requests": 1, "expected_output_tokens": 2}
 
 def response(side, phase, wall=2000):
     summary = {
+        **dict.fromkeys(COUNTS, 1),
+        **dict.fromkeys(METRICS, 3.0),
         "num_requests": 1,
         "completed_requests": 1,
         "total_input_tokens": 8,
@@ -27,7 +40,31 @@ def response(side, phase, wall=2000):
     }
     if phase == "availability":
         summary["per_request"] = [
-            {"request_id": "one", "terminal_status": "completed", "output_length": 2, "requested_output_length": 2}
+            {
+                **dict.fromkeys(REQUEST_FIELDS),
+                "uuid": "one",
+                "request_id": "one",
+                "terminal_status": "completed",
+                "input_length": 8,
+                "output_length": 2,
+                "requested_output_length": 2,
+                "reused_input_tokens": 0,
+                "admission_count": 1,
+                "readmission_count": 0,
+                "routing_history": [
+                    {**dict.fromkeys(ROUTING_FIELDS), "pool": "agg", "outcome": "immediate", "dp_rank": 0}
+                ],
+                "admission_history": [
+                    {
+                        "admission_ordinal": 0,
+                        "pool_admission_ordinal": 0,
+                        "pool": "agg",
+                        "at_ms": 0.0,
+                        "reused_input_tokens": 0,
+                        "is_readmission": False,
+                    }
+                ],
+            }
         ]
     return {
         "protocol_version": PROTOCOL_VERSION,
@@ -38,7 +75,21 @@ def response(side, phase, wall=2000):
         "status": "OK",
         "wall_time_ms": wall,
         "worker_elapsed_ms": wall + 1000,
-        "model_identity": {"aggregated": {"model": "pinned"}},
+        "model_identity": {
+            "aggregated": {
+                **dict.fromkeys(MODEL_FIELDS),
+                "model": "pinned",
+                "system": "b200_sxm",
+                "backend": "vllm",
+                "backend_version": "0.24.0",
+                "worker_type": "aggregated",
+                "tp": 1,
+                "pp": 1,
+                "attention_dp": 1,
+                "kv_block_size": 64,
+                "systems_paths": ["package:aisimulate_core/systems"],
+            }
+        },
         "behavior": summary,
     }
 
@@ -132,16 +183,15 @@ def test_float_tolerance_does_not_hide_count_or_identity_changes():
     assert difference(1, 1.0) is not None
     assert difference({"count": 1}, {"count": 2}) is not None
     assert difference("a", "b") is not None
+    assert "missing_field" in difference({"missing_field": 1}, {})
 
 
-def test_behavior_excludes_only_host_measurements():
-    from tools.simulation_perf_gate.worker import behavior
-
+def test_behavior_uses_fixed_fields_without_changing_raw_report():
     report = response("base", "measure")["behavior"]
     report.update(wall_time_ms=2000.0, processed_tokens_per_s=100.0, processed_output_tokens_per_s=25.0, power_w=400.0)
     result = behavior(report, per_request=False)
-    assert result["power_w"] == 400.0
-    assert not {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"} & result.keys()
+    assert not {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s", "power_w"} & result.keys()
+    assert report["power_w"] == 400.0
 
 
 def test_matrix_and_trace_are_complete_and_local():
@@ -206,9 +256,140 @@ def test_packaged_model_identity_is_independent_of_install_location(tmp_path):
 
     base = tmp_path / "base/site-packages/aisimulate_core/systems"
     head = tmp_path / "head/site-packages/aisimulate_core/systems"
-    identity = {"model": "pinned", "backend_version": "0.24.0"}
+    identity = response("base", "measure")["model_identity"]["aggregated"]
     assert portable_model_identity({**identity, "systems_paths": [str(base)]}, base) == portable_model_identity(
-        {**identity, "systems_paths": [str(head)]}, head
+        {**identity, "systems_paths": [str(head)], "new_metadata": 1, "estimator_config": {"new_option": False}}, head
     )
     with pytest.raises(ValueError, match="packaged model data"):
         portable_model_identity({**identity, "systems_paths": [str(base)]}, head)
+
+
+@pytest.mark.parametrize("wall,expected", [(2000, "PASS"), (4000, "PERFORMANCE_REGRESSION")])
+def test_additive_diagnostics_do_not_change_verdict_or_artifacts(tmp_path, wall, expected):
+    import gzip
+
+    from tools.simulation_perf_gate.run import retain_request_artifacts
+
+    value = samples((wall,) * 5)
+    for index, pair in enumerate([value["availability"], *value["rounds"]]):
+        pair["head"]["behavior"]["new_diagnostic"] = index  # Also varies within one revision.
+        pair["head"]["model_identity"]["aggregated"]["new_metadata"] = index
+    row = value["availability"]["head"]["behavior"]["per_request"][0]
+    row["diagnostic"] = {"extra": True}
+    row["routing_history"][0]["diagnostic"] = 42
+    row["admission_history"][0]["diagnostic"] = 42
+    assert classify(value) == expected
+    retain_request_artifacts(value["availability"], CASE, {"base": "base", "head": "head"}, tmp_path)
+    assert classify(value) == expected
+    artifact = value["availability"]["head"]["per_request_artifact"]
+    with gzip.open(tmp_path / artifact["path"], "rt") as source:
+        rows = json.load(source)
+    assert rows[0]["diagnostic"] == {"extra": True}
+    assert digest(rows) == artifact["sha256"]
+
+
+@pytest.mark.parametrize(
+    "fault,expected",
+    [
+        ("latency", "BEHAVIOR_CHANGED"),
+        ("routing", "BEHAVIOR_CHANGED"),
+        ("admission", "BEHAVIOR_CHANGED"),
+        ("missing_latency", "INVALID_COMPARISON"),
+        ("missing_route", "INVALID_COMPARISON"),
+        ("missing_identity", "INVALID_COMPARISON"),
+        ("noninteger_rank", "INVALID_COMPARISON"),
+    ],
+)
+def test_required_results_and_nested_records(fault, expected):
+    value = samples()
+    head = value["availability"]["head"]
+    row = head["behavior"]["per_request"][0]
+    if fault == "latency":
+        for pair in [value["availability"], *value["rounds"]]:
+            pair["head"]["behavior"]["p99_ttft_ms"] += 1.0
+    elif fault == "routing":
+        row["routing_history"][0]["dp_rank"] = 1
+    elif fault == "admission":
+        row["admission_history"][0]["reused_input_tokens"] = 1
+    elif fault == "missing_latency":
+        del head["behavior"]["p99_ttft_ms"]
+    elif fault == "missing_route":
+        del row["routing_history"][0]["dp_rank"]
+    elif fault == "missing_identity":
+        del head["model_identity"]["aggregated"]["tp"]
+    else:
+        row["routing_history"][0]["dp_rank"] = 0.0
+    result = compare_case(CASE, value, revisions={"base": "base", "head": "head"}, rounds=5)
+    assert result["classification"] == expected
+    assert (result["invalid_reasons"] or result["behavior_changes"])[0]
+
+
+def test_agentic_outcomes_and_identity_have_fixed_nested_fields():
+    report = response("base", "availability")["behavior"]
+    report.update(dict.fromkeys(TRAJECTORY_COUNTS, 1))
+    report["incomplete_trajectories"] = 0
+    report.update(dict.fromkeys(TRAJECTORY_METRICS, 3.0))
+    report["agentic_play_outcomes"] = [
+        {"play_id": "play", "status": "completed", "causal_terminal_ms": 3.0, "settled_at_ms": 3.0}
+    ]
+    row = report["per_request"][0]
+    row.update(play_id="play", agentic={"request_id": "one", "play_id": "play", "conversation_id": "conversation"})
+    expected = behavior(report, per_request=True, agentic=True)
+    report["agentic_play_outcomes"][0]["diagnostic"] = 1
+    row["agentic"]["diagnostic"] = 1
+    assert behavior(report, per_request=True, agentic=True) == expected
+    report["agentic_play_outcomes"][0]["settled_at_ms"] = 4.0
+    assert "settled_at_ms" in difference(expected, behavior(report, per_request=True, agentic=True))
+    del row["agentic"]["conversation_id"]
+    with pytest.raises(ValueError, match="conversation_id"):
+        behavior(report, per_request=True, agentic=True)
+
+
+@pytest.mark.parametrize("failure", [None, "crash", "timeout", "malformed_error"])
+def test_invoke_owns_process_timer_and_preserves_crash_details(tmp_path, monkeypatch, failure):
+    from tools.simulation_perf_gate import run
+
+    clock = [1.0]
+    monkeypatch.setattr(run.time, "perf_counter", lambda: clock[0])
+    original_loads = json.loads
+
+    def slow_loads(payload):
+        clock[0] += 10.0
+        return original_loads(payload)
+
+    monkeypatch.setattr(run.json, "loads", slow_loads)
+
+    def execute(command, **kwargs):
+        clock[0] += 2.0
+        kwargs["stderr"].write("x" * 5000 + "panic details")
+        if failure == "crash":
+            raise subprocess.CalledProcessError(1, command)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 1)
+        payload = response("head", "measure") if failure is None else {"status": "ERROR", "error": "bad"}
+        return subprocess.CompletedProcess(command, 0, json.dumps(payload))
+
+    monkeypatch.setattr(run.subprocess, "run", execute)
+    log = tmp_path / "worker.log"
+    result = run.invoke(
+        python=Path("python"),
+        worker=tmp_path / "src/python/aisimulate/tools/simulation_perf_gate/worker.py",
+        case=CASE,
+        revision="head",
+        phase="measure",
+        cpu=0,
+        timeout=1,
+        log=log,
+    )
+    assert result["worker_elapsed_ms"] == 2000.0
+    if failure:
+        assert result["status"] == "ERROR"
+        assert result["error"]["log"] == str(log)
+        assert len(result["error"]["stderr_tail"].encode()) == 4096
+        assert result["error"]["stderr_tail"].endswith("panic details")
+        assert len(log.read_bytes()) > 4096
+        value = samples()
+        value["rounds"][0]["head"] = result
+        assert classify(value) == "INVALID_COMPARISON"
+    else:
+        assert result["status"] == "OK"

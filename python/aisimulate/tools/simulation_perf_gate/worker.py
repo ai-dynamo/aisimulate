@@ -9,47 +9,22 @@ import hashlib
 import json
 import math
 import sys
-import time
 from copy import deepcopy
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from tools.simulation_perf_gate import PROTOCOL_VERSION, digest
+from tools.simulation_perf_gate.contract import MODEL_FIELDS, fields
 
 HOST_FIELDS = {"wall_time_ms", "processed_tokens_per_s", "processed_output_tokens_per_s"}
-REQUIRED_COUNTS = (
-    "num_requests",
-    "completed_requests",
-    "total_input_tokens",
-    "total_output_tokens",
-    "committed_prefill_tokens",
-)
-REQUIRED_METRICS = ("duration_ms", "prefix_cache_reused_ratio", "first_admission_prefix_cache_reused_ratio")
 
 
 def portable_model_identity(model: dict, systems_root: Path) -> dict:
     paths = model.get("systems_paths", [])
     if not paths or any(Path(path).resolve() != systems_root.resolve() for path in paths):
         raise ValueError("benchmark requires this installation's packaged model data")
-    return {**model, "systems_paths": ["package:aisimulate_core/systems"]}
-
-
-def behavior(report: dict, *, per_request: bool) -> dict:
-    if not isinstance(report, dict):
-        raise ValueError("missing or malformed behavior report")
-    for name in REQUIRED_COUNTS:
-        if type(report.get(name)) is not int or report[name] < 0:
-            raise ValueError(f"missing or invalid count: {name}")
-    for name in REQUIRED_METRICS:
-        value = report.get(name)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
-            raise ValueError(f"missing or invalid metric: {name}")
-    if per_request and not isinstance(report.get("per_request"), list):
-        raise ValueError("equivalence pass requires per-request records")
-    return {
-        key: value for key, value in report.items() if key not in HOST_FIELDS and (per_request or key != "per_request")
-    }
+    return {**fields(model, MODEL_FIELDS, "/model_identity"), "systems_paths": ["package:aisimulate_core/systems"]}
 
 
 def run(request: dict) -> dict:
@@ -112,7 +87,8 @@ def run(request: dict) -> dict:
     wall = report.get("wall_time_ms")
     if isinstance(wall, bool) or not isinstance(wall, (int, float)) or not math.isfinite(wall) or wall <= 0:
         raise ValueError("replay wall_time_ms must be finite and positive")
-    normalized = behavior(report, per_request=availability)
+    # Keep diagnostics in the artifact; the controller owns the comparison projection.
+    normalized = {key: value for key, value in report.items() if key not in HOST_FIELDS}
     evidence = {}
     if availability:
         records = normalized["per_request"]
@@ -165,13 +141,11 @@ def main() -> int:
         "revision": request.get("revision"),
         "phase": request.get("phase"),
     }
-    start = time.perf_counter()
     try:
         with contextlib.redirect_stdout(sys.stderr):
             response.update(run(request))
     except Exception as error:
         response.update(status="ERROR", error={"type": type(error).__name__, "message": str(error)})
-    response["worker_elapsed_ms"] = (time.perf_counter() - start) * 1000
     print(json.dumps(response, allow_nan=False))
     return 0
 
