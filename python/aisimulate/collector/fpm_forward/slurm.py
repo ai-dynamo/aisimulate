@@ -26,10 +26,22 @@ from aisimulate.fpm_contract import FPM_BENCHMARK_RESULT_GLOB
 
 
 class SlurmCellRunner:
-    def __init__(self, manifest: Path, cell_dir: Path, *, image: str, mounts: tuple[str, ...], total_gpus: int):
+    def __init__(
+        self,
+        manifest: Path,
+        cell_dir: Path,
+        *,
+        image: str,
+        mounts: tuple[str, ...],
+        total_gpus: int,
+        backend: str = "vllm",
+    ):
         from .runner import _expected_nodes
 
         self.cell_dir = cell_dir.resolve()
+        if backend not in ("vllm", "sglang"):
+            raise ValueError("unsupported native FPM backend")
+        self.backend = backend
         self.node_count = _expected_nodes(manifest)
         if total_gpus % self.node_count:
             raise ValueError("FPM GPUs must divide evenly across Slurm nodes")
@@ -185,11 +197,13 @@ class SlurmCellRunner:
         )
         script = (
             "import importlib.metadata,json,pathlib,sys; p=json.loads(sys.argv[1]); "
-            "p['runtime']={'backend':'vllm','backend_version':importlib.metadata.version('vllm')}; "
+            "p['runtime']={'backend':sys.argv[3],'backend_version':importlib.metadata.version(sys.argv[3])}; "
             "pathlib.Path('/results',sys.argv[2]).write_text(json.dumps(p,sort_keys=True)+'\\n')"
         )
         for unit in pods:
-            self._exec(unit, ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME], timeout=300)
+            self._exec(
+                unit, ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME, self.backend], timeout=300
+            )
 
     def execute(self, pods: list[str], timeout_seconds: int = 14400) -> None:
         from .runner import CommandScope, _cancel_preserving_interrupt

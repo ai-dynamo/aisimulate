@@ -22,6 +22,8 @@ def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
 
     if cell.state_protocol != PROTOCOL or payload.get("kvwarm", {}).get("state_protocol") != PROTOCOL:
         raise ValueError("GLM hybrid state protocol mismatch")
+    if payload.get("ops_instrumented", False) or payload.get("observation_purpose", "fpm") != "fpm":
+        raise ValueError("GLM FPM cannot admit operation-instrumented or eager Ops validation data")
     if payload.get("timing_boundary") != TIMING_BOUNDARIES[cell.backend]:
         raise ValueError("GLM native timing boundary mismatch")
     producer = payload.get("producer", {})
