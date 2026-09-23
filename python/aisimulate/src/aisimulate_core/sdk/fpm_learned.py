@@ -113,10 +113,20 @@ SLOT_FEATURE_NAMES: tuple[str, ...] = tuple(
 FEATURE_NAMES: tuple[str, ...] = AGGREGATE_FEATURE_NAMES + REQUEST_FEATURE_NAMES + SLOT_FEATURE_NAMES
 
 # Feature presets: ``v1`` uses aggregates only (works on any FPM stream),
-# ``sglang18`` / ``hisim`` need per-request lists, ``all`` is the union.
+# ``sglang18`` / ``core4`` / ``hisim`` need per-request lists, ``all`` is the
+# union. ``core4`` is the ablation minimum (batch size, sum extend, sum past,
+# attention proxy): same accuracy as ``sglang18`` in-distribution and for decode
+# extrapolation, worse for prefill extrapolation; see docs/fpm_ml/design.md §3.
+CORE4_FEATURE_NAMES: tuple[str, ...] = (
+    "req_batch_size",
+    "req_sum_extend",
+    "req_sum_past",
+    "req_sum_attn_flops",
+)
 FEATURE_PRESETS: dict[str, tuple[str, ...]] = {
     "v1": AGGREGATE_FEATURE_NAMES,
     "sglang18": REQUEST_FEATURE_NAMES,
+    "core4": CORE4_FEATURE_NAMES,
     "hisim": ("req_batch_size",) + SLOT_FEATURE_NAMES,
     "all": FEATURE_NAMES,
 }
@@ -867,7 +877,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument(
         "--features",
         default=None,
-        help="preset (v1 | sglang18 | hisim | all) or comma-separated feature names; default: sglang18",
+        help="preset (v1 | sglang18 | core4 | hisim | all) or comma-separated feature names; default: sglang18",
     )
     tr.add_argument("--target", choices=TARGETS, default="log_ms")
     tr.add_argument("--max-iter", type=int, default=600)

@@ -167,6 +167,7 @@ The feature space is a fixed 135-name ABI; an artifact lists the names it reads
 | --- | --- | --- |
 | `v1` | 21 aggregates + their `log1p` and derived ratios | stock FPM v1, no lists needed |
 | `sglang18` (default) | the 18 per-request features below | per-request lists |
+| `core4` | `req_batch_size`, `req_sum_extend`, `req_sum_past`, `req_sum_attn_flops` (the ablation minimum, §3.1) | per-request lists |
 | `hisim` | `req_batch_size` + 32 request slots × (present, past, extend), requests sorted by past descending | per-request lists |
 
 The `sglang18` set is the feature definition of the SGLang simulator's
@@ -194,8 +195,58 @@ Why these and not raw lists: trees need a fixed-width input; sums, extremes and 
 attention proxy capture the two cost drivers (GEMM work ∝ Σ e_i, attention work
 ∝ Σ e_i·p_i) plus the batch shape (n, spread) that decides kernel selection and
 padding. `v1` and `hisim` land within 0.3–0.6 pp of `sglang18` on every deployment
-tested; `sglang18` is the default because it is the smallest set that carries the
-per-request information.
+tested; `sglang18` is the default because it carries the per-request information and,
+unlike the smaller subsets below, keeps its accuracy when the training and test workloads
+differ.
+
+### 3.1 How many of the 18 features are needed
+
+Two ablations on the GB300 SGLang V4.1-Flash data of §7.1, same method as the results
+tables (per-step APE, step-weighted). Nested subsets of the 18 (`core10` … `core4`) drop
+the derived terms first and the extremes last:
+
+| subset | features |
+| --- | --- |
+| `core10` | batch size; sum/max/min extend; sum/max/min past; Σ e·p; attention proxy; `is_decode` |
+| `core8` | `core10` without min extend, min past |
+| `core6` | batch size; sum/max extend; sum/max past; attention proxy |
+| `core4` | batch size; Σ extend; Σ past; attention proxy |
+
+**Same workload mix in train and test** (the ten runs pooled, first 60 % of each tier
+trains, last 40 % tests; MAPE):
+
+| features | n | decode | prefill |
+| --- | --- | --- | --- |
+| `sglang18` | 18 | 2.05 % | 1.98 % |
+| `core10` | 10 | 2.04 % | 1.98 % |
+| `core8` | 8 | 2.05 % | 1.97 % |
+| `core6` | 6 | 2.05 % | 1.97 % |
+| `core4` | 4 | 2.02 % | 1.97 % |
+| `v1` (aggregates) | 21 | 2.04 % | 2.16 % |
+
+**Train on one workload, test on another** (all runs of the first train, all runs of the
+second test; MAPE, `sglang18` → `core4`):
+
+| train → test | decode | prefill |
+| --- | --- | --- |
+| AgentX → LongBench | 3.03 → 3.56 % | 0.88 → 0.81 % |
+| LongBench → AgentX | 2.91 → 2.86 % | 6.52 → 15.12 % |
+| AgentX → ShareGPT | 14.14 → 12.41 % | 3.49 → 3.67 % |
+| ShareGPT → AgentX | 3.88 → 4.34 % | 26.23 → 31.79 % |
+| ShareGPT → LongBench | 3.43 → 4.39 % | 43.17 → 55.09 % |
+| LongBench → ShareGPT | 22.45 → 22.17 % | 29.42 → 75.62 % |
+
+Within the training distribution four features are as good as eighteen, for both roles:
+the trees recover the rest (extremes, spread, cross terms) from the sums. Under
+extrapolation the picture splits. Decode moves by at most ±1 pp either way. Prefill gets
+markedly worse with `core4` in four of six directions (LongBench → AgentX 6.5 → 15 %,
+LongBench → ShareGPT 29 → 76 %): a prefill batch's cost depends on how its tokens are
+distributed over requests (one 8k chunk vs. eight 1k requests), which the sums alone do not
+distinguish and the extremes and cross terms do. Hence `core4` is offered as a preset for
+decode-only or in-distribution use, and `sglang18` stays the default. The feature build is
+not the inference bottleneck either way (§8: 2 µs of a 5.6 µs call at batch 256, nothing at
+batch 1). Raw output: `feature_ablation_pooled.txt`, `feature_ablation_cross.txt` in the
+playground `reports/`.
 
 ## 4. Model
 
@@ -478,13 +529,16 @@ step; single Grace core, release build; details and the native-model comparison 
 
 | decode batch size | GBDT alone (Rust call) | through the Python wrapper |
 | --- | --- | --- |
-| 1 | 3.3 µs | 11 µs |
-| 16 | 4.3 µs | 15 µs |
-| 64 | 5.1 µs | 25 µs |
-| 256 | 6.9 µs | 59 µs |
+| 1 | 3.4 µs | 11 µs |
+| 16 | 4.2 µs | 15 µs |
+| 64 | 4.9 µs | 25 µs |
+| 256 | 5.6 µs | 59 µs |
 
-The GBDT itself is nearly flat in batch size (the tree walk is a few microseconds; only the
-18-feature build over the per-request lists grows). Everything above that in the Python
+The GBDT itself is nearly flat in batch size: the tree walk is a few microseconds, and the
+18-feature build over the per-request lists adds about 8 ns per request (2 µs at batch
+256) after the feature vector was made a single pass over the `(extend, past)` pairs with
+no per-call allocation, sorting only for artifacts that read the HiSim slots (before that
+change the batch-256 call was 6.9 µs). Everything above that in the Python
 column is the wrapper serialising the FPM dict to JSON and Rust parsing it, which is linear
 in the length of the two per-request lists. The simulator calls the Rust path directly, so
 a million-step run spends a few seconds in the model.
@@ -511,11 +565,11 @@ JSON and parses it in Rust on every call.
 
 | | **op-level model** (native analytic): ops per estimate¹ | **op-level model**, Rust µs | **learned GBDT**: ops per estimate² | **learned GBDT**, Rust µs | op-level model, Python µs | learned GBDT, Python µs |
 | --- | --- | --- | --- | --- | --- | --- |
-| decode bs 1, context 32k | ~0.5–1.5 k | 1.4 | 1,682 (1,239 comparisons + 400 adds + ~42 feature ops) | 3.3 | 9.1 | 11.1 |
-| decode bs 16, context 32k | ~0.5–1.5 k | 1.4 | 2,072 (1,449 + 400 + ~222) | 4.3 | 12.0 | 15.0 |
-| decode bs 64, context 128k | ~1.5–4 k | 3.7 | 2,736 (1,537 + 400 + ~798) | 5.1 | 23.2 | 24.7 |
-| decode bs 256, context 128k | ~1.5–4 k | 3.6 | 5,040 (1,537 + 400 + ~3,102) | 6.9 | 55.8 | 58.7 |
-| prefill 4096 tokens, prefix 0 | ~0.5–1.5 k | 1.1 | 2,772 (2,329 + 400 + ~42) | 6.5 | 8.8 | 14.0 |
+| decode bs 1, context 32k | ~0.5–1.5 k | 1.4 | 1,682 (1,239 comparisons + 400 adds + ~42 feature ops) | 3.4 | 9.1 | 11.1 |
+| decode bs 16, context 32k | ~0.5–1.5 k | 1.4 | 2,072 (1,449 + 400 + ~222) | 4.2 | 12.0 | 15.0 |
+| decode bs 64, context 128k | ~1.5–4 k | 3.7 | 2,736 (1,537 + 400 + ~798) | 4.9 | 23.2 | 24.7 |
+| decode bs 256, context 128k | ~1.5–4 k | 3.6 | 5,040 (1,537 + 400 + ~3,102) | 5.6 | 55.8 | 58.7 |
+| prefill 4096 tokens, prefix 0 | ~0.5–1.5 k | 1.1 | 2,772 (2,329 + 400 + ~42) | 6.3 | 8.8 | 14.0 |
 | prefill 4096 tokens, prefix 64k | ~1.5–4 k | 3.5 | 1,948 (1,505 + 400 + ~42) | 4.5 | 11.4 | 12.2 |
 | model construction | | 2.1 s (decode), 0.9 s (prefill) | | 5–8 ms | | |
 
@@ -523,15 +577,15 @@ Prefill worker, one request unless stated (µs per estimate, same machine and me
 
 | extend (tokens) | past (KV) | op-level, Rust | learned GBDT, Rust | op-level, Python | learned GBDT, Python |
 | --- | --- | --- | --- | --- | --- |
-| 512 | 0 | 1.06 | 4.63 | 8.8 | 12.4 |
-| 4096 | 0 | 1.06 | 6.31 | 8.8 | 14.2 |
-| 16384 | 0 | 1.05 | 6.20 | 8.8 | 13.7 |
-| 512 | 16,384 | 1.62 | 4.65 | 9.5 | 12.4 |
-| 4096 | 16,384 | 1.62 | 5.03 | 9.5 | 12.7 |
-| 4096 | 65,536 | 3.51 | 4.48 | 11.5 | 12.3 |
+| 512 | 0 | 1.06 | 4.70 | 8.8 | 12.4 |
+| 4096 | 0 | 1.06 | 6.33 | 8.8 | 14.2 |
+| 16384 | 0 | 1.05 | 6.07 | 8.8 | 13.7 |
+| 512 | 16,384 | 1.62 | 4.70 | 9.5 | 12.4 |
+| 4096 | 16,384 | 1.62 | 4.75 | 9.5 | 12.7 |
+| 4096 | 65,536 | 3.51 | 4.47 | 11.5 | 12.3 |
 | 16384 | 65,536 | 3.63 | 4.62 | 11.6 | 12.6 |
-| 2 requests × 4096 | 16,384 each | 1.62 | 4.88 | 9.6 | 12.7 |
-| 4 requests × 4096 | 16,384 each | 1.61 | 4.71 | 10.1 | 13.1 |
+| 2 requests × 4096 | 16,384 each | 1.62 | 4.62 | 9.6 | 12.7 |
+| 4 requests × 4096 | 16,384 each | 1.61 | 4.77 | 10.1 | 13.1 |
 
 The op-level cost does not depend on the chunk size or the number of prefill requests,
 only on the prefix length (1.1 µs at 0, 1.6 µs at 16k, 3.5–4.7 µs at 64k: different
@@ -553,11 +607,12 @@ compressed-attention variants, MoE + shared-expert overlap, logits), each a 1–
 with grid interpolation over 2–3 axes; it is flat in batch size with two plateaus (1.4 µs
 and 3.5 µs) that correspond to different interpolation regions. The GBDT walks 400 trees of
 ~61 nodes (1.2–2.3 k comparisons on these inputs) after building 18 features from the
-per-request lists, which is the mild growth with batch size. **The native model is 1.1–2.7× faster in pure
-compute**; both are a few microseconds, and at the Python boundary the JSON marshalling
+per-request lists in one pass, which is the mild growth with batch size (3.4 → 5.6 µs from
+batch 1 to 256). **The native model is 1.1–3× faster in pure compute on decode and 1.3–6×
+on prefill**; both are a few microseconds, and at the Python boundary the JSON marshalling
 (6–39 µs, linear in batch size because of the two per-request lists) dominates both, so a
 Python caller sees them within 0.3–5 µs of each other. A million-step simulation spends
-1–7 s in either estimator. Accuracy on the real steps of the same deployment: native
+1–6 s in either estimator. Accuracy on the real steps of the same deployment: native
 decode 6.7% / prefill 46%, GBDT 4.0% / 5.1% (§7.2, and below).
 
 What the native model evaluates per step, and how the two compare on real steps:

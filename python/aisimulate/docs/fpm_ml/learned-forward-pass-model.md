@@ -175,7 +175,14 @@ python -m aisimulate_core.sdk.fpm_learned train \
     (`req_*`: sum/max/min extend and past, cross terms, attention FLOPs proxy,
     `is_decode`/`is_prefill`; preset `sglang18`);
   - 32 HiSim-style request slots sorted by past KV descending, each
-    `(present, past, extend)` (preset `hisim`).
+    `(present, past, extend)` (preset `hisim`);
+  - `core4`: the four of the 18 that an ablation found sufficient
+    (`req_batch_size`, `req_sum_extend`, `req_sum_past`, `req_sum_attn_flops`).
+    Same accuracy as `sglang18` when train and test share the workload mix
+    (2.02 % vs 2.05 % decode, 1.97 % vs 1.98 % prefill on the pooled GB300
+    runs of §4) and for decode across workloads, but prefill extrapolation
+    degrades (LongBench → AgentX 6.5 → 15 %), so it is not the default. The
+    full tables are in `design.md` §3.1.
   The per-request groups need the `extend_lengths` / `past_kv_lengths`
   producer fields described above. Lists must be aligned and cover every
   scheduled request; the Rust validator rejects partial vectors, and an
@@ -395,12 +402,12 @@ step through the PyO3 binding, which is how the simulator uses it.
 | predict decode, Rust, one call per step (through the Python wrapper) | 196,585 steps | 3.78 s (19 µs / step, mean batch 10, max 35) |
 | predict prefill, Rust, one call per step (through the Python wrapper) | 3,803 steps | 0.08 s (22 µs / step, mean batch 1.2) |
 
-The GBDT itself costs 3.3–6.9 µs per prediction from decode batch 1 to 256 (Rust call on
-a prebuilt struct, nearly flat: the tree walk is a few microseconds, only the 18-feature
-build over the per-request lists grows). The per-step numbers above and their growth with
-batch size (9–59 µs from batch 1 to 256) come from the Python wrapper, which serialises
-the FPM dict to JSON and parses it in Rust on every call; the simulator calls the Rust
-path directly. Training the pooled ten-run set (2.7M decode steps) took 25 s on another
+The GBDT itself costs 3.4–5.6 µs per prediction from decode batch 1 to 256 and
+4.5–6.3 µs for prefill (Rust call on a prebuilt struct, nearly flat: the tree walk is a
+few microseconds, the 18-feature build is one pass over the per-request lists at about
+8 ns per request). The per-step numbers above and their growth with batch size (9–59 µs
+from batch 1 to 256) come from the Python wrapper, which serialises the FPM dict to JSON
+and parses it in Rust on every call; the simulator calls the Rust path directly. Training the pooled ten-run set (2.7M decode steps) took 25 s on another
 16-thread machine; loading the compressed stream (204 s) dominates there.
 Artifacts are 100–450 KB of JSON.
 
