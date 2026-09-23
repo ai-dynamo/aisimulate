@@ -2014,10 +2014,9 @@ fn run_replay_with_artifacts_json(py: Python<'_>, payload: &str) -> PyResult<Str
         .map_err(replay_python_error)
 }
 
-/// Register the core Python API in a consumer-owned extension or embedded module.
-/// The binding crate owns the module initializer so linking the core cannot
-/// introduce a second `PyInit__runtime` symbol.
-pub fn register_python(module: &Bound<'_, PyModule>) -> PyResult<()> {
+/// AISimulate native runtime module.
+#[pymodule]
+fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(run_replay_json, module)?)?;
     module.add_function(wrap_pyfunction!(run_replay_with_artifacts_json, module)?)?;
     crate::perfmodel::register_python(module)?;

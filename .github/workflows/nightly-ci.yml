@@ -320,7 +320,7 @@ jobs:
     env:
       UV_VERSION: "0.12.6"
       RUSTUP_VERSION: "1.29.0"
-      RUST_TOOLCHAIN: "1.96.1"
+      RUST_TOOLCHAIN: "1.98.0"
       PYTHON_SERIES: "3.12"
       # The abi3 wheel claims every Python in requires-python; prove each one.
       PYTHON_SERIES_LIST: "3.11 3.12 3.13"

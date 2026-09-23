@@ -302,8 +302,7 @@ jobs:
           "${RUNNER_TEMP}/cargo-deny" --version
       - name: Check dependency policy
         run: |
-          rustup toolchain install 1.96.1 --profile minimal
-          RUSTUP_TOOLCHAIN=1.96.1 cargo-deny -L error --locked --all-features --manifest-path Cargo.toml \
+          cargo-deny -L error --all-features --manifest-path Cargo.toml \
             check licenses bans --config deny.toml
           cargo-deny -L error --all-features \
             --manifest-path crates/tests/public-api/Cargo.toml \
@@ -330,9 +329,7 @@ jobs:
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - run: |
-          cargo test -p aisimulate-core --locked
-          cargo test -p aisimulate-python --locked
+      - run: cargo test --workspace
 
   rust-feature-modes:
     name: Rust feature modes
@@ -364,7 +361,7 @@ jobs:
             python -m pip install './python/aisimulate[dev]' &
           package_pid=$!
           export PYO3_PYTHON="${pythonLocation}/bin/python"
-          cargo test -p aisimulate-core --locked --features embed-python,replay-bench --no-run &
+          cargo test --workspace --features embed-python,replay-bench --no-run &
           rust_pid=$!
           result=0
           wait "${package_pid}" || result=1
@@ -374,7 +371,7 @@ jobs:
         run: |
           export AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1
           export PYO3_PYTHON="${pythonLocation}/bin/python"
-          cargo test -p aisimulate-core --locked --features embed-python,replay-bench
+          cargo test --workspace --features embed-python,replay-bench
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})
@@ -604,8 +601,7 @@ jobs:
             # quay.io/pypa/manylinux_2_28_aarch64:2026.08.24-1
             container_image: quay.io/pypa/manylinux_2_28_aarch64@sha256:29a6ceb78de5b00494e6e7456a72782a4cb54238de102e7491d15fe47789b4d1
     runs-on: prod-aisimulate-default-${{ matrix.arch }}-v1
-    # The unified wheel now also compiles Dynamo and its native ZeroMQ dependency.
-    timeout-minutes: 30
+    timeout-minutes: 10
     container:
       image: ${{ matrix.container_image }}
       env:

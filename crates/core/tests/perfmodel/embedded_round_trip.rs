@@ -26,7 +26,7 @@
 //! and imports `aisimulate_core.sdk.engine`, which itself imports the
 //! maturin-built `aisimulate_core` extension. The test therefore needs
 //! `aisimulate_core` installed into the interpreter
-//! (`uv pip install ./python/aisimulate`).
+//! (`uv run maturin develop -m crates/core/Cargo.toml --release --features extension-module`).
 //!
 //! The embedded interpreter (the framework libpython the test binary links) is
 //! NOT the uv venv, so it does not see the venv's installed core package or the
@@ -38,8 +38,8 @@
 //!   PYTHONPATH="$PWD/aic-core/src:$PWD/.venv/lib/python3.13/site-packages" \
 //!   cargo test -p aisimulate-core --features embed-python --test perfmodel_embedded_round_trip -- --nocapture
 //! ```
-//! (run after `uv pip install ./python/aisimulate`, from the repo root;
-//! adjust the venv python
+//! (run after `uv run maturin develop -m crates/core/Cargo.toml --release
+//! --features extension-module`, from the repo root; adjust the venv python
 //! version if needed).
 //!
 //! ## Honest skip vs. enforced run

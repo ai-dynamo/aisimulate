@@ -12,43 +12,70 @@ remaining requests and recycles completed plays to keep two client lanes occupie
 for a 3,600-second simulated admission window. The simulator runs offline on your
 CPU; you do not need to allocate those GPUs or download model weights.
 
-Use the combined source checkout from
+Use the combined AISimulate source from
 [PR #306](https://github.com/ai-dynamo/aisimulate/pull/306), which includes the
-continuous profiles from [PR #307](https://github.com/ai-dynamo/aisimulate/pull/307)
-and native Dynamo routing in the `aisimulate` wheel. A checkout containing only
-#307 does not provide the routing integration used below. This guide requires
-that combined source; it does not assume the feature is available in a published
-release. Run commands from the repository root. The single-wheel installation and
-CLI were exercised locally on Linux x86-64 with Python 3.12 and Rust 1.96.1;
-platform release checks are tracked on the PR. Functional validation does not
-establish hardware performance accuracy.
+continuous profiles from [PR #307](https://github.com/ai-dynamo/aisimulate/pull/307),
+and the matching Dynamo source below. Routing uses the existing `dynamo` runner
+and `dynamo.router` adapter supplied by Dynamo. AISimulate keeps its existing
+`aisimulate` wheel and `aisimulate-core` crate; it does not build another Python
+package or link Dynamo into its native extension.
 
 The YAML below sets `traffic.load.agentic_profile.duration_seconds: 3600`.
 This controls simulated time for issuing profile requests, not CPU wall time.
 See [continuous agentic profiles](agentic-profile.md) for the detailed contract.
+Functional simulation does not establish hardware performance accuracy.
 
-## 1. Install from source
+## 1. Install matching source builds
 
-You need Python 3.11–3.13, `uv`, Rust 1.96.1, and a C/C++ compiler and linker.
-On Linux, install the build tools, `pkg-config`, OpenSSL development headers and
-CMake. See [source installation](installation.md#use-current-source) for platform
-details. Build and install the single application package:
+The existing published Dynamo packages use AISimulate 0.12 and do not provide the
+conversation/profile adapter used here. A generic AISimulate 0.13 nightly is also
+not evidence that it contains both required features. Use the exact source pair:
+the Dynamo checkout pins the AISimulate core revision, and the same revision must
+supply the Python package. This source-built integration is not a published
+release.
+
+You need Python 3.12, `uv`, Rust 1.96.1, and Dynamo's CPU build prerequisites,
+including a C/C++ compiler and linker, `pkg-config`, OpenSSL development headers,
+CMake and protobuf compiler. The build uses Dynamo's existing `ai-dynamo` and
+`ai-dynamo-runtime` distributions. No running Dynamo service or GPU is needed.
 
 ```bash
 mkdir -p /tmp/agentx-quickstart
 rustup toolchain install 1.96.1 --profile minimal
 uv venv --python 3.12 /tmp/agentx-quickstart/venv
-RUSTUP_TOOLCHAIN=1.96.1 uv pip install \
-  --python /tmp/agentx-quickstart/venv/bin/python ./python/aisimulate
+uv pip install --python /tmp/agentx-quickstart/venv/bin/python 'maturin>=1.12,<2' patchelf
+
+git clone https://github.com/ai-dynamo/dynamo.git /tmp/agentx-quickstart/dynamo
+git -C /tmp/agentx-quickstart/dynamo checkout --detach origin/harrli/aic-1817-existing-adapter
+agentx_core_rev=$(/tmp/agentx-quickstart/venv/bin/python -c \
+  'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("/tmp/agentx-quickstart/dynamo/Cargo.toml").read_text())["workspace"]["dependencies"]["aisimulate-core"]["rev"])')
+git clone https://github.com/ai-dynamo/aisimulate.git /tmp/agentx-quickstart/aisimulate
+git -C /tmp/agentx-quickstart/aisimulate checkout --detach "$agentx_core_rev"
+cd /tmp/agentx-quickstart/aisimulate/python/aisimulate
+RUSTUP_TOOLCHAIN=1.96.1 /tmp/agentx-quickstart/venv/bin/maturin build \
+  --locked --profile dev --out /tmp/agentx-quickstart/wheels
+uv pip install --python /tmp/agentx-quickstart/venv/bin/python \
+  /tmp/agentx-quickstart/wheels/aisimulate-*.whl
+cd /tmp/agentx-quickstart/dynamo/lib/bindings/python
+RUSTUP_TOOLCHAIN=1.96.1 /tmp/agentx-quickstart/venv/bin/maturin build \
+  --locked --profile dev --no-default-features --features aic-forward-pass \
+  --out /tmp/agentx-quickstart/wheels
+uv pip install --python /tmp/agentx-quickstart/venv/bin/python \
+  /tmp/agentx-quickstart/wheels/ai_dynamo_runtime-*.whl \
+  /tmp/agentx-quickstart/dynamo
 uv pip check --python /tmp/agentx-quickstart/venv/bin/python
-git rev-parse HEAD
+git -C /tmp/agentx-quickstart/dynamo rev-parse HEAD
+git -C /tmp/agentx-quickstart/aisimulate rev-parse HEAD
 ```
 
-The wheel includes native Dynamo routing in `aisimulate._runtime`; no separate
-policy wheel, full `ai-dynamo` installation or running Dynamo service is needed.
-The build uses the shared Cargo lockfile and public APIs from already-merged
-Dynamo revision `d9eb42db1168131fdae318eef77255637e4d3495`, without a local override.
-Dynamo #15149 is not a prerequisite. Keep the source SHA with your results.
+Keep both source revisions with the results. Rust, Python and container dependency
+checks require the same AISimulate version and immutable Rust source. The runner
+also checks the installed Python version against the compiled native core and
+replay API before executing the configured policy. This does not use local Cargo
+patches, package overrides or a separate policy wheel. Dynamo #15149 is not a
+prerequisite; the existing native selector and affinity APIs are reused.
+These commands use development builds. Their host CPU execution speed is not a
+release-build benchmark; modeled GPU timing comes from the configured timing model.
 Internet access is needed for initial dependencies, trace download and model
 metadata. Simulation itself runs offline on your CPU.
 
@@ -157,12 +184,11 @@ native hard affinity and commits a binding only after the engine accepts dispatc
 The TTL starts when the last active request releases its lease, using simulated
 time; supported TTL values are 1 through 31,536,000 seconds, including fractions.
 
-YAML with `router` automatically selects the built-in `dynamo-policy` stack.
-Explicit `--stack dynamo-policy` selects the same integration; explicit
-`--stack dynamo` keeps the existing full Dynamo provider and its own capabilities.
-An incompatible explicit stack, unavailable native capability or invalid routing
-option fails with an error. With no routing section and no explicit stack, the
-engine default is unchanged.
+YAML with `router` automatically selects the existing `dynamo` stack and its
+`dynamo.router` adapter. Explicit `--stack dynamo` selects the same integration.
+An incompatible explicit stack, unavailable Dynamo package, mismatched native
+core or invalid routing option fails with an error. With no routing section and
+no explicit stack, the engine default is unchanged.
 
 The trace's embedded hash blocks contain 64 tokens. The explicit
 `traffic.source.block_size: 64` keeps host resource inspection aligned with
@@ -258,15 +284,16 @@ for the detailed contract and qualification boundaries.
 | `prediction.json` | Aggregate predictions, snapshot information, preparation/barrier audit, profile duration/cutoff accounting, and play outcomes |
 | `requests.jsonl` | Measured profile requests, including per-request timing and identity |
 
-Check `dynamo_policy.native_policy` (`dynamo.SelectionCore`) and
-`dynamo_policy.dynamo_revision` to identify the native implementation actually
-called. `dynamo_policy.decisions` records request/group, pool, worker, DP rank and
+Check `dynamo_policy.native_policy: true` and
+`dynamo_policy.routing_provider: dynamo.DefaultWorkerSelector` to identify the
+native implementation actually called; retain the source revisions recorded at
+installation alongside the report. `dynamo_policy.decisions` records request/group, pool, worker, DP rank and
 native cache overlap; `physical_kv_events` counts actual engine cache events fed
 to the native index. Compare decisions with each request's `routing_history`.
 Worker selection alone does not prove physical cache reuse.
 Detailed decisions are retained only with `--capture-per-request`; otherwise
 `decision_count`, `decisions_by_role`, and physical KV event counts remain
-available, with `decisions_captured: false` and an empty `decisions` array.
+available, with an empty `decisions` array.
 
 Check `agentic_phases` for preparation success and barrier state, and
 `agentic_play_outcomes` for completed or incomplete plays. Check `agentic_profile`
@@ -284,15 +311,11 @@ router overlap is not a substitute for cache hits. The 162 source requests
 include initial snapshot history, and the corpus can be replayed repeatedly as
 lanes recycle, so this is not the expected measured request count.
 
-A local single-wheel debug build ran the exact YAML above with this pinned
-subset and default AIC timing. The 3,600-second run recorded 219 successful
-responses, zero canceled or unsettled requests, four started plays, and 95.65%
-first-admission prefix reuse. All 438 measured and 44 preparation P/D decisions
-matched worker/DP bindings across 14 group/pool pairs; 4,053 physical KV events
-were observed. The supervised process peaked at about 270 MB RSS within the
-configured 4 GB budget. These are functional observations, not fixed expected
-counts, a general memory bound, or hardware accuracy claims; native stochastic
-selection can change the results.
+Acceptance results for the existing Dynamo adapter are recorded with the exact
+source pair above. Compare native routing decisions with actual worker/DP
+placement and physical cache reuse; request counts and cache percentages can
+vary with native selection and are not fixed expected values or hardware
+accuracy claims.
 
 To compare against a cold snapshot, repeat the command with a separate output
 directory and add:
@@ -313,10 +336,10 @@ seeded snapshots for the initial lanes.
 
 This integration supports offline vLLM/SGLang aggregated and P/D simulation,
 including attention DP, seeded snapshots, saved-frontier warmup and duration
-profiles. Workload/snapshot seeds remain supported; the existing public Dynamo
-SelectionCore uses native stochastic selection, so an explicit selector seed is
-rejected. Authored DP pins, custom policy classes, online routing, dynamic scaling,
-and routing-aware recommendation are not implemented by this integration.
+profiles. Workload and snapshot seeds remain supported. Conversation/profile
+replay requires static pools and cannot be combined with Planner scaling,
+online execution, or unsupported backends. Existing Dynamo paths keep their own
+capabilities; configuration combinations outside the selected path fail explicitly.
 
 The KV index receives physical simulated engine store/remove events. Cache reuse
 is still simulated behavior, not measured GPU performance. The existing

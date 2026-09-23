@@ -4,9 +4,7 @@
 [workspace]
 members = [
     "crates/core",
-    "crates/python",
 ]
-default-members = ["crates/core"]
 exclude = ["crates/tests/public-api"]
 resolver = "3"
 

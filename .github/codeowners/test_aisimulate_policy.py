@@ -115,9 +115,6 @@ def test_representative_routing_contract() -> None:
         MAINTAINERS,
     }
     assert _owners("crates/core/src/replay/event.rs") == {REPLAY, MAINTAINERS}
-    assert _owners("crates/python/src/lib.rs") == {REPLAY, FPE, MAINTAINERS}
-    assert _owners("python/aisimulate/src/aisimulate/dynamo.py") == {REPLAY, MAINTAINERS}
-    assert _owners("crates/python/Cargo.toml") == {REPLAY, FPE, INFRA, MAINTAINERS}
     assert _owners("crates/core/src/engine/scheduler/vllm/core.rs") == {
         MOCKER,
         MAINTAINERS,
@@ -216,7 +213,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
 
     for expensive_gate in (
         "cargo-deny",
-        "cargo test -p aisimulate-core",
+        "cargo test --workspace",
         "crates/tests/public-api/Cargo.toml",
         "Application Tests",
         "Release Artifact Contract",

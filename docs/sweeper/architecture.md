@@ -29,8 +29,7 @@ YAML. Prediction evaluates one concrete configuration; recommendation emits conc
 inputs. Commands, configuration fields, and output files are covered in the
 [AISimulate CLI User Guide](../cli/user-guide.md).
 
-The `engine` and `dynamo-policy` runner factories ship with AISimulate. The latter runs
-native Dynamo selection inside `aisimulate._runtime`. Additional stacks are discovered through the
+The `engine` runner factory ships with AISimulate. Optional stacks are discovered through the
 `aisimulate.runner_factories` Python entry-point group; the `ai-dynamo` package registers `dynamo`.
 Entry-point names are the accepted `--stack` values and must be unique.
 

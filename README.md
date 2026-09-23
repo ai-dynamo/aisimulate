@@ -23,8 +23,7 @@ repository. Supply both the Parquet file and its adjacent, same-stem
 AISimulate is the successor to the
 [AIConfigurator (AIC)](https://github.com/ai-dynamo/aiconfigurator)
 repository. It brings the complete AIC application and estimator into one
-standalone home with Replay and Sweeper capabilities and a Dynamo-independent
-Rust core.
+standalone home with Dynamo-independent Replay and Sweeper capabilities.
 
 The performance-modeling methodology is described in
 [AIConfigurator: Lightning-Fast Configuration Optimization for Multi-Framework
@@ -36,22 +35,17 @@ See the [installation guide](docs/installation.md) for published versions,
 platform requirements, current-source setup, and internal nightlies. Documentation
 on `main` can describe features newer than the latest published wheel.
 
-### AISimulate
+### Engine-only
 
-Install AISimulate to use the built-in simulation engine:
+Install AISimulate by itself to use the built-in simulation engine without a
+Dynamo dependency:
 
 ```bash
 python3 -m pip install aisimulate
 aisimulate --help
 ```
 
-Native KV-aware routing with conversation affinity is included in the current
-source's `aisimulate` wheel and selected by `router.policy: kv_router`. See the
-[AgentX quickstart](docs/agentx-quickstart.md) for source installation, a complete
-configuration and validation status. It requires no separate policy package or
-full `ai-dynamo` installation; existing published wheels may predate this feature.
-
-### With the full Dynamo stack
+### With Dynamo
 
 Install compatible AISimulate and Dynamo releases to enable the `dynamo`
 runner and Dynamo-owned configuration adapters:
@@ -360,11 +354,8 @@ Python `aisimulate-core` distribution, or an `aiconfigurator-core` crate. The
 estimator packages. Only the legacy `aiconfigurator` executable remains; see
 [Python source migration](docs/python-source-migration.md) for removed imports.
 
-The AISimulate wheel does not declare `ai-dynamo` as a Python installation
-dependency. Its private `crates/python` binding includes the pinned native Dynamo
-router in the existing `aisimulate._runtime` extension; the published Rust core
-has no Dynamo dependency. There is no separate policy wheel. Dynamo-owned legacy
-Router, Planner, runtime, transport and live-Mocker integrations continue to
+The AISimulate wheel does not declare Dynamo as an installation dependency.
+Dynamo-owned Router, Planner, runtime, transport, and live-Mocker integrations
 consume AISimulate through optional adapters.
 
 ### Packaged legal-file copies
@@ -411,7 +402,7 @@ separate evidence lanes.
 For a quick local validation subset:
 
 ```bash
-cargo test -p aisimulate-core --locked
+cargo test --workspace
 python -m pytest -c pytest.ini tests
 python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"
 ```

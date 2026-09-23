@@ -580,8 +580,8 @@ def test_engine_stack_rejects_explicit_unavailable_component(tmp_path, monkeypat
     ("router", "explicit", "selected"),
     [
         (None, None, "engine"),
-        ({"policy": "kv_router"}, None, "dynamo-policy"),
-        ({"policy": "kv_router", "affinity": {"mode": "sibling_group"}}, None, "dynamo-policy"),
+        ({"policy": "kv_router"}, None, "dynamo"),
+        ({"policy": "kv_router", "affinity": {"mode": "sibling_group"}}, None, "dynamo"),
         ({"policy": "kv_router"}, "engine", "engine"),
         ({"policy": "kv_router"}, "dynamo", "dynamo"),
     ],
@@ -623,7 +623,7 @@ def test_prediction_router_override_selects_native_policy(tmp_path, monkeypatch)
     monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: loaded.append(name) or object())
     monkeypatch.setattr(cli, "_predict", lambda args, raw, factory: 0)
     assert cli.main(["predict", "--config", str(path), "--set", "router.policy=kv_router"]) == 0
-    assert loaded == ["dynamo-policy"]
+    assert loaded == ["dynamo"]
 
 
 def test_prediction_router_missing_integration_is_configuration_error(tmp_path, monkeypatch, capsys) -> None:
@@ -635,9 +635,8 @@ def test_prediction_router_missing_integration_is_configuration_error(tmp_path, 
     with pytest.raises(SystemExit, match="2"):
         cli.main(["predict", "--config", str(path)])
     error = capsys.readouterr().err
-    assert "does not provide native Dynamo routing" in error
-    assert "pip install" in error
-    assert "will not fall back" in error
+    assert "stack 'dynamo' is unavailable" in error
+    assert "Install the distribution" in error
 
 
 @pytest.mark.parametrize(("sla_field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])

@@ -25,20 +25,16 @@ their compatibility tests; for that work, install Git LFS and run
 
 ### 2. Install Development Dependencies
 
-Install Python 3.11–3.13, `uv`, Rust 1.96.1 with Cargo, and a C/C++ compiler plus platform
+Install Python 3.11–3.13, `uv`, Rust/Cargo, and a C/C++ compiler plus platform
 linker first. Maturin builds the native extension during sync; see the
 [platform and source-build requirements](docs/installation.md#use-current-source).
 
 ```bash
-rustup toolchain install 1.96.1 --profile minimal
-RUSTUP_TOOLCHAIN=1.96.1 uv sync --project python/aisimulate --extra dev
+uv sync --project python/aisimulate --extra dev
 ```
 
 This creates `python/aisimulate/.venv`, builds the unified native extension,
 and installs the sole Python distribution together with its development tools.
-`crates/python` builds `aisimulate._runtime`, including native Dynamo routing;
-`crates/core` remains independent of Dynamo and is the default Cargo workspace
-member. Both share the root `Cargo.lock`. No separate policy wheel is needed.
 
 To activate the environment:
 

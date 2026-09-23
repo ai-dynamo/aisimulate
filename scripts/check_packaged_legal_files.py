@@ -21,7 +21,7 @@ def main() -> int:
         if not canonical.is_file() or not packaged.is_file():
             mismatched.append(f"{name}: canonical or packaging copy is missing")
         elif canonical.read_bytes() != packaged.read_bytes():
-            mismatched.append(f"{name}: packaged copy differs from root")
+            mismatched.append(f"{name}: python/aisimulate copy differs from root")
 
     if mismatched:
         for message in mismatched:

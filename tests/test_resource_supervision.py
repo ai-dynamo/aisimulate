@@ -286,7 +286,7 @@ def test_supervisor_reports_auto_selected_routing_stack(tmp_path, monkeypatch):
     monkeypatch.setattr(supervision, "run_process", refuse)
     assert supervision.main(args) == 3
     plan = json.loads((tmp_path / "output/resource-plan.json").read_text())
-    assert plan["stack"] == "dynamo-policy"
+    assert plan["stack"] == "dynamo"
 
 
 @pytest.mark.parametrize("child_code,expected", [(-9, 1), (-15, 1), (2, 2)])

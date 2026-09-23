@@ -70,11 +70,6 @@ def test_aisimulate_native_runtime_imports_from_installed_distribution():
     runtime = importlib.import_module("aisimulate._runtime")
     assert callable(runtime.run_replay_json)
     assert callable(runtime.run_replay_with_artifacts_json)
-    assert callable(runtime.run_dynamo_replay_json)
-
-    from aisimulate.dynamo import DynamoPolicyRunnerFactory
-
-    DynamoPolicyRunnerFactory()
 
 
 def test_aisimulate_exposes_unified_and_aiconfigurator_console_scripts():
@@ -100,7 +95,6 @@ def test_aisimulate_has_no_dynamo_or_component_adapter_dependencies():
     requirements = distribution.requires or []
     names = {Requirement(requirement).name.lower() for requirement in requirements}
     assert "ai-dynamo" not in names
-    assert "aisimulate-dynamo-policy" not in names
     assert "prometheus-api-client" not in names
     assert "filterpy" not in names
     assert "pmdarima" not in names
@@ -169,17 +163,13 @@ def test_aisimulate_source_versions_are_synchronized():
     root, repo_root = _source_checkout_roots()
     project = tomllib.loads((root / "pyproject.toml").read_text())
     core = tomllib.loads((repo_root / "crates/core/Cargo.toml").read_text())
-    binding = tomllib.loads((repo_root / "crates/python/Cargo.toml").read_text())
     workspace = tomllib.loads((repo_root / "Cargo.toml").read_text())
 
     workspace_version = workspace["workspace"]["package"]["version"]
     assert project["project"]["version"] == workspace_version
     assert core["package"]["version"] == workspace_version
-    assert binding["package"]["version"] == workspace_version
-    assert binding["package"]["publish"] is False
-    assert workspace["workspace"]["members"] == ["crates/core", "crates/python"]
-    assert workspace["workspace"]["default-members"] == ["crates/core"]
-    assert project["tool"]["maturin"]["manifest-path"] == "../../crates/python/Cargo.toml"
+    assert workspace["workspace"]["members"] == ["crates/core"]
+    assert project["tool"]["maturin"]["manifest-path"] == "../../crates/core/Cargo.toml"
 
 
 def test_profiler_does_not_publish_or_reexport_sweeper():

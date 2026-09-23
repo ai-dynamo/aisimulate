@@ -481,7 +481,7 @@ def test_profile_resource_admission_requires_supervision_and_one_worker(tmp_path
 
 @pytest.mark.parametrize("oversized", ["storage", "tokens"])
 @pytest.mark.parametrize("profile", [None, {}])
-@pytest.mark.parametrize("stack", ["engine", "dynamo-policy"])
+@pytest.mark.parametrize("stack", ["engine", "dynamo"])
 def test_profile_keeps_initial_trace_materialization_guards(tmp_path, host, monkeypatch, oversized, profile, stack):
     trace = tmp_path / "oversized.jsonl"
     if oversized == "storage":
@@ -506,7 +506,7 @@ def test_dynamo_policy_finite_and_profile_memory_remains_unqualified(tmp_path, h
     if profile is not None:
         workload["agentic_profile"] = profile
     monkeypatch.delenv("_AISIMULATE_SUPERVISED_BUDGET", raising=False)
-    assert build_plan(workload, stack="dynamo-policy", host=host)["status"] == "resource_limited"
+    assert build_plan(workload, stack="dynamo", host=host)["status"] == "resource_limited"
     monkeypatch.setenv(
         "_AISIMULATE_SUPERVISED_BUDGET",
         json.dumps(
@@ -518,16 +518,16 @@ def test_dynamo_policy_finite_and_profile_memory_remains_unqualified(tmp_path, h
             }
         ),
     )
-    plan = build_plan(workload, stack="dynamo-policy", host=host, requested_parallelism=4)
+    plan = build_plan(workload, stack="dynamo", host=host, requested_parallelism=4)
     assert plan["status"] == "admitted"
     assert plan["effective_parallelism"] == 1
     assert plan["estimate"]["estimated_peak_bytes"] is None
-    expected_model = "agentic-profile-unqualified-v1" if profile is not None else "dynamo-policy-unqualified-v1"
+    expected_model = "agentic-profile-unqualified-v1" if profile is not None else "dynamo-unqualified-v1"
     assert plan["estimate"]["allocation_model"] == expected_model
     monkeypatch.setattr(resources, "discover_host", lambda: host)
     spec = SimpleNamespace(workload=workload, concurrency=None)
-    assert guard_replay(spec, stack="dynamo-policy")["status"] == "admitted"
-    factory = GuardedRunnerFactory(object(), "dynamo-policy", ResourceConfig())
+    assert guard_replay(spec, stack="dynamo")["status"] == "admitted"
+    factory = GuardedRunnerFactory(object(), "dynamo", ResourceConfig())
     assert factory.admit_wave([spec])["status"] == "admitted"
     with pytest.raises(ResourceLimitError, match="wave"):
         factory.admit_wave([spec, spec])

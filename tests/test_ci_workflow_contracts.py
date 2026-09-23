@@ -622,15 +622,6 @@ def test_platform_wheels_require_the_installed_fpe_exercise() -> None:
     )
     assert "if" not in verification
     assert "--exercise-engine --exercise-fpe" in verification["run"]
-    routing = next(
-        step
-        for step in action["runs"]["steps"]
-        if step.get("name") == "Exercise installed native Dynamo routing from YAML"
-    )
-    assert "if" not in routing
-    assert "--noconftest" in routing["run"]
-    assert "tests/sweeper/test_dynamo_policy.py" in routing["run"]
-    assert "tests/sweeper/test_dynamo_policy_cli.py" in routing["run"]
 
 
 def test_restored_workflows_are_active_at_repository_root() -> None:
@@ -660,13 +651,9 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert jobs["platform-wheels"]["uses"] == "./.github/workflows/validate-platform-wheels.yml"
     assert jobs["collector-data"]["uses"] == "./.github/workflows/collector-check.yml"
     assert jobs["prediction-regression"]["uses"] == "./.github/workflows/prediction-regression-gate.yml"
-    rust_commands = _run_commands(jobs["rust"])
-    assert "cargo test -p aisimulate-core --locked" in rust_commands
-    assert "cargo test -p aisimulate-python --locked" in rust_commands
-    assert "--workspace" not in rust_commands
 
     application_test_wheel = jobs["application-test-wheel"]
-    assert application_test_wheel["timeout-minutes"] == "30"
+    assert application_test_wheel["timeout-minutes"] == "10"
     assert {"fast-ci", "select-full-ci"}.issubset(application_test_wheel["needs"])
     assert "application-test-wheel" in jobs["application-tests"]["needs"]
     assert {shard["suite"] for shard in jobs["application-tests"]["strategy"]["matrix"]["shard"]} == {
@@ -738,7 +725,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert policy_commands.index(fetch) < policy_commands.index("tests/test_ci_qualification.py")
 
     feature_mode_commands = _run_commands(jobs["rust-feature-modes"])
-    assert "cargo test -p aisimulate-core --locked --features embed-python,replay-bench" in feature_mode_commands
+    assert "cargo test --workspace --features embed-python,replay-bench" in feature_mode_commands
     assert "--all-features" not in feature_mode_commands
     assert "--no-default-features" not in feature_mode_commands
     assert "PYTHONPATH" not in feature_mode_commands
@@ -944,7 +931,7 @@ def test_linux_release_wheels_are_repaired_for_manylinux_2_28() -> None:
     assert '"build_manylinux_wheel.py"' in release_builder
 
     dockerfile = (REPOSITORY_ROOT / "python" / "aisimulate" / "docker" / "Dockerfile").read_text()
-    assert 'MATURIN_PEP517_ARGS="--locked --auditwheel skip"' in dockerfile
+    assert 'MATURIN_PEP517_ARGS="--auditwheel skip"' in dockerfile
     assert "auditwheel repair" in dockerfile
     assert "auditwheel show /workspace/dist/aisimulate-*.whl" in dockerfile
     assert "--compatibility manylinux_2_28" not in dockerfile
@@ -1006,18 +993,7 @@ def test_manylinux_build_repairs_the_exact_raw_wheel_then_audits_it(tmp_path, mo
     assert list(output.iterdir()) == [repaired]
     assert calls == [
         (
-            (
-                sys.executable,
-                "-m",
-                "maturin",
-                "build",
-                "--locked",
-                "--release",
-                "--auditwheel",
-                "skip",
-                "--out",
-                raw_output,
-            ),
+            (sys.executable, "-m", "maturin", "build", "--release", "--auditwheel", "skip", "--out", raw_output),
             manylinux_builder.PYTHON_PROJECT,
         ),
         (
@@ -2723,7 +2699,7 @@ def test_nightly_provenance_and_checksums_pass_real_accuracy_consumer(tmp_path, 
         "GH_RUN_ATTEMPT": "1",
         "GH_EVENT_NAME": event,
         "GH_SERVER_URL": "https://github.com",
-        "RUST_TOOLCHAIN": "1.96.1",
+        "RUST_TOOLCHAIN": "1.98.0",
         "UV_VERSION": "0.12.6",
         "GITHUB_STEP_SUMMARY": str(tmp_path / "summary"),
         "GITHUB_OUTPUT": str(tmp_path / "output"),

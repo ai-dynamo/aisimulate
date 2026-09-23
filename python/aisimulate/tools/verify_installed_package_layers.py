@@ -53,9 +53,7 @@ def _verify_metadata() -> str:
     if wheel_version is None:
         raise RuntimeError("aisimulate distribution is not installed")
     stale_distributions = [
-        name
-        for name in ("aisimulate-core", "aiconfigurator-core", "aisimulate-dynamo-policy")
-        if _distribution_version(name) is not None
+        name for name in ("aisimulate-core", "aiconfigurator-core") if _distribution_version(name) is not None
     ]
     if stale_distributions:
         raise RuntimeError(f"split Python distributions are unexpectedly installed: {stale_distributions}")
@@ -122,7 +120,6 @@ def _verify_payload() -> None:
 
 def _verify_imports() -> None:
     runtime = importlib.import_module("aisimulate._runtime")
-    importlib.import_module("aisimulate.dynamo").DynamoPolicyRunnerFactory()
     compatibility_runtime = importlib.import_module("aisimulate_core._native")
     core = importlib.import_module("aisimulate_core")
     importlib.import_module("collector")

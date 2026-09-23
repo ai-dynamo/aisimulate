@@ -10,14 +10,8 @@ provenance:
     - Rust changes include compiled Python, collector installation, prediction, parity, and release consumers.
     - Collector and performance-data changes include their prediction and parity consumers.
     - Unknown, dependency, test-configuration, and CI-contract changes run every component.
-    - The unified application wheel includes Dynamo routing; platform wheels and application tests exercise the installed CLI.
 
 cases:
-  - id: builtin-dynamo-python
-    paths: [python/aisimulate/src/aisimulate/dynamo.py]
-    run_all: false
-    selected: [platform_wheels, application_wheel, application_tests, python_compatibility, release_artifact_contract]
-
   - id: documentation
     paths: [README.md, docs/architecture.md]
     run_all: false

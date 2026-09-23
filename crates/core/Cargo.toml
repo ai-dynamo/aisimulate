@@ -14,7 +14,7 @@ readme = "README.md"
 
 [lib]
 name = "aisimulate_core"
-crate-type = ["rlib"]
+crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 anyhow = { workspace = true }

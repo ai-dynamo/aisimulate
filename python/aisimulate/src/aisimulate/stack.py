@@ -64,13 +64,6 @@ def resolve_runner_factory(
     if not matches:
         available = sorted(set(builtin_factories) | {entry.name for entry in installed})
         choices = ", ".join(available) if available else "<none>"
-        if stack == "dynamo-policy":
-            raise StackNotFoundError(
-                "This AISimulate installation does not provide native Dynamo routing. "
-                "Reinstall a current aisimulate wheel with 'python -m pip install <aisimulate.whl>'; "
-                "see docs/agentx-quickstart.md for source-build instructions. "
-                "Routing will not fall back to round-robin."
-            )
         raise StackNotFoundError(
             f"stack {stack!r} is unavailable; installed stacks: {choices}. "
             "Install the distribution that provides the requested stack."

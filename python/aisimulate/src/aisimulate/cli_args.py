@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("-c", "--config", required=True)
         child.add_argument(
             "--stack",
-            help="execution stack; defaults to engine, or dynamo-policy when router is configured",
+            help="execution stack; defaults to engine, or dynamo when router is configured",
         )
         child.add_argument(
             "--set",
@@ -89,8 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
         "trace_timestamps and positive agentic_lanes. The offline engine stack supports "
         "aggregated and P/D vLLM/SGLang, HBM-only, speculative decoding disabled. "
         "agentic_snapshot selects seeded starts; agentic_warmup primes saved prefixes; "
-        "agentic_profile enables duration controls on the offline engine or optional dynamo-policy stack; "
-        "legacy --stack dynamo does not support profiles. Results are functional_only; "
+        "agentic_profile enables duration controls on the offline engine or a compatible Dynamo stack; "
+        "Dynamo profile support requires a matching adapter/core build. Results are functional_only; "
         "hardware accuracy and complete AgentX recipe parity are not qualified."
     )
     subparsers.choices["predict"].add_argument(
@@ -125,7 +125,7 @@ def select_stack(explicit: str | None, config: dict[str, Any]) -> str:
 
     if explicit is not None:
         return explicit
-    return "dynamo-policy" if "router" in config else "engine"
+    return "dynamo" if "router" in config else "engine"
 
 
 def _load_mapping(path: str) -> dict[str, Any]:

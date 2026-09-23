@@ -249,7 +249,7 @@ def _estimate_trace(
     """Stream JSON/JSONL metadata without materializing request or token arrays."""
     unqualified = lambda reason: ResourceEstimate("trace-unqualified-v1", None, 0, 0, None, reason)
     format_name = workload.get("trace_format", "mooncake")
-    if stack not in {"engine", "dynamo", "dynamo-policy"} or format_name not in {
+    if stack not in {"engine", "dynamo"} or format_name not in {
         "mooncake",
         "mooncake-delta",
         "agentic_mooncake",
@@ -337,12 +337,12 @@ def _estimate_trace(
     lanes = int(workload.get("agentic_lanes") or 1)
     peak = WORKER_BASELINE_BYTES + 128 * total_bytes + lanes * (32 * tokens * cumulative + 65536 * count)
     profile = workload.get("agentic_profile") is not None
-    if profile or stack == "dynamo-policy":
+    if profile or stack == "dynamo":
         # Native routing retains additional state outside the engine estimate.
         # Profiles also retain retired identities and lifecycle rows, whose
         # count depends on simulated completion times rather than corpus size.
         # Keep the initial-materialization refusal before admitting unknown peaks.
-        model = "agentic-profile" if profile else "dynamo-policy"
+        model = "agentic-profile" if profile else "dynamo"
         if inspection_budget_bytes is not None and peak > inspection_budget_bytes:
             return ResourceEstimate(
                 f"{model}-materialization-v1",
