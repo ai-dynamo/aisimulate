@@ -8,9 +8,10 @@ SPDX-License-Identifier: Apache-2.0
 This campaign requests DeepSeek-V4.1-Flash TP2 and TP4, separately for `full`
 and `decoder_bounded`. Its execution contract keeps the native checkpoint
 precision, GPU-resident TP-sharded Engram, DP1, PP1, EP1, eager execution,
-text inputs and speculation disabled. GB200 TP4 full and decoder_bounded now
-have independently validated HF tables; other requested profiles remain pending
-or exceed weight capacity. A requested cell is not an available FPM profile.
+text inputs and speculation disabled. GB200 and H200 TP4 full/decoder_bounded
+and B200 TP4 full have independently validated HF tables. B200 TP4 bounded
+remains pending; H100 TP4 and all requested TP2 cells exceed the weight-only
+capacity bound. A requested cell is not an available FPM profile.
 
 The checkpoint is pinned to
 [`fb2764a5cf321eaa5070ca8f9e892818f477c16d`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/fb2764a5cf321eaa5070ca8f9e892818f477c16d).
@@ -33,8 +34,8 @@ architecture and topology; a system YAML is not a live allocation receipt.
 | System | Capacity per GPU in system YAML | TP2, both profiles | TP4, both profiles |
 | --- | ---: | --- | --- |
 | `h100_sxm` | 80 GiB | Weights exceed capacity | Weights exceed capacity |
-| `h200_sxm` | 141 GiB | Weights exceed capacity | Native Humming full smoke passed at static fraction 0.98; bounded qualification pending |
-| `b200_sxm` | 180 GiB | Weights exceed capacity | Full smoke observed; accepted FPM profiles pending |
+| `h200_sxm` | 141 GiB | Weights exceed capacity | Native Humming full and bounded tables admitted at static fraction 0.98 |
+| `b200_sxm` | 180 GiB | Weights exceed capacity | Full table admitted; bounded formal collection pending |
 | `gb200` | 185.03 GiB | Weights exceed capacity | Full and decoder_bounded tables admitted; independent coverage below |
 
 Capacity rejection is not a failed GPU experiment and must not be reported as
@@ -54,6 +55,22 @@ geometry errors against medians of ten heldout samples. These results cover
 the predeclared grid and the measured 4-slot / 5120-token pool, not arbitrary
 loads. See the [profile pins and coverage](../../src/aisimulate_core/systems/profiles/dsv41_fpm/README.md)
 and [source replay instructions](../../collector/fpm_forward/README.md).
+
+
+H200 TP4 independently retains the same 145 calibration / 38 heldout geometry
+counts and ten fixed attempts. Full MAPE is **1.50639143%**, maximum geometry
+error **3.66066412%**. Bounded explicit coverage is 38/38 with MAPE
+**2.93239322%**, maximum **9.21125404%**. Its aggregate API supports 26/38 with
+conditional MAPE **2.71502976%** and retains all 12 multi-prefill guard failures.
+
+B200 TP4 full predicts 38/38 heldout geometries with MAPE **8.48723299%**
+(prefill **11.09427384%**, decode **1.18751859%**). Its maximum geometry error
+is **152.99519567%**; the two largest prefill errors remain in the published
+comparison. No samples were removed and no numerical accuracy threshold was
+predeclared. Technical admission and reproducible prediction are separate from
+the accuracy a deployment requires. All profiles retain independent calibration
+and heldout run, request, and geometry identities, with no fitting or online
+observation updates.
 
 H200 TP4 uses the separately qualified native Humming route with BF16
 activations. The default Hopper CUTLASS route rejects the local intermediate

@@ -92,3 +92,37 @@ they are not a portable allocation service. Other GPU/TP/profile combinations
 are not implied by this pin. The `dev-800cc9…-cohort…` selector identifies the
 image and cohort adapter; the recorded SGLang Git revision is
 `1aa0e962b206102b7c439a4a0c4981cfec6e87bc`.
+
+
+## H200 TP4 full/bounded and B200 TP4 full
+
+The same public recipe loader supports these additional immutable pins:
+
+| Recipe under `recipes/` | Dataset key | Native MoE identity |
+| --- | --- | --- |
+| `dsv41_h200_tp4_full.json` | `h200-tp4-full` | `w4a16_mxfp4_humming` |
+| `dsv41_h200_tp4_decoder_bounded.json` | `h200-tp4-decoder_bounded` | `w4a16_mxfp4_humming` |
+| `dsv41_b200_tp4_full.json` | `b200-tp4-full` | `w4a8_mxfp4_mxfp8_trtllm` |
+
+Use the selected pin and key in the materialization commands above. The
+H200/B200 source artifacts have a separate immutable source revision; the data
+manifest pins their tables, metadata and systems YAML by SHA256. H200 uses its
+recorded Humming runtime at memory fraction 0.98; B200 uses TRTLLM at 0.9.
+Preserve the exact backend version and pass the manifest identity's
+`moe_quant_mode` when constructing `ForwardPassPerfModelConfig`.
+
+Each archive retains its original source and licenses and adds a `recipe.json`
+manifest. `entrypoint.py reduce --help` documents the explicit archive inputs:
+H200 needs qualification raw/prepared and formal raw/prepared archives plus
+the original terminal receipt; B200 full needs its combined raw/prepared archive
+and terminal receipt. Their immutable paths and hashes are in the data leaf's
+sidecar and `fpm/provenance/original/`. `predict` consumes the reduction and the
+materialized systems root. Source remains read-only; outputs use new directories.
+CPU reproduction needs no cluster, model weights or GPU.
+
+Each profile reproduces all 145 calibration rows and retains 38 independent
+heldout geometries / 380 attempts. H200 bounded uses actual native per-request
+witnesses for full explicit coverage; the aggregate guard still rejects 12
+multi-prefill geometries. The [coverage report](../../docs/fpm/deepseek-v41-four-gpu.md)
+includes measured errors, including B200 full's large prefill outliers.
+B200 bounded has no published recipe or profile yet.

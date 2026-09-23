@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
-  "revision": "bbcba43605bc0d7683c38efa14a9454d2ce83e48",
+  "revision": "98f92790e39ad9d0958265f192f94c5568e33201",
   "profiles": {
     "gb200-tp4-full": {
       "admission": "serving",
@@ -100,6 +100,153 @@
           "sha256": "0eae1446798493cf7d2b60b5edcf22f7eebe9d6ece3edd7216347c9b453309f1"
         }
       ]
+    },
+    "b200-tp4-full": {
+      "admission": "serving",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b200-sxm/sglang/dev-c4ca651192e5-cohort-v1-2f91cdaad3390a729a6b3abb9827eafeaf2fb7104bbe87d4677d380f0e0533d8/pure-tp4/fpm/fpm_forward_perf.full.parquet",
+          "sha256": "8011fa4ba71df885fac48e7a62671830f759ca267219f7f93f57f6b339a4aa62",
+          "target": "data/b200_sxm/sglang/dev-c4ca651192e5-cohort-v1-2f91cdaad3390a729a6b3abb9827eafeaf2fb7104bbe87d4677d380f0e0533d8/fpm_forward_perf.parquet"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b200-sxm/sglang/dev-c4ca651192e5-cohort-v1-2f91cdaad3390a729a6b3abb9827eafeaf2fb7104bbe87d4677d380f0e0533d8/pure-tp4/fpm/fpm_forward_perf.full.metadata.json",
+          "sha256": "eda9e231de061417975392e3be08a6544826880c78d648bfce458fde5b9d7a23",
+          "target": "data/b200_sxm/sglang/dev-c4ca651192e5-cohort-v1-2f91cdaad3390a729a6b3abb9827eafeaf2fb7104bbe87d4677d380f0e0533d8/fpm_forward_perf.metadata.json"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b200-sxm/sglang/dev-c4ca651192e5-cohort-v1-2f91cdaad3390a729a6b3abb9827eafeaf2fb7104bbe87d4677d380f0e0533d8/pure-tp4/fpm/provenance/systems.full.yaml",
+          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd",
+          "target": "b200_sxm.yaml"
+        }
+      ],
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-c4ca651192e5-cohort-v1-2f91cdaad3390a729a6b3abb9827eafeaf2fb7104bbe87d4677d380f0e0533d8",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "b200_sxm",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "source_artifact_revision": "a9c0c2b4fc65a890538288dded258521f3cb4a8e"
+    },
+    "h200-tp4-decoder_bounded": {
+      "admission": "serving",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/h200-sxm/sglang/dev-c4ca651192e5-humming-formal22-84cd4355a2a7e3a9f8d6fe4af40fe4a9a18cea2084b2006faad7150506ed39c3/pure-tp4/fpm/fpm_forward_perf.decoder_bounded.parquet",
+          "sha256": "259ea01df76545ec8b859a1f8d7c624a9d93685bfffabc616fe527597fa53c78",
+          "target": "data/h200_sxm/sglang/dev-c4ca651192e5-humming-formal22-84cd4355a2a7e3a9f8d6fe4af40fe4a9a18cea2084b2006faad7150506ed39c3/fpm_forward_perf.parquet"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/h200-sxm/sglang/dev-c4ca651192e5-humming-formal22-84cd4355a2a7e3a9f8d6fe4af40fe4a9a18cea2084b2006faad7150506ed39c3/pure-tp4/fpm/fpm_forward_perf.decoder_bounded.metadata.json",
+          "sha256": "44cfd479338b9081204a01f466f03d6a032e7092700931f8967d0cfcd2f3f461",
+          "target": "data/h200_sxm/sglang/dev-c4ca651192e5-humming-formal22-84cd4355a2a7e3a9f8d6fe4af40fe4a9a18cea2084b2006faad7150506ed39c3/fpm_forward_perf.metadata.json"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/h200-sxm/sglang/dev-c4ca651192e5-humming-formal22-84cd4355a2a7e3a9f8d6fe4af40fe4a9a18cea2084b2006faad7150506ed39c3/pure-tp4/fpm/provenance/systems.decoder_bounded.yaml",
+          "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d",
+          "target": "h200_sxm.yaml"
+        }
+      ],
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-c4ca651192e5-humming-formal22-84cd4355a2a7e3a9f8d6fe4af40fe4a9a18cea2084b2006faad7150506ed39c3",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "decoder_bounded",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a16_mxfp4_humming",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "h200_sxm",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "source_artifact_revision": "a9c0c2b4fc65a890538288dded258521f3cb4a8e"
+    },
+    "h200-tp4-full": {
+      "admission": "serving",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/h200-sxm/sglang/dev-c4ca651192e5-humming-formal22-f0265c681879c0407834e6ad872b75e7e2aedb6327d3526b73b80e7ca3742d5b/pure-tp4/fpm/fpm_forward_perf.full.parquet",
+          "sha256": "4cac84a8d0b8521e5f6f04c7b973a57f0c983883a49b43630aca733019fabb86",
+          "target": "data/h200_sxm/sglang/dev-c4ca651192e5-humming-formal22-f0265c681879c0407834e6ad872b75e7e2aedb6327d3526b73b80e7ca3742d5b/fpm_forward_perf.parquet"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/h200-sxm/sglang/dev-c4ca651192e5-humming-formal22-f0265c681879c0407834e6ad872b75e7e2aedb6327d3526b73b80e7ca3742d5b/pure-tp4/fpm/fpm_forward_perf.full.metadata.json",
+          "sha256": "cbd45cc16801b1c0c002dacb637935ea6c1ade435ae7b8b4d25935926a734e87",
+          "target": "data/h200_sxm/sglang/dev-c4ca651192e5-humming-formal22-f0265c681879c0407834e6ad872b75e7e2aedb6327d3526b73b80e7ca3742d5b/fpm_forward_perf.metadata.json"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/h200-sxm/sglang/dev-c4ca651192e5-humming-formal22-f0265c681879c0407834e6ad872b75e7e2aedb6327d3526b73b80e7ca3742d5b/pure-tp4/fpm/provenance/systems.full.yaml",
+          "sha256": "1d7359c1a6615efb6c09bb0edcac05fd35ba0a3743a9908e041c4a6c1ec3909d",
+          "target": "h200_sxm.yaml"
+        }
+      ],
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-c4ca651192e5-humming-formal22-f0265c681879c0407834e6ad872b75e7e2aedb6327d3526b73b80e7ca3742d5b",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "full",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a16_mxfp4_humming",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "h200_sxm",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "source_artifact_revision": "a9c0c2b4fc65a890538288dded258521f3cb4a8e"
     }
   }
 }
