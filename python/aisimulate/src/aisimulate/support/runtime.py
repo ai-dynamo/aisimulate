@@ -356,10 +356,12 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
             if source is None or finalized["runtime_probe"] != runtime_probe_manifest(original):
                 raise ValueError("finalized runtime probe provenance changed")
             observations, evidence, _, _ = _verify_collection(original, root)
-            expected = _merge_resources(observations, evidence)
-            if _resource_values(request.profile_deployment().resources.model_dump(mode="json")) != _resource_values(
-                expected
-            ):
+            expected = _merge_resources(
+                observations,
+                evidence,
+                source_references=finalized.get("observation_provenance") == "source_references",
+            )
+            if request.profile_deployment().resources.model_dump(mode="json") != expected:
                 raise ValueError("finalized runtime resources differ from verified formal observations")
             launch = source["provenance"]["launch"]
             if _request_launch(request, launch) != launch:

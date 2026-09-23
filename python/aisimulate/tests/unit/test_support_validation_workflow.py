@@ -794,11 +794,14 @@ def test_serving_threshold_reassessment_preserves_measurements(
     assert raw == {path: path.read_bytes() for path in raw}
 
 
-def test_replay_accepts_verified_memory_finalization_and_rejects_changed_capacity(tmp_path, monkeypatch):
+@pytest.mark.parametrize("legacy_provenance", [False, True])
+def test_replay_accepts_verified_memory_finalization_and_rejects_changed_capacity(
+    tmp_path, monkeypatch, legacy_provenance
+):
     from collector.fpm_forward.repeatability import load_repeatability_source
 
     from aisimulate import supervision
-    from aisimulate.support.finalization import finalize
+    from aisimulate.support.finalization import _merge_resources, _verify_collection, finalize
 
     from .test_onboard_finalization import build_completed_collection
 
@@ -806,6 +809,20 @@ def test_replay_accepts_verified_memory_finalization_and_rejects_changed_capacit
     target = tmp_path / "resolved"
     finalize(original, root, target)
     request = SupportRequest.from_yaml(target / "request.yaml")
+    if legacy_provenance:
+        # Reproduce the previous embedded observation format, keeping its exact
+        # profile/request identity through subsequent replay reassessment.
+        observations, manifest, formal_data, _ = _verify_collection(original, root)
+        payload = request.model_dump(mode="json")
+        payload["fpm_profile"]["deployments"][0]["resources"] = _merge_resources(observations, manifest)
+        request = SupportRequest.model_validate(payload)
+        target = tmp_path / "legacy-resolved"
+        create_plan(request, target)
+        for relative, content in formal_data.items():
+            destination = target / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
+    saved_request = (target / "request.yaml").read_bytes()
     trace = tmp_path / "trace.json"
     _write(
         trace,
@@ -842,6 +859,7 @@ def test_replay_accepts_verified_memory_finalization_and_rejects_changed_capacit
         }
     }
     assert workflow._check_replay(replay / "validation.json", original, collection, plan)["status"] == "passed"
+    assert (target / "request.yaml").read_bytes() == saved_request
 
     changed = request.model_dump(mode="json")
     changed["fpm_profile"]["deployments"][0]["resources"]["runtime_memory"]["kv_cache_bytes"] += 1024

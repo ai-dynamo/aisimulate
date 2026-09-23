@@ -9,6 +9,8 @@ import copy
 import hashlib
 import json
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -27,8 +29,8 @@ def _write(path, value):
     path.write_text(json.dumps(value))
 
 
-def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096):
-    index, launches = observation_fixture(tmp_path / "probe", dense=True)
+def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096, tp=2):
+    index, launches = observation_fixture(tmp_path / "probe", dense=True, tp=tp)
     launch = launches["tp2"]
     model_path = Path(launch["model_config"]["path"])
     _write(
@@ -41,8 +43,8 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096):
             "hidden_size": 128,
             "vocab_size": 1024,
             "num_hidden_layers": 2,
-            "num_attention_heads": 4,
-            "num_key_value_heads": 4,
+            "num_attention_heads": max(4, tp),
+            "num_key_value_heads": max(4, tp),
             "intermediate_size": 256,
             "quantization_config": {"quant_method": "modelopt", "quant_algo": "NVFP4", "kv_cache_quant_algo": "none"},
         },
@@ -82,7 +84,7 @@ def _campaign(tmp_path, *, capacity_multiplier=1, context_length=4096):
         "identity": launch["identity"],
         "workload": {"input_tokens": 64, "output_tokens": 16, "concurrency": 1, "request_count": 1},
         "search": {
-            "tensor_parallel": 2,
+            "tensor_parallel": tp,
             "attention_data_parallel": 1,
             "moe_tensor_parallel": 1,
             "moe_expert_parallel": 1,
@@ -552,8 +554,8 @@ def test_unknown_geometry_does_not_mask_missing_explicit_topology(tmp_path, caps
     assert "tensor_parallel" in str(result["configurations"]["tp2"]["diagnostics"])
 
 
-def _imported(tmp_path, capsys, *, capacity_multiplier=1):
-    checkpoint, index, _ = _campaign(tmp_path, capacity_multiplier=capacity_multiplier)
+def _imported(tmp_path, capsys, *, capacity_multiplier=1, tp=2):
+    checkpoint, index, _ = _campaign(tmp_path, capacity_multiplier=capacity_multiplier, tp=tp)
     assert _import(checkpoint, index, tmp_path / "drafts", configurations=["tp2"]) == 0
     result = json.loads(capsys.readouterr().out)
     state = _load(checkpoint)
@@ -662,7 +664,7 @@ def _formal_bindings(index, cells=None):
     return {"runtime_observation_attempt_id": "formal-parent", "cells": entries}
 
 
-def test_formal_finalize_validates_new_observations_and_preserves_verified_timing_pair(tmp_path, capsys):
+def _completed_runtime_collection(tmp_path, capsys, *, tp=2):
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
     from collector.fpm_forward.database import aggregate_cell, write_formal_database
@@ -670,12 +672,11 @@ def test_formal_finalize_validates_new_observations_and_preserves_verified_timin
     from collector.fpm_forward.planner import build_collection_plan
     from collector.fpm_forward.runner import CHECKPOINT_SCHEMA
 
-    from aisimulate.support.finalization import finalization_manifest
     from aisimulate.support.runtime import runtime_probe_manifest
 
     from .test_onboard_finalization import _native
 
-    checkpoint, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=10)
+    checkpoint, _, request, files = _imported(tmp_path, capsys, capacity_multiplier=10, tp=tp)
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
     root = tmp_path / "collection"
@@ -745,6 +746,13 @@ def test_formal_finalize_validates_new_observations_and_preserves_verified_timin
             },
         },
     )
+    return checkpoint, request, files, root
+
+
+def test_formal_finalize_validates_new_observations_and_preserves_verified_timing_pair(tmp_path, capsys):
+    from aisimulate.support.finalization import finalization_manifest
+
+    checkpoint, request, files, root = _completed_runtime_collection(tmp_path, capsys)
     target = tmp_path / "finalized"
     assert (
         cli.main(
@@ -786,6 +794,109 @@ def test_formal_finalize_validates_new_observations_and_preserves_verified_timin
     assert state.configurations["tp2"].acceptance is None
     state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
     assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+
+
+def test_large_runtime_provenance_reaches_supervised_recommendation_and_keeps_sources(tmp_path, capsys):
+    from aisimulate.support.finalization import _merge_resources, _verify_collection, finalization_manifest
+    from aisimulate.support.runtime import verify_runtime_profile
+
+    # The fixture's arbitrary configuration label is independent of topology.
+    checkpoint, original, files, root = _completed_runtime_collection(tmp_path, capsys, tp=8)
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    accepted = checkpoint.read_bytes()
+    target = tmp_path / "resolved"
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "finalize",
+                "--config",
+                files["request"],
+                "--output-dir",
+                str(root),
+                "--resolved-output-dir",
+                str(target),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert before == {path: path.read_bytes() for path in before}
+    assert checkpoint.read_bytes() == accepted
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    assert resolved.profile_deployment().tp == 8
+    manifest = finalization_manifest(resolved)
+    assert manifest == json.loads((target / "finalization.json").read_text())
+    assert manifest["observation_provenance"] == "source_references"
+    observation = json.loads(manifest["cell_observations"][0]["runtime_memory"]["provenance"])
+    assert len(observation["rank_capacities"]) == 16
+    assert len(observation["artifacts"]) == 18
+    assert all(set(reference) == {"path", "sha256"} for reference in observation["artifacts"])
+    for reference in manifest["source_artifacts"]:
+        assert hashlib.sha256(Path(reference["path"]).read_bytes()).hexdigest() == reference["sha256"]
+    output = tmp_path / "recommendation"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "aisimulate",
+            "recommend",
+            "--config",
+            str(target / "recommend/pilot.yaml"),
+            "--output-dir",
+            str(output),
+            "--format",
+            "json",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 1, result.stderr
+    recommendation = json.loads((output / "recommendation.json").read_text())
+    assert len(recommendation["candidates"]) == 1
+    candidate = recommendation["candidates"][0]
+    assert candidate["status"] == "failed"
+    assert "FPM direct" in candidate["reason"] and "unsupported" in candidate["reason"]
+    assert "bounded checkpoint budget" not in result.stderr
+    events = [json.loads(line) for line in (output / "execution-events.jsonl").read_text().splitlines()]
+    assert any(event["event"] == "candidate_completed" for event in events)
+    verify_runtime_profile(resolved)
+    observations, legacy_manifest, _, _ = _verify_collection(original, root)
+    legacy = resolved.model_dump(mode="json")
+    legacy["fpm_profile"]["deployments"][0]["resources"] = _merge_resources(observations, legacy_manifest)
+    review = tmp_path / "resolved-checkpoint.json"
+    state, _ = save_checkpoint(
+        review,
+        patch={
+            "configurations": {
+                "legacy": {"draft_request": legacy},
+                "references": {"draft_request": resolved.model_dump(mode="json")},
+            }
+        },
+        expected_revision=None,
+        accept=["legacy", "references"],
+    )
+    assert all(config["profile_accepted"] for config in report(state, review)["configurations"].values())
+    assert SupportRequest.model_validate(state.configurations["legacy"].draft_request).model_dump(mode="json") == legacy
+    changed = resolved.model_dump(mode="json")
+    resources = changed["fpm_profile"]["deployments"][0]["resources"]
+    forged = copy.deepcopy(manifest)
+    forged["source_artifacts"][0]["sha256"] = "0" * 64
+    resources["runtime_memory"]["provenance"] = json.dumps(forged, sort_keys=True, separators=(",", ":"))
+    with pytest.raises(ValueError, match="resources differ"):
+        verify_runtime_profile(SupportRequest.model_validate(changed))
+    for value in (None, "future-format", {}):
+        forged["observation_provenance"] = value
+        resources["runtime_memory"]["provenance"] = json.dumps(forged)
+        with pytest.raises(ValueError, match="unsupported finalized observation provenance format"):
+            verify_runtime_profile(SupportRequest.model_validate(changed))
+    # The compact representation must still bind every immutable raw record.
+    source = next(path for path in before if path.name == "worker-0-0.json")
+    source.write_text(source.read_text() + "\n")
+    with pytest.raises(ValueError, match="changed|hash|incomplete"):
+        verify_runtime_profile(resolved)
+    assert all(not config["profile_accepted"] for config in report(state, review)["configurations"].values())
 
 
 def test_formal_capacity_drop_and_geometry_change_are_rejected(tmp_path, capsys):

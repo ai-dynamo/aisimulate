@@ -74,7 +74,11 @@ def finalization_manifest(request: SupportRequest) -> dict[str, Any] | None:
         value = json.loads(runtime.provenance)
     except ValueError:
         return None
-    return value if isinstance(value, dict) and value.get("schema_version") == _SCHEMA else None
+    if not isinstance(value, dict) or value.get("schema_version") != _SCHEMA:
+        return None
+    if "observation_provenance" in value and value["observation_provenance"] != "source_references":
+        raise ValueError("unsupported finalized observation provenance format")
+    return value
 
 
 def verify_finalized_data(request: SupportRequest, root: Path) -> None:
@@ -95,13 +99,16 @@ def verify_finalized_data(request: SupportRequest, root: Path) -> None:
             raise ValueError(f"finalized FPM data changed: {path}")
 
 
-def _merge_resources(observations: list[dict[str, Any]], manifest: dict[str, Any]) -> dict[str, Any]:
+def _merge_resources(
+    observations: list[dict[str, Any]], manifest: dict[str, Any], *, source_references: bool = False
+) -> dict[str, Any]:
     if not observations:
         raise ValueError("collection has no runtime memory observations")
     canonical = None
     runtime_settings = None
     runtime_geometry = None
     minimum = None
+    summaries = []
     for observation in observations:
         resources = FpmResourceProfile.model_validate(observation)
         if resources.memory_source != "runtime" or resources.cache_layout != "grouped":
@@ -141,14 +148,34 @@ def _merge_resources(observations: list[dict[str, Any]], manifest: dict[str, Any
         elif comparable != canonical:
             raise ValueError("collection cells have incompatible runtime cache layouts or settings")
         minimum = capacity if minimum is None else min(minimum, capacity)
+        if source_references:
+            # Raw records remain immutable collection artifacts. Reference their
+            # exact bytes instead of copying every rank/layer into each candidate.
+            evidence["artifacts"] = [
+                {key: value for key, value in artifact.items() if key != "evidence"}
+                for artifact in evidence["artifacts"]
+            ]
+            summaries.append(
+                {
+                    **observation,
+                    "runtime_memory": {**observation["runtime_memory"], "provenance": _canonical(evidence)},
+                }
+            )
     assert canonical is not None and minimum is not None
-    manifest["cell_observations"] = observations
+    if source_references:
+        manifest["observation_provenance"] = "source_references"
+    manifest["cell_observations"] = summaries if source_references else observations
     manifest["capacity_policy"] = "minimum observed request-usable rank-local capacity across compatible cells"
     provenance = _canonical(manifest)
     return {
         **canonical,
         "runtime_memory": {**canonical["runtime_memory"], "kv_cache_bytes": minimum, "provenance": provenance},
-        "provenance": provenance,
+        "provenance": (
+            "Runtime cache resources resolved from verified collection evidence. Raw records are retained at "
+            "the SHA-256-bound sources in runtime_memory.provenance."
+            if source_references
+            else provenance
+        ),
     }
 
 
@@ -359,7 +386,7 @@ def finalize(request: SupportRequest, output_dir: str | Path, resolved_output_di
     with plan_lock(root):
         check_plan(request, root)
         observations, manifest, formal_files, snapshots = _verify_collection(request, root)
-        resources = _merge_resources(observations, manifest)
+        resources = _merge_resources(observations, manifest, source_references=True)
         payload = request.model_dump(mode="json")
         payload["fpm_profile"]["provenance"] = _canonical(
             {

@@ -455,7 +455,11 @@ def _check_replay(path: Path, original: SupportRequest, collection: dict[str, An
         observations, verified_manifest, _, _ = _verify_collection(
             original, Path(collection["inputs"]["collection_directory"])
         )
-        expected_resources = _merge_resources(observations, verified_manifest)
+        expected_resources = _merge_resources(
+            observations,
+            verified_manifest,
+            source_references=manifest.get("observation_provenance") == "source_references",
+        )
         if request.profile_deployment().resources.model_dump(mode="json") != expected_resources:
             raise ValueError("finalized replay resources differ from verified collection memory")
     request.profile_deployment().resources.require_memory()

@@ -41,7 +41,7 @@ def _write(path, payload):
     return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
 
 
-def observation_fixture(root: Path, *, packed=False, planar=False, dense=False):
+def observation_fixture(root: Path, *, packed=False, planar=False, dense=False, tp=2):
     """Synthetic source, rank and runtime records; no GPU or runtime qualification."""
     root.mkdir(parents=True, exist_ok=True)
     path, manifest = _manifest(root)
@@ -61,7 +61,14 @@ def observation_fixture(root: Path, *, packed=False, planar=False, dense=False):
             "interconnect": "nvlink",
             "sm": 103,
         },
-        "topology": {"tp": 2, "pp": 1, "dp": 1 if dense else 2, "moe_tp": 1, "moe_ep": 1 if dense else 4, "cp": 1},
+        "topology": {
+            "tp": tp,
+            "pp": 1,
+            "dp": 1 if dense else 2,
+            "moe_tp": 1,
+            "moe_ep": 1 if dense else tp * 2,
+            "cp": 1,
+        },
         "precision": {
             "gemm_quant_mode": "nvfp4",
             "moe_quant_mode": "nvfp4",
@@ -99,7 +106,7 @@ def observation_fixture(root: Path, *, packed=False, planar=False, dense=False):
             "workers": [
                 {"dp_rank": dp, "tp_rank": tp, "pp_rank": 0}
                 for dp in range(launch["topology"]["dp"])
-                for tp in range(2)
+                for tp in range(launch["topology"]["tp"])
             ],
             "schedulers": [{"dp_rank": dp} for dp in range(launch["topology"]["dp"])],
         }
@@ -233,6 +240,7 @@ def observation_fixture(root: Path, *, packed=False, planar=False, dense=False):
                 "unresolved_fields": [],
             }
             record["resolved_config"]["parallel_config"]["enable_expert_parallel"] = not dense
+            record["resolved_config"]["parallel_config"]["tensor_parallel_size"] = tp
             ref = _write(
                 root / phase / (f"worker-{dp}-{rank['tp_rank']}.json" if worker else f"scheduler-{dp}.json"), record
             )
