@@ -46,7 +46,7 @@ uv venv --python 3.12 /tmp/agentx-quickstart/venv
 uv pip install --python /tmp/agentx-quickstart/venv/bin/python 'maturin>=1.12,<2' patchelf
 
 git clone https://github.com/ai-dynamo/dynamo.git /tmp/agentx-quickstart/dynamo
-git -C /tmp/agentx-quickstart/dynamo checkout --detach origin/harrli/aic-1817-existing-adapter
+git -C /tmp/agentx-quickstart/dynamo checkout --detach 44253532ecbce5a3c7aa454475fc63e3b7f84e99
 agentx_core_rev=$(/tmp/agentx-quickstart/venv/bin/python -c \
   'import pathlib,tomllib; print(tomllib.loads(pathlib.Path("/tmp/agentx-quickstart/dynamo/Cargo.toml").read_text())["workspace"]["dependencies"]["aisimulate-core"]["rev"])')
 git clone https://github.com/ai-dynamo/aisimulate.git /tmp/agentx-quickstart/aisimulate
@@ -287,8 +287,9 @@ for the detailed contract and qualification boundaries.
 Check `dynamo_policy.native_policy: true` and
 `dynamo_policy.routing_provider: dynamo.DefaultWorkerSelector` to identify the
 native implementation actually called; retain the source revisions recorded at
-installation alongside the report. `dynamo_policy.decisions` records request/group, pool, worker, DP rank and
-native cache overlap; `physical_kv_events` counts actual engine cache events fed
+installation alongside the report. `dynamo_policy.decisions` records the request,
+group, pool, worker, DP rank and whether an existing binding was reused.
+`physical_kv_events` counts actual engine cache events fed
 to the native index. Compare decisions with each request's `routing_history`.
 Worker selection alone does not prove physical cache reuse.
 Detailed decisions are retained only with `--capture-per-request`; otherwise
@@ -311,10 +312,18 @@ router overlap is not a substitute for cache hits. The 162 source requests
 include initial snapshot history, and the corpus can be replayed repeatedly as
 lanes recycle, so this is not the expected measured request count.
 
-Acceptance results for the existing Dynamo adapter are recorded with the exact
-source pair above. Compare native routing decisions with actual worker/DP
-placement and physical cache reuse; request counts and cache percentages can
-vary with native selection and are not fixed expected values or hardware
+The source pair above was tested with this exact configuration and trace:
+
+| Admission window | Completed requests | Actual prefix reuse | Canceled / unsettled |
+| --- | --- | --- | --- |
+| 3,600 seconds | 219 | 95.6497% | 0 / 0 |
+| 600 seconds | 42 | 96.1709% | 0 / 0 |
+
+In the 3,600-second run, all 482 native routing decisions passed the accepted-
+dispatch check; 438 measured worker/DP placements matched the report and the
+remaining 44 decisions covered preparation. The native index received 302
+physical cache events. These counts and percentages are observed results;
+native selection may vary, so they are not fixed expected values or hardware
 accuracy claims.
 
 To compare against a cold snapshot, repeat the command with a separate output
