@@ -130,7 +130,7 @@ mod tests {
         // v17: ContextAttentionOp gained apply_rope (Muse Glimmer review
         //     follow-up) — a positional bincode op-layout change.
         // v18: speculative attention width fields and FpmForward verify_width.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 19);
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 20);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }
@@ -369,6 +369,71 @@ mod tests {
             first.materialize_prefix("before", 65).unwrap(),
             first.materialize_prefix("after", 128).unwrap()[..65]
         );
+        let warmup = WorkloadDriver::new_agentic_warmup(prepared.clone(), 32, true, 2.0).unwrap();
+        let phases = warmup.agentic_phase_evidence().unwrap();
+        assert!(warmup.is_agentic_preparing());
+        assert_eq!(phases.lanes[0].primers_expected, 1);
+        assert_eq!(phases.lanes[0].warmup_expected, 10);
+        assert_eq!(phases.requests[0].source_request_id, "before");
+        assert!(phases
+            .requests
+            .iter()
+            .all(|request| request.max_output_tokens == 1));
+        assert_eq!(phases.profile_start_ms, None);
+        // An external caller can run the same prepared context through the
+        // public offline P/D executor without private runtime constructors.
+        use aisimulate_core::replay::{
+            ReplayEngineConfig, ReplayEngineFactory, ReplayRuntimeInput, ReplaySpec,
+            ReplayTopology, Replayer, WorkerPoolSpec,
+        };
+        let expected = prepared.snapshots()[0]
+            .requests
+            .iter()
+            .find(|request| request.source_request_id == "after")
+            .unwrap()
+            .identity
+            .clone();
+        let driver = WorkloadDriver::new_agentic_warmup(
+            prepared,
+            ReplayEngineConfig::default().rank.block_size,
+            true,
+            2.0,
+        )
+        .unwrap();
+        let spec = ReplaySpec {
+            version: 1,
+            topology: ReplayTopology::Disaggregated {
+                prefill: WorkerPoolSpec {
+                    initial_workers: 1,
+                    startup_delay_ms: 0.0,
+                },
+                decode: WorkerPoolSpec {
+                    initial_workers: 1,
+                    startup_delay_ms: 0.0,
+                },
+                handoff_latency_ms: 1.0,
+            },
+            engine: Default::default(),
+            adapters: Default::default(),
+            max_sim_time_ms: None,
+            max_in_flight: None,
+            record_per_request: true,
+            sla: Default::default(),
+            requests: Vec::new(),
+        };
+        let report = Replayer::new(
+            spec,
+            ReplayEngineFactory::with_timing_model(std::sync::Arc::new(LatencyOnlyProvider)),
+        )
+        .unwrap()
+        .with_runtime_input(ReplayRuntimeInput::Workload(driver))
+        .run()
+        .unwrap();
+        assert_eq!(report.request_counts.completed_requests, 1);
+        assert_eq!(report.per_request[0].agentic.as_ref(), Some(&expected));
+        let phases = report.agentic_phases.unwrap();
+        assert_eq!(phases.lanes[0].warmup_completed, 10);
+        assert!(phases.profile_start_ms.is_some());
         let mut driver = WorkloadDriver::new_agentic_snapshots(
             PreparedAgenticSnapshots::from_plays(vec![first]).unwrap(),
             32,
@@ -379,6 +444,88 @@ mod tests {
         assert_eq!(driver.total_turns(), 2);
         assert_eq!(driver.next_ready_time_ms(), Some(0.0));
     }
+}
+
+/// Exhaustive downstream literals for the coordinated 0.13 report migration.
+/// Cold callers explicitly leave both newly introduced phase fields absent.
+/// Keeping this in an external crate catches public-field source changes.
+pub fn rebuild_replay_report_literals(
+    report: aisimulate_core::ReplayReport,
+    record: aisimulate_core::replay::PerRequestRecord,
+) -> (
+    aisimulate_core::ReplayReport,
+    aisimulate_core::replay::PerRequestRecord,
+) {
+    use aisimulate_core::{replay::PerRequestRecord, ReplayReport};
+    (
+        ReplayReport {
+            kv_eviction_policy: report.kv_eviction_policy,
+            kv_eviction_assumption: report.kv_eviction_assumption,
+            committed_prefill_tokens: report.committed_prefill_tokens,
+            g3_offload: report.g3_offload,
+            request_counts: report.request_counts,
+            throughput: report.throughput,
+            prefix_cache_reused_ratio: report.prefix_cache_reused_ratio,
+            first_admission_prefix_cache_reused_ratio: report
+                .first_admission_prefix_cache_reused_ratio,
+            latency: report.latency,
+            trajectories: report.trajectories,
+            agentic_graph: report.agentic_graph,
+            agentic_snapshots: report.agentic_snapshots,
+            agentic_phases: None,
+            agentic_lifecycle: report.agentic_lifecycle,
+            agentic_play_outcomes: report.agentic_play_outcomes,
+            goodput: report.goodput,
+            power: report.power,
+            power_diagnostics: report.power_diagnostics,
+            per_request: report.per_request,
+            runtime_evidence: report.runtime_evidence,
+        },
+        PerRequestRecord {
+            request_id: record.request_id,
+            play_id: record.play_id,
+            session_id: record.session_id,
+            turn_index: record.turn_index,
+            metadata: record.metadata,
+            agentic: record.agentic,
+            agentic_phase: None,
+            uuid: record.uuid,
+            arrival_time_ms: record.arrival_time_ms,
+            dispatched_at_ms: record.dispatched_at_ms,
+            first_admit_ms: record.first_admit_ms,
+            terminal_time_ms: record.terminal_time_ms,
+            first_token_ms: record.first_token_ms,
+            last_token_ms: record.last_token_ms,
+            ttft_ms: record.ttft_ms,
+            ttst_ms: record.ttst_ms,
+            e2e_latency_ms: record.e2e_latency_ms,
+            itl_ms: record.itl_ms,
+            input_length: record.input_length,
+            requested_output_length: record.requested_output_length,
+            output_length: record.output_length,
+            reused_input_tokens: record.reused_input_tokens,
+            first_admission_g1_reused_input_tokens: record.first_admission_g1_reused_input_tokens,
+            first_admission_host_reused_input_tokens: record
+                .first_admission_host_reused_input_tokens,
+            prefill_worker_idx: record.prefill_worker_idx,
+            decode_worker_idx: record.decode_worker_idx,
+            prefill_admit_ms: record.prefill_admit_ms,
+            source_held_ms: record.source_held_ms,
+            destination_reserved_ms: record.destination_reserved_ms,
+            destination_activated_ms: record.destination_activated_ms,
+            decode_admit_ms: record.decode_admit_ms,
+            source_released_ms: record.source_released_ms,
+            decode_reused_input_tokens: record.decode_reused_input_tokens,
+            prefill_route_overlap_tokens: record.prefill_route_overlap_tokens,
+            decode_route_overlap_tokens: record.decode_route_overlap_tokens,
+            routing_history: record.routing_history,
+            admission_history: record.admission_history,
+            admission_count: record.admission_count,
+            readmission_count: record.readmission_count,
+            pressure_record_ordinals: record.pressure_record_ordinals,
+            terminal_status: record.terminal_status,
+        },
+    )
 }
 
 /// Detailed phase evidence is reachable through the canonical model.

@@ -65,8 +65,15 @@ Weka, Agentic Mooncake v2, or agentic Dynamo input. The seed is an unsigned 64-b
 integer. Omit this field for turn-zero replay. The existing `--set
 traffic.load.agentic_snapshot.seed=42` override selects it for prediction or
 recommendation. Snapshot evidence is retained in JSON results. This executes the
-remaining request suffix against a cold engine; primer execution and benchmark
-warmup are separate phase-orchestration work.
+remaining request suffix against a cold engine by default. Add `--set
+traffic.load.agentic_warmup=true` to first execute one-token primers and ten
+one-token warmup requests per lane on the same engine. Preparation is excluded
+from profile metrics and the configured profile time limit; `agentic_phases`
+retains its separate evidence. The built-in offline Engine runner supports
+aggregated and separate prefill/decode workers on vLLM and SGLang, with HBM-only
+KV cache and speculative decoding disabled. P/D uses the same snapshot and
+warmup fields and retains both worker pools across the barrier. See
+[warmup inputs and barrier behavior](../agentic-warmup.md).
 
 <a id="commands"></a>
 
@@ -702,6 +709,7 @@ the current SA convention.
 | `traffic.load.speedup` | `1` | `-` | `-` | Positive; trace timestamp load only. |
 | `traffic.load.agentic_lanes` | `null` | `x` | `-` | Positive integer; `weka`, `agentic_mooncake`, or agentic `dynamo` timestamp replay only. |
 | `traffic.load.agentic_snapshot` | `null` (unset) | `x` | `-` | Optional object `{seed: u64}`; required `seed` is an unsigned 64-bit integer (`0` through `2^64 - 1`). Requires `traffic.load.type: trace_timestamps` and positive `agentic_lanes`; supported formats are `weka`, `agentic_mooncake`, and agentic `dynamo`. Unset preserves turn-zero execution. |
+| `traffic.load.agentic_warmup` | `false` | `x` | `-` | Optional boolean; `true` requires `agentic_snapshot` and positive `agentic_lanes`. Physically primes the saved prefixes, completes ten warmup requests per lane, then profiles the saved suffix. Available on offline aggregated or disaggregated vLLM/SGLang Engine replay, with HBM-only KV cache and speculative decoding disabled. |
 | `traffic.stop.requests` | `100` for default traffic | `x` | `-` | Positive integer; 10× default concurrency; synthetic request source only. |
 | `traffic.stop.requests_per_load_unit` | `null` | `x` | `-` | Positive; synthetic request source only. |
 | `traffic.stop.sessions` | `null` | `x` | `-` | Positive integer; synthetic session source only. |
@@ -828,16 +836,21 @@ first-arrival pacing, and inter-turn or dependency delays remain unscaled.
 |---|---|---|---|---|---|
 | `mooncake` | One request or session turn with a full prompt | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | None specific to the format. |
 | `mooncake-delta` | One session turn; follow-up input is only the new input delta | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | Aggregated deployment only; `planner.policy` must be `disabled`. |
-| `agentic_mooncake` | One request node in a dependency graph | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; `planner.policy` must be `disabled`. |
-| `weka` | A raw kv-cache-tester or published AgentX JSON/JSONL corpus; directories are traversed recursively and JSONL files may contain multiple plays | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; source block size is embedded and the result is functionally qualified. |
+| `agentic_mooncake` | One request node in a dependency graph | `trace_timestamps` | Supported | Not supported; omit it | Offline aggregated or disaggregated vLLM/SGLang Engine replay; `planner.policy` must be `disabled`. |
+| `weka` | A raw kv-cache-tester or published AgentX JSON/JSONL corpus; directories are traversed recursively and JSONL files may contain multiple plays | `trace_timestamps` | Supported | Not supported; omit it | Offline aggregated or disaggregated vLLM/SGLang Engine replay; source block size is embedded and the result is functionally qualified. |
 | `applied_compute_agentic` | One complete session, expanded into `num_turns + 1` requests | `concurrency` | Not supported; omit it | Supported | Source rows have no first-turn timestamps. |
 | `dynamo` standard trace | Native request-trace records, possibly across multiple files | `trace_timestamps`, `concurrency` | Timestamp load only | Supported | The embedded trace block size is authoritative. |
-| `dynamo` agentic trace | Native agentic request-trace records, possibly across multiple files | `trace_timestamps` | Supported | Not supported; omit it | Aggregated deployment only; `planner.policy` must be `disabled`. |
+| `dynamo` agentic trace | Native agentic request-trace records, possibly across multiple files | `trace_timestamps` | Supported | Not supported; omit it | Offline aggregated or disaggregated vLLM/SGLang Engine replay; `planner.policy` must be `disabled`. |
 
 The `dynamo` loader detects whether its records are standard or agentic and applies the corresponding
 row above. If `traffic.source.block_size` is supplied for `dynamo` or `weka`, it must match the
 embedded block size. For the other formats, `block_size` is the trace hash-block size used to
 reconstruct prompts.
+
+Agentic Engine replay requires HBM-only KV cache with speculative decoding
+disabled; TensorRT-LLM is not qualified. P/D workers must share the same target
+model. Online P/D fails validation. These functional replay guarantees do not
+qualify the separate Dynamo runner, even when the input format is `dynamo`.
 
 Weka is the public AgentX source format and AISimulate is its prediction entry point. AISimulate
 deterministically lowers Weka into Agentic Mooncake v2, the versioned producer-neutral interchange
@@ -1012,7 +1025,9 @@ engine:
 | `engine.workers.<role>.kv_cache.bytes_per_token` | `auto` | `x` | `-` | Positive when concrete. `auto` resolves once per worker role from the model and that role's TP/PP/MoE shape. |
 | `engine.workers.<role>.kv_cache.capacity.type` | `default` | `x` | `-` | `default` or `fixed`. |
 | `engine.workers.<role>.kv_cache.capacity.memory_fraction` | vLLM/TensorRT-LLM `0.9`; SGLang `0.88` | `-` | `-` | `(0, 1]`; `default` capacity only. |
-| `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive and required for `fixed` capacity. |
+| `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
+| `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
+| `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
 | `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
@@ -1117,10 +1132,13 @@ candidate (reason category `replay_runtime`) rather than silently falling back t
 decode-KV ceiling. FPM pairs are external runtime inputs. If a pair was collected at a backend
 version outside the queryable slots, set `AIC_ALLOW_UNLISTED_VERSIONS=1` explicitly.
 
-`kv_cache.capacity.type: fixed` requires `blocks`, so users can directly provide cache size. It rejects
-`memory_fraction` and nonzero `cuda_graph_reserved_bytes`. Conversely, `type: default` rejects `blocks`
-and derives block count from model, hardware, parallelism, block size, backend, memory fraction, and
-the caller-provided CUDA graph reservation.
+`kv_cache.capacity.type: fixed` requires `blocks`, or alternatively `bytes` in `predict`.
+Byte capacity requires explicit `block_size` and numeric `bytes_per_token`; the block count is
+`floor(bytes / (block_size * bytes_per_token))`. Specify exactly one of `blocks` and `bytes`.
+Fixed capacity rejects `memory_fraction` and nonzero `cuda_graph_reserved_bytes`.
+Conversely, `type: default` rejects `blocks` and `bytes` and derives block count from model,
+hardware, parallelism, block size, backend, memory fraction, and the caller-provided CUDA graph
+reservation.
 
 The physical GPU count of a worker role is:
 
@@ -1137,6 +1155,32 @@ only the prompt KV not already present at the selected decode worker. `kv_transf
 aggregated mode. All `kv_transfer` fields are concrete-only; their Default Range is `x`, and
 `recommend` rejects domains on them. Transfer bytes per token describe the PD link payload and may
 differ from each worker role's physical `kv_cache.bytes_per_token`.
+
+<a id="manual-state-cache-sizing"></a>
+
+#### 12.1.1 Manual state-cache sizing
+
+For recurrent-state models, set `state_cache.bytes_per_request` under
+`engine.workers.aggregated.kv_cache`. It is disabled by default. Supply the total state size
+per request per simulated rank, including any padding, separately from token KV bytes:
+
+```yaml
+kv_cache:
+  block_size: 64
+  bytes_per_token: 16
+  capacity: {type: fixed, bytes: 8192}
+  state_cache: {bytes_per_request: 1500}
+```
+
+This gives eight 1024-byte blocks. Each request's state uses two blocks, rounded up, in
+addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. The simulator
+does not infer state size or adjust block size automatically.
+
+State caching currently supports `predict --stack engine` with aggregated vLLM and fixed G1 capacity.
+Other runner stacks must explicitly advertise state-cache support; unsupported stacks reject it before execution.
+It cannot be combined with host/G3 offload or disaggregated mode, and is not available in
+`recommend`. `block_size` must be explicitly set to at least two and `bytes_per_token`
+must be a positive integer, not `auto`.
 
 <a id="prompt-lookup-ngram-speculative-decoding"></a>
 

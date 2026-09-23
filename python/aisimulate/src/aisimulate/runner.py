@@ -22,6 +22,7 @@ from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfM
 
 from .capacity import materialize_aic_num_gpu_blocks
 from .config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
+from .config.engine import StateCacheConfig
 from .power import normalize_power_summary, power_metadata
 from .sweeper.afd_engine import AFDForegroundEngine
 from .sweeper.afd_parallel import AFDPhase, AFDTopology
@@ -81,6 +82,7 @@ _RUNTIME_TRAFFIC_FIELDS = frozenset(
         "max_sim_time_ms",
         "agentic_lanes",
         "agentic_snapshot",
+        "agentic_warmup",
     }
 )
 
@@ -92,6 +94,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "gemm_dtype": ("gemm_dtype", "aic_gemm_dtype"),
     "moe_dtype": ("moe_dtype", "aic_moe_dtype"),
     "fmha_dtype": ("fmha_dtype", "aic_fmha_dtype"),
+    "fpm_fmha_dtype": ("fpm_fmha_dtype", "aic_fpm_fmha_dtype"),
     "kv_cache_dtype": ("kv_cache_dtype", "aic_kv_cache_dtype"),
     "comm_dtype": ("comm_dtype", "aic_comm_dtype"),
     "systems_path": ("systems_path",),
@@ -247,18 +250,20 @@ class AICAFDCompanionPerformanceModel:
         if not isinstance(model_name, str) or not model_name or not isinstance(hardware, str) or not hardware:
             raise ValueError(f"{role} AFD companion requires aic_model_path and aic_system")
         fpm_parquet_path = timing_overrides.get("fpm_parquet_path")
+        has_fpm_selector = "fpm_fmha_dtype" in timing_overrides
         metric = "ttft" if role == "prefill" else "tpot"
         source = "aisimulate.legacy_cli.api.cli_estimate"
         try:
-            if fpm_parquet_path is not None:
-                # Preserve static integration through the canonical model API.
+            if fpm_parquet_path is not None or has_fpm_selector:
+                # The canonical API is the only path that preserves FPM selectors.
                 if forward_model != "fpm":
-                    raise ValueError("fpm_parquet_path requires forward_model='fpm'")
+                    raise ValueError("FPM controls require forward_model='fpm'")
                 quantization = {}
                 for field, parameter in (
                     ("gemm_dtype", "gemm_quant_mode"),
                     ("moe_dtype", "moe_quant_mode"),
                     ("fmha_dtype", "fmha_quant_mode"),
+                    ("fpm_fmha_dtype", "fpm_fmha_quant_mode"),
                     ("kv_cache_dtype", "kvcache_quant_mode"),
                     ("comm_dtype", "comm_quant_mode"),
                 ):
@@ -279,7 +284,11 @@ class AICAFDCompanionPerformanceModel:
                     nextn=kwargs.get("nextn", 0),
                     kv_block_size=args.get("block_size"),
                     estimation_mode="fpm_interpolation",
-                    estimator_config={"fpm_interpolation": {"fpm_parquet_path": fpm_parquet_path}},
+                    estimator_config=(
+                        {"fpm_interpolation": {"fpm_parquet_path": fpm_parquet_path}}
+                        if fpm_parquet_path is not None
+                        else {}
+                    ),
                     systems_paths=(timing_overrides["systems_path"],) if "systems_path" in timing_overrides else (),
                     **quantization,
                     **{
@@ -329,6 +338,7 @@ class AICAFDCompanionPerformanceModel:
                 "backend_version": deployment.backend_version,
                 "forward_model": forward_model,
                 **({"fpm_parquet_path": fpm_parquet_path} if fpm_parquet_path is not None else {}),
+                **({"fpm_fmha_dtype": timing_overrides["fpm_fmha_dtype"]} if has_fpm_selector else {}),
                 "metric": metric,
             },
         )
@@ -360,6 +370,7 @@ class EngineReplayRunnerFactory:
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
+            supports_state_cache=True,
             supported_trace_formats=(
                 "mooncake",
                 "mooncake-delta",
@@ -370,7 +381,8 @@ class EngineReplayRunnerFactory:
             ),
             supports_agentic_lanes=True,
             supports_agentic_snapshots=True,
-            supported_agentic_topologies=("agg",),
+            supports_agentic_warmup=True,
+            supported_agentic_topologies=("agg", "disagg"),
             supported_agentic_backends=("vllm", "sglang"),
             supports_agentic_host_offload=False,
             supports_agentic_speculative_decoding=False,
@@ -1068,6 +1080,24 @@ def _materialize_engine_execution_spec(
         trace_format = traffic.get("trace_format")
         if trace_format in {"agentic_mooncake", "dynamo", "weka"}:
             requires_agentic_model = trace_format != "dynamo" or traffic.get("agentic_lanes") is not None
+            if deployment_mode == "disagg":
+                prefill_model = _execution_target_model(deployment, "prefill", raw_prefill)
+                decode_model = _execution_target_model(deployment, "decode", raw_decode)
+                if requires_agentic_model and prefill_model != decode_model:
+                    raise ValueError("agentic prefill and decode must use the same configured target model")
+                if prefill_model == decode_model:
+                    execution_model = prefill_model
+                if requires_agentic_model:
+                    for role, descriptor in (("prefill", prefill), ("decode", decode)):
+                        timing = descriptor["rank"].get("timing_model")
+                        if (
+                            isinstance(timing, Mapping)
+                            and timing.get("type") == "external"
+                            and timing.get("provider") == "aic"
+                            and isinstance(timing.get("config"), Mapping)
+                            and timing["config"].get("model") != execution_model
+                        ):
+                            raise ValueError(f"agentic {role} AIC timing model must match the configured target model")
             if requires_agentic_model and execution_model is None:
                 raise ValueError("agentic execution requires a configured target model")
             # Dynamo may contain standard or agentic requests; native validates the loaded kind.
@@ -1307,6 +1337,7 @@ def _materialize_engine_role(
     capacity_materialized = False
     num_gpu_blocks_is_explicit = False
     if "rank" not in role_config:
+        state_cache = _manual_state_cache(role_config, deployment_backend, role)
         num_gpu_blocks_is_explicit = role_config.get("num_gpu_blocks") is not None
         for name in ("aic_backend_version", "backend_version"):
             if role_config.get(name) is None:
@@ -1344,15 +1375,18 @@ def _materialize_engine_role(
                 role_config["aic_backend_version"] = version
             if timing_config is not None and timing_config.get("backend_version") is None:
                 role_config["timing_model"] = {**timing, "config": {**timing_config, "backend_version": version}}
-        role_config = materialize_aic_num_gpu_blocks(
-            role_config,
-            **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
-        )
-        if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
-            role_memory["status"] = "available"
-            role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
-            role_memory.pop("unavailable_reason", None)
-        capacity_materialized = role_config.get("num_gpu_blocks") is not None
+        if state_cache is not None:
+            role_config["state_cache"] = state_cache.model_dump(mode="json")
+        else:
+            role_config = materialize_aic_num_gpu_blocks(
+                role_config,
+                **({"memory_diagnostics": role_memory} if role_memory is not None else {}),
+            )
+            if role_memory is not None and "total_gpu_capacity_bytes" in role_memory:
+                role_memory["status"] = "available"
+                role_memory["estimated_num_gpu_blocks"] = role_memory.pop("num_gpu_blocks")
+                role_memory.pop("unavailable_reason", None)
+            capacity_materialized = role_config.get("num_gpu_blocks") is not None
     for name in ("engine_type", "aic_backend"):
         configured = role_config.pop(name, None)
         if configured is not None and configured != deployment_backend:
@@ -1423,6 +1457,11 @@ def _materialize_engine_role(
         # role mappings may use the same shorthand.
         rank = role_config
 
+    state_cache = _manual_state_cache(rank, deployment_backend, role)
+    if state_cache is not None:
+        num_gpu_blocks_is_explicit = True
+        rank["state_cache"] = state_cache.model_dump(mode="json")
+
     nested_cuda_graph_reserved_bytes = rank.pop("cuda_graph_reserved_bytes", None)
     if cuda_graph_reserved_bytes is not None and nested_cuda_graph_reserved_bytes is not None:
         raise ValueError(f"engine provider {role} config duplicates cuda_graph_reserved_bytes")
@@ -1448,7 +1487,7 @@ def _materialize_engine_role(
             "engine provider rank backend conflicts with deployment backend: "
             f"{configured_backend!r} != {deployment_backend!r}"
         )
-    if "block_size" not in rank:
+    if "block_size" not in rank and state_cache is None:
         # Keep scheduler capacity, AIC compilation, and synthetic-prefix
         # materialization on one explicit backend-native block size.
         rank["block_size"] = {
@@ -1704,6 +1743,46 @@ def _materialize_engine_role(
     }
 
 
+def _manual_state_cache(rank: Mapping[str, JSONValue], backend: str, role: str) -> StateCacheConfig | None:
+    """Validate manual geometry before any automatic capacity materialization."""
+
+    raw = rank.get("state_cache")
+    if raw is None:
+        return None
+    state_cache = StateCacheConfig.model_validate(raw)
+    if backend != "vllm" or role != "aggregated":
+        raise ValueError("state_cache requires backend=vllm and an aggregated G1 worker")
+    if rank.get("native_host_offload") is not None:
+        raise ValueError("state_cache supports G1 only; native_host_offload is not supported")
+    if rank.get("g3_offload") is not None:
+        raise ValueError("state_cache supports G1 only; g3_offload is not supported")
+    conflicts = [
+        name
+        for name in (
+            "gpu_memory_utilization",
+            "mem_fraction_static",
+            "free_gpu_memory_fraction",
+            "kv_transfer_bytes_per_token",
+            "kv_transfer_bandwidth",
+        )
+        if rank.get(name) is not None
+    ]
+    if rank.get("cuda_graph_reserved_bytes") not in (None, 0):
+        conflicts.append("cuda_graph_reserved_bytes")
+    # Rust serializes this default explicitly; it does not enable PD transfer.
+    if rank.get("kv_transfer_timing_mode") not in (None, "full_prompt"):
+        conflicts.append("kv_transfer_timing_mode")
+    if conflicts:
+        raise ValueError(f"state_cache rejects capacity/transfer overrides: {', '.join(conflicts)}")
+    for name in ("num_gpu_blocks", "block_size", "kv_cache_bytes_per_token"):
+        value = rank.get(name)
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= (1 << 64) - 1:
+            raise ValueError(f"state_cache requires explicit positive {name} within u64")
+    if rank["num_gpu_blocks"] < state_cache.state_blocks(rank["block_size"], rank["kv_cache_bytes_per_token"]) + 1:
+        raise ValueError("state_cache capacity must fit one token block and one request state")
+    return state_cache
+
+
 def _positive_int(value: JSONValue, name: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError(f"{name} must be a positive integer")
@@ -1869,6 +1948,7 @@ def _normalize_engine_replay_report(report: Mapping[str, JSONValue], *, include_
             "agentic_input_format",
             "agentic_lanes",
             "agentic_snapshots",
+            "agentic_phases",
             "agentic_model_projection",
             "weka_nested_timestamp_basis",
         )

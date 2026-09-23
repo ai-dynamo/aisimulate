@@ -201,6 +201,14 @@ pub struct ReplayRoleFactory {
 }
 
 impl ReplayRoleFactory {
+    pub(crate) fn can_have_internal_deadlines(&self) -> bool {
+        self.factory.can_have_internal_deadlines()
+    }
+
+    pub(crate) fn reset_timing_evidence(&self) -> anyhow::Result<()> {
+        self.factory.reset_timing_evidence()
+    }
+
     pub(crate) fn with_belady_oracle(mut self, oracle: BeladyOracle) -> Self {
         self.factory = self.factory.with_belady_oracle(oracle);
         self.needs_belady_oracle = false;
