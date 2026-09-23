@@ -128,7 +128,7 @@ def test_rejects_failed_validation_and_duplicate_keys(tmp_path):
 
 def test_rejects_old_format_and_duplicate_json_fields(tmp_path):
     payload = _payload()
-    payload["schema"] = "aic.afd-moe-stage-profile.v3"
+    payload["schema"] = "unsupported.schema"
     with pytest.raises(ValueError, match="unsupported FastAFD profile schema"):
         FastAFDMoEStageProfile.load(_write(tmp_path, payload))
 
