@@ -2703,6 +2703,42 @@ mod admission_validation_rollback {
         )
     }
 
+    #[test]
+    fn failed_prefill_validation_restores_queue_when_no_request_fits() {
+        let mut core = SglangCore::new_with_kv_capture(test_args(32, 4, 32), 0);
+        core.receive(direct_request((0..8).collect(), 0));
+        core.try_execute_hidden_pass(0.0).unwrap();
+        core.config.max_running_requests = 1;
+        let running = core.receive(direct_request((20..24).collect(), 4));
+        core.try_execute_hidden_pass(1.0).unwrap();
+        let cold = core.receive(direct_request((100..112).collect(), 1));
+        let warm = core.receive(direct_request((0..12).collect(), 1));
+        core.config.schedule_policy = SchedulePolicy::Lpm;
+        core.drain_kv_events();
+
+        let waiting_before = format!("{:?}", core.waiting);
+        let capacity_before = capacity(&core);
+        let fail = Arc::new(AtomicBool::new(true));
+        install_timing(&mut core, &fail, false);
+        // LPM changes queue order and computes lease hashes, but the running
+        // request fills the batch, so admission never changes the cache.
+        for now_ms in [2.0, 3.0] {
+            assert!(core.try_execute_hidden_pass(now_ms).is_err());
+            assert_eq!(format!("{:?}", core.waiting), waiting_before);
+            assert_eq!(capacity(&core), capacity_before);
+            assert_eq!(core.running[0].uuid, running);
+            assert!(core.drain_kv_events().is_empty());
+        }
+
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_hidden_pass(4.0).unwrap();
+        assert!(pass.admissions.is_empty());
+        assert_eq!(core.waiting[0].uuid, warm);
+        assert_eq!(core.waiting[1].uuid, cold);
+        assert_eq!(pass.output_signals.len(), 1);
+        assert_eq!(pass.output_signals[0].uuid, running);
+    }
+
     #[rstest::rstest]
     fn overlength_rejections_survive_failed_prefill_passes(
         #[values(false, true)] fail_in_prediction: bool,
