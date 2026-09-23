@@ -3,7 +3,7 @@
 """Build the artifacts used for FPM collection.
 
 The FPM resource Pod, LeaderWorkerSet, or PodCliqueSet deliberately does not
-launch an engine. It reserves the same infrastructure as the normal vLLM
+launch an engine. It reserves the same infrastructure as the normal backend
 worker and stays alive while a collector stages the generated ``fpm_env.sh``
 and ``run.sh`` into it.
 """
@@ -38,6 +38,50 @@ _MISSING = object()
 _NODE_RANK_SENTINEL = "__FPM_NODE_RANK__"
 _FPM_BENCHMARK_MODES = ("agg", "prefill", "decode")
 _FPM_ORCHESTRATORS = frozenset({"lws", "grove"})
+# The native SGLang driver has a narrower collection contract than serving.
+# Keep unqualified topology, speculative, offload and Dynamo flags out of this
+# entry point; the driver additionally validates native ServerArgs at runtime.
+_SGLANG_FPM_VALUE_FLAGS = frozenset(
+    {
+        "--model-path",
+        "--revision",
+        "--tokenizer-revision",
+        "--quantization",
+        "--tensor-parallel-size",
+        "--pipeline-parallel-size",
+        "--data-parallel-size",
+        "--expert-parallel-size",
+        "--page-size",
+        "--kv-cache-dtype",
+        "--mem-fraction-static",
+        "--max-total-tokens",
+        "--context-length",
+        "--max-running-requests",
+        "--chunked-prefill-size",
+        "--max-prefill-tokens",
+        "--moe-runner-backend",
+        "--attention-backend",
+        "--cuda-graph-max-bs",
+        "--benchmark-mode",
+        "--benchmark-points-file",
+        "--benchmark-output",
+        "--input-text",
+        "--dataset-role",
+        "--run-id",
+        "--request-timeout-seconds",
+    }
+)
+_SGLANG_FPM_SWITCH_FLAGS = frozenset(
+    {
+        "--enable-mixed-chunk",
+        "--trust-remote-code",
+        "--disable-radix-cache",
+        "--disable-cuda-graph",
+        "--disable-cuda-graph-padding",
+        "--disable-overlap-schedule",
+        "--enable-metrics",
+    }
+)
 _FPM_OWNED_ORCHESTRATION_FLAGS = frozenset(
     {
         "--nnodes",
@@ -69,8 +113,8 @@ def build_fpm_artifacts(
     ``FPM_ENV_EXPORTED_VARS``), and moves every concrete environment variable
     and the engine command into ``run.sh``, which only launches the engine.
     """
-    if backend != "vllm":
-        raise ValueError("FPM V1 supports only the vllm backend")
+    if backend not in {"vllm", "sglang"}:
+        raise ValueError("FPM supports only the vllm and sglang backends")
 
     dyn_config = context.get("DynConfig") or {}
     if not isinstance(dyn_config, dict) or dyn_config.get("mode") != "agg":
@@ -87,25 +131,42 @@ def build_fpm_artifacts(
     worker, compute_domain = _build_worker(context, backend, resolved_facts)
     main_container = _require_main_container(worker)
 
-    command = list(main_container.command or [])
-    args = list(main_container.args or [])
-    if command[:3] != ["python3", "-m", "dynamo.vllm"]:
-        raise ValueError("FPM V1 requires the normal vLLM worker command")
-    if not all(isinstance(token, str) for token in command + args):
-        raise ValueError("The resolved vLLM command must contain only string tokens")
-    args.extend(extra_cli_args)
+    if backend == "sglang":
+        command = ["python3", "-m", "collector.fpm_forward.sglang_driver"]
+        args = _sglang_fpm_args(context, extra_cli_args)
+    else:
+        command = list(main_container.command or [])
+        args = list(main_container.args or [])
+        if command[:3] != ["python3", "-m", "dynamo.vllm"]:
+            raise ValueError("FPM V1 requires the normal vLLM worker command")
+        if not all(isinstance(token, str) for token in command + args):
+            raise ValueError("The resolved vLLM command must contain only string tokens")
+        args.extend(extra_cli_args)
 
     env, barrier_timeout_override = _collect_concrete_env(worker, main_container)
     benchmark_mode = _require_benchmark_mode(args)
     topology = _resolve_topology(context, worker, args)
-    if topology["data_parallel_size"] > 1 and _cli_option_value(args, "--data-parallel-backend") is None:
-        args.extend(["--data-parallel-backend", "mp"])
-    if topology["data_parallel_size"] > 1:
-        _require_cli_option(args, "--data-parallel-backend", expected="mp")
-    _ensure_dump_config_path(args, topology["node_count"])
-    if topology["node_count"] > 1 and not _requires_mnnvl_compute_domain(resolved_facts):
-        _force_disable_allreduce_fusion(args)
-    benchmark_output_path = _ensure_benchmark_output_path(args, env)
+    if backend == "sglang":
+        _validate_sglang_fpm_topology(context, topology, args)
+        # Native ServerArgs accepts this alias. Keep the shared topology
+        # resolver on its established spelling, then publish native argv.
+        args = [
+            token.replace("--tensor-parallel-size", "--tp-size", 1)
+            if token.split("=", 1)[0] == "--tensor-parallel-size"
+            else token
+            for token in args
+        ]
+    else:
+        if topology["data_parallel_size"] > 1 and _cli_option_value(args, "--data-parallel-backend") is None:
+            args.extend(["--data-parallel-backend", "mp"])
+        if topology["data_parallel_size"] > 1:
+            _require_cli_option(args, "--data-parallel-backend", expected="mp")
+        _ensure_dump_config_path(args, topology["node_count"])
+        if topology["node_count"] > 1 and not _requires_mnnvl_compute_domain(resolved_facts):
+            _force_disable_allreduce_fusion(args)
+    benchmark_output_path = _ensure_benchmark_output_path(
+        args, env, flag="--benchmark-output" if backend == "sglang" else "--benchmark-output-path"
+    )
     wait_timeout_seconds = _benchmark_wait_timeout_seconds(args)
     orchestrator = _fpm_orchestrator(context)
     preserve_compute_domain = topology["node_count"] > 1 and _requires_mnnvl_compute_domain(resolved_facts)
@@ -139,6 +200,74 @@ def build_fpm_artifacts(
         FPM_ENV_FILENAME: env_script,
         FPM_RUN_SCRIPT_FILENAME: run_script,
     }
+
+
+def _sglang_fpm_args(context: dict[str, Any], extra_cli_args: list[str]) -> list[str]:
+    """Consume rendered native tokens; never parse the normal serving shell."""
+    base_args = context.get("agg_cli_args_list")
+    if not isinstance(base_args, list) or not all(isinstance(token, str) for token in base_args):
+        raise ValueError("SGLang FPM requires rendered agg_cli_args_list tokens")
+    model_path = (context.get("ServiceConfig") or {}).get("model_path")
+    if not isinstance(model_path, str) or not model_path:
+        raise ValueError("SGLang FPM requires ServiceConfig.model_path")
+    if any(key.startswith("kvbm") and value for key, value in (context.get("DynConfig") or {}).items()):
+        raise ValueError("SGLang FPM does not support KVBM offload")
+    args = ["--model-path", model_path, *base_args, *extra_cli_args]
+    seen: set[str] = set()
+    index = 0
+    while index < len(args):
+        token = args[index]
+        flag, joined, value = token.partition("=")
+        if flag in seen:
+            raise ValueError(f"SGLang FPM accepts at most one {flag} option")
+        seen.add(flag)
+        if flag in _SGLANG_FPM_SWITCH_FLAGS:
+            if joined:
+                raise ValueError(f"SGLang FPM {flag} does not accept a value")
+            index += 1
+        elif flag in _SGLANG_FPM_VALUE_FLAGS:
+            if not joined:
+                index += 1
+                value = args[index] if index < len(args) else ""
+            if not value or value.startswith("--"):
+                raise ValueError(f"SGLang FPM {flag} requires a value")
+            index += 1
+        elif flag == "--cuda-graph-bs" and not joined:
+            index += 1
+            start = index
+            while index < len(args) and not args[index].startswith("--"):
+                if not args[index].isdigit() or int(args[index]) <= 0:
+                    raise ValueError("SGLang FPM --cuda-graph-bs requires positive integer tokens")
+                index += 1
+            if index == start:
+                raise ValueError("SGLang FPM --cuda-graph-bs requires positive integer tokens")
+        else:
+            raise ValueError(f"Unsupported SGLang FPM option: {flag}")
+    for flag in ("--context-length", "--benchmark-points-file", "--tokenizer-revision"):
+        _require_cli_option(args, flag)
+    if _positive_cli_int(args, "--context-length") > 131072:
+        raise ValueError("SGLang FPM supports context length at most 131072")
+    _require_cli_option(args, "--kv-cache-dtype", expected="fp8_e4m3")
+    if "--disable-radix-cache" not in seen:
+        raise ValueError("SGLang FPM requires --disable-radix-cache")
+    if "--input-text" not in seen:
+        args.extend(["--input-text", "/tmp/fpm-bench/fpm_text.txt"])
+    if "--request-timeout-seconds" not in seen:
+        args.extend(["--request-timeout-seconds", "900"])
+    _positive_cli_int(args, "--request-timeout-seconds")
+    return args
+
+
+def _validate_sglang_fpm_topology(context: dict[str, Any], topology: dict[str, int], args: list[str]) -> None:
+    if (
+        topology["node_count"] != 1
+        or topology["tensor_parallel_size"] not in {2, 4}
+        or topology["pipeline_parallel_size"] != 1
+        or topology["data_parallel_size"] != 1
+        or _positive_cli_int(args, "--expert-parallel-size") != 1
+        or topology["total_gpus"] > int((context.get("NodeConfig") or {}).get("num_gpus_per_node") or 0)
+    ):
+        raise ValueError("SGLang FPM requires single-node TP2/TP4 with DP=PP=EP=1")
 
 
 def _extract_extra_cli_args(param_values: dict[str, Any] | None) -> list[str]:
@@ -223,8 +352,9 @@ def _build_worker(
         raise ValueError("FPM V1 supports at most one ComputeDomain document")
 
     workers = [(name, service) for name, service in dgd_docs[0].services.items() if service.component_type == "worker"]
-    if len(workers) != 1 or workers[0][0] != "VllmWorker":
-        raise ValueError("FPM V1 requires exactly one aggregated VllmWorker")
+    worker_name = {"vllm": "VllmWorker", "sglang": "SGLangWorker"}[backend]
+    if len(workers) != 1 or workers[0][0] != worker_name:
+        raise ValueError(f"FPM requires exactly one aggregated {worker_name}")
 
     worker = workers[0][1]
     if worker.replicas != 1:
@@ -478,8 +608,9 @@ def _last_env_value(env: list[tuple[str, str]], name: str) -> str | None:
     return None
 
 
-def _ensure_benchmark_output_path(args: list[str], env: list[tuple[str, str]]) -> str:
-    flag = "--benchmark-output-path"
+def _ensure_benchmark_output_path(
+    args: list[str], env: list[tuple[str, str]], *, flag: str = "--benchmark-output-path"
+) -> str:
     cli_value = _cli_option_value(args, flag)
     env_value = _last_env_value(env, FPM_ENGINE_BENCHMARK_OUTPUT_ENV)
     if cli_value is not None and env_value is not None and cli_value != env_value:
