@@ -770,6 +770,7 @@ mod tests {
                 role: "pre".into(),
                 backend: "vllm".into(),
                 checkpoint_format: "nvfp4".into(),
+                tp_size: 2,
                 hidden_size: 4096,
                 hc_mult: 4,
                 sinkhorn_iters: 20,
