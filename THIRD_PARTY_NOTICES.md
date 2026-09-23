@@ -1050,3 +1050,20 @@ the repository Apache-2.0 license text applies to these adaptations.
   selected graph mode and exact frozen-target matching. No upstream compute,
   request construction, hybrid state initialization or scheduling logic is
   copied or replaced. Tests use independent CPU fixtures, not performance data.
+
+## GLM-5.3-Flash native SGLang request campaign
+
+- Adapted files: `python/aisimulate/collector/fpm_forward/sglang_driver.py`,
+  `sglang_artifact.py`, `runtime/glm53flash_sglang/runtime-source-sha256.json`
+  under that same directory, and their collector unit tests.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
+  `python/sglang/srt/entrypoints/engine.py`, `python/sglang/srt/server_args.py`,
+  and the native scheduler/runner paths identified by the adjacent telemetry
+  notice and pinned source-hash inventory.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: original integration code uses public native Engine and
+  ServerArgs APIs with real token-ID requests. It preserves native scheduling
+  and DeviceTimer boundaries and normalizes only observations whose actual
+  coordinates match a frozen request manifest. No native source is copied.

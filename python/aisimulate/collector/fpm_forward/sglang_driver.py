@@ -1,0 +1,397 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Drive real native SGLang requests and retain exact scheduled observations.
+
+Integration: sgl-project/sglang@94602c9c2b7cbdb8efd5c52802dac6a1c180089e,
+python/sglang/srt/{entrypoints/engine.py,server_args.py}, Apache-2.0.
+Uses public Engine/ServerArgs APIs; no upstream source is copied here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import signal
+import statistics
+import time
+import uuid
+from pathlib import Path
+
+from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
+
+from .sglang_artifact import MEASUREMENTS, TELEMETRY_POLICY, WARMUPS, canonical, file_receipt, read_observations
+
+
+def write_json(path: Path, value) -> None:
+    temp = path.with_suffix(path.suffix + ".tmp")
+    temp.write_text(json.dumps(value, indent=2, sort_keys=True, allow_nan=False) + "\n")
+    temp.replace(path)
+
+
+def observed_scheduler_process(*args, **kwargs):
+    """Spawn-safe entrypoint: install before creating each native TP worker."""
+    from sglang.srt.managers.scheduler import run_scheduler_process
+
+    from collector.glm53flash_sglang_runtime import install
+
+    install()
+    return run_scheduler_process(*args, **kwargs)
+
+
+def verify_runtime(output: Path) -> None:
+    import importlib.metadata
+
+    import sglang
+
+    audit = {"backend": "sglang", "backend_version": importlib.metadata.version("sglang"), "sources": {}}
+    try:
+        if audit["backend_version"] != "0.5.20":
+            raise ValueError("GLM SGLang FPM requires version 0.5.20")
+        root = Path(sglang.__file__).resolve().parent
+        pins = json.loads((Path(__file__).parent / "runtime/glm53flash_sglang/runtime-source-sha256.json").read_text())
+        for name, expected in pins.items():
+            actual = hashlib.sha256((root / name).read_bytes()).hexdigest()
+            audit["sources"][name] = actual
+            if actual != expected:
+                raise ValueError(f"SGLang pinned native source differs: {name}")
+        audit["status"] = "passed"
+    except Exception as error:
+        audit.update(status="failed", error=str(error))
+        raise
+    finally:
+        write_json(output / "runtime-preflight.json", audit)
+
+
+def freeze_requests(points: list[dict], *, request_set: str, dataset_role: str, corpus_sha256: str) -> dict:
+    mappings = {}
+    for point in points:
+        from .native_artifact import _expected_scheduled
+
+        _expected_scheduled(point)
+        batch = point["batch_size"]
+        prefill = point["point_type"] == "prefill"
+        query_total = point["total_prefill_tokens"] if prefill else batch
+        prefix_total = point["total_kv_read_tokens"]
+        if query_total % batch or prefix_total % batch or not 1 <= batch <= 32:
+            raise ValueError("GLM SGLang first campaign requires homogeneous batches of 1 through 32")
+        query, prefix = query_total // batch, prefix_total // batch
+        if point.get("partition") is not None or point.get("rows") not in (None, [[query, prefix]] * batch):
+            raise ValueError("SGLang native driver cannot replace heterogeneous requests with homogeneous ones")
+        if query < 1 or prefix < 0 or query + prefix > 131072 or query_total > 8192:
+            raise ValueError("GLM SGLang point exceeds frozen context/token limits")
+        if not prefill and prefix < 1:
+            raise ValueError("GLM SGLang decode requires a positive real prefix")
+        for repetition in range(WARMUPS + MEASUREMENTS):
+            for index in range(batch):
+                rid = f"{request_set}-p{point['benchmark_id']}-r{repetition}-q{index}"
+                mappings[rid] = {
+                    "benchmark_id": point["benchmark_id"],
+                    "repetition": repetition,
+                    "sampling_role": "warmup" if repetition < WARMUPS else "measurement",
+                    "target_phase": "context" if prefill else "generation",
+                    "target_query": query,
+                    "target_prefix": prefix,
+                    "target_batch_size": batch,
+                }
+    return {
+        "request_set": request_set,
+        "dataset_role": dataset_role,
+        "corpus_sha256": corpus_sha256,
+        "requests": mappings,
+    }
+
+
+def validate_server_args(args) -> None:
+    for name in ("pp_size", "dp_size", "ep_size", "attn_cp_size", "nnodes"):
+        if getattr(args, name, 1) != 1:
+            raise ValueError(f"GLM SGLang collection requires {name}=1")
+    if args.tp_size not in (2, 4) or args.context_length is None or args.context_length > 131072:
+        raise ValueError("GLM SGLang requires TP2/TP4 and context_length <= 131072")
+    if args.kv_cache_dtype != "fp8_e4m3" or not args.disable_radix_cache:
+        raise ValueError("GLM SGLang requires FP8 KV and disabled cross-request radix reuse")
+    for name in (
+        "speculative_algorithm",
+        "enable_eplb",
+        "cpu_offload_gb",
+        "offload_group_size",
+        "enable_dp_attention",
+        "enable_dp_lm_head",
+    ):
+        if getattr(args, name, None):
+            raise ValueError(f"GLM SGLang collection rejects {name}")
+    if not 1 <= args.chunked_prefill_size <= 8192:
+        raise ValueError("GLM SGLang requires a positive native chunk budget <= 8192")
+
+
+def result_payload(
+    points: list[dict],
+    observations: dict,
+    *,
+    output: Path,
+    manifest_path: Path,
+    trace_paths: list[Path],
+    provenance: dict,
+    input_provenance: dict,
+    elapsed: float,
+) -> dict:
+    from .native_artifact import _expected_scheduled
+
+    results, groups = [], []
+    measured = 0.0
+    for point in points:
+        bid = point["benchmark_id"]
+        seconds = [
+            observations[0][bid, rep]["native_forward_ms"] / 1000 for rep in range(WARMUPS, WARMUPS + MEASUREMENTS)
+        ]
+        fpm = {
+            "counter_id": bid,
+            "dp_rank": 0,
+            "wall_time": statistics.median(seconds),
+            "scheduled_requests": _expected_scheduled(point),
+        }
+        results.append({"point": point, "fpms": [fpm]})
+        groups.append(
+            {
+                "benchmark_id": bid,
+                "point": point,
+                "expected_dp_ranks": [0],
+                "complete": True,
+                "rank_results": [{"dp_rank": 0, "fpms": [fpm]}],
+                "wall_time": fpm["wall_time"],
+            }
+        )
+        measured += fpm["wall_time"]
+    input_provenance = {
+        **input_provenance,
+        "native_forward_manifest": {
+            "requests": file_receipt(manifest_path),
+            "traces": [{"tp_rank": rank, **file_receipt(path)} for rank, path in enumerate(trace_paths)],
+            "state_layouts": [
+                {"tp_rank": rank, **file_receipt(output.parent / f"state-layout-rank-{rank}.json")}
+                for rank in range(len(trace_paths))
+            ],
+        },
+    }
+    return {
+        "schema_version": 2,
+        "artifact_type": "rank",
+        "status": "complete",
+        "valid": True,
+        "usable": True,
+        "timing_valid": True,
+        "stop_reason": None,
+        "error": None,
+        "skipped_points": [],
+        "missing_phases": [],
+        "config": {"mode": points[0]["point_type"]},
+        "coverage": {"expected_points": len(points), "completed_points": len(points), "skipped_points": 0},
+        "results": results,
+        "iteration_groups": groups,
+        "dp": {"rank": 0, "size": 1},
+        "run_id": provenance["run_id"],
+        "grid_digest": hashlib.sha256(canonical(points).encode()).hexdigest(),
+        "kvwarm": {"enabled": True, "warm_eligible": True, "skip_reason": None, "state_protocol": PROTOCOL},
+        "execution_identity": provenance["execution_identity"],
+        "execution_mode": "native_graph_policy",
+        "input_provenance": input_provenance,
+        "timing_boundary": TIMING_BOUNDARIES["sglang"],
+        "producer": {
+            "backend": "sglang",
+            "backend_version": "0.5.20",
+            "warmup_repeats": WARMUPS,
+            "measurement_repeats": MEASUREMENTS,
+            "telemetry_policy": TELEMETRY_POLICY,
+            "timing_rank": 0,
+            "format": "aisimulate_normalized_native_sglang_v1",
+        },
+        "timing": {"benchmark_elapsed_seconds": elapsed, "measured_iteration_seconds": measured},
+    }
+
+
+def main(argv=None) -> None:
+    from sglang import Engine
+    from sglang.srt.server_args import ServerArgs
+    from transformers import AutoTokenizer
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
+    from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS, Glm53FlashConfig
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    ServerArgs.add_cli_args(parser)
+    parser.add_argument("--benchmark-mode", choices=("prefill", "decode"), required=True)
+    parser.add_argument("--benchmark-points-file", type=Path, required=True)
+    parser.add_argument("--benchmark-output", type=Path, default=Path("/results/benchmark.json"))
+    parser.add_argument("--input-text", type=Path, default=Path("/tmp/fpm-bench/fpm_text.txt"))
+    parser.add_argument("--tokenizer-revision", required=True, choices=tuple(MODEL_REVISIONS.values()))
+    parser.add_argument("--dataset-role", choices=("calibration", "holdout"), default="calibration")
+    parser.add_argument("--run-id", default=os.environ.get("DYN_FPM_RUN_ID", "glm53flash"))
+    parser.add_argument("--request-timeout-seconds", type=int, default=900)
+    parser.add_argument("--observation-purpose", choices=("fpm", "ops"), default="fpm")
+    args = parser.parse_args(argv)
+    server = ServerArgs.from_cli_args(args)
+    validate_server_args(server)
+    if args.observation_purpose == "ops":
+        if (
+            not os.environ.get("AISIM_GLM53_OPS_MANIFEST")
+            or not server.disable_cuda_graph
+            or not server.disable_piecewise_cuda_graph
+        ):
+            raise ValueError("SGLang Ops requires an explicit manifest and native eager execution")
+    elif os.environ.get("AISIM_GLM53_OPS_MANIFEST"):
+        raise ValueError("SGLang FPM cannot run with Ops instrumentation")
+    output = args.benchmark_output
+    output.parent.mkdir(parents=True, exist_ok=True)
+    if output.exists():
+        raise ValueError("SGLang refuses to overwrite an existing benchmark artifact")
+    verify_runtime(output.parent)
+    expected_model = next(model for model, revision in MODEL_REVISIONS.items() if revision == args.tokenizer_revision)
+    raw_config = get_model_config_from_model_path(server.model_path)["raw_config"]
+    expected_config = get_model_config_from_model_path(expected_model)["raw_config"]
+    if raw_config != expected_config or server.revision != args.tokenizer_revision:
+        raise ValueError("SGLang loaded model config/revision differs from the pinned checkpoint contract")
+    Glm53FlashConfig.from_text_config(raw_config["text_config"])
+    identity = dict(
+        zip(EXECUTION_COLUMNS, execution_identity(raw_config, backend="sglang", input_modality="text"), strict=True)
+    )
+    point_payload = json.loads(args.benchmark_points_file.read_text())
+    points = [
+        {
+            **point,
+            "point_type": args.benchmark_mode,
+            "benchmark_id": index,
+            "total_prefill_tokens": point.get("total_prefill_tokens", 0),
+            "sample_reasons": ["kvwarm_real_kv"],
+        }
+        for index, point in enumerate(point_payload[args.benchmark_mode], 1)
+    ]
+    if not points:
+        raise ValueError("SGLang native driver requires a nonempty phase manifest")
+    text_raw = args.input_text.read_bytes()
+    tokenizer = AutoTokenizer.from_pretrained(server.model_path, revision=args.tokenizer_revision)
+    tokens = tokenizer.encode(text_raw.decode(), add_special_tokens=False)
+    if len(set(tokens)) < 2:
+        raise ValueError("SGLang corpus must contain multiple tokenizer-generated tokens")
+    request_set = f"{args.dataset_role}-{uuid.uuid4().hex}"
+    input_provenance = {
+        "source": "tokenizer_text",
+        "text_sha256": hashlib.sha256(text_raw).hexdigest(),
+        "token_ids_sha256": hashlib.sha256(json.dumps(tokens, separators=(",", ":")).encode()).hexdigest(),
+        "tokenizer_revision": args.tokenizer_revision,
+        "token_count": len(tokens),
+        "unique_token_count": len(set(tokens)),
+    }
+    manifest = freeze_requests(
+        points, request_set=request_set, dataset_role=args.dataset_role, corpus_sha256=input_provenance["text_sha256"]
+    )
+    manifest_path = output.parent / "sglang-requests.json"
+    write_json(manifest_path, manifest)
+    provenance = {"run_id": args.run_id, "execution_identity": identity, "telemetry_policy": TELEMETRY_POLICY}
+    provenance_path = output.parent / "sglang-provenance.json"
+    write_json(provenance_path, provenance)
+    write_json(output.parent / "sglang-resolved-config.json", server.resolved_dict())
+    os.environ.update(
+        AISIM_GLM53_TRACE_DIR=str(output.parent),
+        AISIM_GLM53_PROVENANCE=str(provenance_path),
+        AISIM_GLM53_REQUEST_MANIFEST=str(manifest_path),
+    )
+    Engine.run_scheduler_process_func = staticmethod(observed_scheduler_process)
+    start = time.monotonic()
+    engine = None
+    try:
+        engine = Engine(server_args=server)
+        for point in points:
+            for repetition in range(WARMUPS + MEASUREMENTS):
+                selected = [
+                    (rid, entry)
+                    for rid, entry in manifest["requests"].items()
+                    if (entry["benchmark_id"], entry["repetition"]) == (point["benchmark_id"], repetition)
+                ]
+                inputs = []
+                for request_index, (_, entry) in enumerate(selected):
+                    length = entry["target_prefix"] + (entry["target_query"] if args.benchmark_mode == "prefill" else 0)
+                    offset = (point["benchmark_id"] * 997 + repetition * 53 + request_index * 17) % len(tokens)
+                    inputs.append([tokens[(offset + index) % len(tokens)] for index in range(length)])
+
+                def timeout(_signum, _frame):
+                    raise TimeoutError(
+                        f"native SGLang request timed out at point {point['benchmark_id']} repetition {repetition}"
+                    )
+
+                old_handler = signal.signal(signal.SIGALRM, timeout)
+                signal.alarm(args.request_timeout_seconds)
+                try:
+                    result = engine.generate(
+                        input_ids=inputs,
+                        rid=[rid for rid, _ in selected],
+                        sampling_params={
+                            "temperature": 0,
+                            "max_new_tokens": 2 if args.benchmark_mode == "decode" else 1,
+                            "ignore_eos": True,
+                        },
+                    )
+                finally:
+                    signal.alarm(0)
+                    signal.signal(signal.SIGALRM, old_handler)
+                with (output.parent / "sglang-completed-requests.jsonl").open("a") as stream:
+                    stream.write(
+                        canonical(
+                            {
+                                "benchmark_id": point["benchmark_id"],
+                                "repetition": repetition,
+                                "request_ids": [rid for rid, _ in selected],
+                                "responses": result,
+                            }
+                        )
+                        + "\n"
+                    )
+        trace_paths = [output.parent / f"forward-rank-{rank}.jsonl" for rank in range(server.tp_size)]
+        if args.observation_purpose == "ops":
+            write_json(
+                output.parent / "ops-run-summary.json",
+                {
+                    "status": "requests_complete",
+                    "accuracy_acceptance": "NOT_EVALUATED",
+                    "requested_points": points,
+                    "request_manifest": file_receipt(manifest_path),
+                    "native_traces": [file_receipt(path) for path in trace_paths],
+                    "warmup_repeats": WARMUPS,
+                    "measurement_repeats": MEASUREMENTS,
+                },
+            )
+            return
+        observations = read_observations(
+            manifest, {rank: path.read_bytes() for rank, path in enumerate(trace_paths)}, points
+        )
+        payload = result_payload(
+            points,
+            observations,
+            output=output,
+            manifest_path=manifest_path,
+            trace_paths=trace_paths,
+            provenance=provenance,
+            input_provenance=input_provenance,
+            elapsed=time.monotonic() - start,
+        )
+        write_json(output, payload)
+    except BaseException as error:
+        write_json(
+            output.parent / "sglang-failed.json",
+            {
+                "status": "failed",
+                "error": repr(error),
+                "elapsed_seconds": time.monotonic() - start,
+                "requested_points": points,
+                "accuracy_acceptance": "NOT_EVALUATED",
+            },
+        )
+        raise
+    finally:
+        if engine is not None:
+            engine.shutdown()
+
+
+if __name__ == "__main__":
+    main()
