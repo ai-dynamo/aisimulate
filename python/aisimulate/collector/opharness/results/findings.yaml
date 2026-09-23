@@ -620,6 +620,29 @@ findings:
         (readiness.rs even tests DeepseekV4 + bfloat16). They measure vLLM's
         own bf16-weight dispatch (fused_a_gemm at num_tokens<=16) — faithful
         to what vLLM would run, just with no deployed checkpoint to cross-check.
+      RESULTS (same day): 24 DSV4 vllm records + 6 K3 records re-probed clean
+      (6016 budget; first DSV4 serving evidence on vllm: sparse_attn_fwd,
+      cute-DSL compressor/indexer, mHC TileLang). Verdicts: dsv4_csa/hca
+      context+generation, dsv4_hca_attn, dsv4_paged_mqa_logits -> ALIGNED vs
+      sgl-project/DeepSeek-V4-Flash-FP8 fp8; kda_ctx -> ALIGNED after fixing
+      the collector's FlashKDA prefill call (0.29 takes caller-owned
+      out/final_state/workspace buffers, kda.py:193-215/536-547; the
+      preview-era call raised TypeError on every context cell). Two
+      divergences are EXPLAINED and deliberately kept out of the gate:
+        - mhc_module: serving runs mhc_pre_big_fuse_WITH_NORM (norm_weight
+          passed, tilelang.py:90) and mhc_fused_post_pre for middle layers;
+          the collector measures the norm_weight=None pre + separate post
+          because the SDK bills attn_norm separately (collect_mhc_module.py:
+          118-134, measured 1-2% off the fused path). Row-semantics contract;
+          switching needs a producer+consumer decision.
+        - kda_gen: the collector measures BOTH the fused decode
+          (ops.fused_kda_decode = kda_decode_fusion_many_heads, serving's
+          pure-decode path, kda.py:686-695) and the Triton fallback lane
+          (causal_conv1d_update + fused_recurrent_kda_packed_decode, taken by
+          serving only for spec-decode / mixed batches). The fused row matches
+          serving kernel-for-kernel; the fallback rows are collector-only by
+          construction. A verdict per kernel_source lane would express this;
+          today's subset semantics cannot.
       sglang/trtllm evidence: 45 length-conditional records re-probed with the
       fixed probes (isl 4096, cache-cold, phase tables). sglang DSA prefill at
       isl 32 was dense FA3 (SGLANG_DSA_PREFILL_DENSE_ATTN_KV_LEN_THRESHOLD:

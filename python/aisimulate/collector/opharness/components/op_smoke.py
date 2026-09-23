@@ -58,6 +58,10 @@ def main() -> int:
     ap.add_argument("--cases", type=int, default=1, help="how many cases to run (from the head of the plan)")
     ap.add_argument("--case-index", type=int, default=None,
                     help="run exactly this case index instead of the head slice")
+    ap.add_argument("--case-filter", default=None,
+                    help="comma list of substrings; run the first --cases cases whose str(case) "
+                         "contains all of them (collect.py --case-filter semantics) — picks a "
+                         "representative cell (model, precision, shape) without hand-typing the tuple")
     ap.add_argument("--model-path", default=None, help="forwarded to get_func when it accepts model_path")
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--out-dir", default=".", help="directory for the perf file (registry filename)")
@@ -86,8 +90,16 @@ def main() -> int:
     if not cases:
         raise SystemExit(f"{entry.get_func} returned 0 cases — nothing to smoke "
                          "(platform floor or empty plan; see the drop log above)")
-    picked = ([cases[args.case_index]] if args.case_index is not None
-              else cases[: args.cases])
+    if args.case_filter:
+        subs = [s.strip() for s in args.case_filter.split(",") if s.strip()]
+        matching = [c for c in cases if all(s in str(c) for s in subs)]
+        if not matching:
+            raise SystemExit(f"--case-filter {args.case_filter!r} matches 0/{len(cases)} cases")
+        picked = matching[: args.cases]
+        print(f"[op_smoke] --case-filter {args.case_filter!r}: {len(matching)}/{len(cases)} cases match")
+    else:
+        picked = ([cases[args.case_index]] if args.case_index is not None
+                  else cases[: args.cases])
     print(f"[op_smoke] {args.op}: module={module_name} run={entry.run_func} "
           f"perf={perf_path} — {len(picked)}/{len(cases)} case(s)")
     for i, case in enumerate(picked):
