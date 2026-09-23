@@ -87,6 +87,19 @@ def _load_labeler():
     return label_kernels, normalize_kernel
 
 
+def _record_from_raw(raw_path: str) -> dict:
+    """Turn a raw probe JSON that is NOT in the plan (an A/B run such as a
+    different --isl) into a minimal serving record with the same shape
+    build_records emits, so a verdict can be computed against explicit
+    evidence and the report names that file."""
+    from probe_driver import build_ops  # noqa: E402
+    f = json.loads(Path(raw_path).read_text())
+    ops, orphans = build_ops(f)
+    return {"id": f"raw:{Path(raw_path).name}", "ops": ops, "orphan_kernels": orphans,
+            "runtime": {"tp": None, "kv_cache_dtype": f.get("probe_kv_cache_dtype"),
+                        "isl": f.get("probe_isl"), "prefix_caching": f.get("probe_prefix_caching")}}
+
+
 def _kv_equiv(a, b):
     # auto resolves to the model dtype (bf16 for these models); treat the
     # unquantized aliases as one class, fp8 as its own.
@@ -95,7 +108,8 @@ def _kv_equiv(a, b):
 
 
 def diff(capture_file: str, repo: str, framework: str, version: str,
-         op_hint: str | None, save: str | None = None, kv_dtype: str | None = None) -> int:
+         op_hint: str | None, save: str | None = None, kv_dtype: str | None = None,
+         isl: int | None = None, serving_raw: str | None = None) -> int:
     label_kernels, normalize_kernel = _load_labeler()
     cap = json.loads(Path(capture_file).read_text())
     # custom-op LAUNCHERS shadow their kernels under a second name
@@ -108,16 +122,26 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
                           if (n := normalize_kernel(k)) and not _is_launcher(n)})
     col_backends, col_unmatched = label_kernels(col_kernels)
 
-    serving = None
-    for line in (ROOT / "archive" / "records.jsonl").open():
-        r = json.loads(line)
-        if not (r["target"].get("repo") == repo and r["runtime"]["backend"] == framework
-                and r["runtime"].get("version") == version
-                and (r.get("outcome") or {}).get("status") == "ok"):
-            continue
-        if kv_dtype is not None and not _kv_equiv(r["runtime"].get("kv_cache_dtype"), kv_dtype):
-            continue
-        serving = r
+    candidates = []
+    if serving_raw:  # explicit evidence file (A/B run outside the plan)
+        candidates = [_record_from_raw(serving_raw)]
+    else:
+        for line in (ROOT / "archive" / "records.jsonl").open():
+            r = json.loads(line)
+            if not (r["target"].get("repo") == repo and r["runtime"]["backend"] == framework
+                    and r["runtime"].get("version") == version
+                    and (r.get("outcome") or {}).get("status") == "ok"):
+                continue
+            if kv_dtype is not None and not _kv_equiv(r["runtime"].get("kv_cache_dtype"), kv_dtype):
+                continue
+            if isl is not None and r["runtime"].get("isl") != isl:
+                continue
+            candidates.append(r)
+    serving = candidates[-1] if candidates else None
+    if len(candidates) > 1:  # several serving configs match (tp/ep/kv variants): say which one won
+        print(f"[note] {len(candidates)} serving records match; using {serving['id']} "
+              f"(tp={serving['runtime'].get('tp')} kv={serving['runtime'].get('kv_cache_dtype')}); "
+              f"others: {[c['id'] for c in candidates[:-1]]}", file=sys.stderr)
     if serving is None:
         _hint = f" kv={kv_dtype}" if kv_dtype else ""
         print(f"[no-serving-record] {repo} {framework}-{version}{_hint} — probe that config first")
@@ -137,7 +161,11 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
         srv_kernels |= {k for k in (op.get("kernels") or []) if not _is_launcher(k)}
     srv_kernels = {k for k in srv_kernels if not _is_launcher(k)}
 
-    infra = {"cublas", "vllm_kernel", "sgl_kernel", "torch", "triton"}
+    # `triton` is deliberately NOT here: in the taxonomy it now names only the
+    # Triton attention backend (routing/activation are framework_native), and
+    # it is the sole label of vllm's fp8 head_dim>256 path — ignoring it left
+    # that path uncompared (2026-09-23).
+    infra = {"cublas", "vllm_kernel", "sgl_kernel", "torch"}
     col_sig = col_backends - infra
     srv_sig = srv_backends - infra
     only_col = sorted(col_sig - srv_sig)
@@ -166,6 +194,16 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
     report = {
         "verdict": verdict,
         "repo": repo, "framework": framework, "version": version,
+        # reproducibility: a verdict must name both inputs and the scoping it
+        # was computed under, or it cannot be re-derived after a taxonomy change
+        "capture_file": str(capture_file), "capture_cmd": cap.get("cmd"),
+        "capture_run_error": cap.get("error"),
+        "kv_dtype": kv_dtype, "op_hint": op_hint,
+        "serving_record": {"id": serving["id"], "tp": serving["runtime"].get("tp"),
+                           "kv_cache_dtype": serving["runtime"].get("kv_cache_dtype"),
+                           "isl": serving["runtime"].get("isl"),
+                           "prefix_caching": serving["runtime"].get("prefix_caching"),
+                           "raw_file": serving_raw, "candidates": len(candidates)},
         "collector_backends": sorted(col_backends),
         "serving_backends": sorted(srv_backends),
         "collector_only_signal": only_col,
@@ -200,6 +238,12 @@ def main() -> int:
     ap.add_argument("--kv-dtype", default=None,
                     help="select the serving record whose kv-cache dtype matches this "
                          "capture (fp8|auto|bf16); auto and bf16 are treated as equivalent")
+    ap.add_argument("--isl", type=int, default=None,
+                    help="select the serving record probed at this prompt length (records carry "
+                         "runtime.isl); prefill dispatch is length-conditional")
+    ap.add_argument("--serving-raw", default=None,
+                    help="diff against this raw probe JSON instead of archive/records.jsonl "
+                         "(A/B evidence outside the plan); the report names the file")
     ap.add_argument("cmd", nargs="*", help="capture mode: script + args (after --)")
     args = ap.parse_args()
     if args.capture:
@@ -209,7 +253,7 @@ def main() -> int:
         return capture(cmd, args.out)
     if args.diff:
         return diff(args.capture_file, args.repo, args.framework, args.version,
-                    args.op_hint, args.save_verdict, args.kv_dtype)
+                    args.op_hint, args.save_verdict, args.kv_dtype, args.isl, args.serving_raw)
     ap.error("pass --capture or --diff")
 
 

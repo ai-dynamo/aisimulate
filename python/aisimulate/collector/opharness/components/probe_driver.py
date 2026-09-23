@@ -474,6 +474,11 @@ def load_taxonomy():
 
 _TAXONOMY = load_taxonomy()
 
+# Orphan keep-rule (build_ops): labels that carry no path identity — a kernel
+# whose ONLY labels are these is noise for path_diff and may be capped.
+_ORPHAN_NOISE = {"cublas", "vllm_kernel", "sgl_kernel", "torch"}
+_ORPHAN_REST_CAP = 24  # unlabeled/noise orphans kept per record, by device time
+
 
 def label_kernels(kernels):
     """kernel names -> ({backend labels}, {unmatched kernels})."""
@@ -530,13 +535,17 @@ def build_ops(facts: dict) -> tuple[list[dict], list[str]]:
                     "unclassified_kernels": sorted(unmatched) or None})
     # Orphan kernels are those the span attribution missed — critically, the
     # cudagraph-replayed attention kernels (no CPU launch event, so no span),
-    # which live only in the device-stream prefill/decode tables. Keep the
-    # top-40 by DEVICE TIME, never an alphabetical [:15]: the significant
-    # attention kernels (flash_fwd_splitkv_mla_fp8_sparse, fmhaSm10x, ...)
-    # sort late alphabetically and were being truncated away, so the fp8
-    # attention path never reached records.jsonl and path_diff saw an empty
-    # serving signal (found by the fp8-KV probe sweep 2026-09-23; the B300
-    # rerun hit the same bug independently).
+    # which live only in the device-stream prefill/decode tables. The list is
+    # path_diff's serving-side identity evidence, so the keep rule is
+    # structural, not a count: EVERY orphan the taxonomy labels with an
+    # identity-bearing backend is kept, and only the unlabeled/noise remainder
+    # is capped (by device time, for the needs-taxonomy backlog). History: an
+    # alphabetical [:15] cut dropped flash_fwd_splitkv_mla_fp8_sparse /
+    # get_mla_metadata on half the records (137/274 raws exceed 15 orphans),
+    # so the fp8 attention path never reached records.jsonl and path_diff saw
+    # an empty serving signal (fp8-KV probe sweep 2026-09-23; the B300 rerun
+    # hit the same bug independently). A time-ranked top-40 fixed today's
+    # data but was still a count; this rule cannot lose a labeled kernel.
     orphans_t: dict[str, float] = {}
     for tbl in ("prefill_kernels", "decode_kernels"):
         for k in (trace.get(tbl) or []):
@@ -547,8 +556,9 @@ def build_ops(facts: dict) -> tuple[list[dict], list[str]]:
             n = normalize_kernel(name)
             if n and n not in attributed:
                 orphans_t[n] = orphans_t.get(n, 0.0) + float(k.get("us") or 0.0)
-    top = sorted(orphans_t.items(), key=lambda kv: -kv[1])[:40]
-    return ops, sorted(n for n, _ in top)
+    signal = {n for n in orphans_t if label_kernels([n])[0] - _ORPHAN_NOISE}
+    rest = sorted((n for n in orphans_t if n not in signal), key=lambda n: -orphans_t[n])
+    return ops, sorted(signal | set(rest[:_ORPHAN_REST_CAP]))
 
 
 def compress_error(stage: str, tb: str) -> dict:
@@ -602,6 +612,12 @@ def build_records() -> None:
                                 or sa.get("kv_cache_dtype")
                                 or (f.get("kv_cache_resolved") or {}).get("attn_kv_cache_dtype")
                                 or "auto"),
+                            # prompt length and cache state decide WHICH prefill
+                            # path serving took (DSA: query<=256 -> decode
+                            # kernel; prefix-cache hit -> block residual), so a
+                            # verdict must be able to select on them
+                            "isl": f.get("probe_isl"),
+                            "prefix_caching": f.get("probe_prefix_caching"),
                             "evidence": "real"},
                 "resolved": {k: v for k, v in sa.items() if v is not None},
                 # generator-rendered flags that differ from the framework's own

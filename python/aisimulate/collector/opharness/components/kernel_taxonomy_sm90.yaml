@@ -26,19 +26,21 @@ rules:
      match: "sparse_attn_fwd_kernel|_gqa_share_sparse|_flash_attn_fwd_with_block_score|_decode_score_kernel|_merge_topk_attn_out|_fused_indexer_q_rope_quant_kernel|indexer_k_quant_and_cache|cp_gather_indexer_k_quant_cache|topKPerRow"}
   - {backend: trtllm_mha, role: attention,
      match: "^fmha_v2_flash_attention|^kernel_mha$|masked_multihead_attention_kernel"}
-  # Triton ATTENTION backends: sglang TritonAttnBackend
-  # (_fwd_grouped_kernel_stage1/_fwd_kernel) and vllm TRITON_ATTN
-  # (kernel_unified_attention). vllm routes fp8-KV + head_dim>256 (Gemma-4)
-  # here — FA rejects fp8 head512 and FlashInfer SM90 JIT can't compile it —
-  # so this is the ONLY observed label for that serving path
-  # (collect_attn.py:153-163 @0.29.0). Label is `triton_attn`, NOT the generic
-  # `triton`: bare `triton` is in path_diff's infra ignore-set (routing/
-  # activation/elementwise noise), which would swallow the attention signal and
-  # leave the fp8 head512 path uncompared. A dedicated attention label keeps it
-  # a first-class signal. Added 2026-09-23 from the fp8-KV probe sweep; the
-  # 0.24-seeded vocabulary never exercised it.
-  - {backend: triton_attn, role: attention,
-     match: "^_fwd_grouped_kernel_stage1|^_fwd_kernel(_stage2)?$|^kernel_unified_attention$"}
+  # Triton ATTENTION backend — `triton` is that backend's name in the shared
+  # vocabulary (kernel_source_backends.yaml: sglang kernel_source `triton` and
+  # vllm `vllm_triton_attn` both -> backend `triton`), so probe records and
+  # collector rows translate through one label. Nothing else in this file may
+  # emit `triton` (routing/activation kernels are framework_native), which is
+  # what lets path_diff treat it as a signal family rather than infra noise.
+  # Kernels: sglang TritonAttnBackend (_fwd_grouped_kernel_stage1, _fwd_kernel,
+  # _fwd_kernel_stage2) and vllm TRITON_ATTN (v1/attention/ops/
+  # triton_unified_attention.py: kernel_unified_attention + its split-KV
+  # reduction reduce_segments; the diffkv variant). vllm routes fp8-KV +
+  # head_dim>256 (Gemma-4) here — FA rejects fp8 head512 and FlashInfer SM90
+  # JIT can't compile it (collect_attn.py:153-163 @0.29.0) — the 0.24-seeded
+  # vocabulary never saw these names; added 2026-09-23 from the fp8-KV sweep.
+  - {backend: triton, role: attention,
+     match: "^_fwd_grouped_kernel_stage1|^_fwd_kernel(_stage2)?$|^kernel_unified_attention(_diffkv)?$|^reduce_segments$"}
 
   # -------------------------------------------------- linear attention / mamba
   - {backend: fla_triton, role: linear_attention,
@@ -81,7 +83,11 @@ rules:
      match: "^vllm::moe::"}
   - {backend: trtllm_internal, role: moe_infra,
      match: "cutlass_kernels::(expandInputRows|finalizeMoeRouting|doActivation|blockExpertPrefixSum|mergeExpertPrefixSum|globalExpertPrefixSum|computeStrides|fusedBuildExpertMaps)"}
-  - {backend: triton, role: routing,
+  # Routing kernels carry no backend identity (same class as activation); they
+  # used to be labeled `triton`, which forced path_diff to treat `triton` as
+  # infra and swallowed Triton ATTENTION with it. framework_native is dropped
+  # by label_kernels, so verdicts are unchanged for routing itself.
+  - {backend: framework_native, role: routing,
      match: "_router_triton_kernel|_gemma4_routing|deepseek_v3_topk|customMoeRouting|topkGating|cooperative_topk|_topk_forward|_topk_index_kernel|router_gemm_kernel|_bitmatrix_metadata|_sum_bitmatrix_rows"}
   - {backend: torch, role: routing,
      match: "gatherTopK|bitonicSortKVInPlace"}
