@@ -101,6 +101,25 @@ def test_fastafd_profile_rejects_cross_system_use(tmp_path):
         _compile(_profile(tmp_path, system="gb200"))
 
 
+def test_compiled_spec_records_source_and_method(tmp_path, monkeypatch):
+    import aisimulate_core.sdk.engine as core_engine
+
+    captured = {}
+
+    def capture(spec_json):
+        captured.update(json.loads(spec_json))
+        return b""
+
+    monkeypatch.setattr(core_engine.aisimulate_core, "engine_spec_bincode_from_json", capture)
+    _compile(_profile(tmp_path))
+
+    extra = captured["engine"]["extra"]
+    assert extra["source_repository"] == FASTAFD_OFFICIAL_REPOSITORY
+    assert extra["source_commit"] == "3c7161949310b6d59d6b4cf9bf997a4935c8113b"
+    assert extra["measurement_method"] == "nsight-systems-cupti"
+    assert extra["measurement_method_version"] == "2025.5.2"
+
+
 def test_fastafd_mtp_keeps_unmeasured_layer(tmp_path):
     engine = aisimulate_core.AicEngine.from_spec(_compile(_profile(tmp_path, latency_ms=6.5, mtp_nextn=1), nextn=1))
 
