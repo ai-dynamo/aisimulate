@@ -173,7 +173,32 @@ class Glm53FlashModel(BaseModel):
                         1,
                     ),
                 ]
-            return result + [allreduce(f"{phase}_ffn_allreduce_{layer}")]
+            module = _native(
+                "Glm53Ffn",
+                name=f"ffn_{layer}",
+                is_context=phase == "context",
+                is_dense=dense,
+                hidden_size=h,
+                intermediate_size=d.intermediate_size if dense else d.moe_intermediate_size,
+                num_experts=d.n_routed_experts,
+                topk=d.num_experts_per_tok,
+                tp_size=tp,
+                n_shared_experts=d.n_shared_experts,
+                swiglu_limit=d.swiglu_limit,
+                scoring_func=d.scoring_func,
+                routed_scaling_factor=d.routed_scaling_factor,
+                n_group=d.n_group,
+                topk_group=d.topk_group,
+                norm_topk_prob=d.norm_topk_prob,
+                gemm_quant_mode=model_config.gemm_quant_mode.name,
+                shared_quant_mode=(
+                    model_config.gemm_quant_mode if self.checkpoint_format == "fp8" else common.GEMMQuantMode.bfloat16
+                ).name,
+                moe_quant_mode=model_config.moe_quant_mode.name,
+                children=[json.loads(op._spec_json()) for op in result],
+                **identity,
+            )
+            return [module, allreduce(f"{phase}_ffn_allreduce_{layer}")]
 
         for context in (True, False):
             phase = "context" if context else "generation"
