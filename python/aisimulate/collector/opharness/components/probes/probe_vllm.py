@@ -187,6 +187,17 @@ def main() -> None:
         ea = EngineArgs.from_cli_args(ns)
         ea.load_format = "dummy"
         ea.enforce_eager = True  # identity probe: no graph capture
+        # The profiled request must be a CACHE-COLD prefill. vllm enables
+        # prefix caching by default and the warmup request below uses the
+        # same prompt, so with caching on the "prefill" step recomputed only
+        # the last block: a query of <= block_size tokens, which DSA's
+        # metadata builder classifies as decode (reorder threshold 256 for
+        # 128 heads, flashmla_sparse.py:244 @0.29.0) — the serving evidence
+        # then showed the fp8 DECODE kernel for prefill and path_diff flagged
+        # the collector's (correct) sparse prefill as drift. Same policy as
+        # the sglang probe's --disable-radix-cache. Found 2026-09-23.
+        ea.enable_prefix_caching = False
+        rec["probe_prefix_caching"] = False
         rec["engine_args_resolved"] = {
             k: v for k, v in vars(ea).items()
             if isinstance(v, (str, int, float, bool, type(None)))
