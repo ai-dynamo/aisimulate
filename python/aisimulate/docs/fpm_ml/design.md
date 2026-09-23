@@ -244,7 +244,7 @@ LongBench → ShareGPT 29 → 76 %): a prefill batch's cost depends on how its t
 distributed over requests (one 8k chunk vs. eight 1k requests), which the sums alone do not
 distinguish and the extremes and cross terms do. Hence `core4` is offered as a preset for
 decode-only or in-distribution use, and `sglang18` stays the default. The feature build is
-not the inference bottleneck either way (§8: 2 µs of a 5.6 µs call at batch 256, nothing at
+not the inference bottleneck either way (§8.1: 2 µs of a 5.6 µs call at batch 256, nothing at
 batch 1). Raw output: `feature_ablation_pooled.txt`, `feature_ablation_cross.txt` in the
 playground `reports/`.
 
@@ -529,115 +529,87 @@ Dynamo relay files recorded in parallel were complete and are the only source us
 
 ## 8. Speed
 
-Two machines appear in this section. All inference latencies and the per-run training
-times were measured on an AI Hub (aws-cmh-slurm-1) login node: NVIDIA Grace, Arm
-Neoverse V2, 96 cores at one thread per core, 2 MiB L2 per core, 36 MiB L3, 370 GB RAM,
-aarch64, release build (`cargo test --release`), the benchmark pinned to one core with
-`taskset`. The pooled ten-run training time was measured on a dlcluster login node: AMD
-EPYC 7232P, 8 cores / 16 threads, 125 GB RAM, x86_64.
+**Setup.** One machine for every latency number in this chapter: an AI Hub
+(aws-cmh-slurm-1) login node, NVIDIA Grace CPU (Arm Neoverse V2), 96 cores at one thread
+per core, 2 MiB L2 per core, 36 MiB L3, 370 GB RAM, aarch64. Release build, the benchmark
+pinned to one core with `taskset`. Both estimators are the same deployment
+(DeepSeek-V4-Flash, GB300, vLLM 0.24.0 tables, TP4/EP4); the GBDT is a `sglang18`
+artifact with 400 trees. Two call paths were timed: the Rust call
+`ForwardPassPerfModel::estimate_forward_pass_time_ms` on a prebuilt struct, which is what
+the simulator pays, and the Python wrapper, which serialises the FPM dict to JSON and
+parses it in Rust on every call. Op-level and GBDT columns come from the same run.
 
-**Inference** (`sglang18` artifact, 400 trees, one prediction = one `ForwardPassMetrics`
-step; one Grace core; details and the native-model comparison in §8.1):
+### 8.1 Time per estimate
 
-| step | GBDT alone (Rust call) | through the Python wrapper |
-| --- | --- | --- |
-| decode, batch 1 | 3.4 µs | 11 µs |
-| decode, batch 16 | 4.2 µs | 15 µs |
-| decode, batch 64 | 4.9 µs | 25 µs |
-| decode, batch 256 | 5.6 µs | 59 µs |
-| prefill, 1 request × 512 tokens, no prefix | 4.7 µs | 12 µs |
-| prefill, 1 request × 4096 tokens, no prefix | 6.3 µs | 14 µs |
-| prefill, 1 request × 4096 tokens, 64k prefix | 4.5 µs | 12 µs |
-| prefill, 4 requests × 4096 tokens, 16k prefix each | 4.8 µs | 13 µs |
-
-Prefill is flat at 4.5–6.3 µs whatever the chunk size, prefix or request count (the full
-grid is in §8.1); decode grows mildly with batch size.
-
-The GBDT itself is nearly flat in batch size: the tree walk is a few microseconds, and the
-18-feature build over the per-request lists adds about 8 ns per request (2 µs at batch
-256) after the feature vector was made a single pass over the `(extend, past)` pairs with
-no per-call allocation, sorting only for artifacts that read the HiSim slots (before that
-change the batch-256 call was 6.9 µs). Everything above that in the Python
-column is the wrapper serialising the FPM dict to JSON and Rust parsing it, which is linear
-in the length of the two per-request lists. The simulator calls the Rust path directly, so
-a million-step run spends a few seconds in the model.
-
-**Training** (scikit-learn on the dlcluster AMD EPYC 7232P login node, 16 threads, log
-target, 400 trees, the ten GB300 SGLang runs of §7.1 pooled):
-
-| store | rows | fit time |
-| --- | --- | --- |
-| decode | 2,732,395 | 25 s (400 trees) |
-| prefill | 79,261 | 1 s (116 trees, early-stopped) |
-
-Loading and featurizing the FPM stream (gzip JSON lines) dominates: 204 s for the 2.7M decode records against 25 s of fitting; both are one-off offline costs. On the Grace node, a single capture run (302,603 decode steps) trains in 54 s with 16 OpenMP threads and its 5,245 prefill steps in 20 s (the user guide §5 has the step-by-step timing). scikit-learn's own batched `predict` runs at 2.5 µs per row on the EPYC node; the Rust single-step path above is what the simulator uses. Artifacts are 100–450 KB of JSON.
-
-### 8.1 Cost against the native op-level model
-
-Time to compute one estimate, native op-level analytic model vs. learned GBDT, both
-columns from the same benchmark run on the optimised branch (c4e101e), same
-deployment (DeepSeek-V4-Flash, GB300, vLLM 0.24.0 tables, TP4/EP4), synthetic steps on a
-grid of decode batch sizes, one core of the Grace node described at the top of §8, release
-build. Two layers were measured:
-the pure Rust call `ForwardPassPerfModel::estimate_forward_pass_time_ms` on a prebuilt
-struct (what the simulator pays), and the Python wrapper, which serialises the FPM dict to
-JSON and parses it in Rust on every call.
+| step | op-level, Rust | GBDT, Rust | op-level, Python | GBDT, Python |
+| --- | --- | --- | --- | --- |
+| decode, batch 1, context 32k | 1.4 µs | 3.4 µs | 9.1 µs | 11.1 µs |
+| decode, batch 16, context 32k | 1.4 µs | 4.2 µs | 12.0 µs | 15.0 µs |
+| decode, batch 64, context 128k | 3.7 µs | 4.9 µs | 23.2 µs | 24.7 µs |
+| decode, batch 256, context 128k | 3.6 µs | 5.6 µs | 55.8 µs | 58.7 µs |
+| prefill, 1 × 512 tokens, no prefix | 1.05 µs | 4.7 µs | 8.8 µs | 12.4 µs |
+| prefill, 1 × 4096 tokens, no prefix | 1.04 µs | 6.3 µs | 8.8 µs | 14.2 µs |
+| prefill, 1 × 4096 tokens, 64k prefix | 3.5 µs | 4.5 µs | 11.5 µs | 12.3 µs |
+| prefill, 4 × 4096 tokens, 16k prefix each | 1.6 µs | 4.8 µs | 10.1 µs | 13.1 µs |
+| model construction | 2.1 s (decode), 0.9 s (prefill) | 5–8 ms | | |
 
 ![Estimator latency, native vs GBDT, Rust layer and Python layer](figs/estimator_latency_native_vs_gbdt.png)
 
-| | **op-level model** (native analytic): ops per estimate¹ | **op-level model**, Rust µs | **learned GBDT**: ops per estimate² | **learned GBDT**, Rust µs | op-level model, Python µs | learned GBDT, Python µs |
-| --- | --- | --- | --- | --- | --- | --- |
-| decode bs 1, context 32k | ~0.5–1.5 k | 1.4 | 1,682 (1,239 comparisons + 400 adds + ~42 feature ops) | 3.4 | 9.1 | 11.1 |
-| decode bs 16, context 32k | ~0.5–1.5 k | 1.4 | 2,072 (1,449 + 400 + ~222) | 4.2 | 12.0 | 15.0 |
-| decode bs 64, context 128k | ~1.5–4 k | 3.7 | 2,736 (1,537 + 400 + ~798) | 4.9 | 23.2 | 24.7 |
-| decode bs 256, context 128k | ~1.5–4 k | 3.6 | 5,040 (1,537 + 400 + ~3,102) | 5.6 | 55.8 | 58.7 |
-| prefill 4096 tokens, prefix 0 | ~0.5–1.5 k | 1.1 | 2,772 (2,329 + 400 + ~42) | 6.3 | 8.8 | 14.0 |
-| prefill 4096 tokens, prefix 64k | ~1.5–4 k | 3.5 | 1,948 (1,505 + 400 + ~42) | 4.5 | 11.4 | 12.2 |
-| model construction | | 2.1 s (decode), 0.9 s (prefill) | | 5–8 ms | | |
+The op-level model is flat in batch size with two plateaus (1.4 µs and 3.5 µs) that
+correspond to exact-hit versus interpolated lookups in the attention table. The GBDT is a
+400-tree walk of about 3.3 µs plus the 18-feature build, one pass over the per-request
+lists at about 8 ns per request, hence 3.4 → 5.6 µs from decode batch 1 to 256 and flat
+4.5–6.3 µs on prefill. **In pure compute the op-level model is 1.1–3× faster on decode and
+1.3–6× on prefill.** At the Python boundary the JSON marshalling (6–39 µs, linear in the
+list lengths) dominates both, so a Python caller sees them within 0.3–5 µs of each other.
+A million-step simulation spends 1–6 s in either estimator.
 
-Prefill worker, one request unless stated (µs per estimate, same machine and method):
+### 8.2 Prefill grid
 
-| extend (tokens) | past (KV) | op-level, Rust | learned GBDT, Rust | op-level, Python | learned GBDT, Python |
-| --- | --- | --- | --- | --- | --- |
-| 512 | 0 | 1.05 | 4.70 | 8.8 | 12.4 |
-| 4096 | 0 | 1.04 | 6.33 | 8.8 | 14.2 |
-| 16384 | 0 | 1.04 | 6.07 | 8.8 | 13.7 |
-| 512 | 16,384 | 1.61 | 4.70 | 9.5 | 12.4 |
-| 4096 | 16,384 | 1.60 | 4.75 | 9.5 | 12.7 |
-| 4096 | 65,536 | 3.47 | 4.47 | 11.5 | 12.3 |
-| 16384 | 65,536 | 3.66 | 4.62 | 11.6 | 12.6 |
-| 2 requests × 4096 | 16,384 each | 1.61 | 4.62 | 9.6 | 12.7 |
-| 4 requests × 4096 | 16,384 each | 1.62 | 4.77 | 10.1 | 13.1 |
+Prefill worker, one request unless stated, Rust call (µs per estimate):
 
-The op-level cost does not depend on the chunk size or the number of prefill requests,
-only on the prefix length (1.0 µs at 0, 1.6 µs at 16k, 3.5–4.7 µs at 64k: different
-interpolation regions of the attention table). The GBDT is flat at 4.5–6.3 µs.
+| extend (tokens) | past (KV) | op-level | GBDT |
+| --- | --- | --- | --- |
+| 512 | 0 | 1.05 | 4.70 |
+| 4096 | 0 | 1.04 | 6.33 |
+| 16384 | 0 | 1.04 | 6.07 |
+| 512 | 16,384 | 1.61 | 4.70 |
+| 4096 | 16,384 | 1.60 | 4.75 |
+| 4096 | 65,536 | 3.47 | 4.47 |
+| 16384 | 65,536 | 3.66 | 4.62 |
+| 2 requests × 4096 | 16,384 each | 1.61 | 4.62 |
+| 4 requests × 4096 | 16,384 each | 1.62 | 4.77 |
 
-¹ Op-level (native analytic) model, estimated from the interpolation code, not instrumented: 16 operator evaluations, each 1–2
+The op-level cost depends only on the prefix length (1.0 µs at 0, 1.6 µs at 16k,
+3.5–3.7 µs at 64k: different interpolation regions of the attention table), not on the
+chunk size or the number of requests. The GBDT is flat at 4.5–6.3 µs.
+
+### 8.3 Operations per estimate
+
+| step | op-level model¹ | learned GBDT² |
+| --- | --- | --- |
+| decode, batch 1 | ~0.5–1.5 k | 1,682 (1,239 comparisons + 400 adds + ~42 feature ops) |
+| decode, batch 16 | ~0.5–1.5 k | 2,072 (1,449 + 400 + ~222) |
+| decode, batch 64 | ~1.5–4 k | 2,736 (1,537 + 400 + ~798) |
+| decode, batch 256 | ~1.5–4 k | 5,040 (1,537 + 400 + ~3,102) |
+| prefill, 4096 tokens, no prefix | ~0.5–1.5 k | 2,772 (2,329 + 400 + ~42) |
+| prefill, 4096 tokens, 64k prefix | ~1.5–4 k | 1,948 (1,505 + 400 + ~42) |
+
+¹ Estimated from the interpolation code, not instrumented: 16 operator evaluations (10
+top-level ops with the 43-layer count folded in as a scale factor: embedding, mHC pre/post,
+norms, two compressed-attention variants, MoE + shared-expert overlap, logits), each 1–2
 perf-table lookups; an exact-key hit is a map lookup (~10 operations), a miss recurses over
-the 2–3 table axes (binary search of ~6 comparisons per visited node, 2 neighbours per axis,
-4–8 leaves, one linear blend of ~4 operations per internal node), i.e. roughly 30–120
-arithmetic operations per lookup, plus the attention/MoE modules' closed-form SOL terms.
-The two plateaus in the measured time (1.4 µs vs 3.5 µs) match the hit-vs-miss split.
-² Learned GBDT, exact, counted by walking the trained artifact on the same synthetic inputs: internal
-nodes visited across the 400 trees (comparisons; mean leaf depth 3.1–5.8 for these inputs),
-400 leaf additions, plus the 18-feature build (~12 operations per request + ~30).
+the 2–3 table axes (binary search of ~6 comparisons per visited node, 2 neighbours per
+axis, 4–8 leaves, one linear blend of ~4 operations per internal node), i.e. roughly
+30–120 operations per lookup, plus the attention/MoE closed-form SOL terms.
+² Exact, counted by walking the trained artifact on the same inputs: internal nodes visited
+across the 400 trees (mean leaf depth 3.1–5.8), 400 leaf additions, plus the 18-feature
+build (~12 operations per request + ~30).
 
-What each side does per step: the native model evaluates 16 operators (10 top-level ops
-with the 43-layer count folded in as a scale factor: embedding, mHC pre/post, norms, two
-compressed-attention variants, MoE + shared-expert overlap, logits), each a 1–2 table lookup
-with grid interpolation over 2–3 axes; it is flat in batch size with two plateaus (1.4 µs
-and 3.5 µs) that correspond to different interpolation regions. The GBDT walks 400 trees of
-~61 nodes (1.2–2.3 k comparisons on these inputs) after building 18 features from the
-per-request lists in one pass, which is the mild growth with batch size (3.4 → 5.6 µs from
-batch 1 to 256). **The native model is 1.1–3× faster in pure compute on decode and 1.3–6×
-on prefill**; both are a few microseconds, and at the Python boundary the JSON marshalling
-(6–39 µs, linear in batch size because of the two per-request lists) dominates both, so a
-Python caller sees them within 0.3–5 µs of each other. A million-step simulation spends
-1–6 s in either estimator. Accuracy on the real steps of the same deployment: native
-decode 6.7% / prefill 46%, GBDT 4.0% / 5.1% (§7.2, and below).
+### 8.4 The two models on real steps
 
-What the native model evaluates per step, and how the two compare on real steps:
+Accuracy on the real steps of the same deployment: op-level decode 6.7 % / prefill 46 %,
+GBDT 4.0 % / 5.1 % (§7.2).
 
 ![Native op-level model: decode step per-operator breakdown vs batch size and context](figs/native_decode_op_breakdown.png)
 
@@ -645,13 +617,27 @@ What the native model evaluates per step, and how the two compare on real steps:
 
 ![Predicted vs observed step time, native vs GBDT, decode and prefill workers](figs/pred_vs_observed_scatter.png)
 
-The native prefill error on this deployment is a systematic under-estimate, not noise:
+The op-level prefill error on this deployment is a systematic under-estimate, not noise:
 the vLLM prefill worker's `wall_time` sits on a 180–250 ms floor regardless of scheduled
 tokens (a 5-token chunk takes 200–650 ms, a 4096-token chunk ~190 ms), while the analytic
 compute estimate is 24–110 ms. The floor is disaggregation overhead (KV hand-off) inside
 the measured step, which the GBDT learns from the data and the op-level model does not
 represent. It also means the vLLM prefill numbers in §7.2 are step times including that
 overhead, not pure forward time.
+
+### 8.5 Training time
+
+scikit-learn `HistGradientBoostingRegressor`, log target, 400 trees, 16 OpenMP threads.
+
+| data | machine | rows | load + featurize | fit |
+| --- | --- | --- | --- | --- |
+| one SGLang AgentX capture run, decode | Grace node above | 302,603 | 4.4 s | 54 s |
+| same run, prefill | Grace node above | 5,245 | | 20 s |
+| ten GB300 SGLang runs of §7.1 pooled, decode | dlcluster login node, AMD EPYC 7232P (8 cores / 16 threads, x86_64) | 2,732,395 | 204 s | 25 s |
+| same pooled set, prefill | same | 79,261 | | 1 s (116 trees, early-stopped) |
+
+Loading the gzip JSON-lines stream dominates; both are one-off offline costs. Artifacts
+are 100–450 KB of JSON.
 
 ## 9. Limitations and follow-ups
 
