@@ -1091,3 +1091,19 @@ the repository Apache-2.0 license text applies to these adaptations.
 - Modified/adapted: independently authored wrappers preserve original native
   calls and inspect real worker requests, allocated cache metadata and dispatch.
   No upstream compute, request construction or scheduling code is copied.
+
+
+## Dynamo GLM-5.3-Flash FPM collection adapter
+
+`python/aisimulate/collector/fpm_forward/runtime/glm53flash/glm53flash_scheduler.py`
+is modified code adapted from `components/src/dynamo/vllm/instrumented_scheduler.py`
+in https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9,
+using this repository's DeepSeek V4.1 same-request adapter as the integration
+precedent. Changes add the GLM hybrid-state contract, repeated real warmups and
+measurements, actual graph-dispatch receipts and immutable source validation.
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the upstream license is preserved in the adjacent
+`LICENSE`. No upstream root NOTICE exists. vLLM implementation files are not
+vendored; exact API source hashes and their revision are recorded alongside
+this adapter. The corpus and new contract tests are original project content.
+
