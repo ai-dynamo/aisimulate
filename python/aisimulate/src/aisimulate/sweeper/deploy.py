@@ -99,6 +99,9 @@ def _engine_args_payload(
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
+    if role in ("agg", "prefill") and backend == "sglang":
+        # Ahead of the capacity materialization below, which deducts the tower and cache.
+        payload.update(_native_vl_engine_args(sample, role))
     if sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
@@ -194,6 +197,43 @@ def _engine_args_payload(
     return payload
 
 
+def _frontend_row(sample: dict[str, Any], role: str) -> dict[str, Any] | None:
+    """The measured table row a candidate's tensor-parallel width selects for `role`, if it uses one."""
+    by_transport = sample.get(f"{role}_frontend_by_transport")
+    if not by_transport:
+        return None
+    from ..config.engine import feature_transport
+
+    tp = int(sample[f"{_role_prefix(role)}tp"])
+    frontend_kind = next(iter(by_transport.values()))["frontend"]["measured_for"]["frontend"]
+    transport = feature_transport(frontend_kind, tp)
+    try:
+        return by_transport[transport]
+    except KeyError:
+        raise ValueError(f"no frontend stages were resolved for feature transport {transport} (tp={tp})") from None
+
+
+def sample_frontend(sample: dict[str, Any], role: str) -> dict[str, Any] | None:
+    """The frontend stages a candidate's `role` runs with: its transport's measured row, or the explicit stages."""
+    row = _frontend_row(sample, role)
+    return row["frontend"] if row is not None else sample.get(f"{role}_frontend")
+
+
+def _native_vl_engine_args(sample: dict[str, Any], role: str) -> dict[str, Any]:
+    """The compiler's SGLang host-aware lowering for a sweeper candidate's `role`."""
+    from ..compiler import sglang_host_engine_args
+    from ..config.engine import FrontendPredictionConfig, VisionPredictionConfig
+
+    frontend = sample_frontend(sample, role)
+    vision = sample.get(f"{role}_vision")
+    return sglang_host_engine_args(
+        host_loop=bool(sample.get(f"{role}_host_loop")),
+        vision=VisionPredictionConfig.model_validate(vision) if vision is not None else None,
+        max_batched_tokens=int(sample[f"{role}_max_num_batched_tokens"]),
+        frontend=FrontendPredictionConfig.model_validate(frontend) if frontend is not None else None,
+    )
+
+
 def build_backend_deployment(
     sample: dict[str, Any],
     *,
@@ -205,7 +245,7 @@ def build_backend_deployment(
     forward_pass_estimators = dict(forward_pass_estimators or {})
     mode = sample["deployment_mode"]
     if encoder is not None and mode not in {"agg", "disagg"}:
-        raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
+        raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
     if mode in {"afd", "afd+pd"}:
         parallel_config = {
             "afd": sample["afd"],
@@ -300,6 +340,17 @@ def build_backend_deployment(
             "config": deepcopy(estimator.config),
             "selection": deepcopy(estimator.diagnostics),
         }
+    host_role = "agg" if mode == "agg" else "prefill"
+    row = _frontend_row(sample, host_role)
+    if row is not None:
+        common["performance_model_metadata"]["aggregated" if mode == "agg" else "prefill"]["vl"] = {
+            "host_profile_digest": row["digest"],
+            "frontend": row["frontend"]["measured_for"]["frontend"],
+        }
+    if encoder is not None and encoder.native is not None:
+        from ..config.epd import encoder_metadata
+
+        common["performance_model_metadata"]["encoder"] = encoder_metadata(encoder)
     if mode == "agg":
         return BackendDeploymentSpec(
             agg_engine_args=_engine_args_payload(

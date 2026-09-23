@@ -27,6 +27,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ENGINE_SPEC_SCHEMA_VERSION;
+use crate::common::enums::EncoderParallel;
 use crate::common::error::AicError;
 use crate::perfmodel::EngineConfig;
 
@@ -60,6 +61,42 @@ pub struct EngineSpec {
     pub context_ops: Vec<OpSpec>,
     /// Generation-phase ops, in execution order.
     pub generation_ops: Vec<OpSpec>,
+    /// The vision tower of a VL model, present when the estimator was asked to
+    /// price encoder calls (`ForwardPassPerfModelConfig::encoder_parallel`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<VisionSpec>,
+}
+
+/// Vision-encoder ops grouped by the token count each group runs on. Image
+/// shapes arrive at query time ([`EncoderImageShape`]), so the compiled spec
+/// needs no image configuration.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VisionSpec {
+    pub encoder_parallel: EncoderParallel,
+    /// Patch embedding, on the pre-merge patch sequence.
+    pub patch_ops: Vec<OpSpec>,
+    /// The ViT blocks, on the transformer sequence (patches plus any CLS token).
+    pub transformer_ops: Vec<OpSpec>,
+    /// Projector and DP exit, on the merged output tokens.
+    pub output_ops: Vec<OpSpec>,
+}
+
+/// One homogeneous group of images in a vision-encoder call.
+///
+/// The processor turns an image into `sequences` independent encoder sequences
+/// (tiles, or one for a dynamic-resolution tower); ViT attention never crosses
+/// them. Token counts are per sequence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EncoderImageShape {
+    pub sequences: u32,
+    /// Patch-embedding tokens per sequence.
+    pub patch_tokens: u32,
+    /// Transformer tokens per sequence (patches plus any CLS token).
+    pub transformer_tokens: u32,
+    /// Merged output tokens per sequence, as the projector sees them.
+    pub output_tokens: u32,
+    /// Images of this shape in the call.
+    pub images: u32,
 }
 
 /// Private bincode payload. `engine` is carried as a JSON string so the
@@ -72,6 +109,7 @@ struct BincodeWire {
     engine_json: String,
     context_ops: Vec<OpSpec>,
     generation_ops: Vec<OpSpec>,
+    vision: Option<VisionSpec>,
 }
 
 impl EngineSpec {
@@ -86,6 +124,7 @@ impl EngineSpec {
             engine,
             context_ops,
             generation_ops,
+            vision: None,
         }
     }
 
@@ -100,6 +139,7 @@ impl EngineSpec {
             engine_json,
             context_ops: self.context_ops.clone(),
             generation_ops: self.generation_ops.clone(),
+            vision: self.vision.clone(),
         };
         bincode::serialize(&wire).map_err(|e| AicError::EngineSpec(format!("bincode encode: {e}")))
     }
@@ -151,6 +191,7 @@ impl EngineSpec {
             engine,
             context_ops: wire.context_ops,
             generation_ops: wire.generation_ops,
+            vision: wire.vision,
         })
     }
 }
@@ -1089,6 +1130,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn vision_section_round_trips_through_bincode() {
+        let ops = all_op_variants();
+        let mut spec = EngineSpec::new(sample_engine_config(), vec![], vec![]);
+        spec.vision = Some(VisionSpec {
+            encoder_parallel: EncoderParallel::Dp,
+            patch_ops: vec![ops[0].clone()],
+            transformer_ops: Vec::new(),
+            output_ops: vec![ops[1].clone()],
+        });
+        let bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+    }
+
     /// The backend layout is positional even though legacy JSON has a default.
     #[test]
     fn dsv41_layout_round_trip_and_stale_v18_payload_rejection() {
@@ -1099,10 +1154,16 @@ mod tests {
         let spec = EngineSpec::new(sample_engine_config(), vec![], vec![attention]);
         let mut bytes = spec.to_bincode().unwrap();
         assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-        // SglangFp8Bf16 is enum1 (four bytes), the final field of the final op.
-        // Removing it restores the actual prior Dsv41Attention schema18 shape.
-        assert_eq!(&bytes[bytes.len() - 4..], &1u32.to_le_bytes());
-        bytes.truncate(bytes.len() - 4);
+        // The optional vision section closes the wire (`None` is one zero byte);
+        // before it, SglangFp8Bf16 is enum1 (four bytes), the final field of the
+        // final op. Removing both restores the actual prior Dsv41Attention
+        // schema18 shape.
+        assert_eq!(bytes[bytes.len() - 1], 0u8);
+        assert_eq!(
+            &bytes[bytes.len() - 5..bytes.len() - 1],
+            &1u32.to_le_bytes()
+        );
+        bytes.truncate(bytes.len() - 5);
         bytes[..4].copy_from_slice(&18u32.to_le_bytes());
         assert!(matches!(
             EngineSpec::from_bincode(&bytes),
@@ -1226,6 +1287,7 @@ mod tests {
             engine_json: "this is not json".to_string(),
             context_ops: vec![],
             generation_ops: vec![],
+            vision: None,
         };
         let bytes = bincode::serialize(&wire).expect("serialize wire");
 

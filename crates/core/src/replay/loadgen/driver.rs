@@ -23,6 +23,7 @@ use super::{
     AgenticPlay, AgenticReplayContext, AgenticSnapshotEvidence, PreparedAgenticSnapshots,
     SYNTHETIC_OUTPUT_SEED, planned_output_token_ids,
 };
+use crate::engine::ImageSpec;
 use crate::engine::belady::{SequenceHash, input_sequence_hashes};
 use crate::replay::ReplayTerminalStatus;
 use crate::replay::protocol::{
@@ -310,6 +311,7 @@ struct TurnRuntime {
     priority: i32,
     strict_priority: u32,
     policy_class: Option<String>,
+    images: Vec<ImageSpec>,
     // Canonical capture assigns ordinals; Belady may instead reserve an opaque
     // UUID here so the forecast and eventual causal admission share an identity.
     deterministic_request_id: Option<Uuid>,
@@ -1302,6 +1304,7 @@ impl WorkloadDriver {
                     priority: node.priority,
                     strict_priority: node.strict_priority,
                     policy_class: node.policy_class,
+                    images: Vec::new(),
                     deterministic_request_id: Some(deterministic_request_id),
                 }],
                 cumulative_tokens: Vec::new(),
@@ -1472,6 +1475,7 @@ impl WorkloadDriver {
                             priority: turn.priority,
                             strict_priority: turn.strict_priority,
                             policy_class: turn.policy_class,
+                            images: turn.images,
                             deterministic_request_id: None,
                         })
                     })
@@ -1750,6 +1754,7 @@ impl WorkloadDriver {
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
                         replay_context: replay_context.clone(),
+                        images: turn.images.clone(),
                     };
                     deferred_request_with_hashes(
                         request_metadata,
@@ -1780,6 +1785,7 @@ impl WorkloadDriver {
                         strict_priority: turn.strict_priority,
                         policy_class: turn.policy_class.clone(),
                         replay_context,
+                        images: turn.images.clone(),
                     });
                     (request, replay_hashes)
                 }
@@ -3086,6 +3092,7 @@ mod tests {
                         priority: 3,
                         strict_priority: 4,
                         policy_class: None,
+                        images: Vec::new(),
                     },
                     TurnTrace {
                         input_length: 3,
@@ -3097,6 +3104,7 @@ mod tests {
                         priority: -2,
                         strict_priority: 7,
                         policy_class: None,
+                        images: Vec::new(),
                     },
                 ],
             }],

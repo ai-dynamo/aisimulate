@@ -12,7 +12,7 @@ import logging
 import math
 import random
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from numbers import Real
 from typing import Any, Protocol, runtime_checkable
 
@@ -30,6 +30,7 @@ from .sweeper.afd_perfmodel import AFDLayerTimes
 from .sweeper.provider import JSONValue
 from .sweeper.replay import (
     BackendDeploymentSpec,
+    EncoderPoolSpec,
     ReplayOutputRequirements,
     ReplayReport,
     ReplaySpec,
@@ -367,6 +368,7 @@ class EngineReplayRunnerFactory:
             supported_backend_topologies=_SUPPORTED_BACKEND_TOPOLOGIES,
             supports_disaggregated_attention_dp=True,
             supports_analytical_epd=True,
+            supports_native_epd=True,
             supports_cached_prefix_tokens=True,
             supports_mtp_expected_acceptance=True,
             supported_engine_model_controls=ENGINE_MODEL_CONTROL_FIELDS,
@@ -446,8 +448,19 @@ class EngineReplayRunner:
             raise ValueError("length_sampler requires materialized direct synthetic replay without source_type")
         self.capabilities.require_compatible(spec)
         encoder = spec.backend_deployment.encoder
-        if encoder is None and spec.workload.get("images") is not None:
-            raise InvalidRunnerError("image workloads require an encoder pool")
+        if (
+            encoder is None
+            and spec.workload.get("images") is not None
+            and _vision_role_args(spec.backend_deployment) is None
+        ):
+            raise InvalidRunnerError(
+                "image workloads require an encoder pool or an aggregated or prefill SGLang worker hosting the "
+                "vision encoder"
+            )
+        if encoder is None and spec.workload.get("images") is not None and spec.workload.get("source_type") is None:
+            # Only the workload driver lays image placeholders into prompts; a
+            # materialized request list would silently run the workload text-only.
+            raise InvalidRunnerError("native image workloads require workload-driver traffic (workload.source_type)")
         if spec.backend_deployment.deployment_mode in {"afd", "afd+pd"}:
             return _run_afd_replay(
                 spec,
@@ -460,23 +473,26 @@ class EngineReplayRunner:
             from .sweeper.config import OptimizationGoal, Workload
             from .sweeper.epd import apply_encoder_overlay
 
-            if output_requirements.capture_per_request or output_requirements.include_raw_report:
-                raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
             if spec.adapters or spec.execution_mode != "offline":
-                raise InvalidRunnerError("analytical EPD requires offline static pools without adapters")
-            goal = OptimizationGoal.model_validate(spec.goal)
-            if (
-                goal.min_goodput_rps is not None
-                or (goal.sla is not None and not goal.requires_aggregate_sla)
-                or any(
-                    target.value.startswith("goodput")
-                    for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
-                )
-            ):
-                raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
+                raise InvalidRunnerError("encoder pools require offline static pools without adapters")
             workload = Workload.model_validate(spec.workload)
-            workload.require_fixed_epd()
+            if encoder.mode == "analytical":
+                if output_requirements.capture_per_request or output_requirements.include_raw_report:
+                    raise InvalidRunnerError("analytical EPD cannot produce per-request or raw replay reports")
+                goal = OptimizationGoal.model_validate(spec.goal)
+                if (
+                    goal.min_goodput_rps is not None
+                    or (goal.sla is not None and not goal.requires_aggregate_sla)
+                    or any(
+                        target.value.startswith("goodput")
+                        for target in (goal.resolved_pareto_objectives if goal.is_pareto else [goal.target])
+                    )
+                ):
+                    raise InvalidRunnerError("analytical EPD cannot report per-request goodput")
+                workload.require_fixed_epd()
             images = workload.images
+            if images is None:
+                raise InvalidRunnerError("encoder pools require an image workload")
             if (images.height, images.width, images.count) != (
                 encoder.image_height,
                 encoder.image_width,
@@ -500,13 +516,16 @@ class EngineReplayRunner:
                         raise InvalidRunnerError("language rank config must be a mapping")
                     scopes.append(args["rank"])
                 for scope in scopes:
-                    if scope.get("timing_model") is not None or any(
-                        scope.get(alias, "op_level") != "op_level"
-                        for alias in _AIC_TIMING_FIELD_ALIASES["forward_model"]
+                    if encoder.mode == "analytical" and (
+                        scope.get("timing_model") is not None
+                        or any(
+                            scope.get(alias, "op_level") != "op_level"
+                            for alias in _AIC_TIMING_FIELD_ALIASES["forward_model"]
+                        )
                     ):
                         raise InvalidRunnerError("analytical EPD requires op_level language timing")
                     if scope.get("startup_time") not in (None, 0.0):
-                        raise InvalidRunnerError("analytical EPD requires static worker pools")
+                        raise InvalidRunnerError("encoder pools require static worker pools")
             original_spec = spec
             spec = replace(spec, workload={**spec.workload, "isl": spec.workload["isl"] + encoder.visual_tokens})
         memory_diagnostics = {} if output_requirements.capture_memory_diagnostics else None
@@ -516,6 +535,10 @@ class EngineReplayRunner:
             record_per_request=output_requirements.capture_per_request,
             memory_diagnostics=memory_diagnostics,
         )
+        if encoder is not None and encoder.mode == "native":
+            if "spec" not in execution_spec:
+                execution_spec = {"spec": execution_spec}
+            execution_spec["spec"]["encoder"] = _native_encoder_spec(encoder, spec.backend_deployment)
         if output_requirements.capture_performance_diagnostics:
             if "spec" not in execution_spec:
                 execution_spec = {"spec": execution_spec}
@@ -562,13 +585,24 @@ class EngineReplayRunner:
             ),
         )
         if encoder is not None:
-            normalized = apply_encoder_overlay(normalized, original_spec)
+            if encoder.mode == "analytical":
+                normalized = apply_encoder_overlay(normalized, original_spec)
+            else:
+                from .sweeper.epd import language_gpus
+
+                # The pool's GPUs are in the replay's gpu_hours; publish the totals
+                # the analytical overlay reports so the two modes stay comparable.
+                total_gpus = language_gpus(spec.backend_deployment) + encoder.total_gpus
+                normalized = ReplayReport(
+                    metrics={**normalized.metrics, "total_gpus": float(total_gpus)},
+                    metadata={**normalized.metadata, "encoder": asdict(encoder), "total_gpus": total_gpus},
+                )
             if memory_diagnostics is not None:
                 memory_diagnostics["encoder"] = {
                     "scope": "capacity_estimate_per_rank",
                     "stage": "before_native_capacity_adjustments",
                     "status": "unavailable",
-                    "unavailable_reason": "analytical EPD does not export an encoder memory component estimate",
+                    "unavailable_reason": "encoder pools do not export an encoder memory component estimate",
                 }
                 # Capacity estimates remain valid across the overlay. Raw language
                 # timing/records do not describe the combined EPD workload.
@@ -1075,6 +1109,9 @@ def _materialize_engine_execution_spec(
         traffic = {
             key: value for key, value in spec.workload.items() if key in _RUNTIME_TRAFFIC_FIELDS and value is not None
         }
+        images = spec.workload.get("images")
+        if images is not None and spec.backend_deployment.encoder is None:
+            traffic.update(_image_traffic_fields(spec.backend_deployment, images))
         if traffic.get("trace_format") not in {"dynamo", "weka"}:
             traffic.setdefault("trace_block_size", trace_block_size)
         trace_format = traffic.get("trace_format")
@@ -1105,6 +1142,71 @@ def _materialize_engine_execution_spec(
                 traffic["execution_model"] = execution_model
         return {"spec": execution_spec, "traffic": traffic}
     return execution_spec
+
+
+def _vision_role_args(deployment: BackendDeploymentSpec) -> Mapping[str, JSONValue] | None:
+    """Engine args of the language role hosting the vision encoder: the aggregated or the prefill worker."""
+    if (deployment.decode_engine_args or {}).get("vision"):
+        raise InvalidRunnerError("the decode worker never runs the vision encoder")
+    for args in (deployment.agg_engine_args, deployment.prefill_engine_args):
+        if args and args.get("vision"):
+            return args
+    return None
+
+
+def _native_encoder_spec(encoder: EncoderPoolSpec, deployment: BackendDeploymentSpec) -> dict[str, JSONValue]:
+    """Lower the resolved pool to the replay's encoder component.
+
+    The embeddings fan out to every tensor-parallel rank of the language worker
+    that receives them (SGLang `zmq_to_scheduler`), so the bytes scale with its width.
+    """
+    native = encoder.native
+    assert native is not None
+    prefix = "" if deployment.deployment_mode == "agg" else "prefill_"
+    tensor = int(deployment.parallel_config[prefix + "tp"])
+    return {
+        "instances": encoder.workers,
+        "max_batch": encoder.batch_size,
+        "gpus_per_instance": encoder.tp,
+        "images_per_request": encoder.image_count,
+        "shape": dict(native.shape),
+        "preprocess_ms_per_image": native.preprocess_ms_per_image,
+        "transfer_bytes_per_image": native.transfer_bytes_per_image * tensor,
+        "transfer_bandwidth_gb_s": native.transfer_bandwidth_gb_s,
+        "timing_model": native.timing_model,
+    }
+
+
+def _image_traffic_fields(deployment: BackendDeploymentSpec, images: Mapping[str, JSONValue]) -> dict[str, JSONValue]:
+    """Lower the public image profile to the placeholder geometry the workload driver lays out."""
+    from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+    args = _vision_role_args(deployment) or {}
+    timing = args.get("timing_model") if isinstance(args.get("timing_model"), Mapping) else {}
+    model = args.get("aic_model_path") or (timing.get("config") or {}).get("model")
+    if not isinstance(model, str) or not model:
+        raise ValueError("image workloads require the language model identity in the vision-hosting engine args")
+    geometry = image_geometry(
+        model,
+        int(images["height"]),
+        int(images["width"]),
+        min_pixels=images.get("min_pixels"),
+        max_pixels=images.get("max_pixels"),
+    )
+    fields: dict[str, JSONValue] = {
+        "image_count": int(images.get("count", 1)),
+        "image_visual_tokens": geometry.visual_tokens,
+        "image_sequences": geometry.sequences,
+        "image_patch_tokens": geometry.patch_tokens,
+        "image_transformer_tokens": geometry.transformer_tokens,
+        "image_output_tokens": geometry.output_tokens,
+        "image_feature_bytes": geometry.feature_bytes,
+        "image_embedding_bytes": geometry.embedding_bytes,
+    }
+    identity = images.get("identity", "unique")
+    if isinstance(identity, Mapping):
+        fields["image_identity_pool"] = int(identity["pool"])
+    return fields
 
 
 def _execution_target_model(

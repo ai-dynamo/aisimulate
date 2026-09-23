@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Lossless public encoding of a resolved analytical encoder pool."""
+"""Lossless public encoding of a resolved encoder pool, analytical or native."""
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
 
 def encoder_prediction_fields(encoder: EncoderPoolSpec) -> dict:
     """Pin inputs, including resolved data version; never accept user-supplied timing estimates."""
-    return {
+    fields = {
         "hardware": encoder.system,
         "backend_version": encoder.backend_version,
         "tensor": encoder.tp,
@@ -21,7 +22,26 @@ def encoder_prediction_fields(encoder: EncoderPoolSpec) -> dict:
         "batch_size": encoder.batch_size,
         "latency_correction": encoder.latency_correction,
         "rate_degradation": encoder.rate_degradation,
+        "mode": encoder.mode,
+        "host_profile": (
+            {"path": encoder.native.host_profile_path, "frontend": encoder.native.host_profile_frontend}
+            if encoder.native is not None
+            else None
+        ),
+        "transfer": (
+            {"bandwidth_gb_per_second": encoder.native.transfer_bandwidth_gb_s} if encoder.native is not None else None
+        ),
     }
+    if encoder.native is not None:
+        # The native loop does not use the analytical overlay's rate factor.
+        del fields["rate_degradation"]
+    return fields
+
+
+def encoder_metadata(encoder: EncoderPoolSpec) -> dict:
+    """Resolved identity a native pool was scored with; a saved candidate must reproduce it."""
+    assert encoder.native is not None
+    return {"host_profile_digest": encoder.native.host_profile_digest, "native": asdict(encoder.native)}
 
 
 def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
@@ -36,7 +56,10 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
     try:
         prediction = CorePredictionConfig.model_validate(value)
         engine = prediction.engine
-        if engine.workers.encoder is None or engine.workers.encoder.model_dump() != encoder_prediction_fields(encoder):
+        excluded = {"rate_degradation"} if encoder.native is not None else set()
+        if engine.workers.encoder is None or engine.workers.encoder.model_dump(exclude=excluded) != (
+            encoder_prediction_fields(encoder)
+        ):
             raise ValueError("encoder parameters or resolved database version changed")
         if engine.model != encoder.model or engine.backend != encoder.backend:
             raise ValueError("encoder model/backend identity changed")
@@ -49,18 +72,19 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
             raise ValueError("image profile changed")
         if (source.input_tokens, source.output_tokens) != (spec.workload["isl"], spec.workload["osl"]):
             raise ValueError("text lengths changed")
-        if prediction.traffic.load.concurrency != (spec.concurrency or spec.workload.get("concurrency")):
-            raise ValueError("fixed concurrency changed")
-        stop = prediction.traffic.stop
-        assert stop is not None
-        expected_count = spec.workload.get("request_count")
-        if expected_count is None:
-            expected_count = max(1, round(spec.workload["num_request_ratio"] * prediction.traffic.load.concurrency))
-        count = stop.requests
-        if count is None:
-            count = max(1, round(stop.requests_per_load_unit * prediction.traffic.load.concurrency))
-        if count != expected_count:
-            raise ValueError("request count changed")
+        if encoder.mode == "analytical":
+            if prediction.traffic.load.concurrency != (spec.concurrency or spec.workload.get("concurrency")):
+                raise ValueError("fixed concurrency changed")
+            stop = prediction.traffic.stop
+            assert stop is not None
+            expected_count = spec.workload.get("request_count")
+            if expected_count is None:
+                expected_count = max(1, round(spec.workload["num_request_ratio"] * prediction.traffic.load.concurrency))
+            count = stop.requests
+            if count is None:
+                count = max(1, round(stop.requests_per_load_unit * prediction.traffic.load.concurrency))
+            if count != expected_count:
+                raise ValueError("request count changed")
         deployment = spec.backend_deployment
         mode = "agg" if engine.mode == "aggregated" else "disagg"
         if mode != deployment.deployment_mode:
@@ -74,6 +98,16 @@ def validate_epd_prediction_mapping(value: dict, spec: ReplaySpec) -> None:
         # Compare the same engine descriptors the runner executes, not a second list
         # of scheduler/cache/timing fields that can drift from the actual consumer.
         compiled = prediction_to_replay_spec(prediction)
+        if encoder.mode == "native":
+            # Event-level replay: the whole traffic definition matters, as for native VL.
+            from .vl import _differences, _execution_traffic
+
+            mine, scored = _execution_traffic(compiled), _execution_traffic(spec)
+            if mine != scored:
+                raise ValueError(f"traffic changed: {_differences(mine, scored)}")
+            # The host table and the geometry behind the pool's terms may have changed.
+            if compiled.backend_deployment.encoder.native != encoder.native:
+                raise ValueError("encoder cost terms changed")
         if _language_execution(compiled) != _language_execution(spec):
             raise ValueError("language replay settings changed")
         if _materialize_sla(compiled) != _materialize_sla(spec):
@@ -105,7 +139,14 @@ def _language_execution(spec: ReplaySpec) -> dict:
         rank = engine["rank"]
         rank.setdefault("prefill_schedule_interval", SchedulerPredictionConfig().prefill_schedule_interval)
         rank.setdefault("prefill_decode_interval", SchedulerPredictionConfig().prefill_decode_interval)
-        timing = rank["timing_model"]["config"]
+        timing_model = rank["timing_model"]
+        if timing_model.get("type") != "external":
+            # Built-in models carry their whole meaning in the descriptor.
+            if rank.get("kv_transfer_bytes_per_token") is None or rank.get("kv_transfer_bandwidth") is None:
+                rank.pop("kv_transfer_timing_mode", None)
+            result[role] = engine
+            continue
+        timing = timing_model["config"]
         roots = timing.get("systems_paths")
         if not roots and timing.get("systems_path") is not None:
             roots = [timing["systems_path"]]

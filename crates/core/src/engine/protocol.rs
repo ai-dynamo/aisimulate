@@ -8,6 +8,52 @@ use uuid::Uuid;
 
 use super::{HandoffId, HandoffTransferTiming};
 
+/// Encoder work behind one image, as the checkpoint's processor lays it out.
+///
+/// An image becomes `sequences` independent encoder sequences (tiles, or one
+/// for a dynamic-resolution tower) that attention never crosses; the token
+/// counts are per sequence. The placeholder span an image occupies in the
+/// prompt can exceed `sequences * output_tokens` by structural tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct EncoderShape {
+    pub sequences: u32,
+    /// Patch-embedding tokens per sequence.
+    pub patch_tokens: u32,
+    /// Transformer tokens per sequence (patches plus any CLS token).
+    pub transformer_tokens: u32,
+    /// Merged output tokens per sequence.
+    pub output_tokens: u32,
+}
+
+/// One image placeholder span and the encoder shape behind it.
+///
+/// `token_start..token_end` is the half-open placeholder interval inside the
+/// prompt; its length is the image's visual token count. `identity` keys the
+/// vision embedding cache and repeats only when the workload reuses an image.
+/// `feature_bytes` is the processor output moved through host memory and
+/// `embedding_bytes` the encoder output retained by the embedding cache.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImageSpec {
+    pub identity: u64,
+    pub token_start: usize,
+    pub token_end: usize,
+    pub encoder: EncoderShape,
+    pub feature_bytes: u64,
+    pub embedding_bytes: u64,
+}
+
+impl ImageSpec {
+    /// Placeholder tokens occupied by this image.
+    pub fn visual_tokens(&self) -> usize {
+        self.token_end - self.token_start
+    }
+
+    /// Whether the placeholder interval intersects the half-open `start..end`.
+    pub fn overlaps(&self, start: usize, end: usize) -> bool {
+        self.token_start < end && start < self.token_end
+    }
+}
+
 /// Runtime-neutral request accepted by the rank engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Request {
@@ -20,6 +66,9 @@ pub struct Request {
     /// Optional exact output IDs. Its length overrides `max_output_tokens`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_token_ids: Option<Vec<u32>>,
+    /// Image placeholders inside `tokens`, in prompt order; empty for text-only requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<ImageSpec>,
 }
 
 /// Commands supported by the standalone scheduler.
@@ -86,6 +135,26 @@ pub enum LifecycleEvent {
         request_id: Uuid,
         transferable_prompt_tokens: usize,
     },
+    /// A host-aware scheduler reached a scheduler-thread stage for one request.
+    TtftMilestone {
+        request_id: Uuid,
+        stage: TtftMilestone,
+        at_ms: f64,
+    },
+}
+
+/// Scheduler-thread stages reported by a host-aware scheduler for one request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TtftMilestone {
+    /// Left the frontend worker pools; delivered to the scheduler process.
+    FrontendReady,
+    /// Drained from the scheduler inbox at an iteration start.
+    Received,
+    /// Selected into its first batch.
+    Selected,
+    /// The forward that finished its prompt completed on the device.
+    PrefillComplete,
 }
 
 /// One runtime-neutral KV block identity.

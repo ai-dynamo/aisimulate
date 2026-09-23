@@ -44,6 +44,7 @@ import os
 from typing import Any
 
 import aisimulate_core
+from aisimulate_core.sdk import common
 from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
@@ -439,17 +440,22 @@ def compile_engine(
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
     fpm_parquet_path: str | None = None,
+    encoder_parallel: str | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
     Signature matches the kwargs the Rust ``AicEngineBuilder`` passes. Reuses
     ``cli/api._build_model_config`` + ``sdk/models.get_model`` (quant inferred
-    inside ``get_model``) to build the model, then walks ``encoder_ops`` (vision
-    decomposed), ``context_ops`` and ``generation_ops`` into OpSpecs and returns
-    the bytes produced by the Rust ``engine_spec_bincode_from_json`` pyfunction.
+    inside ``get_model``) to build the model, then walks ``context_ops`` and
+    ``generation_ops`` into OpSpecs and returns the bytes produced by the Rust
+    ``engine_spec_bincode_from_json`` pyfunction. ``encoder_parallel`` (``"tp"``
+    or ``"dp"``) additionally compiles the model's vision tower with that layout
+    so the engine can price encoder calls; it requires a VL model.
     """
     if not isinstance(decoder_replay, bool):
         raise InvalidEngineConfigurationError("decoder_replay must be a boolean")
+    if encoder_parallel not in (None, "tp", "dp"):
+        raise InvalidEngineConfigurationError("encoder_parallel must be 'tp', 'dp', or None")
     if decoder_replay and (model_path != DEEPSEEK_V41_MODEL_PATH or backend != "sglang"):
         raise InvalidEngineConfigurationError(
             f"decoder_replay requires model={DEEPSEEK_V41_MODEL_PATH!r} and backend='sglang'"
@@ -486,6 +492,7 @@ def compile_engine(
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
             speculation=resolved_speculation,
+            **({"enable_encoder_dp": encoder_parallel == "dp"} if encoder_parallel is not None else {}),
         )
         # Apply MTP BEFORE get_model so the walked op lists carry the
         # (L+nextn)/L compute scale; accepted-token progress is applied above core.
@@ -539,6 +546,7 @@ def compile_engine(
         transfer_policy=transfer_policy,
         strict_provenance=strict_provenance,
         fpm_parquet_path=fpm_parquet_path,
+        encoder_parallel=encoder_parallel,
     )
 
     return bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json))
@@ -617,11 +625,15 @@ def build_engine_spec_json(
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
     fpm_parquet_path: str | None = None,
+    encoder_parallel: str | None = None,
 ) -> str:
     """Walk a built model's op lists into an ``EngineSpec`` JSON string.
 
     Separated from ``compile_engine`` so the op-transfer round-trip test can
     inspect the JSON (and the decoded ops) without going through bincode.
+    ``encoder_parallel`` adds the ``vision`` section: the model's encoder ops
+    grouped by the token count they run on, under the layout the model was
+    built with.
     """
     # AIC-1715/1716: resolve each attention op's kernel-lane walk now that a
     # database is in hand (see `_resolve_attention_lane_orders`). The
@@ -633,20 +645,34 @@ def build_engine_spec_json(
     _resolve_attention_lane_orders(model.context_ops, database, override, architecture)
     _resolve_attention_lane_orders(model.generation_ops, database, override, architecture)
 
-    # Vision encoder ops are intentionally NOT emitted into the spec.
-    #
-    # The compile path threads no image configuration (num_images_per_request,
-    # image_height/width, num_image_tokens), so the compiled engine cannot
-    # reproduce `BaseBackend._run_encoder`'s token-count math (eff_batch, eff_s,
-    # pre/post-merge counts) needed to query the vision ops with correct shapes.
-    # Python's `run_static` already treats any request without image dimensions
-    # as text-only and skips the encoder entirely (base_backend `_run_encoder`
-    # early-return). Emitting the encoder ops here would make the compiled engine
-    # query them unconditionally (with wrong shapes), diverging from the Python
-    # reference for VL models. Vision modeling in the compiled path is deferred
-    # until runtime image config is threaded through compile_engine (#1567).
+    # Vision encoder ops stay out of the context/generation walks: the language
+    # phases never run them, and Python's `run_static` treats requests without
+    # image dimensions as text-only. When a caller asks for the tower
+    # (`encoder_parallel`), the ops travel in their own section grouped by the
+    # token class they run on; image shapes are supplied at query time, so no
+    # image configuration is compiled in.
     context_ops = json.loads(_ops_json(model.context_ops))
     generation_ops = json.loads(_ops_json(model.generation_ops))
+    vision = None
+    if encoder_parallel is not None:
+        from aisimulate_core.sdk.models.blocks.vit import encoder_shape_class
+
+        encoder_ops = getattr(model, "encoder_ops", None) or []
+        if not encoder_ops or not isinstance(getattr(model, "encoder_config", None), common.VisionEncoderConfig):
+            raise InvalidEngineConfigurationError(f"{model_path} has no vision encoder to compile")
+        if bool(getattr(model.config, "enable_encoder_dp", False)) != (encoder_parallel == "dp"):
+            raise InvalidEngineConfigurationError("the model was not built with the requested encoder_parallel")
+        if encoder_parallel == "dp" and model.architecture == "Llama4ForConditionalGeneration":
+            # sglang v0.5.19 reads `mm_enable_dp_encoder` only in its Qwen-VL, GLM, InternVL, Kimi
+            # and MiMo towers; Llama 4's vision tower is always tensor-parallel.
+            raise InvalidEngineConfigurationError("Llama 4's vision tower is tensor-parallel only in SGLang 0.5.19")
+        groups: dict[str, list] = {"patch": [], "transformer": [], "output": []}
+        for op in encoder_ops:
+            groups[encoder_shape_class(op._name)].append(op)
+        vision = {
+            "encoder_parallel": encoder_parallel,
+            **{f"{name}_ops": json.loads(_ops_json(ops)) for name, ops in groups.items()},
+        }
 
     spec = {
         "schema_version": ENGINE_SPEC_SCHEMA_VERSION,
@@ -669,6 +695,8 @@ def build_engine_spec_json(
         "context_ops": context_ops,
         "generation_ops": generation_ops,
     }
+    if vision is not None:
+        spec["vision"] = vision
     return json.dumps(spec)
 
 

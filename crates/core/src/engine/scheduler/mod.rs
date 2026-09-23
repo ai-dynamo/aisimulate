@@ -298,6 +298,15 @@ impl EngineCore {
         matches!(self, Self::Sglang(core) if core.model_work_in_pass())
     }
 
+    /// Device time of the forward the last pass launched, when the SGLang host
+    /// loop separates it from the pass end.
+    pub(crate) fn last_forward_ms(&self) -> Option<f64> {
+        match self {
+            Self::Sglang(core) => core.last_forward_ms(),
+            Self::Vllm(_) => None,
+        }
+    }
+
     pub(crate) fn finish_group_pass(&mut self, any_rank_prefilled: bool, any_rank_ran_model: bool) {
         if let Self::Sglang(core) = self {
             core.finish_group_pass(any_rank_prefilled, any_rank_ran_model);
@@ -346,20 +355,21 @@ impl EngineCore {
     pub(crate) fn is_ready(&self) -> bool {
         match self {
             Self::Vllm(core) => core.is_ready(),
-            Self::Sglang(core) => !core.is_drained(),
+            Self::Sglang(core) => core.is_ready(),
         }
     }
 
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
         match self {
             Self::Vllm(core) => core.next_internal_deadline_ms(),
-            Self::Sglang(_) => None,
+            Self::Sglang(core) => core.next_internal_deadline_ms(),
         }
     }
 
     pub(crate) fn process_internal_work(&mut self, now_ms: f64) {
-        if let Self::Vllm(core) = self {
-            core.process_internal_work(now_ms);
+        match self {
+            Self::Vllm(core) => core.process_internal_work(now_ms),
+            Self::Sglang(core) => core.process_internal_work(now_ms),
         }
     }
 
@@ -409,7 +419,9 @@ impl EngineCore {
             Self::Vllm(core) => {
                 core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
             }
-            Self::Sglang(core) => core.apply_command_effects(command, allow_destination_admission),
+            Self::Sglang(core) => {
+                core.apply_command_effects_at(command, allow_destination_admission, Some(now_ms))
+            }
         }
     }
 

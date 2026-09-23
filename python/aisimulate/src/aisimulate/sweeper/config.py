@@ -171,6 +171,11 @@ class OptimizationGoal(BaseModel):
         return self
 
 
+class ImagePool(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    pool: int = Field(strict=True, gt=0)
+
+
 class ImageWorkload(BaseModel):
     """One fixed image profile shared by every request (AIC encoder semantics)."""
 
@@ -178,6 +183,10 @@ class ImageWorkload(BaseModel):
     height: int = Field(strict=True, gt=0)
     width: int = Field(strict=True, gt=0)
     count: int = Field(default=1, strict=True, gt=0)
+    encoding: Literal["png", "jpeg"] = "png"
+    identity: Literal["unique"] | ImagePool = "unique"
+    min_pixels: int | None = Field(default=None, strict=True, gt=0)
+    max_pixels: int | None = Field(default=None, strict=True, gt=0)
 
 
 class EncoderSearch(BaseModel):
@@ -191,6 +200,19 @@ class EncoderSearch(BaseModel):
     workers: list[int] = [1, 2, 4, 8]
     latency_correction: float = Field(default=1.0, strict=True, gt=0, allow_inf_nan=False)
     rate_degradation: float = Field(default=0.9, strict=True, gt=0, le=1, allow_inf_nan=False)
+    # native: SGLang encoder servers replayed event by event; `batch_size` is then the loop's one batch cap.
+    mode: Literal["analytical", "native"] = "analytical"
+    host_profile: dict[str, Any] | None = None
+    transfer_bandwidth_gb_per_second: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+
+    @model_validator(mode="after")
+    def _validate_native(self) -> EncoderSearch:
+        if self.mode == "native":
+            if self.host_profile is None or self.transfer_bandwidth_gb_per_second is None:
+                raise ValueError("native encoder replay requires host_profile and transfer_bandwidth_gb_per_second")
+            if len(self.batch_size) != 1:
+                raise ValueError("native encoder replay takes one batch cap, not a batch_size search")
+        return self
 
     @field_validator("tp", "batch_size", "workers", mode="before")
     @classmethod
@@ -610,6 +632,18 @@ class SearchSpace(BaseModel):
     agg_forward_model: str = "op_level"  # AIC forward-pass model: op_level | fpm
     agg_fpm_parquet_path: str | None = None
     agg_startup_time: float | None = None
+    # Host-aware SGLang VL replay: pinned settings lowered from the public configuration.
+    agg_host_loop: bool | None = None
+    agg_frontend: dict[str, Any] | None = None
+    # Measured rows by feature transport (`inline` for TP1 Rust frontends, `shm` otherwise),
+    # each `{"frontend": ..., "digest": ...}`; a candidate takes the row its TP needs.
+    agg_frontend_by_transport: dict[str, Any] | None = None
+    agg_vision: dict[str, Any] | None = None
+    # The prefill worker hosts the same loop in disaggregated deployments.
+    prefill_host_loop: bool | None = None
+    prefill_frontend: dict[str, Any] | None = None
+    prefill_frontend_by_transport: dict[str, Any] | None = None
+    prefill_vision: dict[str, Any] | None = None
     kv_transfer_bytes_per_token: int | str | None = None
     kv_transfer_bandwidth: float | None = None
     kv_transfer_timing_mode: str = "destination_missing"
@@ -1192,31 +1226,42 @@ class SmartSearchConfig(BaseModel):
         encoder, workload = self.search_space.encoder, self.workload
         if workload.cached_prefix_tokens and set(self.search_space.deployment_mode) & {"afd", "afd+pd"}:
             raise ValueError("cached_prefix_tokens is unsupported for AFD")
+        search = self.search_space
+        if encoder is None and workload.images is not None:
+            if search.agg_vision is None and search.prefill_vision is None:
+                raise ValueError("image workloads require search_space.encoder or a language worker hosting vision")
+            return self
         if (encoder is None) != (workload.images is None):
             raise ValueError("EPD requires both search_space.encoder and workload.images")
         if encoder is None:
             return self
+        if search.agg_vision or search.prefill_vision:
+            raise ValueError("search_space.encoder and a language worker hosting the vision tower are exclusive")
+        if encoder.mode == "analytical" and (search.agg_host_loop or search.prefill_host_loop):
+            raise ValueError("analytical search_space.encoder and a host loop on the language worker are exclusive")
         if any(mode not in {"agg", "disagg"} for mode in self.search_space.deployment_mode):
-            raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
+            raise ValueError("encoder pools support only agg/disagg language deployments; AFD is unsupported")
         if self.adapters:
-            raise ValueError("analytical EPD does not support adapters")
+            raise ValueError("encoder pools do not support adapters")
         if self.search_space.min_gpu_budget is not None:
             raise ValueError("EPD currently supports gpu_budget only, not min_gpu_budget")
         if encoder.backend_version is not None and len(set(self.search_space.backend)) != 1:
             raise ValueError("encoder.backend_version requires a single backend")
-        targets = self.goal.resolved_pareto_objectives if self.goal.is_pareto else [self.goal.target]
-        if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.requires_aggregate_sla):
-            raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
-        workload.require_fixed_epd()
+        if encoder.mode == "analytical":
+            targets = self.goal.resolved_pareto_objectives if self.goal.is_pareto else [self.goal.target]
+            if set(targets) & _SLA_TARGETS or (self.goal.sla is not None and not self.goal.requires_aggregate_sla):
+                raise ValueError("analytical EPD supports aggregate strict_sla, not per-request goodput")
+            workload.require_fixed_epd()
         for role in ("agg", "prefill", "decode"):
-            if getattr(self.search_space, f"{role}_forward_model") != "op_level":
-                raise ValueError("EPD requires op_level forward models")
-            if getattr(self.search_space, f"{role}_timing_model") is not None:
-                raise ValueError("EPD does not support custom language timing")
+            if encoder.mode == "analytical":
+                if getattr(self.search_space, f"{role}_forward_model") != "op_level":
+                    raise ValueError("analytical EPD requires op_level forward models")
+                if getattr(self.search_space, f"{role}_timing_model") is not None:
+                    raise ValueError("analytical EPD does not support custom language timing")
             if getattr(self.search_space, f"{role}_startup_time") not in (None, 0.0):
-                raise ValueError("analytical EPD requires static worker pools")
+                raise ValueError("encoder pools require static worker pools")
         if self.search_space.startup_time not in (None, 0.0):
-            raise ValueError("analytical EPD requires static worker pools")
+            raise ValueError("encoder pools require static worker pools")
         return self
 
     @model_validator(mode="before")

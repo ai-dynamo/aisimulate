@@ -93,7 +93,10 @@ impl HandoffTransferTiming {
             return None;
         }
 
-        Some(tokens as f64 * bytes_per_token as f64 / (bandwidth_gb_s * 1e9) * 1000.0)
+        Some(transfer_delay_ms(
+            tokens as f64 * bytes_per_token as f64,
+            bandwidth_gb_s,
+        ))
     }
 
     /// Calculate delay using the full prompt irrespective of `mode`.
@@ -104,6 +107,13 @@ impl HandoffTransferTiming {
         }
         .delay_ms(0)
     }
+}
+
+/// Milliseconds to move `bytes` over a link of `bandwidth_gb_s` decimal
+/// gigabytes per second. The prefill-to-decode KV handoff and the encoder
+/// pool's embedding transfer share this arithmetic and count their own bytes.
+pub fn transfer_delay_ms(bytes: f64, bandwidth_gb_s: f64) -> f64 {
+    bytes / (bandwidth_gb_s * 1e9) * 1000.0
 }
 
 /// Compute the client-visible prefill-to-decode handoff delay.

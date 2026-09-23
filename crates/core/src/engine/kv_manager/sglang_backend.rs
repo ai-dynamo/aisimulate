@@ -113,6 +113,11 @@ impl RadixRequestLease {
         ));
     }
 
+    /// Forget the hashes of pages past `complete_pages` after the sequence shrank.
+    pub(crate) fn truncate_page_hashes(&mut self, complete_pages: usize) {
+        self.page_hashes.truncate(complete_pages);
+    }
+
     fn page_hashes_through(&self, token_count: usize, page_size: usize) -> &[LocalBlockHash] {
         &self.page_hashes[..token_count / page_size]
     }

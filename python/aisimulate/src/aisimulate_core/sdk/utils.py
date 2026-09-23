@@ -531,18 +531,28 @@ def _parse_nemotron_block_configs(block_configs: list[dict]) -> list[BlockConfig
     return grouped_configs if grouped_configs else None
 
 
+# Qwen3-VL checkpoints ship `preprocessor_config.json` with
+# `size: {shortest_edge: 65536, longest_edge: 16777216}` (verified on
+# Qwen/Qwen3-VL-8B-Instruct@0c351dd and Qwen/Qwen3-VL-2B-Instruct@89644892);
+# `smart_resize` rescales images outside that pixel budget before patchify.
+QWEN3_VL_PIXEL_BOUNDS = (65536, 16777216)
+
+
 def _parse_qwen_vision_encoder_config(
     vision_cfg: dict | None,
     *,
     expected_out_hidden_size: int,
     supports_deepstack: bool,
     partial_rotary_factor: float,
+    pixel_bounds: tuple[int, int] = (0, 0),
 ) -> VisionEncoderConfig | None:
     """Parse the shared Qwen ViT and its architecture-specific merger count.
 
     Qwen3-VL may project intermediate deepstack features in addition to the
     final tower output. Qwen3.5 inherits that ViT implementation but deletes
     the deepstack mergers, so it always has exactly one PatchMerger instance.
+    ``pixel_bounds`` is the processor's ``(min_pixels, max_pixels)`` budget;
+    zero leaves a bound unknown.
     """
     if not vision_cfg:
         return None
@@ -572,6 +582,8 @@ def _parse_qwen_vision_encoder_config(
         projector_n_instances=1 + len(deepstack_visual_indexes),
         partial_rotary_factor=partial_rotary_factor,
         in_channels=int(vision_cfg.get("in_channels", 3)),
+        min_pixels=int(pixel_bounds[0]),
+        max_pixels=int(pixel_bounds[1]),
     )
 
 
@@ -1479,6 +1491,7 @@ def _parse_hf_config_json(config: dict) -> dict:
             # Preserve the existing Qwen3-VL rotary-table gate. The shared
             # builder treats any positive value as full-head vision RoPE.
             partial_rotary_factor=0.5,
+            pixel_bounds=QWEN3_VL_PIXEL_BOUNDS,
         )
         if extra_params is not None:
             logger.info(

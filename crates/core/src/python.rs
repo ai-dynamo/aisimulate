@@ -8,16 +8,16 @@ use std::sync::{Arc, Mutex};
 
 use crate::engine::{
     Backend, EngineConfig, TimingEvidenceSource, TimingEvidenceSummary, TimingModel,
-    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence,
+    TimingModelConfig, TimingOperationEvidence, TimingPhaseEvidence, VisionShape,
 };
 use crate::replay::{
-    POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
+    EncoderSpec, POWER_DATA_COVERAGE_THRESHOLD, ReplayArtifactKvEventVisibility, ReplayArtifacts,
     ReplayEngineConfig, ReplayEngineFactory, ReplayOperationPowerDiagnostics,
     ReplayPhasePowerDiagnostics, ReplayPowerDiagnostics, ReplayRoleConfig, ReplayRuntimeInput,
     ReplaySpec, ReplayTopology, Replayer, TracePowerStats,
     loadgen::{
         AgenticSnapshotOptions, ArrivalSpec, DelaySpec, DynamoRequestTrace, LengthSpec,
-        SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
+        SyntheticImages, SyntheticTraceSpec, Trace, ValidatedAgenticGraph, WekaImportOptions,
         WekaNestedTimestampBasis, WekaResolvedTimestampBasis, WorkloadDriver,
         load_agentic_mooncake, load_weka_agentic_graph_with_options,
     },
@@ -81,6 +81,25 @@ struct RuntimeTraffic {
     osl: Option<usize>,
     #[serde(default)]
     cached_prefix_tokens: Option<usize>,
+    // Fixed per-request image workload resolved by the Python geometry layer.
+    #[serde(default)]
+    image_count: Option<usize>,
+    #[serde(default)]
+    image_visual_tokens: Option<usize>,
+    #[serde(default)]
+    image_sequences: Option<u32>,
+    #[serde(default)]
+    image_patch_tokens: Option<u32>,
+    #[serde(default)]
+    image_transformer_tokens: Option<u32>,
+    #[serde(default)]
+    image_output_tokens: Option<u32>,
+    #[serde(default)]
+    image_feature_bytes: Option<u64>,
+    #[serde(default)]
+    image_embedding_bytes: Option<u64>,
+    #[serde(default)]
+    image_identity_pool: Option<u64>,
     #[serde(default)]
     request_count: Option<usize>,
     #[serde(default)]
@@ -207,6 +226,9 @@ struct AicTimingConfig {
     fpm_parquet_path: Option<String>,
     #[serde(default)]
     decoder_replay: bool,
+    /// Layout of the model's vision tower; required when the rank hosts it.
+    #[serde(default)]
+    encoder_parallel: Option<crate::EncoderParallel>,
     #[serde(default)]
     worker_type: Option<ForwardPassWorkerType>,
     #[serde(default)]
@@ -322,6 +344,7 @@ impl AicTimingConfig {
             wideep_num_slots: self.wideep_num_slots,
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
+            encoder_parallel: self.encoder_parallel,
         })
     }
 
@@ -421,12 +444,42 @@ struct AicTimingModel {
     fpm_decode_kv_ceiling: Option<u32>,
     evidence: Mutex<TimingEvidenceSummary>,
     phase_cache: quick_cache::sync::Cache<PhaseEvidenceKey, TimingPhaseEvidence>,
+    /// Present when the rank hosts the vision tower.
+    vision: Option<VisionTimer>,
+}
+
+/// The canonical estimator's compiled vision tower and the encoder evidence it
+/// produced per image shape. Kept apart from the diagnostic handle, which
+/// replay drops when no evidence capture was requested.
+struct VisionTimer {
+    model: ForwardPassPerfModel,
+    cache: quick_cache::sync::Cache<VisionShape, TimingPhaseEvidence>,
 }
 
 impl AicTimingModel {
-    fn build(config: &mut AicTimingConfig, worker_type: ForwardPassWorkerType) -> Result<Self> {
+    /// `vision` marks a rank that hosts the vision tower: the canonical model
+    /// must then have been asked to compile it (`encoder_parallel`).
+    fn build(
+        config: &mut AicTimingConfig,
+        worker_type: ForwardPassWorkerType,
+        vision: bool,
+    ) -> Result<Self> {
         config.validate_parallel_shape()?;
         config.resolved_memory_fraction()?;
+        if vision {
+            ensure!(
+                config.backend == "sglang"
+                    && config.pp == 1
+                    && config.attention_dp == 1
+                    && config.nextn == 0
+                    && config.speculation.is_none(),
+                "AIC vision timing requires backend=sglang with pp=1, attention_dp=1, and no speculative decoding"
+            );
+            ensure!(
+                config.encoder_parallel.is_some(),
+                "a rank hosting the vision encoder requires timing config encoder_parallel (tp or dp)"
+            );
+        }
         let model = ForwardPassPerfModel::best_available(config.estimator_request(worker_type)?)
             .context("AIC timing provider could not construct the requested estimator")?;
         let provenance = model
@@ -451,6 +504,18 @@ impl AicTimingModel {
         let native = model.native_engine().context(
             "AIC regression estimator is not ready: offline replay requires trained observations or a native estimator"
         )?;
+        if vision {
+            ensure!(
+                native.has_vision(),
+                "AIC model {:?} compiled no vision tower for encoder_parallel {:?}",
+                config.model,
+                config.encoder_parallel
+            );
+        }
+        let vision = vision.then(|| VisionTimer {
+            model: model.clone(),
+            cache: quick_cache::sync::Cache::new(64),
+        });
         let (engine, fpm_decode_kv_ceiling) = Python::with_gil(|py| -> PyResult<_> {
             let engine = Py::new(py, crate::AicEngine::from_shared_engine(native))?.into_any();
             let ceiling = if use_fpm_decode_totals {
@@ -471,7 +536,45 @@ impl AicTimingModel {
             fpm_decode_kv_ceiling,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
             phase_cache: quick_cache::sync::Cache::new(128),
+            vision,
         })
+    }
+
+    /// Operation evidence of one encoder call over `shape.count` equal images,
+    /// priced by the canonical model's compiled vision tower.
+    fn vision_phase(&self, shape: VisionShape) -> Result<TimingPhaseEvidence> {
+        let timer = self
+            .vision
+            .as_ref()
+            .context("this rank does not host the vision encoder")?;
+        if let Some(phase) = timer.cache.get(&shape) {
+            return Ok(phase);
+        }
+        let entries = timer
+            .model
+            .vision_operations(&[crate::EncoderImageShape {
+                sequences: shape.encoder.sequences,
+                patch_tokens: shape.encoder.patch_tokens,
+                transformer_tokens: shape.encoder.transformer_tokens,
+                output_tokens: shape.encoder.output_tokens,
+                images: shape.count,
+            }])
+            .map_err(|error| anyhow!("AIC vision evaluation failed: {error}"))?;
+        ensure!(
+            !entries.is_empty(),
+            "AIC vision encoder returned no operation evidence for {} image(s)",
+            shape.count
+        );
+        let phase = phase_evidence_from_python(
+            entries
+                .into_iter()
+                .map(|(name, latency_ms, energy_wms, source)| {
+                    (name, latency_ms, energy_wms, source.to_owned())
+                })
+                .collect(),
+        )?;
+        timer.cache.insert(shape, phase.clone());
+        Ok(phase)
     }
 
     fn predict_phase_evidence(
@@ -583,6 +686,21 @@ impl TimingModel for AicTimingModel {
         self.decoder_replay
     }
 
+    fn predict_vision_ms(&self, shapes: &[VisionShape]) -> Result<Option<f64>> {
+        if self.vision.is_none() {
+            return Ok(None);
+        }
+        let mut latency_ms = 0.0;
+        for shape in shapes {
+            let phase = self.vision_phase(*shape)?;
+            latency_ms += phase.latency_ms;
+            // The encoder runs inside the prefill forward; its operations join
+            // that phase's evidence under their own `encoder_*` names.
+            self.record_evidence(phase, true)?;
+        }
+        Ok(Some(latency_ms))
+    }
+
     fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> Result<()> {
         if self.decoder_replay {
             ensure!(
@@ -683,31 +801,56 @@ fn checked_u32(value: usize, name: &str) -> Result<u32> {
     u32::try_from(value).with_context(|| format!("{name} {value} exceeds AIC's u32 limit"))
 }
 
+/// Keyword arguments that identify the model build (parallel shape, quantization,
+/// and MoE/attention controls) for the Python SDK entry points.
+fn aic_model_identity_kwargs<'py>(
+    py: Python<'py>,
+    config: &AicTimingConfig,
+) -> PyResult<Bound<'py, PyDict>> {
+    let kwargs = PyDict::new(py);
+    kwargs.set_item("tp_size", config.tp)?;
+    kwargs.set_item("pp_size", config.pp)?;
+    kwargs.set_item("attention_dp_size", config.attention_dp)?;
+    kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
+    kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
+    kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
+    kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
+    kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
+    kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
+    kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
+    kwargs.set_item("moe_backend", config.moe_backend.as_deref())?;
+    kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
+    kwargs.set_item("enable_eplb", config.enable_eplb)?;
+    kwargs.set_item("wideep_num_slots", config.wideep_num_slots)?;
+    Ok(kwargs)
+}
+
 fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig) -> Result<usize> {
     let (memory_fraction_kind, memory_fraction_value) = config.resolved_memory_fraction()?;
     Python::with_gil(|py| -> PyResult<usize> {
         let memory = PyModule::import(py, "aisimulate_core.sdk.memory")?;
-        let kwargs = PyDict::new(py);
+        let kwargs = aic_model_identity_kwargs(py, config)?;
         kwargs.set_item("backend_version", config.resolved_backend_version())?;
         kwargs.set_item("scheduler_block_size", role.rank.block_size)?;
         kwargs.set_item("max_num_tokens", role.rank.max_num_batched_tokens)?;
         kwargs.set_item("max_batch_size", role.rank.max_num_seqs)?;
         kwargs.set_item("memory_fraction_kind", memory_fraction_kind)?;
         kwargs.set_item("memory_fraction_value", memory_fraction_value)?;
-        kwargs.set_item("tp_size", config.tp)?;
-        kwargs.set_item("pp_size", config.pp)?;
-        kwargs.set_item("attention_dp_size", config.attention_dp)?;
-        kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
-        kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
-        kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
-        kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
-        kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
-        kwargs.set_item("kvcache_quant_mode", config.kv_cache_dtype.as_deref())?;
-        kwargs.set_item("comm_quant_mode", config.comm_dtype.as_deref())?;
-        kwargs.set_item("moe_backend", config.moe_backend.as_deref())?;
-        kwargs.set_item("attention_backend", config.attention_backend.as_deref())?;
-        kwargs.set_item("enable_eplb", config.enable_eplb)?;
-        kwargs.set_item("wideep_num_slots", config.wideep_num_slots)?;
+        // A rank hosting the vision encoder keeps its weights and embedding
+        // cache outside the KV pool.
+        kwargs.set_item("colocated_encoder", role.rank.vision)?;
+        kwargs.set_item(
+            "encoder_parallel",
+            config.encoder_parallel.map(crate::EncoderParallel::as_str),
+        )?;
+        kwargs.set_item(
+            "reserved_bytes",
+            if role.rank.vision {
+                role.rank.sglang.vlm_cache_bytes
+            } else {
+                0
+            },
+        )?;
         kwargs.set_item(
             "cuda_graph_reserved_bytes",
             config.cuda_graph_reserved_bytes,
@@ -826,6 +969,35 @@ fn role_capacity_is_explicit(engine_value: &serde_json::Value, role: Option<&str
         })
 }
 
+/// Resolve the encoder pool's timing model the way a rank's is resolved: the
+/// canonical model compiled with its vision tower at the pool's tensor width.
+/// Built-in models return `None`; the Replayer then rejects the spec.
+fn resolve_encoder_timing(
+    encoder: &EncoderSpec,
+    capture_performance_diagnostics: bool,
+) -> Result<Option<Arc<dyn TimingModel>>> {
+    let Some(TimingModelConfig::External { provider, config }) = encoder.timing_model.clone()
+    else {
+        return Ok(None);
+    };
+    ensure!(
+        provider == "aic",
+        "native timing provider {provider:?} is not installed; only \"aic\" is \
+         available in the AISimulate runtime"
+    );
+    let mut config: AicTimingConfig =
+        serde_json::from_value(config).context("invalid encoder AIC timing configuration")?;
+    ensure!(
+        usize::try_from(config.tp).ok() == Some(encoder.gpus_per_instance),
+        "encoder gpus_per_instance must equal the timing model's tensor-parallel width"
+    );
+    let mut timing = AicTimingModel::build(&mut config, ForwardPassWorkerType::Prefill, true)?;
+    if !capture_performance_diagnostics {
+        timing.diagnostic_model = None;
+    }
+    Ok(Some(Arc::new(timing)))
+}
+
 fn resolve_role_timing(
     role: &mut ReplayRoleConfig,
     capacity_is_explicit: bool,
@@ -842,7 +1014,7 @@ fn resolve_role_timing(
     );
     let mut config: AicTimingConfig =
         serde_json::from_value(config).context("invalid AIC timing provider configuration")?;
-    let mut timing = AicTimingModel::build(&mut config, worker_type)?;
+    let mut timing = AicTimingModel::build(&mut config, worker_type, role.rank.vision)?;
     if !capture_performance_diagnostics {
         timing.diagnostic_model = None;
     }
@@ -960,6 +1132,40 @@ fn concrete_session_count(traffic: &RuntimeTraffic) -> Result<usize> {
     Ok(((ratio * load).round() as usize).max(1))
 }
 
+/// Per-request image workload declared by the Python traffic payload, if any.
+fn synthetic_images(traffic: &RuntimeTraffic) -> Result<Option<SyntheticImages>> {
+    let Some(count) = traffic.image_count else {
+        return Ok(None);
+    };
+    Ok(Some(SyntheticImages {
+        count,
+        visual_tokens: traffic
+            .image_visual_tokens
+            .context("image traffic requires image_visual_tokens")?,
+        encoder: crate::engine::EncoderShape {
+            sequences: traffic
+                .image_sequences
+                .context("image traffic requires image_sequences")?,
+            patch_tokens: traffic
+                .image_patch_tokens
+                .context("image traffic requires image_patch_tokens")?,
+            transformer_tokens: traffic
+                .image_transformer_tokens
+                .context("image traffic requires image_transformer_tokens")?,
+            output_tokens: traffic
+                .image_output_tokens
+                .context("image traffic requires image_output_tokens")?,
+        },
+        feature_bytes: traffic
+            .image_feature_bytes
+            .context("image traffic requires image_feature_bytes")?,
+        embedding_bytes: traffic
+            .image_embedding_bytes
+            .context("image traffic requires image_embedding_bytes")?,
+        identity_pool: traffic.image_identity_pool,
+    }))
+}
+
 fn resolve_kv_capacity_concurrency(
     traffic: &mut RuntimeTraffic,
     role: &ReplayRoleConfig,
@@ -979,8 +1185,11 @@ fn resolve_kv_capacity_concurrency(
     );
     let isl = traffic.isl.context("KV load requires isl")?;
     let osl = traffic.osl.context("KV load requires osl")?;
+    let visual_tokens =
+        synthetic_images(traffic)?.map_or(0, |images| images.count * images.visual_tokens);
     let expected_tokens = isl
-        .checked_add(osl / 2)
+        .checked_add(visual_tokens)
+        .and_then(|tokens| tokens.checked_add(osl / 2))
         .context("KV-load expected token count overflow")?;
     ensure!(
         expected_tokens > 0,
@@ -1216,11 +1425,13 @@ fn build_runtime_input(
         1
     };
     let cached_prefix_tokens = traffic.cached_prefix_tokens.unwrap_or(0);
+    let images = synthetic_images(&traffic)?;
     let trace = Trace::synthetic(SyntheticTraceSpec {
         // A one-token trace block preserves prefixes that are not aligned to
-        // the engine's scheduler block size. The driver still hashes them at
-        // `engine_block_size` when it constructs replay requests.
-        block_size: if cached_prefix_tokens == 0 {
+        // the engine's scheduler block size and keeps image placeholder spans
+        // token-exact. The driver still hashes them at `engine_block_size`
+        // when it constructs replay requests.
+        block_size: if cached_prefix_tokens == 0 && images.is_none() {
             engine_block_size
         } else {
             1
@@ -1245,6 +1456,7 @@ fn build_runtime_input(
             .map_or(DelaySpec::None, DelaySpec::ConstantMs),
         seed: 0,
         arrival_seed: traffic.arrival_seed.unwrap_or(42),
+        images,
     })?;
     let cap = traffic.concurrency;
     let accumulate = traffic.source_type == "synthetic-session";
@@ -1643,11 +1855,25 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
         serde_json::from_value(spec.engine.clone())
             .context("invalid native engine descriptor in execution ReplaySpec")?
     };
+    let encoder_timing = spec
+        .encoder
+        .as_ref()
+        .map(|encoder| resolve_encoder_timing(encoder, capture_performance_diagnostics))
+        .transpose()?
+        .flatten();
     let expected_power_sources = match &spec.topology {
         ReplayTopology::Aggregated { .. } => 1,
         ReplayTopology::Disaggregated { .. } => 2,
-    };
+    } + usize::from(encoder_timing.is_some());
     let mut power_sources = Vec::with_capacity(expected_power_sources);
+    if let Some(timing) = &encoder_timing {
+        // The encoder pool's forwards join the power evidence like a rank's.
+        power_sources.push(TimingPowerSource {
+            timing: Arc::clone(timing),
+            prefill_speedup_ratio: 1.0,
+            decode_speedup_ratio: 1.0,
+        });
+    }
 
     let (mut report, artifacts, resolved_weka_timestamp_basis) = match spec.topology.clone() {
         ReplayTopology::Aggregated { .. } => {
@@ -1695,10 +1921,13 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
             let input = built_input.map(|built| built.input);
-            let factory = timing.map_or_else(
+            let mut factory = timing.map_or_else(
                 ReplayEngineFactory::new,
                 ReplayEngineFactory::with_timing_model,
             );
+            if let Some(timing) = &encoder_timing {
+                factory = factory.with_encoder_timing(Arc::clone(timing));
+            }
             run_with_input(spec, factory, input, capture_artifacts)
                 .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
@@ -1815,15 +2044,12 @@ fn execute_json(payload: &str, capture_artifacts: bool) -> Result<String> {
                 .as_ref()
                 .and_then(|built| built.weka_nested_timestamp_basis);
             let input = built_input.map(|built| built.input);
-            run_with_input(
-                spec,
-                ReplayEngineFactory::with_optional_role_timing_models(
-                    prefill_timing,
-                    decode_timing,
-                ),
-                input,
-                capture_artifacts,
-            )
+            let mut factory =
+                ReplayEngineFactory::with_optional_role_timing_models(prefill_timing, decode_timing);
+            if let Some(timing) = &encoder_timing {
+                factory = factory.with_encoder_timing(Arc::clone(timing));
+            }
+            run_with_input(spec, factory, input, capture_artifacts)
             .map(|(report, artifacts)| (report, artifacts, resolved_basis))
         }
     }
@@ -1961,7 +2187,7 @@ fn _runtime(module: &Bound<'_, PyModule>) -> PyResult<()> {
 mod tests {
     use crate::engine::{EngineConfig, TimingModelConfig};
     use crate::replay::{
-        ProviderSpec, ReplayAdapters, ReplayEngineConfig, ReplayRequest, ReplaySpec,
+        EncoderSpec, ProviderSpec, ReplayAdapters, ReplayEngineConfig, ReplayRequest, ReplaySpec,
         ReplayTopology, WorkerPoolSpec,
     };
 
@@ -2424,6 +2650,7 @@ mod tests {
             fpm_decode_kv_ceiling: None,
             evidence: Mutex::new(TimingEvidenceSummary::default()),
             phase_cache: quick_cache::sync::Cache::new(128),
+            vision: None,
         }
     }
 
@@ -2504,6 +2731,7 @@ mod tests {
             forward_model: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            encoder_parallel: None,
         }
     }
 
@@ -3364,6 +3592,7 @@ mod tests {
     fn json_bindings_share_report_and_retain_request_correlation() {
         let mut spec = ReplaySpec {
             version: 1,
+            encoder: None,
             topology: ReplayTopology::Aggregated {
                 workers: WorkerPoolSpec::default(),
             },

@@ -100,9 +100,12 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
 
     checkpoint("resource_plan", plan)
     factory = GuardedRunnerFactory(factory, args.stack, config.execution.resources)
-    epd = config.engine.workers.encoder is not None
-    if epd and (args.stack != "engine" or args.online or args.capture_per_request or adapter_raw):
-        raise ValueError("analytical EPD requires offline --stack engine without adapters or per-request capture")
+    encoder = config.engine.workers.encoder
+    if encoder is not None and (args.stack != "engine" or args.online or adapter_raw):
+        raise ValueError("encoder pools require offline --stack engine without adapters")
+    analytical_epd = encoder is not None and encoder.mode == "analytical"
+    if analytical_epd and args.capture_per_request:
+        raise ValueError("analytical EPD cannot capture per-request records")
     adapters = _resolve_section_adapters(adapter_raw, args.stack)
     adapter_specs = _compile_prediction_adapters(
         adapter_raw,
@@ -124,7 +127,7 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
             report = runner.run(
                 spec,
                 output_requirements=ReplayOutputRequirements(
-                    include_raw_report=not epd,
+                    include_raw_report=not analytical_epd,
                     capture_per_request=args.capture_per_request,
                     capture_memory_diagnostics="memory" in args.detail,
                     capture_performance_diagnostics=bool({"time", "source"}.intersection(args.detail)),
@@ -141,15 +144,22 @@ def _predict(args: argparse.Namespace, raw: dict[str, Any], factory) -> int:
     native = report.metadata.get("native_report")
     if not isinstance(native, dict):
         native = {"summary": dict(report.metrics)}
-    if epd:
+    if analytical_epd:
         native = {"summary": dict(report.metrics), "metadata": dict(report.metadata)}
         if "memory_diagnostics" in native["metadata"]:
             native["memory_diagnostics"] = native["metadata"].pop("memory_diagnostics")
         # JSON stdout, like prediction.json, must identify the approximation.
         native["summary"]["metric_semantics"] = report.metadata["metric_semantics"]
-        native["summary"]["total_gpus"] = report.metadata["total_gpus"]
+    # The aggregated or the prefill worker hosts the measured frontend stages.
+    for role in ("aggregated", "prefill"):
+        vl = (spec.backend_deployment.performance_model_metadata.get(role) or {}).get("vl")
+        if isinstance(vl, dict):
+            native = {**native, "vl": vl}
     summary = prediction_summary(native)
     summary.update(normalize_power_summary(report.metrics))
+    if encoder is not None:
+        # Both tiers' GPUs, reported alike by the analytical overlay and the native pool.
+        summary["total_gpus"] = report.metadata["total_gpus"]
     if "summary" in native:
         native = {**native, "summary": summary}
     else:

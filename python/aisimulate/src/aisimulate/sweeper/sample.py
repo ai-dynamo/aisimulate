@@ -38,6 +38,10 @@ _AGG_PINNED = (
     "agg_forward_model",
     "agg_fpm_parquet_path",
     "agg_startup_time",
+    "agg_host_loop",
+    "agg_frontend",
+    "agg_frontend_by_transport",
+    "agg_vision",
 )
 _PREFILL_SEARCHED = ("prefill_max_num_batched_tokens", "prefill_max_num_seqs")
 _PREFILL_PINNED = (
@@ -51,6 +55,10 @@ _PREFILL_PINNED = (
     "prefill_forward_model",
     "prefill_fpm_parquet_path",
     "prefill_startup_time",
+    "prefill_host_loop",
+    "prefill_frontend",
+    "prefill_frontend_by_transport",
+    "prefill_vision",
 )
 _DECODE_SEARCHED = ("decode_max_num_batched_tokens", "decode_max_num_seqs")
 _DECODE_PINNED = (

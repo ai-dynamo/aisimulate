@@ -16,7 +16,7 @@ from dataclasses import asdict, replace
 
 from .config import EncoderSearch, SmartSearchConfig, Workload
 from .kv_estimate import NoPerfDatabase, resolve_backend_version
-from .replay import EncoderPoolSpec, ReplayReport, ReplaySpec
+from .replay import EncoderPoolSpec, NativeEncoderTiming, ReplayReport, ReplaySpec
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +65,18 @@ def resolve_encoder_pools(
         image_width=images.width,
         num_images_per_request=images.count,
     )
-    visual_tokens = BaseBackend.effective_prefill_isl(model_name, runtime) - runtime.isl
+    geometry = None
+    if encoder.mode == "native":
+        # The replay lays out, encodes and transfers the processor's geometry,
+        # pixel budget included, as the language worker's tower does.
+        from aisimulate_core.sdk.backends.base_backend import image_geometry
+
+        geometry = image_geometry(
+            model_name, images.height, images.width, min_pixels=images.min_pixels, max_pixels=images.max_pixels
+        )
+        visual_tokens = geometry.visual_tokens * images.count
+    else:
+        visual_tokens = BaseBackend.effective_prefill_isl(model_name, runtime) - runtime.isl
     if context_length is not None and runtime.isl + visual_tokens + runtime.osl > context_length:
         raise ValueError("EPD text + visual + output tokens exceed context_length")
     catalog = {}
@@ -83,15 +94,28 @@ def resolve_encoder_pools(
             logger.warning("Skipping encoder backend: no encoder database for %s/%s/%s", system, backend, version)
             continue
         version = database.version
-        rows = _get_encoder_worker_candidates(
-            model_path=model_name,
-            tp_list=encoder.tp,
-            b_list=encoder.batch_size,
-            runtime_config=runtime,
-            database=database,
-            backend_name=backend,
-            latency_correction=encoder.latency_correction,
-        )
+        if encoder.mode == "native":
+            rows = _native_encoder_rows(
+                encoder,
+                model_name=model_name,
+                system=system,
+                backend=backend,
+                version=version,
+                database=database,
+                runtime=runtime,
+                images=images,
+                geometry=geometry,
+            )
+        else:
+            rows = _get_encoder_worker_candidates(
+                model_path=model_name,
+                tp_list=encoder.tp,
+                b_list=encoder.batch_size,
+                runtime_config=runtime,
+                database=database,
+                backend_name=backend,
+                latency_correction=encoder.latency_correction,
+            )
         for row in rows:
             coverage = float(row.get("power_coverage", 0.0))
             power = float(row.get("power_w", 0.0))
@@ -117,12 +141,111 @@ def resolve_encoder_pools(
                     image_count=images.count,
                     power_w=power if power > 0 and coverage > 0 else None,
                     power_coverage=coverage if power > 0 else 0.0,
+                    mode=encoder.mode,
+                    native=row.get("native"),
                 )
                 if gpu_budget is None or point.total_gpus < gpu_budget:
                     catalog[f"{backend}|tp{point.tp}|bs{point.batch_size}|w{workers}"] = point
     if not catalog:
         raise ValueError("no feasible encoder pool for the requested shape and GPU budget")
     return catalog
+
+
+def _native_encoder_rows(encoder, *, model_name, system, backend, version, database, runtime, images, geometry):
+    """One row per encoder tp at the loop's batch cap, with the terms the replay prices batches from.
+
+    The forward is priced at replay time by the canonical timing model at the pool's
+    tensor width, the oracle a language rank uses for its vision tower; memory and
+    power come from the analytical candidate helper at the cap. The CPU preprocessing
+    extrapolates the tokenizer manager's measured `process` stage per image: the
+    encoder servers run the same image processor over the whole batch.
+    """
+    from aisimulate.sdk.errors import InsufficientMemoryError, NoFeasibleConfigError
+    from aisimulate.sdk.sweep import _get_encoder_worker_candidates
+
+    from ..config.engine import HostProfileConfig
+    from ..vl.table import resolve_frontend
+
+    (cap,) = encoder.batch_size
+    profile = HostProfileConfig.model_validate(encoder.host_profile)
+    frontend, digest = resolve_frontend(profile, model=model_name, images=images.model_dump(mode="json"), tensor=1)
+    rows = []
+    for tp in encoder.tp:
+        try:
+            (point,) = _get_encoder_worker_candidates(
+                model_path=model_name,
+                tp_list=[tp],
+                b_list=[cap],
+                runtime_config=runtime,
+                database=database,
+                backend_name=backend,
+                latency_correction=encoder.latency_correction,
+            )
+        except (ValueError, InsufficientMemoryError, NoFeasibleConfigError) as exc:
+            logger.debug("native encoder: tp=%s rejected: %s", tp, exc)
+            continue
+        rows.append(
+            {
+                **point,
+                "native": NativeEncoderTiming(
+                    preprocess_ms_per_image=frontend.stages[0].service_ms / images.count,
+                    preprocess_source="frontend_process_extrapolated",
+                    shape={
+                        "sequences": geometry.sequences,
+                        "patch_tokens": geometry.patch_tokens,
+                        "transformer_tokens": geometry.transformer_tokens,
+                        "output_tokens": geometry.output_tokens,
+                    },
+                    transfer_bytes_per_image=geometry.embedding_bytes,
+                    transfer_bandwidth_gb_s=encoder.transfer_bandwidth_gb_per_second,
+                    timing_model=encoder_timing_payload(
+                        model=model_name, system=system, backend=backend, backend_version=version, tp=tp
+                    ),
+                    host_profile_path=profile.path,
+                    host_profile_frontend=profile.frontend,
+                    host_profile_digest=digest,
+                ),
+            }
+        )
+    return rows
+
+
+def encoder_timing_payload(*, model: str, system: str, backend: str, backend_version: str, tp: int) -> dict:
+    """The canonical timing payload of an encoder server: a prefill-shaped rank at
+    the pool's tensor width whose model compiles the vision tower."""
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    from ..config.common import omit_inactive_moe_controls
+    from .forward_pass_estimator import resolve_systems_paths
+
+    canonical = ForwardPassPerfModelConfig(
+        model=model,
+        system=system,
+        backend=backend,
+        backend_version=backend_version,
+        worker_type="prefill",
+        tp=tp,
+        systems_paths=resolve_systems_paths(None),
+        encoder_parallel="tp",
+    )
+    return {"type": "external", "provider": "aic", "config": omit_inactive_moe_controls(canonical.to_dict())}
+
+
+def language_gpus(deployment) -> int:
+    """GPUs of the language workers of a resolved deployment."""
+    parallel = deployment.parallel_config
+
+    def role_gpus(prefix, workers):
+        return (
+            workers
+            * int(parallel[prefix + "tp"])
+            * int(parallel[prefix + "pp"])
+            * int(parallel[prefix + "attention_dp"])
+        )
+
+    if deployment.deployment_mode == "agg":
+        return role_gpus("", deployment.num_workers)
+    return role_gpus("prefill_", deployment.num_prefill_workers) + role_gpus("decode_", deployment.num_decode_workers)
 
 
 def add_encoder_choices(branches, catalog):
@@ -171,21 +294,7 @@ def apply_encoder_overlay(report: ReplayReport, spec: ReplaySpec) -> ReplayRepor
     if source["duration_ms"] <= 0 or source["completed_requests"] <= 0:
         raise ValueError("EPD requires a completed language replay")
     deployment = spec.backend_deployment
-    parallel = deployment.parallel_config
-
-    def role_gpus(prefix, workers):
-        return (
-            workers
-            * int(parallel[prefix + "tp"])
-            * int(parallel[prefix + "pp"])
-            * int(parallel[prefix + "attention_dp"])
-        )
-
-    language_gpus = (
-        role_gpus("", deployment.num_workers)
-        if deployment.deployment_mode == "agg"
-        else role_gpus("prefill_", deployment.num_prefill_workers) + role_gpus("decode_", deployment.num_decode_workers)
-    )
+    language = language_gpus(deployment)
     row = _overlay_encoder_stage(
         {
             "seq/s": source["completed_requests"] * 1000 / source["duration_ms"],
@@ -194,7 +303,7 @@ def apply_encoder_overlay(report: ReplayReport, spec: ReplaySpec) -> ReplayRepor
             "tpot": source["mean_tpot_ms"],
             "request_latency": source["mean_e2e_latency_ms"],
             "osl": spec.workload["osl"],
-            "num_total_gpus": language_gpus,
+            "num_total_gpus": language,
         },
         {
             "seq/s": encoder.throughput_rps,
@@ -244,7 +353,7 @@ def apply_encoder_overlay(report: ReplayReport, spec: ReplaySpec) -> ReplayRepor
         metadata={
             "metric_semantics": "analytical_epd_overlay",
             "encoder": asdict(encoder),
-            "language_gpus": language_gpus,
+            "language_gpus": language,
             "total_gpus": row["num_total_gpus"],
             "language_replay_duration_ms": source["duration_ms"],
             "deployment_artifact_generation_supported": False,

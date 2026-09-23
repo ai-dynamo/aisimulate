@@ -295,3 +295,60 @@ def test_capacity_rejects_malformed_external_identity(invalid):
             ratio=1,
             backend_version="v",
         )
+
+
+def test_image_workloads_size_the_load_on_the_placeholders_the_runner_lays_out():
+    """Native VL and analytical EPD both count the visual tokens, overrides included."""
+    from aisimulate.sweeper.config import ImageWorkload
+
+    sample = {
+        "model_name": "Qwen/Qwen3-VL-8B-Instruct",
+        "agg_block_size": 16,
+        "agg_num_gpu_blocks": 6_250,
+        "agg_vision": {"cache_mib": 100, "encoder_parallel": "tp"},
+    }
+    parallel = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+
+    def concurrency(**bounds):
+        return resolve_kv_load(
+            sample,
+            workload=Workload(
+                isl=128,
+                osl=4,
+                kv_load_ratio=1.0,
+                request_count=1,
+                images=ImageWorkload(height=448, width=448, **bounds),
+            ),
+            parallel_config=parallel,
+            ratio=1.0,
+            backend_version="0.5.14",
+        ).concurrency
+
+    # 448x448 -> 196 visual tokens; capped at 65536 pixels the image shrinks to 256x256 -> 64.
+    assert concurrency() == 100_000 // (128 + 196 + 2)
+    assert concurrency(max_pixels=65536) == 100_000 // (128 + 64 + 2)
+    # Analytical EPD (no vision tower on the language worker) sizes on the same placeholders.
+    del sample["agg_vision"]
+    assert concurrency() == 100_000 // (128 + 196 + 2)
+
+
+def test_disagg_prefill_vision_sizes_only_the_prefill_capacity_against_the_tower(monkeypatch):
+    controls = []
+
+    def fake_per_rank(shape, **kwargs):
+        controls.append(dict(kwargs.get("model_controls", ())))
+        return 10_000
+
+    monkeypatch.setattr("aisimulate.sweeper.kv_load._per_rank_capacity_tokens", fake_per_rank)
+    sample = {**_sample("disagg"), "backend": "sglang", "prefill_vision": {"cache_mib": 100, "encoder_parallel": "tp"}}
+    rank = ReplicaParallelConfig(ParallelShape(tp=1, dp=1, moe_tp=1, moe_ep=1), replicas=1)
+    resolve_kv_load(
+        sample,
+        workload=Workload(isl=100, osl=100, kv_load_ratio=1.0, num_request_ratio=10),
+        parallel_config=DisaggParallelConfig(prefill=rank, decode=rank),
+        ratio=1.0,
+        backend_version="v",
+    )
+    # The runtime deducts the tower and the embedding cache on the prefill rank only.
+    assert controls[0] == {"colocated_encoder": True, "reserved_bytes": 100 << 20, "encoder_parallel": "tp"}
+    assert "colocated_encoder" not in controls[1]

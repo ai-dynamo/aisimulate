@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::engine::{EncoderShape, TimingModelConfig};
 use crate::replay::{ReplayError, ReplayResult, SlaThresholds};
 
 pub const CURRENT_REPLAY_SPEC_VERSION: u32 = 1;
@@ -45,6 +46,9 @@ pub struct ReplaySpec {
     /// Optional latency targets used to calculate goodput.
     #[serde(default, skip_serializing_if = "SlaThresholds::is_unset")]
     pub sla: SlaThresholds,
+    /// Optional encoder pool every request crosses before the language workers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encoder: Option<EncoderSpec>,
     pub requests: Vec<ReplayRequest>,
 }
 
@@ -66,6 +70,9 @@ impl ReplaySpec {
             ));
         }
         self.sla.validate()?;
+        if let Some(encoder) = &self.encoder {
+            encoder.validate()?;
+        }
 
         let mut ids = BTreeSet::new();
         for request in &self.requests {
@@ -140,6 +147,86 @@ impl ReplayTopology {
                 validate_time("handoff_latency_ms", *handoff_latency_ms)
             }
         }
+    }
+}
+
+/// Event-level model of SGLang's dedicated encoder servers (`--encoder-only`)
+/// ahead of the language workers.
+///
+/// A request's images are spread over the instances; each instance runs one
+/// serial loop that takes the queued parts up to `max_batch`, preprocesses and
+/// encodes them as one batch, then pushes each part's embeddings to the language
+/// rank. A batch frees its instance when its GPU work ends; transfers are timed
+/// per part, and the request is admitted when its last part arrived.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EncoderSpec {
+    pub instances: usize,
+    /// Parts one batch takes at most (`SGLANG_ENCODER_MAX_BATCH_SIZE`).
+    pub max_batch: usize,
+    /// GPUs one instance occupies (its tensor-parallel width).
+    pub gpus_per_instance: usize,
+    pub images_per_request: u32,
+    /// Geometry of one image as the encoder forward sees it.
+    pub shape: EncoderShape,
+    /// CPU preprocessing (image decode and processor) per image; a batch costs
+    /// its image count times this.
+    pub preprocess_ms_per_image: f64,
+    /// Embedding bytes one image sends to the language rank(s).
+    pub transfer_bytes_per_image: u64,
+    /// Network bandwidth in decimal gigabytes per second.
+    pub transfer_bandwidth_gb_s: f64,
+    /// Timing model pricing the encoder forward, resolved by the runner like a
+    /// rank's; `None` shares the language workers' model (tests).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timing_model: Option<TimingModelConfig>,
+}
+
+impl EncoderSpec {
+    pub fn validate(&self) -> ReplayResult<()> {
+        for (name, value) in [
+            ("instances", self.instances),
+            ("max_batch", self.max_batch),
+            ("gpus_per_instance", self.gpus_per_instance),
+            ("images_per_request", self.images_per_request as usize),
+        ] {
+            if value == 0 {
+                return Err(ReplayError::InvalidSpec(format!(
+                    "encoder {name} must be positive"
+                )));
+            }
+        }
+        let shape = &self.shape;
+        if [
+            shape.sequences,
+            shape.patch_tokens,
+            shape.transformer_tokens,
+            shape.output_tokens,
+        ]
+        .contains(&0)
+        {
+            return Err(ReplayError::InvalidSpec(
+                "encoder shape counts must be positive".to_string(),
+            ));
+        }
+        validate_time(
+            "encoder preprocess_ms_per_image",
+            self.preprocess_ms_per_image,
+        )?;
+        if !self.transfer_bandwidth_gb_s.is_finite() || self.transfer_bandwidth_gb_s <= 0.0 {
+            return Err(ReplayError::InvalidSpec(format!(
+                "encoder transfer_bandwidth_gb_s must be positive and finite, got {}",
+                self.transfer_bandwidth_gb_s
+            )));
+        }
+        if let Some(TimingModelConfig::Fixed { .. } | TimingModelConfig::Polynomial) =
+            &self.timing_model
+        {
+            return Err(ReplayError::InvalidSpec(
+                "encoder timing_model must price vision batches; fixed and polynomial models do not"
+                    .to_string(),
+            ));
+        }
+        Ok(())
     }
 }
 

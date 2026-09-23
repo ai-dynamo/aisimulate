@@ -135,6 +135,9 @@ class ForwardPassPerfModelConfig:
     moe_backend: str | None = None
     enable_eplb: bool = False
     wideep_num_slots: int | None = None
+    # Compile the vision tower with this layout ("tp" or "dp") so the estimator
+    # prices encoder calls; None prices the language model only.
+    encoder_parallel: str | None = None
 
     @classmethod
     def from_legacy_engine_config(
@@ -309,6 +312,16 @@ class RustForwardPassPerfModel:
         to one iteration.
         """
         self._inner.tune_with_fpms(_json_dumps(_normalize_tuning_iterations(iterations)))
+
+    def vision_operations(self, shapes: list[dict[str, int]]) -> list[tuple[str, float, float, str]]:
+        """API: ``model.vision_operations(shapes) -> list[(name, latency_ms, energy_wms, source)]``.
+
+        Description: per-op values of one vision-encoder call over image
+        groups ``{"sequences", "patch_tokens", "transformer_tokens",
+        "output_tokens", "images"}``. Requires a native estimator constructed
+        with ``encoder_parallel`` for a VL model.
+        """
+        return [tuple(entry) for entry in self._inner.vision_operations(_json_dumps(shapes))]
 
     def static_phase_latency(self, *, batch_size: int, input_tokens: int, output_tokens: int, prefill: bool) -> float:
         """Native static latency in ms, before online correction.

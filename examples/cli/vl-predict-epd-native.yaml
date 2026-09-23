@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Native encoder disaggregation: SGLang `--encoder-only` servers are replayed event by event
+# ahead of a `--language-only` aggregated worker. The encoder's CPU preprocessing comes from
+# the `process` stage of a host cost table measured on the encoder host with
+#   python -m aisimulate.vl.collect --config vl-predict-epd-native.yaml --sglang-python <serving venv python>
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 128
+    output_tokens: 32
+    images: {height: 1024, width: 1024, count: 1, encoding: png, identity: unique}
+  load: {type: concurrency, concurrency: 8}
+  stop: {requests: 32}
+engine:
+  model: Qwen/Qwen3-VL-8B-Instruct
+  hardware: h200_sxm
+  backend: sglang
+  backend_version: 0.5.14
+  mode: aggregated
+  workers:
+    encoder:
+      mode: native
+      tensor: 1
+      replicas: 1
+      batch_size: 8   # SGLANG_ENCODER_MAX_BATCH_SIZE
+      host_profile: {path: ./host-costs.json, frontend: python}
+      transfer: {bandwidth_gb_per_second: 25}
+    aggregated:
+      parallelism: {tensor: 1, replicas: 1}
+      scheduler: {max_batched_tokens: 8192, max_sequences: 64}
+      host_loop: true

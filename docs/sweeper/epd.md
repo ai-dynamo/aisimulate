@@ -110,6 +110,15 @@ enforces them. Encoder queueing, CPU overhead,
 embedding transfer, variable-image traces and deployment generation remain out
 of scope. Estimation support does not establish silicon accuracy.
 
+`engine.workers.encoder.mode: native` replaces this overlay with an event-level
+replay of SGLang's encoder servers that gates each request's admission to the
+language worker and prices the encoder's CPU preprocessing and embedding
+transfer; it lifts the fixed-concurrency, aggregate-SLA, per-request,
+`op_level` and pixel-budget restrictions above (static worker pools and an
+`agg`/`disagg` SGLang language deployment remain required), counts the pool's
+GPUs in `gpu_hours`, and does not use `rate_degradation`. See
+[Native encoder disaggregation](../sglang-vl-host-loop.md#native-encoder-disaggregation).
+
 The SDK example uses its own schema, distinct from public CLI YAML above.
 Prediction-config callbacks must preserve the resolved encoder identity, fixed
 image/text workload and GPU topology or the candidate is rejected. Deployment

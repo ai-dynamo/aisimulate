@@ -9,6 +9,7 @@ rank-local KV capacity is derived from the same defaults and AIC argument set.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from functools import cache
 from typing import Any
 
@@ -25,6 +26,14 @@ _DEFAULT_AIC_SYSTEM = "h200_sxm"
 _DEFAULT_MAX_NUM_BATCHED_TOKENS = 8192
 _DEFAULT_MAX_NUM_SEQUENCES = 1
 _DEFAULT_BLOCK_SIZES = {"vllm": 64, "sglang": 1, "trtllm": 32}
+
+
+def _vision_cache_bytes(lowered: Mapping[str, Any]) -> int:
+    """The embedding cache a rank hosting the vision encoder deducts from its KV budget."""
+    cache = (lowered.get("sglang") or {}).get("vlm_cache_bytes")
+    if cache is None:
+        raise ValueError("rank.vision requires rank.sglang.vlm_cache_bytes")
+    return int(cache)
 
 
 def materialize_aic_num_gpu_blocks(
@@ -213,6 +222,11 @@ def materialize_aic_num_gpu_blocks(
         },
         systems_path=capacity_systems_path,
         cuda_graph_reserved_bytes=lowered.get("cuda_graph_reserved_bytes", 0),
+        colocated_encoder=bool(lowered.get("vision", False)),
+        reserved_bytes=_vision_cache_bytes(lowered) if lowered.get("vision") else 0,
+        encoder_parallel=((lowered.get("timing_model") or {}).get("config") or {}).get("encoder_parallel")
+        if lowered.get("vision")
+        else None,
         **({"diagnostics": memory_diagnostics} if memory_diagnostics is not None else {}),
     )
     return finish_lowering(lowered)
@@ -247,6 +261,9 @@ def estimate_num_gpu_blocks(
     systems_path: str | None = None,
     cuda_graph_reserved_bytes: int = 0,
     diagnostics: dict[str, Any] | None = None,
+    colocated_encoder: bool = False,
+    reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> int:
     """Estimate per-rank KV blocks using the replay-wide AIC contract.
 
@@ -323,6 +340,9 @@ def estimate_num_gpu_blocks(
             },
             systems_path=systems_path,
             cuda_graph_reserved_bytes=cuda_graph_reserved_bytes,
+            colocated_encoder=colocated_encoder,
+            reserved_bytes=reserved_bytes,
+            encoder_parallel=encoder_parallel,
             **({"diagnostics": diagnostics} if diagnostics is not None else {}),
         )
     )

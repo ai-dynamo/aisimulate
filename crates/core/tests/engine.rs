@@ -8,16 +8,17 @@ use std::sync::{Arc, Mutex};
 
 use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
-    Backend, Command, Engine, EngineConfig, EngineFactory, NativeHostOffloadConfig,
-    PassCompletionEffects, Request, SglangConfig, TimingModel, TimingModelConfig,
+    Backend, Command, EncoderShape, Engine, EngineConfig, EngineFactory, FrontendConfig,
+    FrontendStage, NativeHostOffloadConfig, PassCompletionEffects, Request, SglangConfig,
+    TimingModel, TimingModelConfig, VisionShape,
 };
 use aisimulate_core::replay::{
-    AggregatedRoundRobinPlacement, NoEngineEvents, NoReplayMetadata, PoolRoundRobinPlacement,
-    ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition, ReplayDeterminism,
-    ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest, ReplayRequestPool,
-    ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy, ReplayScalingSnapshot,
-    ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec, WorkerTopology, run_engine_replay,
-    run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
+    AggregatedRoundRobinPlacement, EncoderSpec, NoEngineEvents, NoReplayMetadata,
+    PoolRoundRobinPlacement, ProviderSpec, ReplayAdapters, ReplayCaptureOptions, ReplayComposition,
+    ReplayDeterminism, ReplayEngineConfig, ReplayEngineFactory, ReplayReport, ReplayRequest,
+    ReplayRequestPool, ReplayRoleConfig, ReplayScalingDecision, ReplayScalingPolicy,
+    ReplayScalingSnapshot, ReplaySpec, ReplayTopology, Replayer, WorkerPoolSpec, WorkerTopology,
+    run_engine_replay, run_engine_replay_with_optional_role_timing, run_engine_replay_with_timing,
 };
 use anyhow::Result;
 use uuid::Uuid;
@@ -117,6 +118,7 @@ fn engine_config(timing_model: TimingModelConfig) -> ReplayEngineConfig {
 fn spec(config: ReplayEngineConfig) -> ReplaySpec {
     ReplaySpec {
         version: 1,
+        encoder: None,
         topology: ReplayTopology::Aggregated {
             workers: WorkerPoolSpec {
                 initial_workers: 1,
@@ -514,6 +516,7 @@ fn submit_interval_request(
                     tokens: vec![id as u32; input_tokens],
                     max_output_tokens: output_tokens,
                     output_token_ids: None,
+                    images: Vec::new(),
                 }),
             ),
             now_ms,
@@ -593,6 +596,7 @@ fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
                         tokens,
                         max_output_tokens: 0,
                         output_token_ids: None,
+                        images: Vec::new(),
                     }),
                 ),
                 now_ms,
@@ -646,6 +650,7 @@ fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
                             tokens,
                             max_output_tokens: 0,
                             output_token_ids: None,
+                            images: Vec::new(),
                         }),
                     ),
                     now_ms,
@@ -1622,9 +1627,20 @@ fn resource_accounting_multiplies_attention_dp_and_tensor_parallelism() {
 struct FixedExternalTiming {
     prefill_ms: f64,
     decode_ms: f64,
+    /// Encoder forward per image; `None` prices no vision batches.
+    vision_ms_per_image: Option<f64>,
 }
 
 impl TimingModel for FixedExternalTiming {
+    fn predict_vision_ms(&self, shapes: &[VisionShape]) -> Result<Option<f64>> {
+        Ok(self.vision_ms_per_image.map(|per_image| {
+            shapes
+                .iter()
+                .map(|shape| f64::from(shape.count) * per_image)
+                .sum()
+        }))
+    }
+
     fn predict_prefill_ms(
         &self,
         _batch_size: usize,
@@ -1664,6 +1680,7 @@ fn runner_must_resolve_external_timing_before_execution() {
         Arc::new(FixedExternalTiming {
             prefill_ms: 5.0,
             decode_ms: 1.0,
+            vision_ms_per_image: None,
         }),
     )
     .unwrap();
@@ -1821,10 +1838,12 @@ fn role_specific_timing_models_support_external_and_builtin_mixes() {
         Some(Arc::new(FixedExternalTiming {
             prefill_ms: 3.0,
             decode_ms: 1.0,
+            vision_ms_per_image: None,
         })),
         Some(Arc::new(FixedExternalTiming {
             prefill_ms: 4.0,
             decode_ms: 2.0,
+            vision_ms_per_image: None,
         })),
     )
     .unwrap();
@@ -1843,6 +1862,7 @@ fn role_specific_timing_models_support_external_and_builtin_mixes() {
         Some(Arc::new(FixedExternalTiming {
             prefill_ms: 3.0,
             decode_ms: 1.0,
+            vision_ms_per_image: None,
         })),
         None,
     )
@@ -1861,4 +1881,243 @@ fn native_trtllm_disaggregated_replay_completes() {
     assert_eq!(report.request_counts.completed_requests, 1);
     assert_eq!(report.request_counts.total_input_tokens, 4);
     assert_eq!(report.request_counts.total_output_tokens, 2);
+}
+
+#[test]
+fn sglang_host_loop_reports_the_forward_duration_to_fpm_telemetry() {
+    // Under the host loop a pass ends when the scheduler thread returns to its loop,
+    // which is not when its forward ends; the forward-pass telemetry must carry the
+    // forward's own device time, or the 7 ms prefill would be recorded as 0 and the
+    // following 2 ms decode as 7.
+    let mut config = sglang_interval_config(0);
+    config.sglang.host_loop = true;
+    let mut engine = sglang_interval_engine(config, 1);
+    let mut now_ms = 0.0;
+    submit_interval_request(&mut engine, 0, 1, 4, 2, now_ms);
+    let prefill = step_interval_engine(&mut engine, &mut now_ms);
+    assert_eq!(prefill.duration_ms, 0.0, "the free loop returns at once");
+    assert_eq!(prefill.ranks[0].forward_pass_metrics.duration_ms, 7.0);
+    let decode = step_interval_engine(&mut engine, &mut now_ms);
+    assert_eq!(
+        decode.duration_ms, 7.0,
+        "the loop returns when the prefill is observed"
+    );
+    assert_eq!(decode.ranks[0].forward_pass_metrics.duration_ms, 2.0);
+}
+
+#[test]
+fn sglang_host_loop_reports_scheduler_stage_timestamps_per_request() {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 20.0,
+        decode_ms: 4.0,
+    });
+    config.rank.backend = Backend::Sglang;
+    config.rank.sglang = SglangConfig {
+        host_loop: true,
+        ..SglangConfig::default()
+    };
+    let mut replay = spec(config);
+    replay.requests = vec![request("vision-less", 0.0, 4, 1)];
+    // The engine config crosses the ReplaySpec JSON boundary.
+    let report = run_engine_replay(replay).unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 1);
+    let record = &report.per_request[0];
+    assert_eq!(record.scheduler_received_ms, Some(0.0));
+    assert_eq!(record.selected_ms, Some(0.0));
+    assert_eq!(record.first_admit_ms, Some(0.0));
+    assert_eq!(record.prefill_complete_ms, Some(20.0));
+    // Observed when the next iteration's decode launch synchronized with the forward.
+    assert_eq!(record.first_token_ms, Some(20.0));
+    assert_eq!(record.terminal_time_ms, 20.0);
+}
+
+#[test]
+fn sglang_frontend_pools_delay_scheduler_receipt() {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 20.0,
+        decode_ms: 4.0,
+    });
+    config.rank.backend = Backend::Sglang;
+    config.rank.sglang = SglangConfig {
+        host_loop: true,
+        ..SglangConfig::default()
+    };
+    config.rank.frontend = Some(FrontendConfig {
+        stages: vec![FrontendStage {
+            workers: 1,
+            service_ms: 4.0,
+            concurrency_scale: Vec::new(),
+        }],
+    });
+    let mut replay = spec(config);
+    replay.requests = vec![request("first", 0.0, 4, 1), request("second", 0.0, 4, 1)];
+    let report = run_engine_replay(replay).unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 2);
+    let mut ready = report
+        .per_request
+        .iter()
+        .map(|record| (record.request_id.clone().unwrap(), record.frontend_ready_ms))
+        .collect::<Vec<_>>();
+    ready.sort_by(|a, b| a.0.cmp(&b.0));
+    // One processor worker serializes the two arrivals; the scheduler receives
+    // each request at the first iteration after it leaves the pool.
+    assert_eq!(
+        ready,
+        vec![
+            ("first".to_string(), Some(4.0)),
+            ("second".to_string(), Some(8.0))
+        ]
+    );
+    for record in &report.per_request {
+        assert!(record.scheduler_received_ms >= record.frontend_ready_ms);
+    }
+}
+
+#[test]
+fn sglang_disaggregated_prefill_frontend_pools_deliver_through_the_handoff() {
+    let timing = TimingModelConfig::Fixed {
+        prefill_ms: 20.0,
+        decode_ms: 4.0,
+    };
+    let mut prefill = role_config(Backend::Sglang, timing.clone());
+    prefill.rank.sglang = SglangConfig {
+        host_loop: true,
+        ..SglangConfig::default()
+    };
+    prefill.rank.frontend = Some(FrontendConfig {
+        stages: vec![FrontendStage {
+            workers: 1,
+            service_ms: 4.0,
+            concurrency_scale: Vec::new(),
+        }],
+    });
+    let mut replay = spec(ReplayEngineConfig {
+        prefill: Some(prefill),
+        decode: Some(role_config(Backend::Sglang, timing)),
+        ..ReplayEngineConfig::default()
+    });
+    replay.topology = ReplayTopology::Disaggregated {
+        prefill: WorkerPoolSpec::default(),
+        decode: WorkerPoolSpec::default(),
+        handoff_latency_ms: 1.0,
+    };
+    replay.requests = vec![request("first", 0.0, 4, 2), request("second", 0.0, 4, 2)];
+    let report = run_engine_replay(replay).unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 2);
+    let mut records = report
+        .per_request
+        .iter()
+        .map(|record| {
+            (
+                record.request_id.clone().unwrap(),
+                record.frontend_ready_ms,
+                record.first_token_ms,
+            )
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|a, b| a.0.cmp(&b.0));
+    // The prefill rank's single processor worker serializes the two arrivals
+    // and its frontend deadlines wake the disaggregated replay.
+    assert_eq!(records[0].1, Some(4.0));
+    assert_eq!(records[1].1, Some(8.0));
+    // Frontend, extend, handoff transfer, then one decode step on the decode rank.
+    for (_, frontend_ready_ms, first_token_ms) in &records {
+        assert!(first_token_ms.unwrap() >= frontend_ready_ms.unwrap() + 20.0 + 1.0 + 4.0);
+    }
+    // The prefill rank observes the extend when it holds the KV source; the
+    // handoff and the decode step are their own stage, and the stages add up.
+    let stages = report.latency.ttft_milestones.unwrap();
+    assert!(stages.mean_handoff_to_first_token_ms >= 1.0 + 4.0);
+    let total = stages.mean_frontend_ms
+        + stages.mean_scheduler_inbox_wait_ms
+        + stages.mean_receive_to_admit_ms
+        + stages.mean_prefill_elapsed_ms
+        + stages.mean_result_observation_delay_ms
+        + stages.mean_handoff_to_first_token_ms;
+    assert!((total - report.latency.ttft.mean_ms).abs() < 1e-9);
+    for record in &report.per_request {
+        assert!(record.source_held_ms >= record.prefill_complete_ms);
+    }
+}
+
+fn encoder_replay() -> (ReplaySpec, Arc<FixedExternalTiming>) {
+    let timing = TimingModelConfig::External {
+        provider: "aic".to_string(),
+        config: serde_json::json!({"model": "test"}),
+    };
+    let mut replay = disaggregated_spec(Backend::Sglang, timing.clone(), timing);
+    replay.max_in_flight = Some(1);
+    replay.encoder = Some(EncoderSpec {
+        instances: 2,
+        max_batch: 8,
+        gpus_per_instance: 2,
+        images_per_request: 3,
+        shape: EncoderShape {
+            sequences: 1,
+            patch_tokens: 4,
+            transformer_tokens: 4,
+            output_tokens: 1,
+        },
+        preprocess_ms_per_image: 1.0,
+        // 1 MB per image at 1 GB/s: 1 ms on the wire per image.
+        transfer_bytes_per_image: 1_000_000,
+        transfer_bandwidth_gb_s: 1.0,
+        timing_model: None,
+    });
+    replay.requests = vec![request("first", 0.0, 4, 1), request("second", 0.0, 4, 1)];
+    let model = Arc::new(FixedExternalTiming {
+        prefill_ms: 20.0,
+        decode_ms: 4.0,
+        vision_ms_per_image: Some(10.0),
+    });
+    (replay, model)
+}
+
+#[test]
+fn encoder_pool_gates_admission_to_the_language_worker() {
+    // Two encoder instances ahead of disaggregated SGLang ranks under a
+    // concurrency cap of one: a request's three images spread over both
+    // instances and it reaches the prefill rank when its last part arrived.
+    let (replay, timing) = encoder_replay();
+    let report = run_engine_replay_with_timing(replay, timing).unwrap();
+
+    assert_eq!(report.request_counts.completed_requests, 2);
+    let mut records = report
+        .per_request
+        .iter()
+        .map(|record| {
+            (
+                record.request_id.clone().unwrap(),
+                record.encoder_ready_ms.unwrap(),
+                record.first_token_ms.unwrap(),
+                record.last_token_ms.unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    records.sort_by(|a, b| a.0.cmp(&b.0));
+    // Two images on one instance (2 x 1 + 2 x 10 = 22, landed at 24) and one on
+    // the other (11, landed at 12): the request is delivered with its last part.
+    assert_eq!(records[0].1, 24.0);
+    // Extend 20 + handoff 1 + one decode step 4: the first token at 49 frees the
+    // only in-flight slot, and the second request enters the pool then.
+    assert_eq!(records[0].2, 49.0);
+    assert_eq!(records[1].1, records[0].3 + 24.0);
+    // The pool's GPUs are provisioned for the whole run.
+    assert_eq!(report.throughput.encoder_gpus, 4);
+    let duration_s = report.throughput.duration_ms / 1000.0;
+    assert!(report.throughput.gpu_hours * 3600.0 >= 4.0 * duration_s);
+    assert_eq!(report.latency.encoder_latency_ms, Some(24.0));
+}
+
+#[test]
+fn requests_parked_in_the_encoder_pool_are_reported_when_the_run_is_cut_short() {
+    let (mut replay, timing) = encoder_replay();
+    replay.max_sim_time_ms = Some(10.0);
+    let report = run_engine_replay_with_timing(replay, timing).unwrap();
+    // The first request arrived and sits in the pool; the cap holds the second back.
+    assert_eq!(report.request_counts.num_requests, 1);
+    assert_eq!(report.request_counts.completed_requests, 0);
 }

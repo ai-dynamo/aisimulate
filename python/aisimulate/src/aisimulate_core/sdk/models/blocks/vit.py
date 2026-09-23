@@ -78,6 +78,20 @@ import aisimulate_core.sdk.operations as ops
 from aisimulate_core.sdk import common
 
 
+def encoder_shape_class(name: str) -> str:
+    """Token count an encoder op runs on: ``patch`` before spatial merging,
+    ``output`` after it (projector, DP exit), ``transformer`` on the ViT sequence.
+
+    Every builder in this module names its ops so this classification holds;
+    the compiled-engine vision section and the Python encoder phase both rely
+    on it."""
+    if "encoder_patch_embedding" in name:
+        return "patch"
+    if "encoder_projector" in name or "encoder_gemma4_pool_postprocess" in name or name == "encoder_dp_all_gather":
+        return "output"
+    return "transformer"
+
+
 def _patch_embedding_ops(enc_cfg: common.VisionEncoderConfig) -> list:
     """Build the input patch projection and position-embedding operations.
 

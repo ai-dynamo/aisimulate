@@ -36,16 +36,16 @@ pub use replay::{ReplayReport, ReplaySpec, Replayer};
 pub use perfmodel::EngineConfig;
 pub use perfmodel::{
     AicError, BackendKind, CorrectionConfig, DataType, DatabaseMode, ENGINE_CONFIG_SCHEMA_VERSION,
-    ENGINE_SPEC_SCHEMA_VERSION, EstimateSource, EstimationMode, EstimatorConfig, FPM_VERSION,
-    ForwardPassFallbackPolicy, ForwardPassMetrics, ForwardPassPerfDiagnostics,
-    ForwardPassPerfModel, ForwardPassPerfModelConfig, ForwardPassPerfOptions,
-    ForwardPassPerfProvenance, ForwardPassPerfReadiness, ForwardPassPerfSource,
-    ForwardPassRegressionStoreDiagnostics, ForwardPassRegressionWorkloadKind,
-    ForwardPassSpeculationConfig, ForwardPassWorkerType, FpmRegressionConfig, KvCacheEstimate,
-    KvCacheEstimateAdjusted, KvCacheEstimateError, KvCacheEstimateOptions, KvCacheEstimateRequest,
-    KvCacheMemoryFraction, MemoryBreakdown, ParallelMapping, QuantizationConfig,
-    QueuedRequestMetrics, RegressionFeatureWeights, SamplingConfig, ScheduledRequestMetrics,
-    SpeculativeConfig,
+    ENGINE_SPEC_SCHEMA_VERSION, EncoderImageShape, EncoderParallel, EstimateSource, EstimationMode,
+    EstimatorConfig, FPM_VERSION, ForwardPassFallbackPolicy, ForwardPassMetrics,
+    ForwardPassPerfDiagnostics, ForwardPassPerfModel, ForwardPassPerfModelConfig,
+    ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
+    ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
+    ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassWorkerType,
+    FpmRegressionConfig, KvCacheEstimate, KvCacheEstimateAdjusted, KvCacheEstimateError,
+    KvCacheEstimateOptions, KvCacheEstimateRequest, KvCacheMemoryFraction, MemoryBreakdown,
+    ParallelMapping, QuantizationConfig, QueuedRequestMetrics, RegressionFeatureWeights,
+    SamplingConfig, ScheduledRequestMetrics, SpeculativeConfig,
 };
 pub use perfmodel::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,

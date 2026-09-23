@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Search load and scheduling for a native SGLang VL deployment; saved candidates carry
+# the measured frontend stages and can be passed to predict.
+traffic:
+  source:
+    type: synthetic
+    input_tokens: 128
+    output_tokens: 32
+    images: {height: 1024, width: 1024, count: 1, encoding: png, identity: unique}
+  load: {type: concurrency, concurrency: {choices: [2, 4, 8]}}
+  stop: {requests: 32}
+engine:
+  model: Qwen/Qwen3-VL-8B-Instruct
+  hardware: h200_sxm
+  backend: sglang
+  backend_version: 0.5.14
+  mode: aggregated
+  workers:
+    aggregated:
+      parallelism:
+        preset: false
+        tensor: {choices: [1, 2]}
+        replicas: 1
+        pipeline: 1
+        attention_data: 1
+        moe_tensor: 1
+        moe_expert: 1
+      scheduler: {max_batched_tokens: {choices: [4096, 8192]}, max_sequences: 64}
+      host_profile: {path: ./host-costs.json, frontend: python}
+      vision: {cache_mib: 100, encoder_parallel: tp}
+optimization:
+  target: throughput_per_gpu
+  constraints: {max_candidate_gpus: 2}
+optimizer: {algorithm: random, max_trials: 6, parallelism: 1, seed: 13}

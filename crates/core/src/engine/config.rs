@@ -140,6 +140,66 @@ pub enum SglangSchedulePolicy {
     Lpm,
 }
 
+/// One frontend processing stage: a request-level black box served by a pool
+/// of `workers`. Measured frontend service times are lowered into it by the
+/// Python configuration layer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendStage {
+    #[serde(default = "one_worker")]
+    pub workers: usize,
+    /// Service time of one request running alone on the pool, in milliseconds.
+    pub service_ms: f64,
+    /// Entry `c - 1` scales the service time while `c` jobs share the pool;
+    /// empty keeps the service time independent of sharing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub concurrency_scale: Vec<f64>,
+}
+
+/// Frontend stages that requests traverse, in order, before reaching the scheduler.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FrontendConfig {
+    pub stages: Vec<FrontendStage>,
+}
+
+const fn one_worker() -> usize {
+    1
+}
+
+impl FrontendConfig {
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.stages.is_empty(),
+            "frontend requires at least one stage"
+        );
+        for (index, stage) in self.stages.iter().enumerate() {
+            ensure!(
+                stage.workers > 0,
+                "frontend.stages[{index}].workers must be positive"
+            );
+            ensure!(
+                stage.service_ms.is_finite() && stage.service_ms >= 0.0,
+                "frontend.stages[{index}].service_ms must be finite and non-negative"
+            );
+            ensure!(
+                stage.concurrency_scale.is_empty()
+                    || stage.concurrency_scale.len() == stage.workers,
+                "frontend.stages[{index}].concurrency_scale needs one entry per worker ({})",
+                stage.workers
+            );
+            ensure!(
+                stage
+                    .concurrency_scale
+                    .iter()
+                    .all(|scale| scale.is_finite() && *scale > 0.0),
+                "frontend.stages[{index}].concurrency_scale entries must be finite and positive"
+            );
+        }
+        Ok(())
+    }
+}
+
 /// Serializable SGLang scheduler controls.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -158,6 +218,19 @@ pub struct SglangConfig {
     /// Multiplier applied to SGLang's adaptive output-reservation ratio.
     #[serde(default = "default_schedule_conservativeness")]
     pub schedule_conservativeness: f64,
+    /// Vision embedding cache capacity in bytes (`SGLANG_VLM_CACHE_SIZE_MB`).
+    #[serde(default = "default_vlm_cache_bytes")]
+    pub vlm_cache_bytes: u64,
+    /// Model one pass as one iteration of SGLang's overlap scheduler loop:
+    /// requests are received at iteration boundaries and a forward's outputs,
+    /// terminals, and prefix-cache commits become visible one iteration later.
+    /// Off, a pass is one forward whose outputs are visible when it ends. See
+    /// `crates/core/src/engine/scheduler/sglang/host_loop.rs`.
+    pub host_loop: bool,
+}
+
+const fn default_vlm_cache_bytes() -> u64 {
+    100 * 1024 * 1024
 }
 
 impl Default for SglangConfig {
@@ -168,6 +241,8 @@ impl Default for SglangConfig {
             chunked_prefill_size: default_chunked_prefill_size(),
             clip_max_new_tokens: default_clip_max_new_tokens(),
             schedule_conservativeness: default_schedule_conservativeness(),
+            vlm_cache_bytes: default_vlm_cache_bytes(),
+            host_loop: false,
         }
     }
 }
@@ -447,6 +522,14 @@ pub struct EngineConfig {
     pub sglang: SglangConfig,
     /// TensorRT-LLM-only scheduler controls.
     pub trtllm: TrtllmConfig,
+    /// SGLang-only frontend stages; requires `sglang.host_loop`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend: Option<FrontendConfig>,
+    /// The rank hosts the model's vision encoder: image batches are timed
+    /// through the timing provider and the encoder weights and embedding cache
+    /// are deducted from the KV budget.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub vision: bool,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -514,6 +597,10 @@ struct EngineConfigWire {
     sglang: SglangConfig,
     #[serde(default)]
     trtllm: TrtllmConfig,
+    #[serde(default)]
+    frontend: Option<FrontendConfig>,
+    #[serde(default)]
+    vision: bool,
 }
 
 impl<'de> Deserialize<'de> for EngineConfig {
@@ -565,6 +652,8 @@ impl<'de> Deserialize<'de> for EngineConfig {
             timing_model: wire.timing_model,
             sglang: wire.sglang,
             trtllm: wire.trtllm,
+            frontend: wire.frontend,
+            vision: wire.vision,
         };
         config
             .validate_state_cache()
@@ -605,6 +694,8 @@ impl Default for EngineConfig {
             timing_model: TimingModelConfig::Polynomial,
             sglang: SglangConfig::default(),
             trtllm: TrtllmConfig::default(),
+            frontend: None,
+            vision: false,
         }
     }
 }
@@ -690,6 +781,25 @@ impl EngineConfig {
         ensure!(
             self.backend == Backend::Sglang || self.prefill_decode_interval == 0,
             "prefill_decode_interval is supported only for backend=sglang"
+        );
+        ensure!(
+            self.backend == Backend::Sglang || !self.sglang.host_loop,
+            "sglang.host_loop is supported only for backend=sglang"
+        );
+        ensure!(
+            !self.sglang.host_loop || self.worker_type != WorkerType::Decode,
+            "sglang.host_loop is not modeled on a decode rank; the decode rank is the text-PD decode rank"
+        );
+        if let Some(frontend) = &self.frontend {
+            ensure!(
+                self.backend == Backend::Sglang && self.sglang.host_loop,
+                "frontend requires backend=sglang with sglang.host_loop enabled"
+            );
+            frontend.validate()?;
+        }
+        ensure!(
+            !self.vision || self.backend == Backend::Sglang,
+            "vision is supported only for backend=sglang"
         );
         ensure!(
             self.max_model_len.is_none_or(|limit| limit > 0),

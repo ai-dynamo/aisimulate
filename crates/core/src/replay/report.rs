@@ -11,7 +11,7 @@ use serde_json::Value;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use uuid::Uuid;
 
-use crate::engine::CacheTierAttribution;
+use crate::engine::{CacheTierAttribution, TtftMilestone};
 use crate::replay::loadgen::{
     AgenticGraphIdentity, AgenticLifecycleTranscript, AgenticPhaseEvidence, AgenticPlayOutcome,
     AgenticReplayPhase, AgenticSnapshotEvidence, AgenticTrajectorySnapshot,
@@ -117,10 +117,13 @@ pub struct TraceThroughputStats {
     /// DP topology); the runtime sets it on the collector. 0 when not set.
     pub prefill_gpus_per_worker: usize,
     pub decode_gpus_per_worker: usize,
-    /// GPU-hours = Σ_role `worker_seconds × gpus_per_worker / 3600` — the
-    /// deployment's provisioned GPU-time (already including the startup ramp and
-    /// drain tail, since `*_worker_seconds` do). Computed in `finish()` straight
-    /// from the mocker's own worker parallelism, so it needs no external config.
+    /// GPUs of the static encoder pool ahead of the language workers; 0 without one.
+    pub encoder_gpus: usize,
+    /// GPU-hours = Σ_role `worker_seconds × gpus_per_worker / 3600` plus the
+    /// encoder pool's `encoder_gpus × duration / 3600` — the deployment's
+    /// provisioned GPU-time (already including the startup ramp and drain tail,
+    /// since `*_worker_seconds` do). Computed in `finish()` straight from the
+    /// mocker's own worker parallelism, so it needs no external config.
     pub gpu_hours: f64,
 }
 
@@ -275,6 +278,49 @@ pub struct TraceLatencyStats {
     pub itl: TraceInterTokenLatencyStats,
     pub e2e: TraceDistributionStats,
     pub output_token_throughput_per_user: TraceDistributionStats,
+    /// Mean time to first token split by scheduler-thread stage; present when a
+    /// host-aware engine reported stages for completed requests.
+    pub ttft_milestones: Option<TraceTtftStageStats>,
+    /// Mean arrival-to-embeddings-delivered time of the completed requests that
+    /// crossed the encoder pool; `None` without one.
+    pub encoder_latency_ms: Option<f64>,
+}
+
+/// Mean per-request time spent in each host stage on the way to the first token.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TraceTtftStageStats {
+    /// Arrival, or the encoder pool's delivery, to leaving the frontend pools;
+    /// zero without a frontend.
+    pub mean_frontend_ms: f64,
+    /// Frontend exit (or arrival) to the scheduler receiving the request.
+    pub mean_scheduler_inbox_wait_ms: f64,
+    /// Received to selected into a batch.
+    pub mean_receive_to_admit_ms: f64,
+    /// Selected to the prompt's last forward finishing on the device.
+    pub mean_prefill_elapsed_ms: f64,
+    /// Device completion to the scheduler observing the result: the KV source
+    /// hold on a prefill rank, the first token elsewhere.
+    pub mean_result_observation_delay_ms: f64,
+    /// KV handoff and the decode rank's first step on a disaggregated path;
+    /// zero when the observing scheduler emits the first token itself.
+    pub mean_handoff_to_first_token_ms: f64,
+}
+
+impl TraceTtftStageStats {
+    /// Means over `samples` requests of the per-stage sums, `None` without samples.
+    fn from_sums(sums: &[f64; 6], samples: usize) -> Option<Self> {
+        (samples > 0).then(|| {
+            let mean = |index: usize| sums[index] / samples as f64;
+            Self {
+                mean_frontend_ms: mean(0),
+                mean_scheduler_inbox_wait_ms: mean(1),
+                mean_receive_to_admit_ms: mean(2),
+                mean_prefill_elapsed_ms: mean(3),
+                mean_result_observation_delay_ms: mean(4),
+                mean_handoff_to_first_token_ms: mean(5),
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -462,6 +508,9 @@ impl Serialize for ReplayReport {
             "decode_gpus_per_worker",
             &self.throughput.decode_gpus_per_worker,
         )?;
+        if self.throughput.encoder_gpus > 0 {
+            map.serialize_entry("encoder_gpus", &self.throughput.encoder_gpus)?;
+        }
         map.serialize_entry("gpu_hours", &self.throughput.gpu_hours)?;
         if let Some(goodput) = &self.goodput {
             map.serialize_entry("goodput_completed_requests", &goodput.completed_requests)?;
@@ -528,6 +577,26 @@ impl Serialize for ReplayReport {
             map.serialize_entry("agentic_play_outcomes", outcomes)?;
         }
         serialize_distribution(&mut map, "e2e_latency", &self.latency.e2e)?;
+        if let Some(stages) = &self.latency.ttft_milestones {
+            map.serialize_entry("mean_frontend_ms", &stages.mean_frontend_ms)?;
+            map.serialize_entry(
+                "mean_scheduler_inbox_wait_ms",
+                &stages.mean_scheduler_inbox_wait_ms,
+            )?;
+            map.serialize_entry("mean_receive_to_admit_ms", &stages.mean_receive_to_admit_ms)?;
+            map.serialize_entry("mean_prefill_elapsed_ms", &stages.mean_prefill_elapsed_ms)?;
+            map.serialize_entry(
+                "mean_result_observation_delay_ms",
+                &stages.mean_result_observation_delay_ms,
+            )?;
+            map.serialize_entry(
+                "mean_handoff_to_first_token_ms",
+                &stages.mean_handoff_to_first_token_ms,
+            )?;
+        }
+        if let Some(encoder_latency_ms) = self.latency.encoder_latency_ms {
+            map.serialize_entry("encoder_latency_ms", &encoder_latency_ms)?;
+        }
         serialize_rate_distribution(
             &mut map,
             "output_token_throughput_per_user",
@@ -608,8 +677,48 @@ struct TraceRequestStats {
     play_id: Option<String>,
     dispatched_at_ms: Option<f64>,
     metadata: Value,
+    /// Scheduler-thread stages of a host-aware engine; all `None` otherwise.
+    ttft_milestones: TtftMilestoneTimes,
+    /// When the encoder pool delivered this request's embeddings, if it crossed one.
+    encoder_ready_ms: Option<f64>,
     agentic: Option<AgenticRuntimeIdentity>,
     detail: Option<Box<PerRequestDetail>>,
+}
+
+/// First time a request reached each scheduler-thread stage.
+#[derive(Debug, Default, Clone, Copy)]
+struct TtftMilestoneTimes {
+    frontend_ready_ms: Option<f64>,
+    scheduler_received_ms: Option<f64>,
+    selected_ms: Option<f64>,
+    prefill_complete_ms: Option<f64>,
+    /// A prefill rank observed the finished extend and holds the KV source.
+    source_held_ms: Option<f64>,
+}
+
+impl TtftMilestoneTimes {
+    /// Time spent in each stage on the way to the first token, in the order of
+    /// [`TraceTtftStageStats`]; `None` until every scheduler stage was reached.
+    fn stage_spans(&self, arrival_ms: f64, first_token_ms: f64) -> Option<[f64; 6]> {
+        let received = self.scheduler_received_ms?;
+        let selected = self.selected_ms?;
+        let prefill_complete = self.prefill_complete_ms?;
+        let frontend_exit = self.frontend_ready_ms.unwrap_or(arrival_ms);
+        // On a prefill rank the scheduler observes the result when it holds the
+        // KV source; the handoff and the decode rank's first step follow.
+        let observed = self.source_held_ms.unwrap_or(first_token_ms);
+        Some(
+            [
+                frontend_exit - arrival_ms,
+                received - frontend_exit,
+                selected - received,
+                prefill_complete - selected,
+                observed - prefill_complete,
+                first_token_ms - observed,
+            ]
+            .map(|span| span.max(0.0)),
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -849,6 +958,18 @@ pub struct PerRequestRecord {
     pub prefill_worker_idx: Option<usize>,
     pub decode_worker_idx: Option<usize>,
     pub prefill_admit_ms: Option<f64>,
+    /// When the encoder pool delivered the embeddings; absent without an encoder pool.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub encoder_ready_ms: Option<f64>,
+    /// Host-aware scheduler stages; absent unless the engine models its scheduler thread.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub frontend_ready_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scheduler_received_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selected_ms: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefill_complete_ms: Option<f64>,
     pub source_held_ms: Option<f64>,
     pub destination_reserved_ms: Option<f64>,
     pub destination_activated_ms: Option<f64>,
@@ -1004,6 +1125,8 @@ pub struct TraceCollector {
     /// `finish()` to turn worker-seconds into gpu_hours.
     prefill_gpus_per_worker: usize,
     decode_gpus_per_worker: usize,
+    /// GPUs of the static encoder pool, charged for the whole duration.
+    encoder_gpus: usize,
     runtime_evidence: crate::replay::OfflineRuntimeEvidence,
     agentic_trajectory: Option<AgenticTrajectorySnapshot>,
     agentic_graph: Option<AgenticGraphIdentity>,
@@ -1217,6 +1340,11 @@ impl TraceCollector {
 
     /// Set GPUs-per-worker per role (from the mocker engine parallelism). Used
     /// in `finish()` to derive gpu_hours from the worker-seconds.
+    /// GPUs of the encoder pool ahead of the language workers.
+    pub(crate) fn set_encoder_gpus(&mut self, gpus: usize) {
+        self.encoder_gpus = gpus;
+    }
+
     pub fn set_gpus_per_worker(&mut self, prefill: usize, decode: usize) {
         self.prefill_gpus_per_worker = prefill;
         self.decode_gpus_per_worker = decode;
@@ -1254,6 +1382,8 @@ impl TraceCollector {
                 metadata: Value::Null,
                 agentic: None,
                 first_admission_reused_input_tokens: 0,
+                ttft_milestones: TtftMilestoneTimes::default(),
+                encoder_ready_ms: None,
                 detail: self
                     .capture_per_request
                     .then(|| Box::new(PerRequestDetail::default())),
@@ -1448,8 +1578,32 @@ impl TraceCollector {
     }
 
     pub(crate) fn on_source_held(&mut self, uuid: Uuid, at_ms: f64) {
-        if let Some(detail) = self.detail_mut(uuid) {
-            detail.source_held_ms.get_or_insert(at_ms);
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            stats.ttft_milestones.source_held_ms.get_or_insert(at_ms);
+            if let Some(detail) = stats.detail.as_deref_mut() {
+                detail.source_held_ms.get_or_insert(at_ms);
+            }
+        }
+    }
+
+    /// Record the first time `uuid` reached a scheduler-thread stage.
+    pub(crate) fn on_ttft_milestone(&mut self, uuid: Uuid, stage: TtftMilestone, at_ms: f64) {
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            let stages = &mut stats.ttft_milestones;
+            let slot = match stage {
+                TtftMilestone::FrontendReady => &mut stages.frontend_ready_ms,
+                TtftMilestone::Received => &mut stages.scheduler_received_ms,
+                TtftMilestone::Selected => &mut stages.selected_ms,
+                TtftMilestone::PrefillComplete => &mut stages.prefill_complete_ms,
+            };
+            slot.get_or_insert(at_ms);
+        }
+    }
+
+    /// The encoder pool delivered the request's embeddings to the language rank.
+    pub(crate) fn on_encoder_ready(&mut self, uuid: Uuid, at_ms: f64) {
+        if let Some(stats) = self.requests.get_mut(&uuid) {
+            stats.encoder_ready_ms.get_or_insert(at_ms);
         }
     }
 
@@ -1705,6 +1859,7 @@ impl TraceCollector {
             static_worker_count: self.static_worker_count,
             prefill_gpus_per_worker: self.prefill_gpus_per_worker,
             decode_gpus_per_worker: self.decode_gpus_per_worker,
+            encoder_gpus: self.encoder_gpus,
             ..Default::default()
         };
         if self.batch_reporting {
@@ -1767,6 +1922,7 @@ impl TraceCollector {
         let accumulated_decode_worker_seconds = self.decode_worker_seconds;
         let prefill_gpus_per_worker = self.prefill_gpus_per_worker;
         let decode_gpus_per_worker = self.decode_gpus_per_worker;
+        let encoder_gpus = self.encoder_gpus;
         let runtime_evidence = self.runtime_evidence;
         let agentic_graph = self.agentic_graph;
         let agentic_snapshots = self.agentic_snapshots;
@@ -1801,6 +1957,10 @@ impl TraceCollector {
         let requests = self.requests;
         let request_count = requests.len();
         let mut ttfts = Vec::with_capacity(request_count);
+        let mut ttft_stage_sums = [0.0f64; 6];
+        let mut ttft_stage_samples = 0usize;
+        let mut encoder_sum_ms = 0.0f64;
+        let mut encoder_samples = 0usize;
         let mut ttsts = Vec::with_capacity(request_count);
         let mut tpots = Vec::with_capacity(request_count);
         let mut e2e_latencies = Vec::with_capacity(request_count);
@@ -1831,6 +1991,10 @@ impl TraceCollector {
             };
 
             completed_requests += 1;
+            if let Some(encoder_ready_ms) = stats.encoder_ready_ms {
+                encoder_sum_ms += (encoder_ready_ms - stats.arrival_time_ms).max(0.0);
+                encoder_samples += 1;
+            }
             total_input_tokens += stats.input_length;
             let output_length = stats.actual_output_length();
             total_output_tokens += output_length;
@@ -1852,6 +2016,17 @@ impl TraceCollector {
             let e2e_ms = (last_token_ms - stats.arrival_time_ms).max(0.0);
             ttfts.push(ttft_ms);
             e2e_latencies.push(e2e_ms);
+            // The host stages start where the language rank received the request:
+            // after the encoder pool's delivery when there is one.
+            if let Some(spans) = stats.ttft_milestones.stage_spans(
+                stats.encoder_ready_ms.unwrap_or(stats.arrival_time_ms),
+                first_token_ms,
+            ) {
+                for (sum, value) in ttft_stage_sums.iter_mut().zip(spans) {
+                    *sum += value;
+                }
+                ttft_stage_samples += 1;
+            }
 
             // Goodput classification (aiperf avg-ITL; see SlaThresholds::is_good).
             if sla.is_set() && sla.is_good(ttft_ms, e2e_ms, output_length) {
@@ -1882,9 +2057,11 @@ impl TraceCollector {
             ),
         };
         // GPU-hours straight from the mocker's own worker parallelism (no
-        // external GPU-count config). 0 when gpus_per_worker was not set.
+        // external GPU-count config). 0 when gpus_per_worker was not set. The
+        // encoder pool is static, so it is charged for the whole duration.
         let gpu_hours = (prefill_worker_seconds * prefill_gpus_per_worker as f64
-            + decode_worker_seconds * decode_gpus_per_worker as f64)
+            + decode_worker_seconds * decode_gpus_per_worker as f64
+            + duration_s * encoder_gpus as f64)
             / 3600.0;
         // Goodput only when an SLA was supplied; otherwise it is undefined.
         let goodput = sla.is_set().then(|| TraceGoodputStats {
@@ -1917,6 +2094,7 @@ impl TraceCollector {
                 decode_worker_seconds,
                 prefill_gpus_per_worker,
                 decode_gpus_per_worker,
+                encoder_gpus,
                 gpu_hours,
             },
             prefix_cache_reused_ratio: if total_input_tokens == 0 {
@@ -1942,6 +2120,12 @@ impl TraceCollector {
                 },
                 e2e: build_distribution_stats(e2e_latencies),
                 output_token_throughput_per_user,
+                ttft_milestones: TraceTtftStageStats::from_sums(
+                    &ttft_stage_sums,
+                    ttft_stage_samples,
+                ),
+                encoder_latency_ms: (encoder_samples > 0)
+                    .then(|| encoder_sum_ms / encoder_samples as f64),
             },
             trajectories,
             agentic_graph,
@@ -2013,6 +2197,11 @@ impl TraceCollector {
                 prefill_worker_idx: stats.prefill_worker_idx,
                 decode_worker_idx: stats.decode_worker_idx,
                 prefill_admit_ms: detail.prefill_admit_ms,
+                encoder_ready_ms: stats.encoder_ready_ms,
+                frontend_ready_ms: stats.ttft_milestones.frontend_ready_ms,
+                scheduler_received_ms: stats.ttft_milestones.scheduler_received_ms,
+                selected_ms: stats.ttft_milestones.selected_ms,
+                prefill_complete_ms: stats.ttft_milestones.prefill_complete_ms,
                 source_held_ms: detail.source_held_ms,
                 destination_reserved_ms: detail.destination_reserved_ms,
                 destination_activated_ms: detail.destination_activated_ms,

@@ -284,8 +284,17 @@ class KVCacheEstimator:
         wideep_num_slots: int | None = None,
         nextn: int = 0,
         systems_path: str | None = None,
+        colocated_encoder: bool = False,
+        reserved_bytes: int = 0,
+        encoder_parallel: str | None = None,
     ) -> KVCacheEstimator:
         """Build the model/backend/perf-DB and the non-KV memory breakdown.
+
+        ``colocated_encoder`` keeps the model's vision-encoder weights resident on
+        this rank, laid out per ``encoder_parallel`` (``"tp"`` shards the tower
+        over the tensor-parallel group, ``"dp"`` replicates it; the model
+        layer's default otherwise); ``reserved_bytes`` is a fixed rank-local
+        reservation outside the KV pool (SGLang's multimodal embedding cache).
 
         Reuses the exact AIC machinery the latency path uses: ``build_model_config``
         + ``apply_nextn`` (so the built model is spec-decode aware) + ``get_model``
@@ -326,6 +335,7 @@ class KVCacheEstimator:
             attention_backend=attention_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
+            **({"enable_encoder_dp": encoder_parallel == "dp"} if encoder_parallel is not None else {}),
         )
         # Apply nextn/MTP onto the config BEFORE get_model so the built model is
         # spec-decode aware (e.g. for any draft-module weights). This does NOT scale
@@ -377,10 +387,15 @@ class KVCacheEstimator:
             resident_weights = weight_memory()
             if resident_weights is not None:
                 weights_bytes = float(resident_weights)
+        if colocated_encoder:
+            # The language worker loads the vision tower; its weights never enter
+            # the context-op inventory above.
+            weights_bytes += float(sum(op.get_weights() for op in getattr(model, "encoder_ops", ())))
         activations_bytes = float(memory["activations"]) * _ONE_GIB
         runtime_overhead_bytes = float(memory["others"]) * _ONE_GIB
         comm_overhead_bytes = float(memory["nccl"]) * _ONE_GIB
-        non_kv_bytes = weights_bytes + runtime_overhead_bytes + comm_overhead_bytes
+        reserved_bytes = float(reserved_bytes)
+        non_kv_bytes = weights_bytes + runtime_overhead_bytes + comm_overhead_bytes + reserved_bytes
         # SGLang sizes its static weights/KV pool before allocating peak forward
         # activations. mem_fraction_static already leaves headroom for those
         # transient allocations; charging them inside the pool counts them twice.
@@ -394,6 +409,7 @@ class KVCacheEstimator:
                 "activations_bytes": activations_bytes,
                 "runtime_overhead_bytes": runtime_overhead_bytes,
                 "comm_overhead_bytes": comm_overhead_bytes,
+                "reserved_bytes": reserved_bytes,
                 "non_kv_bytes": non_kv_bytes,
                 # SGLang measures free memory after distributed/CUDA setup,
                 # before loading weights, and applies its static fraction there.
@@ -1028,6 +1044,9 @@ def estimate_kv_cache(
     naive_kv_reservation: float = _DEFAULT_NAIVE_KV_RESERVATION,
     allow_naive_fallback: bool = False,
     allow_hf_config_download: bool = False,
+    colocated_encoder: bool = False,
+    reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> dict[str, Any]:
     """Compute the KV-cache memory estimate (raw + optional tolerance margin).
 
@@ -1116,6 +1135,9 @@ def estimate_kv_cache(
             wideep_num_slots=wideep_num_slots,
             nextn=int(nextn),
             systems_path=systems_path,
+            colocated_encoder=colocated_encoder,
+            reserved_bytes=reserved_bytes,
+            encoder_parallel=encoder_parallel,
         )
     except Exception as exc:  # native model build unsupported (model/backend/perf DB)
         if (
@@ -1124,6 +1146,9 @@ def estimate_kv_cache(
             or wideep_num_slots is not None
             or moe_backend not in (None, "default")
             or attention_backend is not None
+            or colocated_encoder
+            or reserved_bytes
+            or encoder_parallel is not None
         ):
             raise ValueError(
                 f"unsupported model/backend/GPU for KV-cache estimation: "
@@ -1194,6 +1219,9 @@ def estimate_num_gpu_blocks(
     allow_naive_fallback: bool = False,
     allow_hf_config_download: bool = False,
     diagnostics: dict[str, Any] | None = None,
+    colocated_encoder: bool = False,
+    reserved_bytes: int = 0,
+    encoder_parallel: str | None = None,
 ) -> int:
     """Convert the KV-cache token capacity to a scheduler block count.
 
@@ -1255,6 +1283,9 @@ def estimate_num_gpu_blocks(
         naive_kv_reservation=float(naive_kv_reservation),
         allow_naive_fallback=allow_naive_fallback,
         allow_hf_config_download=allow_hf_config_download,
+        colocated_encoder=colocated_encoder,
+        reserved_bytes=reserved_bytes,
+        encoder_parallel=encoder_parallel,
     )
 
     adjusted = estimate.get("tolerance_adjusted")

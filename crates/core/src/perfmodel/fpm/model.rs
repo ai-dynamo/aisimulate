@@ -13,7 +13,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::perfmodel::engine::Engine;
+use crate::perfmodel::engine::spec::EncoderImageShape;
+use crate::perfmodel::engine::{Engine, PerOpValue};
 use crate::{AicError, ForwardPassMetrics};
 
 use super::config::{EstimationMode, ForwardPassFallbackPolicy, ForwardPassPerfModelConfig};
@@ -677,6 +678,31 @@ impl ForwardPassPerfModel {
                 )
             })?
             .static_phase_diagnostics(batch_size, context_length, prefix, prefill)
+    }
+
+    /// Native operation values of one vision-encoder call over `shapes`, name
+    /// folded like the other per-op walks. Requires a native estimator compiled
+    /// with `encoder_parallel` for a model that has a vision tower.
+    pub fn vision_operations(
+        &self,
+        shapes: &[EncoderImageShape],
+    ) -> Result<Vec<PerOpValue>, AicError> {
+        self.native_engine()
+            .ok_or_else(|| {
+                AicError::InvalidEngineConfig(
+                    "vision encoder timing requires a native estimator".into(),
+                )
+            })?
+            .evaluate_vision(shapes)
+    }
+
+    /// Latency of one vision-encoder call over `shapes`, in milliseconds.
+    pub fn predict_vision_ms(&self, shapes: &[EncoderImageShape]) -> Result<f64, AicError> {
+        Ok(self
+            .vision_operations(shapes)?
+            .iter()
+            .map(|(_, latency_ms, _, _)| latency_ms)
+            .sum())
     }
 
     pub(crate) fn native_engine(&self) -> Option<Arc<Engine>> {

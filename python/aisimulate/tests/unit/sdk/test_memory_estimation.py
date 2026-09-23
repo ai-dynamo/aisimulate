@@ -1215,3 +1215,49 @@ def test_tolerance_zero_is_noop_margin(monkeypatch):
     adj = out["tolerance_adjusted"]
     assert adj is not None
     assert adj["total_kv_size_bytes"] == out["total_kv_size_bytes"]
+
+
+def test_breakdown_charges_a_colocated_encoder_and_reserved_bytes(monkeypatch):
+    # A rank hosting the vision tower keeps its weights and the multimodal
+    # embedding cache outside the KV pool.
+    class _EncoderOp:
+        def get_weights(self):
+            return 2 * _GIB
+
+    class _StubModel:
+        def __init__(self):
+            self.encoder_ops = [_EncoderOp()]
+
+        def get_kvcache_bytes_per_sequence(self, seq_len):
+            return 100.0 * seq_len
+
+        def get_kvcache_max_tokens(self, budget):
+            return int(budget // 100)
+
+    class _StubBackend:
+        def _get_memory_usage(self, *a, **k):
+            return {"weights": 1.0, "activations": 1.0, "others": 1.0, "nccl": 1.0, "kvcache": 0.0}
+
+    class _StubDB:
+        def __init__(self):
+            self.version = "1.3.0rc20"
+            self.system_spec = {"gpu": {"mem_capacity": 100 * _GIB}}
+
+    monkeypatch.setattr(memory, "get_model", lambda *a, **k: _StubModel())
+    monkeypatch.setattr(memory, "get_backend", lambda backend: _StubBackend())
+    monkeypatch.setattr(memory.perf_database, "get_database", lambda *a, **k: _StubDB())
+
+    plain = memory.KVCacheEstimator.from_request(
+        "Qwen/Qwen3-VL-8B-Instruct", "h200_sxm", "sglang", max_num_tokens=8192, max_batch_size=8
+    ).breakdown
+    hosted = memory.KVCacheEstimator.from_request(
+        "Qwen/Qwen3-VL-8B-Instruct",
+        "h200_sxm",
+        "sglang",
+        max_num_tokens=8192,
+        max_batch_size=8,
+        colocated_encoder=True,
+        reserved_bytes=100 << 20,
+    ).breakdown
+    assert hosted["weights_bytes"] - plain["weights_bytes"] == 2 * _GIB
+    assert hosted["non_kv_bytes"] - plain["non_kv_bytes"] == 2 * _GIB + (100 << 20)

@@ -12,6 +12,7 @@ from typing import Any
 from pydantic import Field, model_validator
 
 from .common import (
+    Choices,
     EvaluationConfig,
     ExecutionConfig,
     OptimizationConfig,
@@ -19,7 +20,7 @@ from .common import (
     StrictModel,
     load_yaml,
 )
-from .engine import EnginePredictionConfig, EngineRecommendationConfig
+from .engine import EnginePredictionConfig, EngineRecommendationConfig, require_native_vl_parallelism
 from .traffic import (
     SyntheticSource,
     TraceSource,
@@ -101,14 +102,58 @@ class CoreRecommendationConfig(StrictModel):
         return cls.model_validate(load_yaml(path))
 
 
+def _only(value: Any, expected: str) -> bool:
+    """Whether a concrete or single-choice engine field resolves to `expected`."""
+    return value == expected or (isinstance(value, Choices) and list(value.choices) == [expected])
+
+
 def _validate_epd(traffic, engine) -> None:
     encoder = engine.workers.encoder
     source = traffic.source if traffic is not None else None
     images = source.images if isinstance(source, SyntheticSource) else None
+    # The language worker that hosts the scheduler loop and the vision tower: aggregated or prefill.
+    language, mode = (
+        (engine.workers.aggregated, "aggregated")
+        if engine.workers.aggregated is not None
+        else (engine.workers.prefill, "disaggregated")
+    )
+    host_aware = language is not None and (language.host_loop or language.vision is not None)
+    if encoder is not None and host_aware:
+        if encoder.mode == "analytical":
+            raise ValueError(
+                "engine.workers.encoder (analytical EPD) and the language worker's host_loop or vision "
+                "(native VL replay) are exclusive"
+            )
+        if language.vision is not None or language.frontend is not None or language.host_profile is not None:
+            raise ValueError(
+                "with a native encoder pool the language worker runs --language-only: it neither hosts the vision "
+                "tower nor prices image frontend stages; only host_loop applies"
+            )
+    if encoder is None and images is not None:
+        # Images without an encoder pool are encoded on the aggregated or the prefill SGLang worker.
+        if language is None or not _only(engine.backend, "sglang") or not _only(engine.mode, mode):
+            raise ValueError(
+                "image workloads require engine.workers.encoder (analytical EPD) or an aggregated or prefill worker "
+                f"with backend=sglang and concrete mode={mode} (native VL replay)"
+            )
+        if language.timing.type != "default":
+            raise ValueError("native VL replay requires default timing")
+        require_native_vl_parallelism(language)
+        return
     if (encoder is None) != (images is None):
         raise ValueError("EPD requires both traffic.source.images and engine.workers.encoder")
     if encoder is None:
         return
+    if encoder.mode == "native":
+        if not _only(engine.backend, "sglang"):
+            raise ValueError("native encoder replay requires backend=sglang")
+        for role in ("aggregated", "prefill", "decode"):
+            worker = getattr(engine.workers, role)
+            if worker is not None and worker.startup_seconds != 0:
+                raise ValueError("encoder pools require static worker pools")
+        return
+    if images.min_pixels is not None or images.max_pixels is not None:
+        raise ValueError("images.min_pixels and max_pixels are honored only by native VL replay, not by analytical EPD")
     if traffic.load.type != "concurrency" or type(traffic.load.concurrency) is not int:
         raise ValueError("analytical EPD requires fixed synthetic concurrency, not rate or load search")
     for role in ("aggregated", "prefill", "decode"):
@@ -118,7 +163,7 @@ def _validate_epd(traffic, engine) -> None:
         if worker.timing.type != "default" or worker.timing.forward_model != "op_level":
             raise ValueError("analytical EPD requires default op_level language timing")
         if worker.startup_seconds != 0:
-            raise ValueError("analytical EPD requires static worker pools")
+            raise ValueError("encoder pools require static worker pools")
 
 
 def prediction_mapping(

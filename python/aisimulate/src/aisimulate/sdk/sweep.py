@@ -876,15 +876,7 @@ def _get_encoder_worker_candidates(
     power_w / power_coverage``.
     """
     backend = get_backend(backend_name)
-    model_info = get_model_config_from_model_path(model_path)
-    enc_cfg = model_info.get("extra_params")
-    if isinstance(enc_cfg, common.KimiK3Config):
-        # K3 nests its generic ViT config alongside the language geometry.
-        # Other nested families may need specialized encoder builders.
-        enc_cfg = get_vision_encoder_config_from_model_info(model_info)
-    if not isinstance(enc_cfg, common.VisionEncoderConfig):
-        # Not a VL model -> EPD cannot apply (config error, not a type bug).
-        raise ValueError(f"EPD (encoder disaggregation) requested but model {model_path!r} has no vision encoder.")
+    enc_cfg = _vision_encoder_config(model_path)
     if BaseBackend._visual_context_tokens_from_encoder_config(enc_cfg, runtime_config) <= 0:
         raise ValueError(
             "EPD (encoder disaggregation) requested but the workload has no image input; "
@@ -966,6 +958,19 @@ def _get_encoder_worker_candidates(
             "(tp must divide the ViT geometry and have comm data on this system; see warnings)."
         )
     return rows
+
+
+def _vision_encoder_config(model_path: str) -> common.VisionEncoderConfig:
+    model_info = get_model_config_from_model_path(model_path)
+    enc_cfg = model_info.get("extra_params")
+    if isinstance(enc_cfg, common.KimiK3Config):
+        # K3 nests its generic ViT config alongside the language geometry.
+        # Other nested families may need specialized encoder builders.
+        enc_cfg = get_vision_encoder_config_from_model_info(model_info)
+    if not isinstance(enc_cfg, common.VisionEncoderConfig):
+        # Not a VL model -> EPD cannot apply (config error, not a type bug).
+        raise ValueError(f"EPD (encoder disaggregation) requested but model {model_path!r} has no vision encoder.")
+    return enc_cfg
 
 
 def _epd_e_num_candidates(

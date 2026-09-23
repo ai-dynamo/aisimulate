@@ -280,6 +280,8 @@ pub struct ReplayEngineFactory {
     timing: Option<Arc<dyn TimingModel>>,
     prefill_timing: Option<Arc<dyn TimingModel>>,
     decode_timing: Option<Arc<dyn TimingModel>>,
+    /// Prices the encoder pool's forwards; resolved like a rank's model.
+    encoder_timing: Option<Arc<dyn TimingModel>>,
 }
 
 impl ReplayEngineFactory {
@@ -288,6 +290,7 @@ impl ReplayEngineFactory {
             timing: None,
             prefill_timing: None,
             decode_timing: None,
+            encoder_timing: None,
         }
     }
 
@@ -296,6 +299,7 @@ impl ReplayEngineFactory {
             timing: Some(timing),
             prefill_timing: None,
             decode_timing: None,
+            encoder_timing: None,
         }
     }
 
@@ -307,7 +311,21 @@ impl ReplayEngineFactory {
             timing: None,
             prefill_timing: prefill,
             decode_timing: decode,
+            encoder_timing: None,
         }
+    }
+
+    pub fn with_encoder_timing(mut self, timing: Arc<dyn TimingModel>) -> Self {
+        self.encoder_timing = Some(timing);
+        self
+    }
+
+    /// The model pricing the encoder pool: its own, else the language workers'.
+    pub(crate) fn encoder_timing(&self) -> Option<&Arc<dyn TimingModel>> {
+        self.encoder_timing
+            .as_ref()
+            .or(self.prefill_timing.as_ref())
+            .or(self.timing.as_ref())
     }
 
     #[doc(hidden)]

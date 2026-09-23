@@ -247,7 +247,7 @@ def is_active_engine_model_control(name: str, value: Any) -> bool:
 def omit_inactive_moe_controls(config: dict[str, Any]) -> dict[str, Any]:
     """Keep additive defaults out of timing payloads parsed by older runners."""
     result = dict(config)
-    for name in ("moe_backend", "wideep_num_slots", "enable_eplb"):
+    for name in ("moe_backend", "wideep_num_slots", "enable_eplb", "encoder_parallel"):
         if not is_active_engine_model_control(name, result.get(name)):
             result.pop(name, None)
     return result

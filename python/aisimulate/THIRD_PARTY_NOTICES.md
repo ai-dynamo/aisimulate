@@ -512,6 +512,32 @@ Rust operator/spec unit tests, `docs/deepseek-v41.md`, and
 `docs/deepseek-v41-storage.md`. They distinguish candidate masking from scoring
 and physical FlashMLA cache payload from logical FP4 values.
 
+## SGLang 0.5.19 multimodal frontend and scheduler behavior
+
+The native VL replay path models sgl-project/sglang v0.5.19 at immutable commit
+`0bcd822377da7b5718e674eaf9c870d349424dd1`. Repository-root paths:
+
+- `crates/core/src/engine/scheduler/sglang/{host_loop,vision,frontend}.rs` and
+  their tests re-implement the observed behavior of `Scheduler.event_loop_overlap`,
+  `run_batch`, `recv_requests`, `process_batch_result_prefill`,
+  `_batch_encode_per_image_misses`, `MultiModalStaticCache`, `TokenizerManager`,
+  `BaseMultimodalProcessor` and the Rust multimodal workers' feature transport
+  (`RustMmProcessor._use_feature_shm`) as performance models. They do not execute
+  or copy the upstream implementation.
+- `crates/core/src/engine/scheduler/sglang/core.rs` (disaggregated prefill) and
+  `crates/core/src/replay/components/encoder.rs` likewise re-implement the
+  observed behavior of `disaggregation/prefill.py` (`SchedulerDisaggregationPrefillMixin`)
+  and of `disaggregation/encoder/{runtime,server,receiver,preprocessor}.py`
+  (`EncoderScheduler`, `_assign_items_by_modality`, `zmq_to_scheduler`) as
+  performance models, without copying the upstream implementation.
+- `python/aisimulate/src/aisimulate/vl/collect/` instantiates the pinned
+  upstream frontend objects unmodified on the serving host and times them from
+  the outside; it does not copy or modify their implementations.
+
+Source: https://github.com/sgl-project/sglang/tree/0bcd822377da7b5718e674eaf9c870d349424dd1
+Copyright 2023-2024 SGLang Team and SGLang contributors. Licensed under Apache-2.0; its terms are
+at https://github.com/sgl-project/sglang/blob/0bcd822377da7b5718e674eaf9c870d349424dd1/LICENSE.
+
 ## DeepSeek model configuration files
 
 The following model configuration files are copied from, or formatting-only
@@ -729,6 +755,16 @@ This material is licensed under the Apache License 2.0.
 
 The upstream license at that revision is available at:
 https://github.com/huggingface/transformers/blob/cbc1651a032b923da7f4b44b3d0e6f68e6ba6b55/LICENSE
+
+The Qwen VL `smart_resize` pixel-budget rule in
+`src/aisimulate_core/sdk/backends/base_backend.py` (`_qwen_smart_resize`) is a
+modified adaptation of the Qwen2-VL image processor in Hugging Face Transformers
+at tag `v4.57.0`:
+
+- https://github.com/huggingface/transformers/blob/v4.57.0/src/transformers/models/qwen2_vl/image_processing_qwen2_vl.py
+
+Copyright 2024 the HuggingFace Inc. team. All rights reserved.
+This material is licensed under the Apache License 2.0.
 
 The fixed-tile canvas and global-tile logic in
 `src/aiconfigurator_core/sdk/backends/base_backend.py`, and the processor metadata
