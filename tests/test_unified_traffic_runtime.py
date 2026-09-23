@@ -268,12 +268,12 @@ def test_b200_power_survives_native_json_and_runner_normalization() -> None:
 
     assert report.metrics["completed_requests"] == 100
     native_summary = report.metadata["native_report"]
-    # Decode converts scheduler-inclusive length to past KV before pricing the
-    # current token. Reverting only that conversion reproduces the older
-    # section 4.11 capture (655.9411158961074 W, coverage 0.9070317503277924).
-    for name, expected in {"power_w": 655.957349601573, "power_coverage": 0.907023184956731}.items():
-        assert native_summary[name] == pytest.approx(expected)
-        assert report.metrics[name] == native_summary[name]
+    # Ordinary prefill supplies the first token, removing the extra decode
+    # forward from both active energy and active latency accounting.
+    expected = {"power_w": 656.2595860547453, "power_coverage": 0.907023184956731}
+    actual = {name: native_summary[name] for name in expected}
+    assert actual == pytest.approx(expected), actual
+    assert {name: report.metrics[name] for name in expected} == actual
 
 
 def test_engine_stack_runs_ordered_synthetic_sessions() -> None:

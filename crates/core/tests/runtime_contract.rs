@@ -279,7 +279,7 @@ fn telemetry_baseline_preserves_t0_activity_and_emits_a_positive_final_tail() {
     let observer = RecordingTelemetryObserver {
         samples: Arc::clone(&samples),
     };
-    let spec = aggregated_spec(Backend::Vllm, 1, 0.0, vec![request("telemetry", 0.0, 4, 2)]);
+    let spec = aggregated_spec(Backend::Vllm, 1, 0.0, vec![request("telemetry", 0.0, 4, 3)]);
 
     let report = Replayer::new(spec, ReplayEngineFactory::new())
         .unwrap()
