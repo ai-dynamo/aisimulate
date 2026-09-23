@@ -35,9 +35,11 @@ mHC is measured at native boundaries, including the output RMSNorm: vLLM has one
 pre, 89 fused post/pre and one post interval, plus expand/contract; SGLang has 90
 pre and 90 post intervals plus expand/contract. If SGLang leaves RMSNorm outside
 its pre call, the current hook rejects that path rather than undercounting it.
-Router measures the FP32 projection only; scoring and top-k belong to MoE.
-Ordinary GEMM, expert compute, activation and collective measurements retain
-their existing operation schemas and require separate native dispatch evidence.
+The whole native FFN includes FP32 gate projection, sigmoid/top-k routing,
+shared and routed experts, and clamp10. Its analytical children never query
+generic measured GEMM/MoE rows. All45 FFNs are required on every rank.
+Ordinary embedding, final norm, logits and collective observation is a separate
+complete-graph requirement; decoder observations alone do not certify a model prediction.
 
 Raw rank JSONL records retain every layer occurrence, request/history identity,
 sample, invocation and excluded collective. Publication first requires complete
@@ -104,3 +106,17 @@ Additional integration sources at the pinned SGLang revision above are
 `python/sglang/srt/model_executor/runner/{eager_runner,decode_cuda_graph_runner}.py`,
 and `python/sglang/srt/utils/device_timer.py`. Their implementations are called
 without modification; the wrappers and trace schema are original adapter code.
+
+
+## vLLM eager worker integration
+
+Install `collector.glm53flash_vllm_runtime.install()` in each V1 worker before
+request execution. It wraps `GPUModelRunner.execute_model` and `_model_forward`,
+reads actual scheduler/query/prefix data after native metadata preparation, and
+finalizes after native `compute_logits`. The scheduler atomically updates
+`AISIM_GLM53_REQUEST_MANIFEST` before each request cohort; workers reload it for
+every real forward. Required files are `AISIM_GLM53_OPS_MANIFEST` and
+`AISIM_GLM53_PROVENANCE`; output uses `AISIM_GLM53_TRACE_DIR`. Every cache tensor's
+allocated dtype/shape/stride is preserved separately. The current adapter rejects
+actual graph dispatch. This integration remains unverified until target-GPU
+instrumented smoke and independent whole-forward accuracy checks pass.

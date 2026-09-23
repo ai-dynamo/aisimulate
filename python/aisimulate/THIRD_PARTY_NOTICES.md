@@ -1075,3 +1075,19 @@ the repository Apache-2.0 license text applies to these adaptations.
   ServerArgs APIs with real token-ID requests. It preserves native scheduling
   and DeviceTimer boundaries and normalizes only observations whose actual
   coordinates match a frozen request manifest. No native source is copied.
+
+
+## GLM-5.3-Flash vLLM native worker telemetry
+
+- Derived files: `python/aisimulate/collector/glm53flash_vllm_runtime.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_vllm_runtime.py`,
+  and the vLLM integration section of `collector/README.glm53flash.md`.
+- Source: https://github.com/vllm-project/vllm at immutable revision
+  `ced6857afa0ea7b2e3f0846a62e1394e90f15607` (v0.30.0), paths
+  `vllm/v1/worker/gpu_model_runner.py`, `vllm/forward_context.py`,
+  `vllm/models/glm5next/nvidia/{model,attention,kda}.py`,
+  and `vllm/model_executor/layers/{mla,logits_processor}.py`.
+- Copyright: vLLM contributors. License: Apache-2.0 (full text above).
+- Modified/adapted: independently authored wrappers preserve original native
+  calls and inspect real worker requests, allocated cache metadata and dispatch.
+  No upstream compute, request construction or scheduling code is copied.
