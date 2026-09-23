@@ -3,8 +3,8 @@
 
 interface:
   display_name: "AISimulate Replay Performance"
-  short_description: "Assess replay cost and required performance evidence"
-  default_prompt: "Use $aisimulate-replay-performance while implementing or reviewing this replay change to assess host cost and required evidence."
+  short_description: "Build and review efficient simulation execution"
+  default_prompt: "Use $aisimulate-replay-performance to design, implement, or review this replay change for efficient execution, preserve correctness, and resolve substantial avoidable overhead before completion."
 
 policy:
   allow_implicit_invocation: true

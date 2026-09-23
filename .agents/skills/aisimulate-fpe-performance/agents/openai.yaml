@@ -3,8 +3,8 @@
 
 interface:
   display_name: "AISimulate FPE Performance"
-  short_description: "Assess FPE cost and required performance evidence"
-  default_prompt: "Use $aisimulate-fpe-performance while implementing or reviewing this FPE change to assess host cost and required evidence."
+  short_description: "Build and review efficient numerical prediction"
+  default_prompt: "Use $aisimulate-fpe-performance to design, implement, or review this FPE change for efficient execution, preserve correctness, and resolve substantial avoidable overhead before completion."
 
 policy:
   allow_implicit_invocation: true
