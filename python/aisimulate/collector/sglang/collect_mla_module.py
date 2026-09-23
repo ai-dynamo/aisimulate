@@ -1455,7 +1455,15 @@ def _run_prefill(
         )
         with _temporarily_chunked_alloc_extend(model_runner, batch_size * seq_length):
             batch.prepare_for_extend()
-        forward_batch = ForwardBatch.init_new(batch, model_runner)
+        # sglang 0.5.16 made return_hidden_states_before_norm a required
+        # keyword (ForwardBatch.init_new); older pins do not accept it —
+        # same dispatch collect_msa_module.py:1015 uses.
+        import inspect as _inspect
+
+        _fb_kw = ({"return_hidden_states_before_norm": False}
+                  if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+                  else {})
+        forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
         model_runner.attn_backend.init_forward_metadata(forward_batch)
 
         hidden_states = torch.randn(

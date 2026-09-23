@@ -207,6 +207,7 @@ class MockModelRunner:
                 moe_dp_rank=0, moe_dp_size=1, dcp_size=1, gpu_id=0,
             )
         self.server_args = MockServerArgs(kv_cache_dtype, page_size)
+        self.is_draft_worker = False  # read by the 0.5.16 attention backends (draft-worker branches)
         self.use_mla_backend = True
 
 

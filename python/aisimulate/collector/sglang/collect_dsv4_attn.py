@@ -1117,7 +1117,14 @@ def _build_forward_batch(
                 req.output_ids.append(0)
             batch.prepare_for_decode()
 
-    forward_batch = ForwardBatch.init_new(batch, model_runner)
+    import inspect as _inspect
+
+    # sglang 0.5.16: return_hidden_states_before_norm is a required keyword of
+    # ForwardBatch.init_new; older pins reject it (collect_msa_module.py:1015 pattern)
+    _fb_kw = ({"return_hidden_states_before_norm": False}
+              if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+              else {})
+    forward_batch = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
     model_runner.attn_backend.init_forward_metadata(forward_batch)
     return forward_batch
 
