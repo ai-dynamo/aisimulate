@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import os
 import sys
 import traceback
 from collections import Counter, defaultdict
@@ -109,6 +110,11 @@ def main() -> None:
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--trust-remote-code", action="store_true")
+    # prompt length of the profiled request (same knob/default as the vllm and
+    # sglang probes; recorded as probe_isl). The historical 16-token prompt
+    # sat below every length-conditional dispatch threshold.
+    ap.add_argument("--isl", type=int,
+                    default=int(os.environ.get("AIS_PROBE_ISL") or os.environ.get("AIC_PROBE_ISL") or "4096"))
     ap.add_argument("--engine-yaml", default=None,
                     help="generator-rendered extra_engine_args yaml (dynamo.trtllm contract)")
     args = ap.parse_args()
@@ -149,9 +155,13 @@ def main() -> None:
             model=args.model,
             load_format="dummy",
             trust_remote_code=args.trust_remote_code,
-            kv_cache_config=KvCacheConfig(max_tokens=16384),
+            # cache-cold prefill: block reuse (default on) would turn the
+            # profiled request into a residual of the warmup prompt — same
+            # policy as vllm enable_prefix_caching=False / sglang disable_radix_cache
+            kv_cache_config=KvCacheConfig(max_tokens=max(16384, args.isl + 256),
+                                          enable_block_reuse=False),
             max_batch_size=8,
-            max_seq_len=4096,
+            max_seq_len=args.isl + 64,
         )
         if args.engine_yaml:
             import yaml as _yaml
@@ -169,12 +179,18 @@ def main() -> None:
             # sglang at 138GB; same hazard here) — keep dtype/block identity keys
             if kvc.pop("free_gpu_memory_fraction", None) is not None:
                 probe_overrides["kv_cache_config.free_gpu_memory_fraction"] = "replaced by max_tokens=16384 cap"
-            kvc["max_tokens"] = 16384
+            kvc["max_tokens"] = max(16384, args.isl + 256)
+            if kvc.get("enable_block_reuse", True):
+                probe_overrides["kv_cache_config.enable_block_reuse"] = "False: profiled prefill must be cache-cold"
+            kvc["enable_block_reuse"] = False
             kwargs["kv_cache_config"] = KvCacheConfig(**kvc)
             # identity probe runs eager, matching the sglang probe
             if eng.pop("cuda_graph_config", None) is not None:
                 probe_overrides["cuda_graph_config"] = "dropped: identity probe runs eager"
             kwargs.update(eng)
+            if (kwargs.get("max_seq_len") or 0) < args.isl + 64:
+                probe_overrides["max_seq_len"] = f"raised to {args.isl + 64} to fit the {args.isl}-token probe prompt"
+                kwargs["max_seq_len"] = args.isl + 64
             rec["probe_overrides"] = probe_overrides
         # unknown kwargs are drift facts (template ahead of / behind llmapi)
         rec["engine_yaml_unknown_args"] = []
@@ -244,17 +260,44 @@ def main() -> None:
 
             from tensorrt_llm import SamplingParams
 
-            _ = llm.generate([[1] * 16], SamplingParams(max_tokens=2))  # warmup
-            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as p:
-                llm.generate([[1] * 16], SamplingParams(max_tokens=2))
+            rec["probe_isl"] = args.isl
+            rec["probe_prefix_caching"] = False
+            # warmup on a DIFFERENT prompt (block reuse is off, but never rely on
+            # one guard): lazy JIT / autotune happen off-profile
+            _ = llm.generate([list(range(1, args.isl + 1))], SamplingParams(max_tokens=2))
+            prompt = [list(range(args.isl))]
+
+            def _table(prof):
+                rows = []
+                for e in prof.key_averages():
+                    dt = getattr(e, "self_device_time_total", 0) or getattr(e, "self_cuda_time_total", 0)
+                    if dt > 0:
+                        rows.append({"kernel": e.key, "launches": e.count, "us": round(dt, 1)})
+                return sorted(rows, key=lambda r: -r["us"])  # no count cap: identity evidence
+
+            # TWO phases, like the vllm/sglang probes: the llmapi has no step()
+            # so prefill = a max_tokens=1 run; decode = what a max_tokens=2 run
+            # executes beyond it (per-kernel launch/time difference)
+            _kw = dict(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
+            with profile(**_kw) as p1:
+                llm.generate(prompt, SamplingParams(max_tokens=1))
                 torch.cuda.synchronize()
-            rows = []
-            for e in p.key_averages():
-                dt = getattr(e, "self_device_time_total", 0) or getattr(e, "self_cuda_time_total", 0)
-                if dt > 0:
-                    rows.append({"kernel": e.key, "calls": e.count, "us": round(dt, 1)})
-            rec["kernels_visible_in_process"] = bool(rows)  # False again == subprocess
-            rec["kernels"] = sorted(rows, key=lambda r: -r["us"])[:40]
+            with profile(**_kw) as p2:
+                llm.generate(prompt, SamplingParams(max_tokens=2))
+                torch.cuda.synchronize()
+            pre = _table(p1)
+            both = {r["kernel"]: r for r in _table(p2)}
+            pre_by = {r["kernel"]: r for r in pre}
+            dec = []
+            for k, r in both.items():
+                d_l = r["launches"] - pre_by.get(k, {}).get("launches", 0)
+                if d_l > 0:
+                    dec.append({"kernel": k, "launches": d_l,
+                                "us": round(max(r["us"] - pre_by.get(k, {}).get("us", 0.0), 0.0), 1)})
+            rec["prefill_kernels"] = pre
+            rec["decode_kernels"] = sorted(dec, key=lambda r: -r["us"])
+            rec["kernels_visible_in_process"] = bool(pre)  # False == subprocess executor
+            rec["kernels"] = _table(p2)  # whole-run view kept for older consumers
         except Exception:
             rec["errors"]["generate"] = traceback.format_exc()[-2000:]
     except Exception:

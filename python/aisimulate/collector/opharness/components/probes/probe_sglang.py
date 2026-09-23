@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import traceback
 from collections import Counter, defaultdict
 
@@ -37,6 +38,12 @@ def main() -> None:
     ap.add_argument("--model", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--stage", type=int, default=2)
+    # prompt length of the profiled request. Serving dispatch is length-
+    # conditional (NSA/DSA dense-vs-sparse thresholds, M3 sparse threshold,
+    # chunked prefill), so the historical implicit 32 hid those paths — same
+    # knob and default as probe_vllm (owner-set 2026-09-19); recorded as probe_isl.
+    ap.add_argument("--isl", type=int,
+                    default=int(os.environ.get("AIS_PROBE_ISL") or os.environ.get("AIC_PROBE_ISL") or "4096"))
     ap.add_argument("--override", default=None, help="json_model_override_args, e.g. '{\"expert_dtype\": \"fp8\"}'")
     ap.add_argument("--quantization", default=None, help="explicit ServerArgs.quantization (collector sets fp8 for dsv4)")
     ap.add_argument("--kv-dtype", default=None, help="explicit kv_cache_dtype (generator passes fp8_e4m3 for fp8 profiles)")
@@ -110,6 +117,8 @@ def main() -> None:
             **({"kv_cache_dtype": args.kv_dtype} if args.kv_dtype else {}),
         )
     rec["cuda_graph_fields_disabled"] = sorted(graph_off)
+    rec["probe_isl"] = args.isl
+    rec["probe_prefix_caching"] = False  # disable_radix_cache on both construction paths
     if args.override:
         rec["json_model_override_args"] = args.override
     rec["server_args_resolved"] = dump_server_args(sa)
@@ -325,7 +334,9 @@ def main() -> None:
                 dt = getattr(e, "self_device_time_total", 0) or getattr(e, "self_cuda_time_total", 0)
                 if dt > 0:
                     rows.append({"kernel": e.key, "calls": e.count, "us": round(dt, 1)})
-            return sorted(rows, key=lambda r: -r["us"])[:50]
+            # no count cap: these tables are path_diff's serving-side identity
+            # evidence; build_records applies the structural keep-rule downstream
+            return sorted(rows, key=lambda r: -r["us"])
 
         try:
             import torch
@@ -335,7 +346,7 @@ def main() -> None:
 
             # warmup pass outside the profiler: lazy JIT loading / autotune noise
             try:
-                out = ret.extend(ob.prepare_synthetic_inputs_for_latency_test(2, 32))
+                out = ret.extend(ob.prepare_synthetic_inputs_for_latency_test(1, args.isl))
                 torch.cuda.synchronize()
             except Exception:
                 # transient tvm_ffi 'Mismatched Tensor' seen when parallel runs
@@ -344,7 +355,7 @@ def main() -> None:
                 rec["warmup_retry"] = traceback.format_exc().strip().splitlines()[-1][:200]
                 import time
                 time.sleep(5)
-                out = ret.extend(ob.prepare_synthetic_inputs_for_latency_test(2, 32))
+                out = ret.extend(ob.prepare_synthetic_inputs_for_latency_test(1, args.isl))
                 torch.cuda.synchronize()
             ret.clear()
             try:  # source-line attribution for stacks needs the verbose kineto config
@@ -354,7 +365,7 @@ def main() -> None:
             _prof_kw = dict(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
                             **({"with_stack": True, "experimental_config": _exp}
                                if args.py_paths and _exp else {}))
-            reqs = ob.prepare_synthetic_inputs_for_latency_test(2, 32)
+            reqs = ob.prepare_synthetic_inputs_for_latency_test(1, args.isl)
             try:
                 with profile(**_prof_kw) as p1:
                     out = ret.extend(reqs)
@@ -366,7 +377,7 @@ def main() -> None:
                 # Retry stackless: kernels still captured, py_paths lost.
                 rec["trace_stack_fallback"] = traceback.format_exc().strip().splitlines()[-1][:200]
                 _prof_kw = dict(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA])
-                reqs = ob.prepare_synthetic_inputs_for_latency_test(2, 32)
+                reqs = ob.prepare_synthetic_inputs_for_latency_test(1, args.isl)
                 with profile(**_prof_kw) as p1:
                     out = ret.extend(reqs)
                     torch.cuda.synchronize()
