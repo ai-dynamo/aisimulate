@@ -764,6 +764,24 @@ mod tests {
                 k: 5120,
                 quant_mode: GemmQuantMode::Fp8Block,
             }),
+            OpSpec::Glm53Attention(crate::operators::glm53flash::tests::attention("kda")),
+            OpSpec::Glm53Mhc(crate::operators::Glm53MhcOp {
+                name: "mhc_pre_attn_0".into(),
+                role: "pre".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                hidden_size: 4096,
+                hc_mult: 4,
+                sinkhorn_iters: 20,
+            }),
+            OpSpec::Glm53Router(crate::operators::Glm53RouterOp {
+                name: "router_3".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "nvfp4".into(),
+                hidden_size: 4096,
+                num_experts: 288,
+                topk: 8,
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -809,6 +827,9 @@ mod tests {
                 | OpSpec::Dsv41Mhc(_)
                 | OpSpec::Dsv41Engram(_)
                 | OpSpec::Dsv41Stage(_)
+                | OpSpec::Glm53Attention(_)
+                | OpSpec::Glm53Mhc(_)
+                | OpSpec::Glm53Router(_)
                 | OpSpec::Dsv41Linear(_)
                 | OpSpec::TokenScale(_) => {}
             }
@@ -907,11 +928,11 @@ mod tests {
         let appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
         assert_eq!(
             appended,
-            vec![36, 37, 38, 39, 40],
-            "V41 appended indices moved"
+            vec![36, 37, 38, 39, 40, 41, 42, 43],
+            "V41/GLM appended indices moved"
         );
         assert_eq!(
-            TOKEN_SCALE_INDEX as usize + 6,
+            TOKEN_SCALE_INDEX as usize + 9,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
