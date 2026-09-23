@@ -166,9 +166,7 @@ The feature space is a fixed 135-name ABI; an artifact lists the names it reads
 | Preset | Slots | Source |
 | --- | --- | --- |
 | `v1` | 21 aggregates + their `log1p` and derived ratios | stock FPM v1, no lists needed |
-| `sglang18` (default for prefill and aggregated workers) | the 18 per-request features below | per-request lists |
-| `indep5` (default for decode workers) | `req_batch_size`, `req_sum_past`, `req_max_past`, `req_min_past`, `req_sum_past_squared`: the five of the 18 that carry information on a decode step (§3.1) | per-request lists |
-| `core4` | `req_batch_size`, `req_sum_extend`, `req_sum_past`, `req_sum_attn_flops` (the ablation minimum, §3.1) | per-request lists |
+| `sglang18` (default) | the 18 per-request features below | per-request lists |
 | `hisim` | `req_batch_size` + 32 request slots × (present, past, extend), requests sorted by past descending | per-request lists |
 
 The `sglang18` set is the feature definition of the SGLang simulator's
@@ -196,10 +194,10 @@ Why these and not raw lists: trees need a fixed-width input; sums, extremes and 
 attention proxy capture the two cost drivers (GEMM work ∝ Σ e_i, attention work
 ∝ Σ e_i·p_i) plus the batch shape (n, spread) that decides kernel selection and
 padding. `v1` and `hisim` land within 0.3–0.6 pp of `sglang18` on every deployment
-tested. Prefill and aggregated workers default to `sglang18` because, unlike the smaller
-subsets below, it keeps its accuracy when the training and test workloads differ. Decode
-workers default to `indep5`: on a decode step every request extends by one token, so
-thirteen of the eighteen are copies of the other five (§3.1).
+tested; `sglang18` is the default. §3.1 works out how many of the 18 are actually needed:
+five suffice for decode without any measured loss, prefill needs all 18. The shipped code
+has no reduced preset; a reduced set is trained by passing the feature names to
+`--features` as a comma-separated list.
 
 ### 3.1 How many of the 18 features are needed
 
@@ -212,10 +210,13 @@ inside a store. What remains:
 
 | set | n | features |
 | --- | --- | --- |
-| `sglang18` | 18 | all (default for prefill / aggregated) |
+| `sglang18` | 18 | all (the shipped default) |
 | `indep10` | 10 | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp²: the non-derivable ten |
-| `indep5` | 5 | n, Σp, max p, min p, Σp²: decode only (default for decode), where every extend is 1 so Σe = n, max e = min e = 1, Σe² = n, Σe·p = Σp |
+| `indep5` | 5 | n, Σp, max p, min p, Σp²: decode only, where every extend is 1 so Σe = n, max e = min e = 1, Σe² = n, Σe·p = Σp |
+| `indep12` | 12 | `indep10` plus the two cross terms Σe·(p + e/2) and Σe · max p: tests whether the cross terms alone carry the prefill extrapolation |
 | `core4` | 4 | n, Σe, Σp, Σe·(p + e/2): the smallest set that still scored like 18 in-distribution |
+
+None of these is a named preset in the code; `--features` takes the comma-separated names.
 
 **By measurement.** Same data and method as §7.1 (GB300, SGLang V4.1-Flash, ten capture
 runs). "Pooled" = all ten runs, the first 60 % of each concurrency tier trains and the last
@@ -246,6 +247,16 @@ Prefill, cells = `sglang18` / `indep10` / `core4`:
 | LongBench only | 6.52 / 10.84 / 15.12 | 29.42 / 73.43 / 75.62 | 0.62 / 0.62 / 0.62 |
 | all three | 2.28 / 2.28 / 2.30 | 2.56 / 2.56 / 2.53 | 0.57 / 0.57 / 0.59 |
 
+Prefill, `indep12` against `sglang18` re-fitted in the same run (row order differs from the
+table above, so the `sglang18` cells differ slightly from it; compare within this table):
+
+| train \ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.24 / 2.25 | 3.19 / 3.29 | 0.80 / 0.84 |
+| ShareGPT only | 27.46 / 29.34 | 2.55 / 2.56 | 45.67 / 46.37 |
+| LongBench only | 6.70 / 7.55 | 33.75 / 69.73 | 0.62 / 0.63 |
+| all three | 2.28 / 2.29 | 2.56 / 2.56 | 0.57 / 0.57 |
+
 Reading the tables:
 
 - **Decode.** `indep5` and `indep10` give identical numbers in every row, confirming that
@@ -254,10 +265,12 @@ Reading the tables:
   uniformly best but has no bad row that the others avoid.
 - **Prefill.** In-distribution all sets tie. Across workloads the derived features matter:
   without them, LongBench → ShareGPT goes from 29 % to 73–76 % and LongBench → AgentX from
-  6.5 % to 11–15 %. A tree cannot form a product; having Σe·(p + e/2) and Σe · max p as
-  their own axes lets it split on attention work directly, which is what carries over when
-  the test workload's mix of chunk sizes and prefixes was never seen. "Derivable" is
-  therefore not "useless" for a GBDT.
+  6.5 % to 11–15 %. Adding back only the two cross terms (`indep12`) does not recover it
+  (LongBench → ShareGPT 34 % → 70 % in that run): the `log1p` transforms, n · Σe and
+  max p − min p contribute too. A tree cannot form a product or a log; each derived axis
+  lets it split on that quantity directly, which is what carries over when the test
+  workload's mix of chunk sizes and prefixes was never seen. "Derivable" is therefore not
+  "useless" for a GBDT.
 - **Speed is unaffected by the feature count.** Two artifacts trained on the same vLLM
   AgentX run (§7.2 data, 400 trees each), timed as in §8.1 on one Grace core: the 18-feature
   decode model takes 3.7–5.8 µs per estimate over the decode grid, the `core4` model
@@ -266,13 +279,14 @@ Reading the tables:
   nanoseconds; the time is the 400-tree walk, and trees fitted on fewer axes are not
   shallower.
 
-Decision: decode workers default to `indep5` (the thirteen dropped features are exact
-copies of the five on a decode step, and every measured cell agrees to the second decimal);
-prefill and aggregated workers stay on `sglang18`, because both reduced sets lose accuracy
-under extrapolation, each for a different missing piece (extremes for `core4`, cross terms
-for `indep10`). `core4` remains available as a preset. `indep5` assumes one new token per
-request per step; with speculative decoding on (extends of 1 + k) train with `--features
-sglang18`. Raw output: `feature_ablation_pooled.txt`,
+Result: for decode, five features (`indep5`) carry everything the eighteen do, on every
+train/test pair to the second decimal; the other thirteen are exact copies of them on a
+decode step. This holds only without speculative decoding (extends of 1 + k make the extend
+features informative again). For prefill, every reduced set loses accuracy under
+extrapolation, each for a different missing piece (extremes for `core4`, derived terms for
+`indep10` / `indep12`), so prefill needs all 18. The shipped default is `sglang18` for
+both roles; training a five-feature decode model is
+`--features req_batch_size,req_sum_past,req_max_past,req_min_past,req_sum_past_squared`. Raw output: `feature_ablation_pooled.txt`,
 `feature_ablation_cross.txt`, `feature_ablation_indep.txt`, `feature_ablation_matrix_cells.txt`,
 `estimator_latency_by_feature_set.csv` in the playground `reports/`.
 
@@ -754,8 +768,8 @@ quantified, not guessed. Raw data: `estimator_threads_grace_node.csv`,
   such a kernel, and the KV-capacity side of prefix sharing is the scheduler model's job,
   not this model's.
 - **Speculative decoding.** Extends of `1 + k` are accepted, but no training data with
-  MTP/EAGLE on exists yet. The decode default `indep5` drops the extend features because
-  they are constant without it; with MTP/EAGLE on, train decode with `--features sglang18`.
+  MTP/EAGLE on exists yet. The five-feature decode set of §3.1 assumes one token per
+  request per step and does not apply with MTP/EAGLE on.
 - **GPU type.** All numbers are GB300. A model is per deployment (GPU, engine, model,
   parallelism); nothing here claims transfer across GPU types.
 

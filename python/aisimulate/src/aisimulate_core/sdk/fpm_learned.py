@@ -112,51 +112,21 @@ SLOT_FEATURE_NAMES: tuple[str, ...] = tuple(
 )
 FEATURE_NAMES: tuple[str, ...] = AGGREGATE_FEATURE_NAMES + REQUEST_FEATURE_NAMES + SLOT_FEATURE_NAMES
 
-# Feature presets: ``v1`` uses aggregates only (works on any FPM stream);
-# ``sglang18`` / ``indep5`` / ``core4`` / ``hisim`` need per-request lists;
-# ``all`` is the union. See docs/fpm_ml/design.md §3.1 for the derivation.
-#
-# ``indep5``: the five of the 18 that carry information on a decode step, where
-# every request extends by exactly one token (Σe = n, Σe·p = Σp, ...): batch
-# size, sum / max / min past KV, sum of squared past. Identical accuracy to the
-# 18 on every train/test pair measured. Not valid with speculative decoding
-# (extends of 1 + k), where the extend features become informative again.
-INDEP5_FEATURE_NAMES: tuple[str, ...] = (
-    "req_batch_size",
-    "req_sum_past",
-    "req_max_past",
-    "req_min_past",
-    "req_sum_past_squared",
-)
-# ``core4``: the ablation minimum (batch size, sum extend, sum past, attention
-# proxy): ties the 18 in-distribution, worse for prefill extrapolation.
-CORE4_FEATURE_NAMES: tuple[str, ...] = (
-    "req_batch_size",
-    "req_sum_extend",
-    "req_sum_past",
-    "req_sum_attn_flops",
-)
+# Feature presets: ``v1`` uses aggregates only (works on any FPM stream),
+# ``sglang18`` / ``hisim`` need per-request lists, ``all`` is the union.
 FEATURE_PRESETS: dict[str, tuple[str, ...]] = {
     "v1": AGGREGATE_FEATURE_NAMES,
     "sglang18": REQUEST_FEATURE_NAMES,
-    "indep5": INDEP5_FEATURE_NAMES,
-    "core4": CORE4_FEATURE_NAMES,
     "hisim": ("req_batch_size",) + SLOT_FEATURE_NAMES,
     "all": FEATURE_NAMES,
 }
-# Defaults: ``indep5`` for decode workers, the 18 per-request features for
-# prefill and aggregated (mixed) workers. Both need the producer to emit
-# extend_lengths / past_kv_lengths; aggregate-only streams need an explicit
-# ``--features v1``.
+# Default = the 18 per-request features (SGLang simulator / HiSim lineage); the
+# producer must emit extend_lengths / past_kv_lengths. Aggregate-only streams
+# need an explicit ``--features v1``.
 DEFAULT_FEATURES: dict[str, tuple[str, ...]] = {
-    "decode": INDEP5_FEATURE_NAMES,
+    "decode": REQUEST_FEATURE_NAMES,
     "prefill": REQUEST_FEATURE_NAMES,
     "aggregated": REQUEST_FEATURE_NAMES,
-}
-DEFAULT_FEATURE_PRESET: dict[str, str] = {
-    "decode": "indep5",
-    "prefill": "sglang18",
-    "aggregated": "sglang18",
 }
 
 MIN_POSITIVE_PREDICTION_MS = 1e-6
@@ -852,7 +822,7 @@ def _cmd_train(args: argparse.Namespace) -> int:
             "join_ranks": args.join_ranks,
             "train_iterations": len(train_set),
             "holdout_iterations": len(holdout),
-            "features_preset": args.features or DEFAULT_FEATURE_PRESET[args.worker_type],
+            "features_preset": args.features,
         },
     )
     out = Path(args.out)
@@ -897,8 +867,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument(
         "--features",
         default=None,
-        help="preset (v1 | sglang18 | indep5 | core4 | hisim | all) or comma-separated feature names; "
-        "default: indep5 for decode, sglang18 for prefill / aggregated",
+        help="preset (v1 | sglang18 | hisim | all) or comma-separated feature names; default: sglang18",
     )
     tr.add_argument("--target", choices=TARGETS, default="log_ms")
     tr.add_argument("--max-iter", type=int, default=600)

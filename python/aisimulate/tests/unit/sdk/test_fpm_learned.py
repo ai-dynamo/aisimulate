@@ -273,9 +273,7 @@ def test_train_export_roundtrip_matches_sklearn() -> None:
     assert set(artifact["stores"]) == {"pure_decode"}
     assert artifact["metadata"]["hyperparameters"]["early_stopping"] is False
     assert artifact["metadata"]["trees_fitted"]["pure_decode"] == len(artifact["stores"]["pure_decode"]["trees"]) == 50
-    assert artifact["features"] == list(fpm_learned.INDEP5_FEATURE_NAMES)
-    assert fpm_learned.DEFAULT_FEATURES["prefill"] == fpm_learned.REQUEST_FEATURE_NAMES
-    assert set(fpm_learned.INDEP5_FEATURE_NAMES) < set(fpm_learned.REQUEST_FEATURE_NAMES)
+    assert artifact["features"] == list(fpm_learned.REQUEST_FEATURE_NAMES)
     # Exported trees reproduce the in-distribution fit closely.
     report = fpm_learned.evaluate(artifact, rng_iterations)
     assert report["pure_decode"]["mape_pct"] < 3.0
@@ -380,26 +378,6 @@ def test_evaluate_counts_refused_and_unpredicted_iterations() -> None:
     assert report["pure_decode"]["n"] == 1 and report["pure_decode"]["mape_pct"] == 0.0
     assert report["_refused"]["n"] == 1
     assert "_refused" in fpm_learned._format_report(report)
-
-
-def test_train_core4_preset_roundtrip() -> None:
-    pytest.importorskip("sklearn")
-    iterations = []
-    for i in range(300):
-        nd = 1 + i % 8
-        past = 500 * (1 + (i * 5) % 40)
-        wall = 0.004 + 0.0003 * nd + 0.00000004 * past * nd
-        fpm = _decode_fpm(nd, past * nd, wall, counter=i)
-        fpm["scheduled_requests"]["extend_lengths"] = [1] * nd
-        fpm["scheduled_requests"]["past_kv_lengths"] = [past] * nd
-        iterations.append([fpm])
-    core4 = fpm_learned.FEATURE_PRESETS["core4"]
-    artifact = fpm_learned.train(iterations, "decode", features=core4, max_iter=30, min_store_rows=10)
-    assert artifact["features"] == ["req_batch_size", "req_sum_extend", "req_sum_past", "req_sum_attn_flops"]
-    fpm_learned.validate_artifact(artifact)
-    predict = lambda m: fpm_reference.reference_predict_ms(artifact, m)  # noqa: E731
-    report = fpm_learned.evaluate(artifact, iterations, predict=predict)
-    assert report["pure_decode"]["mape_pct"] < 12.0
 
 
 def test_train_hisim_slot_features_roundtrip() -> None:
