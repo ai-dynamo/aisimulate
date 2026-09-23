@@ -220,29 +220,29 @@ runs). "Pooled" = all ten runs, the first 60 % of each concurrency tier trains a
 40 % tests. "A → B" = every run of workload A trains, every run of workload B tests. MAPE
 over steps.
 
-Decode:
+Each cell below is the MAPE of the model trained on the row's data and tested on the
+column's data, written as **`sglang18` / reduced / `core4`**. Diagonal and last row: the
+test set is the last 40 % of each concurrency tier of that workload, training uses the
+rest (no overlap). Off-diagonal: every run of the row workload trains, every run of the
+column workload tests.
 
-| train → test | `sglang18` | `indep10` | `indep5` | `core4` |
-| --- | --- | --- | --- | --- |
-| pooled (same mix) | 2.05 % | 2.04 % | 2.04 % | 2.02 % |
-| AgentX → LongBench | 3.03 % | 2.77 % | 2.77 % | 3.56 % |
-| AgentX → ShareGPT | 14.14 % | 13.79 % | 13.79 % | 12.41 % |
-| LongBench → AgentX | 2.91 % | 2.97 % | 2.97 % | 2.86 % |
-| LongBench → ShareGPT | 22.45 % | 22.46 % | 22.46 % | 22.17 % |
-| ShareGPT → AgentX | 3.88 % | 5.00 % | 5.00 % | 4.34 % |
-| ShareGPT → LongBench | 3.43 % | 6.03 % | 6.03 % | 4.39 % |
+Decode, cells = `sglang18` / `indep5` / `core4` (`indep10` equals `indep5` in every cell):
 
-Prefill (`indep5` does not apply: extends vary):
-
-| train → test | `sglang18` | `indep10` | `core4` |
+| train \ test | AgentX | ShareGPT | LongBench |
 | --- | --- | --- | --- |
-| pooled (same mix) | 1.98 % | 1.98 % | 1.97 % |
-| AgentX → LongBench | 0.88 % | 0.87 % | 0.81 % |
-| AgentX → ShareGPT | 3.49 % | 3.47 % | 3.67 % |
-| LongBench → AgentX | 6.52 % | 10.84 % | 15.12 % |
-| LongBench → ShareGPT | 29.42 % | 73.43 % | 75.62 % |
-| ShareGPT → AgentX | 26.23 % | 28.04 % | 31.79 % |
-| ShareGPT → LongBench | 43.17 % | 43.92 % | 55.09 % |
+| AgentX only | 2.34 / 2.33 / 2.19 | 14.14 / 13.79 / 12.41 | 3.03 / 2.77 / 3.56 |
+| ShareGPT only | 3.88 / 5.00 / 4.34 | 2.26 / 2.12 / 2.11 | 3.43 / 6.03 / 4.39 |
+| LongBench only | 2.91 / 2.97 / 2.86 | 22.45 / 22.46 / 22.17 | 1.84 / 1.84 / 1.82 |
+| all three | 2.21 / 2.21 / 2.14 | 2.10 / 2.08 / 2.10 | 1.84 / 1.84 / 1.85 |
+
+Prefill, cells = `sglang18` / `indep10` / `core4`:
+
+| train \ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.24 / 2.24 / 2.24 | 3.49 / 3.47 / 3.67 | 0.88 / 0.87 / 0.81 |
+| ShareGPT only | 26.23 / 28.04 / 31.79 | 2.55 / 2.54 / 2.53 | 43.17 / 43.92 / 55.09 |
+| LongBench only | 6.52 / 10.84 / 15.12 | 29.42 / 73.43 / 75.62 | 0.62 / 0.62 / 0.62 |
+| all three | 2.28 / 2.28 / 2.30 | 2.56 / 2.56 / 2.53 | 0.57 / 0.57 / 0.59 |
 
 Reading the tables:
 
@@ -266,7 +266,7 @@ Reading the tables:
 
 Decision: `sglang18` stays the default for both roles. `core4` is available as a preset for
 decode-only or in-distribution use. Raw output: `feature_ablation_pooled.txt`,
-`feature_ablation_cross.txt`, `feature_ablation_indep.txt`,
+`feature_ablation_cross.txt`, `feature_ablation_indep.txt`, `feature_ablation_matrix_cells.txt`,
 `estimator_latency_by_feature_set.csv` in the playground `reports/`.
 
 ## 4. Model
