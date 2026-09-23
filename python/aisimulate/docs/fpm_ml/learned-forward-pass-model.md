@@ -392,14 +392,17 @@ step through the PyO3 binding, which is how the simulator uses it.
 | load + featurize (gzip JSON lines) | 302,603 decode steps | 4.4 s |
 | train decode model (scikit-learn HGB, 400 trees, early stopping off) | 302,603 steps | 54 s |
 | train prefill model (same settings) | 5,245 steps | 20 s |
-| predict decode, Rust, one call per step | 196,585 steps | 3.78 s (19 µs / step, mean batch 10, max 35) |
-| predict prefill, Rust, one call per step | 3,803 steps | 0.08 s (22 µs / step, mean batch 1.2) |
+| predict decode, Rust, one call per step (through the Python wrapper) | 196,585 steps | 3.78 s (19 µs / step, mean batch 10, max 35) |
+| predict prefill, Rust, one call per step (through the Python wrapper) | 3,803 steps | 0.08 s (22 µs / step, mean batch 1.2) |
 
-Per-step inference grows linearly with the number of requests in the step (the feature
-vector walks the per-request lists): 12 / 23 / 58 µs at decode batch 8 / 64 / 256. The
-400-tree walk itself is a few microseconds. Training the pooled ten-run set (2.7M decode
-steps) took 25 s on another 16-thread machine; loading the compressed stream (204 s)
-dominates there. Artifacts are 100–450 KB of JSON.
+The GBDT itself costs 3.3–6.9 µs per prediction from decode batch 1 to 256 (Rust call on
+a prebuilt struct, nearly flat: the tree walk is a few microseconds, only the 18-feature
+build over the per-request lists grows). The per-step numbers above and their growth with
+batch size (9–59 µs from batch 1 to 256) come from the Python wrapper, which serialises
+the FPM dict to JSON and parses it in Rust on every call; the simulator calls the Rust
+path directly. Training the pooled ten-run set (2.7M decode steps) took 25 s on another
+16-thread machine; loading the compressed stream (204 s) dominates there.
+Artifacts are 100–450 KB of JSON.
 
 ## Limitations
 

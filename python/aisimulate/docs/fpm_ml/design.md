@@ -473,18 +473,21 @@ Dynamo relay files recorded in parallel were complete and are the only source us
 
 ## 8. Speed
 
-**Inference** (Rust tree walk through the PyO3 binding, one prediction = one
-`ForwardPassMetrics` step, `sglang18` artifact with 400 trees):
+**Inference** (`sglang18` artifact, 400 trees, one prediction = one `ForwardPassMetrics`
+step; single Grace core, release build; details and the native-model comparison in §8.1):
 
-| decode batch size | time per prediction |
-| --- | --- |
-| 8 | 12 µs |
-| 64 | 23 µs |
-| 256 | 58 µs |
+| decode batch size | GBDT alone (Rust call) | through the Python wrapper |
+| --- | --- | --- |
+| 1 | 3.3 µs | 11 µs |
+| 16 | 4.3 µs | 15 µs |
+| 64 | 5.1 µs | 25 µs |
+| 256 | 6.9 µs | 59 µs |
 
-The cost is dominated by building the feature vector from the per-request lists
-(linear in batch size); the 400-tree walk itself is a few microseconds. A simulated
-run of a million steps therefore spends well under a minute in the perf model.
+The GBDT itself is nearly flat in batch size (the tree walk is a few microseconds; only the
+18-feature build over the per-request lists grows). Everything above that in the Python
+column is the wrapper serialising the FPM dict to JSON and Rust parsing it, which is linear
+in the length of the two per-request lists. The simulator calls the Rust path directly, so
+a million-step run spends a few seconds in the model.
 
 **Training** (scikit-learn, CPU, 16 threads, log target, 400 trees, pooled 10 runs):
 
