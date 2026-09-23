@@ -17,6 +17,7 @@ import json
 import os
 import statistics
 import time
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 
@@ -53,6 +54,11 @@ def token_slice(pool: list[int], length: int, offset: int) -> list[int]:
 
 class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
     def _bench_init(self, config):
+        self._real_request_set = f"{os.environ.get('FPM_RUN_ID', 'glm53flash')}-{uuid.uuid4().hex}"
+        self._real_request_manifest = {}
+        self._real_purpose = os.environ.get("AISIM_GLM53_PURPOSE", "fpm")
+        if self._real_purpose not in {"fpm", "ops", "ops_holdout"}:
+            raise ValueError("unsupported GLM observation purpose")
         self._real_tags = {}
         self._real_callback_stage = None
         self._real_stage = None
@@ -72,8 +78,12 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         super()._bench_init(config)
         if not self._bench_active:
             raise ValueError("GLM-5.3-Flash canary overlay requires native benchmark mode")
-        if config.model_config.enforce_eager:
+        if self._real_purpose == "fpm" and config.model_config.enforce_eager:
             raise ValueError("GLM-5.3-Flash formal collection requires native graph policy")
+        if self._real_purpose != "fpm" and not config.model_config.enforce_eager:
+            raise ValueError("GLM operation observation currently requires explicit native eager execution")
+        if (self._real_purpose == "ops") != bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")):
+            raise ValueError("GLM Ops instrumentation must match its explicit collection purpose")
         if not config.observability_config.cudagraph_metrics:
             raise ValueError("GLM-5.3-Flash FPM requires actual CUDA graph dispatch metrics")
         parallel = config.parallel_config
@@ -107,16 +117,17 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         self._real_repeat = 0
         self._real_repetitions = {}
         self._real_dispatches = []
-        model_path = Path(config.model_config.model)
-        raw_config = json.loads((model_path / "config.json").read_text())
-        from aisimulate_core.sdk.glm53flash import Glm53FlashConfig
+        from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS, Glm53FlashConfig
+        from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+        raw_config = get_model_config_from_model_path(config.model_config.model)["raw_config"]
 
         Glm53FlashConfig.from_text_config(raw_config["text_config"])
         if (
             config.model_config.architecture != "Glm5NextForConditionalGeneration"
             or config.model_config.hf_config.model_type != "glm5_next"
         ):
-            raise ValueError("loaded model must be DeepSeek GLM-5.3-Flash")
+            raise ValueError("loaded model must be GLM-5.3-Flash")
         from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
 
         self._real_identity = dict(
@@ -133,6 +144,9 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         revision = os.environ.get("DYN_FPM_TOKENIZER_REVISION")
         if revision not in MODEL_SHAS:
             raise ValueError("tokenizer revision must equal the pinned GLM-5.3-Flash checkpoint revision")
+        expected_model = next(model for model, pin in MODEL_REVISIONS.items() if pin == revision)
+        if raw_config != get_model_config_from_model_path(expected_model)["raw_config"]:
+            raise ValueError("loaded model metadata differs from the pinned GLM checkpoint")
         text_bytes = Path(os.environ["DYN_FPM_INPUT_TEXT"]).read_bytes()
         tokenizer = get_tokenizer(
             config.model_config.tokenizer,
@@ -283,7 +297,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         self._real_stage_index = 0
         for index in range(point.batch_size):
             prompt_len = prefix[index] if point.point_type == "decode" else prefix[index] + suffix[index]
-            req_id = f"__glm53flash_real_{point.benchmark_id}_{index}_{self._bench_seq}"
+            req_id = f"{self._real_request_set}_{point.benchmark_id}_{index}_{self._bench_seq}"
             request = Request(
                 request_id=req_id,
                 prompt_token_ids=token_slice(self._real_tokens, prompt_len, 131 * index + 17 * point.benchmark_id),
@@ -299,6 +313,31 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             self.running.append(request)
             self._bench_active_req_ids.add(req_id)
             self._real_requests.append(request)
+            self._real_request_manifest[req_id] = {
+                "benchmark_id": point.benchmark_id,
+                "repetition": self._real_repeat,
+                "sampling_role": "warmup" if self._real_repeat < WARMUP_REPEATS else "measurement",
+                "target_phase": "generation" if point.point_type == "decode" else "context",
+                "target_query": suffix[index],
+                "target_prefix": prefix[index] + int(point.point_type == "decode"),
+                "target_batch_size": point.batch_size,
+            }
+        manifest_path = os.environ.get("AISIM_GLM53_REQUEST_MANIFEST")
+        if manifest_path:
+            destination = Path(manifest_path)
+            temporary = destination.with_suffix(destination.suffix + ".tmp")
+            temporary.write_text(
+                json.dumps(
+                    {
+                        "request_set": self._real_request_set,
+                        "dataset_role": os.environ.get("DYN_FPM_DATASET_ROLE", "calibration"),
+                        "corpus_sha256": self._real_input["text_sha256"],
+                        "requests": self._real_request_manifest,
+                    },
+                    sort_keys=True,
+                )
+            )
+            os.replace(temporary, destination)
         self._bench_seq += 1
 
     def _real_output(self, stage, counts):
@@ -489,7 +528,9 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             "records": len(self._real_token_streams),
         }
         output["execution_identity"] = self._real_identity
-        output["execution_mode"] = "native_graph_policy"
+        output["execution_mode"] = "native_graph_policy" if self._real_purpose == "fpm" else "eager_ops"
+        output["observation_purpose"] = self._real_purpose
+        output["ops_instrumented"] = self._real_purpose == "ops"
         output["timing_boundary"] = "vllm_native_scheduler_output_interval"
         output["kvwarm"] = {
             "enabled": True,

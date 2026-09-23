@@ -6,6 +6,7 @@ import importlib.util
 import json
 import math
 import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -76,6 +77,12 @@ for phase, context, suffix in [("prefill", 0, 64), ("prefill", 4099, 3), ("decod
     point = precedent.point(phase, batch=2, context=context, new=suffix)
     scheduler = precedent.scheduler(point)
     scheduler._real_repeat = 0
+    scheduler._real_request_set = "fixture-run"
+    scheduler._real_request_manifest = {}
+    scheduler._real_input = {"text_sha256": "a" * 64}
+    manifest_dir = tempfile.TemporaryDirectory()
+    manifest_path = Path(manifest_dir.name) / "requests.json"
+    os.environ["AISIM_GLM53_REQUEST_MANIFEST"] = str(manifest_path)
     scheduler._real_repetitions = {}
     scheduler._real_dispatches = []
     driver = Driver(scheduler)
@@ -93,6 +100,15 @@ for phase, context, suffix in [("prefill", 0, 64), ("prefill", 4099, 3), ("decod
     histories = [json.loads(row) for row in scheduler._real_token_streams]
     assert [h["sampling_role"] for h in histories] == ["warmup"] * 5 + ["measurement"] * 10
     assert len({r["request_id"] for h in histories for r in h["requests"]}) == 30
+    manifest = json.loads(manifest_path.read_text())
+    assert len(manifest["requests"]) == 30
+    assert manifest["corpus_sha256"] == "a" * 64
+    for entry in manifest["requests"].values():
+        assert entry["target_prefix"] == context
+        assert entry["target_phase"] == ("generation" if phase == "decode" else "context")
+        assert entry["sampling_role"] == ("warmup" if entry["repetition"] < 5 else "measurement")
+    del os.environ["AISIM_GLM53_REQUEST_MANIFEST"]
+    manifest_dir.cleanup()
     assert math.isclose(scheduler.saved[0][1][-1]["wall_time"], 0.0105, rel_tol=1e-12)
     for repetition in scheduler._real_repetitions[1]:
         assert repetition["completed_seed_tokens"] == point.total_kv_read_tokens - (2 if phase == "decode" else 0)
