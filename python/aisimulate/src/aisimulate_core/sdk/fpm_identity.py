@@ -30,6 +30,21 @@ def execution_identity(
     runtime configuration. A checkpoint hash does not prove runtime residency.
     """
     architectures = raw_config.get("architectures") or []
+    if "Glm5NextForConditionalGeneration" in architectures:
+        if decoder_replay or backend not in {"vllm", "sglang"}:
+            raise ValueError("GLM-5.3-Flash FPM requires full text execution on vLLM or SGLang")
+        if input_modality != "text":
+            raise ValueError("GLM-5.3-Flash FPM requires explicit input_modality='text'")
+        from .utils import _attach_inferred_quant_fields
+
+        payload = _attach_inferred_quant_fields(copy.deepcopy(raw_config))
+        # The protocol is part of the curve identity: historical fake-KV or
+        # generic MLA data cannot satisfy a hybrid-state forward query.
+        payload["_fpm_state_protocol"] = "glm53flash_same_request_real_hybrid_v1"
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        ).hexdigest()
+        return (digest, "full", "none", "text")
     if "DeepseekV41ForCausalLM" not in architectures:
         if decoder_replay:
             raise ValueError("FPM decoder replay requires a DeepSeek-V4.1 model")

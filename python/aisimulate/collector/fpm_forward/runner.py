@@ -1224,6 +1224,12 @@ def _cell_generator_overrides(
             )
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
+    if architecture == "Glm5NextForConditionalGeneration":
+        # The adapter owns five real warmups for every exact point.
+        scheduler_args[scheduler_args.index("--benchmark-warmup-iterations") + 1] = "0"
+        model_args.extend(["--language-model-only", "--cudagraph-metrics"])
+        if cell.workload_kind == "decode":
+            model_args.extend(["--max-num-batched-tokens", str(plan.options.max_prefill_isl)])
     if architecture == "DeepseekV41ForCausalLM":
         if plan.options.decoder_replay:
             raise NotImplementedError("vLLM DeepSeek-V4.1 true decoder replay is not verified")
@@ -1251,6 +1257,18 @@ def _cell_generator_overrides(
                 {"name": "DYN_FPM_DSV41_REAL_KV", "value": "1"},
                 {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
                 {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISION},
+            ]
+        )
+    if architecture == "Glm5NextForConditionalGeneration":
+        from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+
+        if plan.model_path not in MODEL_REVISIONS:
+            raise ValueError("GLM FPM plan model_path must identify one of the two pinned HF checkpoints")
+        env.extend(
+            [
+                {"name": "DYN_FPM_GLM53FLASH_REAL_KV", "value": "1"},
+                {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
+                {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISIONS[plan.model_path]},
             ]
         )
     total_gpus = cell.topology.total_gpus
@@ -1305,13 +1323,14 @@ def _cell_generator_overrides(
         if existing is not None and existing != item:
             raise ValueError(f"conflicting FPM environment value for {name}")
         resolved_env[name] = copy.deepcopy(item)
-    if architecture == "DeepseekV41ForCausalLM":
+    if architecture in {"DeepseekV41ForCausalLM", "Glm5NextForConditionalGeneration"}:
         # Image layout belongs to this source-pinned adapter. An explicitly
         # configured path uses the existing deployment environment interface;
         # both preflight and generated run.sh receive the same resolved value.
         configured = resolved_env.get("PYTHONPATH")
         if configured is None:
-            adapter = Path(__file__).parent / "runtime" / "dsv41" / "runtime-paths.json"
+            family = "glm53flash" if cell.state_protocol else "dsv41"
+            adapter = Path(__file__).parent / "runtime" / family / "runtime-paths.json"
             python_path = json.loads(adapter.read_text())["python_path"]
         else:
             python_path = configured.get("value")
@@ -1411,6 +1430,7 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
         READINESS_TIMEOUT_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
+        "DYN_FPM_GLM53FLASH_REAL_KV",
         "DYN_FPM_INPUT_TEXT",
         "DYN_FPM_TOKENIZER_REVISION",
     }
@@ -2035,8 +2055,14 @@ def _run_collection_impl(
                     *_stage_points_file(plan, cell_dir),
                     *(
                         [
-                            runtime_preflight.parent / "fpm_text.txt",
-                            *sorted(p for p in (runtime_preflight.parent / "dsv41").iterdir() if p.is_file()),
+                            _stage_input_text(plan, cell, cell_dir),
+                            *sorted(
+                                p
+                                for p in (
+                                    runtime_preflight.parent / ("glm53flash" if cell.state_protocol else "dsv41")
+                                ).iterdir()
+                                if p.is_file()
+                            ),
                         ]
                         if cell.execution_identity[0]
                         else []
@@ -2147,6 +2173,17 @@ def _run_collection_impl(
         },
     )
     if formal_database_terminal:
+        return errors
+    if plan.options.dataset_role == "holdout":
+        checkpoint["holdout"] = {
+            "status": "passed"
+            if not errors
+            and all(checkpoint["cells"].get(cell.cell_id, {}).get("status") == "passed" for cell in plan.cells)
+            else "incomplete",
+            "formal_database_written": False,
+            "accuracy_acceptance": "NOT_EVALUATED",
+        }
+        _atomic_json(checkpoint_path, checkpoint)
         return errors
     all_passed = all(checkpoint["cells"].get(cell.cell_id, {}).get("status") == "passed" for cell in target_cells)
     # Formal publication eligibility must agree with completion: a deliberate
@@ -2268,3 +2305,17 @@ def _run_collection_impl(
             }
         )
     return errors
+
+
+def _stage_input_text(plan, cell, cell_dir):
+    source = (
+        Path(plan.options.input_text_path).expanduser()
+        if plan.options.input_text_path
+        else Path(__file__).parent / "runtime" / "fpm_text.txt"
+    )
+    raw = source.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != cell.input_text_sha256:
+        raise ValueError("FPM text corpus changed after the plan was frozen")
+    destination = cell_dir / "fpm_text.txt"
+    destination.write_bytes(raw)
+    return destination

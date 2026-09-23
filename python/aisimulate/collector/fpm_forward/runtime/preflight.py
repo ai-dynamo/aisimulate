@@ -46,6 +46,16 @@ def main() -> None:
     try:
         from dynamo.vllm.instrumented_scheduler import BenchmarkPoint, InstrumentedScheduler
 
+        if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
+            from glm53flash_scheduler import Glm53FlashRealKVScheduler
+
+            if InstrumentedScheduler is not Glm53FlashRealKVScheduler:
+                raise RuntimeError("GLM-5.3-Flash source-checked scheduler activation did not occur")
+            from aisimulate_core.sdk.glm53flash import Glm53FlashConfig
+
+            if not callable(Glm53FlashConfig.from_text_config):
+                raise RuntimeError("GLM runtime lacks the shared AISimulate model contract")
+
         if os.environ.get("DYN_FPM_DSV41_REAL_KV") == "1":
             from dsv41_scheduler import DeepseekV41RealKVScheduler
 
