@@ -871,7 +871,8 @@ fn learned_base_ms(
     if !learned.has_store(workload_kind) {
         return Ok(None);
     }
-    let vector = IterationFeatureVector::from_metrics(metrics_by_rank);
+    let vector =
+        IterationFeatureVector::from_metrics_with(metrics_by_rank, learned.needs_slot_features());
     if learned.needs_request_features() && !vector.request_lists {
         // Without the lists every req_*/slot feature is NaN and the trees
         // would return one constant for every batch. Refuse loudly instead.

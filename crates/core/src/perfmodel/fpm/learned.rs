@@ -308,6 +308,12 @@ impl LearnedForwardPassModel {
         self.stores.keys().copied().collect()
     }
 
+    /// `true` when the artifact reads any HiSim request slot (`slot*`), which is the
+    /// only consumer of the sorted per-request list.
+    pub(crate) fn needs_slot_features(&self) -> bool {
+        self.feature_names.iter().any(|name| name.starts_with("slot"))
+    }
+
     /// `true` when the artifact uses any per-request (`req_*`) or slot feature
     /// and therefore needs `extend_lengths` / `past_kv_lengths` on the input.
     pub(crate) fn needs_request_features(&self) -> bool {
@@ -326,11 +332,11 @@ impl LearnedForwardPassModel {
         let Some(store) = self.stores.get(&kind) else {
             return Ok(None);
         };
-        let x: Vec<f64> = self
-            .feature_indices
-            .iter()
-            .map(|&index| features.values[index])
-            .collect();
+        let mut buf = [f64::NAN; FEATURE_COUNT];
+        for (slot, &index) in self.feature_indices.iter().enumerate() {
+            buf[slot] = features.values[index];
+        }
+        let x = &buf[..self.feature_indices.len()];
         let mut raw = store.baseline;
         for tree in &store.trees {
             raw += tree_leaf_value(tree, &x);
@@ -435,7 +441,17 @@ impl IterationFeatureVector {
 
     /// Compute the named features from one iteration's per-rank FPMs. Callers
     /// validate the metrics first; ranks with no scheduled work are skipped.
+    /// Fills the HiSim request slots too (sorted list); see `from_metrics_with`.
     pub(crate) fn from_metrics(metrics_by_rank: &[ForwardPassMetrics]) -> Self {
+        Self::from_metrics_with(metrics_by_rank, true)
+    }
+
+    /// Same as `from_metrics`, but the per-request list is sorted and copied into
+    /// the 32 HiSim slots only when `fill_slots` is set; artifacts that read no
+    /// `slot*` feature skip that O(n log n) work. All `req_*` sums are exact
+    /// integer arithmetic in f64 for real token counts, so their value does not
+    /// depend on the summation order.
+    pub(crate) fn from_metrics_with(metrics_by_rank: &[ForwardPassMetrics], fill_slots: bool) -> Self {
         let mut num_active_ranks = 0.0_f64;
         let mut num_prefill = 0.0_f64;
         let mut sum_ptok = 0.0_f64;
@@ -555,37 +571,40 @@ impl IterationFeatureVector {
         let request_lists = matches!(&pairs, Some(list) if !list.is_empty());
         match pairs {
             Some(mut list) if !list.is_empty() => {
-                // Sort by past descending, then extend descending (stable slot semantics).
-                list.sort_by(|a, b| {
-                    b.1.partial_cmp(&a.1)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then(b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal))
-                });
+                if fill_slots {
+                    // Sort by past descending, then extend descending (stable slot semantics).
+                    list.sort_by(|a, b| {
+                        b.1.partial_cmp(&a.1)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then(b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal))
+                    });
+                }
+                // One pass for every reduction. Per-request attention proxy is
+                // e * (p + e / 2) (the SGLang simulator formula); the aggregate
+                // `prefill_attention_pairs` above uses the balanced-partition estimate
+                // e * (p + (e + 1) / 2). Both are mirrored byte-for-byte in the Python
+                // trainer.
                 let n = list.len() as f64;
-                let sum_e: f64 = list.iter().map(|(e, _)| e).sum();
-                let sum_p: f64 = list.iter().map(|(_, p)| p).sum();
-                let sum_ep: f64 = list.iter().map(|(e, p)| e * p).sum();
-                let sum_e2: f64 = list.iter().map(|(e, _)| e * e).sum();
-                let sum_p2: f64 = list.iter().map(|(_, p)| p * p).sum();
-                // Per-request attention proxy e * (p + e / 2) (the SGLang simulator
-                // formula); the aggregate `prefill_attention_pairs` above uses the
-                // balanced-partition estimate e * (p + (e + 1) / 2). Both are mirrored
-                // byte-for-byte in the Python trainer.
-                let sum_attn: f64 = list.iter().map(|(e, p)| e * (p + e / 2.0)).sum();
-                let max_e = list.iter().map(|(e, _)| *e).fold(f64::MIN, f64::max);
-                let min_e = list.iter().map(|(e, _)| *e).fold(f64::MAX, f64::min);
-                let max_p = list.iter().map(|(_, p)| *p).fold(f64::MIN, f64::max);
-                let min_p = list.iter().map(|(_, p)| *p).fold(f64::MAX, f64::min);
-                let is_decode = if list.iter().all(|(e, _)| *e <= 1.0) {
-                    1.0
-                } else {
-                    0.0
-                };
-                let is_prefill = if list.iter().any(|(e, _)| *e > 1.0) {
-                    1.0
-                } else {
-                    0.0
-                };
+                let (mut sum_e, mut sum_p, mut sum_ep, mut sum_e2, mut sum_p2, mut sum_attn) =
+                    (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+                let (mut max_e, mut min_e, mut max_p, mut min_p) =
+                    (f64::MIN, f64::MAX, f64::MIN, f64::MAX);
+                let mut any_extend = false;
+                for &(e, p) in &list {
+                    sum_e += e;
+                    sum_p += p;
+                    sum_ep += e * p;
+                    sum_e2 += e * e;
+                    sum_p2 += p * p;
+                    sum_attn += e * (p + e / 2.0);
+                    max_e = max_e.max(e);
+                    min_e = min_e.min(e);
+                    max_p = max_p.max(p);
+                    min_p = min_p.min(p);
+                    any_extend |= e > 1.0;
+                }
+                let is_decode = if any_extend { 0.0 } else { 1.0 };
+                let is_prefill = if any_extend { 1.0 } else { 0.0 };
                 values.extend_from_slice(&[
                     n,
                     sum_e,
@@ -606,11 +625,15 @@ impl IterationFeatureVector {
                     is_decode,
                     is_prefill,
                 ]);
-                for slot in 0..SLOT_COUNT {
-                    match list.get(slot) {
-                        Some((e, p)) => values.extend_from_slice(&[1.0, *p, *e]),
-                        None => values.extend_from_slice(&[0.0, 0.0, 0.0]),
+                if fill_slots {
+                    for slot in 0..SLOT_COUNT {
+                        match list.get(slot) {
+                            Some((e, p)) => values.extend_from_slice(&[1.0, *p, *e]),
+                            None => values.extend_from_slice(&[0.0, 0.0, 0.0]),
+                        }
                     }
+                } else {
+                    values.extend(std::iter::repeat_n(0.0, 3 * SLOT_COUNT));
                 }
             }
             _ => {
