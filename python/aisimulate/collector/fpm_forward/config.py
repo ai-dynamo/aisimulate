@@ -253,6 +253,9 @@ class FPMCollectionOptions:
     executor: str = "kubernetes"
     slurm_container_image: str = ""
     slurm_container_mounts: tuple[str, ...] = ()
+    input_text_path: str | None = None
+    input_text_sha256: str = ""
+    dataset_role: str = "calibration"
 
     @property
     def prefill_sampling(self) -> PrefillSamplingProfile:
@@ -318,6 +321,13 @@ class FPMCollectionOptions:
             points_json, points_sha256 = _freeze_benchmark_points(points_path)
 
         return cls(
+            input_text_path=getattr(args, "fpm_input_text", None),
+            input_text_sha256=(
+                hashlib.sha256(Path(args.fpm_input_text).expanduser().read_bytes()).hexdigest()
+                if getattr(args, "fpm_input_text", None)
+                else ""
+            ),
+            dataset_role=getattr(args, "fpm_dataset_role", None) or "calibration",
             benchmark_points_json=points_json,
             benchmark_points_sha256=points_sha256,
             max_gpus=max_gpus,
@@ -389,6 +399,10 @@ class FPMCollectionOptions:
         }
         if self.enforce_eager:
             payload["enforce_eager"] = True
+        if self.input_text_sha256:
+            payload["input_text_sha256"] = self.input_text_sha256
+        if self.dataset_role != "calibration":
+            payload["dataset_role"] = self.dataset_role
         if self.benchmark_points_json is not None:
             payload["benchmark_points"] = {
                 "payload": json.loads(self.benchmark_points_json),
@@ -403,6 +417,13 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group(
         "FPM forward collection",
         "Whole-model forward-pass planning, execution, and publication.",
+    )
+    group.add_argument("--fpm-input-text", default=None, help="UTF-8 token corpus; freeze its SHA in the plan.")
+    group.add_argument(
+        "--fpm-dataset-role",
+        choices=("calibration", "holdout"),
+        default="calibration",
+        help="Holdout runs retain native evidence without publishing calibration rows.",
     )
     group.add_argument(
         "--fpm-enforce-eager",

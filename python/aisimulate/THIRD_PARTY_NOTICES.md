@@ -80,6 +80,20 @@ records the inspected vLLM API revision and immutable runtime image/source
 hashes. vLLM implementation files are not vendored. The text fixture and
 lifecycle tests are original work for this change, with no external corpus.
 
+## Dynamo GLM-5.3-Flash FPM collection adapter
+
+`python/aisimulate/collector/fpm_forward/runtime/glm53flash/glm53flash_scheduler.py`
+is modified code adapted from `components/src/dynamo/vllm/instrumented_scheduler.py`
+in https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9,
+using this repository's DeepSeek V4.1 same-request adapter as the integration
+precedent. Changes add the GLM hybrid-state contract, repeated real warmups and
+measurements, actual graph-dispatch receipts and immutable source validation.
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the upstream license is preserved in the adjacent
+`LICENSE`. No upstream root NOTICE exists. vLLM implementation files are not
+vendored; exact API source hashes and their revision are recorded alongside
+this adapter. The corpus and new contract tests are original project content.
+
 ## NVIDIA AIConfigurator speculative decoding
 
 The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.

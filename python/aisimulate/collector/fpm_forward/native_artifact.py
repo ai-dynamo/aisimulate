@@ -93,8 +93,9 @@ def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path:
     expected = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))
     if payload.get("execution_identity") != expected:
         raise ValueError(f"native execution identity differs from the frozen V4.1 cell: {path}")
-    if payload.get("execution_mode") != "eager":
-        raise ValueError(f"V4.1 native data requires verified eager execution: {path}")
+    expected_mode = "native_graph_policy" if getattr(cell, "state_protocol", "") else "eager"
+    if payload.get("execution_mode") != expected_mode:
+        raise ValueError(f"native data requires verified {expected_mode} execution: {path}")
     evidence = payload.get("input_provenance")
     if not isinstance(evidence, dict) or evidence.get("source") != "tokenizer_text":
         raise ValueError(f"V4.1 native result requires tokenizer-generated text provenance: {path}")
@@ -256,7 +257,7 @@ def _validate_collector_provenance(
         runtime = payload.get("runtime")
         if (
             not isinstance(runtime, dict)
-            or runtime.get("backend") != "vllm"
+            or runtime.get("backend") != cell.backend
             or not isinstance(runtime.get("backend_version"), str)
             or not runtime["backend_version"]
         ):
@@ -413,7 +414,12 @@ def validate_native_collection(
             raise ValueError(f"native result has malformed result points: {path}")
         evidence = _validate_execution_provenance(cell, payload, path)
         if evidence is not None:
-            _validate_token_streams(payload, path)
+            if cell.state_protocol:
+                from .hybrid_artifact import validate_real_hybrid_repetitions
+
+                validate_real_hybrid_repetitions(cell, payload, path)
+            else:
+                _validate_token_streams(payload, path)
         if input_provenance is None:
             input_provenance = evidence
         elif {k: v for k, v in evidence.items() if k != "token_stream_manifest"} != {
