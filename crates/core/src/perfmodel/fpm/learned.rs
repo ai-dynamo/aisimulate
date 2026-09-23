@@ -311,7 +311,9 @@ impl LearnedForwardPassModel {
     /// `true` when the artifact reads any HiSim request slot (`slot*`), which is the
     /// only consumer of the sorted per-request list.
     pub(crate) fn needs_slot_features(&self) -> bool {
-        self.feature_names.iter().any(|name| name.starts_with("slot"))
+        self.feature_names
+            .iter()
+            .any(|name| name.starts_with("slot"))
     }
 
     /// `true` when the artifact uses any per-request (`req_*`) or slot feature
@@ -451,7 +453,10 @@ impl IterationFeatureVector {
     /// `slot*` feature skip that O(n log n) work. All `req_*` sums are exact
     /// integer arithmetic in f64 for real token counts, so their value does not
     /// depend on the summation order.
-    pub(crate) fn from_metrics_with(metrics_by_rank: &[ForwardPassMetrics], fill_slots: bool) -> Self {
+    pub(crate) fn from_metrics_with(
+        metrics_by_rank: &[ForwardPassMetrics],
+        fill_slots: bool,
+    ) -> Self {
         let mut num_active_ranks = 0.0_f64;
         let mut num_prefill = 0.0_f64;
         let mut sum_ptok = 0.0_f64;
