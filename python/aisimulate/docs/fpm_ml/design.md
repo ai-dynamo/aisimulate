@@ -365,21 +365,12 @@ steps per request), so few requests are decoding at any moment. The region
 
 ## 7. Results
 
-### 7.1 Independent capture runs, one deployment each
+The results are organised around the two deployments that carry the full three-workload
+study: DeepSeek-V4.1-Flash on the Dynamo SGLang runtime (§7.1) and DeepSeek-V4-Flash on the
+Dynamo vLLM runtime (§7.2), both on GB300. Earlier single-pair runs on other models are in
+Appendix A.
 
-Train on one run, test on another (different seed and tiers). Step-weighted MAPE
-(median):
-
-| Deployment | train → test tiers | decode | prefill |
-| --- | --- | --- | --- |
-| Qwen3-32B-FP8, vLLM 1.4.0, 262k YaRN | c16/32/64 → c24/48/96 | 2.41% (0.97%), 122k steps | 1.64% (0.55%), 13k steps |
-| DeepSeek-V4-Flash, vLLM 1.4.0, 262k | c16/32/64/128 → c24/48/96/64 | 3.14% (0.97%), 457k steps | 4.46% (4.48%), 32k steps¹ |
-| DeepSeek-V4.1-Flash, SGLang 1.6.0-dev, TP4/EP4, overlap off | c16/32/64/128 → c24/48/96 | 1.92% (1.47%), 197k steps | 2.23% (1.00%), 3.7k steps |
-
-¹ a constant run-to-run offset (predicted/observed median 1.044, p10–p90
-1.002–1.058), which the online correction grid absorbs.
-
-### 7.2 Three workloads, V4.1-Flash SGLang GB300
+### 7.1 DeepSeek-V4.1-Flash on the Dynamo SGLang runtime, three workloads
 
 Rows = training data, columns = test set. Same-workload cells (diagonal and the
 pooled row): 60/40 time-block split of that workload's runs, test set = 40% of the
@@ -423,7 +414,7 @@ workload, so a release artifact should be trained on the union of the workloads 
 meant to simulate. Step balancing between workloads changes the pooled numbers by at
 most 0.1 pp.
 
-### 7.3 The same three workloads on the vLLM backend (DeepSeek-V4-Flash)
+### 7.2 DeepSeek-V4-Flash on the Dynamo vLLM runtime, same three workloads
 
 Same GB300 nodes and load generator, Dynamo vLLM runtime `vllm-runtime:1.4.0`,
 DeepSeek-V4-Flash (V4.1 is not in a vLLM release yet), TP4/EP4, 262k context, FP8 KV,
@@ -448,7 +439,7 @@ AgentX (p50 3 / max 23 vs. 7 / 43):
 | decode context per request | 34k / 115k / 230k / 254k | 96 / 759 / 1,861 / 2,860 | 8.6k / 32k / 160k / 201k |
 | prefill / decode steps (both runs) | 61.6k / 1,089k | 45.1k / 697k | 56.9k / 1,341k |
 
-Decode, step-weighted MAPE (same layout as §7.2):
+Decode, step-weighted MAPE (same layout as §7.1):
 
 | Training data \ test set | AgentX | ShareGPT | LongBench |
 | --- | --- | --- | --- |
@@ -546,7 +537,7 @@ compute**; both are a few microseconds, and at the Python boundary the JSON mars
 (6–39 µs, linear in batch size because of the two per-request lists) dominates both, so a
 Python caller sees them within 0.3–5 µs of each other. A million-step simulation spends
 1–7 s in either estimator. Accuracy on the real steps of the same deployment: native
-decode 6.7% / prefill 46%, GBDT 4.0% / 5.1% (§7.3, and below).
+decode 6.7% / prefill 46%, GBDT 4.0% / 5.1% (§7.2, and below).
 
 What the native model evaluates per step, and how the two compare on real steps:
 
@@ -561,7 +552,7 @@ the vLLM prefill worker's `wall_time` sits on a 180–250 ms floor regardless of
 tokens (a 5-token chunk takes 200–650 ms, a 4096-token chunk ~190 ms), while the analytic
 compute estimate is 24–110 ms. The floor is disaggregation overhead (KV hand-off) inside
 the measured step, which the GBDT learns from the data and the op-level model does not
-represent. It also means the vLLM prefill numbers in §7.3 are step times including that
+represent. It also means the vLLM prefill numbers in §7.2 are step times including that
 overhead, not pure forward time.
 
 ## 9. Limitations and follow-ups
@@ -586,3 +577,22 @@ overhead, not pure forward time.
   MTP/EAGLE on exists yet.
 - **GPU type.** All numbers are GB300. A model is per deployment (GPU, engine, model,
   parallelism); nothing here claims transfer across GPU types.
+
+## Appendix A. Earlier single-pair runs on other deployments
+
+Before the three-workload study, the method was checked on one pair of AgentX capture
+runs per deployment: train on one run, test on another run with a different seed and
+different concurrency tiers. Step-weighted MAPE (median in parentheses):
+
+| Deployment | train → test tiers | decode | prefill |
+| --- | --- | --- | --- |
+| Qwen3-32B-FP8, vLLM 1.4.0, 262k YaRN context, TP4 | c16/32/64 → c24/48/96 | 2.41% (0.97%), 122k steps | 1.64% (0.55%), 13k steps |
+| DeepSeek-V4-Flash, vLLM 1.4.0, 262k, TP4/EP4 (2026-09-18 capture, per-request fields from a patched Dynamo image rather than the hooks) | c16/32/64/128 → c24/48/96/64 | 3.14% (0.97%), 457k steps | 4.46% (4.48%), 32k steps¹ |
+| DeepSeek-V4.1-Flash, SGLang 1.6.0-dev, TP4/EP4, overlap off (the first two runs of §7.1) | c16/32/64/128 → c24/48/96 | 1.92% (1.47%), 197k steps | 2.23% (1.00%), 3.7k steps |
+
+¹ a constant run-to-run offset (predicted/observed median 1.044, p10–p90 1.002–1.058),
+which the online correction grid absorbs.
+
+On aggregates-only features (`v1`) the same experiments land within about half a
+percentage point of `sglang18`; the per-request features matter most where batches are
+large and heterogeneous.
