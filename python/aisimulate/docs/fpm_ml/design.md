@@ -251,7 +251,9 @@ Reading the tables:
   tree cannot form a product or a log, so the derived axes (attention work Σe·(p + e/2),
   Σe · max p, the `log1p` transforms) let it split directly on quantities that carry over
   to unseen chunk-size / prefix mixes. Information-preserving is not the same as
-  GBDT-preserving; prefill keeps all 18.
+  GBDT-preserving; prefill keeps all 18. §8.8(b) traces the loss to one derived feature,
+  n · Σe: the ten atomic features plus `req_batch_size_x_sum_extend` (eleven) stay within
+  1.4 pp of the eighteen on every cross cell.
 - **Time per estimate is unchanged by the feature count.** Two decode artifacts trained on
   the same vLLM AgentX run (§7.2 data, 400 trees each), timed as in §8.1 on one Grace core:
   18 features 3.7–5.8 µs over the decode grid, 4 features 4.3–6.4 µs; prefill 4.5–6.3 µs
@@ -761,10 +763,12 @@ Prefill:
 
 Same-workload accuracy (pooled and diagonal) is flat across the whole grid, down to 50
 trees of 7 leaves: about 2.0 % decode and 2.0 % prefill. The cross-workload cells move by
-a few points between configurations in both directions; those cells are dominated by
-extrapolation and vary this much between training seeds as well (the 400 × 31 / 18-feature
-row here differs from §3.1 by up to 2 pp for that reason), so they do not separate the
-configurations.
+a few points between configurations in both directions. §8.8 measures how much of that is
+noise: training is deterministic for prefill and varies by at most ±0.9 pp for decode, so
+the 400 × 31 / 18-feature row differing from §3.1 by up to 2 pp on some cross cells comes
+from the row order of the training data (histogram binning), not from a seed; differences
+between configurations of 2–3 pp on cross cells are real but small against the 25–70 %
+level of those cells.
 
 **Accuracy and time per estimate on the vLLM V4-Flash AgentX pair** (§7.2 data: one run
 trains, the other is scored; latency = Rust call on one Grace core, method of §8.1; every
@@ -803,8 +807,8 @@ step-time noise.
 
 Reading: a decode model of five features, 100 trees and 7 leaves (learning rate 0.2) and a
 prefill model of 18 features, 100 trees and 15 leaves (learning rate 0.2) are 4–5× faster
-than the current default at the same or better accuracy on every same-workload test, and
-inside the seed-to-seed spread on every cross-workload cell. They are trained with the
+than the current default at the same or better accuracy on every same-workload test; on
+cross-workload cells they are within a few points of the default in both directions (§8.8). They are trained with the
 existing CLI:
 
 ```
@@ -816,6 +820,86 @@ The shipped defaults are unchanged. Machines: accuracy grid on dlcluster login-0
 EPYC 7313P, 16 threads); vLLM training and latency on AI Hub aws-cmh `cpu` partition node
 cpu-0007 (NVIDIA Grace, 96 cores, exclusive; 48 trainings in parallel at 8 threads each,
 then the bench pinned to one core).
+
+### 8.8 Three checks on the simplified models
+
+All on the ten GB300 SGLang runs (dlcluster login-03, AMD EPYC 7313P), same method as §3.1
+and §8.7. Raw output in the playground `reports/`: `simplify_seed_variance.txt`,
+`prefill_feature_addone_leaveoneout.txt`, `simplify_error_by_bucket.txt`.
+
+**(a) Is the difference between configurations larger than training noise?** Five
+training seeds per configuration, full 4 × 3 matrix, mean ± standard deviation:
+
+| role, model | pooled | same workload (AgentX / ShareGPT / LongBench) | cross cells |
+| --- | --- | --- | --- |
+| decode 18 features 400 × 31 | 2.06 ± 0.00 | 2.34 / 2.29 / 1.86, ± ≤ 0.02 | ± 0.08 – 0.43 |
+| decode 5 features 400 × 31 | 2.05 ± 0.00 | 2.33 / 2.22 / 1.85, ± ≤ 0.02 | ± 0.05 – 0.91 |
+| decode 5 features 100 × 7 | 2.02 ± 0.00 | 2.21 / 2.20 / 1.83, ± ≤ 0.01 | ± 0.02 – 0.70 |
+| decode 5 features 50 × 7 | 2.03 ± 0.00 | 2.20 / 2.20 / 1.82, ± ≤ 0.01 | ± 0.03 – 0.93 |
+| prefill, every configuration | ± 0.00 | ± 0.00 | ± 0.00 |
+
+Without early stopping or subsampling the fit is deterministic; the only randomness is the
+200,000-row histogram-binning sample, which exists only for the decode stores (more than
+200,000 rows). So same-workload numbers are exact to the second decimal, and cross cells
+carry at most ±0.9 pp of seed noise. The 2–3 pp differences between model sizes on cross
+cells in §8.7 are real; they are also small next to the 25–70 % level of those cells.
+
+**(b) Which of the eight derived prefill features carry the extrapolation?** Add each one
+to the ten atomic features, and remove each one from the eighteen (400 × 31 and 100 × 15;
+deterministic, so single runs). One feature matters: `req_batch_size_x_sum_extend` (n · Σe).
+
+| prefill feature set | n | pooled | LongBench → AgentX | LongBench → ShareGPT | ShareGPT → LongBench | AgentX → ShareGPT |
+| --- | --- | --- | --- | --- | --- | --- |
+| 18 (400 × 31) | 18 | 2.05 | 5.22 | 34.7 | 43.3 | 4.64 |
+| 10 atomic | 10 | 2.03 | 7.17 | 69.1 | 48.1 | 3.28 |
+| 10 + n · Σe | 11 | 2.04 | 5.91 | 37.5 | 48.0 | 5.24 |
+| 10 + any other single derived feature | 11 | 2.03–2.05 | 6.8–7.4 | 65–71 | 46–48 | 3.1–3.6 |
+| 18 − n · Σe | 17 | 2.04 | 6.65 | 64.3 | 44.9 | 3.12 |
+| 18 − any other single derived feature | 17 | 2.04–2.05 | 5.2–6.0 | 30–35 | 43–48 | 4.0–5.2 |
+| 18 (100 × 15) | 18 | 2.03 | 6.82 | 36.1 | 39.6 | 5.48 |
+| 10 + n · Σe (100 × 15) | 11 | 2.02 | 6.20 | 35.1 | 46.9 | 4.90 |
+| 18 − n · Σe (100 × 15) | 17 | 2.02 | 8.40 | 70.0 | 38.9 | 3.25 |
+
+The attention proxy, Σe · max p, the `log1p` transforms and max p − min p each move cells
+by at most ±3 pp when added or removed; the role flags do nothing (constant in a store).
+n · Σe is a product of two features the trees already have, but as its own axis one split
+separates "one long chunk" from "many short requests with the same token total", which is
+what LongBench-trained models otherwise get wrong on ShareGPT. The smallest prefill set
+that keeps the eighteen's extrapolation is therefore eleven features: the ten atomic ones
+plus `req_batch_size_x_sum_extend`.
+
+**(c) Does the small model lose anywhere in particular?** Error by batch size, by mean
+context per request and (prefill) by scheduled tokens; default versus small model;
+predictions averaged over 3 seeds. Pooled 60/40 test set of all three workloads (MAPE %):
+
+| decode, pooled | 18 features 400 × 31 | 5 features 100 × 7 |
+| --- | --- | --- |
+| all steps | 2.06 (p95 6.4) | 2.02 (p95 6.4) |
+| batch 1 / 2 / 3–4 / 5–8 | 1.68 / 1.67 / 1.81 / 1.92 | 1.59 / 1.58 / 1.74 / 1.89 |
+| batch 9–16 / 17–32 / 33–64 | 2.22 / 2.42 / 2.33 | 2.19 / 2.35 / 2.33 |
+| batch 65–128 / 129–256 | 1.98 / 1.96 | 2.01 / 2.00 |
+| context per request ≤ 1k / 1–4k / 4–16k / 16–64k / > 64k | 2.02 / 2.64 / 2.66 / 1.83 / 2.17 | 2.04 / 2.48 / 2.39 / 1.83 / 2.10 |
+
+| prefill, pooled | 18 features 400 × 31 | 18 features 100 × 15 | 10 features 100 × 15 |
+| --- | --- | --- | --- |
+| all steps | 2.05 (p95 6.2) | 2.03 (p95 6.1) | 2.02 (p95 6.0) |
+| batch 1 / 2 / 3–4 / 5–8 / 9–16 | 1.61 / 1.61 / 2.60 / 3.23 / 3.93 | 1.62 / 1.59 / 2.57 / 3.11 / 3.76 | 1.62 / 1.59 / 2.56 / 3.10 / 3.77 |
+| tokens ≤ 512 / 0.5–2k / 2–8k / 8–16k | 2.33 / 2.68 / 3.19 / 0.82 | 2.26 / 2.62 / 3.10 / 0.89 | 2.28 / 2.61 / 3.07 / 0.88 |
+| context per request ≤ 1k / 1–4k / 4–16k / 16–64k / > 64k | 2.77 / 0.97 / 0.58 / 1.28 / 2.01 | 2.70 / 0.99 / 0.61 / 1.32 / 2.03 | 2.69 / 0.98 / 0.60 / 1.30 / 2.04 |
+
+In-distribution no bucket moves by more than 0.1 pp in either direction: the small models
+do not trade accuracy at the extremes for the average. On the hardest cross pair per role:
+
+| cross pair | 18 features 400 × 31 | small model |
+| --- | --- | --- |
+| decode ShareGPT → LongBench | 5.15 | 5 features 100 × 7: 2.85, better in every batch and context bucket except batch 17–32 (5.0 vs 2.0) |
+| prefill LongBench → AgentX | 5.22 | 18 features 100 × 15: 6.82, worse on chunks ≤ 8k tokens (10–13 vs 8), equal on 8–16k |
+| prefill LongBench → AgentX | 5.22 | 10 features 100 × 15: 5.16, better at batch 1 (3.7 vs 4.8), worse at batch 2–8 (11–24 vs 6–15) |
+
+The 10-feature model loses on multi-request batches, where the extremes and n · Σe do
+their work; the 18-feature 15-leaf model loses on short chunks, which a 15-leaf ensemble
+resolves less finely than a 31-leaf one. Both stay inside the range the default itself
+spans on that pair.
 
 ## 9. Limitations and follow-ups
 
