@@ -467,11 +467,14 @@ The following rules apply:
 
 ## 8. Choose an execution stack
 
-`--stack engine` is the default and uses the built-in offline runner. To use Dynamo-owned
-routing and Planner behavior, install the optional integration and select it explicitly:
+Without an explicit stack or a `router` section, the built-in `engine` runner is
+the default. A `router` section selects the existing `dynamo` stack automatically.
+An explicit `--stack` remains authoritative. Install a compatible Dynamo integration
+as described in [installation](../installation.md#optional-dynamo-integration);
+conversation affinity and duration require the source pair in the
+[AgentX quickstart](../agentx-quickstart.md). Explicit selection remains available:
 
 ```bash
-python3 -m pip install aisimulate ai-dynamo
 aisimulate predict --stack dynamo --config prediction.yaml --output-dir ./dynamo-prediction
 aisimulate recommend --stack dynamo --config recommendation.yaml --output-dir ./dynamo-recommendation
 ```

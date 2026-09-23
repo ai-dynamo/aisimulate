@@ -493,6 +493,17 @@ impl AgenticPlaySnapshot {
                 .then(|| self.instance_request_id(&graph.nodes[play.root_nodes[0]].request_id)),
             parent_id: parent.map(|e| self.instance_request_id(&e.request_id)),
             cache_id: Some(self.evidence.cache_id.clone()),
+            lineage: graph.conversation_lineage[index].as_ref().map(|lineage| {
+                crate::replay::AgenticConversationLineage {
+                    schema: lineage.schema.clone(),
+                    root_conversation_id: self
+                        .instance_conversation_id(&lineage.root_conversation_id),
+                    parent_conversation_id: lineage
+                        .parent_conversation_id
+                        .as_ref()
+                        .map(|parent| self.instance_conversation_id(parent)),
+                }
+            }),
         }
     }
     pub(super) fn token_ids(&self, index: usize) -> Result<Vec<u32>> {

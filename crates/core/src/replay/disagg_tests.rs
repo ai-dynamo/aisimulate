@@ -3701,3 +3701,243 @@ mod agentic_pd_qualification {
         }
     }
 }
+
+#[rstest::rstest]
+#[case(f64::NAN)]
+#[case(f64::INFINITY)]
+#[case(f64::NEG_INFINITY)]
+#[case(-1.0)]
+#[case(0.0)]
+fn disagg_rejects_invalid_policy_wakeup_before_advancing_clock(
+    #[case] wakeup_ms: f64,
+    #[values(true, false)] invalid_prefill: bool,
+) {
+    use crate::replay::runtime_utils::wakeup_test_policy::WakeupPlacement;
+    let config = disagg_config().runtime_config(false).unwrap();
+    let mut runtime = DisaggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, _, _, _| {
+            Ok((
+                WakeupPlacement::new(invalid_prefill.then_some(wakeup_ms), false),
+                WakeupPlacement::new((!invalid_prefill).then_some(wakeup_ms), false),
+            ))
+        },
+    )
+    .unwrap();
+    // Decode selection happens after prefill. Bound the number of semantic
+    // steps so a broken same-time wakeup fails the test without hanging it.
+    let mut failure = None;
+    let mut previous_ms = 0.0;
+    for _ in 0..8 {
+        match runtime.step() {
+            Err(error) => {
+                failure = Some(error);
+                break;
+            }
+            Ok(ReplayStepOutcome::Settled { now_ms }) => {
+                assert!(now_ms.is_finite() && now_ms >= previous_ms);
+                previous_ms = now_ms;
+            }
+            Ok(_) => break,
+        }
+    }
+    let error = failure.expect("invalid or unconsumed wakeup must fail while settling");
+    let role = if invalid_prefill { "prefill" } else { "decode" };
+    assert!(
+        error
+            .to_string()
+            .contains(&format!("{role} placement policy wakeup")),
+        "{error:#}"
+    );
+    assert!(
+        runtime.now_ms.is_finite() && runtime.now_ms >= previous_ms,
+        "invalid policy must not corrupt replay time"
+    );
+}
+
+#[rstest::rstest]
+#[case(0.0)]
+#[case(7.0)]
+fn disagg_consumes_same_now_and_future_policy_wakeups(
+    #[case] wakeup_ms: f64,
+    #[values(true, false)] queued_prefill: bool,
+) {
+    use crate::replay::runtime_utils::wakeup_test_policy::WakeupPlacement;
+    let config = disagg_config().runtime_config(false).unwrap();
+    let (collector, _) = DisaggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, _, _, _| {
+            Ok((
+                WakeupPlacement::new(queued_prefill.then_some(wakeup_ms), true),
+                WakeupPlacement::new((!queued_prefill).then_some(wakeup_ms), true),
+            ))
+        },
+    )
+    .unwrap()
+    .with_per_request_records(true)
+    .run()
+    .unwrap();
+    let report = collector.finish();
+    assert_eq!(report.request_counts.completed_requests, 1);
+    assert!(report.per_request[0].terminal_time_ms >= wakeup_ms);
+}
+
+#[rstest::rstest]
+fn disagg_dispatch_commit_failure_rolls_back_and_prevents_runtime_reuse(
+    #[values(EngineType::Vllm, EngineType::Sglang)] backend: EngineType,
+    #[values(false, true)] fail_prefill: bool,
+    #[values(false, true)] fail_abort: bool,
+) {
+    use crate::replay::runtime_utils::dispatch_failure_test_policy::FailingDispatchPlacement;
+    let config = match backend {
+        EngineType::Vllm => disagg_config(),
+        EngineType::Sglang => sglang_disagg_config(),
+        _ => unreachable!(),
+    }
+    .runtime_config(false)
+    .unwrap();
+    let mut runtime = DisaggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, _, _, _| {
+            Ok((
+                FailingDispatchPlacement {
+                    fail_commit: fail_prefill,
+                    fail_abort: fail_prefill && fail_abort,
+                    ..Default::default()
+                },
+                FailingDispatchPlacement {
+                    fail_commit: !fail_prefill,
+                    fail_abort: !fail_prefill && fail_abort,
+                    ..Default::default()
+                },
+            ))
+        },
+    )
+    .unwrap();
+    let error = loop {
+        match runtime.step() {
+            Err(error) => break error,
+            Ok(ReplayStepOutcome::Settled { .. }) => {}
+            Ok(other) => panic!("failure was not surfaced: {other:?}"),
+        }
+    };
+    let (engine, policy) = if fail_prefill {
+        (&runtime.prefill_engine, &runtime.prefill_placement)
+    } else {
+        (&runtime.decode_engine, &runtime.decode_placement)
+    };
+    assert_eq!(
+        engine.in_flight(),
+        0,
+        "failed dispatch retained engine ownership"
+    );
+    assert!(!engine.has_runnable_worker());
+    assert_eq!(*policy.calls.lock().unwrap(), ["commit", "abort"]);
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string() == "injected commit failure"),
+        "{error:#}"
+    );
+    assert!(
+        error.to_string().contains("injected commit failure"),
+        "{error:#}"
+    );
+    assert_eq!(
+        format!("{error:#}").contains("injected abort failure"),
+        fail_abort
+    );
+    assert!(runtime.step().unwrap_err().to_string().contains("poisoned"));
+    assert!(
+        runtime
+            .run()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("poisoned")
+    );
+}
+
+#[rstest::rstest]
+fn disagg_dispatch_abort_failure_preserves_native_rejection(
+    #[values(EngineType::Vllm, EngineType::Sglang)] backend: EngineType,
+    #[values(false, true)] fail_prefill: bool,
+) {
+    use crate::replay::runtime_utils::dispatch_failure_test_policy::FailingDispatchPlacement;
+    let config = match backend {
+        EngineType::Vllm => disagg_config(),
+        EngineType::Sglang => sglang_disagg_config(),
+        _ => unreachable!(),
+    }
+    .runtime_config(false)
+    .unwrap();
+    let mut runtime = DisaggRuntimeImpl::<_, NoEngineEvents, NoReplayMetadata>::new_composed(
+        &config,
+        AdmissionQueue::new_requests(VecDeque::from([request(1, 64, 2, 0.0)]), ReplayMode::Trace),
+        false,
+        |_, _, _, _| {
+            Ok((
+                FailingDispatchPlacement {
+                    fail_abort: fail_prefill,
+                    ..Default::default()
+                },
+                FailingDispatchPlacement {
+                    fail_abort: !fail_prefill,
+                    ..Default::default()
+                },
+            ))
+        },
+    )
+    .unwrap();
+    let engine = if fail_prefill {
+        &mut runtime.prefill_engine
+    } else {
+        &mut runtime.decode_engine
+    };
+    if fail_prefill {
+        engine.dispatch(0, request(1, 64, 2, 0.0), 0.0).unwrap();
+    } else {
+        // Keep the duplicate destination parked: an ordinary decode submit
+        // would execute before the coordinator attempts its reservation.
+        engine
+            .apply_command(
+                0,
+                Command::ReserveDestination {
+                    handoff_id: HandoffId::new(Uuid::from_u128(999)),
+                    request: direct_to_native(request(1, 64, 2, 0.0)).unwrap(),
+                },
+                0.0,
+            )
+            .unwrap();
+    }
+    let error = loop {
+        match runtime.step() {
+            Err(error) => break error,
+            Ok(ReplayStepOutcome::Settled { .. }) => {}
+            Ok(other) => panic!("failure was not surfaced: {other:?}"),
+        }
+    };
+    assert!(
+        error
+            .chain()
+            .any(|cause| cause.to_string().contains("already active")),
+        "{error:#}"
+    );
+    assert!(error.to_string().contains("already active"), "{error:#}");
+    assert!(format!("{error:#}").contains("injected abort failure"));
+    assert!(runtime.step().unwrap_err().to_string().contains("poisoned"));
+    assert!(
+        runtime
+            .run()
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("poisoned")
+    );
+}

@@ -14,6 +14,43 @@ use crate::engine::HandoffId;
 #[cfg(test)]
 use crate::replay::protocol::DirectRequest;
 
+/// A failed dispatch may leave arbitrary policy and reporting side effects.
+/// Cleanup is best-effort; no subsequent execution or report is trustworthy.
+#[derive(Default)]
+pub(super) struct DispatchFailure {
+    reason: Option<String>,
+}
+
+impl DispatchFailure {
+    pub(super) fn ensure_healthy(&self) -> anyhow::Result<()> {
+        if let Some(reason) = &self.reason {
+            anyhow::bail!(
+                "replay is poisoned after a failed dispatch: {reason}; construct a new runtime"
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn record(
+        &mut self,
+        mut error: anyhow::Error,
+        rollback: anyhow::Result<()>,
+        abort: anyhow::Result<()>,
+    ) -> anyhow::Error {
+        if let Err(cleanup) = rollback {
+            error = error.context(format!("engine dispatch rollback failed: {cleanup:#}"));
+        }
+        if let Err(cleanup) = abort {
+            error = error.context(format!("placement dispatch_aborted failed: {cleanup:#}"));
+        }
+        let reason = format!("{error:#}");
+        self.reason.get_or_insert_with(|| reason.clone());
+        error.context(format!(
+            "replay is poisoned after a failed dispatch: {reason}; construct a new runtime"
+        ))
+    }
+}
+
 /// Result of advancing a replay runtime to its next settled semantic boundary.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ReplayStepOutcome {
@@ -32,6 +69,28 @@ pub(super) fn next_timestamp(
         (None, Some(event_ms)) => Some(event_ms),
         (None, None) => None,
     }
+}
+
+/// A same-time wakeup is allowed while draining immediate policy work, but
+/// must be consumed before the timestamp is settled. Check each policy before
+/// merging deadlines: `f64::min` can otherwise hide a NaN behind a valid event.
+pub(super) fn validate_policy_wakeup(
+    wakeup_ms: Option<f64>,
+    now_ms: f64,
+    role: &str,
+    settled: bool,
+) -> anyhow::Result<()> {
+    if let Some(wakeup_ms) = wakeup_ms {
+        anyhow::ensure!(
+            wakeup_ms.is_finite() && wakeup_ms >= now_ms,
+            "{role} placement policy wakeup must be finite and not precede replay time {now_ms}ms; got {wakeup_ms}ms"
+        );
+        anyhow::ensure!(
+            !settled || wakeup_ms > now_ms,
+            "{role} placement policy wakeup at {wakeup_ms}ms made no progress at replay time {now_ms}ms; a settled wakeup must be strictly in the future"
+        );
+    }
+    Ok(())
 }
 
 /// Return the earliest scheduled event that can advance replay semantics.
@@ -437,5 +496,222 @@ mod tests {
             pop_ready_transfer_complete(&mut events, 10.0),
             Some(HandoffId::new(Uuid::from_u128(2)))
         );
+    }
+}
+
+// Minimal queued placement used to exercise scheduler wakeups through both engines.
+#[cfg(test)]
+pub(super) mod wakeup_test_policy {
+    use super::super::core::{
+        Placement, PlacementDecision, PlacementEffects, PlacementPolicy, WorkerTopology,
+    };
+    use super::super::loadgen::ReplayRequestPayload;
+    use uuid::Uuid;
+
+    pub(crate) struct WakeupPlacement {
+        delay_ms: Option<f64>,
+        wakeup_ms: Option<f64>,
+        consume_wakeup: bool,
+        pending: Vec<Uuid>,
+    }
+
+    impl WakeupPlacement {
+        pub(crate) fn new(wakeup_ms: Option<f64>, consume_wakeup: bool) -> Self {
+            Self {
+                delay_ms: wakeup_ms,
+                wakeup_ms: None,
+                consume_wakeup,
+                pending: Vec::new(),
+            }
+        }
+        fn placement(request_id: Uuid) -> Placement {
+            Placement {
+                request_id,
+                scheduler_id: 0,
+                reported_overlap_tokens: 0,
+                cache_sample: None,
+                placement_replica_id: None,
+            }
+        }
+    }
+
+    impl PlacementPolicy<ReplayRequestPayload> for WakeupPlacement {
+        type Metadata = ();
+        type Observation = ();
+        fn place(
+            &mut self,
+            request: &ReplayRequestPayload,
+            _: (),
+            _: Option<String>,
+            now_ms: f64,
+        ) -> anyhow::Result<PlacementEffects> {
+            let id = request.metadata().uuid.unwrap();
+            let decision = if let Some(delay_ms) = self.delay_ms {
+                self.wakeup_ms = Some(now_ms + delay_ms);
+                self.pending.push(id);
+                PlacementDecision::Queued
+            } else {
+                PlacementDecision::Immediate(Self::placement(id))
+            };
+            Ok(PlacementEffects {
+                decision,
+                released: Vec::new(),
+            })
+        }
+        fn next_wakeup_ms(&self) -> Option<f64> {
+            if self.pending.is_empty() {
+                None
+            } else {
+                self.wakeup_ms
+            }
+        }
+        fn advance_clock(&mut self, now_ms: f64) -> anyhow::Result<Vec<Placement>> {
+            if self.consume_wakeup
+                && self.wakeup_ms.is_some_and(|wake| wake <= now_ms)
+                && !self.pending.is_empty()
+            {
+                self.wakeup_ms = None;
+                self.delay_ms = None;
+                return Ok(self.pending.drain(..).map(Self::placement).collect());
+            }
+            Ok(Vec::new())
+        }
+        fn observe(&mut self, _: (), _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn cancel_pending(&mut self, id: Uuid) -> bool {
+            let before = self.pending.len();
+            self.pending.retain(|pending| *pending != id);
+            self.pending.len() != before
+        }
+        fn request_terminal(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn prefill_completed(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn pending_count(&self) -> usize {
+            self.pending.len()
+        }
+        fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn topology_settled(&mut self, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) mod dispatch_failure_test_policy {
+    use super::super::core::{
+        Placement, PlacementDecision, PlacementEffects, PlacementPolicy, WorkerTopology,
+    };
+    use crate::replay::loadgen::ReplayRequestPayload;
+    use std::sync::{Arc, Mutex};
+    use uuid::Uuid;
+
+    #[derive(Default)]
+    pub struct FailingDispatchPlacement {
+        pub fail_commit: bool,
+        pub fail_abort: bool,
+        pub calls: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl PlacementPolicy<ReplayRequestPayload> for FailingDispatchPlacement {
+        type Metadata = ();
+        type Observation = ();
+
+        fn place(
+            &mut self,
+            request: &ReplayRequestPayload,
+            _: (),
+            _: Option<String>,
+            _: f64,
+        ) -> anyhow::Result<PlacementEffects> {
+            Ok(PlacementEffects {
+                decision: PlacementDecision::Immediate(Placement {
+                    request_id: request.metadata().uuid.unwrap(),
+                    scheduler_id: 0,
+                    reported_overlap_tokens: 0,
+                    cache_sample: None,
+                    placement_replica_id: None,
+                }),
+                released: Vec::new(),
+            })
+        }
+        fn dispatch_committed(&mut self, _: Uuid, _: f64) -> anyhow::Result<()> {
+            self.calls.lock().unwrap().push("commit");
+            anyhow::ensure!(!self.fail_commit, "injected commit failure");
+            Ok(())
+        }
+        fn dispatch_aborted(&mut self, _: Uuid, _: f64) -> anyhow::Result<()> {
+            self.calls.lock().unwrap().push("abort");
+            anyhow::ensure!(!self.fail_abort, "injected abort failure");
+            Ok(())
+        }
+        fn observe(&mut self, _: (), _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn cancel_pending(&mut self, _: Uuid) -> bool {
+            false
+        }
+        fn request_terminal(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn prefill_completed(&mut self, _: Uuid, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn pending_count(&self) -> usize {
+            0
+        }
+        fn worker_ready(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn worker_draining(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn worker_removed(&mut self, _: WorkerTopology, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+        fn topology_settled(&mut self, _: f64) -> anyhow::Result<Vec<Placement>> {
+            Ok(Vec::new())
+        }
+    }
+}
+
+#[cfg(test)]
+mod dispatch_failure_tests {
+    use super::DispatchFailure;
+
+    #[test]
+    fn dispatch_failure_keeps_primary_and_both_cleanup_diagnostics() {
+        let mut failure = DispatchFailure::default();
+        let error = failure.record(
+            anyhow::anyhow!("original dispatch failure"),
+            Err(anyhow::anyhow!("rollback failure")),
+            Err(anyhow::anyhow!("abort failure")),
+        );
+        assert_eq!(error.root_cause().to_string(), "original dispatch failure");
+        for message in [
+            "original dispatch failure",
+            "rollback failure",
+            "abort failure",
+        ] {
+            assert!(error.to_string().contains(message));
+            assert!(
+                failure
+                    .ensure_healthy()
+                    .unwrap_err()
+                    .to_string()
+                    .contains(message)
+            );
+        }
     }
 }

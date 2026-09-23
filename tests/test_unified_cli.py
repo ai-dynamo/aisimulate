@@ -572,8 +572,71 @@ def test_engine_stack_rejects_explicit_unavailable_component(tmp_path, monkeypat
     monkeypatch.setattr(cli, "resolve_config_adapters", unavailable)
 
     with pytest.raises(SystemExit, match="2"):
-        cli.main(["predict", "--config", str(config_path)])
+        cli.main(["predict", "--stack", "engine", "--config", str(config_path)])
     assert "engine.router" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("router", "explicit", "selected"),
+    [
+        (None, None, "engine"),
+        ({"policy": "kv_router"}, None, "dynamo"),
+        ({"policy": "kv_router", "affinity": {"mode": "sibling_group"}}, None, "dynamo"),
+        ({"policy": "kv_router"}, "engine", "engine"),
+        ({"policy": "kv_router"}, "dynamo", "dynamo"),
+    ],
+)
+def test_prediction_selects_stack_from_router_only_when_not_explicit(
+    tmp_path, monkeypatch, router, explicit, selected
+) -> None:
+    raw = {"engine": {}}
+    if router is not None:
+        raw["router"] = router
+    path = tmp_path / "routing.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    factory = object()
+    loaded = []
+
+    def resolve(name):
+        loaded.append(name)
+        return factory
+
+    def predict(args, config, actual_factory):
+        assert args.stack == selected
+        assert config == raw
+        assert actual_factory is factory
+        return 0
+
+    monkeypatch.setattr(cli, "resolve_runner_factory", resolve)
+    monkeypatch.setattr(cli, "_predict", predict)
+    argv = ["predict", "--config", str(path)]
+    if explicit is not None:
+        argv += ["--stack", explicit]
+    assert cli.main(argv) == 0
+    assert loaded == [selected]
+
+
+def test_prediction_router_override_selects_native_policy(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "routing.yaml"
+    path.write_text("engine: {}\n")
+    loaded = []
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: loaded.append(name) or object())
+    monkeypatch.setattr(cli, "_predict", lambda args, raw, factory: 0)
+    assert cli.main(["predict", "--config", str(path), "--set", "router.policy=kv_router"]) == 0
+    assert loaded == ["dynamo"]
+
+
+def test_prediction_router_missing_integration_is_configuration_error(tmp_path, monkeypatch, capsys) -> None:
+    from aisimulate.stack import resolve_runner_factory
+
+    path = tmp_path / "routing.yaml"
+    path.write_text("engine: {}\nrouter: {policy: kv_router}\n")
+    monkeypatch.setattr(cli, "resolve_runner_factory", lambda name: resolve_runner_factory(name, entry_points=[]))
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(["predict", "--config", str(path)])
+    error = capsys.readouterr().err
+    assert "stack 'dynamo' is unavailable" in error
+    assert "Install the distribution" in error
 
 
 @pytest.mark.parametrize(("sla_field", "bound"), [("ttft_ms", 800.0), ("itl_ms", 30.0)])

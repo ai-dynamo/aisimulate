@@ -147,6 +147,82 @@ def test_invalid_cli_input_preserves_outputs_and_stack_error_order(tmp_path, fai
         assert "invalid --set" not in result.stderr
 
 
+@pytest.mark.parametrize(
+    "routing_yaml,duplicate",
+    [
+        ("router: {policy: round_robin}\nrouter: {policy: kv_router}\n", "router"),
+        ("router: {policy: round_robin, policy: kv_router}\n", "policy"),
+        ("router: {policy: kv_router, affinity: null, affinity: {mode: session}}\n", "affinity"),
+        ("router: {policy: kv_router, affinity: {mode: session, mode: sibling_group}}\n", "mode"),
+        ("router: {<<: {policy: round_robin, policy: kv_router}}\n", "policy"),
+        ("router: {policy: kv_router, extra: [{mode: session, mode: sibling_group}]}\n", "mode"),
+    ],
+)
+@pytest.mark.parametrize("input_source", ["config", "override"])
+def test_duplicate_yaml_keys_fail_before_cli_outputs(tmp_path, routing_yaml, duplicate, input_source):
+    import subprocess
+
+    config = tmp_path / "config.yaml"
+    config.write_text("engine: {model: example/model, hardware: h200_sxm, workers: {aggregated: {}}}\n")
+    output = tmp_path / "output"
+    output.mkdir()
+    original = {"prediction.json": '{"old":true}', "resource-runtime.json": '{"old_runtime":true}'}
+    for name, contents in original.items():
+        (output / name).write_text(contents)
+    command = [
+        sys.executable,
+        "-m",
+        "aisimulate",
+        "predict",
+        "--config",
+        str(config),
+        "--output-dir",
+        str(output),
+        "--overwrite",
+    ]
+    if input_source == "config":
+        config.write_text(config.read_text() + routing_yaml)
+    else:
+        command += ["--set", f"router={routing_yaml}"]
+
+    result = subprocess.run(command, capture_output=True, text=True, timeout=15)
+
+    assert result.returncode == 2, result.stderr
+    assert f"duplicate mapping key {duplicate!r}" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert {path.name: path.read_text() for path in output.iterdir()} == original
+
+
+@pytest.mark.parametrize("input_source", ["config", "override"])
+def test_cli_yaml_preserves_aliases_and_explicit_merge_overrides(tmp_path, input_source):
+    from aisimulate.cli_args import _apply_overrides, _load_mapping
+
+    source = """
+first: &first {policy: kv_router, ttl_seconds: 60}
+second: &second {policy: round_robin, mode: session}
+router:
+  <<: [*first, *second]
+  ttl_seconds: 120
+aliases: [*first, *first]
+literal_keys: {=: value, '<<': literal}
+"""
+    if input_source == "config":
+        config = tmp_path / "config.yaml"
+        config.write_text(source)
+        value = _load_mapping(str(config))
+    else:
+        data = {}
+        _apply_overrides(data, [f"router={source}"], command="predict")
+        value = data["router"]
+
+    assert value["router"] == {"policy": "kv_router", "ttl_seconds": 120, "mode": "session"}
+    assert value["aliases"][0] is value["first"]
+    assert value["aliases"][1] is value["first"]
+    assert value["literal_keys"] == {"=": "value", "<<": "literal"}
+    _apply_overrides(value, ["router.mode=session", "router.mode=sibling_group"], command="predict")
+    assert value["router"]["mode"] == "sibling_group"
+
+
 def _cli_arguments(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text("engine:\n  model: example/model\n  hardware: h200_sxm\n  workers:\n    aggregated: {}\n")
@@ -194,6 +270,23 @@ def test_early_resource_failure_keeps_a_complete_runtime_envelope(tmp_path, monk
         "termination_complete",
     ):
         assert report[key] == details.get(key)
+
+
+def test_supervisor_reports_auto_selected_routing_stack(tmp_path, monkeypatch):
+    from aisimulate import supervision
+    from aisimulate.resources import ResourceLimitError
+
+    args = _cli_arguments(tmp_path)
+    config = tmp_path / "config.yaml"
+    config.write_text(config.read_text() + "router: {policy: kv_router}\n")
+
+    def refuse(*args, **kwargs):
+        raise ResourceLimitError("resource probe failed")
+
+    monkeypatch.setattr(supervision, "run_process", refuse)
+    assert supervision.main(args) == 3
+    plan = json.loads((tmp_path / "output/resource-plan.json").read_text())
+    assert plan["stack"] == "dynamo"
 
 
 @pytest.mark.parametrize("child_code,expected", [(-9, 1), (-15, 1), (2, 2)])

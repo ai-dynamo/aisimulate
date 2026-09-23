@@ -17,6 +17,42 @@ class _CliConfigError(ValueError):
     pass
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._checked_mappings: set[yaml.MappingNode] = set()
+
+    def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        # Check authored keys before merge expansion adds inherited keys. A
+        # shared alias may already be flattened, so validate each node once.
+        if node not in self._checked_mappings:
+            self._checked_mappings.add(node)
+            seen: set[Any] = set()
+            merge_key = object()
+            for key_node, _ in node.value:
+                if key_node.tag == "tag:yaml.org,2002:merge":
+                    key = merge_key
+                elif key_node.tag == "tag:yaml.org,2002:value":
+                    key = self.construct_scalar(key_node)
+                else:
+                    key = self.construct_object(key_node)
+                try:
+                    duplicate = key in seen
+                    seen.add(key)
+                except TypeError:
+                    # Let SafeLoader produce its normal unhashable-key error.
+                    continue
+                if duplicate:
+                    label = "<<" if key is merge_key else key
+                    raise yaml.constructor.ConstructorError(
+                        "while constructing a mapping",
+                        node.start_mark,
+                        f"duplicate mapping key {label!r}",
+                        key_node.start_mark,
+                    )
+        super().flatten_mapping(node)
+
+
 def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -33,7 +69,10 @@ def build_parser() -> argparse.ArgumentParser:
     for command in ("predict", "recommend"):
         child = subparsers.add_parser(command)
         child.add_argument("-c", "--config", required=True)
-        child.add_argument("--stack", default="engine")
+        child.add_argument(
+            "--stack",
+            help="execution stack; defaults to engine, or dynamo when router is configured",
+        )
         child.add_argument(
             "--set",
             dest="overrides",
@@ -50,8 +89,8 @@ def build_parser() -> argparse.ArgumentParser:
         "trace_timestamps and positive agentic_lanes. The offline engine stack supports "
         "aggregated and P/D vLLM/SGLang, HBM-only, speculative decoding disabled. "
         "agentic_snapshot selects seeded starts; agentic_warmup primes saved prefixes; "
-        "agentic_profile enables duration controls on the offline engine stack; "
-        "legacy --stack dynamo does not support profiles. Results are functional_only; "
+        "agentic_profile enables duration controls on the offline engine or a compatible Dynamo stack; "
+        "Dynamo profile support requires a matching adapter/core build. Results are functional_only; "
         "hardware accuracy and complete AgentX recipe parity are not qualified."
     )
     subparsers.choices["predict"].add_argument(
@@ -81,10 +120,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def select_stack(explicit: str | None, config: dict[str, Any]) -> str:
+    """Select an optional integration only when no stack was explicitly requested."""
+
+    if explicit is not None:
+        return explicit
+    return "dynamo" if "router" in config else "engine"
+
+
 def _load_mapping(path: str) -> dict[str, Any]:
     source = Path(path)
     try:
-        value = yaml.safe_load(source.read_text(encoding="utf-8"))
+        value = yaml.load(source.read_text(encoding="utf-8"), Loader=_UniqueKeySafeLoader)
     except OSError as exc:
         raise _CliConfigError(f"could not read configuration {source}: {exc}") from exc
     except yaml.YAMLError as exc:
@@ -115,6 +162,6 @@ def _apply_overrides(data: dict[str, Any], overrides: list[str], *, command: str
         if not isinstance(current, dict):
             raise _CliConfigError(f"--set path {raw_path!r} crosses a non-mapping value")
         try:
-            current[leaf] = yaml.safe_load(raw_value)
+            current[leaf] = yaml.load(raw_value, Loader=_UniqueKeySafeLoader)
         except yaml.YAMLError as exc:
             raise _CliConfigError(f"invalid YAML value for --set {raw_path!r}: {exc}") from exc

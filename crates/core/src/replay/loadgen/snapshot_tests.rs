@@ -72,6 +72,97 @@ fn boundary_graph() -> ValidatedAgenticGraph {
     graph(vec![root, child, background, boundary, child_next, future])
 }
 
+#[test]
+fn conversation_lineage_survives_history_and_later_turns_with_fresh_play_namespaces() {
+    use AgenticDependencyRelation::{Sequence, Spawn};
+    use AgenticDependencyTrigger::{Completion, Dispatch};
+    let root = row("root", "main", 0.0, Some(10.0));
+    let mut child = row("child", "worker", 10.0, Some(10.0));
+    child.dependencies = vec![edge("root", Spawn, Dispatch, 10.0)];
+    let mut later = row("later", "worker", 30.0, Some(10.0));
+    later.dependencies = vec![edge("child", Sequence, Completion, 10.0)];
+    let mut nested = row("nested", "grandchild", 40.0, Some(10.0));
+    nested.dependencies = vec![edge("later", Spawn, Dispatch, 10.0)];
+    let graph = graph(vec![root, child, later, nested]);
+    let snapshot = prepare(&graph, 25.0);
+    assert!(request(&snapshot, "root").historical);
+    assert!(request(&snapshot, "child").historical);
+    let root = snapshot.identity("root").unwrap();
+    let child = snapshot.identity("child").unwrap();
+    let later = snapshot.identity("later").unwrap();
+    let nested = snapshot.identity("nested").unwrap();
+    assert_eq!(later.parent_id, None); // Legacy request-edge semantics stay intact.
+    assert_eq!(later.lineage, child.lineage);
+    assert_eq!(child.parent_id.as_deref(), Some(root.request_id.as_str()));
+    let lineage = nested.lineage.as_ref().unwrap();
+    assert_eq!(
+        lineage.parent_conversation_id.as_deref(),
+        Some(child.conversation_id.as_str())
+    );
+    assert_eq!(lineage.root_conversation_id, root.conversation_id);
+    assert_ne!(lineage.root_conversation_id, root.request_id);
+    let encoded = serde_json::to_value(&nested).unwrap();
+    assert_eq!(
+        serde_json::from_value::<crate::replay::AgenticRuntimeIdentity>(encoded).unwrap(),
+        nested
+    );
+    let next = snapshot.context().prepare_play_from_start(0, 1).unwrap();
+    assert_ne!(next.identity("nested").unwrap().lineage, nested.lineage);
+    assert_eq!(
+        next.identity("nested")
+            .unwrap()
+            .lineage
+            .unwrap()
+            .parent_conversation_id,
+        Some(next.identity("child").unwrap().conversation_id)
+    );
+    let turns = drain(WorkloadDriver::new_agentic_trace(graph, 64).unwrap());
+    let static_lineage = turns["nested"]
+        .request
+        .replay_context
+        .as_ref()
+        .unwrap()
+        .agentic
+        .as_ref()
+        .unwrap()
+        .lineage
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        static_lineage.parent_conversation_id.as_deref(),
+        Some("worker")
+    );
+    assert_eq!(static_lineage.root_conversation_id, "main");
+}
+
+#[test]
+fn ambiguous_conversation_parent_does_not_invent_a_routing_tree() {
+    use AgenticDependencyRelation::Spawn;
+    use AgenticDependencyTrigger::Dispatch;
+    let a = row("a", "parent-a", 0.0, Some(10.0));
+    let b = row("b", "parent-b", 0.0, Some(10.0));
+    let mut child = row("child", "child", 20.0, Some(10.0));
+    child.dependencies = vec![
+        edge("a", Spawn, Dispatch, 20.0),
+        edge("b", Spawn, Dispatch, 20.0),
+    ];
+    let mut nested = row("nested", "nested", 30.0, Some(10.0));
+    nested.dependencies = vec![edge("child", Spawn, Dispatch, 10.0)];
+    let graph = graph(vec![a, b, child, nested]);
+    let snapshot = prepare(&graph, 0.0);
+    assert!(snapshot.identity("child").unwrap().lineage.is_none());
+    assert!(snapshot.identity("nested").unwrap().lineage.is_none());
+    assert_eq!(
+        snapshot
+            .identity("a")
+            .unwrap()
+            .lineage
+            .unwrap()
+            .parent_conversation_id,
+        None
+    );
+}
+
 fn request<'a>(play: &'a AgenticPlaySnapshot, source: &str) -> &'a AgenticSnapshotRequest {
     play.evidence()
         .requests

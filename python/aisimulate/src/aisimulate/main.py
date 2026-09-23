@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from .afd_artifacts import write_afd_qualification_artifacts
-from .cli_args import _apply_overrides, _CliConfigError, _load_mapping, build_parser
+from .cli_args import _apply_overrides, _CliConfigError, _load_mapping, build_parser, select_stack
 from .compiler import prediction_to_replay_spec
 from .config.cli import (
     CorePredictionConfig,
@@ -299,20 +299,24 @@ def _write_resource_plan(args, plan: dict[str, Any]) -> None:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
-    # Stack resolution deliberately precedes opening the configuration file.
+    # An explicit stack retains its error ordering and is never silently replaced.
     try:
-        factory = resolve_runner_factory(args.stack)
+        factory = resolve_runner_factory(args.stack) if args.stack is not None else None
     except StackResolutionError as exc:
         parser.error(str(exc))
     try:
         raw = _load_mapping(args.config)
         _apply_overrides(raw, args.overrides, command=args.command)
+        args.stack = select_stack(args.stack, raw)
+        if factory is None:
+            factory = resolve_runner_factory(args.stack)
         if args.command == "predict":
             return _predict(args, raw, factory)
         return _recommend(args, raw, factory)
     except (
         _CliConfigError,
         ConfigAdapterResolutionError,
+        StackResolutionError,
         ValidationError,
         ValueError,
     ) as exc:

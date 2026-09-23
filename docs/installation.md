@@ -130,6 +130,11 @@ The [artifact contract](artifact-contract.md) describes wheel/crate versioning.
 
 ## Optional Dynamo integration
 
+Conversation affinity with continuous AgentX profiles uses the existing Dynamo
+runner and router adapter. Follow the [AgentX quickstart](agentx-quickstart.md) for
+the exact source pair and builds; the historical pairing below does not include
+those features. No additional AISimulate policy distribution is required.
+
 The engine stack does not require Dynamo. For `--stack dynamo`, install a
 Dynamo distribution that supplies the required runner and adapters into the
 same environment. The verified **source** pairing on September 14, 2026 is:
