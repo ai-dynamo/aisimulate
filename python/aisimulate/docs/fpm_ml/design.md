@@ -633,7 +633,7 @@ scikit-learn `HistGradientBoostingRegressor`, log target, 400 trees, 16 OpenMP t
 | --- | --- | --- | --- | --- |
 | one SGLang AgentX capture run, decode | Grace node above | 302,603 | 4.4 s | 54 s |
 | same run, prefill | Grace node above | 5,245 | | 20 s |
-| ten GB300 SGLang runs of §7.1 pooled, decode | dlcluster login node, AMD EPYC 7232P (8 cores / 16 threads, x86_64) | 2,732,395 | 204 s | 25 s |
+| ten GB300 SGLang runs of §7.1 pooled, decode | dlcluster login-03, AMD EPYC 7313P (16 cores / 32 threads, x86_64) | 2,732,395 | 204 s | 25 s |
 | same pooled set, prefill | same | 79,261 | | 1 s (116 trees, early-stopped) |
 
 Loading the gzip JSON-lines stream dominates; both are one-off offline costs. Artifacts
@@ -646,21 +646,21 @@ the simulator asks for one step at a time. This section answers two follow-up qu
 what more cores buy, and how a different CPU compares. Two machines, same binary source
 (branch at c4e101e), same artifacts:
 
-| | Grace | AMD |
+| | NVIDIA Grace | AMD EPYC 7313P |
 | --- | --- | --- |
-| machine | AI Hub `cpu` partition compute node cpu-0088, NVIDIA Grace (Arm Neoverse V2), 96 cores, exclusive allocation, load 0.6 | dlcluster login node, AMD EPYC 7313P, 16 cores / 32 threads (SMT), shared, load 30–70 during the run, boost on (3.6–3.7 GHz), no pinning |
+| machine | AI Hub `cpu` partition compute node cpu-0088: NVIDIA Grace CPU, 96 Arm Neoverse V2 cores at one thread per core, 2 MiB L2 per core, 36 MiB L3, 240 GB RAM, aarch64, exclusive allocation, load 0.6 | dlcluster login-03: AMD EPYC 7313P (Zen 3, Milan), 16 cores / 32 threads with SMT, 512 KiB L2 per core, 128 MiB L3, 125 GB RAM, x86_64, shared login node, load 30–70 during the run, boost on (3.6–3.7 GHz), no pinning, no root to fix the clock |
 | conditions | clean | noisy; numbers are upper bounds |
 
 **One thread, one estimate (µs):**
 
-| step | op-level, Grace | GBDT, Grace | op-level, AMD | GBDT, AMD |
+| step | op-level, Grace | GBDT, Grace | op-level, EPYC 7313P | GBDT, EPYC 7313P |
 | --- | --- | --- | --- | --- |
 | decode, batch 16, context 32k | 1.40 | 4.32 | 1.52 | 5.22 |
 | decode, batch 256, context 128k | 3.58 | 5.71 | 4.35 | 7.80 |
 | prefill, 1 × 4096 tokens, no prefix | 1.05 | 6.29 | 1.21 | 9.08 |
 
 The quiet Grace node reproduces the login-node numbers of §8.1 within 0.1 µs. The loaded
-AMD node is 1.1–1.5× slower on both models; with the load it carried, that is not a
+EPYC 7313P node is 1.1–1.5× slower on both models; with the load it carried, that is not a
 statement about the CPU.
 
 **Many independent estimates in parallel** (N threads, each looping on its own step with
@@ -674,8 +674,8 @@ throughput in million estimates per second, and per-call latency seen by each th
 | Grace 16 | 3.68 (4.4 µs) | 2.81 (5.7 µs) | 2.53 (6.3 µs) | 4.01 (4.0 µs) | 4.06 (3.9 µs) | 3.54 (4.6 µs) |
 | Grace 32 | 7.35 (4.4 µs) | 5.61 (5.7 µs) | 5.06 (6.3 µs) | 3.38 (9.5 µs) | 3.56 (9.1 µs) | 3.50 (9.3 µs) |
 | Grace 96 | 21.9 (4.4 µs) | 16.7 (5.8 µs) | 15.2 (6.3 µs) | 2.58 (42 µs) | 2.81 (47 µs) | 3.32 (31 µs) |
-| AMD 16 | 2.68 (6.1 µs) | 1.65 (10.1 µs) | 1.39 (11.9 µs) | 5.05 (3.2 µs) | 2.43 (6.9 µs) | 5.33 (3.1 µs) |
-| AMD 32 | 3.25 (10.0 µs) | 1.96 (16.5 µs) | 1.91 (17.2 µs) | 5.12 (6.4 µs) | 3.17 (10.3 µs) | 8.41 (3.9 µs) |
+| EPYC 7313P 16 | 2.68 (6.1 µs) | 1.65 (10.1 µs) | 1.39 (11.9 µs) | 5.05 (3.2 µs) | 2.43 (6.9 µs) | 5.33 (3.1 µs) |
+| EPYC 7313P 32 | 3.25 (10.0 µs) | 1.96 (16.5 µs) | 1.91 (17.2 µs) | 5.12 (6.4 µs) | 3.17 (10.3 µs) | 8.41 (3.9 µs) |
 
 The GBDT is read-only after loading and scales linearly to all 96 Grace cores with the
 per-call latency unchanged (22 M decode estimates per second at batch 16). The op-level
@@ -683,7 +683,7 @@ model stops scaling at 8–16 threads and its per-call latency then grows with t
 count (1.4 → 42 µs at 96), which is the signature of contended shared state; the
 op-level path keeps mutex-guarded lookup caches in the perf-database and operator layers
 (`perf_database/source_resolution.rs`, `perf_database/dsa.rs`,
-`operators/util_empirical.rs`), not instrumented here. On the AMD node the GBDT stops
+`operators/util_empirical.rs`), not instrumented here. On the EPYC 7313P node the GBDT stops
 scaling at 16 threads because the machine has 16 cores and was already loaded; the same
 op-level plateau is visible.
 
@@ -692,7 +692,7 @@ faster with threads, K pinned workers each walk a 400/K-tree artifact for the sa
 behind a spin barrier and the caller's wall time per estimate is measured (the workers
 spin while idle, so this buys latency with K busy cores):
 
-| K workers | Grace, decode bs 16 | Grace, decode bs 256 | AMD, decode bs 16 | AMD, decode bs 256 |
+| K workers | Grace, decode bs 16 | Grace, decode bs 256 | EPYC 7313P, decode bs 16 | EPYC 7313P, decode bs 256 |
 | --- | --- | --- | --- | --- |
 | 1 (400 trees, no barrier) | 4.31 µs | 5.71 µs | 4.98 µs | 10.3 µs |
 | 2 × 200 trees | 2.50 µs | 3.60 µs | 3.12 µs | 4.93 µs |
