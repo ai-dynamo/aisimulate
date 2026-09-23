@@ -203,7 +203,17 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
         if misses:
             kernel_drift[fam] = {"collector_only_kernels": misses,
                                  "serving_kernels": sorted(sk)}
-    verdict = "aligned" if not only_col and not kernel_drift else "diverged"
+    # A capture that crashed, or that executed no signal-family kernel at all,
+    # is not evidence: the empty set is a subset of everything and would read
+    # as "aligned". Found 2026-09-24 when six broken sglang captures (mock
+    # runner drift, subprocess collectors invisible to the parent profiler)
+    # all came back aligned with col=[] — refuse to grade them.
+    if cap.get("error"):
+        verdict = "invalid-capture"
+    elif not col_sig:
+        verdict = "no-collector-signal"
+    else:
+        verdict = "aligned" if not only_col and not kernel_drift else "diverged"
     report = {
         "verdict": verdict,
         "repo": repo, "framework": framework, "version": version,
