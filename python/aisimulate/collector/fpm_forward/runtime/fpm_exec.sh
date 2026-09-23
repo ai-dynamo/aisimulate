@@ -20,6 +20,12 @@ source "${workdir}/fpm_env.sh"
 # This is staged by the Collector from the same resolved deployment settings
 # used by run.sh. It carries startup configuration across both transports.
 source "${workdir}/collector-runtime-env.sh"
+if [[ "${AISIM_FPM_BACKEND:-vllm}" == "sglang" ]]; then
+  # The native Engine driver owns initialization, request execution, its
+  # schema-2 result envelope and shutdown. It does not use Dynamo or etcd.
+  # The common Collector validates the retained native traces after exit.
+  exec bash "${workdir}/run.sh"
+fi
 if [[ ! "${FPM_READINESS_TIMEOUT_SECONDS:-}" =~ ^[1-9][0-9]*$ ]] ||
    (( ${#FPM_READINESS_TIMEOUT_SECONDS} > 4 || FPM_READINESS_TIMEOUT_SECONDS > 3600 )); then
   echo "FPM_READINESS_TIMEOUT_SECONDS must be an integer from 1 through 3600" >&2

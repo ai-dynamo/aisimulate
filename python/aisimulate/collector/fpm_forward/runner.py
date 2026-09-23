@@ -449,8 +449,11 @@ def _run_command(
 class KubernetesCellRunner:
     """Own one generated Pod/LWS/PCS and auxiliary resources through deletion."""
 
-    def __init__(self, manifest: Path, cell_dir: Path) -> None:
+    def __init__(self, manifest: Path, cell_dir: Path, *, backend: str = "vllm") -> None:
         self.manifest = manifest
+        if backend not in ("vllm", "sglang"):
+            raise ValueError("unsupported native FPM backend")
+        self.backend = backend
         self.cell_dir = cell_dir
         documents = _manifest_documents(manifest)
         workload = _workload_document(documents)
@@ -680,8 +683,8 @@ class KubernetesCellRunner:
         script = (
             "import importlib.metadata, json, pathlib, sys; "
             "payload = json.loads(sys.argv[1]); "
-            "payload['runtime'] = {'backend': 'vllm', "
-            "'backend_version': importlib.metadata.version('vllm')}; "
+            f"payload['runtime'] = {{'backend': {self.backend!r}, "
+            f"'backend_version': importlib.metadata.version({self.backend!r})}}; "
             f"path = pathlib.Path('{FPM_RESULTS_DIR}') / sys.argv[2]; "
             "path.write_text(json.dumps(payload, sort_keys=True) + '\\n')"
         )
@@ -1130,6 +1133,98 @@ def _validate_points_receipts(plan, cell, raw_root: Path, attempt_id: str) -> No
             raise ValueError(f"runtime benchmark-points receipt mismatch: {path}")
 
 
+def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
+    from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+
+    if smoke or not cell.state_protocol or _frozen_points(plan) is None:
+        raise ValueError("SGLang GLM FPM requires a frozen explicit real-state campaign")
+    if set(base) - {"K8sConfig", "generator_dynamo_version"}:
+        raise ValueError("FPM runner accepts deployment-only Generator inputs")
+    if cell.backend_policy.generator_overrides:
+        raise ValueError("SGLang native FPM backend overrides require verified driver plumbing")
+    service = {"include_frontend": False}
+    deployment = base.get("K8sConfig") or {}
+    mount, relative = deployment.get("k8s_pvc_mount_path"), deployment.get("k8s_model_path_in_pvc")
+    if mount is not None or relative is not None:
+        if (
+            not mount
+            or not relative
+            or PurePosixPath(str(relative)).is_absolute()
+            or ".." in PurePosixPath(str(relative)).parts
+        ):
+            raise ValueError("SGLang checkpoint deployment requires a mount and a relative model path")
+        service.update(
+            model_path=str(PurePosixPath(str(mount)) / relative),
+            served_model_path=str(PurePosixPath(str(mount)) / relative),
+            served_model_name=plan.model_path,
+        )
+    if plan.model_path not in MODEL_REVISIONS:
+        raise ValueError("GLM FPM requires one of the two pinned HF checkpoint identities")
+    native_args = [
+        "--benchmark-mode",
+        cell.workload_kind,
+        "--benchmark-points-file",
+        f"{REMOTE_WORKDIR}/{POINTS_FILENAME}",
+        "--benchmark-output",
+        f"{FPM_RESULTS_DIR}/benchmark.json",
+        "--tokenizer-revision",
+        MODEL_REVISIONS[plan.model_path],
+        "--dataset-role",
+        plan.options.dataset_role,
+        "--run-id",
+        cell.cell_id,
+        "--disable-radix-cache",
+        "--context-length",
+        str(plan.options.vllm_max_model_len),
+        "--chunked-prefill-size",
+        str(plan.options.max_prefill_isl),
+    ]
+    native_args.extend(
+        ["--max-running-requests", str(plan.options.max_decode_batch_size or plan.options.max_prefill_batch_size or 32)]
+    )
+    native_args.extend(["--revision", MODEL_REVISIONS[plan.model_path]])
+    if cell.weight_quantization == "nvfp4":
+        native_args.extend(["--quantization", "modelopt_fp4"])
+    env = [
+        {"name": "AISIM_FPM_BACKEND", "value": "sglang"},
+        {"name": FPM_ENGINE_BENCHMARK_OUTPUT_ENV, "value": f"{FPM_RESULTS_DIR}/benchmark.json"},
+        {"name": FPM_RUN_ID_ENV, "value": cell.cell_id},
+        {"name": READINESS_TIMEOUT_ENV, "value": str(DEFAULT_READINESS_TIMEOUT_SECONDS)},
+    ]
+    existing = {entry["name"]: entry for entry in deployment.get("extra_env", [])}
+    for entry in env:
+        if entry["name"] in existing and existing[entry["name"]] != entry:
+            raise ValueError(f"conflicting SGLang FPM environment {entry['name']}")
+        existing[entry["name"]] = entry
+    generated = {
+        "ServiceConfig": service,
+        "DynConfig": {"mode": "agg"},
+        "WorkerConfig": {"agg_workers": 1, "agg_gpus_per_worker": cell.topology.total_gpus},
+        "K8sConfig": {
+            "name_prefix": cell.cell_id,
+            "extra_env": list(existing.values()),
+            "fpm_resource_labels": {
+                "aiconfigurator.nvidia.com/owned-by": "fpm-forward-collector",
+                "aiconfigurator.nvidia.com/plan": plan.sha256[:16],
+                FPM_CELL_LABEL: cell.cell_id,
+            },
+        },
+        "params": {
+            "agg": {
+                "tensor_parallel_size": cell.topology.tp,
+                "pipeline_parallel_size": 1,
+                "data_parallel_size": 1,
+                "moe_tensor_parallel_size": cell.topology.tp,
+                "moe_expert_parallel_size": 1,
+                "gpus_per_worker": cell.topology.total_gpus,
+                "kv_cache_dtype": "fp8_e4m3",
+                "extra_cli_args": native_args,
+            }
+        },
+    }
+    return _deep_merge(base, generated)
+
+
 def _cell_generator_overrides(
     plan: FPMCollectionPlan,
     cell: FPMCell,
@@ -1137,6 +1232,8 @@ def _cell_generator_overrides(
     *,
     smoke: bool = False,
 ) -> dict[str, Any]:
+    if plan.backend == "sglang":
+        return _sglang_cell_generator_overrides(plan, cell, base, smoke=smoke)
     explicit_points = _frozen_points(plan)
     enforce_eager = bool(getattr(plan.options, "enforce_eager", False))
     if explicit_points is not None and smoke:
@@ -1264,11 +1361,13 @@ def _cell_generator_overrides(
 
         if plan.model_path not in MODEL_REVISIONS:
             raise ValueError("GLM FPM plan model_path must identify one of the two pinned HF checkpoints")
+        model_args.extend(["--revision", MODEL_REVISIONS[plan.model_path]])
         env.extend(
             [
                 {"name": "DYN_FPM_GLM53FLASH_REAL_KV", "value": "1"},
                 {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
                 {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISIONS[plan.model_path]},
+                {"name": "DYN_FPM_DATASET_ROLE", "value": plan.options.dataset_role},
             ]
         )
     total_gpus = cell.topology.total_gpus
@@ -1293,7 +1392,7 @@ def _cell_generator_overrides(
                 "moe_tensor_parallel_size": cell.topology.moe_tp,
                 "moe_expert_parallel_size": cell.topology.moe_ep,
                 "gpus_per_worker": total_gpus,
-                "kv_cache_dtype": cell.kv_cache_dtype,
+                "kv_cache_dtype": "fp8_e4m3" if cell.state_protocol else cell.kv_cache_dtype,
                 "extra_cli_args": [],
             }
         },
@@ -1433,6 +1532,8 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
         "DYN_FPM_GLM53FLASH_REAL_KV",
         "DYN_FPM_INPUT_TEXT",
         "DYN_FPM_TOKENIZER_REVISION",
+        "DYN_FPM_DATASET_ROLE",
+        "AISIM_FPM_BACKEND",
     }
     lines = ["# Generated Collector startup environment; engine settings remain in run.sh."]
     for item in overrides["K8sConfig"]["extra_env"]:
@@ -1602,10 +1703,11 @@ def _cell_runner(plan: FPMCollectionPlan, cell: FPMCell, manifest: Path, cell_di
             image=plan.options.slurm_container_image,
             mounts=plan.options.slurm_container_mounts,
             total_gpus=cell.topology.total_gpus,
+            backend=plan.backend,
         )
     if executor != "kubernetes":
         raise ValueError(f"unknown FPM executor {executor!r}")
-    return KubernetesCellRunner(manifest, cell_dir)
+    return KubernetesCellRunner(manifest, cell_dir, backend=plan.backend)
 
 
 def _salvage_artifacts(resource, cell_id: str) -> None:

@@ -415,9 +415,14 @@ def validate_native_collection(
         evidence = _validate_execution_provenance(cell, payload, path)
         if evidence is not None:
             if cell.state_protocol:
-                from .hybrid_artifact import validate_real_hybrid_repetitions
+                if cell.backend == "sglang":
+                    from .sglang_artifact import validate_sglang_repetitions
 
-                validate_real_hybrid_repetitions(cell, payload, path)
+                    validate_sglang_repetitions(cell, payload, path)
+                else:
+                    from .hybrid_artifact import validate_real_hybrid_repetitions
+
+                    validate_real_hybrid_repetitions(cell, payload, path)
             else:
                 _validate_token_streams(payload, path)
         if input_provenance is None:

@@ -232,10 +232,24 @@ def aggregate_cell(
                 "partition_policy": "balanced_v1",
                 "kv_seed_regime": _kv_seed_regime(point, phase),
                 "latency_ms": max(latency for _rank, latency in measurement.rank_wall_times) * 1000.0,
-                "global_warmup_iterations": plan.options.warmup_iterations,
-                "warmup_repeats": 0,
-                "measurement_repeats": 1,
-                "measurement_policy": "dynamo_native_single_sample_v1",
+                "global_warmup_iterations": 0 if cell.state_protocol else plan.options.warmup_iterations,
+                "warmup_repeats": 5 if cell.state_protocol else 0,
+                "measurement_repeats": 10 if cell.state_protocol else 1,
+                "measurement_policy": (
+                    f"{cell.backend}_native_real_hybrid_median_v1"
+                    if cell.state_protocol
+                    else "dynamo_native_single_sample_v1"
+                ),
+                **(
+                    {
+                        "state_protocol": cell.state_protocol,
+                        "timing_boundary": "sglang_native_forward_device_timer"
+                        if cell.backend == "sglang"
+                        else "vllm_native_scheduler_output_interval",
+                    }
+                    if cell.state_protocol
+                    else {}
+                ),
                 "model_support_level": capability.support_level,
                 "model_template_id": capability.template_id,
                 "model_template_version": capability.template_version,
@@ -654,6 +668,10 @@ def write_formal_database(
             row.setdefault("kv_seed_regime", None)
             for field in ("input_text_sha256", "input_token_ids_sha256", "input_tokenizer_revision"):
                 row.setdefault(field, None)
+        if any(row.get("state_protocol") for row in merged):
+            for row in merged:
+                row.setdefault("state_protocol", None)
+                row.setdefault("timing_boundary", None)
 
         temporary = _temporary_path(parquet_path)
         temporary_metadata = _temporary_path(metadata_path)
@@ -663,9 +681,17 @@ def write_formal_database(
                 "schema_name": "aic_fpm_forward_perf",
                 "schema_version": 7,
                 "coordinate_system": "iteration_totals_balanced_v1",
-                "measurement_policy": "dynamo_native_single_sample_v1",
-                "warmup_repeats": 0,
-                "measurement_repeats": 1,
+                "measurement_policy": (
+                    next(iter(policies))
+                    if len(policies := {row["measurement_policy"] for row in merged}) == 1
+                    else "per_row"
+                ),
+                "warmup_repeats": (
+                    next(iter(warmups)) if len(warmups := {row["warmup_repeats"] for row in merged}) == 1 else None
+                ),
+                "measurement_repeats": (
+                    next(iter(repeats)) if len(repeats := {row["measurement_repeats"] for row in merged}) == 1 else None
+                ),
                 "row_count": len(merged),
                 "parquet_sha256": _sha256(temporary),
                 "source_plan_sha256": sorted({str(row["source_plan_sha256"]) for row in merged}),
