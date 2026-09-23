@@ -1,0 +1,79 @@
+{
+ "verdict": "diverged",
+ "repo": "MiniMaxAI/MiniMax-M3",
+ "framework": "sglang",
+ "version": "0.5.16",
+ "capture_file": "facts/pathdiff/opcov_sgl_msa_gen.json",
+ "capture_cmd": [
+  "/work/ais/python/aisimulate/collector/sglang/collect_msa_module.py",
+  "--mode",
+  "generation",
+  "--quick",
+  "--batch-size",
+  "1",
+  "--seq-len",
+  "4096",
+  "--model",
+  "MiniMaxAI/MiniMax-M3",
+  "--output-path",
+  "/tmp"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "attn|sparse|msa|topk|index|score|merge|block",
+ "serving_record": {
+  "id": "9cf016bdbd38",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "cublas",
+  "fa3",
+  "triton"
+ ],
+ "serving_backends": [
+  "cublas",
+  "fa3",
+  "sgl_kernel",
+  "triton",
+  "triton_fused_moe"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": {
+  "triton": {
+   "collector_only_kernels": [
+    "_topk_index_merge_kernel",
+    "_topk_index_partial_kernel"
+   ],
+   "serving_kernels": [
+    "_decode_score_kernel",
+    "_flash_attn_fwd_with_block_score_kernel",
+    "_gqa_share_sparse_decode_kernel",
+    "_gqa_share_sparse_fwd_kernel",
+    "_merge_topk_attn_out_kernel",
+    "_topk_index_kernel"
+   ]
+  }
+ },
+ "serving_kernels_matched_in_collector": [
+  "Command",
+  "_decode_score_kernel",
+  "_gqa_share_sparse_decode_kernel",
+  "_merge_topk_attn_out_kernel",
+  "alloc_decode_kernel",
+  "alloc_extend_kernel",
+  "cuLaunchKernelEx",
+  "flash::prepare_varlen_num_blocks_kernel",
+  "write_req_to_token_pool_triton"
+ ],
+ "collector_unmatched_kernels": [
+  "Command",
+  "INVALID",
+  "alloc_decode_kernel"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

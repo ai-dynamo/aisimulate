@@ -1,0 +1,66 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "trtllm",
+ "version": "1.3.0rc23",
+ "capture_file": "facts/pathdiff/opcov_trt_dsa_ctx.json",
+ "capture_cmd": [
+  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
+  "--backend",
+  "trtllm",
+  "--op",
+  "dsa_context_module",
+  "--case-filter",
+  "[4096, 1, 128, 'bfloat16', 'bfloat16', 'bfloat16', 'deepseek-ai/DeepSeek-V3.2', 'dsa'",
+  "--cases",
+  "1",
+  "--out-dir",
+  "/tmp/smk"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha",
+ "serving_record": {
+  "id": "6086eebfe7f2",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "cublas",
+  "dsa_nsa",
+  "vllm_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "dsa_nsa",
+  "trtllm_internal",
+  "vllm_kernel"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "deep_gemm::sm90_fp8_mqa_logits",
+  "deep_gemm::smxx_clean_logits",
+  "flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel",
+  "kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel",
+  "namespace",
+  "nvjet_sm90_tst_128x256_64x4_1x2_h_bz_coopA_TNN",
+  "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
+  "sm90::sparse_attn_fwd_kernel",
+  "sm90_xmma_gemm_f32f32_tf32f32_f32_tn_n_tilesize64x64x32_warpgroupsize1x1x1_execu",
+  "tensorrt_llm::_v1::kernels"
+ ],
+ "collector_unmatched_kernels": [
+  "deep_gemm::smxx_clean_logits",
+  "sm90_xmma_gemm_f32f32_tf32f32_f32_tn_n_tilesize64x64x32_warpgroupsize1x1x1_execu",
+  "triton_poi_fused__to_copy_0",
+  "triton_poi_fused_mul_squeeze_0"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

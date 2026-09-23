@@ -1,0 +1,63 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3",
+ "framework": "trtllm",
+ "version": "1.3.0rc23",
+ "capture_file": "facts/pathdiff/opcov_trt_moe_fp8block.json",
+ "capture_cmd": [
+  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
+  "--backend",
+  "trtllm",
+  "--op",
+  "moe",
+  "--case-filter",
+  "'fp8_block', [1, 2, 4, 8, 16, 32, 48, 64, 80, 96, 128, 160, 192, 256, 320, 384, 512, 768, 1024, 1536, 2048, 3072, 4096, 6144, 8192, 12288, 16384], 7168, 2048, 8, 256",
+  "--cases",
+  "1",
+  "--out-dir",
+  "/tmp/smk"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|routing|cutlass",
+ "serving_record": {
+  "id": "bad91e890026",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "cutlass",
+  "deepgemm",
+  "trtllm_internal"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "flashmla",
+  "trtllm_internal",
+  "trtllm_mha"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "deep_gemm::fp8_gemm_kernel",
+  "deep_gemm::fp8_gemm_kernel_swapAB",
+  "namespace",
+  "operator",
+  "tensorrt_llm::_v1::kernels::cutlass_kernels::blockExpertPrefixSumKernel",
+  "tensorrt_llm::_v1::kernels::cutlass_kernels::doActivationKernel",
+  "tensorrt_llm::_v1::kernels::cutlass_kernels::expandInputRowsKernel",
+  "tensorrt_llm::_v1::kernels::cutlass_kernels::finalizeMoeRoutingKernel",
+  "tensorrt_llm::_v1::kernels::cutlass_kernels::fusedBuildExpertMapsSortFirstTokenK",
+  "tensorrt_llm::_v1::kernels::cutlass_kernels::globalExpertPrefixSumKernel"
+ ],
+ "collector_unmatched_kernels": [
+  "tensorrt_llm::_v1::kernels::delayStreamKernel"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

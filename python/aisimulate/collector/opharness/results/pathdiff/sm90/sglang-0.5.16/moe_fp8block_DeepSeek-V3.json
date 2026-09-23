@@ -1,0 +1,54 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3",
+ "framework": "sglang",
+ "version": "0.5.16",
+ "capture_file": "facts/pathdiff/opcov_sgl_moe_fp8block.json",
+ "capture_cmd": [
+  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
+  "--backend",
+  "sglang",
+  "--op",
+  "moe",
+  "--case-filter",
+  "'fp8_block', 4096, 7168, 2048, 8, 256, 1, 1, 'deepseek-ai/DeepSeek-V3'",
+  "--cases",
+  "1",
+  "--out-dir",
+  "/tmp/smk"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": "auto",
+ "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing|ep_",
+ "serving_record": {
+  "id": "4df52b61b921",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "sgl_kernel",
+  "triton_fused_moe"
+ ],
+ "serving_backends": [
+  "cublas",
+  "deepgemm",
+  "sgl_kernel",
+  "triton_fused_moe"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "count_and_sort_expert_tokens_kernel",
+  "fused_moe_kernel",
+  "moe_align_block_size_kernel",
+  "moe_sum_reduce_warp_per_token_vec_kernel",
+  "namespace",
+  "tensorrt_llm::kernels::deepseek_v3_topk_kernel"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

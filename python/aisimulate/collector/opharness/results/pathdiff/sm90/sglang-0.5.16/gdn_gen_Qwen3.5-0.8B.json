@@ -1,0 +1,50 @@
+{
+ "verdict": "aligned",
+ "repo": "Qwen/Qwen3.5-0.8B",
+ "framework": "sglang",
+ "version": "0.5.16",
+ "capture_file": "facts/pathdiff/opcov_sgl_gdn_gen.json",
+ "capture_cmd": [
+  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
+  "--backend",
+  "sglang",
+  "--op",
+  "gdn",
+  "--case-filter",
+  "'generation'",
+  "--cases",
+  "1",
+  "--out-dir",
+  "/tmp/smk"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": "auto",
+ "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
+ "serving_record": {
+  "id": "cacb0772b54f",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": null,
+  "prefix_caching": null,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "causal_conv1d",
+  "fla_triton"
+ ],
+ "serving_backends": [
+  "causal_conv1d",
+  "fa3",
+  "fla_triton"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "_causal_conv1d_update_kernel",
+  "fused_recurrent_gated_delta_rule_packed_decode_kernel",
+  "namespace"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

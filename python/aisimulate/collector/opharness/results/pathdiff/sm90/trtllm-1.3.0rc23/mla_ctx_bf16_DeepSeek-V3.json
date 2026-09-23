@@ -1,0 +1,57 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3",
+ "framework": "trtllm",
+ "version": "1.3.0rc23",
+ "capture_file": "facts/pathdiff/opcov_trt_mla_ctx.json",
+ "capture_cmd": [
+  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
+  "--backend",
+  "trtllm",
+  "--op",
+  "mla_context_module",
+  "--case-filter",
+  "[4096, 1, 128, 'bfloat16', 'bfloat16', 'bfloat16', 'deepseek-ai/DeepSeek-V3', 'mla'",
+  "--cases",
+  "1",
+  "--out-dir",
+  "/tmp/smk"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha",
+ "serving_record": {
+  "id": "bad91e890026",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "cublas",
+  "trtllm_mha"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "flashmla",
+  "trtllm_internal",
+  "trtllm_mha"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "fmha_v2_flash_attention_bf16_64_128_S_q_k_v_192x128_causal_tma_ws_sm90_kernel",
+  "kernel_cutlass_kernel_flashinfernormkernelsrmsnormRMSNormKernel",
+  "namespace",
+  "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
+  "tensorrt_llm::_v1::kernels::applyMLARopeAndAssignQKVKernelOptContext",
+  "tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets",
+  "triton_poi_fused_copy_copy__0"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

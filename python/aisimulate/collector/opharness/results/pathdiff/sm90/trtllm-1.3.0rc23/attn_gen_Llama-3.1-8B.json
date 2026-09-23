@@ -1,0 +1,56 @@
+{
+ "verdict": "diverged",
+ "repo": "meta-llama/Meta-Llama-3.1-8B",
+ "framework": "trtllm",
+ "version": "1.3.0rc23",
+ "capture_file": "facts/pathdiff/opcov_trt_attn_gen.json",
+ "capture_cmd": [
+  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
+  "--backend",
+  "trtllm",
+  "--op",
+  "attention_generation",
+  "--case-prefix",
+  "[1, 1, 32, 8, 128, 0, False, False, False",
+  "--cases",
+  "1",
+  "--out-dir",
+  "/tmp/smk"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "attn|attention|fmha|mha|flash|xqa",
+ "serving_record": {
+  "id": "32180b816d3d",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "trtllm_mha"
+ ],
+ "serving_backends": [
+  "cublas",
+  "trtllm_mha"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": {
+  "trtllm_mha": {
+   "collector_only_kernels": [
+    "tensorrt_llm::_v1::kernels::mmha::masked_multihead_attention_kernel"
+   ],
+   "serving_kernels": [
+    "fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel",
+    "kernel_mha"
+   ]
+  }
+ },
+ "serving_kernels_matched_in_collector": [
+  "namespace"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

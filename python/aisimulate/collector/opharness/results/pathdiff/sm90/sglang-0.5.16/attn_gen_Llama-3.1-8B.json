@@ -1,0 +1,50 @@
+{
+ "verdict": "aligned",
+ "repo": "meta-llama/Meta-Llama-3.1-8B",
+ "framework": "sglang",
+ "version": "0.5.16",
+ "capture_file": "facts/pathdiff/opcov_sgl_attn_gen.json",
+ "capture_cmd": [
+  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
+  "--backend",
+  "sglang",
+  "--op",
+  "attention_generation",
+  "--case-filter",
+  "[1, 1, 32, 8, 128, False, False, False, 0, 128, -1, None, False, None, 'fa3'",
+  "--cases",
+  "1",
+  "--out-dir",
+  "/tmp/smk"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "attn|attention|flash|fwd|triton",
+ "serving_record": {
+  "id": "9871bca36ca5",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": null,
+  "prefix_caching": null,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "fa3"
+ ],
+ "serving_backends": [
+  "cublas",
+  "fa3"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
+  "flash::FlashAttnFwdSm90",
+  "flash::prepare_varlen_num_blocks_kernel",
+  "namespace"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}
