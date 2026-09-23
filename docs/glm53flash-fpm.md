@@ -22,8 +22,38 @@ These are qualification candidates, not evidence of measured GB300 coverage. Pre
 
 ## Acceptance and data status
 
-This draft records the approved implementation boundary. No new GPU measurements, accuracy results, or completed implementation are claimed by this initial checkpoint. Each required deployment cell remains pending qualification, collection and independent validation. Failures and unqualified fake-state observations must remain visible.
+Implemented: GLM-specific planning and configuration identity; source-pinned vLLM real-hybrid scheduling; native SGLang Engine collection; Generator, Slurm and Kubernetes backend routing; exact request/dispatch/state evidence validation; and five warmup plus ten measurement medians. The native runtime adapters are shared with the companion Ops implementation. CPU contract tests and all eight deployment renders pass.
+
+GPU qualification and producer qualification are separate. Native vLLM FP8 TP2/TP4 and NVFP4 TP4 have completed real requests on GB300, including 131008 input tokens plus 32 decode tokens with max model length 131072. This does not qualify an exact past-KV=131072 timing point. The formal producer canary, remaining native cells, full data matrix, independent MAPE acceptance and immutable Hugging Face publication are pending. No new profile is claimed as accepted.
 
 Formal collection retains at least five warmups and ten observations per point, and separate calibration/holdout token streams and geometry. Exact table self-queries verify integrity, not independent accuracy. Record complete coverage, phase MAPE, WAPE and tail errors. Existing data remains unchanged.
 
 Track [AIC-1999](https://linear.app/nvidia/issue/AIC-1999). SOL is the common prerequisite; FPM and Ops can progress in parallel after their shared execution contract is established.
+
+## Native collection interfaces
+
+`python -m collector.fpm_forward` accepts `--backend vllm` or `--backend sglang`
+for this model, a frozen `--fpm-benchmark-points-file`, and pure TP2/TP4.
+Use `--fpm-input-text` to freeze a corpus by content hash and
+`--fpm-dataset-role holdout` for independent validation runs; holdout runs never
+publish calibration rows. The normal plan/run/resume/checkpoint workflow and
+`--fpm-executor slurm` transport are retained. A Slurm run requires an existing
+owned allocation, an explicit container image, and checkpoint/runtime mounts.
+
+The SGLang driver uses its unchanged native scheduler and observes actual
+coordinates. A requested cached extension that the native scheduler does not
+produce is missing coverage, never a substituted geometry. Long contexts are
+initialized by real forwards on the same requests. Every TP rank retains the
+actual input IDs and completed prefix chain, native DeviceTimer intervals,
+graph mode/padding, and allocated KDA/MLA/index-tail tensor layout.
+
+SGLang timing is rank zero's native DeviceTimer forward interval, including its
+native logits boundary. Token readback happens outside that interval and is
+recorded as an explicit telemetry policy; it can serialize serving overlap.
+vLLM preserves the native scheduler/output interval, including host work.
+Neither boundary is interchangeable with HTTP TTFT/TPOT. Ops-instrumented
+latency cannot be admitted to the FPM database.
+
+The strict reader checks the complete frozen point set and the retained raw
+repetitions before the common Parquet publisher records each median. Raw
+producer failure artifacts remain available even when no table is published.
