@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Modifications Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """GLM geometry assertions derived from pinned config; see THIRD_PARTY_NOTICES.md."""
 
@@ -54,6 +54,7 @@ def test_native_graph_boundary_precision_and_state(path, backend, tp):
         sparse_quant = "fp8_block" if backend == "sglang" and expected_format == "fp8" else "bfloat16"
         assert {op["projection_quant_mode"] for op in attn if op["layer_kind"] == "sparse_mla"} == {sparse_quant}
         mhc = Counter(op["Glm53Mhc"]["role"] for op in native if "Glm53Mhc" in op)
+        assert {op["Glm53Mhc"]["tp_size"] for op in native if "Glm53Mhc" in op} == {tp}
         assert mhc == (
             {"expand": 1, "contract": 1, "pre": 1, "fused_post_pre": 89, "post": 1}
             if backend == "vllm"

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Modifications Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """GLM-5.3-Flash text-only, pure TP graph.
 
@@ -93,6 +93,7 @@ class Glm53FlashModel(BaseModel):
                 "Glm53Mhc",
                 name=name,
                 role=role,
+                tp_size=tp,
                 hidden_size=h,
                 hc_mult=d.hc_mult,
                 sinkhorn_iters=d.hc_sinkhorn_iters,
