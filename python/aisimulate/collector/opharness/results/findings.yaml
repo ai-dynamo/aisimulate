@@ -582,6 +582,82 @@ findings:
     - Qwen/Qwen3.5-0.8B
     - deepseek-ai/DeepSeek-V3
     - deepseek-ai/DeepSeek-R1
+  op_coverage_sglang_trtllm_2026_09_24:
+    statement: |
+      OP-LEVEL ALIGNMENT SWEEP, sglang 0.5.16 and trtllm 1.3.0rc23 on SM90, after
+      both probes were brought to the vllm standard (isl 4096, cache-cold, phase
+      tables) and their length-conditional records re-probed. Captures run the
+      collector through op_smoke (--case-filter/--case-prefix) or the module
+      CLI's --quick / in-process entry (the sglang DSA/MSA module collectors run
+      each case in a SUBPROCESS, which the parent profiler cannot see — a
+      capture of the worker wrapper is silently empty).
+      HARNESS DEFECT found first: path_diff graded a crashed or empty capture
+      "aligned" (empty set is a subset of everything) — six broken sglang
+      captures passed. Verdicts are now invalid-capture / no-collector-signal.
+      COLLECTOR DRIFT ON THE PINNED VERSIONS (all fixed, each surfaced as a
+      zero-kernel capture; 286 sglang + 114 vllm collector unit tests pass):
+        sglang 0.5.16 — ModelRunner takes ps: ParallelState (mla_module built
+        it with tp_rank/tp_size...), attention backends read model_runner.ps /
+        server_args.enable_prefill_cp / enable_dp_attention /
+        model_config.linear_attn_registry_result / hf_config.get_text_config()
+        / is_draft_worker (attention + MLA mocks lacked them),
+        Req.set_extend_input_len -> set_extend_range (mla_module, dsv4),
+        ForwardBatch.init_new requires return_hidden_states_before_norm
+        (mla_module context+generation, dsv4). The sglang collector had not
+        run on its own pin since the bump.
+        trtllm — gemm/computescale/mla_bmm imported case_generator and helper
+        as bare modules (only works from collector/ cwd); GDN prefill/decode
+        imported the vendored FLA Triton kernels directly while serving
+        dispatches to FlashInfer's cute-DSL GDN chunk + bf16-state decode on
+        SM90/SM100 (gdn_mixer.py:57-70,670; fused_sigmoid_gating_recurrent.py:
+        205-238). The collector now calls the mixer's resolver for prefill
+        (packed [1,T,H,D] + cu_seqlens, fp32 g — FlashInfer's contract) and
+        serving's fused_sigmoid_gating_delta_rule_update for decode, labeling
+        rows by the dispatch that actually ran (new kernel_source values in
+        kernel_source_backends.yaml).
+        path_diff/normalize — cute-DSL symbols carry tensor specs
+        (…_kernel_tensorptrbf16gmemalign32o1291…): identity cut at
+        _tensorptr/_object; `trtllm::` launchers excluded like vllm/sglang;
+        collector EXIT_CODE_RESTART (10) is a protocol signal, not a failure.
+      VERDICTS (results/pathdiff/sm90/{sglang-0.5.16,trtllm-1.3.0rc23}/):
+        sglang ALIGNED: attn ctx+gen (Llama-3.1-8B shape, fa3), dsa ctx+gen
+        (DSV3.2 bf16: sparse_attn_fwd/FA3 + indexer), mla ctx+gen (DSV3, fa3),
+        msa ctx (M3), gemm fp8_block, moe fp8_block, gdn ctx+gen (Qwen3.5).
+        trtllm ALIGNED: attn ctx (Llama, fmha_v2 causal), dsa ctx+gen (DSV3.2),
+        mla ctx+gen (DSV3), gemm fp8_block, moe fp8_block, gdn ctx (FlashInfer
+        chunk + trtllm conv1d).
+        OPEN — real divergences left red for the owner:
+        - trtllm attention_generation (Llama-3.1-8B, TRTLLM backend): the
+          collector's decode runs the legacy MMHA kernel
+          (mmha::masked_multihead_attention_kernel); serving runs XQA
+          (kernel_mha). The collector sets TRTLLM_ENABLE_XQA_JIT=1 at run time
+          (collect_attn.py:135-139) but the flag is consumed by the C++ op
+          (no Python reader in rc23); XQA eligibility for the collector's
+          module construction needs a serving-parity audit.
+        - sglang msa_generation (MiniMax-M3): the collector's top-k lane gate
+          mirrors sglang (collect_msa_module.py:860-872:
+          SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX && score_blocks<=4096 &&
+          topk_blocks<=32) yet selected topk_split (_topk_index_partial/merge)
+          where the serving probe ran the radix path — one of the three inputs
+          differs between the collector's module build and serving; audit.
+        EXPLAINED (kept out of the gate, same class as vllm kda_gen): trtllm
+        gdn_gen — FlashInfer decode row matches serving kernel-for-kernel; the
+        FLA fused_recurrent row is the deliberate fallback lane.
+        NOT RUN: 5 trtllm records probed on trtllm-probe:1.3.0rc20-onnxfix
+        (image gone); sglang gdn_ctx via op_smoke hits the known int32-offset
+        FIXME at the largest sweep points (captured via a direct 4096-token
+        call instead).
+    applies_to:
+    - instrument:path_diff
+    - instrument:op_smoke
+    - framework:sglang-0.5.16
+    - framework:trtllm-1.3.0rc23
+    - platform:sm90
+    - meta-llama/Meta-Llama-3.1-8B
+    - deepseek-ai/DeepSeek-V3.2
+    - deepseek-ai/DeepSeek-V3
+    - MiniMaxAI/MiniMax-M3
+    - Qwen/Qwen3.5-0.8B
   unalignable_ops_followup_2026_09_24:
     statement: |
       Follow-up on the "no serving reference" ops (owner 2026-09-24: "if running

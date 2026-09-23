@@ -205,6 +205,11 @@ def run_gdn_context_benchmark(
                         torch.randn(batch_size, seq_len, num_v_heads, dtype=torch.float32, device=device)
                     )
                     beta = torch.sigmoid(torch.randn(batch_size, seq_len, num_v_heads, dtype=dtype, device=device))
+                    # serving feeds the chunk kernel PACKED tokens [1, B*S, H, D] plus
+                    # cu_seqlens (gdn_mixer.forward_extend); FlashInfer's chunk kernel
+                    # accepts only that layout ("q must be [1, T, H_q, D_k]")
+                    q, k, v, g, beta = (t.reshape(1, batch_size * seq_len, *t.shape[2:]) for t in (q, k, v, g, beta))
+                    cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int64, device=device)
 
                     # --- Benchmark causal_conv1d_fn ---
                     torch.cuda.synchronize()
@@ -235,11 +240,11 @@ def run_gdn_context_benchmark(
 
                     # --- Benchmark chunk_gated_delta_rule ---
                     torch.cuda.synchronize()
-                    chunk_gated_delta_rule(q, k, v, g, beta)
+                    chunk_gated_delta_rule(q, k, v, g, beta, cu_seqlens=cu_seqlens)
                     torch.cuda.synchronize()
 
-                    def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta):
-                        chunk_gated_delta_rule(_q, _k, _v, _g, _beta)
+                    def run_gdn_scan(_q=q, _k=k, _v=v, _g=g, _beta=beta, _cu=cu_seqlens):
+                        chunk_gated_delta_rule(_q, _k, _v, _g, _beta, cu_seqlens=_cu)
 
                     with benchmark_with_power(
                         device=device,
@@ -264,17 +269,19 @@ def run_gdn_context_benchmark(
                     input_pool = _make_input_pool(
                         {
                             "k_input": (batch_size, conv_channels, seq_len),
-                            "q": (batch_size, seq_len, num_k_heads, head_k_dim),
-                            "k": (batch_size, seq_len, num_k_heads, head_k_dim),
-                            "v": (batch_size, seq_len, num_v_heads, head_v_dim),
-                            "g": (batch_size, seq_len, num_v_heads),
-                            "beta": (batch_size, seq_len, num_v_heads),
+                            # packed [1, B*S, ...] + cu_seqlens, as serving feeds the chunk kernel
+                            "q": (1, batch_size * seq_len, num_k_heads, head_k_dim),
+                            "k": (1, batch_size * seq_len, num_k_heads, head_k_dim),
+                            "v": (1, batch_size * seq_len, num_v_heads, head_v_dim),
+                            "g": (1, batch_size * seq_len, num_v_heads),
+                            "beta": (1, batch_size * seq_len, num_v_heads),
                         },
                         total_iters,
                         dtype,
                         device,
                     )
                     input_pool["g"] = [t.float() for t in input_pool["g"]]  # serving g is fp32
+                    cu_seqlens = torch.arange(0, batch_size * seq_len + 1, seq_len, dtype=torch.int64, device=device)
                     for i in range(total_iters):
                         input_pool["g"][i] = torch.nn.functional.logsigmoid(input_pool["g"][i])
                         input_pool["beta"][i] = torch.sigmoid(input_pool["beta"][i])
@@ -322,6 +329,7 @@ def run_gdn_context_benchmark(
                         input_pool["v"][0],
                         input_pool["g"][0],
                         input_pool["beta"][0],
+                        cu_seqlens=cu_seqlens,
                     )
                     torch.cuda.synchronize()
 
@@ -336,6 +344,7 @@ def run_gdn_context_benchmark(
                             _pool["v"][idx],
                             _pool["g"][idx],
                             _pool["beta"][idx],
+                            cu_seqlens=cu_seqlens,
                         )
 
                     with benchmark_with_power(

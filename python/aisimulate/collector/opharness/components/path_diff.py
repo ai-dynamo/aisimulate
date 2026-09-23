@@ -61,7 +61,10 @@ def capture(argv: list[str], out: str) -> int:
         try:
             runpy.run_path(script, run_name="__main__")
         except SystemExit as e:
-            if e.code not in (0, None):
+            # 10 is collector.helper.EXIT_CODE_RESTART: the collector asks the
+            # executor to recycle its worker AFTER the case ran — a protocol
+            # signal, not a failure (trtllm collect_moe.py:830).
+            if e.code not in (0, None, 10):
                 err = f"exit={e.code}"
         except Exception as e:  # capture is still evidence on failure
             err = f"{type(e).__name__}: {e}"
