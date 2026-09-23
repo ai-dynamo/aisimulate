@@ -104,7 +104,7 @@ fn sdk_error_type(
 /// The sdk import is lazy and failure-tolerant: in pure-Rust test contexts
 /// (cargo test without the sdk on `sys.path`) the conversion degrades to
 /// `PyValueError` with the same message.
-fn aic_to_py(e: AicError) -> PyErr {
+pub(crate) fn aic_to_py(e: AicError) -> PyErr {
     let sdk_class: Option<(&'static GILOnceCell<Py<PyType>>, &str)> = if e.is_missing_perf_data() {
         Some((&PERF_DATA_NOT_AVAILABLE_ERROR, "PerfDataNotAvailableError"))
     } else if matches!(e, AicError::EmpiricalNotImplemented(_)) {
@@ -137,7 +137,7 @@ fn aic_to_py(e: AicError) -> PyErr {
 /// Map the `mode` string (Python's `_run_static_breakdown` convention) to the
 /// Rust [`StaticMode`]. `"static" → Both`, `"static_ctx" → Context`,
 /// `"static_gen" → Generation`; anything else is a `ValueError`.
-fn parse_mode(mode: &str) -> PyResult<StaticMode> {
+pub(crate) fn parse_mode(mode: &str) -> PyResult<StaticMode> {
     match mode {
         "static" => Ok(StaticMode::Both),
         "static_ctx" => Ok(StaticMode::Context),
