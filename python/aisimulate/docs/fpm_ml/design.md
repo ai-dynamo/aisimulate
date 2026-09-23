@@ -166,7 +166,8 @@ The feature space is a fixed 135-name ABI; an artifact lists the names it reads
 | Preset | Slots | Source |
 | --- | --- | --- |
 | `v1` | 21 aggregates + their `log1p` and derived ratios | stock FPM v1, no lists needed |
-| `sglang18` (default) | the 18 per-request features below | per-request lists |
+| `sglang18` (default for prefill and aggregated workers) | the 18 per-request features below | per-request lists |
+| `indep5` (default for decode workers) | `req_batch_size`, `req_sum_past`, `req_max_past`, `req_min_past`, `req_sum_past_squared`: the five of the 18 that carry information on a decode step (§3.1) | per-request lists |
 | `core4` | `req_batch_size`, `req_sum_extend`, `req_sum_past`, `req_sum_attn_flops` (the ablation minimum, §3.1) | per-request lists |
 | `hisim` | `req_batch_size` + 32 request slots × (present, past, extend), requests sorted by past descending | per-request lists |
 
@@ -195,9 +196,10 @@ Why these and not raw lists: trees need a fixed-width input; sums, extremes and 
 attention proxy capture the two cost drivers (GEMM work ∝ Σ e_i, attention work
 ∝ Σ e_i·p_i) plus the batch shape (n, spread) that decides kernel selection and
 padding. `v1` and `hisim` land within 0.3–0.6 pp of `sglang18` on every deployment
-tested; `sglang18` is the default because it carries the per-request information and,
-unlike the smaller subsets below, keeps its accuracy when the training and test workloads
-differ.
+tested. Prefill and aggregated workers default to `sglang18` because, unlike the smaller
+subsets below, it keeps its accuracy when the training and test workloads differ. Decode
+workers default to `indep5`: on a decode step every request extends by one token, so
+thirteen of the eighteen are copies of the other five (§3.1).
 
 ### 3.1 How many of the 18 features are needed
 
@@ -210,9 +212,9 @@ inside a store. What remains:
 
 | set | n | features |
 | --- | --- | --- |
-| `sglang18` | 18 | all (default) |
+| `sglang18` | 18 | all (default for prefill / aggregated) |
 | `indep10` | 10 | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp²: the non-derivable ten |
-| `indep5` | 5 | n, Σp, max p, min p, Σp²: decode only, where every extend is 1 so Σe = n, max e = min e = 1, Σe² = n, Σe·p = Σp |
+| `indep5` | 5 | n, Σp, max p, min p, Σp²: decode only (default for decode), where every extend is 1 so Σe = n, max e = min e = 1, Σe² = n, Σe·p = Σp |
 | `core4` | 4 | n, Σe, Σp, Σe·(p + e/2): the smallest set that still scored like 18 in-distribution |
 
 **By measurement.** Same data and method as §7.1 (GB300, SGLang V4.1-Flash, ten capture
@@ -264,8 +266,13 @@ Reading the tables:
   nanoseconds; the time is the 400-tree walk, and trees fitted on fewer axes are not
   shallower.
 
-Decision: `sglang18` stays the default for both roles. `core4` is available as a preset for
-decode-only or in-distribution use. Raw output: `feature_ablation_pooled.txt`,
+Decision: decode workers default to `indep5` (the thirteen dropped features are exact
+copies of the five on a decode step, and every measured cell agrees to the second decimal);
+prefill and aggregated workers stay on `sglang18`, because both reduced sets lose accuracy
+under extrapolation, each for a different missing piece (extremes for `core4`, cross terms
+for `indep10`). `core4` remains available as a preset. `indep5` assumes one new token per
+request per step; with speculative decoding on (extends of 1 + k) train with `--features
+sglang18`. Raw output: `feature_ablation_pooled.txt`,
 `feature_ablation_cross.txt`, `feature_ablation_indep.txt`, `feature_ablation_matrix_cells.txt`,
 `estimator_latency_by_feature_set.csv` in the playground `reports/`.
 
@@ -747,7 +754,8 @@ quantified, not guessed. Raw data: `estimator_threads_grace_node.csv`,
   such a kernel, and the KV-capacity side of prefix sharing is the scheduler model's job,
   not this model's.
 - **Speculative decoding.** Extends of `1 + k` are accepted, but no training data with
-  MTP/EAGLE on exists yet.
+  MTP/EAGLE on exists yet. The decode default `indep5` drops the extend features because
+  they are constant without it; with MTP/EAGLE on, train decode with `--features sglang18`.
 - **GPU type.** All numbers are GB300. A model is per deployment (GPU, engine, model,
   parallelism); nothing here claims transfer across GPU types.
 

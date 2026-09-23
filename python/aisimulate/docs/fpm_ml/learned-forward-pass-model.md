@@ -176,23 +176,27 @@ python -m aisimulate_core.sdk.fpm_learned train \
     `is_decode`/`is_prefill`; preset `sglang18`);
   - 32 HiSim-style request slots sorted by past KV descending, each
     `(present, past, extend)` (preset `hisim`);
-  - `core4`: the four of the 18 that an ablation found sufficient
-    (`req_batch_size`, `req_sum_extend`, `req_sum_past`, `req_sum_attn_flops`).
-    Same accuracy as `sglang18` when train and test share the workload mix
-    (2.02 % vs 2.05 % decode, 1.97 % vs 1.98 % prefill on the pooled GB300
-    runs of §4) and for decode across workloads, but prefill extrapolation
-    degrades (LongBench → AgentX 6.5 → 15 %), so it is not the default. Fewer
-    features do not make inference faster either; the 400-tree walk dominates.
-    The full tables are in `design.md` §3.1.
+  - `indep5` (decode default): `req_batch_size`, `req_sum_past`,
+    `req_max_past`, `req_min_past`, `req_sum_past_squared`. On a decode step
+    every request extends by one token, so the other thirteen of the 18 are
+    exact copies of these five; every train/test pair measured agrees with
+    `sglang18` to the second decimal. Not for speculative decoding (extends
+    of 1 + k): use `sglang18` there.
+  - `core4`: `req_batch_size`, `req_sum_extend`, `req_sum_past`,
+    `req_sum_attn_flops`, the smallest set that ties `sglang18` when train and
+    test share the workload mix. Prefill extrapolation degrades (LongBench →
+    AgentX 6.5 → 15 %), so prefill stays on `sglang18`. Fewer features do not
+    make inference faster; the 400-tree walk dominates. Tables in `design.md`
+    §3.1.
   The per-request groups need the `extend_lengths` / `past_kv_lengths`
   producer fields described above. Lists must be aligned and cover every
   scheduled request; the Rust validator rejects partial vectors, and an
   artifact that uses `req_*` / `slot*` features **refuses** (error, not a
   constant prediction) iterations that carry no consistent lists, because
   the trees never saw those features missing during training.
-  `--features` takes a preset name or a comma-separated list; the default is
-  `sglang18` (the 18 per-request features). Aggregate-only streams must opt in
-  with `--features v1`.
+  `--features` takes a preset name or a comma-separated list. Defaults:
+  `indep5` for `--worker-type decode`, `sglang18` for prefill and aggregated.
+  Aggregate-only streams must opt in with `--features v1`.
 - The model is a scikit-learn `HistGradientBoostingRegressor` on
   `log(wall_ms)` per store, exported to plain JSON
   (`schema = aic_fpm_learned_forward_perf`, version 1). No pickle is involved

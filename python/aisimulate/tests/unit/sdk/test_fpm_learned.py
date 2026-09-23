@@ -273,7 +273,9 @@ def test_train_export_roundtrip_matches_sklearn() -> None:
     assert set(artifact["stores"]) == {"pure_decode"}
     assert artifact["metadata"]["hyperparameters"]["early_stopping"] is False
     assert artifact["metadata"]["trees_fitted"]["pure_decode"] == len(artifact["stores"]["pure_decode"]["trees"]) == 50
-    assert artifact["features"] == list(fpm_learned.REQUEST_FEATURE_NAMES)
+    assert artifact["features"] == list(fpm_learned.INDEP5_FEATURE_NAMES)
+    assert fpm_learned.DEFAULT_FEATURES["prefill"] == fpm_learned.REQUEST_FEATURE_NAMES
+    assert set(fpm_learned.INDEP5_FEATURE_NAMES) < set(fpm_learned.REQUEST_FEATURE_NAMES)
     # Exported trees reproduce the in-distribution fit closely.
     report = fpm_learned.evaluate(artifact, rng_iterations)
     assert report["pure_decode"]["mape_pct"] < 3.0
