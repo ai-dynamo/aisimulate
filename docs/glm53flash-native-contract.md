@@ -36,7 +36,10 @@ NCCL operators model FFN compute and explicit output reductions.
   for short prefill and also omits index query/head-gate projections there. KDA uses BF16 projections
   and FP32 recurrent state. vLLM also materializes sparse MLA projections in
   BF16; SGLang retains FP8 main sparse projections for the native FP8 checkpoint.
-- mHC `pre` includes input RMSNorm. vLLM emits one pre, 89 fused post/pre,
+- mHC requires explicit `tp_size` in its native identity: TP1/2/4 cannot
+  borrow one another's measured dispatch. Its replicated local SOL work is
+  unchanged by this identity field. Missing TP metadata is rejected.
+  mHC `pre` includes input RMSNorm. vLLM emits one pre, 89 fused post/pre,
   and one post, plus expand/contract. SGLang emits 90 pre and 90 post, plus
   expand/contract. A collector must include SGLang's fallback RMSNorm if its
   native pre reports that normalization was not fused.

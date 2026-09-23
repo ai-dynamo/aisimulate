@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+// SPDX-FileCopyrightText: Modifications Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //! Independently expressed GLM-5.3-Flash analytical operator contracts.
 //!
@@ -414,6 +414,8 @@ pub struct Glm53MhcOp {
     pub role: String,
     pub backend: String,
     pub checkpoint_format: String,
+    /// Native invocation identity, even though the local SOL work is replicated.
+    pub tp_size: u32,
     pub hidden_size: u32,
     pub hc_mult: u32,
     pub sinkhorn_iters: u32,
@@ -421,7 +423,7 @@ pub struct Glm53MhcOp {
 impl Glm53MhcOp {
     pub fn validate(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
-        if self.hidden_size == 0 || self.hc_mult != 4 || self.sinkhorn_iters != 20 {
+        if self.hidden_size == 0 || self.hc_mult != 4 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4) {
             return Err(AicError::ModelConfig(
                 "GLM mHC requires positive hidden size, multiplier4 and20 Sinkhorn iterations"
                     .into(),
@@ -449,6 +451,7 @@ impl Glm53MhcOp {
     pub fn sol(&self, spec: &SystemSpec, x: f64) -> Result<PerformanceResult, AicError> {
         self.validate()?;
         let (h, c) = (self.hidden_size as f64, self.hc_mult as f64);
+
         if x <= 0.0 {
             return Ok(zero());
         }

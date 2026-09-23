@@ -388,6 +388,7 @@ mod tests {
         Glm53MhcOp {
             name: "mhc_pre_attn_0".into(),
             role: "pre".into(),
+            tp_size: 2,
             backend: "vllm".into(),
             checkpoint_format: "fp8".into(),
             hidden_size: 4096,
