@@ -158,11 +158,12 @@ def _build_common_cli_experiments_parser() -> argparse.ArgumentParser:
     common_parser.add_argument(
         "--deployment-target",
         type=str,
-        choices=["dynamo-j2", "dynamo-python", "llm-d-helm", "llm-d-kustomize", "fpm"],
+        choices=["dynamo-j2", "dynamo-python", "llm-d-helm", "llm-d-kustomize", "fpm", "slurm"],
         default="dynamo-j2",
         help="Deployment target platform. Options: dynamo-j2 (default, typed Dynamo manifests), "
         "dynamo-python (Dynamo Python config modifiers), llm-d-helm (llm-d Helm values), "
-        "llm-d-kustomize (llm-d Kustomize overlays), fpm (reusable resource Pod + run.sh).",
+        "llm-d-kustomize (llm-d Kustomize overlays), fpm (reusable resource Pod + run.sh), "
+        "slurm (Dynamo service and benchmark jobs).",
     )
     common_parser.add_argument(
         "--engine-step-backend",
@@ -2440,7 +2441,10 @@ def _run_generate_mode(args):
     print("  For production deployments, use 'aiconfigurator cli default'")
     print("  to run the full parameter sweep with SLA optimization.")
     print("-" * 60)
-    print("\nTo deploy, run the generated shell script or apply the k8s manifest.")
+    if getattr(args, "deployment_target", None) == "slurm":
+        print("\nOn the Slurm cluster, run: bash submit.sh benchmark (or: bash submit.sh serve).")
+    else:
+        print("\nTo deploy, run the generated shell script or apply the k8s manifest.")
     print("=" * 60 + "\n")
 
 
