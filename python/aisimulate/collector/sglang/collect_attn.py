@@ -81,6 +81,13 @@ class MockModelConfig:
                 self.hidden_size = num_attention_heads * head_dim
                 self.attn_logit_softcapping = None
 
+            def get_text_config(self):
+                # HF PretrainedConfig API: sglang 0.5.16 unwraps multimodal
+                # configs through it (configs/hybrid_arch.py:49,
+                # linear_attn_model_registry.py:56); a text-only mock is its own
+                # text config.
+                return self
+
         self.hf_config = MockHFConfig(
             num_attention_heads=num_attention_heads,
             num_key_value_heads=num_key_value_heads,
@@ -143,6 +150,24 @@ class MockModelRunner:
         self.attn_backend = None
         self.server_args = MockServerArgs(page_size=page_size)
         self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
+        # sglang 0.5.16 reads the parallel geometry from ``model_runner.ps``
+        # (flashattention_backend.py:183 attn_cp_size, :271-274 tp_size; the
+        # runner sets it at model_runner.py:262 from a ParallelState). Provide
+        # the real trivial ParallelState when the wrapper exists, else a
+        # namespace with the same fields (parallel_state_wrapper.py:6-24).
+        try:
+            from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+
+            self.ps = ParallelState.trivial(gpu_id=0)
+        except ImportError:
+            from types import SimpleNamespace
+
+            self.ps = SimpleNamespace(
+                tp_rank=0, tp_size=1, pp_rank=0, pp_size=1, dp_rank=0, dp_size=1,
+                attn_tp_rank=0, attn_tp_size=1, attn_cp_rank=0, attn_cp_size=1,
+                attn_dp_rank=0, attn_dp_size=1, moe_ep_rank=0, moe_ep_size=1,
+                moe_dp_rank=0, moe_dp_size=1, dcp_size=1, gpu_id=0,
+            )
         self.is_draft_worker = False
         self.model_is_mrope = False
         self.sliding_window_size = attention_chunk_size

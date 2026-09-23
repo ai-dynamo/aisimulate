@@ -1164,18 +1164,31 @@ def load_model_runner(
     if native_quant == "fp8_block":
         _ensure_fp8_block_quant_config(model_config.hf_config)
 
+    # sglang 0.5.16 moved the rank/size arguments into one ``ps: ParallelState``
+    # (model_executor/model_runner.py:237-251, distributed/parallel_state_wrapper.py
+    # :6-24 @0.5.16); the old keyword form raised TypeError on every DSA/MLA
+    # module cell. Dispatch on the wrapper's presence (same pattern as
+    # collect_msa_module.py:659,752) so older pins keep their signature.
+    try:
+        from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+
+        _runner_parallel_kwargs = {"ps": ParallelState.trivial(gpu_id=gpu_id)}
+    except ImportError:
+        _runner_parallel_kwargs = {
+            "tp_rank": gpu_id,
+            "tp_size": server_args.tp_size,
+            "pp_rank": 0,
+            "pp_size": 1,
+            "moe_ep_rank": 0,
+            "moe_ep_size": 1,
+        }
     model_runner = ModelRunner(
         model_config=model_config,
         mem_fraction_static=server_args.mem_fraction_static,
         gpu_id=gpu_id,
-        tp_rank=gpu_id,
-        tp_size=server_args.tp_size,
-        pp_rank=0,
-        pp_size=1,
-        moe_ep_rank=0,
-        moe_ep_size=1,
         nccl_port=nccl_port,
         server_args=server_args,
+        **_runner_parallel_kwargs,
     )
 
     model_runner.alloc_memory_pool()

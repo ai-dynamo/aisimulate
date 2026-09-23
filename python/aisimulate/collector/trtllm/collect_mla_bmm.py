@@ -36,7 +36,7 @@ __compat__ = "trtllm>=1.3.0rc20"
 import tensorrt_llm
 import tensorrt_llm.quantization.utils.fp8_utils as fp8_utils
 import torch
-from case_generator import get_mla_bmm_case_specs
+from collector.case_generator import get_mla_bmm_case_specs
 
 from helper import benchmark_with_power, get_sm_version, log_perf
 
