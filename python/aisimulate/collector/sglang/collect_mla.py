@@ -160,6 +160,7 @@ class MockServerArgs:
         # stays off exactly as in production (triton_backend.py:214-217).
         # The SM90 fa3 / SM100 trtllm_mla init paths never read this field.
         self.cuda_graph_config = None
+        self.enable_prefill_cp = False  # sglang 0.5.16 flashattention_backend.py:51
 
 
 class MockModelRunner:
@@ -190,6 +191,21 @@ class MockModelRunner:
         # Keep attributes for compatibility across sglang versions (older code ignores them)
         self.is_hybrid_swa = self.model_config.is_hybrid_swa
         self.attn_cp_size = 1  # Context parallelism size; required by FlashAttentionBackend in sglang >=0.5.10
+        # sglang 0.5.16 reads the parallel geometry from model_runner.ps
+        # (flashattention_backend.py:183,271-274; parallel_state_wrapper.py:6-24)
+        try:
+            from sglang.srt.distributed.parallel_state_wrapper import ParallelState
+
+            self.ps = ParallelState.trivial(gpu_id=0)
+        except ImportError:
+            from types import SimpleNamespace
+
+            self.ps = SimpleNamespace(
+                tp_rank=0, tp_size=1, pp_rank=0, pp_size=1, dp_rank=0, dp_size=1,
+                attn_tp_rank=0, attn_tp_size=1, attn_cp_rank=0, attn_cp_size=1,
+                attn_dp_rank=0, attn_dp_size=1, moe_ep_rank=0, moe_ep_size=1,
+                moe_dp_rank=0, moe_dp_size=1, dcp_size=1, gpu_id=0,
+            )
         self.server_args = MockServerArgs(kv_cache_dtype, page_size)
         self.use_mla_backend = True
 

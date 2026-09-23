@@ -15,7 +15,7 @@ import tensorrt_llm
 import torch
 from collector.case_generator import get_compute_scale_case_specs
 
-from helper import benchmark_with_power, get_sm_version, log_perf
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 
 def get_computescale_test_cases():

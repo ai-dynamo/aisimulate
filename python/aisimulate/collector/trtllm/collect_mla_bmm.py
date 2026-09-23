@@ -38,7 +38,7 @@ import tensorrt_llm.quantization.utils.fp8_utils as fp8_utils
 import torch
 from collector.case_generator import get_mla_bmm_case_specs
 
-from helper import benchmark_with_power, get_sm_version, log_perf
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 
 def _supported_dtypes() -> set[str]:

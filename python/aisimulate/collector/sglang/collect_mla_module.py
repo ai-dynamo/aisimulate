@@ -1424,7 +1424,15 @@ def _run_prefill(
             req.prefix_indices = prefix_indices[i]
             req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
             req.fill_len = full_length
-            req.set_extend_input_len(seq_length if prefix_len else full_length)
+            # sglang 0.5.16 replaced Req.set_extend_input_len(n) with
+            # set_extend_range(start, end) (schedule_batch.py:1153: the extend
+            # window is the last n of fill_len tokens); keep the old call on
+            # pins that still have it.
+            _n = seq_length if prefix_len else full_length
+            if hasattr(req, "set_extend_input_len"):
+                req.set_extend_input_len(_n)
+            else:
+                req.set_extend_range(full_length - _n, full_length)
             req.logprob_start_len = 0
             reqs.append(req)
 
@@ -2124,7 +2132,10 @@ def _run_decode(
             req.prefix_indices = torch.empty((0,), dtype=torch.int64)
             req.full_untruncated_fill_ids = array("q", req.origin_input_ids)
             req.fill_len = len(req.origin_input_ids)
-            req.set_extend_input_len(req.fill_len)
+            if hasattr(req, "set_extend_input_len"):
+                req.set_extend_input_len(req.fill_len)
+            else:  # sglang 0.5.16: schedule_batch.py:1153 set_extend_range(start, end)
+                req.set_extend_range(0, req.fill_len)
             req.logprob_start_len = 0
             req.cached_tokens = 0
             req.already_computed = 0

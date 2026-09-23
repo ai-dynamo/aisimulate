@@ -24,7 +24,7 @@ from tensorrt_llm._torch.modules.linear import Linear
 from tensorrt_llm._utils import is_sm_100f
 from tensorrt_llm.models.modeling_utils import QuantAlgo, QuantConfig
 
-from helper import benchmark_with_power, get_sm_version, log_perf
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 
 def pad_up(x: int, y: int) -> int:

@@ -68,6 +68,11 @@ class MockModelConfig:
         self.is_multimodal = False
         self.hidden_size = num_attention_heads * head_dim
         self.is_local_attention_model = attention_chunk_size is not None
+        # sglang 0.5.16: configs/hybrid_arch.py:30-31 reads
+        # model_config.linear_attn_registry_result (ModelConfig property,
+        # model_config.py:707) to detect hybrid linear-attention archs; the
+        # dense-attention mock has none.
+        self.linear_attn_registry_result = None
 
         class MockHFConfig:
             def __init__(self, *, num_attention_heads, num_key_value_heads, head_dim, v_head_dim, architecture):
@@ -128,6 +133,9 @@ class MockServerArgs:
         self.enable_two_batch_overlap = False
         self.disable_attn_tp_gather = False
         self.moe_dense_tp_size = None
+        # sglang 0.5.16: flashattention_backend.py:51 reads
+        # server_args.enable_prefill_cp (prefill context parallelism) — off
+        self.enable_prefill_cp = False
 
 
 class MockModelRunner:
