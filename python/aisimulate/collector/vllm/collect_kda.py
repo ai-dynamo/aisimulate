@@ -327,20 +327,46 @@ def run_kda_context_benchmark(
                 init_state = torch.zeros(batch_size, nh, hd, hd, dtype=torch.float32, device=device)
 
                 if prefill_source == "flashkda_fwd":
+                    import inspect
 
-                    def run_prefill():
-                        flashkda_prefill(
-                            q,
-                            k,
-                            v,
-                            raw_g,
-                            raw_beta,
-                            a_log,
-                            dt_bias,
-                            KDA_LOWER_BOUND,
-                            init_state,
-                            cu,
+                    # vLLM 0.29.0 FlashKDA writes into caller-owned buffers taken
+                    # from the engine workspace (kda.py:536-547 sizes them:
+                    # out (1,T,H,D) model dtype, final_state (N,H,D,D) fp32,
+                    # workspace uint8 of _flashkda_C.get_workspace_size(T,H,N);
+                    # the non-checkpoint prefill call is kda.py:939-953). The
+                    # kimi-k3 preview build returned them instead — dispatch on
+                    # the signature so both builds run the same kernel.
+                    if "out" in inspect.signature(flashkda_prefill).parameters:
+                        import vllm._flashkda_C  # noqa: F401
+
+                        fk_out = torch.empty_like(q)
+                        fk_final = torch.zeros(batch_size, nh, hd, hd, dtype=torch.float32, device=device)
+                        fk_ws = torch.empty(
+                            int(torch.ops._flashkda_C.get_workspace_size(nt, nh, batch_size)),
+                            dtype=torch.uint8,
+                            device=device,
                         )
+
+                        def run_prefill():
+                            flashkda_prefill(
+                                q, k, v, raw_g, raw_beta, a_log, dt_bias, KDA_LOWER_BOUND, init_state, cu,
+                                out=fk_out, final_state=fk_final, workspace=fk_ws,
+                            )
+                    else:
+
+                        def run_prefill():
+                            flashkda_prefill(
+                                q,
+                                k,
+                                v,
+                                raw_g,
+                                raw_beta,
+                                a_log,
+                                dt_bias,
+                                KDA_LOWER_BOUND,
+                                init_state,
+                                cu,
+                            )
 
                 else:
 
