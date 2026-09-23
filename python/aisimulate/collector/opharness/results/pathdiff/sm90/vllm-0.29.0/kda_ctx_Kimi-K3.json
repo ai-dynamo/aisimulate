@@ -1,0 +1,44 @@
+{
+ "verdict": "aligned",
+ "repo": "moonshotai/Kimi-K3",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "capture_file": "facts/pathdiff/opcov_kda_ctx.json",
+ "capture_cmd": [
+  "/work/s/caps/kda_ctx.py"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": "auto",
+ "op_hint": "kda|delta|conv1d|linear|attn_res|gated|recurr",
+ "serving_record": {
+  "id": "32a94013fed2",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 2
+ },
+ "collector_backends": [
+  "causal_conv1d",
+  "flashkda"
+ ],
+ "serving_backends": [
+  "causal_conv1d",
+  "cublas",
+  "fa3",
+  "flashkda",
+  "torch",
+  "vllm_kernel"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "_Z25_flash_kda_fwd_recurrenceIN4cute9TiledCopyINS0_9Copy_AtomIJNS0_11Copy_Traits",
+  "_causal_conv1d_fwd_kernel",
+  "_flash_kda_fwd_prepare",
+  "namespace"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

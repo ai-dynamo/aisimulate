@@ -1,0 +1,58 @@
+{
+ "verdict": "aligned",
+ "repo": "sgl-project/DeepSeek-V4-Flash-FP8",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "capture_file": "facts/pathdiff/opcov_dsv4_csa_ctx.json",
+ "capture_cmd": [
+  "/work/s/caps/dsv4_csa_ctx.py"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": "fp8",
+ "op_hint": "dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant",
+ "serving_record": {
+  "id": "bc7245f116c1",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 3
+ },
+ "collector_backends": [
+  "cublas",
+  "deepgemm",
+  "dsa_nsa",
+  "sgl_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "dsa_nsa",
+  "flashmla",
+  "sgl_kernel",
+  "tilelang",
+  "torch"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "_apply_write_kernel",
+  "_build_c128a_topk_metadata_kernel",
+  "_compute_global_topk_indices_and_lens_kernel",
+  "_compute_swa_indices_and_lens_kernel",
+  "_dsv4_topk_kernel",
+  "_fused_inv_rope_fp8_quant_per_head",
+  "_fused_q_kv_rmsnorm_kernel",
+  "_gumbel_sample_kernel",
+  "_min_p_kernel",
+  "_penalties_kernel"
+ ],
+ "collector_unmatched_kernels": [
+  "compute_cuda_kernel",
+  "kernel",
+  "vllm::fused_inv_rope_fp8_quant_kernel"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

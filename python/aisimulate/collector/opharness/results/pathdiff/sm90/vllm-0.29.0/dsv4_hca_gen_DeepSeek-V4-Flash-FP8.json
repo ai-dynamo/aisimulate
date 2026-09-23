@@ -1,0 +1,58 @@
+{
+ "verdict": "aligned",
+ "repo": "sgl-project/DeepSeek-V4-Flash-FP8",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "capture_file": "facts/pathdiff/opcov_dsv4_hca_gen.json",
+ "capture_cmd": [
+  "/work/s/caps/dsv4_hca_gen.py"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": "fp8",
+ "op_hint": "dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant",
+ "serving_record": {
+  "id": "bc7245f116c1",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 3
+ },
+ "collector_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "dsa_nsa",
+  "flashmla"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "dsa_nsa",
+  "flashmla",
+  "sgl_kernel",
+  "tilelang",
+  "torch"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "_build_c128a_topk_metadata_kernel",
+  "_compute_swa_indices_and_lens_kernel",
+  "_fused_inv_rope_fp8_quant_per_head",
+  "_fused_q_kv_rmsnorm_kernel",
+  "_save_partial_states_kernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
+  "deep_gemm::fp8_gemm_kernel_swapAB",
+  "deep_gemm::sm90_fp8_gemm_1d2d_impl",
+  "kernel",
+  "namespace"
+ ],
+ "collector_unmatched_kernels": [
+  "compute_cuda_kernel",
+  "vllm::fused_inv_rope_fp8_quant_kernel"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}
