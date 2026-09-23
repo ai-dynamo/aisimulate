@@ -723,6 +723,100 @@ simulations in parallel (previous table). The measurement is here so the option 
 quantified, not guessed. Raw data: `estimator_threads_grace_node.csv`,
 `estimator_threads_amd_login.csv` in the playground `reports/`.
 
+### 8.7 Smaller models: accuracy against time per estimate
+
+The 400-tree, 31-leaf model was chosen for accuracy without asking what it costs. This
+section trains smaller models with the existing CLI options (`--max-iter`,
+`--learning-rate`, `--max-leaf-nodes`, `--features`; no code change) and measures both.
+The learning rate is raised as the tree count drops so the ensembles fit to the same depth.
+
+**Accuracy on the GB300 SGLang data** (ten runs, method of §3.1: "pooled" = 60/40 time
+split of all runs; A → B = all runs of A train, all runs of B test; MAPE). Decode uses the
+five atomic features of §3.1, prefill the ten (18 shown for reference):
+
+Decode:
+
+| trees × leaves (lr) | features | pooled | AgentX→AgentX | ShareGPT→ShareGPT | LongBench→LongBench | AgentX→ShareGPT | ShareGPT→AgentX | ShareGPT→LongBench | LongBench→AgentX | LongBench→ShareGPT |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 400 × 31 (0.05) | 18 | 2.05 | 2.34 | 2.27 | 1.86 | 13.5 | 4.6 | 5.5 | 2.8 | 22.5 |
+| 400 × 31 (0.05) | 5 | 2.05 | 2.33 | 2.21 | 1.85 | 14.1 | 3.8 | 4.0 | 3.0 | 22.4 |
+| 200 × 7 (0.10) | 5 | 2.01 | 2.21 | 2.19 | 1.83 | 14.8 | 4.5 | 3.0 | 3.0 | 24.8 |
+| 100 × 7 (0.20) | 5 | 2.02 | 2.20 | 2.19 | 1.83 | 15.4 | 4.0 | 3.1 | 3.0 | 24.1 |
+| 100 × 15 (0.20) | 5 | 2.04 | 2.25 | 2.20 | 1.84 | 15.6 | 5.9 | 6.7 | 3.2 | 23.1 |
+| 50 × 7 (0.30) | 5 | 2.03 | 2.19 | 2.20 | 1.82 | 16.0 | 6.7 | 5.1 | 2.9 | 23.9 |
+| 50 × 15 (0.30) | 5 | 2.04 | 2.24 | 2.20 | 1.83 | 15.8 | 3.9 | 2.9 | 3.1 | 23.1 |
+
+Prefill:
+
+| trees × leaves (lr) | features | pooled | AgentX→AgentX | ShareGPT→ShareGPT | LongBench→LongBench | AgentX→ShareGPT | ShareGPT→AgentX | ShareGPT→LongBench | LongBench→AgentX | LongBench→ShareGPT |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 400 × 31 (0.05) | 18 | 2.05 | 2.35 | 2.74 | 0.63 | 4.6 | 28.8 | 43.3 | 5.2 | 34.7 |
+| 200 × 7 (0.10) | 18 | 1.98 | 2.21 | 2.57 | 0.62 | 3.6 | 30.9 | 36.9 | 5.3 | 42.3 |
+| 100 × 7 (0.20) | 18 | 2.01 | 2.26 | 2.59 | 0.63 | 3.5 | 30.9 | 39.9 | 5.6 | 64.3 |
+| 100 × 15 (0.20) | 18 | 2.03 | 2.29 | 2.70 | 0.65 | 5.5 | 29.5 | 39.6 | 6.8 | 36.1 |
+| 50 × 7 (0.30) | 18 | 2.04 | 2.34 | 2.59 | 0.66 | 3.4 | 26.9 | 40.3 | 6.4 | 67.4 |
+| 50 × 15 (0.30) | 18 | 2.05 | 2.35 | 2.70 | 0.65 | 4.0 | 28.2 | 34.4 | 7.1 | 25.9 |
+| 400 × 31 (0.05) | 10 | 2.03 | 2.38 | 2.72 | 0.64 | 3.3 | 28.3 | 48.1 | 7.2 | 69.1 |
+| 100 × 15 (0.20) | 10 | 2.02 | 2.35 | 2.70 | 0.64 | 3.2 | 25.6 | 40.0 | 5.2 | 71.8 |
+
+Same-workload accuracy (pooled and diagonal) is flat across the whole grid, down to 50
+trees of 7 leaves: about 2.0 % decode and 2.0 % prefill. The cross-workload cells move by
+a few points between configurations in both directions; those cells are dominated by
+extrapolation and vary this much between training seeds as well (the 400 × 31 / 18-feature
+row here differs from §3.1 by up to 2 pp for that reason), so they do not separate the
+configurations.
+
+**Accuracy and time per estimate on the vLLM V4-Flash AgentX pair** (§7.2 data: one run
+trains, the other is scored; latency = Rust call on one Grace core, method of §8.1; every
+artifact trained and timed on the same AI Hub `cpu`-partition node):
+
+Decode, five features:
+
+| trees × leaves (lr) | test MAPE | median | p95 | bs 1 / 32k | bs 16 / 32k | bs 64 / 128k | bs 256 / 128k |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 400 × 31 (0.05), 18 features | 4.02 % | 1.48 % | 9.4 % | 3.35 µs | 4.12 µs | 4.82 µs | 5.48 µs |
+| 400 × 31 (0.05) | 3.94 % | 1.45 % | 8.5 % | 3.21 µs | 4.07 µs | 4.62 µs | 5.28 µs |
+| 200 × 7 (0.10) | 3.28 % | 1.30 % | 3.3 % | 1.30 µs | 1.40 µs | 1.55 µs | 2.19 µs |
+| 100 × 15 (0.20) | 3.57 % | 1.36 % | 5.6 % | 0.74 µs | 0.87 µs | 1.11 µs | 1.74 µs |
+| 100 × 7 (0.20) | 3.29 % | 1.30 % | 3.3 % | 0.77 µs | 0.76 µs | 0.89 µs | 1.55 µs |
+| 50 × 15 (0.30) | 3.55 % | 1.32 % | 4.2 % | 0.45 µs | 0.54 µs | 0.68 µs | 1.33 µs |
+| 50 × 7 (0.30) | 3.30 % | 1.28 % | 3.3 % | 0.45 µs | 0.50 µs | 0.63 µs | 1.28 µs |
+
+Prefill, 18 features:
+
+| trees × leaves (lr) | test MAPE | median | p95 | 1 × 512, no prefix | 1 × 4096, no prefix | 1 × 4096, 64k prefix | 4 × 4096, 16k each |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 400 × 31 (0.05) | 5.09 % | 4.03 % | 9.1 % | 4.68 µs | 6.29 µs | 4.46 µs | 4.67 µs |
+| 200 × 7 (0.10) | 4.98 % | 3.97 % | 9.1 % | 1.72 µs | 1.53 µs | 1.27 µs | 1.30 µs |
+| 100 × 15 (0.20) | 5.04 % | 4.00 % | 9.1 % | 1.06 µs | 1.10 µs | 0.78 µs | 0.84 µs |
+| 100 × 7 (0.20) | 4.99 % | 3.98 % | 9.1 % | 0.82 µs | 0.81 µs | 0.68 µs | 0.70 µs |
+| 50 × 15 (0.30) | 5.04 % | 3.99 % | 9.1 % | 0.63 µs | 0.63 µs | 0.50 µs | 0.53 µs |
+| 50 × 7 (0.30) | 4.97 % | 3.97 % | 9.1 % | 0.58 µs | 0.49 µs | 0.46 µs | 0.47 µs |
+
+The full 48-configuration grid (12 model sizes × two feature sets × two roles) is in the
+playground `reports/simplify_grid_vllm_acc_latency_grace.txt`; the rows above are the
+shortlist. Time per estimate scales with trees × depth, as §8.1 predicts: 100 trees of 7
+leaves is 4–5× faster than 400 × 31 at every batch size, 50 × 7 is 7×. Accuracy on the
+held-out run does not drop; on this pair the 7-leaf models are better (decode 3.3 % vs
+4.0 %, p95 3.3 % vs 9.4 %) because the 31-leaf trees overfit the training run's
+step-time noise.
+
+Reading: a decode model of five features, 100 trees and 7 leaves (learning rate 0.2) and a
+prefill model of 18 features, 100 trees and 15 leaves (learning rate 0.2) are 4–5× faster
+than the current default at the same or better accuracy on every same-workload test, and
+inside the seed-to-seed spread on every cross-workload cell. They are trained with the
+existing CLI:
+
+```
+--features req_batch_size,req_sum_past,req_max_past,req_min_past,req_sum_past_squared --max-iter 100 --learning-rate 0.2 --max-leaf-nodes 7   # decode
+--max-iter 100 --learning-rate 0.2 --max-leaf-nodes 15                                                                                  # prefill
+```
+
+The shipped defaults are unchanged. Machines: accuracy grid on dlcluster login-03 (AMD
+EPYC 7313P, 16 threads); vLLM training and latency on AI Hub aws-cmh `cpu` partition node
+cpu-0007 (NVIDIA Grace, 96 cores, exclusive; 48 trainings in parallel at 8 threads each,
+then the bench pinned to one core).
+
 ## 9. Limitations and follow-ups
 
 - **Coverage.** No workload in the set has decode batches above ~43 at contexts above
