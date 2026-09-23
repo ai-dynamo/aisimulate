@@ -1,89 +1,91 @@
 ---
 name: aisimulate-replay-performance
-description: Assess host runtime cost when implementing or reviewing AISimulate engine-only replay changes, including features and correctness fixes. Use for scheduling, admission rollback, event queues, worker lifecycle, request lowering, KV ownership, timing evidence, and reports. Require matched evidence for likely added hot-path work. Excludes Dynamo Router, Planner, KVBM, and live event-plane behavior.
+description: Design, implement, and review efficient AISimulate engine-only simulation execution. Use for replay features, correctness fixes, and refactors that affect scheduling, state transitions, event processing, or costs that scale with requests, tokens, workers, or resident state. Resolve substantial avoidable overhead before completion. Excludes Dynamo Router, Planner, KVBM, and live event-plane behavior.
 ---
 
 # AISimulate replay performance
 
-Apply this guide to feature work, correctness fixes, refactors, and performance work in
-AISimulate-owned engine replay. Assess host CPU and wall time separately from simulated
-serving latency. Costs multiply across requests, tokens, workers, and backend events.
+Design new and changed code for efficient execution. Functional correctness and
+efficient execution are both completion requirements. Resolve substantial, avoidable
+overhead in the same PR before marking the implementation ready for merge.
+Assess simulator host cost separately from simulated serving latency. Apply this guide
+to AISimulate-owned engine replay; route Dynamo-owned runtime work to its own workflow.
 
-## Assess the cost before adding work
+## Design
 
-- Identify work done once, per request, per token or block, per event, per worker, or
-  per same-timestamp phase. Estimate its frequency and input-size dependence.
-- Identify copied state and its size: resident cache, page pool, waiting leases, queues,
-  and evidence. A cheap-looking `clone()` can grow with the whole simulation state.
-- Check whether a narrow backend or model feature adds cost to other configurations,
-  successful admissions, disabled features, or requests that need no state change.
-- Prefer existing incremental state, borrowed immutable data, and bounded work. Justify
-  extra caches or complex ownership with reuse, memory cost, and integrated benefit.
+- Identify the expected workload, operation frequency, input sizes, and state lifetime.
+  State how work scales with requests, tokens, events, workers, and resident state.
+  Include bursts, long runs, and affected backend configurations where relevant.
+- Choose scheduling algorithms, data structures, and ownership to fit those conditions.
+  Distinguish the state an operation needs from all stored state. Account for total
+  preparation, repeated execution, retained memory, synchronization, and cleanup cost.
+- Identify copied state and repeated discovery of information already available to the
+  caller. Check whether optional functionality adds cost to configurations that do not
+  use it. An event with a small local cost can be expensive at simulation frequency.
+- Prefer existing incremental state and borrowed immutable data where appropriate.
+  Justify extra caching, concurrency, or ownership complexity with a concrete need and
+  expected benefit. Account for reuse, invalidation, contention, and retained memory;
+  lower local cost is insufficient if setup or state maintenance consumes the saving.
 
-## Inspect these recurring costs
+## Implement
 
-- Whole-cache, page-pool, or lease snapshots for every admission attempt, including
-  successful attempts. Delaying a snapshot does not bound the cost of each remaining copy.
-- Repeated queue, worker, cache, or timestamp scans; sorting or temporary containers
-  where incremental state already exists.
-- Repeated prompt expansion, token traversal, hashing, or KV-accounting work.
-- Broad same-timestamp restarts; shared locks, global barriers, or slowest-worker waits.
-- Event, lifecycle, or timing-evidence bookkeeping with no consumer; backend-specific
-  data added to every backend's path.
-- Cost moved from a local helper into cleanup, accounting, or report generation.
-
-Concrete example: [#321](https://github.com/ai-dynamo/aisimulate/pull/321) reduces admission
-snapshot copies added by a correctness change. Check both snapshot frequency and copied
-state size; preserve rollback before considering lazy snapshots or shared storage.
-
-## Protect behavior
-
-- Preserve request and token totals, completed lifecycles, canonical report parity,
-  deterministic same-timestamp order, and stable ties. Zero errors do not prove that
-  work was not dropped, duplicated, or left unfinished.
-- Preserve cache ownership, capacity, eviction, preemption, retraction, and handoff.
-- Keep admission transactional. Prefix matching can split, touch, and lock cache nodes:
-  establish rollback state before the first mutation, not merely before allocation.
-  Restore queue and lease state on failure. Buffer events until commit and preserve
-  their order; failure must not publish events or consume state needed by a retry.
-- Share immutable state only with defined mutation isolation. Retain validation at
-  public boundaries and preserve evidence, diagnostics, and error behavior.
-- When output or lifecycle behavior can change, read the existing
+- Keep work proportional to the transition or event being processed. Avoid redundant
+  scans, repeated preparation, unnecessary data movement, and bookkeeping without a
+  required consumer. Include helper calls and downstream report processing when checking
+  total cost. Use the simplest design that meets the workload and correctness needs.
+- Preserve request and token totals, completed lifecycles, required report behavior,
+  deterministic same-timestamp order, and stable ties. Preserve ownership, capacity,
+  eviction, preemption, and handoff semantics. Do not drop, duplicate, or leave work
+  incomplete to improve a timing result.
+- Preserve transactional state transitions. Establish rollback before the first mutation,
+  including mutations in lookups or matching helpers. A failed operation must restore
+  all affected state and permit a correct retry. Publish events only at commit and
+  preserve commit order; rollback must not leave externally visible events.
+- Define mutation isolation when sharing state. Keep validation at public boundaries;
+  internal reuse requires established invariants. Preserve diagnostics and error behavior.
+  When output or lifecycle behavior can change, read the existing
   [replay-parity guide](../../../python/aisimulate/.agents/skills/aisimulate-replay-parity/SKILL.md).
-  Its semantic qualification is separate from performance measurement.
+  Semantic qualification and performance measurement are separate checks.
 
-## Require matched native replay evidence
+## Validate and review
 
-- For a cold or rare path, give a supported bound on frequency, input size, and total
-  work. A bounded cold-path change does not require a benchmark by default.
-- For likely added hot-path work, require repeated matched before/after timings before
-  performance approval. Use native `aisimulate predict --stack engine` runs. A forward
-  prediction benchmark does not cover scheduling, admission, evidence, or report costs.
-- Match immutable revisions, release builds, dependencies, data, workload, and host
-  settings. Verify loaded native binaries. Use repeated paired timings on a representative
-  workload and a small control. For cache snapshots, include a workload with substantial
-  resident state and reuse, not only a short or empty-cache run.
-- Check equivalent work and behavior before interpreting speed differences. Missing
-  data, skipped coverage, incomplete execution, or behavior changes do not establish a
-  speed result. Explain intentional added work separately from avoidable overhead.
-- Use separate profiles to locate cost; check capture boundaries and lost samples.
-  Combine related symbol families when helpers change. Keep builds and profiles out of
-  timing runs, and retain attempted samples and explained failures.
-- Reject complexity without repeatable integrated benefit. A useful feature can add
-  cost, but measure and justify it; this guide sets no universal slowdown threshold.
+- Trace the changed execution paths. Confirm that the workload exercises the changed
+  operation, affected configurations, and relevant state sizes. A short run with little
+  resident state cannot establish the cost of work that grows with accumulated state.
+- Choose proportionate evidence. For a cold or small path, a supported bound on frequency,
+  input size, total work, and retained memory can suffice. For likely added hot-path work
+  or material cost changes, require repeated matched before/after native
+  `aisimulate predict --stack engine` comparisons. Forward-only prediction measurements
+  cannot clear scheduling, state management, evidence processing, or other integrated costs.
+- Record exact baseline and candidate revisions. Match release builds, dependencies,
+  data, workload, and host settings, and verify the loaded native binaries. Use repeated
+  paired timings on a representative workload and a small control. Report variation;
+  keep profiles separate from timing samples. Measure memory when retention can change.
+- Check equivalent work, complete execution, and required behavior before interpreting
+  speed differences. Missing data, skipped coverage, and incomplete execution are
+  missing evidence. Explain intended changes in work separately from implementation
+  overhead; passing behavior checks does not establish efficient execution.
+- Use `wall_time_ms` for native preparation, replay execution, and report aggregation.
+  It excludes Python startup, trace loading, and output serialization. Distinguish it
+  from loop-only timing, full CLI time, and simulated serving latency. A narrower timer
+  cannot qualify costs outside its boundary.
+- Investigate material costs and correct avoidable overhead before completion. Passing
+  tests or documenting a slowdown is not sufficient. Distinguish necessary feature
+  cost from implementation waste; explain material necessary costs, measured impact,
+  and considered alternatives. There is no universal slowdown limit. Accept an efficient
+  implementation with sufficient evidence without demanding further optimization.
 
-## State the timing scope and result
+Report the cost assessment, evidence and timing scope, behavior checks, and remaining
+uncertainty. Distinguish source-level risks, measured regressions, and inconclusive
+results. Missing required measurements leave an evidence gap, not performance approval.
+In a source-only review, identify the concern and needed comparison without starting
+builds, profiles, or benchmarks outside the task's permissions.
 
-`wall_time_ms` measures native preparation, replay execution, and report aggregation.
-It excludes Python startup, trace loading, and output serialization. It supports a native
-replay comparison, not a loop-only or full CLI claim. Report those scopes separately if
-measured; do not confuse host runtime with simulated serving latency.
+## Examples
 
-Report the cost concern and scaling, matched evidence and timing scope, behavior checks,
-and remaining uncertainty. Separate a source-level risk from a measured regression.
-Missing measurements are an evidence gap and do not support performance approval. In a
-source-only review, identify the needed comparison without starting builds, profiles, or
-benchmarks that the task does not authorize.
+- [#321](https://github.com/ai-dynamo/aisimulate/pull/321): a correctness change copied
+  broad resident state during frequent transitions, increasing CPU cost as state grew.
+- [#295](https://github.com/ai-dynamo/aisimulate/pull/295): auxiliary processing around
+  predictions added replay cost that a numerical-kernel benchmark would not cover.
 
-Route Dynamo Router, Planner, KVBM, discovery, scaling, and live event-plane performance
-work to the corresponding Dynamo workflow.
+These illustrate failure patterns and consequences; their solutions are not requirements.
