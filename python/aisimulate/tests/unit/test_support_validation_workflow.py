@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from dataclasses import replace
@@ -52,7 +53,8 @@ def _synthetic_campaign(root, checkpoint, plan, *, attempt_id, generator_overrid
 
 
 @pytest.fixture
-def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload):  # noqa: F811
+def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload, request):  # noqa: F811
+    instrumented = getattr(request, "param", False)
     replay_args, request, root, trace, replay_output = validation_case
     payload = request.model_dump(mode="json")
     payload["identity"]["framework_version"] = "0.27.0"
@@ -102,6 +104,48 @@ def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload):
         options, benchmark_points_json=points_json, benchmark_points_sha256=planner._canonical_hash(points)
     )
     overrides = {"K8sConfig": {"k8s_image": "example/runtime@sha256:" + "a" * 64}}
+    runtime = {}
+    if instrumented:
+        from collector.fpm_forward.bundled_instrumentation import bundled_instrumentation
+
+        deployment = request.profile_deployment()
+        runtime = {
+            "runtime_instrumentation": bundled_instrumentation("0.27.0"),
+            "runtime_configuration": "worker",
+            "runtime_launch": {
+                "identity": request.identity.model_dump(mode="json"),
+                "topology": {name: getattr(deployment, name) for name in ("tp", "pp", "dp", "moe_tp", "moe_ep", "cp")},
+                "precision": {
+                    **{
+                        name: getattr(deployment, name)
+                        for name in (
+                            "gemm_quant_mode",
+                            "moe_quant_mode",
+                            "fmha_quant_mode",
+                            "comm_quant_mode",
+                            "moe_backend",
+                            "attention_backend",
+                            "enable_wideep",
+                            "enable_eplb",
+                        )
+                    },
+                    "kvcache_quant_mode": deployment.kv_cache_dtype,
+                },
+                "collection": {
+                    "max_model_len": options.vllm_max_model_len,
+                    "max_num_batched_tokens": options.max_num_batched_tokens,
+                    "max_num_seqs": options.max_num_seqs,
+                    "gpu_memory_utilization": request.collection.memory_fraction,
+                    "prefill_cudagraph_policy": "runtime",
+                    "max_prefill_cudagraph_size": None,
+                },
+                "model_config": {
+                    "path": str(model_config),
+                    "sha256": hashlib.sha256(model_config.read_bytes()).hexdigest(),
+                },
+                "deployment": {"executor": "kubernetes", "image": overrides["K8sConfig"]["k8s_image"]},
+            },
+        }
     monkeypatch.setattr(planner, "_git_revision", lambda: "synthetic-workflow-revision")
     plan = planner.build_collection_plan(
         backend="vllm",
@@ -113,6 +157,7 @@ def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload):
         model_config_path=str(model_config),
         fpm_profile=request.fpm_profile,
         generator_overrides=overrides,
+        **runtime,
     )
     campaign = root / "fpm-artifacts" / plan.sha256[:16]
     checkpoint = root / "fpm-checkpoint/fpm_forward.json"
@@ -179,6 +224,7 @@ def quality_case(validation_case, tmp_path, monkeypatch, materialized_workload):
     }
 
 
+@pytest.mark.parametrize("quality_case", [False, True], indirect=True, ids=["ordinary", "instrumented"])
 def test_public_prepare_then_repeat_and_holdout_preserve_originals(quality_case):
     case = quality_case
     originals = {p: p.read_bytes() for p in case["root"].rglob("*") if p.is_file()}
@@ -194,6 +240,13 @@ def test_public_prepare_then_repeat_and_holdout_preserve_originals(quality_case)
     assert checked["status"] == "passed"
     assert len(case["calls"]) == 10
     assert originals == {p: p.read_bytes() for p in originals}
+    if case["plan"].runtime_instrumentation is not None:
+        from collector.fpm_forward.runtime_memory import validate_saved_plan
+
+        for path in case["output"].rglob("collection-plan.json"):
+            saved = json.loads(path.read_text())
+            validate_saved_plan(saved)
+            assert saved["runtime_observation"] == case["plan"].to_dict()["runtime_observation"]
 
 
 def test_changed_threshold_reuses_raw_samples_but_changed_count_does_not(quality_case, tmp_path):

@@ -191,6 +191,24 @@ def _groups(cache: dict, config: Any, version: str, pool_id: str) -> None:
 
 def _layer_views(owner: Any, cache: dict, source_files: dict) -> None:
     runner = owner.model_runner
+    runner_class = legacy._class_name(runner)
+    # Worker.init_device selects either native runner. Each initialize_kv_cache
+    # stores the sizes it passes to the tensor allocator under a different name;
+    # missing state must not fall back to another runner's field or spec sizes.
+    size_fields = {
+        "vllm.v1.worker.gpu_model_runner.GPUModelRunner": "_kernel_block_sizes",
+        "vllm.v1.worker.gpu.model_runner.GPUModelRunner": "kernel_block_sizes",
+    }
+    if runner_class not in size_fields:
+        raise ValueError(f"model runner has no audited cache mapping: {runner_class}")
+    runner_source = type(runner).__module__.replace(".", "/") + ".py"
+    if runner_source not in source_files:
+        raise ValueError(f"selected model runner source has not been audited: {runner_source}")
+    kernel_block_sizes = getattr(runner, size_fields[runner_class])
+    if not isinstance(kernel_block_sizes, list) or len(kernel_block_sizes) != len(cache["groups"]):
+        raise ValueError("initialized kernel block sizes do not cover every cache group")
+    kernel_block_sizes = [legacy._positive(size, "kernel block size") for size in kernel_block_sizes]
+    cache["model_runner"] = {"class": runner_class, "kernel_block_sizes": kernel_block_sizes}
     layers = owner.vllm_config.compilation_config.static_forward_context
     storage_ids = {}
     for index, storage in enumerate(cache["storages"]):
@@ -205,7 +223,7 @@ def _layer_views(owner: Any, cache: dict, source_files: dict) -> None:
     for attention_groups in runner.attn_groups:
         for group in attention_groups:
             spec = group.kv_cache_spec
-            kernel = legacy._positive(runner._kernel_block_sizes[group.kv_cache_group_id], "kernel block size")
+            kernel = kernel_block_sizes[group.kv_cache_group_id]
             if getattr(spec, "storage_block_size", spec.block_size) != spec.block_size:
                 raise ValueError("compressed kernel cache blocks are unsupported")
             # Both audited runners use auto for an unquantized group's shape.

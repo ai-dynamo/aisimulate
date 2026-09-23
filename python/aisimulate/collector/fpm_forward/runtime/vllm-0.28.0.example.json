@@ -22,7 +22,8 @@
       "vllm/transformers_utils/config.py": "869c46fc5c78aa33b86df168c56a6e9e52a1e22ed5becccabce153c8839c6a30",
       "dynamo/vllm/instrumented_scheduler.py": "89547cf5ccf65a5ddd2dab015d8fc35759a472cd53bc441918981eef48749c28",
       "vllm/_version.py": "63904896f9449a84bac95c17567eb1dea3592783ac3aa13916f5928b9458e9ac",
-      "vllm/v1/worker/utils.py": "e9d4381d903f7345c9b2fa7e9facfdfe7de7c36c2488bf7e28398183282b7a07"
+      "vllm/v1/worker/utils.py": "e9d4381d903f7345c9b2fa7e9facfdfe7de7c36c2488bf7e28398183282b7a07",
+      "vllm/v1/worker/gpu/model_runner.py": "fb08762e3a025fdc55ab8d2605a96a57d1fad7efae0fbb605cc4fe2973028aca"
     }
   },
   "files": [

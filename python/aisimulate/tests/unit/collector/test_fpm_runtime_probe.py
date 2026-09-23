@@ -155,6 +155,8 @@ def test_preview_requires_no_cache_geometry_and_never_imports_bundle(tmp_path, m
         assert args[args.index("--max-num-batched-tokens") + 1] == "1024"
         assert args[args.index("--max-num-seqs") + 1] == "64"
         assert params["params"]["agg"]["kv_cache_free_gpu_memory_fraction"] == 0.85
+        assert args[args.index("--revision") + 1] == launch["identity"]["model_revision"]
+        assert args.count("--revision") == 1
         assert args[args.index("--worker-cls") + 1] == "observer.ObservedWorker"
         assert "--no-async-scheduling" in args
         batch_flag = "--prefix-max-batch-size-samples" if phase == "prefill" else "--decode-max-batch-size-samples"
@@ -166,6 +168,23 @@ def test_preview_requires_no_cache_geometry_and_never_imports_bundle(tmp_path, m
             if graph_policy == "explicit":
                 graph = json.loads(args[args.index("--compilation-config") + 1])
                 assert graph["max_cudagraph_capture_size"] == 512
+
+
+@pytest.mark.parametrize("flag", [["--revision", "another-model-revision"], ["--revision=another-model-revision"]])
+def test_runtime_revision_cannot_be_replaced_by_backend_policy(tmp_path, flag):
+    from dataclasses import replace
+
+    from collector.fpm_forward import runner, runtime_probe
+    from collector.fpm_forward.planner import BackendPolicy
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    launch, manifest, _marker = _inputs(tmp_path)
+    plan = runtime_probe.build_runtime_probe_plan("worker", launch, load_instrumentation(manifest))
+    cell = replace(
+        plan.cells[0], backend_policy=BackendPolicy("test", {"params": {"agg": {"extra_cli_args": flag}}}, {})
+    )
+    with pytest.raises(ValueError, match="selected model revision"):
+        runner._cell_generator_overrides(plan, cell, runtime_probe.probe_generator_overrides(plan.launch))
 
 
 def test_execute_covers_each_configuration_and_both_phases_then_resumes(tmp_path, monkeypatch):
@@ -362,6 +381,35 @@ def test_formal_collector_cli_requires_all_instrumentation_inputs(tmp_path, caps
     assert plan["runtime_observation"]["launch"]["identity"]["framework_version"] == "0.28.0"
 
 
+def test_repeatability_roundtrips_and_hashes_instrumented_formal_plan(tmp_path):
+    from collector.fpm_forward import cli, entry, repeatability
+    from collector.fpm_forward.runtime_memory import validate_saved_plan
+    from collector.model_cases import build_collection_case_plan
+
+    argv, extra, _launch = _formal_cli_inputs(tmp_path)
+    args = cli._parser().parse_args([*argv, *extra])
+    case_plan = build_collection_case_plan(backend="vllm", model_path=args.model_path, gpu_type=args.gpu)
+    plan, _overrides = entry.resolve_inputs(args, case_plan)
+    saved = plan.to_dict()
+    validate_saved_plan(saved)
+    (tmp_path / "collection-plan.json").write_text(json.dumps(saved))
+    loaded = repeatability.load_repeatability_source(tmp_path)
+    assert loaded.to_dict() == saved
+    assert loaded.runtime_instrumentation.sha256 == plan.runtime_instrumentation.sha256
+    selected = {
+        "cell_id": plan.cells[0].cell_id,
+        "benchmark_points": {
+            "schema_version": 3,
+            "prefill": [{"batch_size": 1, "total_prefill_tokens": 16, "total_kv_read_tokens": 0}],
+            "decode": [],
+        },
+    }
+    subset = repeatability._subset_plan(loaded, selected)
+    validate_saved_plan(subset.to_dict())
+    assert subset.to_dict()["runtime_observation"] == saved["runtime_observation"]
+    assert subset.sha256 != plan.sha256
+
+
 def test_formal_collection_instruments_resolved_memory_and_archives_phase_attempts(tmp_path, monkeypatch):
     from collector.fpm_forward import cli, entry, runner
     from collector.model_cases import build_collection_case_plan
@@ -399,6 +447,10 @@ def test_formal_collection_instruments_resolved_memory_and_archives_phase_attemp
     assert {context["attempt_id"] for context in contexts} == {attempt["attempt_id"]}
     assert len({context["collector_attempt_id"] for context in contexts}) == 2
     assert all(len(items) == 1 for items in attempt["phase_attempts"].values())
+    for path in (root / "cells").glob("*/generator-request.json"):
+        args = json.loads(path.read_text())["params"]["agg"]["extra_cli_args"]
+        assert args[args.index("--revision") + 1] == plan.runtime_launch["identity"]["model_revision"]
+        assert args.count("--revision") == 1
 
 
 def _sidecar_inputs(tmp_path):

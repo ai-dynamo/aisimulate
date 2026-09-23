@@ -759,7 +759,7 @@ runtime:
 files: [observer.py, source-notes.md]
 source_notes: source-notes.md
 worker_class: observer.ObservedWorker
-scheduler_class: observer.ObservedScheduler
+scheduler_class: observer.ObservedInstrumentedScheduler
 observation_schema: aisimulate-runtime-observation/v1
 ```
 

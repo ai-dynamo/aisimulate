@@ -134,7 +134,7 @@ def isolated_runtime_imports():
     sys.modules.update(saved)
 
 
-def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version="0.28.0"):
+def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version="0.28.0", runner_version=1):
     """Synthetic vendor files and GPU objects; verifies mapping, never GPU support."""
     import hashlib
     import importlib
@@ -222,13 +222,17 @@ def _fake_campaign(tmp_path, monkeypatch, *, packed=False, planar=False, version
         attn.append([SimpleNamespace(layer_names=[name], kv_cache_spec=spec, kv_cache_group_id=index, backend=Backend)])
     cache = SimpleNamespace(num_blocks=blocks, kv_cache_groups=groups, kv_cache_tensors=allocations)
     config.compilation_config.static_forward_context = layers
-    runner = SimpleNamespace(
-        kv_cache_config=cache,
-        kv_caches=[layer.kv_cache for layer in layers.values()],
-        shared_kv_cache_layers={},
-        attn_groups=attn,
-        _kernel_block_sizes=[16] * len(groups),
+    runner = _typed(
+        "vllm.v1.worker.gpu_model_runner" if runner_version == 1 else "vllm.v1.worker.gpu.model_runner",
+        "GPUModelRunner",
     )
+    runner.kv_cache_config = cache
+    runner.kv_caches = [layer.kv_cache for layer in layers.values()]
+    runner.shared_kv_cache_layers = {}
+    runner.attn_groups = attn
+    # The native initialize_kv_cache methods bind different fields. V2 never
+    # assigns the private V1 field, even though both classes have the same name.
+    setattr(runner, "_kernel_block_sizes" if runner_version == 1 else "kernel_block_sizes", [16] * len(groups))
     block_objects = [SimpleNamespace(block_id=index, is_null=index == 0) for index in range(blocks)]
     pool = SimpleNamespace(
         blocks=block_objects,
@@ -414,6 +418,52 @@ def test_runtime_records_import_complete_for_source_audited_layouts(tmp_path, mo
         assert worker["model_config_sha256"] == campaign.launch["model_config"]["sha256"]
     result = validate_observations(tmp_path / "observations.json", {"worker": campaign.launch})["worker"]
     assert result["status"] == "complete", result["diagnostics"]
+
+
+@pytest.mark.parametrize("version", ["0.27.0", "0.28.0"])
+@pytest.mark.parametrize("runner_version", [1, 2])
+def test_native_runner_selection_uses_its_initialized_kernel_block_sizes(
+    tmp_path, monkeypatch, version, runner_version
+):
+    from collector.fpm_forward.runtime_observations import validate_observations
+
+    campaign = _fake_campaign(tmp_path, monkeypatch, version=version, runner_version=runner_version)
+    runner = campaign.adapter.ObservedWorker().model_runner
+    other_field = "kernel_block_sizes" if runner_version == 1 else "_kernel_block_sizes"
+    assert not hasattr(runner, other_field)
+    for phase in ("prefill", "decode"):
+        records = campaign.run(phase)
+        assert all(record["unresolved_fields"] == [] for record in records), records
+        worker = next(record for record in records if record["kind"] == "worker")
+        assert worker["cache"]["layer_tensors"]["layer0"]["kernel_block_size_tokens"] == 16
+        assert worker["cache"]["model_runner"]["class"] == f"{type(runner).__module__}.GPUModelRunner"
+    result = validate_observations(tmp_path / "observations.json", {"worker": campaign.launch})["worker"]
+    assert result["status"] == "complete", result["diagnostics"]
+
+
+@pytest.mark.parametrize("failure", ["unknown_runner", "unaudited_source", "missing_field"])
+def test_runner_mapping_never_guesses_a_compatible_field(tmp_path, monkeypatch, failure):
+    import importlib
+
+    campaign = _fake_campaign(tmp_path, monkeypatch, runner_version=2)
+    runner = campaign.adapter.ObservedWorker().model_runner
+    if failure == "unknown_runner":
+        type(runner).__module__ = "vendor.unreviewed_runner"
+    elif failure == "unaudited_source":
+        campaign.source["runtime"]["source_files"].pop("vllm/v1/worker/gpu/model_runner.py", None)
+    else:
+        del runner.kernel_block_sizes
+        runner._kernel_block_sizes = [16]
+    observer = importlib.import_module("instrumentation.observer")
+    worker = campaign.adapter.ObservedWorker()
+    worker.determine_available_memory()
+    worker.initialize_from_config(campaign.cache)
+    with pytest.raises((ValueError, AttributeError)):
+        observer._layer_views(
+            worker,
+            observer.legacy.worker_memory(worker),
+            campaign.source["runtime"]["source_files"],
+        )
 
 
 def test_changed_vendor_source_is_unresolved_with_raw_measurements_retained(tmp_path, monkeypatch):

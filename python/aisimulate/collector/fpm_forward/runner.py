@@ -1332,6 +1332,11 @@ def _cell_generator_overrides(
     observe_memory = _observe_runtime_memory(plan, cell)
     observe_execution = _observe_runtime_execution(plan, cell)
     instrumentation = getattr(plan, "runtime_instrumentation", None)
+    if instrumentation is not None:
+        # Pass the selected pin to native model construction for both probes and
+        # later formal collection. Local checkpoints otherwise resolve revision
+        # to None; loaded config bytes remain independently verified on import.
+        model_args.extend(["--revision", plan.runtime_launch["identity"]["model_revision"]])
     if observe_memory:
         if cell.workload_kind == "decode":
             # Use the prefill collection requirement for both phases when
@@ -1454,6 +1459,8 @@ def _cell_generator_overrides(
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
     policy_flags = {str(argument).split("=", 1)[0].split(" ", 1)[0] for argument in policy_args}
+    if instrumentation is not None and "--revision" in policy_flags:
+        raise ValueError("backend policy cannot override the runtime probe's selected model revision")
     if (observe_memory or observe_execution) and "--worker-cls" in policy_flags:
         raise ValueError("backend policy cannot replace the runtime execution/memory observer worker class")
     if observe_memory and policy_flags & {"--scheduler-cls", "--kv-cache-memory-bytes", "--num-gpu-blocks-override"}:

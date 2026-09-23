@@ -153,6 +153,7 @@ def load_repeatability_source(source_campaign_dir: str | Path) -> FPMCollectionP
         backend_policies=tuple(BackendPolicy(**item) for item in saved["backend_policies"]),
         cells=tuple(cell_from_dict(item) for item in saved["cells"]),
         _fpm_profile_json=json.dumps(saved["fpm_profile"]) if "fpm_profile" in saved else None,
+        _runtime_observation_json=json.dumps(saved["runtime_observation"]) if "runtime_observation" in saved else None,
     )
     if plan.to_dict() != saved:
         raise ValueError("saved repeatability source cannot be reconstructed exactly by this collector version")
@@ -371,7 +372,7 @@ def _subset_plan(source: FPMCollectionPlan, selected: dict[str, Any]) -> FPMColl
         "cells": [cell.to_dict() for cell in plan.cells],
     }
     serialized = plan.to_dict()
-    for key in ("fpm_profile", "runtime_memory_policy"):
+    for key in ("fpm_profile", "runtime_memory_policy", "runtime_observation"):
         if key in serialized:
             payload[key] = serialized[key]
     return replace(plan, sha256=_canonical_hash(payload))
