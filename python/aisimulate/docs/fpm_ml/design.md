@@ -201,75 +201,71 @@ differ.
 
 ### 3.1 How many of the 18 features are needed
 
-Two ablations on the GB300 SGLang V4.1-Flash data of §7.1, same method as the results
-tables (per-step APE, step-weighted). Nested subsets of the 18 (`core10` … `core4`) drop
-the derived terms first and the extremes last:
-
-| subset | features |
-| --- | --- |
-| `core10` | batch size; sum/max/min extend; sum/max/min past; Σ e·p; attention proxy; `is_decode` |
-| `core8` | `core10` without min extend, min past |
-| `core6` | batch size; sum/max extend; sum/max past; attention proxy |
-| `core4` | batch size; Σ extend; Σ past; attention proxy |
-
-**Same workload mix in train and test** (the ten runs pooled, first 60 % of each tier
-trains, last 40 % tests; MAPE):
-
-| features | n | decode | prefill |
-| --- | --- | --- | --- |
-| `sglang18` | 18 | 2.05 % | 1.98 % |
-| `core10` | 10 | 2.04 % | 1.98 % |
-| `core8` | 8 | 2.05 % | 1.97 % |
-| `core6` | 6 | 2.05 % | 1.97 % |
-| `core4` | 4 | 2.02 % | 1.97 % |
-| `v1` (aggregates) | 21 | 2.04 % | 2.16 % |
-
-**Train on one workload, test on another** (all runs of the first train, all runs of the
-second test; MAPE, `sglang18` → `core4`):
-
-| train → test | decode | prefill |
-| --- | --- | --- |
-| AgentX → LongBench | 3.03 → 3.56 % | 0.88 → 0.81 % |
-| LongBench → AgentX | 2.91 → 2.86 % | 6.52 → 15.12 % |
-| AgentX → ShareGPT | 14.14 → 12.41 % | 3.49 → 3.67 % |
-| ShareGPT → AgentX | 3.88 → 4.34 % | 26.23 → 31.79 % |
-| ShareGPT → LongBench | 3.43 → 4.39 % | 43.17 → 55.09 % |
-| LongBench → ShareGPT | 22.45 → 22.17 % | 29.42 → 75.62 % |
-
-**Which of the 18 are functions of the others.** Eight are exact functions of the rest, or
-constants: `req_sum_attn_flops` = Σe·p + ½Σe², `req_sum_extend_x_max_past` = Σe · max p,
+**By construction.** Eight of the 18 are exact functions of the others, or constants:
+`req_sum_attn_flops` = Σe·p + ½Σe², `req_sum_extend_x_max_past` = Σe · max p,
 `req_batch_size_x_sum_extend` = n · Σe, `req_max_past_minus_min_past` = max p − min p, the
 two `log1p` features are monotone transforms of `req_sum_past` and `req_sum_attn_flops`
 (a tree splits identically on either), and `req_is_decode` / `req_is_prefill` are constant
-inside a store. The ten that remain (`indep10`) are n, Σe, max e, min e, Σp, max p, min p,
-Σe·p, Σe², Σp². For decode every extend is 1, so Σe = n, max e = min e = 1, Σe² = n and
-Σe·p = Σp: five features carry everything (`indep5`: n, Σp, max p, min p, Σp²). The
-empirical check below confirms this for decode (`indep5` and `indep10` give identical
-numbers) but not for prefill extrapolation, because a tree cannot form a product: having
-Σe·(p + e/2) as its own axis lets it split on attention work directly, which matters when
-the test workload's mix of chunk sizes and prefixes was never seen.
+inside a store. What remains:
 
-| features | n | pooled decode | pooled prefill | cross decode, worst change vs 18 | cross prefill, worst change vs 18 |
-| --- | --- | --- | --- | --- | --- |
-| `indep10` | 10 | 2.04 % | 1.98 % | ShareGPT → LongBench 3.43 → 6.03 % | LongBench → ShareGPT 29.4 → 73.4 % |
-| `indep5` (decode only) | 5 | 2.04 % | | same as `indep10` | |
+| set | n | features |
+| --- | --- | --- |
+| `sglang18` | 18 | all (default) |
+| `indep10` | 10 | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp²: the non-derivable ten |
+| `indep5` | 5 | n, Σp, max p, min p, Σp²: decode only, where every extend is 1 so Σe = n, max e = min e = 1, Σe² = n, Σe·p = Σp |
+| `core4` | 4 | n, Σe, Σp, Σe·(p + e/2): the smallest set that still scored like 18 in-distribution |
 
-Within the training distribution four features are as good as eighteen, for both roles:
-the trees recover the rest (extremes, spread, cross terms) from the sums. Under
-extrapolation the picture splits. Decode moves by at most ±1 pp either way. Prefill gets
-markedly worse with `core4` in four of six directions (LongBench → AgentX 6.5 → 15 %,
-LongBench → ShareGPT 29 → 76 %): a prefill batch's cost depends on how its tokens are
-distributed over requests (one 8k chunk vs. eight 1k requests), which the sums alone do not
-distinguish and the extremes and cross terms do. Hence `core4` is offered as a preset for
-decode-only or in-distribution use, and `sglang18` stays the default.
+**By measurement.** Same data and method as §7.1 (GB300, SGLang V4.1-Flash, ten capture
+runs). "Pooled" = all ten runs, the first 60 % of each concurrency tier trains and the last
+40 % tests. "A → B" = every run of workload A trains, every run of workload B tests. MAPE
+over steps.
 
-Fewer features do not make inference faster. Two artifacts trained on the same vLLM
-AgentX run (§7.2 data, 400 trees each), timed with the method of §8.1 on the same Grace
-core: the 18-feature decode model takes 3.7–5.8 µs per estimate over the decode grid, the
-`core4` model 4.3–6.4 µs; prefill 4.5–6.3 µs versus 4.6–5.3 µs. The feature build is a few
-hundred nanoseconds either way; the time is the 400-tree walk, and trees fitted on fewer
-axes are not shallower (accuracy on the test run: decode 4.02 % vs 3.33 %, prefill 5.09 % vs
-4.99 %, i.e. equal within this pair). Raw output: `feature_ablation_pooled.txt`,
+Decode:
+
+| train → test | `sglang18` | `indep10` | `indep5` | `core4` |
+| --- | --- | --- | --- | --- |
+| pooled (same mix) | 2.05 % | 2.04 % | 2.04 % | 2.02 % |
+| AgentX → LongBench | 3.03 % | 2.77 % | 2.77 % | 3.56 % |
+| AgentX → ShareGPT | 14.14 % | 13.79 % | 13.79 % | 12.41 % |
+| LongBench → AgentX | 2.91 % | 2.97 % | 2.97 % | 2.86 % |
+| LongBench → ShareGPT | 22.45 % | 22.46 % | 22.46 % | 22.17 % |
+| ShareGPT → AgentX | 3.88 % | 5.00 % | 5.00 % | 4.34 % |
+| ShareGPT → LongBench | 3.43 % | 6.03 % | 6.03 % | 4.39 % |
+
+Prefill (`indep5` does not apply: extends vary):
+
+| train → test | `sglang18` | `indep10` | `core4` |
+| --- | --- | --- | --- |
+| pooled (same mix) | 1.98 % | 1.98 % | 1.97 % |
+| AgentX → LongBench | 0.88 % | 0.87 % | 0.81 % |
+| AgentX → ShareGPT | 3.49 % | 3.47 % | 3.67 % |
+| LongBench → AgentX | 6.52 % | 10.84 % | 15.12 % |
+| LongBench → ShareGPT | 29.42 % | 73.43 % | 75.62 % |
+| ShareGPT → AgentX | 26.23 % | 28.04 % | 31.79 % |
+| ShareGPT → LongBench | 43.17 % | 43.92 % | 55.09 % |
+
+Reading the tables:
+
+- **Decode.** `indep5` and `indep10` give identical numbers in every row, confirming that
+  the extend-derived features carry nothing on decode. In-distribution all four sets tie.
+  Across workloads the reduced sets move by −0.4 to +2.6 pp, both ways; `sglang18` is not
+  uniformly best but has no bad row that the others avoid.
+- **Prefill.** In-distribution all sets tie. Across workloads the derived features matter:
+  without them, LongBench → ShareGPT goes from 29 % to 73–76 % and LongBench → AgentX from
+  6.5 % to 11–15 %. A tree cannot form a product; having Σe·(p + e/2) and Σe · max p as
+  their own axes lets it split on attention work directly, which is what carries over when
+  the test workload's mix of chunk sizes and prefixes was never seen. "Derivable" is
+  therefore not "useless" for a GBDT.
+- **Speed is unaffected by the feature count.** Two artifacts trained on the same vLLM
+  AgentX run (§7.2 data, 400 trees each), timed as in §8.1 on one Grace core: the 18-feature
+  decode model takes 3.7–5.8 µs per estimate over the decode grid, the `core4` model
+  4.3–6.4 µs; prefill 4.5–6.3 µs versus 4.6–5.3 µs; accuracy on that pair equal (decode
+  4.02 % vs 3.33 %, prefill 5.09 % vs 4.99 %). The feature build is a few hundred
+  nanoseconds; the time is the 400-tree walk, and trees fitted on fewer axes are not
+  shallower.
+
+Decision: `sglang18` stays the default for both roles. `core4` is available as a preset for
+decode-only or in-distribution use. Raw output: `feature_ablation_pooled.txt`,
 `feature_ablation_cross.txt`, `feature_ablation_indep.txt`,
 `estimator_latency_by_feature_set.csv` in the playground `reports/`.
 
