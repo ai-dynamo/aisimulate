@@ -1,0 +1,50 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "capture_file": "facts/pathdiff/opcov_moe_fp8block_dsv3.json",
+ "capture_cmd": [
+  "/work/s/caps/moe_fp8block_dsv3.py"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": "fp8",
+ "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",
+ "serving_record": {
+  "id": "f208a101a9c8",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "sgl_kernel",
+  "triton_fused_moe",
+  "vllm_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "dsa_nsa",
+  "flashmla",
+  "sgl_kernel",
+  "triton_fused_moe",
+  "vllm_kernel"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "fused_moe_kernel",
+  "kernel",
+  "operator",
+  "per_token_group_quant_8bit_kernel",
+  "vllm::act_and_mul_kernel",
+  "vllm::moe::count_and_sort_expert_tokens_kernel",
+  "vllm::moe::grouped_topk_fused_small_expert_count_kernel",
+  "vllm::moe::moe_align_block_size_kernel",
+  "vllm::moe::moe_sum_vec_kernel"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

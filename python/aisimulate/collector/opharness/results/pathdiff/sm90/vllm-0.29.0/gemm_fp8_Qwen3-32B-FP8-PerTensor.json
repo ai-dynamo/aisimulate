@@ -1,0 +1,38 @@
+{
+ "verdict": "aligned",
+ "repo": "Qwen/Qwen3-32B-FP8-Static-PerTensor",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "capture_file": "facts/pathdiff/opcov_gemm_fp8.json",
+ "capture_cmd": [
+  "/work/s/caps/gemm_fp8.py"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "gemm|linear|proj|nvjet|cublas|deepgemm|scaled_mm|quant|cutlass",
+ "serving_record": {
+  "id": "e69bd0eccd7e",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": null,
+  "raw_file": null,
+  "candidates": 3
+ },
+ "collector_backends": [
+  "vllm_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "fa3",
+  "vllm_kernel"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "namespace",
+  "vllm::scaled_fp8_quant_kernel_strided_group_shape"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

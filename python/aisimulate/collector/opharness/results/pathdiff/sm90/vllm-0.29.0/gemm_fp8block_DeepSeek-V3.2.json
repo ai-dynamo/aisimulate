@@ -1,0 +1,50 @@
+{
+ "verdict": "aligned",
+ "repo": "deepseek-ai/DeepSeek-V3.2",
+ "framework": "vllm",
+ "version": "0.29.0",
+ "capture_file": "facts/pathdiff/opcov_gemm_fp8block.json",
+ "capture_cmd": [
+  "/work/s/caps/gemm_fp8block.py"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": "fp8",
+ "op_hint": "gemm|linear|proj|nvjet|cublas|deepgemm|scaled_mm|quant|cutlass",
+ "serving_record": {
+  "id": "f208a101a9c8",
+  "tp": 1,
+  "kv_cache_dtype": "fp8",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "deepgemm",
+  "sgl_kernel"
+ ],
+ "serving_backends": [
+  "cublas",
+  "cutlass",
+  "deepgemm",
+  "dsa_nsa",
+  "flashmla",
+  "sgl_kernel",
+  "triton_fused_moe",
+  "vllm_kernel"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "serving_kernels_matched_in_collector": [
+  "deep_gemm::sm90_fp8_gemm_1d2d_impl",
+  "kernel",
+  "per_token_group_quant_8bit_kernel"
+ ],
+ "collector_unmatched_kernels": [
+  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_slice_view_",
+  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_view_zeros_",
+  "triton_poi_fused__to_copy_clamp_div_mul_reciprocal_slice_view_zeros_2",
+  "triton_poi_fused__to_copy_clamp_div_mul_reciprocal_view_zeros_1"
+ ],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

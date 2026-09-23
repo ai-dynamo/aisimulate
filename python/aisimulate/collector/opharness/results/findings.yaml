@@ -523,6 +523,65 @@ findings:
     - instrument:probe_trtllm
     - framework:vllm-0.29.0
     - platform:sm90
+  op_coverage_vllm_0290:
+    statement: |
+      OP-LEVEL ALIGNMENT SWEEP (2026-09-23, after the probes were fixed): every
+      vllm registry op with a serving reference now has a path_diff verdict in
+      results/pathdiff/sm90/vllm-0.29.0/ (23 files, gate aligned). Captures are
+      one representative cell per op at a serving model's real shape, run via
+      the collector's own run_* entry (op_smoke semantics), diffed against
+      cache-cold serving records (re-probed for DSV3 bf16 and Qwen3.5-0.8B).
+        aligned: gemm {fp8_block/deepgemm vs DSV3.2, bf16/cublas vs Llama,
+        fp8 per-tensor vs Qwen3-32B-FP8}; moe {fp8_block DSV3.2, bf16 Gemma-4,
+        mxfp4 gpt-oss-120b}; mla_context {bf16 DSV3, fp8 R1}; mla_generation
+        {fp8 R1}; mla_bmm_gen_pre/post; gdn {ctx: flashinfer GDN + conv1d,
+        gen: fla_triton fused_recurrent} vs Qwen3.5-0.8B; compute_scale;
+        plus the earlier attention/dsa/msa set.
+      REAL DIVERGENCE FOUND AND FIXED — moe w4a16_mxfp4 (gpt-oss): the
+      collector built a bare Mxfp4Config -> Mxfp4MoEMethod -> MARLIN, while
+      vllm 0.29 overrides OCP "mxfp4" checkpoints of model_type gpt_oss to
+      GptOssMxfp4Config/GptOssMxfp4MoEMethod (quantization/mxfp4.py:119-139),
+      whose gpt-oss priority list (fused_moe/oracle/mxfp4.py:584-602) picks
+      TRITON matmul_ogs on SM90 — exactly what the gpt-oss-120b serving probe
+      shows. Same class as the Gemma-4 attention override: the collector
+      constructed the generic config and lost the model-specific method.
+      collect_moe.py now mirrors the override (commit in this series).
+      HARNESS FIXES surfaced by the sweep: (1) path_diff picked the LAST
+      matching serving record; a decode-only Qwen3.5 record beat the
+      cache-cold one and produced a false collector-only `flashinfer` — records
+      are now ranked by evidence quality (prefix_caching False > phase tables >
+      known isl); (2) Triton autotune tile suffixes (_matmul_ogs_..._16x256x128x1
+      vs _128x256x128x1, BLOCK_M from the token count) are stripped by
+      normalize_kernel so kernel-drift compares kernels, not tiles;
+      (3) FlashInfer GDN kernels relabeled trtllm_internal -> flashinfer (the
+      vocabulary name; vllm runs them on SM90 @0.29).
+      NOT ALIGNED-ABLE TODAY (no serving reference, not a collector defect):
+        - mla_generation bf16-gemm cells: every DeepSeek/Kimi checkpoint is fp8
+          or NVFP4, so the bf16-weight grid has no serving instance; the
+          collector's fused_a_gemm there is vllm's own small-M dispatch
+          (deepseek_v2.py:~915-925, num_tokens <= 16). Verdict file removed;
+          the fp8 cell is the reference comparison.
+        - dsv4_* (6 ops) and mhc_module: vllm DSV4 serving has no evidence
+          (load errors from the 6012 token-budget trigger; generator fix on
+          its own branch).
+        - kda: Kimi-K3 runs only on the vllm kimi-k3 preview image; its
+          records carry no kernels.
+        - encoder_attention: the probe prompt is text-only, so vision-encoder
+          kernels never execute in the profiled window (Qwen3-VL records have
+          none) — needs a multimodal probe request.
+      FOLLOW-UP: sglang (91 records at isl 32) and trtllm (74 at 16 tokens,
+      block reuse on) serving evidence predates their probe fixes; their
+      length-conditional classes (DSA/NSA, M3) need the same targeted
+      re-probe before sglang/trtllm op verdicts are drawn.
+    applies_to:
+    - instrument:path_diff
+    - instrument:probe_driver
+    - framework:vllm-0.29.0
+    - platform:sm90
+    - openai/gpt-oss-120b
+    - Qwen/Qwen3.5-0.8B
+    - deepseek-ai/DeepSeek-V3
+    - deepseek-ai/DeepSeek-R1
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.
