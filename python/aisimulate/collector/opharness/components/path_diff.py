@@ -115,7 +115,10 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
     # custom-op LAUNCHERS shadow their kernels under a second name
     # (_vllm_fa3_C::fwd wraps flash::FlashAttnFwdSm90) — same exclusion
     # build_ops applies to serving orphans, applied here to both sides
-    _launcher = re.compile(r"^(_\w*C\w*|sglang|sgl_kernel|triton_|vllm)::(?!.*_kernel)")
+    # trtllm's custom ops surface as `trtllm::<op>` launchers over
+    # `tensorrt_llm::_v1::kernels::...` kernels (causal_conv1d_fwd vs
+    # causal_conv1d::causal_conv1d_fwd_kernel) — same exclusion
+    _launcher = re.compile(r"^(_\w*C\w*|sglang|sgl_kernel|triton_|vllm|trtllm)::(?!.*_kernel)")
     def _is_launcher(name: str) -> bool:
         return bool(_launcher.match(name)) and "kernel" not in name.split("::")[-1].lower()
     col_kernels = sorted({n for k in cap["kernels"]

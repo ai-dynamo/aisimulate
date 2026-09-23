@@ -450,6 +450,9 @@ FW_FRAME = re.compile(r"(sglang|vllm|tensorrt_llm|cutlass|flashinfer|deep_gemm|s
 
 
 _TRITON_TILE_SUFFIX = re.compile(r"_(?:\d+x){3}\d+(?=(?:_[a-z]\w*)?$)")
+# cute-DSL symbols append every tensor spec ("_tensorptrbf16gmemalign32o1291612…",
+# "_object_a…") to the kernel name; identity ends at the kernel name.
+_CUTEDSL_PARAM_SUFFIX = re.compile(r"_(tensorptr|object).*$")
 
 
 def normalize_kernel(name: str) -> str | None:
@@ -461,6 +464,11 @@ def normalize_kernel(name: str) -> str | None:
         # at M=1 vs ..._128x256x128x1 at M=4096 — the same kernel, different
         # BLOCK sizes chosen from the token count. Identity is the kernel, not
         # the tile: strip the suffix (an epilogue marker like _swiglu survives).
+        if name.startswith("kernel_cutlass_"):
+            # cute-DSL instantiations bake shape parameters into the symbol
+            # (…gdn_decode_bf16state_mtp_ilp4_kernel_tensorptrbf16gmemalign32o1291612812828);
+            # identity is the kernel, so drop the trailing parameter blob.
+            return _CUTEDSL_PARAM_SUFFIX.sub("", name)[:80]
         return _TRITON_TILE_SUFFIX.sub("", name)[:80]
     idents = re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)+|[A-Za-z_][A-Za-z0-9_]{5,}", name)
     for ident in idents:

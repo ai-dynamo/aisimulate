@@ -2171,7 +2171,12 @@ def _run_decode(
         for req in batch.reqs:
             req.output_ids.append(0)
         batch.prepare_for_decode()
-        forward_batch_decode = ForwardBatch.init_new(batch, model_runner)
+        import inspect as _inspect
+
+        _fb_kw = ({"return_hidden_states_before_norm": False}
+                  if "return_hidden_states_before_norm" in _inspect.signature(ForwardBatch.init_new).parameters
+                  else {})  # sglang 0.5.16 required keyword (see the context path above)
+        forward_batch_decode = ForwardBatch.init_new(batch, model_runner, **_fb_kw)
         model_runner.attn_backend.init_forward_metadata(forward_batch_decode)
 
         decode_hidden = torch.randn(

@@ -199,8 +199,10 @@ def run_gdn_context_benchmark(
                     q = torch.randn(batch_size, seq_len, num_k_heads, head_k_dim, dtype=dtype, device=device)
                     k = torch.randn(batch_size, seq_len, num_k_heads, head_k_dim, dtype=dtype, device=device)
                     v = torch.randn(batch_size, seq_len, num_v_heads, head_v_dim, dtype=dtype, device=device)
+                    # g is fp32 in serving (fused_gdn_gating output); FlashInfer's
+                    # chunk kernel asserts it ("g must be fp32"), Triton accepts both
                     g = torch.nn.functional.logsigmoid(
-                        torch.randn(batch_size, seq_len, num_v_heads, dtype=dtype, device=device)
+                        torch.randn(batch_size, seq_len, num_v_heads, dtype=torch.float32, device=device)
                     )
                     beta = torch.sigmoid(torch.randn(batch_size, seq_len, num_v_heads, dtype=dtype, device=device))
 
@@ -272,6 +274,7 @@ def run_gdn_context_benchmark(
                         dtype,
                         device,
                     )
+                    input_pool["g"] = [t.float() for t in input_pool["g"]]  # serving g is fp32
                     for i in range(total_iters):
                         input_pool["g"][i] = torch.nn.functional.logsigmoid(input_pool["g"][i])
                         input_pool["beta"][i] = torch.sigmoid(input_pool["beta"][i])
@@ -521,7 +524,7 @@ def run_gdn_generation_benchmark(
                 q = torch.randn(batch_size, 1, num_k_heads, head_k_dim, dtype=dtype, device=device)
                 k = torch.randn(batch_size, 1, num_k_heads, head_k_dim, dtype=dtype, device=device)
                 v = torch.randn(batch_size, 1, num_v_heads, head_v_dim, dtype=dtype, device=device)
-                g = torch.nn.functional.logsigmoid(torch.randn(batch_size, 1, num_v_heads, dtype=dtype, device=device))
+                g = torch.nn.functional.logsigmoid(torch.randn(batch_size, 1, num_v_heads, dtype=torch.float32, device=device))  # serving g is fp32
                 beta = torch.sigmoid(torch.randn(batch_size, 1, num_v_heads, dtype=dtype, device=device))
 
                 # --- Benchmark causal_conv1d_update ---
@@ -608,6 +611,7 @@ def run_gdn_generation_benchmark(
                     dtype,
                     device,
                 )
+                input_pool["g"] = [t.float() for t in input_pool["g"]]  # serving g is fp32
                 for i in range(total_iters):
                     input_pool["g"][i] = torch.nn.functional.logsigmoid(input_pool["g"][i])
                     input_pool["beta"][i] = torch.sigmoid(input_pool["beta"][i])
