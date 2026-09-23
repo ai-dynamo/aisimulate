@@ -92,17 +92,26 @@ def check_manifests() -> tuple[str, str]:
         assert native["dependencies"]["aisimulate-core"]["version"] == f"={crate_version}", (
             "adapter must pin its core crate"
         )
-        for relative, names in (
-            ("Cargo.lock", {"aisimulate-core"}),
-            ("crates/dynamo-policy/Cargo.lock", {"aisimulate-core", "aisimulate-dynamo-policy"}),
-        ):
-            packages = _toml(ROOT / relative)["package"]
-            for name in names:
-                local = [package for package in packages if package["name"] == name]
-                assert len(local) == 1 and local[0]["version"] == crate_version and "source" not in local[0], (
-                    f"{relative} must contain the matching local {name} version"
-                )
-        assert not any(package["name"].startswith("dynamo-") for package in _toml(ROOT / "Cargo.lock")["package"]), (
+        packages = _toml(ROOT / "Cargo.lock")["package"]
+        for name in ("aisimulate-core", "aisimulate-dynamo-policy"):
+            local = [package for package in packages if package["name"] == name]
+            assert len(local) == 1 and local[0]["version"] == crate_version and "source" not in local[0], (
+                f"Cargo.lock must contain the matching local {name} version"
+            )
+        # Workspace members share a lockfile, not their dependency graphs.
+        # Traverse names conservatively across any locked versions without
+        # running Cargo or fetching metadata during release preflight checks.
+        core_dependencies: set[str] = set()
+        pending = ["aisimulate-core"]
+        while pending:
+            name = pending.pop()
+            if name in core_dependencies:
+                continue
+            core_dependencies.add(name)
+            for package in packages:
+                if package["name"] == name:
+                    pending.extend(dependency.split()[0] for dependency in package.get("dependencies", []))
+        assert not any(name.startswith("dynamo-") for name in core_dependencies), (
             "the base package must remain independent of Dynamo"
         )
     optional_dependencies = app.get("optional-dependencies", {})

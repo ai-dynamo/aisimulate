@@ -194,7 +194,6 @@ def test_dependency_policy_covers_every_rust_manifest_root() -> None:
     for manifest in (
         "Cargo.toml",
         "crates/tests/public-api/Cargo.toml",
-        "crates/dynamo-policy/Cargo.toml",
     ):
         assert f"--manifest-path {manifest}" in workflow
 
@@ -218,7 +217,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
 
     for expensive_gate in (
         "cargo-deny",
-        "cargo test --workspace",
+        "cargo test -p aisimulate-core",
         "crates/tests/public-api/Cargo.toml",
         "Application Tests",
         "Release Artifact Contract",

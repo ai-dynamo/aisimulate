@@ -30,8 +30,10 @@ version in a manifest does not establish publication on an index.
 
 `aisimulate-dynamo-policy` is a separately installed adapter, built from
 `python/aisimulate-dynamo-policy/pyproject.toml`. Its native crate at
-`crates/dynamo-policy/` is `publish = false`, excluded from the core workspace,
-and has a separate lockfile. The base wheel and crate have no Dynamo dependency.
+`crates/dynamo-policy/` is `publish = false` and belongs to the root Cargo
+workspace, sharing its `Cargo.lock` with `aisimulate-core`. The core is the
+default workspace member; the base wheel and crate have no Dynamo dependency.
+Only the adapter's dependency graph includes the native Dynamo router.
 
 The supported source build uses `scripts/build_dynamo_policy.py` to produce
 matching base and adapter wheels from one checkout. Python package versions,
@@ -39,7 +41,7 @@ Rust package versions and exact dependency pins must agree; both native modules
 must report the same core source digest and serialized replay contract. The
 adapter imports the existing public APIs of immutable, merged Dynamo commit
 `d9eb42db1168131fdae318eef77255637e4d3495`, without a local override. Both
-wheels build with Rust 1.96.1 and committed Cargo lockfiles. The builder verifies
+wheels build with Rust 1.96.1 and the shared, committed `Cargo.lock`. The builder verifies
 wheel metadata and legal files and records source identity and artifact hashes
 in `manifest.json`. Archive/container builds require an explicit source SHA and
 record source cleanliness as unknown because Git metadata is absent.
@@ -71,7 +73,7 @@ convention. The release script accepts only this suffix pair and still
 anchors both artifacts to the one product version; any other version shape
 fails the build.
 The same stamp updates the optional adapter's package versions, exact base pins,
-and local package records in both Cargo lockfiles while retaining resolved
+and both local package records in the shared Cargo lockfile while retaining resolved
 third-party dependency versions.
 
 The bundled performance database makes the unified wheel about 164 MiB, above

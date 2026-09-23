@@ -195,7 +195,6 @@ jobs:
       - name: Verify exact target
         run: test "$(git rev-parse HEAD)" = "${TARGET_SHA}"
       - run: cargo fmt --all -- --check
-      - run: cargo fmt --manifest-path crates/dynamo-policy/Cargo.toml -- --check
 
   # Full CI verifies this standalone run and each substantive job at the same
   # branch/SHA. No reusable Fast CI invocation is nested inside Full CI.

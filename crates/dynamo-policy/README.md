@@ -11,6 +11,11 @@ Python wheel. It consumes the unmodified, merged ai-dynamo/dynamo revision
 It does not depend on Dynamo PR #15149, a development AISimulate commit from
 Dynamo, or a local dependency override.
 
+The crate is a member of AISimulate's root Cargo workspace and uses the root
+`Cargo.lock`. The core remains the default member and does not depend on Dynamo;
+the adapter depends on both the core and Dynamo's standalone router. Build the
+adapter explicitly with `cargo build -p aisimulate-dynamo-policy --locked`.
+
 AISimulate's canonical replay bridge constructs workloads, performance models,
 engines and reports. The plugin supplies a `ReplayComposition` whose policies use
 Dynamo's public `SelectionServiceBuilder`, `SelectionCore`, native worker-selection

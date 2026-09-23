@@ -8,8 +8,6 @@ edition = "2024"
 license = "Apache-2.0"
 description = "Optional native Dynamo policy composition for AISimulate replay"
 
-[workspace]
-
 [lib]
 name = "_native"
 crate-type = ["cdylib", "rlib"]

@@ -4,8 +4,10 @@
 [workspace]
 members = [
     "crates/core",
+    "crates/dynamo-policy",
 ]
-exclude = ["crates/tests/public-api", "crates/dynamo-policy"]
+default-members = ["crates/core"]
+exclude = ["crates/tests/public-api"]
 resolver = "3"
 
 [workspace.package]

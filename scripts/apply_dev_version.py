@@ -10,7 +10,7 @@ argument -- a PEP 440 suffix like '.dev202609170000001234' -- and rewrites:
     [workspace.package].version in Cargo.toml (SemVer form: dash instead of
     dot, so '0.13.0-dev.202609170000001234' -- cargo rejects the PEP 440 spelling)
   - optional policy package versions and exact base-package dependency pins
-  - local package versions in committed Cargo lockfiles, so --locked builds
+  - local package versions in the shared Cargo.lock, so --locked builds
     retain the same resolved third-party dependencies after stamping
 
 The suffix is the UTC creation date followed by a ten-digit workflow run
@@ -89,7 +89,7 @@ def main() -> int:
     changes: dict[Path, str] = {}
     stamped = [stage_version(root / PYPROJECT, args.suffix, changes)]
     stamped += [stage_version(root / path, semver(args.suffix), changes) for path in CARGO_MANIFESTS]
-    stage_lock(root / "Cargo.lock", {"aisimulate-core": stamped[2]}, changes)
+    package_versions = {"aisimulate-core": stamped[2]}
     plugin_py = root / "python/aisimulate-dynamo-policy/pyproject.toml"
     if plugin_py.is_file():
         plugin_native = root / "crates/dynamo-policy/Cargo.toml"
@@ -107,11 +107,8 @@ def main() -> int:
         if count != 1:
             raise SystemExit(f"expected one exact aisimulate-core pin in {plugin_native}")
         changes[plugin_native] = native_text
-        stage_lock(
-            root / "crates/dynamo-policy/Cargo.lock",
-            {"aisimulate-core": stamped[2], "aisimulate-dynamo-policy": stamped[-1]},
-            changes,
-        )
+        package_versions["aisimulate-dynamo-policy"] = stamped[-1]
+    stage_lock(root / "Cargo.lock", package_versions, changes)
     for path, text in changes.items():
         path.write_text(text)
     print(f"apply_dev_version: {', '.join(stamped)}", file=sys.stderr)

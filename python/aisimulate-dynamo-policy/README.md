@@ -18,7 +18,7 @@ loader rejects a mismatched pair, including different development builds with
 the same version. It never substitutes round-robin for missing or incompatible
 Dynamo routing.
 
-The native crate has a separate lockfile and only imports Dynamo's router and
+The native crate shares the root Cargo lockfile and only imports Dynamo's router and
 its dependencies. It does not require the full `ai-dynamo` Python distribution,
 Dynamo Mocker or a running Dynamo service. Existing explicit `--stack dynamo`
 continues to select the full Dynamo provider when installed.

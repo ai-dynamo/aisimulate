@@ -402,7 +402,7 @@ separate evidence lanes.
 For a quick local validation subset:
 
 ```bash
-cargo test --workspace
+cargo test -p aisimulate-core --locked
 python -m pytest -c pytest.ini tests
 python -m pytest -c python/aisimulate/pytest.ini python/aisimulate/tests -m "unit or build"
 ```

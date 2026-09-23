@@ -38,7 +38,7 @@ def check_policy_dependency(root: Path = ROOT) -> None:
     assert "path" not in dependency and "branch" not in dependency and "tag" not in dependency, (
         "Dynamo must use the immutable Git revision without an override"
     )
-    lock = tomllib.loads((root / "crates/dynamo-policy/Cargo.lock").read_text())
+    lock = tomllib.loads((root / "Cargo.lock").read_text())
     dynamo = [entry for entry in lock["package"] if entry["name"].startswith("dynamo-")]
     assert {entry["name"] for entry in dynamo} == {
         "dynamo-kv-router",

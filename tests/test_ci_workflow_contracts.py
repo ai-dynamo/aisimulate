@@ -725,7 +725,7 @@ def test_full_ci_owns_migrated_expensive_suites() -> None:
     assert policy_commands.index(fetch) < policy_commands.index("tests/test_ci_qualification.py")
 
     feature_mode_commands = _run_commands(jobs["rust-feature-modes"])
-    assert "cargo test --workspace --features embed-python,replay-bench" in feature_mode_commands
+    assert "cargo test -p aisimulate-core --locked --features embed-python,replay-bench" in feature_mode_commands
     assert "--all-features" not in feature_mode_commands
     assert "--no-default-features" not in feature_mode_commands
     assert "PYTHONPATH" not in feature_mode_commands
@@ -1679,7 +1679,7 @@ def test_optional_policy_runs_installed_cli_under_existing_full_ci_admission() -
     assert 'test "$(git rev-parse HEAD)" = "${EXPECTED_SHA}"' in commands
     assert "scripts/build_dynamo_policy.py --debug --output-dir policy-wheels" in commands
     assert "policy-smoke/bin/python -m pip install policy-wheels/*.whl" in commands
-    assert "cargo test --manifest-path crates/dynamo-policy/Cargo.toml --locked" in commands
+    assert "cargo test -p aisimulate-dynamo-policy --locked" in commands
     assert "--confcutdir=python/aisimulate-dynamo-policy/tests python/aisimulate-dynamo-policy/tests" in commands
     assert "PYTHONPATH" not in commands
     assert "pip install -e" not in commands

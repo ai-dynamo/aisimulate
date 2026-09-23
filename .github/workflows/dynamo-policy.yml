@@ -49,7 +49,7 @@ jobs:
           policy-smoke/bin/python -m pip install policy-wheels/*.whl pytest==8.4.2
           policy-smoke/bin/python -m pip check
       - name: Test native policy lifecycle
-        run: cargo test --manifest-path crates/dynamo-policy/Cargo.toml --locked
+        run: cargo test -p aisimulate-dynamo-policy --locked
       - name: Test installed adapter and real YAML CLI
         run: >-
           policy-smoke/bin/python -m pytest -c /dev/null -q -p no:cacheprovider

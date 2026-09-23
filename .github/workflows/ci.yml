@@ -302,14 +302,11 @@ jobs:
           "${RUNNER_TEMP}/cargo-deny" --version
       - name: Check dependency policy
         run: |
-          cargo-deny -L error --all-features --manifest-path Cargo.toml \
+          rustup toolchain install 1.96.1 --profile minimal
+          RUSTUP_TOOLCHAIN=1.96.1 cargo-deny -L error --locked --all-features --manifest-path Cargo.toml \
             check licenses bans --config deny.toml
           cargo-deny -L error --all-features \
             --manifest-path crates/tests/public-api/Cargo.toml \
-            check licenses bans --config deny.toml
-          rustup toolchain install 1.96.1 --profile minimal
-          RUSTUP_TOOLCHAIN=1.96.1 cargo-deny -L error --all-features \
-            --manifest-path crates/dynamo-policy/Cargo.toml \
             check licenses bans --config deny.toml
 
   rust:
@@ -333,7 +330,7 @@ jobs:
       - uses: ./.github/actions/setup-python-rust
         with:
           python-version: "3.12"
-      - run: cargo test --workspace
+      - run: cargo test -p aisimulate-core --locked
 
   rust-feature-modes:
     name: Rust feature modes
@@ -365,7 +362,7 @@ jobs:
             python -m pip install './python/aisimulate[dev]' &
           package_pid=$!
           export PYO3_PYTHON="${pythonLocation}/bin/python"
-          cargo test --workspace --features embed-python,replay-bench --no-run &
+          cargo test -p aisimulate-core --locked --features embed-python,replay-bench --no-run &
           rust_pid=$!
           result=0
           wait "${package_pid}" || result=1
@@ -375,7 +372,7 @@ jobs:
         run: |
           export AIC_REQUIRE_EMBEDDED_ROUND_TRIP=1
           export PYO3_PYTHON="${pythonLocation}/bin/python"
-          cargo test --workspace --features embed-python,replay-bench
+          cargo test -p aisimulate-core --locked --features embed-python,replay-bench
 
   public-api-rust:
     name: Public API Rust (${{ matrix.arch }})

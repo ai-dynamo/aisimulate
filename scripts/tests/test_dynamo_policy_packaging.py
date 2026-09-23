@@ -31,13 +31,20 @@ class PolicyPackagingTests(unittest.TestCase):
         if plugin:
             files += [
                 "crates/dynamo-policy/Cargo.toml",
-                "crates/dynamo-policy/Cargo.lock",
                 "python/aisimulate-dynamo-policy/pyproject.toml",
             ]
         for name in files:
             target = self.root / name
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text((ROOT / name).read_text().replace("0.13.0", version))
+            text = (ROOT / name).read_text().replace("0.13.0", version)
+            if name == "Cargo.lock" and not plugin:
+                # Historical roots have no optional policy package to stamp.
+                text = "[[package]]".join(
+                    record
+                    for record in text.split("[[package]]")
+                    if not record.startswith('\nname = "aisimulate-dynamo-policy"\n')
+                )
+            target.write_text(text)
 
     def manifests(self) -> tuple[str, str]:
         with patch.multiple(
@@ -66,8 +73,7 @@ class PolicyPackagingTests(unittest.TestCase):
             ("crates/dynamo-policy/Cargo.toml", 'version = "0.13.0"'),
             ("crates/dynamo-policy/Cargo.toml", 'version = "=0.13.0"'),
             ("Cargo.lock", 'name = "aisimulate-core"\nversion = "0.13.0"'),
-            ("crates/dynamo-policy/Cargo.lock", 'name = "aisimulate-core"\nversion = "0.13.0"'),
-            ("crates/dynamo-policy/Cargo.lock", 'name = "aisimulate-dynamo-policy"\nversion = "0.13.0"'),
+            ("Cargo.lock", 'name = "aisimulate-dynamo-policy"\nversion = "0.13.0"'),
         ]
         for relative, text in cases:
             with self.subTest(relative=relative, text=text):
@@ -81,8 +87,8 @@ class PolicyPackagingTests(unittest.TestCase):
             ("crates/dynamo-policy/Cargo.toml", DYNAMO_REVISION, "a" * 40),
             ("crates/dynamo-policy/Cargo.toml", 'rev = "', 'path = "../router", rev = "'),
             ("crates/dynamo-policy/Cargo.toml", "default-features = false", "default-features = true"),
-            ("crates/dynamo-policy/Cargo.lock", 'name = "dynamo-kv-hashing"', 'name = "dynamo-mocker"'),
-            ("crates/dynamo-policy/Cargo.lock", f"#{DYNAMO_REVISION}", "#" + "b" * 40),
+            ("Cargo.lock", 'name = "dynamo-kv-hashing"', 'name = "dynamo-mocker"'),
+            ("Cargo.lock", f"#{DYNAMO_REVISION}", "#" + "b" * 40),
         ]:
             with self.subTest(relative=relative, before=before):
                 self.source_tree()
@@ -94,6 +100,16 @@ class PolicyPackagingTests(unittest.TestCase):
             handle.write('\n[patch."https://github.com/ai-dynamo/dynamo"]\ndynamo-kv-router = { path = "../router" }\n')
         with self.assertRaisesRegex(AssertionError, "overrides"):
             check_policy_dependency(self.root)
+
+    def test_core_cannot_depend_on_the_optional_policy(self) -> None:
+        self.source_tree()
+        self.replace(
+            "Cargo.lock",
+            'name = "aisimulate-core"\nversion = "0.13.0"\ndependencies = [',
+            'name = "aisimulate-core"\nversion = "0.13.0"\ndependencies = [\n "aisimulate-dynamo-policy",',
+        )
+        with self.assertRaisesRegex(AssertionError, "independent of Dynamo"):
+            self.manifests()
 
     def test_archive_provenance_is_explicit_and_does_not_claim_cleanliness(self) -> None:
         with self.assertRaisesRegex(ValueError, "require --source-revision"):
@@ -214,8 +230,7 @@ class PolicyPackagingTests(unittest.TestCase):
     def test_stamp_rejects_invalid_local_lock_records_without_writes(self) -> None:
         for relative, name in (
             ("Cargo.lock", "aisimulate-core"),
-            ("crates/dynamo-policy/Cargo.lock", "aisimulate-core"),
-            ("crates/dynamo-policy/Cargo.lock", "aisimulate-dynamo-policy"),
+            ("Cargo.lock", "aisimulate-dynamo-policy"),
         ):
             record = f'[[package]]\nname = "{name}"\nversion = "0.13.0"\n'
             for replacement, count in ((record.replace(name, "unrelated"), 0), (record + record, 2)):

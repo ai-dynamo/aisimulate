@@ -166,8 +166,6 @@ shared:
     owners: [replay, maintainers]
   - glob: crates/dynamo-policy/Cargo.toml
     owners: [replay, infra, maintainers]
-  - glob: crates/dynamo-policy/Cargo.lock
-    owners: [replay, infra, maintainers]
   - glob: python/aisimulate-dynamo-policy/pyproject.toml
     owners: [replay, infra, maintainers]
   - glob: python/aisimulate-dynamo-policy/Dockerfile
