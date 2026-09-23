@@ -6,6 +6,7 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+
 from collector.glm53flash_sglang_runtime import _TraceState, actual_coordinates, match_frozen_requests
 
 pytestmark = pytest.mark.unit
@@ -204,3 +205,60 @@ def test_actual_kda_dtype_override_is_not_admitted():
     assert allocated_state_inventory(runner)["admitted"] is True
     cache.temporal = bf16
     assert allocated_state_inventory(runner)["admitted"] is False
+
+
+def test_whole_gpu_holdout_is_independent_of_module_observers(monkeypatch, tmp_path):
+    monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_holdout")
+    monkeypatch.setitem(sys.modules, "sglang.srt.utils.device_timer", SimpleNamespace(DeviceTimer=Timer))
+    clock = [0.0]
+
+    class Event:
+        def __init__(self, enable_timing):
+            assert enable_timing
+
+        def record(self, stream):
+            self.time = clock[0]
+
+        def elapsed_time(self, end):
+            return end.time - self.time
+
+    cuda = SimpleNamespace(Event=Event, current_stream=lambda: 0, is_current_stream_capturing=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(cuda=cuda))
+    monkeypatch.setattr("collector.glm53flash_sglang_runtime.allocated_state_inventory", lambda _: {"admitted": True})
+
+    def native_forward():
+        clock[0] += 7.0
+        return "native-output"
+
+    runner = SimpleNamespace(
+        ps=SimpleNamespace(tp_rank=0), device_timer=None, model=SimpleNamespace(forward=native_forward)
+    )
+    manifest = {
+        "request_set": "heldout",
+        "dataset_role": "holdout",
+        "corpus_sha256": "a" * 64,
+        "requests": {
+            "actual-request": {
+                "benchmark_id": 1,
+                "repetition": 5,
+                "sampling_role": "measurement",
+                "target_phase": "context",
+                "target_query": 4,
+                "target_prefix": 0,
+                "target_batch_size": 1,
+            }
+        },
+    }
+    state = _TraceState(runner, tmp_path, {}, None, manifest)
+    request = SimpleNamespace(rid="actual-request", origin_input_ids=[10, 11, 12, 13])
+    index = state.before(batch("EXTEND", query=[4], prefix=[0], tokens=[10, 11, 12, 13]), [request])
+    assert runner.model.forward() == "native-output"
+    state.on_timing(t=0.009, category="extend")
+    state.after(index, SimpleNamespace(can_run_graph=False))
+    state.finish_worker(index, SimpleNamespace(next_token_ids=Tensor([20]), delay_sample_func=None))
+    record = json.loads((tmp_path / "forward-rank-0.jsonl").read_text())
+    assert record["whole_forward_gpu_ms"] == 7.0
+    assert record["native_forward_ms"] == 9.0
+    assert record["ops_instrumented"] is False
+    assert record["whole_forward_boundary"] == "embedding_to_logits_gpu_v1"
+    assert not (tmp_path / "rank-0.jsonl").exists()
