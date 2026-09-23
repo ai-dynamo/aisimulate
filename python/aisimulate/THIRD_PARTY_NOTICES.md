@@ -1030,3 +1030,22 @@ https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c1800
 (Copyright SGLang contributors, Apache-2.0). No serving implementation is
 vendored. Upstream licenses are at `LICENSE` under those immutable revisions;
 the repository Apache-2.0 license text applies to these adaptations.
+
+## GLM-5.3-Flash SGLang native scheduler telemetry
+
+- Derived files: `python/aisimulate/collector/glm53flash_sglang_runtime.py`,
+  `python/aisimulate/collector/README.glm53flash_sglang.md`, and
+  `python/aisimulate/tests/unit/collector/test_glm53flash_sglang_runtime.py`.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20). Original paths:
+  `python/sglang/srt/managers/tp_worker.py`,
+  `python/sglang/srt/model_executor/{model_runner,forward_batch_info}.py`,
+  `python/sglang/srt/model_executor/runner/{eager_runner,decode_cuda_graph_runner}.py`,
+  and `python/sglang/srt/utils/device_timer.py`.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: original wrappers call the native scheduler worker, forward
+  runner and DeviceTimer, retaining actual request histories, phase coordinates,
+  selected graph mode and exact frozen-target matching. No upstream compute,
+  request construction, hybrid state initialization or scheduling logic is
+  copied or replaced. Tests use independent CPU fixtures, not performance data.
