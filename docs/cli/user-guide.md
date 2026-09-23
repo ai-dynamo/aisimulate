@@ -1178,27 +1178,21 @@ addition to its token KV. `capacity: {type: fixed, blocks: 8}` is equivalent. Th
 
 Use `state_cache: {}` to infer one state per rank; `bytes_per_request` overrides
 inference without loading model geometry. Omit `state_cache` or set it to `null`
-to disable it. With `layout: auto` (default), inference selects Qwen3-Next/Qwen3.5
-GDN or KimiLinear/Kimi-K3 KDA geometry. The resolved layouts are
-`vllm-gdn-a474da28` and `vllm-kda-a474da28`, pinned to vLLM commit
+to disable it. Automatic sizing currently supports Kimi-K3/KimiLinear KDA only.
+The `auto` layout resolves to `vllm-kda-a474da28`, pinned to vLLM commit
 `a474da28131f61684849b31e29af0eebaaedc383`, independently of the timing database
-version. Either layout can be selected explicitly. TP must divide the recurrent
-heads; PP must be 1. Unknown layouts, PP>1, and speculative KDA execution require
-an explicit byte override.
+version. TP must divide the KDA heads; PP must be 1. Other model layouts and
+speculative KDA execution require an explicit byte override.
 
-Optional `model_dtype` accepts `auto` (default), `float16`, `bfloat16`, or `float32`.
-`mamba_cache_dtype` and `mamba_ssm_cache_dtype` accept `auto`, `float16`, or `float32`,
-matching this vLLM revision. Auto state dtypes follow
-vLLM: conv follows model dtype; Qwen3.5 SSM uses the model's `mamba_ssm_dtype`
-when present, otherwise it follows conv. Qwen3-Next SSM follows conv. An explicit
-`mamba_ssm_cache_dtype` overrides the model field. Set `model_dtype` explicitly
-when the model config is missing its dtype or uses float32, whose vLLM auto
-downcast depends on hardware. Speculation adds its draft-token count to the GDN
-conv-state length. KDA has three conv windows
-and one FP32 recurrent matrix; it accepts only `auto` or `float32` for
-`mamba_ssm_cache_dtype`. Changing KDA `model_dtype` from the HF dtype also
-requires an explicit `mamba_cache_dtype`. K3 uses the nested text config and its
-1-based KDA/MLA layer lists. The size represents one state, without a snapshot-slot multiplier.
+KDA has three convolution history buffers and one FP32 recurrent matrix per layer.
+`model_dtype` accepts `auto` (default), `float16`, `bfloat16`, or `float32`.
+`mamba_cache_dtype` accepts `auto`, `float16`, or `float32`; auto follows model dtype.
+Changing `model_dtype` from the HF dtype also requires an explicit `mamba_cache_dtype`.
+The recurrent matrix always uses FP32, so `mamba_ssm_cache_dtype` accepts only
+`auto` or `float32` for inference. Set `model_dtype` explicitly when the model
+config lacks a dtype or uses float32, whose vLLM auto downcast depends on hardware.
+K3 uses its nested text config and 1-based KDA/MLA layer lists. The size represents
+one state, without a snapshot-slot multiplier.
 
 Supply the **resolved vLLM block geometry**: per-layer attention page size is
 `block_size * bytes_per_token / full_attention_layers`. Inference pads each

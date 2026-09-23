@@ -148,7 +148,7 @@ def test_engine_cli_case_matrix_is_complete() -> None:
 
 @pytest.mark.parametrize(
     "state_enabled,expected_duration_ms",
-    [(False, 2.0), (True, 4.0), ("auto", 4.0), ("auto-kda", 4.0), ("auto-k3", 4.0)],
+    [(False, 2.0), (True, 4.0), ("auto-kda", 4.0), ("auto-k3", 4.0)],
 )
 def test_manual_state_cache_runs_through_native_engine(
     tmp_path: Path, state_enabled: bool | str, expected_duration_ms: float
@@ -183,40 +183,25 @@ traffic:
         payload = yaml.safe_load(config.read_text(encoding="utf-8"))
         del payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"]
         config.write_text(yaml.safe_dump(payload), encoding="utf-8")
-    if state_enabled in ("auto", "auto-kda", "auto-k3"):
+    if state_enabled in ("auto-kda", "auto-k3"):
         model = tmp_path / "model"
         model.mkdir()
         (model / "config.json").write_text(
             json.dumps(
                 {
-                    "model_type": "qwen3_next",
+                    "model_type": "kimi_linear",
                     "num_hidden_layers": 4,
-                    "linear_num_key_heads": 2,
-                    "linear_num_value_heads": 4,
-                    "linear_key_head_dim": 8,
-                    "linear_value_head_dim": 8,
-                    "linear_conv_kernel_dim": 4,
-                    "torch_dtype": "bfloat16",
+                    "dtype": "bfloat16",
+                    "linear_attn_config": {
+                        "num_heads": 2,
+                        "head_dim": 8,
+                        "short_conv_kernel_size": 4,
+                        "kda_layers": [1, 2, 3],
+                        "full_attn_layers": [4],
+                    },
                 }
             )
         )
-        if state_enabled == "auto-kda":
-            (model / "config.json").write_text(
-                json.dumps(
-                    {
-                        "model_type": "kimi_linear",
-                        "num_hidden_layers": 4,
-                        "dtype": "bfloat16",
-                        "linear_attn_config": {
-                            "num_heads": 2,
-                            "head_dim": 8,
-                            "short_conv_kernel_size": 4,
-                            "kda_layers": [1, 2, 3],
-                            "full_attn_layers": [4],
-                        },
-                    }
-                )
-            )
         payload = yaml.safe_load(config.read_text(encoding="utf-8"))
         payload["engine"]["model"] = str(model)
         payload["engine"]["workers"]["aggregated"]["kv_cache"]["state_cache"] = {}
@@ -246,15 +231,11 @@ traffic:
     assert report.get("summary", report)["completed_requests"] == 4
     state = report["state_cache"]["aggregated"]
     assert state["source"] == (
-        "inferred"
-        if state_enabled in ("auto", "auto-kda", "auto-k3")
-        else "overridden"
-        if state_enabled
-        else "disabled"
+        "inferred" if state_enabled in ("auto-kda", "auto-k3") else "overridden" if state_enabled else "disabled"
     )
-    if state_enabled in ("auto", "auto-kda", "auto-k3"):
+    if state_enabled in ("auto-kda", "auto-k3"):
         assert state["bytes_per_request"] == (61046784 if state_enabled == "auto-k3" else 3072)
-        assert state["raw_bytes_per_layer"] == {"auto": 896, "auto-kda": 800, "auto-k3": 814080}[state_enabled]
+        assert state["raw_bytes_per_layer"] == {"auto-kda": 800, "auto-k3": 814080}[state_enabled]
     # Six blocks fit two token-only requests, but only one with its state allocation.
     assert summary["duration_ms"] == pytest.approx(expected_duration_ms)
     assert report.get("summary", report)["duration_ms"] == pytest.approx(expected_duration_ms)

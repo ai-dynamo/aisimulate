@@ -988,16 +988,15 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility. No Plotly assets included.
 
-## vLLM recurrent-state sizing
+## vLLM Kimi KDA state sizing
 
 `src/aisimulate_core/sdk/state_memory.py` and the cache-dtype controls in
 `src/aisimulate/config/engine.py` are adapted and modified from vLLM commit
 `a474da28131f61684849b31e29af0eebaaedc383`. Original paths:
 `vllm/model_executor/layers/mamba/mamba_utils.py`,
-`vllm/model_executor/models/{config,kimi_linear,qwen3_next,qwen3_5}.py`,
+`vllm/model_executor/models/kimi_linear.py`,
 `vllm/model_executor/layers/kda.py`,
 `vllm/transformers_utils/configs/kimi_linear.py`,
-`vllm/transformers_utils/configs/{qwen3_next,qwen3_5,qwen3_5_moe}.py`,
 `vllm/platforms/interface.py`, `vllm/v1/kv_cache_interface.py`, and
 `vllm/config/cache.py`.
 The modified implementation uses CPU-only arithmetic, restricts supported layouts,
@@ -1006,11 +1005,6 @@ and adds AISimulate validation and diagnostics.
 Source: https://github.com/vllm-project/vllm/tree/a474da28131f61684849b31e29af0eebaaedc383
 
 Copyright contributors to the vLLM project.
-Copyright 2025 The vLLM team; The Qwen team, Alibaba Group and the HuggingFace
-Inc. team; The Qwen Team and The HuggingFace Inc. team. All rights reserved.
-The upstream Qwen3.5 model file additionally attributes its architectural ancestry
-to EleutherAI's GPT-NeoX and the GPT-NeoX/OPT implementations modified for the
-Meta AI model; AISimulate adapts only its state-size configuration interface.
 Licensed under Apache-2.0;
 the license is included at the repository root as `LICENSE` and in the Python
 distribution. Upstream license:

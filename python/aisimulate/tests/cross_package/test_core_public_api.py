@@ -401,9 +401,11 @@ import sys
 from aisimulate_core.sdk import estimate_state_cache
 result = estimate_state_cache(
     model_config={
-        "model_type": "qwen3_next", "dtype": "bfloat16", "num_hidden_layers": 4,
-        "linear_num_key_heads": 2, "linear_num_value_heads": 4,
-        "linear_key_head_dim": 8, "linear_value_head_dim": 8, "linear_conv_kernel_dim": 4,
+        "model_type": "kimi_linear", "dtype": "bfloat16", "num_hidden_layers": 4,
+        "linear_attn_config": {
+            "num_heads": 2, "head_dim": 8, "short_conv_kernel_size": 4,
+            "kda_layers": [1, 2, 3], "full_attn_layers": [4],
+        },
     },
     backend="vllm", block_size=64, kv_bytes_per_token=16,
 )
