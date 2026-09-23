@@ -574,6 +574,7 @@ def build_records() -> None:
         plan.update({r["id"]: r for r in json.loads(pf.read_text()) if "skip" not in r})
     out = ROOT / "archive" / "records.jsonl"
     n = 0
+    stale_prefill = 0
     with out.open("w") as fh:
         for rid, run in plan.items():
             raw = ROOT / "archive" / "raw" / f"{rid}.json"
@@ -652,8 +653,18 @@ def build_records() -> None:
             }
             fh.write(json.dumps({k: v for k, v in rec.items() if v is not None}) + "\n")
             n += 1
+            if (rec["runtime"].get("backend") == "vllm" and f.get("prefill_kernels")
+                    and rec["runtime"].get("prefix_caching") is not False):
+                stale_prefill += 1
     raw_bytes = sum(p.stat().st_size for p in (ROOT / "archive" / "raw").glob("*.json"))
     print(f"wrote {out}: {n} records, {out.stat().st_size // 1024}KB (raw evidence: {raw_bytes // 1024}KB)")
+    if stale_prefill:
+        # evidence-quality signal, printed on every rebuild so it cannot be
+        # forgotten: these prefill tables predate the cache-cold probe fix and
+        # hold a prefix-cache residual (query <= block_size), not an isl-token
+        # prefill — identity of the prefill kernel may be wrong (DSA/MLA fp8)
+        print(f"NOTE: {stale_prefill} vllm records still carry cached-residual prefill "
+              f"evidence (runtime.prefix_caching != False); re-probe before drawing prefill conclusions")
 
 
 # ---------------------------------------------------------------------------

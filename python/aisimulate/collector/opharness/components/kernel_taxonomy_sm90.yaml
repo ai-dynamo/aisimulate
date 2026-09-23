@@ -23,7 +23,11 @@ rules:
   - {backend: flashmla, role: attention,
      match: "flash_fwd_splitkv_mla|flash_fwd_mla_combine|fwd_kvcache_mla|get_mla_metadata|flash_mla"}
   - {backend: dsa_nsa, role: attention,
-     match: "sparse_attn_fwd_kernel|_gqa_share_sparse|_flash_attn_fwd_with_block_score|_decode_score_kernel|_merge_topk_attn_out|_fused_indexer_q_rope_quant_kernel|indexer_k_quant_and_cache|cp_gather_indexer_k_quant_cache|topKPerRow"}
+     match: "sparse_attn_fwd_kernel|_fused_indexer_q_rope_quant_kernel|indexer_k_quant_and_cache|cp_gather_indexer_k_quant_cache|topKPerRow"}
+  # MiniMax-M3 0.24-era names (_flash_attn_fwd_with_block_score, _decode_score_kernel)
+  # belong with the M3 Triton rule below, not DSA; kept for old-raw relabeling.
+  - {backend: triton, role: attention,
+     match: "_flash_attn_fwd_with_block_score|^_decode_score_kernel"}
   - {backend: trtllm_mha, role: attention,
      match: "^fmha_v2_flash_attention|^kernel_mha$|masked_multihead_attention_kernel"}
   # Triton ATTENTION backend — `triton` is that backend's name in the shared
@@ -39,8 +43,15 @@ rules:
   # head_dim>256 (Gemma-4) here — FA rejects fp8 head512 and FlashInfer SM90
   # JIT can't compile it (collect_attn.py:153-163 @0.29.0) — the 0.24-seeded
   # vocabulary never saw these names; added 2026-09-23 from the fp8-KV sweep.
+  # Also MiniMax-M3 sparse attention (vllm models/minimax_m3 Triton kernels,
+  # MiniMaxM3SparseTritonImpl -> `triton` in kernel_source_backends.yaml):
+  # prefill _gqa_sparse_fwd + _index_block_score + _topk_index, decode
+  # _gqa_sparse_decode + _decode_index_score + _topk_index_{partial,merge} +
+  # _merge_topk_attn_out. 0.24 seeds knew _gqa_share_sparse/_decode_score;
+  # 0.29 renamed them and the M3 prefill path went unlabeled (found by the
+  # cache-cold re-probe 2026-09-23). This closes the dsa_nsa-covers-M3 debt.
   - {backend: triton, role: attention,
-     match: "^_fwd_grouped_kernel_stage1|^_fwd_kernel(_stage2)?$|^kernel_unified_attention(_diffkv)?$|^reduce_segments$"}
+     match: "^_fwd_grouped_kernel_stage1|^_fwd_kernel(_stage2)?$|^kernel_unified_attention(_diffkv)?$|^reduce_segments$|^_gqa_(share_)?sparse|^_index_block_score_kernel$|^_decode_index_score_kernel$|^_topk_index(_merge|_partial)?_kernel$|^_merge_topk_attn_out"}
 
   # -------------------------------------------------- linear attention / mamba
   - {backend: fla_triton, role: linear_attention,
@@ -88,7 +99,7 @@ rules:
   # infra and swallowed Triton ATTENTION with it. framework_native is dropped
   # by label_kernels, so verdicts are unchanged for routing itself.
   - {backend: framework_native, role: routing,
-     match: "_router_triton_kernel|_gemma4_routing|deepseek_v3_topk|customMoeRouting|topkGating|cooperative_topk|_topk_forward|_topk_index_kernel|router_gemm_kernel|_bitmatrix_metadata|_sum_bitmatrix_rows"}
+     match: "_router_triton_kernel|_gemma4_routing|deepseek_v3_topk|customMoeRouting|topkGating|cooperative_topk|_topk_forward|router_gemm_kernel|_bitmatrix_metadata|_sum_bitmatrix_rows"}
   - {backend: torch, role: routing,
      match: "gatherTopK|bitonicSortKVInPlace"}
 
