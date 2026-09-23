@@ -2502,7 +2502,20 @@ def test_v41_reader_rejects_unqualified_graph_or_missing_execution_mode(tmp_path
 def test_explicit_eager_collection_admission(v41, eager, monkeypatch):
     from collector.fpm_forward import planner
 
-    monkeypatch.setattr(planner, "execution_identity", lambda *args, **kwargs: ("c" * 64 if v41 else "",))
+    resolve = planner.resolve_model_capability
+
+    def resolve_architecture(**kwargs):
+        from dataclasses import replace
+
+        capability = resolve(**kwargs)
+        return replace(capability, architecture="DeepseekV41ForCausalLM") if v41 else capability
+
+    monkeypatch.setattr(planner, "resolve_model_capability", resolve_architecture)
+    monkeypatch.setattr(
+        planner,
+        "execution_identity",
+        lambda *args, **kwargs: ("c" * 64, "full", "hbm_tp_sharded", "text") if v41 else ("", "", "", ""),
+    )
     with pytest.raises(ValueError, match="eager"):
         build_collection_plan(
             backend="vllm",
