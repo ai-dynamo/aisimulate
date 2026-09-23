@@ -1,47 +1,37 @@
 {
  "verdict": "aligned",
- "repo": "meta-llama/Meta-Llama-3.1-8B",
+ "repo": "google/gemma-4-26B-A4B",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/cap_attn029_gen.json",
+ "capture_file": "facts/pathdiff/cap_attn_h512_fp8.json",
  "capture_cmd": [
-  "/ws/collector/opharness/components/op_smoke.py",
-  "--backend",
-  "vllm",
-  "--op",
-  "attention_generation",
-  "--module",
-  "collector.vllm.collect_attn_029",
-  "--cases",
-  "1",
-  "--out-dir",
-  "/tmp/smk"
+  "/s/cap_attn_h512.py"
  ],
  "capture_run_error": null,
- "kv_dtype": null,
+ "kv_dtype": "fp8",
  "op_hint": "attn|attention|flash|fwd|unified",
  "serving_record": {
-  "id": "d76b8af8879c",
+  "id": "dfe3060b813f",
   "tp": 1,
-  "kv_cache_dtype": "auto",
-  "candidates": 3
+  "kv_cache_dtype": "fp8",
+  "candidates": 1
  },
  "collector_backends": [
-  "fa3",
-  "torch"
+  "torch",
+  "triton"
  ],
  "serving_backends": [
   "cublas",
-  "fa3"
+  "triton",
+  "triton_fused_moe",
+  "vllm_kernel"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
  "serving_kernels_matched_in_collector": [
-  "flash::FlashAttnFwdCombine",
-  "flash::FlashAttnFwdSm90",
-  "flash::prepare_varlen_num_blocks_kernel",
+  "kernel_unified_attention",
   "namespace",
-  "vllm::reshape_and_cache_flash_kernel"
+  "reshape_and_cache_kernel_flash"
  ],
  "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

@@ -3,39 +3,31 @@
  "repo": "deepseek-ai/DeepSeek-V3.2",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/dsa_ctx_bf16_s4096_0290.json",
+ "capture_file": "facts/pathdiff/cap_dsa_ctx_fp8_s4096_fp8gemm.json",
  "capture_cmd": [
-  "collector/vllm/collect_mla_module_029.py",
-  "--mode",
-  "context",
-  "--model",
-  "deepseek-ai/DeepSeek-V3.2",
-  "--quick",
-  "--batch-size",
-  "1",
-  "--seq-len",
-  "4096"
+  "/work/s/cap_dsa_ctx_fp8_s4096.py"
  ],
  "capture_run_error": null,
- "kv_dtype": "auto",
+ "kv_dtype": "fp8",
  "op_hint": "mla|dsa|attn|indexer|flash|mqa|sparse|gemm|proj|deepgemm|quant",
  "serving_record": {
-  "id": "2b90b9eb7d0c",
+  "id": "f208a101a9c8",
   "tp": 1,
-  "kv_cache_dtype": "auto",
-  "candidates": 2
+  "kv_cache_dtype": "fp8",
+  "candidates": 1
  },
  "collector_backends": [
   "cublas",
+  "deepgemm",
   "dsa_nsa",
-  "fa3"
+  "sgl_kernel"
  ],
  "serving_backends": [
   "cublas",
   "cutlass",
   "deepgemm",
   "dsa_nsa",
-  "fa3",
+  "flashmla",
   "sgl_kernel",
   "triton_fused_moe",
   "vllm_kernel"
@@ -43,22 +35,24 @@
  "collector_only_signal": [],
  "kernel_drift": null,
  "serving_kernels_matched_in_collector": [
-  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
-  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
-  "cublasLt::splitKreduce_kernel",
-  "deep_gemm::fp8_gemm_kernel_swapAB",
-  "flash::FlashAttnFwdSm90",
-  "flash::prepare_varlen_num_blocks_kernel",
-  "fused_moe_kernel",
-  "namespace",
-  "per_token_group_quant_8bit_kernel",
-  "tensorrt_llm::kernels::fp8_blockscale_gemm::scale_1x128_kernel"
+  "_apply_write_kernel",
+  "_combine_sampled_and_draft_tokens_kernel",
+  "_compute_slot_mappings_kernel",
+  "_convert_req_index_to_global_index_kernel",
+  "_fused_embed_norm_kernel",
+  "_fused_norm_rope_kernel",
+  "_fused_q_kernel",
+  "_gather_block_tables_kernel",
+  "_get_num_sampled_and_rejected_kernel",
+  "_gumbel_sample_kernel"
  ],
  "collector_unmatched_kernels": [
   "_fused_norm_rope_kernel",
   "_fused_q_kernel",
   "deep_gemm::sm90_fp8_mqa_logits",
-  "kernel"
+  "kernel",
+  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_slice_view_",
+  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_view_zeros_"
  ],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
 }

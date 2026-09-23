@@ -3,20 +3,44 @@
  "repo": "MiniMaxAI/MiniMax-M3",
  "framework": "vllm",
  "version": "0.29.0",
+ "capture_file": "facts/pathdiff/cap_msa029_ctx.json",
+ "capture_cmd": [
+  "/ws/collector/vllm/collect_msa_029.py",
+  "--mode",
+  "context",
+  "--quick",
+  "--batch-size",
+  "1",
+  "--seq-len",
+  "512",
+  "--model",
+  "MiniMaxAI/MiniMax-M3"
+ ],
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "attn|sparse|msa|topk|indexer",
+ "serving_record": {
+  "id": "5f46facfd6f6",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "candidates": 3
+ },
  "collector_backends": [
-  "cublas",
-  "triton"
+  "cublas"
  ],
  "serving_backends": [
   "dsa_nsa",
-  "triton"
+  "torch",
+  "triton_fused_moe",
+  "vllm_kernel"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
  "serving_kernels_matched_in_collector": [
   "_gqa_sparse_fwd_kernel",
   "_index_block_score_kernel",
-  "_topk_index_kernel"
+  "_topk_index_kernel",
+  "namespace"
  ],
  "collector_unmatched_kernels": [
   "Command",

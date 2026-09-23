@@ -406,41 +406,98 @@ findings:
   pathdiff_fp8kv_coverage_complete:
     statement: |
       HARNESS COMPLETENESS (2026-09-23, driven by "fp8-KV must be probed and
-      compared, not skipped"): fp8-KV is now a first-class path_diff dimension
-      and the two fp8 attention paths that the collector fixes targeted are
-      verified aligned end-to-end. Getting there took THREE fixes, each a case
-      of the collector/probe losing serving context:
+      compared, not skipped"; REVISED the same day after a second review found
+      four defects in the first pass — see probe_prefill_prefix_cache_contamination
+      for the largest). fp8-KV is a first-class path_diff dimension and the fp8
+      attention paths are verified aligned with matched evidence:
         (a) probe fp8-KV as a config axis: probe_vllm --kv-cache-dtype +
             probe_driver kv_variants=[None,fp8] (vllm), path_diff --kv-dtype
             selects the same-kv serving record (commit a2076196).
-        (b) build_ops orphan truncation: sorted(set)[:15] alphabetical cut
-            dropped the sparse-MLA fp8 kernels (cudagraph-replayed, device
-            stream only) so serving fp8 signal was empty; now top-40 by device
-            time (commit 19ae5ea9).
-        (c) taxonomy gap: vllm kernel_unified_attention (TRITON_ATTN, the ONLY
-            fp8 head_dim>256 Gemma-4 path) was unlabeled; labeled triton_attn,
-            distinct from the infra-swallowed generic `triton` (commit
-            553c2772).
-      VERDICTS (sm90, vllm 0.29.0, kv=fp8):
-        - Gemma-4 head512 fp8 -> ALIGNED (triton_attn both sides); confirms the
-          collect_attn head_dim>256 backend override (commit 47282aa1).
-        - DSV3.2 dsa-context fp8 -> ALIGNED (dsa_nsa + flashmla + deepgemm),
-          confirming the DSA context chunked-prefill grid. NOTE the capture
-          precision must match serving: gemm_type=bfloat16 shows a false
-          fused_a-projection drift (cutlass vs serving fp8_blockscale); the
-          gemm_type=fp8_block capture aligns. path_diff compares whatever cell
-          it is handed, so fp8-serving comparisons need the fp8_block capture.
-      LESSON: path_diff only validates the config points actually captured and
-      probed; a family unlabeled or a kernel truncated is silently uncompared.
-      Evidence results/pathdiff/sm90/vllm_0290_{gemma4_attn_h512,dsv32_dsa_ctx}_fp8.json,
-      facts/pathdiff/cap_{attn_h512,dsa_ctx}_fp8*.json, facts/gemma4_fp8_serving.json.
+        (b) build_ops orphan keep-rule is STRUCTURAL: every orphan the taxonomy
+            labels with an identity-bearing backend is kept; only unlabeled/
+            noise orphans are capped (24, by device time). The first fix
+            (top-40 by time) was still a count; the original alphabetical
+            [:15] had truncated half the records (137/274 raws exceed 15).
+        (c) taxonomy: vllm kernel_unified_attention / reduce_segments
+            (TRITON_ATTN, the only fp8 head_dim>256 Gemma-4 path) labeled
+            `triton` — the shared vocabulary's name for the Triton attention
+            backend (kernel_source_backends.yaml: sglang `triton`, vllm
+            `vllm_triton_attn` -> triton). The first pass invented
+            `triton_attn`, breaking the one-vocabulary contract. Routing
+            kernels moved triton -> framework_native, so `triton` now means
+            attention only and left path_diff's infra set.
+        (d) verdict artifacts are reproducible: reports carry capture_file,
+            capture_cmd, op_hint, kv_dtype and the serving record (id, tp, kv,
+            isl, prefix_caching, candidate count); records carry runtime.isl;
+            path_diff --isl selects by prompt length and --serving-raw diffs
+            against explicit A/B evidence. The first pass saved verdicts to
+            results/pathdiff/sm90/ where the gate never reads them (it reads
+            sm90/<fw>-<version>/).
+      VERDICTS (sm90, vllm 0.29.0, kv=fp8, results/pathdiff/sm90/vllm-0.29.0/):
+        - Gemma-4 head512 fp8 -> ALIGNED (triton both sides).
+        - DSV3.2 DSA fp8 GENERATION -> ALIGNED (flashmla sparse_fp8 decode +
+          dsa_nsa paged_mqa_logits + deepgemm). The first pass called this
+          capture "ctx": run_mla_module picks the phase from
+          `"context" in perf_filename` (collect_mla_module.py:920) and the
+          capture used /tmp/cap_perf.txt.
+        - DSV3.2 DSA fp8 CONTEXT s=4096 (128 heads, separate prefill path:
+          cp_gather_and_upconvert -> bf16 workspace -> sparse_attn_fwd_kernel)
+          -> ALIGNED against cache-cold serving at isl 4096.
+        - DSV3.2 DSA fp8 CONTEXT s=512 (dense FA3 MLA prefill, seq <= index_topk)
+          -> ALIGNED against cache-cold serving at isl 512 (--serving-raw
+          facts/reprobe_nopc/f208a101a9c8_isl512.json). Against the isl-4096
+          record it is legitimately "diverged" (serving never ran FA3 at 4096):
+          prefill dispatch is length-conditional, so the serving evidence must
+          be isl-matched to the collector cell.
+        - heads=16 fp8 context (TP8-equivalent, num_heads < 32) follows the
+          mixed-batch path in the collector too (sparse_decode_fwd), matching
+          flashmla_sparse.py:307 — capture facts/pathdiff/cap_dsa_ctx_fp8_s4096_h16.json.
+        Capture precision must match serving: gemm_type=bfloat16 shows a false
+        fused_a-projection drift (cutlass vs fp8_blockscale); use fp8_block.
+      FOLLOW-UP (unconfirmed, needs an sglang capture): sglang 0.5.16 serves
+      Gemma-4 (head512) on Triton attention (_fwd_grouped_kernel_stage1 in the
+      raws) while collector/sglang/collect_attn.py pins FlashAttentionBackend
+      on SM90 unless head_dim==192 — same class as the vllm Gemma-4 override.
     applies_to:
     - instrument:path_diff
     - instrument:kernel_taxonomy
+    - instrument:probe_driver
     - framework:vllm-0.29.0
     - platform:sm90
     - google/gemma-4-26B-A4B
     - deepseek-ai/DeepSeek-V3.2
+  probe_prefill_prefix_cache_contamination:
+    statement: |
+      INSTRUMENT FIX (probe_vllm, 2026-09-23): the profiled request reused the
+      warmup prompt (list(range(isl))) and vllm enables prefix caching by
+      default, so every "prefill" step the probe profiled was a near-total
+      cache hit recomputing only the last block — a query of <= block_size
+      tokens with a full-length KV. ALL 173 vllm serving records with prefill
+      tables carried this residual, not an isl-token prefill. Identity verdicts
+      survived wherever the residual still routes to the same kernel family
+      (FA3, TRITON_ATTN), which is why it stayed invisible; DSA fp8 exposed it:
+      FlashMLASparse's builder classifies query_len <= 256 (128 heads) as
+      decode (flashmla_sparse.py:244 @0.29.0), so serving "prefill" evidence
+      showed the fp8 DECODE kernel and path_diff flagged the collector's
+      correct separate-path prefill (sparse_attn_fwd_kernel) as kernel drift.
+      Cache-cold re-probes confirm: DSV3.2 fp8 prefill 688us decode kernel ->
+      26.9ms sparse_attn_fwd (+cp_gather_and_upconvert); Gemma-4 fp8
+      kernel_unified_attention 863us -> 10.5ms; Llama-3.1-8B FA3 41us ->
+      2.08ms. Fix: ea.enable_prefix_caching=False (same policy as the sglang
+      probe's --disable-radix-cache); records carry runtime.prefix_caching.
+      The three raws above are superseded (old copies in workspace
+      facts/raw_superseded/prefixcache_2026-09-23/); the remaining ~170 vllm
+      records still hold cached-residual prefill evidence and need a re-sweep
+      before any prefill-side conclusion is drawn from them (decode evidence
+      is unaffected). The trtllm probe has the same shape (warmup and profiled
+      prompt both [[1]*16], block reuse on) plus no --isl and no phase tables —
+      a weaker lane that needs the same treatment. Evidence
+      facts/reprobe_nopc/, facts/pathdiff/cap_dsa_ctx_fp8_s4096_fp8gemm.json.
+    applies_to:
+    - instrument:probe_vllm
+    - instrument:probe_trtllm
+    - framework:vllm-0.29.0
+    - platform:sm90
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'NAMING DEBT: the kernel_taxonomy family "dsa_nsa" matches MiniMax-M3 sparse-attention kernels
       too (sparse_attn_fwd/_gqa_share_sparse/_merge_topk_attn_out/_decode_score are models/minimax_m3 Triton
