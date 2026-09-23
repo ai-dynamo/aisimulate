@@ -236,6 +236,24 @@ second test; MAPE, `sglang18` → `core4`):
 | ShareGPT → LongBench | 3.43 → 4.39 % | 43.17 → 55.09 % |
 | LongBench → ShareGPT | 22.45 → 22.17 % | 29.42 → 75.62 % |
 
+**Which of the 18 are functions of the others.** Eight are exact functions of the rest, or
+constants: `req_sum_attn_flops` = Σe·p + ½Σe², `req_sum_extend_x_max_past` = Σe · max p,
+`req_batch_size_x_sum_extend` = n · Σe, `req_max_past_minus_min_past` = max p − min p, the
+two `log1p` features are monotone transforms of `req_sum_past` and `req_sum_attn_flops`
+(a tree splits identically on either), and `req_is_decode` / `req_is_prefill` are constant
+inside a store. The ten that remain (`indep10`) are n, Σe, max e, min e, Σp, max p, min p,
+Σe·p, Σe², Σp². For decode every extend is 1, so Σe = n, max e = min e = 1, Σe² = n and
+Σe·p = Σp: five features carry everything (`indep5`: n, Σp, max p, min p, Σp²). The
+empirical check below confirms this for decode (`indep5` and `indep10` give identical
+numbers) but not for prefill extrapolation, because a tree cannot form a product: having
+Σe·(p + e/2) as its own axis lets it split on attention work directly, which matters when
+the test workload's mix of chunk sizes and prefixes was never seen.
+
+| features | n | pooled decode | pooled prefill | cross decode, worst change vs 18 | cross prefill, worst change vs 18 |
+| --- | --- | --- | --- | --- | --- |
+| `indep10` | 10 | 2.04 % | 1.98 % | ShareGPT → LongBench 3.43 → 6.03 % | LongBench → ShareGPT 29.4 → 73.4 % |
+| `indep5` (decode only) | 5 | 2.04 % | | same as `indep10` | |
+
 Within the training distribution four features are as good as eighteen, for both roles:
 the trees recover the rest (extremes, spread, cross terms) from the sums. Under
 extrapolation the picture splits. Decode moves by at most ±1 pp either way. Prefill gets
@@ -243,10 +261,17 @@ markedly worse with `core4` in four of six directions (LongBench → AgentX 6.5 
 LongBench → ShareGPT 29 → 76 %): a prefill batch's cost depends on how its tokens are
 distributed over requests (one 8k chunk vs. eight 1k requests), which the sums alone do not
 distinguish and the extremes and cross terms do. Hence `core4` is offered as a preset for
-decode-only or in-distribution use, and `sglang18` stays the default. The feature build is
-not the inference bottleneck either way (§8.1: 2 µs of a 5.6 µs call at batch 256, nothing at
-batch 1). Raw output: `feature_ablation_pooled.txt`, `feature_ablation_cross.txt` in the
-playground `reports/`.
+decode-only or in-distribution use, and `sglang18` stays the default.
+
+Fewer features do not make inference faster. Two artifacts trained on the same vLLM
+AgentX run (§7.2 data, 400 trees each), timed with the method of §8.1 on the same Grace
+core: the 18-feature decode model takes 3.7–5.8 µs per estimate over the decode grid, the
+`core4` model 4.3–6.4 µs; prefill 4.5–6.3 µs versus 4.6–5.3 µs. The feature build is a few
+hundred nanoseconds either way; the time is the 400-tree walk, and trees fitted on fewer
+axes are not shallower (accuracy on the test run: decode 4.02 % vs 3.33 %, prefill 5.09 % vs
+4.99 %, i.e. equal within this pair). Raw output: `feature_ablation_pooled.txt`,
+`feature_ablation_cross.txt`, `feature_ablation_indep.txt`,
+`estimator_latency_by_feature_set.csv` in the playground `reports/`.
 
 ## 4. Model
 

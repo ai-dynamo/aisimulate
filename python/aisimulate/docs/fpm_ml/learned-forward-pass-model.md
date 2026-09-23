@@ -181,8 +181,9 @@ python -m aisimulate_core.sdk.fpm_learned train \
     Same accuracy as `sglang18` when train and test share the workload mix
     (2.02 % vs 2.05 % decode, 1.97 % vs 1.98 % prefill on the pooled GB300
     runs of §4) and for decode across workloads, but prefill extrapolation
-    degrades (LongBench → AgentX 6.5 → 15 %), so it is not the default. The
-    full tables are in `design.md` §3.1.
+    degrades (LongBench → AgentX 6.5 → 15 %), so it is not the default. Fewer
+    features do not make inference faster either; the 400-tree walk dominates.
+    The full tables are in `design.md` §3.1.
   The per-request groups need the `extend_lengths` / `past_kv_lengths`
   producer fields described above. Lists must be aligned and cover every
   scheduled request; the Rust validator rejects partial vectors, and an
