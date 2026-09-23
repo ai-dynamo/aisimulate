@@ -804,8 +804,8 @@ def test_external_fpm_pair_drives_yaml_replay_without_backend_data(external_fpm_
     assert not (systems_root / "data").exists()
     assert report.metrics["completed_requests"] == 1
     record = report.metadata["native_report"]["per_request"][0]
-    # Replay emits the first token after prefill plus the first decode step.
-    assert record["first_token_ms"] - record["arrival_time_ms"] == pytest.approx(22.0 + 6.0)
+    # The final prefill forward produces the first token; only later tokens decode.
+    assert record["first_token_ms"] - record["arrival_time_ms"] == pytest.approx(22.0)
     assert record["last_token_ms"] - record["first_token_ms"] == pytest.approx(6.0)
 
 
