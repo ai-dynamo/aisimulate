@@ -1048,7 +1048,8 @@ the repository Apache-2.0 license text applies to these adaptations.
   `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20). Original paths:
   `python/sglang/srt/managers/tp_worker.py`,
   `python/sglang/srt/model_executor/{model_runner,forward_batch_info}.py`,
-  `python/sglang/srt/model_executor/runner/{eager_runner,decode_cuda_graph_runner}.py`,
+  `python/sglang/srt/model_executor/runner/{eager_runner,decode_cuda_graph_runner,prefill_cuda_graph_runner}.py`,
+  `python/sglang/srt/mem_cache/memory_pool.py`,
   and `python/sglang/srt/utils/device_timer.py`.
 - Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
 - License: Apache-2.0 (full text above).

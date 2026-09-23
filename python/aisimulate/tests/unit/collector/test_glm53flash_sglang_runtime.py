@@ -147,3 +147,60 @@ def test_frozen_target_needs_exact_batch_coordinates_and_real_chain():
         match_frozen_requests({**record, "requests": [{"same_request_real_prefix": False}]}, manifest)["stage"]
         == "seed"
     )
+
+
+def test_actual_native_prefill_padding_is_observed_not_predicted(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "sglang.srt.utils.device_timer", SimpleNamespace(DeviceTimer=Timer))
+    native = SimpleNamespace(
+        load_batch=lambda value: SimpleNamespace(input_ids=SimpleNamespace(shape=(192,))),
+        prefill_backend_name="BREAKABLE",
+        _is_full_backend=False,
+    )
+    runner = SimpleNamespace(ps=SimpleNamespace(tp_rank=0), device_timer=None, prefill_cuda_graph_runner=native)
+    state = _TraceState(runner, tmp_path, {}, None)
+    request = SimpleNamespace(rid="actual-request", origin_input_ids=list(range(129)))
+    index = state.before(batch("EXTEND", query=[129], prefix=[0], tokens=range(129)), [request])
+    with pytest.raises(RuntimeError, match="padding receipt"):
+        state.after(index, SimpleNamespace(can_run_graph=True))
+    native.load_batch(object())
+    state.after(index, SimpleNamespace(can_run_graph=True))
+    assert state.records[index]["num_padded_tokens"] == 192
+    assert state.records[index]["runtime_mode"] == "PIECEWISE"
+    assert state.records[index]["native_prefill_backend"] == "BREAKABLE"
+
+
+def test_actual_kda_dtype_override_is_not_admitted():
+    from collector.glm53flash_sglang_runtime import allocated_state_inventory
+
+    class Storage:
+        shape = (34, 5, 16, 128, 128)
+        device = "cuda:0"
+
+        def __init__(self, dtype):
+            self.dtype = dtype
+
+        def stride(self):
+            return (100, 50, 10, 5, 1)
+
+        def numel(self):
+            return 100
+
+        def element_size(self):
+            return 4
+
+    bf16, fp32, packed = Storage("torch.bfloat16"), Storage("torch.float32"), Storage("torch.uint8")
+    full = SimpleNamespace(
+        kv_buffer=[packed],
+        index_k_with_scale_buffer=[packed],
+        _compress_tail_k=[bf16],
+        _compress_tail_score=[bf16],
+        dtype="torch.float8_e4m3fn",
+        store_dtype="torch.uint8",
+    )
+    cache = SimpleNamespace(conv=[bf16], temporal=fp32)
+    runner = SimpleNamespace(
+        token_to_kv_pool=SimpleNamespace(mamba_pool=SimpleNamespace(mamba_cache=cache), full_kv_pool=full)
+    )
+    assert allocated_state_inventory(runner)["admitted"] is True
+    cache.temporal = bf16
+    assert allocated_state_inventory(runner)["admitted"] is False

@@ -66,6 +66,58 @@ def actual_coordinates(forward_batch) -> dict:
     }
 
 
+def allocated_state_inventory(runner) -> dict:
+    """Record allocated tensor metadata, without reading cache contents."""
+    pool = getattr(runner, "token_to_kv_pool", None)
+    mamba = getattr(getattr(pool, "mamba_pool", None), "mamba_cache", None)
+    full = getattr(pool, "full_kv_pool", None)
+    if mamba is None or full is None:
+        return {"admitted": False, "reason": "native hybrid cache objects unavailable"}
+
+    def tensors(value):
+        if value is None:
+            return []
+        values = value if isinstance(value, (list, tuple)) else [value]
+        return [
+            {
+                "dtype": str(t.dtype),
+                "shape": list(t.shape),
+                "stride": list(t.stride()),
+                "device": str(t.device),
+                "nbytes": int(t.numel() * t.element_size()),
+            }
+            for t in values
+        ]
+
+    groups = {
+        "kda_conv": tensors(mamba.conv),
+        "kda_temporal": tensors(mamba.temporal),
+        "mla_latent": tensors(full.kv_buffer),
+        "pooled_index_packed": tensors(full.index_k_with_scale_buffer),
+        "index_tail_key": tensors(getattr(full, "_compress_tail_k", None)),
+        "index_tail_score": tensors(getattr(full, "_compress_tail_score", None)),
+    }
+    expected = {
+        "kda_conv": "torch.bfloat16",
+        "kda_temporal": "torch.float32",
+        "pooled_index_packed": "torch.uint8",
+        "index_tail_key": "torch.bfloat16",
+        "index_tail_score": "torch.bfloat16",
+    }
+    admitted = all(groups[name] and all(t["dtype"] == dtype for t in groups[name]) for name, dtype in expected.items())
+    logical_kv_dtype = str(full.dtype)
+    admitted = admitted and logical_kv_dtype == "torch.float8_e4m3fn"
+    return {
+        "admitted": admitted,
+        "groups": groups,
+        "logical_kv_dtype": logical_kv_dtype,
+        "physical_kv_dtype": str(full.store_dtype),
+        "pooled_index_layout": "packed_fp8_keys_and_fp32_scales",
+        "pool_class": f"{type(pool).__module__}.{type(pool).__name__}",
+        "full_pool_class": f"{type(full).__module__}.{type(full).__name__}",
+    }
+
+
 class _TraceState:
     def __init__(self, runner, output: Path, provenance: dict, manifest: dict | None, request_manifest=None):
         from sglang.srt.utils.device_timer import DeviceTimer
@@ -82,7 +134,26 @@ class _TraceState:
         self.sampled = {}
         self.counter = 0
         self.observer = None
+        self.prefill_receipt = None
+        self.state_layout = allocated_state_inventory(runner)
+        self.state_layout_sha256 = hashlib.sha256(json.dumps(self.state_layout, sort_keys=True).encode()).hexdigest()
         output.mkdir(parents=True, exist_ok=True)
+        (output / f"state-layout-rank-{self.rank}.json").write_text(json.dumps(self.state_layout, indent=2))
+        native_prefill = getattr(runner, "prefill_cuda_graph_runner", None)
+        if native_prefill is not None and hasattr(native_prefill, "load_batch"):
+            original_load = native_prefill.load_batch
+
+            @functools.wraps(original_load)
+            def load_batch(*args, **kwargs):
+                result = original_load(*args, **kwargs)
+                self.prefill_receipt = {
+                    "num_padded_tokens": int(result.input_ids.shape[0]),
+                    "native_prefill_backend": str(native_prefill.prefill_backend_name),
+                    "runtime_mode": "FULL" if native_prefill._is_full_backend else "PIECEWISE",
+                }
+                return result
+
+            native_prefill.load_batch = load_batch
         if runner.device_timer is None:
             runner.device_timer = DeviceTimer(self.on_timing)
         else:
@@ -114,6 +185,7 @@ class _TraceState:
         record.update(native_forward_ms=t * 1000, native_timer_category=category, gpu_completed=True)
 
     def before(self, forward_batch, requests) -> int:
+        self.prefill_receipt = None
         coordinates = actual_coordinates(forward_batch)
         self.counter += 1
         invocation = self.counter
@@ -177,12 +249,16 @@ class _TraceState:
             "ops_instrumented": self.observer is not None,
             "allocated_fake_tokens": 0,
             "state_protocol": "glm53flash_same_request_real_hybrid_v1",
+            "state_layout_sha256": self.state_layout_sha256,
+            "state_layout_admitted": self.state_layout["admitted"],
         }
         self.records[invocation] = record
         record["_completed_tokens"] = completed_tokens
         self.pending.append(invocation)
         record.update(match_frozen_requests(record, self.request_manifest))
         if record["stage"] == "measure":
+            if not self.state_layout["admitted"]:
+                raise RuntimeError("actual native hybrid cache dtype/layout is outside the admitted GLM identity")
             key = (record["benchmark_id"], record["repetition"])
             if key in self.matched:
                 raise RuntimeError("frozen target matched more than one native forward")
@@ -223,9 +299,9 @@ class _TraceState:
         elif not graph:
             record["num_padded_tokens"] = record["total_new_tokens"]
         else:
-            # The whole-model flag proves piecewise dispatch, not its captured
-            # token bucket. Publication must get that from the native runner.
-            record["num_padded_tokens"] = None
+            if self.prefill_receipt is None:
+                raise RuntimeError("native prefill graph dispatch lacks its actual load_batch padding receipt")
+            record.update(self.prefill_receipt)
         if self.observer is not None and record.get("ops_observed"):
             if graph:
                 raise RuntimeError("native eager Ops campaign actually replayed a CUDA graph")
