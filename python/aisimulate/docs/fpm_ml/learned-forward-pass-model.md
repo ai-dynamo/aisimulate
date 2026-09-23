@@ -413,7 +413,22 @@ wrapper, which serialises the FPM dict to JSON and parses it in Rust on every ca
 | prefill, 1 × 4096 tokens, 64k prefix | 4.5 µs | 12 µs |
 
 The Rust cost is a 400-tree walk of about 3.3 µs plus one pass over the per-request lists
-(about 8 ns per request); the rest of the Python column is JSON marshalling. The full grid,
+(about 8 ns per request); the rest of the Python column is JSON marshalling.
+
+Smaller models are 4–5× faster at the same accuracy (`design.md` §8.7–8.8, measured on the
+GB300 SGLang and vLLM captures): time per estimate scales with trees × leaves, and the
+same-workload accuracy is flat down to 50 trees of 7 leaves. Trained with the existing
+options, no code change:
+
+| role | features | `--max-iter` | `--learning-rate` | `--max-leaf-nodes` | Rust µs (was) | test MAPE (was) |
+| --- | --- | --- | --- | --- | --- | --- |
+| decode | `req_batch_size,req_sum_past,req_max_past,req_min_past,req_sum_past_squared` | 100 | 0.2 | 7 | 0.8–1.6 (3.4–5.5) | 3.3 % (4.0 %) |
+| prefill | `sglang18` | 100 | 0.2 | 15 | 0.8–1.1 (4.5–6.3) | 5.0 % (5.1 %) |
+
+The five decode features are the ones with information on a decode step (every request
+extends by one token); not for speculative decoding. For prefill, the ten atomic features
+plus `req_batch_size_x_sum_extend` (eleven) keep the eighteen's cross-workload behaviour;
+the other derived features add nothing measurable. The full grid,
 the comparison with the native op-level model, multi-core scaling (the GBDT is read-only and
 scales linearly to 96 cores; 22 M decode estimates per second on a Grace node) and the
 pooled ten-run training time are in `design.md` §8. Artifacts are 100–450 KB of JSON.
