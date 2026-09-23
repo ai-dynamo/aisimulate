@@ -485,21 +485,48 @@ findings:
       kernel_unified_attention 863us -> 10.5ms; Llama-3.1-8B FA3 41us ->
       2.08ms. Fix: ea.enable_prefix_caching=False (same policy as the sglang
       probe's --disable-radix-cache); records carry runtime.prefix_caching.
-      The three raws above are superseded (old copies in workspace
-      facts/raw_superseded/prefixcache_2026-09-23/); the remaining ~170 vllm
-      records still hold cached-residual prefill evidence and need a re-sweep
-      before any prefill-side conclusion is drawn from them (decode evidence
-      is unaffected). The trtllm probe has the same shape (warmup and profiled
-      prompt both [[1]*16], block reuse on) plus no --isl and no phase tables —
-      a weaker lane that needs the same treatment. Evidence
-      facts/reprobe_nopc/, facts/pathdiff/cap_dsa_ctx_fp8_s4096_fp8gemm.json.
+      TARGETED RE-PROBE (owner decision 2026-09-23: no full re-sweep; GEMM/MoE
+      identity is not length-conditional, so only attention classes whose
+      DISPATCH changes with query length were redone). Triage over the 173
+      records by mechanism, then 37 + 3 records re-probed cache-cold (all ok):
+        - DSA family (DSV3.2 variants, GLM-5/5.1/5.2 + FP8/NVFP4; 18): fp8-KV
+          prefill evidence flipped from the fp8 DECODE kernel to
+          sparse_attn_fwd_kernel (the separate-path bf16-workspace prefill),
+          matching the collector; bf16-KV DSV3.2 stayed FA3.
+        - MLA + fp8-KV (DeepSeek-R1/V3 fp8, Kimi-K2/K2.5, DSV3.1/K2.5/K2.6/
+          K2.7 NVFP4; 12): flipped from flash_fwd_splitkv_mla (FlashMLA
+          decode) to FA3 prefill — the residual query had been routed through
+          the MLA decode path, so every MLA fp8 prefill row was wrong.
+        - MiniMax-M3 (7): prefill still showed NO labeled attention kernel —
+          that was a taxonomy gap, not the probe: 0.29 renamed the M3 Triton
+          kernels (_gqa_sparse_fwd/_decode, _index_block_score,
+          _decode_index_score, _topk_index_{partial,merge}); labeled `triton`
+          (kernel_source_backends.yaml: MiniMaxM3SparseTritonImpl -> triton),
+          closing the dsa_nsa-covers-M3 naming debt. msa029_m3_{ctx,gen} were
+          previously aligned on an EMPTY attention set; now kernel-matched.
+        - Dense FA3 / TRITON_ATTN / linear-attention (133 records): same
+          family before and after in the three cache-cold controls (Llama,
+          Gemma-4, DSV3.2 MoE/quant/routing identical; GEMM differs only in
+          cuBLAS nvjet tile shape) — identity verdicts are trustworthy, prefill
+          MAGNITUDES are not. build_records prints the count of such records
+          on every rebuild ("NOTE: N vllm records still carry cached-residual
+          prefill evidence"). Superseded raws: facts/raw_superseded/prefixcache_2026-09-23/.
+      DSV4 on vllm has NO serving evidence at all (36 records, mostly `load`
+      errors from the --max-num-batched-tokens 6012 trigger; the generator fix
+      lives on its own branch) — unrelated to this contamination.
+      The trtllm probe has the same shape (warmup and profiled prompt both
+      [[1]*16], block reuse on) plus no --isl and no phase tables — a weaker
+      lane that needs the same treatment. Evidence facts/reprobe_nopc/
+      (candidates.json, postprocess.py), facts/pathdiff/cap_dsa_ctx_fp8_s4096_fp8gemm.json.
     applies_to:
     - instrument:probe_vllm
     - instrument:probe_trtllm
     - framework:vllm-0.29.0
     - platform:sm90
   taxonomy_dsa_nsa_family_covers_m3:
-    statement: 'NAMING DEBT: the kernel_taxonomy family "dsa_nsa" matches MiniMax-M3 sparse-attention kernels
+    statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
+      MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.
+      Original: NAMING DEBT: the kernel_taxonomy family "dsa_nsa" matches MiniMax-M3 sparse-attention kernels
       too (sparse_attn_fwd/_gqa_share_sparse/_merge_topk_attn_out/_decode_score are models/minimax_m3 Triton
       kernels, ops/sparse_attn.py). Verdicts are computed within-family by kernel-name overlap so the lumping
       is functionally harmless today, but the family name misleads readers of verdict files. Rename (e.g.

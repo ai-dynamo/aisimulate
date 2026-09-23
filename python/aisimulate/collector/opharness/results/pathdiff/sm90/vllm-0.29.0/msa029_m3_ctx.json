@@ -18,19 +18,22 @@
  ],
  "capture_run_error": null,
  "kv_dtype": null,
- "op_hint": "attn|sparse|msa|topk|indexer",
+ "op_hint": "attn|sparse|msa|topk|index|score|merge",
  "serving_record": {
   "id": "5f46facfd6f6",
   "tp": 1,
   "kv_cache_dtype": "auto",
+  "isl": 4096,
+  "prefix_caching": false,
+  "raw_file": null,
   "candidates": 3
  },
  "collector_backends": [
-  "cublas"
+  "cublas",
+  "triton"
  ],
  "serving_backends": [
-  "dsa_nsa",
-  "torch",
+  "triton",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -40,12 +43,12 @@
   "_gqa_sparse_fwd_kernel",
   "_index_block_score_kernel",
   "_topk_index_kernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "namespace"
  ],
  "collector_unmatched_kernels": [
-  "Command",
-  "_gqa_sparse_fwd_kernel",
-  "_index_block_score_kernel"
+  "Command"
  ],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
 }
