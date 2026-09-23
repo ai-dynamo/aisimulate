@@ -185,13 +185,13 @@ class TestCLIIntegration:
         cli_args_factory,
     ):
         mock_task_config = MagicMock(name="TaskConfig")
-        mock_build_default.return_value = {"afd": mock_task_config}
+        mock_build_default.return_value = {"disagg": mock_task_config}
         mock_execute.return_value = (
-            "afd",
-            {"afd": MagicMock(name="BestConfigDF")},
-            {"afd": MagicMock(name="ResultsDF")},
-            {"afd": 123.4},
-            {"afd": {"ttft": 100.0, "tpot": 10.0, "request_latency": 1000.0}},
+            "disagg",
+            {"disagg": MagicMock(name="BestConfigDF")},
+            {"disagg": MagicMock(name="ResultsDF")},
+            {"disagg": 123.4},
+            {"disagg": {"ttft": 100.0, "tpot": 10.0, "request_latency": 1000.0}},
             {},
         )
 
@@ -199,22 +199,13 @@ class TestCLIIntegration:
             mode="default",
             extra_args=[
                 "--serving-mode",
-                "afd",
-                "--afd-max-a-batch-size",
-                "1536",
-                "--afd-max-candidates",
-                "500",
-                "--afd-candidate-overflow",
-                "truncate",
+                "disagg",
             ],
         )
         cli_main(args)
 
         mock_build_default.assert_called_once()
-        assert mock_build_default.call_args.kwargs["serving_mode"] == "afd"
-        assert mock_build_default.call_args.kwargs["afd_max_a_batch_size"] == 1536
-        assert mock_build_default.call_args.kwargs["afd_max_candidates"] == 500
-        assert mock_build_default.call_args.kwargs["afd_candidate_overflow"] == "truncate"
+        assert mock_build_default.call_args.kwargs["serving_mode"] == "disagg"
         mock_execute.assert_called_once()
 
     @patch("aisimulate.legacy_cli.main.save_results")

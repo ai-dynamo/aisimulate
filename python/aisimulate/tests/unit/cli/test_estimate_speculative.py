@@ -166,8 +166,7 @@ class TestEstimateSpeculativeBlock:
             )
 
 
-@pytest.mark.parametrize("mode", ["afd", "disagg"])
-def test_unsupported_scheme_estimate_fails_before_database_lookup(monkeypatch, mode):
+def test_unsupported_scheme_estimate_fails_before_database_lookup(monkeypatch):
     import aisimulate.sdk.perf_database as perf_database
 
     def unexpected_database_lookup(*args, **kwargs):
@@ -175,7 +174,7 @@ def test_unsupported_scheme_estimate_fails_before_database_lookup(monkeypatch, m
 
     monkeypatch.setattr(perf_database, "get_database_view", unexpected_database_lookup)
     with pytest.raises(NotImplementedError, match="agg/static"):
-        cli_estimate(mode=mode, speculative=SPEC_BLOCK, **COMMON)
+        cli_estimate(mode="disagg", speculative=SPEC_BLOCK, **COMMON)
 
 
 def _args(cli_parser, *extra):
