@@ -68,6 +68,15 @@ rules:
      match: "_fused_gdn_post_conv_kernel"}
   - {backend: causal_conv1d, role: linear_attention,
      match: "causal_conv1d"}
+  # Kimi-K3 KDA (vllm 0.29 ships K3 natively: vllm/models/kimi_k3): prefill =
+  # FlashKDA CUDA extension (_flash_kda_fwd_prepare + the mangled
+  # _flash_kda_fwd_recurrence template), decode = vllm custom op
+  # kda_decode_fusion_many_heads_kernel. Vocabulary: flashkda_fwd -> flashkda,
+  # fused_kda_decode -> vllm_kernel (kernel_source_backends.yaml:309-310).
+  - {backend: flashkda, role: linear_attention,
+     match: "_flash_kda_fwd|flash_kda_fwd"}
+  - {backend: vllm_kernel, role: linear_attention,
+     match: "kda_decode_fusion"}
   - {backend: mamba_triton, role: linear_attention,
      match: "_selective_scan_update|selective_state_update|_chunk_(scan|state|cumsum)_fwd|_state_passing_fwd|_bmm_chunk_fwd|_chunk_state_varlen"}
 
@@ -127,7 +136,7 @@ rules:
 
   # -------------------------------------------------- activation / elementwise
   - {backend: framework_native, role: activation,
-     match: "act_and_mul|silu_and_mul|_run_activation|_sigmoid_gate_mul|_fused_(gate_)?sigmoid_mul|triton_poi_fused_add.*sigmoid|triton_poi_fused_copy|triton_per_fused|triton_red_fused|_split_qkv_contiguous|_typeConvert|fusedMiniMaxM3QNormRope"}
+     match: "act_and_mul|silu_and_mul|situ_and_mul|_run_activation|_sigmoid_gate_mul|_fused_(gate_)?sigmoid_mul|triton_poi_fused_add.*sigmoid|triton_poi_fused_copy|triton_per_fused|triton_red_fused|_split_qkv_contiguous|_typeConvert|fusedMiniMaxM3QNormRope|^_attn_res_kernel$|^layer_norm_gated_fwd_kernel$"}
 
   # ----------------------------------------------------------------- infra
   - {backend: infra, role: infra,

@@ -555,7 +555,10 @@ def build_ops(facts: dict) -> tuple[list[dict], list[str]]:
     # hit the same bug independently). A time-ranked top-40 fixed today's
     # data but was still a count; this rule cannot lose a labeled kernel.
     orphans_t: dict[str, float] = {}
-    for tbl in ("prefill_kernels", "decode_kernels"):
+    # profile_run_kernels: vLLM's own dummy full-model forward at engine
+    # construction (the only place vision-encoder kernels run for a text
+    # probe) — legitimate serving execution, so it counts as identity evidence
+    for tbl in ("prefill_kernels", "decode_kernels", "profile_run_kernels"):
         for k in (trace.get(tbl) or []):
             name = k.get("kernel", "")
             if (name.startswith(("AIC::", "step", "aten::")) or name.isupper()

@@ -84,9 +84,14 @@ def main() -> None:
         import shlex
 
         argv = shlex.split(args.engine_cli)
+        # KV pool cap scales with the probe prompt: multi-cache-group models
+        # (DeepSeek-V4: MLA + compressor + indexer caches) exhausted a fixed
+        # 16384-token pool at isl 4096 and died inside sglang's allocation
+        # error path (TreeCacheNamespace.available_and_evictable_str, 0.5.16)
+        pool = str(max(16384, 16 * args.isl))
         argv += ["--model-path", args.model, "--load-format", "dummy",
                  "--trust-remote-code", "--disable-radix-cache",
-                 "--max-total-tokens", "16384", "--max-running-requests", "32"]
+                 "--max-total-tokens", pool, "--max-running-requests", "32"]
         argv += [f"--{f.replace('_', '-')}" for f in graph_off]
         if args.kv_dtype:
             argv += ["--kv-cache-dtype", args.kv_dtype]
@@ -109,8 +114,9 @@ def main() -> None:
             disable_radix_cache=True,
             max_running_requests=32,
             # identity probe: cap the KV pool so tiny dummy models don't let
-            # sglang size max_total_tokens to the whole GPU (DSV4 OOMed at 138GB)
-            max_total_tokens=16384,
+            # sglang size max_total_tokens to the whole GPU (DSV4 OOMed at 138GB);
+            # scaled with the prompt (see the engine-cli path above)
+            max_total_tokens=max(16384, 16 * args.isl),
             **graph_off,
             **({"json_model_override_args": args.override} if args.override else {}),
             **({"quantization": args.quantization} if args.quantization else {}),

@@ -214,7 +214,32 @@ def main() -> None:
             from vllm.v1.engine.llm_engine import LLMEngine
         except ImportError:
             from vllm import LLMEngine
-        engine = LLMEngine.from_engine_args(ea)
+        # Engine construction runs vLLM's OWN profile_run: a full-model dummy
+        # forward at max_num_batched_tokens which, for multimodal models, also
+        # pushes vLLM's max-size dummy images through the vision encoder. The
+        # probe prompt is text-only, so this is the only place vision-encoder
+        # kernels (encoder_attention) execute — capture it as a third evidence
+        # table. Same device-stream method as the phase tables (2026-09-24).
+        from torch.profiler import ProfilerActivity as _PA, profile as _profile
+        with _profile(activities=[_PA.CPU, _PA.CUDA]) as _p_init:
+            engine = LLMEngine.from_engine_args(ea)
+        try:
+            from torch.autograd import DeviceType as _DT
+            _acc: dict = {}
+            for _kev in _p_init.profiler.kineto_results.events():
+                try:
+                    if _kev.device_type() != _DT.CUDA:
+                        continue
+                except Exception:
+                    continue
+                _a = _acc.setdefault(_kev.name(), {"us": 0.0, "launches": 0})
+                _a["us"] += (_kev.duration_ns() / 1e3 if hasattr(_kev, "duration_ns") else _kev.duration_us())
+                _a["launches"] += 1
+            rec["profile_run_kernels"] = sorted(
+                ({"kernel": k, "us": round(v["us"], 1), "launches": v["launches"]} for k, v in _acc.items()),
+                key=lambda r: -r["us"])
+        except Exception as e:
+            rec["errors"]["profile_run_kernels"] = f"{type(e).__name__}: {e}"[:200]
         model = find_torch_model(engine)
         if model is None:
             raise RuntimeError("no nn.Module found via object-graph search")
