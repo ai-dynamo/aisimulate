@@ -9,5 +9,7 @@
   "formal_fpm_accuracy": "NOT_EVALUATED",
   "formal_ops_accuracy": "NOT_EVALUATED",
   "old_runtime": "0.30.0+glm53kpool.bf5f6b0e689d",
-  "old_runtime_status": "QUARANTINED_SLOT_MAPPING_OUT_OF_BOUNDS"
+  "old_runtime_status": "QUARANTINED_SLOT_MAPPING_OUT_OF_BOUNDS",
+  "actual_packaged_verifier_job": 614605,
+  "packaged_verifier_status": "BOTH_PACKAGED_VERIFIERS_ACTUAL_INSTALL_PASS"
 }
