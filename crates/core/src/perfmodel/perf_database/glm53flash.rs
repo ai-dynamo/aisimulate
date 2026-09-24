@@ -236,7 +236,9 @@ fn partition(key: &Key, shape: &Value) -> Vec<u64> {
     let context = shape["is_context"].as_bool().unwrap_or(false);
     if shape["layer_kind"] == "kda" {
         return if context {
-            vec![u64::from(key.x).div_ceil(128), u64::from(key.prefix == 0)]
+            // Native FlashKDA/Triton tile counts change work, not dispatch.
+            // Actual specialization still requires identical observed kernels.
+            vec![u64::from(key.prefix == 0)]
         } else {
             vec![]
         };
@@ -250,6 +252,16 @@ fn partition(key: &Key, shape: &Value) -> Vec<u64> {
     };
     let total = past + query;
     let topk = shape["index_topk"].as_u64().unwrap_or(2048);
+    if context && past == 0 {
+        // Full-prefill tail length is a runtime masked value. Keep the native
+        // no-pool/no-tail call boundaries; never generalize cached starts.
+        return vec![
+            u64::from(total <= topk),
+            u64::from(total >= pool),
+            u64::from(total % pool != 0),
+            1,
+        ];
+    }
     vec![
         u64::from(total <= topk),
         past % pool,
@@ -705,6 +717,66 @@ mod tests {
         points.insert(key(2044), measured(3.0, SHA));
         points.insert(key(2052), measured(7.0, SHA));
         assert!(interpolate(&points, &key(2048)).unwrap().is_none());
+    }
+
+    #[test]
+    fn kda_tile_work_counts_preserve_only_initial_state_partition() {
+        let attention = crate::operators::glm53flash::tests::attention("kda");
+        let shape = geometry(&attention).unwrap();
+        let key = |prefix, x| Key {
+            component: "attention".into(),
+            geometry: shape.clone(),
+            batch_size: 1,
+            prefix,
+            x,
+        };
+        let mut points = Points::new();
+        points.insert(key(0, 1024), measured(3.0, SHA));
+        points.insert(key(0, 1536), measured(7.0, SHA));
+        assert_eq!(
+            interpolate(&points, &key(0, 1280))
+                .unwrap()
+                .unwrap()
+                .latency,
+            5.0
+        );
+        assert!(interpolate(&points, &key(1, 1280)).unwrap().is_none());
+        points.get_mut(&key(0, 1536)).unwrap().dispatch.clear();
+        assert!(interpolate(&points, &key(0, 1280)).unwrap().is_none());
+    }
+
+    #[test]
+    fn full_prefill_partial_tails_share_runtime_mask_without_crossing_calls() {
+        let attention = crate::operators::glm53flash::tests::attention("sparse_mla");
+        let shape = geometry(&attention).unwrap();
+        let key = |prefix, x| Key {
+            component: "attention".into(),
+            geometry: shape.clone(),
+            batch_size: 1,
+            prefix,
+            x,
+        };
+        let mut points = Points::new();
+        points.insert(key(0, 121), measured(3.0, SHA));
+        points.insert(key(0, 127), measured(9.0, SHA));
+        assert_eq!(
+            interpolate(&points, &key(0, 123)).unwrap().unwrap().latency,
+            5.0
+        );
+        assert!(interpolate(&points, &key(0, 124)).unwrap().is_none());
+        assert!(interpolate(&points, &key(1, 123)).unwrap().is_none());
+        points.clear();
+        points.insert(key(0, 1), measured(1.0, SHA));
+        points.insert(key(0, 5), measured(5.0, SHA));
+        assert!(interpolate(&points, &key(0, 3)).unwrap().is_none());
+        points.clear();
+        points.insert(key(0, 2045), measured(3.0, SHA));
+        points.insert(key(0, 2053), measured(9.0, SHA));
+        assert!(interpolate(&points, &key(0, 2047)).unwrap().is_none());
+        points.clear();
+        points.insert(key(4, 121), measured(3.0, SHA));
+        points.insert(key(4, 127), measured(9.0, SHA));
+        assert!(interpolate(&points, &key(4, 123)).unwrap().is_none());
     }
 
     #[test]

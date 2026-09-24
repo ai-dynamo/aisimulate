@@ -14,7 +14,7 @@ backend and checkpoint format. Context uses query length `x` and actual cached
 total tokens `x`, `batch_size=1`, `prefix=0`. Latency is milliseconds; integer
 columns are physical INT64 constrained to uint32. The Rust reader admits exact measured keys, or bounded linear interpolation
 with every required corner measured under the same actual CUDA dispatch
-fingerprint, runtime, graph policy and state mode. KDA chunk boundaries and
+fingerprint, runtime, graph policy and state mode. KDA initial-state and
 IndexPool short-path/tail partitions cannot be crossed. Missing kernel evidence,
 an incomplete interpolation cell or extrapolation is an explicit coverage gap;
 there is no analytical fallback.
@@ -58,6 +58,29 @@ maxima. Distinct checkpoint formats, runtimes, graph modes, seed policies or
 state modes never silently collapse onto the same physical key. Failed attempts
 remain separate evidence. A collector success is not accuracy acceptance; the
 formal Ops gate is phase/cell MAPE <=20% against independent whole-forward truth.
+
+## Source-grounded interpolation partitions
+
+KDA keeps zero-prefix and initialized-state workloads separate. Native tile
+counts change the work grid and scratch size; they are not an arbitrary
+`ceil(query/128)` dispatch boundary. vLLM's pinned
+[FlashKDA implementation](https://github.com/vllm-project/FlashKDA/blob/b59532f1f464fbd536272780e30df5bf6a2ccc02/csrc/flash_kda.cpp)
+uses tiles of 16 and has a real `use_vsplit` specialization depending on heads,
+request count and SM count. SGLang's selected Triton implementation uses tiles
+of 64 in [chunk_kda_fwd](https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/kernels/ops/attention/fla/kda.py).
+Observed CUDA kernel fingerprints must still match; changing native backend or
+specialization is not admitted by this geometric rule.
+
+For full prefill with no previous tokens, partial IndexPool tails of one, two
+and three tokens use runtime masks in the same native kernels. The reader
+separates no complete pool versus at least one complete pool, empty versus
+partial tail, and the inclusive 2048-token short path. Cached prefill and decode
+retain exact prefix/total residues modulo four. This follows native
+[vLLM pool writes and tail seeding](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/model_executor/layers/sparse_attn_indexer_kpool.py)
+and [SGLang runtime-masked tail writes](https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/layers/attention/dsa/kpool_fp8_index.py).
+These rules only establish interpolation eligibility. They do not establish
+numerical correctness of native cached starts or the required independent
+whole-forward MAPE <=20%.
 
 ## Upstream integration sources
 
