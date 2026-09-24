@@ -397,7 +397,9 @@ def _glm53flash_capability(resolved_config, backend, requested_weights, requeste
 
     if backend not in {"vllm", "sglang"}:
         raise ValueError("GLM-5.3-Flash native FPM supports vLLM and SGLang")
-    version = validate_backend_version(backend, database_version or BASELINE_VERSIONS[backend])
+    version = validate_backend_version(
+        backend, BASELINE_VERSIONS[backend] if database_version is None else database_version
+    )
     payload = resolved_config.payload
     Glm53FlashConfig.from_text_config(payload["text_config"])
     config = _attach_inferred_quant_fields(resolved_config.effective_payload)
