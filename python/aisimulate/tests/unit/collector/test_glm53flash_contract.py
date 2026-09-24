@@ -455,3 +455,33 @@ def test_public_population_preserves_native_checkpoint_and_targeted_plan(monkeyp
     assert len(resolved) == 1 and resolved[0]["unverified"] is True
     # The public scheduler therefore queues zero cases until native qualification;
     # raw recipes are retained and never described as scheduled GPU coverage.
+
+
+def test_native_completion_streams_raw_forwards_and_requires_boolean_receipts(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from collector.collect_glm53flash import verify_target_completeness
+
+    (tmp_path / "requests.json").write_text(json.dumps({"requests": {"r": {"benchmark_id": 1, "repetition": 0}}}))
+    path = tmp_path / "forward-rank-0.jsonl"
+    record = {
+        "stage": "measure",
+        "benchmark_id": 1,
+        "repetition": 0,
+        "gpu_completed": True,
+        "state_layout_admitted": True,
+    }
+    path.write_text(json.dumps(record) + "\n")
+    original = Path.read_text
+
+    def bounded(self, *args, **kwargs):
+        if self.suffix == ".jsonl":
+            pytest.fail("native forward JSONL must stream")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", bounded)
+    assert verify_target_completeness(tmp_path, 1)["requests"]
+    record["gpu_completed"] = "true"
+    path.write_text(json.dumps(record) + "\n")
+    with pytest.raises(ValueError, match="completion/state"):
+        verify_target_completeness(tmp_path, 1)

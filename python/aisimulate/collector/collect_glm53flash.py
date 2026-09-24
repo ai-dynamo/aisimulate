@@ -26,6 +26,7 @@ from collector.glm53flash_contract import (
     sha256_json,
     validate_native_workload,
 )
+from collector.glm53flash_jsonl import iter_records
 from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, sglang_runtime_context_length
 
 
@@ -67,10 +68,9 @@ def verify_target_completeness(output: Path, tp_size: int) -> dict:
     expected = {(entry["benchmark_id"], entry["repetition"]) for entry in mapping["requests"].values()}
     for rank in range(tp_size):
         observed = []
-        for line in (output / f"forward-rank-{rank}.jsonl").read_text().splitlines():
-            record = json.loads(line)
+        for record in iter_records(output / f"forward-rank-{rank}.jsonl"):
             if record["stage"] == "measure":
-                if not record.get("gpu_completed") or not record.get("state_layout_admitted"):
+                if record.get("gpu_completed") is not True or record.get("state_layout_admitted") is not True:
                     raise ValueError("target forward lacks native completion/state admission")
                 observed.append((record["benchmark_id"], record["repetition"]))
         if len(observed) != len(set(observed)) or set(observed) != expected:
