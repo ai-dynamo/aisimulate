@@ -443,3 +443,86 @@ def test_graph_holdout_cannot_adopt_late_or_replaced_capture():
     manager.graphs["native_descriptor"] = object()
     with pytest.raises(RuntimeError, match="changed its initialized"):
         holdout_policy(manager, model)
+
+
+@pytest.mark.parametrize("mode,physical,stage", [("FULL", 4, "measure"), ("PIECEWISE", 4, "seed"), ("NONE", 3, "seed")])
+def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_tokens(
+    monkeypatch, tmp_path, mode, physical, stage
+):
+    from collector import glm53flash_vllm_runtime as runtime
+
+    ids = ["a", "b", "c"]
+    queries = [7, 8, 9]
+    prefix = 2 if mode == "FULL" else 0
+    prompts = [[1, 2]] * 3 if mode == "FULL" else [[token, 2] for token in queries]
+
+    class PromptBuffer:
+        def __getitem__(self, key):
+            row, columns = key
+            return Tensor(prompts[row][columns])
+
+    state = _TraceState.__new__(_TraceState)
+    state.runner = SimpleNamespace(
+        max_model_len=131079,
+        req_states=SimpleNamespace(
+            req_id_to_index=dict(zip(ids, range(3), strict=True)),
+            prompt_len=SimpleNamespace(np=[2] * 3),
+            all_token_ids=SimpleNamespace(gpu=PromptBuffer()),
+        ),
+    )
+    state.counter, state.rank, state.provenance = 0, 0, {"backend_version": "0.30.0"}
+    state.previous = {rid: {"computed_tokens": 2, "tokens": [1, 2], "forward_id": "seed-" + rid} for rid in ids}
+    state.matched = set()
+    state.layout, state.layout_sha256 = {"admitted": True}, "b" * 64
+    state.observer = None
+    state.torch = SimpleNamespace(cuda=SimpleNamespace(current_stream=lambda: 1, Event=lambda **kwargs: Event()))
+    coords = {
+        "phase": "generation" if mode == "FULL" else "context",
+        "batch_size": 3,
+        "request_ids": ids,
+        "query_lengths": [1] * 3,
+        "prefix_lengths": [prefix] * 3,
+        "total_new_tokens": 3,
+        "total_past_kv_tokens": prefix * 3,
+        "native_dispatch": {"descriptor": {"cg_mode": mode}, "physical_tokens": physical},
+    }
+    monkeypatch.setattr(runtime, "native_v2_coordinates", lambda *args, **kwargs: coords)
+    path = tmp_path / "request-map.json"
+    path.write_text(
+        json.dumps(
+            {
+                "request_set": "TEST_ONLY_native",
+                "dataset_role": "holdout",
+                "corpus_sha256": "a" * 64,
+                "requests": {
+                    rid: {
+                        "benchmark_id": 1,
+                        "repetition": 5,
+                        "sampling_role": "measurement",
+                        "target_phase": "generation",
+                        "target_query": 1,
+                        "target_prefix": 2,
+                        "target_batch_size": 3,
+                    }
+                    for rid in ids
+                },
+            }
+        )
+    )
+    monkeypatch.setenv("AISIM_GLM53_REQUEST_MANIFEST", str(path))
+    record, completed = state.before(
+        object(),
+        Tensor(queries + ([999] if physical == 4 else [])),
+        None,
+        native_batch=object(),
+        graph_policy={"TEST_ONLY": True},
+        native_descriptor=object(),
+    )
+    assert record["stage"] == stage
+    assert record["used_cuda_graph"] is (mode != "NONE")
+    assert record["num_padded_tokens"] == physical
+    assert record["total_new_tokens"] == 3
+    assert [row["native_query_token_ids"] for row in record["requests"]] == [[7], [8], [9]]
+    assert all(999 not in tokens for tokens in completed.values())
+    if stage == "measure":
+        assert state.whole_boundary == "native_metadata_to_logits_gpu_v1"
