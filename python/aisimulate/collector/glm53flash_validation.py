@@ -829,11 +829,17 @@ def _sharded_calibration_rows(children: list[tuple[dict, dict]], frozen_shard_ma
 
 
 def publish_sharded_calibration(
-    children: list[tuple[dict, dict]], frozen_shard_manifest: dict, destination: Path
+    children: list[tuple[dict, dict]], frozen_shard_manifest: dict, destination: Path, *, parent_run: dict | None = None
 ) -> dict:
     """Publish only after callers admitted every child with load_native()."""
     from collector.glm53flash_contract import write_parquet
 
+    if any(run["spec"].get("ops_execution_mode") == "native_serving" for run, _ in children):
+        from collector.glm53flash_serving_shards import publish_calibration as publish_serving
+
+        if parent_run is None or parent_run.get("shard_manifest") != frozen_shard_manifest:
+            raise ValueError("serving shard publication requires its original complete parent plan")
+        return publish_serving(parent_run, children, destination)
     rows, ownership, receipts = _sharded_calibration_rows(children, frozen_shard_manifest)
     if destination.exists():
         raise FileExistsError("never replace an existing native calibration publication")
@@ -848,10 +854,18 @@ def publish_sharded_calibration(
     return publication
 
 
-def bind_sharded_calibration(paths: list[Path], children: list[tuple[dict, dict]], frozen_shard_manifest: dict) -> dict:
+def bind_sharded_calibration(
+    paths: list[Path], children: list[tuple[dict, dict]], frozen_shard_manifest: dict, *, parent_run: dict | None = None
+) -> dict:
     """Reproduce frozen ownership and validate a complete final table, without averaging shards."""
     import pyarrow.parquet as pq
 
+    if any(run["spec"].get("ops_execution_mode") == "native_serving" for run, _ in children):
+        from collector.glm53flash_serving_shards import bind_calibration as bind_serving
+
+        if parent_run is None or parent_run.get("shard_manifest") != frozen_shard_manifest:
+            raise ValueError("serving shard binding requires its original complete parent plan")
+        return bind_serving(paths, parent_run, children)
     expected_rows, ownership, receipts = _sharded_calibration_rows(children, frozen_shard_manifest)
     expected = {tuple(row[key] for key in KEY_COLUMNS): row for row in expected_rows}
     selected = {}

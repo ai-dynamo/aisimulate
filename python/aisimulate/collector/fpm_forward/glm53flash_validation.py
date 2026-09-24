@@ -337,6 +337,11 @@ def installed_consumer_identity() -> dict:
 
 def _load_native(run: dict, base: Path, mode: str) -> dict:
     if "children" in run:
+        serving = mode == "ops" and run["spec"].get("ops_execution_mode") == "native_serving"
+        if serving:
+            from collector.glm53flash_serving_shards import same_native_policy, validate_children
+
+            validate_children(run, run["children"])
         values, request_ids, children, receipts = {}, set(), {}, []
         boundaries, versions = set(), set()
         execution_policy = None
@@ -347,6 +352,12 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
                 if execution_policy is not None:
                     _same_sglang_policy(execution_policy, native, "native shards")
                 execution_policy = {key: native[key] for key in ("execution_policy", "_execution_policy")}
+            elif serving:
+                if execution_policy is not None:
+                    same_native_policy(execution_policy, native)
+                execution_policy = {
+                    key: native[key] for key in ("execution_policy", "_execution_policy", "graph_policy")
+                }
             cid = child["cell"]["cell_id"]
             if request_ids & native["request_ids"]:
                 raise ValueError("native requests were reused across independent shard attempts")
@@ -570,12 +581,13 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
                     for child in calibration["children"]
                 ],
                 calibration["shard_manifest"],
+                parent_run=calibration,
             )
         else:
             binding = bind_calibration(paths, calibration, calibration_native)
     config["systems_paths"] = roots
     if mode == "ops" and calibration["spec"].get("ops_execution_mode") == "native_serving":
-        from collector.glm53flash_vllm_serving_export import predict_homogeneous
+        from collector.glm53flash_serving_shards import predict_homogeneous
 
         prediction = predict_homogeneous(run, base, config, calibration_native, binding)
         return {**prediction, "config": config, "data_receipts": receipts, "calibration_binding": binding}

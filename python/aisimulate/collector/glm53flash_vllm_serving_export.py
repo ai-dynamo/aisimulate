@@ -950,10 +950,11 @@ def predict_homogeneous(run, base, config, calibration_native, calibration_bindi
     policy = calibration_native["graph_policy"]
     if policy.get("schema_version") != 3 or holdout["graph_policy"] != policy:
         raise ValueError("independent serving holdout changed its initialized calibration policy")
+    from collector.glm53flash_serving_shards import validate_prediction_binding
+
+    validate_prediction_binding(calibration_native, calibration_binding)
     if (
         calibration_binding.get("graph_policy_sha256") != sha256_json(policy)
-        or calibration_binding.get("native_runtime_run_id") != calibration_native["runtime_run_id"]
-        or not _hash(calibration_binding.get("evidence_sha256"))
         or not calibration_binding.get("tables")
         or any(file_sha256(Path(item["path"])) != item["sha256"] for item in calibration_binding["tables"])
     ):

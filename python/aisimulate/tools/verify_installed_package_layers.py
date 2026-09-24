@@ -314,6 +314,10 @@ def _verify_fpm_workflow() -> str:
             "collector/glm53flash_vllm_serving_export.py",
         ),
         (
+            importlib.import_module("collector.glm53flash_serving_shards"),
+            "collector/glm53flash_serving_shards.py",
+        ),
+        (
             importlib.import_module("collector.glm53flash_vllm_graph_policy"),
             "collector/glm53flash_vllm_graph_policy.py",
         ),

@@ -1136,6 +1136,8 @@ the repository Apache-2.0 license text applies to these adaptations.
   `python/aisimulate/collector/glm53flash_vllm_none.py` and its CPU tests,
   `python/aisimulate/collector/glm53flash_vllm_serving_export.py` and its
   TEST_ONLY capture/trace/export tests,
+  `python/aisimulate/collector/glm53flash_serving_shards.py` and its TEST_ONLY
+  source-contract/shard publication tests,
   `python/aisimulate/tests/unit/collector/test_glm53flash_vllm_runtime.py`,
   `python/aisimulate/collector/glm53flash_graph_observer.py`,
   `python/aisimulate/tests/unit/collector/test_glm53flash_graph_observer.py`,

@@ -848,3 +848,19 @@ there is no geometry-only waiver or residual scaling. NONE diagnostic files
 remain `DIAGNOSTIC_ONLY_NO_TABLE_EXPORT` and are rejected even for exact hits.
 Its measured producer admission remains a separate native qualification step.
 No schema or TEST_ONLY test admits a repaired runtime or establishes GPU accuracy.
+
+Schema3 shard publication uses `glm53flash_serving_shards.py`. Supply the
+original parent run and every strictly admitted child to
+`publish_sharded_calibration(..., parent_run=parent)`. The complete parent point
+payload, child plan digests, native-to-original point map, corpus and initialized
+runtime policy are checked again. Every child is rederived from its original
+native capture/activity, rank selection and independent control. Named rows keep
+their own evidence hashes; repeated geometry, missing children and reused native
+request/run IDs fail instead of being averaged or supplied by another attempt.
+
+The shared acceptance path binds the final table to that complete point union
+and preserves the group of actual native run IDs. A group is not assigned a
+fictional native run ID. Holdout children predict using the same calibrated
+policy, then map results back to the original parent IDs. Errors and missing
+brackets remain in those results. A passing shard publication or protocol test
+does not meet the independent accuracy gate or qualify a runtime.
