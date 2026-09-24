@@ -1,5 +1,5 @@
 {
-  "status": "NOT_QUALIFIED",
+  "status": "BOUNDED_NATIVE_ENGINE_FUNCTIONALLY_QUALIFIED",
   "version": "0.30.0+glm53kpool.bf5f6b0e689d",
   "wheel_sha256": "a3b63cb3c95cf976f717077102e8172a33501c7d05092bc84cc58e3aaef47d36",
   "actual_source_build": {
@@ -17,10 +17,59 @@
     "cases": 16,
     "scope": "source-overlay bytewise pooled-cache and tail correctness only"
   },
-  "native_full_engine": "NOT_EVALUATED",
-  "collector_runtime_admission": "DENIED",
+  "native_full_engine": "PASSED_FROZEN_GEOMETRY_SUITE",
+  "collector_runtime_admission": "APPROVED_EXACT_REPAIRED_RUNTIME_ONLY",
   "accuracy_acceptance": "NOT_EVALUATED",
   "performance_cells": "NOT_EVALUATED",
   "wheel_location": "/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-wheel-build-results/604885/build/dist/vllm-0.30.0+glm53kpool.bf5f6b0e689d-cp312-cp312-linux_aarch64.whl",
-  "private_install_location": "/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-wheel-runtime/604941/python"
+  "private_install_location": "/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-wheel-runtime/604941/python",
+  "stock_runtime_retained_tail_gate": "ACTIVE",
+  "formal_campaign_hardware_qualification": "NOT_EVALUATED",
+  "formal_8_cell_coverage": "NOT_EVALUATED",
+  "graph_ops_support": "NOT_EVALUATED",
+  "qualification": {
+    "scope": "native_Engine_functional_correctness_for_frozen_geometry_suite_only",
+    "summary_path": "qualification/admission-summary.json",
+    "summary_sha256": "d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67",
+    "summary_source_uri": "ssh://ocijhb/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/qualification-admission/four-cells-receipts-v1/qualification/admission-summary.json",
+    "current_validator_source_commit": "aae82cc48f2e05a1a077893ba42152d8708771de",
+    "original_validator_sha256": "839af86e26a41a14a79ed301c71e495c571d16970f6c37d0802a30fd7d3fb5e2",
+    "policy": "production",
+    "profiles_per_cell": 3,
+    "requests_per_profile": 20,
+    "greedy_output_tokens_per_request": 32,
+    "comparisons_per_cell": 40,
+    "differences": [],
+    "cells": [
+      {
+        "checkpoint": "fp8",
+        "tp": 2,
+        "job": 608011,
+        "status": "passed"
+      },
+      {
+        "checkpoint": "fp8",
+        "tp": 4,
+        "job": 606669,
+        "status": "passed"
+      },
+      {
+        "checkpoint": "nvfp4",
+        "tp": 2,
+        "job": 608013,
+        "status": "passed"
+      },
+      {
+        "checkpoint": "nvfp4",
+        "tp": 4,
+        "job": 608014,
+        "status": "passed"
+      }
+    ],
+    "current_strict_raw_revalidation": "passed",
+    "independent_raw_prompt_output_finish_review": "passed",
+    "packaged_summary_validation": "passed",
+    "private_lustre_receipts_readback": "passed",
+    "historical_failures_preserved": true
+  }
 }

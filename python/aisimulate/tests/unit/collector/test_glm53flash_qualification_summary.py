@@ -202,14 +202,28 @@ def rebind(staged, index=0, profile_index=0, *, preflight=None, receipt=None, ev
 
 
 def test_only_four_complete_profiles_may_reach_test_admission(staged, monkeypatch):
-    assert identity.ADMITTED_VLLM_REPAIRS == {}
     assert admit(staged, monkeypatch) == identity.VLLM_KPOOL_CANDIDATE
 
 
-def test_registry_hash_does_not_admit_a_missing_packaged_summary(monkeypatch):
+def test_registry_hash_does_not_admit_a_missing_packaged_summary(monkeypatch, tmp_path):
+    monkeypatch.setattr(identity, "_qualification_root", lambda: tmp_path)
     monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, identity.VLLM_KPOOL_CANDIDATE, "a" * 64)
     with pytest.raises(ValueError, match="regular JSON"):
         identity.validate_backend_version("vllm", identity.VLLM_KPOOL_CANDIDATE)
+
+
+def test_packaged_reviewed_native_evidence_admits_only_the_exact_runtime():
+    version = identity.VLLM_KPOOL_CANDIDATE
+    summary = identity._validate_qualification_summary(identity.ADMITTED_VLLM_REPAIRS[version])
+    assert identity.validate_backend_version("vllm", version) == version
+    assert identity.vllm_unaligned_prefill_admitted(version)
+    assert not identity.vllm_unaligned_prefill_admitted("0.30.0")
+    assert {(c["checkpoint"], c["tp"]) for c in summary["cells"]} == {
+        (precision, tp) for precision in ("fp8", "nvfp4") for tp in (2, 4)
+    }
+    assert summary["accuracy_acceptance"] == summary["formal_8_cell_coverage"] == "NOT_EVALUATED"
+    with pytest.raises(ValueError, match="unqualified"):
+        identity.validate_backend_version("vllm", version + ".other")
 
 
 @pytest.mark.parametrize("bad", ["missing", "duplicate", "wrong_tp", "wrong_precision"])

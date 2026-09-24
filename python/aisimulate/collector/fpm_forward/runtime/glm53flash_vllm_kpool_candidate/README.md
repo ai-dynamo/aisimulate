@@ -1,9 +1,11 @@
 # GLM IndexPool runtime repair candidate
 
-**Status: NOT_QUALIFIED.** This directory preserves a separately versioned native
-vLLM repair candidate. It does not select or admit that runtime in a collector.
-The stock-runtime rejection for cached prefill beginning inside a pool remains
-active. Requested failing geometries stay visible; no point is dropped.
+**Status: bounded native Engine functional qualification passed and reviewed.**
+The separately versioned vLLM repair passed the frozen FP8/NVFP4 TP2/TP4 suite
+on GB300. Admission is restricted to the exact repaired distribution, source,
+binary closure and packaged summary below. The stock-runtime rejection for
+cached prefill beginning inside a pool remains active. Requested failing
+geometries stay visible; no point is dropped.
 
 The stock GB300 probe observed incorrect pooled cache entries for retained
 prefix4097 followed by query3 or4, while aligned-prefix controls, one-shot
@@ -101,10 +103,16 @@ That is a cache correctness diagnostic, not full Engine or performance acceptanc
 real native retained state and completed worker/sample witnesses; stock one-shot
 versus candidate one-shot, then candidate split versus candidate one-shot, with
 exact output-token comparison. Its README describes the fixed geometries and
-source/binary/runtime checks. Full Engine qualification is pending. Only after
-that result may the shared runtime contract admit the exact new identity.
-No performance rows, graph Ops support, full-matrix coverage, FPM10% or Ops20%
-accuracy pass is claimed by this bundle.
+source/binary/runtime checks. All four production-policy cells passed: FP8 TP4
+(job 606669), FP8 TP2 (608011), NVFP4 TP2 (608013), and NVFP4 TP4 (608014). Each
+cell retained all three profiles, 20 requests per profile, 32 greedy output
+tokens per request, and 40 exact comparisons with no differences. The current
+strict validator rechecked all original raw files; an independent review also
+compared original prompts, outputs and finish status across all four cells.
+
+This qualifies the frozen functional geometry suite only. Formal campaign
+hardware/capacity qualification, performance rows, graph Ops support, full
+eight-configuration coverage, FPM 10% and Ops 20% accuracy remain NOT_EVALUATED.
 
 
 Offline request identity validation follows native `InputProcessor.assign_request_id`
@@ -116,8 +124,9 @@ hyphen and exactly eight lowercase hexadecimal characters. Every pair also
 requires identical prompt bytes/hash and the complete native sampled-token
 chain on every TP rank. This is an offline validator correction: historical
 GPU logs and the original failed validator result remain unchanged; revalidation
-receipts identify the new validator hash separately. It does not qualify the
-candidate runtime or relax its native-state/functional gates.
+receipts identify the new validator hash separately. That historical correction
+alone did not qualify the candidate runtime or relax its native-state/functional
+gates; the completed four-cell evidence below establishes the bounded pass.
 
 
 New qualification runs additionally hash-check the parent request-ID APIs and
@@ -129,7 +138,7 @@ every completed worker chain; missing or altered assignments fail validation.
 Historical runs without that declaration continue using the explicitly named
 `pinned_source_offline_bijection` correction above.
 
-The dormant repaired-runtime consumer contract preserves stock manifest bytes
+The repaired-runtime consumer contract preserves stock manifest bytes
 and extends its own closure with the native Engine qualification sources plus
 `v2-source-sha256.json`. These additional hashes identify upstream
 vllm-project/vllm@ced6857afa0ea7b2e3f0846a62e1394e90f15607 under
@@ -138,19 +147,21 @@ vllm-project/vllm@ced6857afa0ea7b2e3f0846a62e1394e90f15607 under
 actual V2 graph, attention-cache initialization, warmup and hybrid state path;
 the legacy runner file alone is insufficient. No upstream implementation is
 copied by this manifest. Each repaired worker must hash the effective vLLM
-source files and all 19 native binaries before timing. Python and Rust repair
-allowlists remain empty until an immutable native Engine qualification receipt
-has been reviewed and explicitly admitted.
+source files and all 19 native binaries before timing. The reviewed exception
+applies only to `0.30.0+glm53kpool.bf5f6b0e689d` and its immutable qualification
+summary. Stock and unknown runtime identities retain their existing gates.
 
-## Packaged admission evidence (closed)
+## Reviewed packaged admission evidence
 
-`ADMITTED_VLLM_REPAIRS` is still empty. Merely inserting a version/hash no longer
-admits the candidate: the consumer requires the actual SHA256 of
-`qualification/admission-summary.json` and checks its complete packaged receipt
-chain. No such summary or accepted comparison is supplied by this preparation.
-The Rust exception also remains closed and requires a separate reviewed change.
+The reviewed `qualification/admission-summary.json` has SHA256
+`d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67`. The consumer
+requires these exact bytes and validates the complete packaged receipt chain;
+a matching version string alone does not admit a runtime. The original raw
+directories remain external. Small receipts and validator sources were copied
+to task-owned Lustre and verified by reading their actual remote bytes before
+constructing the final summary URIs.
 
-The future summary has `schema_version: 1`, status
+The summary has `schema_version: 1`, status
 `native_engine_qualification_passed`, and scope
 `native_Engine_functional_correctness_for_frozen_geometry_suite_only`. It binds
 `backend_version`, `build_receipt_sha256`, `wheel_sha256`, and
@@ -159,7 +170,7 @@ The future summary has `schema_version: 1`, status
 `NOT_EVALUATED`; native functional correctness does not establish performance
 accuracy or eight-configuration coverage.
 
-The remaining required fields are:
+The receipt contract also requires:
 
 - `source_commit`: the immutable 40-character revision of the strict validator.
   `validator_sources` maps `validate.py`, `probe.py`, `worker_probe.py`,
@@ -196,12 +207,15 @@ small-file SHA against that inventory, the actual checkpoint config and both
 loader revisions, the runtime/source/19-binary closure, native cohort protocol,
 all TP ranks, and FULL graph evidence.
 
-Promotion requires running the current `qualification/validate.py` against all
-original raw files for all four cells, preserving those exact comparison JSON
-bytes, and reviewing the resulting summary SHA in the same admission change.
-For historical evidence, retain the original invocation and frozen bundle as
-well as the current revalidation command and source identity. This small-file
-consumer verifies the reviewed evidence chain offline; it does not reread large
+The accepted summary records current strict revalidation from source commit
+`aae82cc48f2e05a1a077893ba42152d8708771de` and preserves the exact four comparison
+JSON files. It separately binds the original frozen v3 validator
+(`839af86e26a41a14a79ed301c71e495c571d16970f6c37d0802a30fd7d3fb5e2`),
+original invocations and unmodified raw inventories. Historical failed jobs and
+receipts remain historical failures. Newly derived checkpoint identity and
+receipt-file hashes are explicitly labeled rather than attributed to the old
+validator. This small-file consumer verifies the reviewed evidence chain offline;
+it does not reread large
 external token arrays or independently recreate a GPU execution. Unit tests
 construct only temporary `TEST_ONLY` contracts and do not supply publication or
 admission artifacts.
