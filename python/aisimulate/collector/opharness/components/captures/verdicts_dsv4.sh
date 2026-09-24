@@ -22,6 +22,13 @@ run dsv4_hca_attn          dsv4_hca_attn_DeepSeek-V4-Flash-FP8     $M fp8 "$DSV4
 run dsv4_paged_mqa_logits  dsv4_paged_mqa_logits_DeepSeek-V4-Flash-FP8 $M fp8 "$DSV4"
 # explained decomposition (collector measures pre/post unfused; SDK composes attn_norm separately) — not a gate verdict
 # run mhc_pre_post           mhc_module_DeepSeek-V4-Flash-FP8        $M fp8 "$MHC"
-run kda_ctx                kda_ctx_Kimi-K3                         moonshotai/Kimi-K3 auto "$KDA"
+# Kimi-K3 framework-mode probes crash in vLLM's decode warm-up at the rendered
+# max-num-seqs 512 when a KDA layer is present (findings followups_after_full_
+# reprobe_2026_09_24); the serving evidence is the --eager A/B record of the
+# same config (KDA prefill kernels identical), passed explicitly.
+python3 $PD --diff --capture-file facts/pathdiff/opcov_kda_ctx.json --repo moonshotai/Kimi-K3 --framework vllm --version 0.29.0 --kv-dtype auto --serving-raw facts/full_reprobe/k3_eager.json --op-hint "$KDA" --save-verdict $OUT/kda_ctx_Kimi-K3.json 2>/dev/null | python3 -c "
+import sys,json;t=sys.stdin.read()
+if '{' not in t: print('%-40s'%'kda_ctx_Kimi-K3','NO SERVING RECORD', t.strip()[:80]); sys.exit()
+d=json.loads(t[t.index('{'):]); print('%-40s'%'kda_ctx_Kimi-K3', d['verdict'].upper().ljust(9), 'only_col=',d['collector_only_signal'], 'drift=',d['kernel_drift'], '| raw=',d['serving_record']['raw_file'])"
 # collector also measures the Triton fallback lane (spec/mixed batches); fused row matches serving — not a gate verdict
 # run kda_gen                kda_gen_Kimi-K3                         moonshotai/Kimi-K3 auto "$KDA"

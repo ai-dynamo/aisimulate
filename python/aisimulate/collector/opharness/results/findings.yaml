@@ -1109,27 +1109,32 @@ findings:
       view. All five NVFP4 DSA artifacts (GLM-5 / 5.1 / 5.2 / 5.3, DeepSeek-
       V3.2) render --kv-cache-dtype fp8; GLM-5-NVFP4 and DeepSeek-V3.2-NVFP4
       re-probed with the new render (see the matrix).
-      (3) "关于kimi k3，我感觉可能还有其他构造问题": a construction defect WAS
-      found — the depth cut kept Kimi-K3's linear_attn_config.kda_layers /
-      full_attn_layers index lists verbatim, so in the 2-layer dummy index 0
-      silently became a full-attention layer and index 1 a KDA layer, and
-      the stale-reference check (strings only) missed it. Fixed in the dummy
-      generator (index lists remapped, kind axis synthesized so the default
-      variant holds one KDA + one full-attention layer; commit 85d1dd32).
-      It is NOT what crashes the framework-mode probe, though — eleven A/Bs
-      on the rendered config (max-num-seqs 512): construction variants
-      (rep, 3-layer with the dense layer, remapped kda+kda, remapped
-      full+kda, the new all_kinds) ALL fail; CUDA graphs off passes; compile
+      (3) "关于kimi k3，我感觉可能还有其他构造问题": the construction was
+      audited twice. Kimi-K3 names its layer kinds by 1-BASED index lists
+      (configuration_kimi_k3.is_kda_layer: `layer_idx + 1 in kda_layers`).
+      The depth cut kept the lists verbatim; by luck the 2-layer "rep" dummy
+      (original layers 1,2 -> 1-based 2,3, both KDA) still resolved to two
+      KDA layers, so the records' KDA evidence was real. My first remap
+      assumed 0-based lists and produced an all_kinds dummy whose two layers
+      both resolved to FULL attention — that variant "passed" the
+      framework-mode probe while running no KDA kernel at all (false pass,
+      caught by the record's kernel families). The generator now detects
+      the base from the config data (commits 85d1dd32 + 51158047):
+      all_kinds = one KDA (1) + one full-attention layer (2), no stale refs.
+      The crash itself: eleven A/Bs on the rendered config (max-num-seqs
+      512) — every variant that runs a KDA layer fails (rep, 3-layer with
+      the dense layer, kda+kda, full+kda); CUDA graphs off passes; compile
       off (graphs on) fails; piecewise-only graphs fail; text-only
       (limit-mm image 0) fails; max-num-seqs 64 and 256 PASS. CUDA_LAUNCH_
       BLOCKING places the illegal memory access after graph capture, in
       warmup_kernels -> _run_decode_step -> run_fullgraph — the decode
-      warm-up step at the generator's max_num_seqs=512 with CUDA graphs. So:
-      our dummy had a real defect (fixed), and independently vLLM 0.29's K3
-      decode warm-up faults at batch 512 on SM90 (256 passes) — the latter is
-      what the record shows; the generator's 512 is what real deployments
-      get. Upstream draft 7 updated. K3 records stay on the eager A/B for
-      kda_ctx.
+      warm-up step at the generator's max_num_seqs=512 with CUDA graphs and
+      a KDA layer present. So: a real dummy defect existed and is fixed, and
+      independently vLLM 0.29's K3 (KDA) decode warm-up faults at batch 512
+      on SM90 (256 passes) — the generator's 512 is what real deployments
+      get. Upstream draft 7 updated. The corrected all_kinds dummy is
+      re-probed at the end of the batch (result in the matrix); kda_ctx
+      keeps the eager A/B evidence if it fails again.
       (4) Dummy dirs: no step provisioned the tokenizer / custom-code files
       (Kimi needs tiktoken.model + tokenization_kimi.py + modeling_*.py).
       dummies.py now copies every auxiliary artifact file from
