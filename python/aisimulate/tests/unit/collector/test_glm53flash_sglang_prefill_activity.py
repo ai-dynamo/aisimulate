@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector import glm53flash_sglang_prefill_activity as prefill
 from collector.glm53flash_observer import NativeOperationObserver, NativeWorkload
 
@@ -287,6 +286,7 @@ def lifecycle_fixture(monkeypatch, tmp_path):
     cuda.Event = lambda **_: Event()
     cuda.current_stream = lambda: cuda.stream
     cuda.is_current_stream_capturing = lambda: False
+    cuda.synchronize = lambda: log.append(("cuda", "synchronize"))
     torch = SimpleNamespace(
         cuda=cuda,
         float32="torch.float32",
@@ -374,9 +374,15 @@ def test_lifecycle_preserves_original_once_and_profiles_only_excluded_fifth_warm
         assert model.forward(token, None, batch) is token
         assert observer.profiler is None
         log.append(("native", "sampling"))
+        # This fixture substitutes the completed native-call inventory above;
+        # the separate event-pool tests exercise real observer.end() and reads.
+        observer.torch.cuda.synchronize()
+        observer.event_pool.consumed_operations()
         helper.complete(row)
         assert row["native_prefill_setup"]["latency"] == 1
         assert row["whole_forward_gpu_ms"] == 4
+        assert row["native_prefill_event_pool"]["contract"] == "sglang_prefill_preinitialized_events_v1"
+        assert row["native_prefill_event_pool"]["bootstrap_sample"] == 0
         assert ("native_prefill_profile" in row) is (sample == 4)
         observer.workload = None
     assert log.count(("native", "model")) == log.count(("native", "allocator")) == 15
@@ -387,6 +393,19 @@ def test_lifecycle_preserves_original_once_and_profiles_only_excluded_fifth_warm
     assert json.loads(saved[0].read_text())["aisim_native_forward"]["invocation"] == 5
     helper.close()
     assert model.forward == original and helper.allocator.__init__ is allocate
+
+
+def test_setup_and_whole_pairs_remain_owned_until_operation_reads_complete(monkeypatch, tmp_path):
+    helper, observer, model, batch, _, _, _, _ = lifecycle_fixture(monkeypatch, tmp_path)
+    row = begin(helper, observer, 0)
+    model.forward(object(), None, batch)
+    with pytest.raises(RuntimeError, match="no complete"):
+        helper.complete(row)
+    assert helper.active is not None and observer.event_pool.active
+    observer.torch.cuda.synchronize()
+    observer.event_pool.consumed_operations()
+    helper.complete(row)
+    assert helper.active is None and not observer.event_pool.active
 
 
 @pytest.mark.parametrize(

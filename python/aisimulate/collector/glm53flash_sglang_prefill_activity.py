@@ -302,6 +302,7 @@ class NativeSglangPrefillExecution:
         observer.profile_scope_ids = True
         observer.defer_profile_start = True
         observer.profile_callback = self.profile_finished
+        observer.enable_prefill_event_pool()
         self.restorations = []
         self._install()
 
@@ -326,7 +327,7 @@ class NativeSglangPrefillExecution:
                 raise RuntimeError("native prefill allocator arguments differ from the actual model contract")
             torch = self.observer.torch
             stream = torch.cuda.current_stream()
-            start, end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            start, end = self.observer.event_pool.pairs["setup"]
             proof = {
                 "buffer_size": values["buffer_size"],
                 "dtype": str(values["dtype"]),
@@ -359,7 +360,7 @@ class NativeSglangPrefillExecution:
                 active["profile_started"] = True
             torch = self.observer.torch
             stream = torch.cuda.current_stream()
-            whole_start, whole_end = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            whole_start, whole_end = self.observer.event_pool.pairs["whole"]
             active["whole"] = whole_start, whole_end
             whole_start.record(stream)
             try:
@@ -457,6 +458,7 @@ class NativeSglangPrefillExecution:
             or self.active["record"] is not record
             or not self.active["completed"]
             or self.observer.profiler is not None
+            or not self.observer.event_pool.read_complete
         ):
             raise RuntimeError("native prefill has no complete original model/setup observation")
         setup = self.active["setup"]
@@ -471,6 +473,7 @@ class NativeSglangPrefillExecution:
         record["native_prefill_calls"] = self.active["calls"]
         start, end = self.active["whole"]
         record.update(whole_forward_gpu_ms=start.elapsed_time(end), whole_forward_boundary="embedding_to_logits_gpu_v1")
+        record["native_prefill_event_pool"] = self.observer.event_pool.finish()
         self.active = None
 
     def abort(self, error):
@@ -487,6 +490,7 @@ class NativeSglangPrefillExecution:
             self.observer.close()
 
     def close(self):
+        self.observer.event_pool.close()
         for owner, name, original in reversed(self.restorations):
             setattr(owner, name, original)
         self.restorations.clear()

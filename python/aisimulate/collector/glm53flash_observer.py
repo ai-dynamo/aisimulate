@@ -87,6 +87,107 @@ def dispatch_identity(owner, method: str) -> str:
     return identity
 
 
+class _NativeEventPool:
+    """SG prefill slots, initialized before timing and held through all reads.
+
+    Capacity comes from installed hook declarations, not a guessed model size.
+    The first excluded warmup for each exact geometry records actual call order;
+    later invocations must preserve that order, nesting and Python call arity.
+    No kernel fingerprint or tensor value participates in event selection.
+    """
+
+    contract = "sglang_prefill_preinitialized_events_v1"
+
+    def __init__(self, cuda, bindings):
+        if any(not binding[3] for binding in bindings):
+            raise RuntimeError("prefill event pooling requires bounded native hook occurrences")
+        self.cuda, self.bindings = cuda, tuple(bindings)
+        self.pairs = {}
+        self.paths = {}
+        self.active = False
+        self.read_complete = False
+        self.closed = False
+
+    def begin(self, workload):
+        if self.closed or self.active:
+            raise RuntimeError("prefill event slots still outstanding or closed")
+        for owner, method, wrapper, _ in self.bindings:
+            if getattr(owner, method) is not wrapper:
+                raise RuntimeError("prefill event pool native hook identity changed")
+        self.key = (workload.phase, workload.batch_size, workload.query, workload.prefix, workload.state_mode)
+        self.expected = self.paths.get(self.key)
+        if self.expected is None and workload.sample >= 5:
+            raise RuntimeError("prefill event path requires an excluded bootstrap warmup")
+        self.stream = self.cuda.current_stream()
+        if not self.pairs:
+            for binding, (_, _, _, names) in enumerate(self.bindings):
+                for occurrence in range(len(names)):
+                    self.pairs[binding, occurrence] = self._new_pair()
+            # The actual model allocator and whole-model boundary each own a
+            # separate pair, with the same lifetime as native operation slots.
+            self.pairs["setup"] = self._new_pair()
+            self.pairs["whole"] = self._new_pair()
+        self.sequence, self.used, self.completed = [], set(), set()
+        self.active, self.read_complete = True, False
+        self.sample = workload.sample
+
+    def _new_pair(self):
+        pair = self.cuda.Event(enable_timing=True), self.cuda.Event(enable_timing=True)
+        # torch.cuda.Event creates its native handle lazily on first record.
+        # Both first records precede the model and fifth-warmup profiler start.
+        for event in pair:
+            event.record(self.stream)
+        return pair
+
+    def observe(self, binding, occurrence, parent, included, args, kwargs, stream):
+        if not self.active or self.read_complete or stream != self.stream:
+            raise RuntimeError("prefill event pool requires its active native stream")
+        identity = (binding, occurrence, parent, included, len(args), tuple(sorted(kwargs)))
+        index = len(self.sequence)
+        if self.expected is not None and (index >= len(self.expected[1]) or identity != self.expected[1][index]):
+            raise RuntimeError("prefill native call identity/order/arity changed")
+        slot = binding, occurrence
+        if slot in self.used:
+            raise RuntimeError("prefill native event slot already outstanding")
+        self.sequence.append(identity)
+        self.used.add(slot)
+        return None if included else self.pairs[slot]
+
+    def complete_call(self, binding, occurrence):
+        slot = binding, occurrence
+        if slot not in self.used or slot in self.completed:
+            raise RuntimeError("prefill event call completion is missing or repeated")
+        self.completed.add(slot)
+
+    def consumed_operations(self):
+        if not self.active or self.read_complete:
+            raise RuntimeError("prefill event reads do not belong to an active invocation")
+        if self.completed != self.used:
+            raise RuntimeError("prefill native call did not complete")
+        if self.expected is not None and len(self.sequence) != len(self.expected[1]):
+            raise RuntimeError("prefill native call sequence is incomplete")
+        self.read_complete = True
+
+    def finish(self):
+        if not self.read_complete or not self.active:
+            raise RuntimeError("prefill event reuse requires synchronization and all operation reads")
+        if self.expected is None:
+            self.paths[self.key] = self.sample, tuple(self.sequence)
+        bootstrap = self.paths[self.key][0]
+        self.active = False
+        return {
+            "contract": self.contract,
+            "bootstrap_sample": bootstrap,
+            "reserved_pairs": len(self.pairs),
+            "completed_calls": len(self.sequence),
+        }
+
+    def close(self):
+        # Failed invocations never release slots for another forward. Event
+        # references remain held until observer teardown; no extra sync here.
+        self.closed = True
+
+
 class NativeOperationObserver:
     """CUDA-event intervals attached to native objects by a versioned adapter.
 
@@ -118,6 +219,8 @@ class NativeOperationObserver:
         self.defer_profile_start = False
         self._scope_counter = 0
         self.dispatches = {}
+        self._event_bindings = []
+        self.event_pool = None
         self._entries = {
             phase: {entry["name"]: entry for entry in entries} for phase, entries in manifest["phases"].items()
         }
@@ -128,6 +231,8 @@ class NativeOperationObserver:
             raise RuntimeError("previous native invocation was not finalized")
         if self.torch.cuda.is_current_stream_capturing():
             raise RuntimeError("eager collection cannot begin inside CUDA graph capture")
+        if self.event_pool is not None:
+            self.event_pool.begin(workload)
         self.workload = workload
         self._scope_counter = 0
         self.collective_calls = 0
@@ -145,6 +250,11 @@ class NativeOperationObserver:
             )
             if not self.defer_profile_start:
                 self.profiler.start()
+
+    def enable_prefill_event_pool(self):
+        if self.provenance.get("backend") != "sglang" or self.workload is not None or self.event_pool is not None:
+            raise RuntimeError("prefill event pool requires one inactive native SGLang observer")
+        self.event_pool = _NativeEventPool(self.torch.cuda, self._event_bindings)
 
     def _scope_name(self, name):
         if not self.profile_scope_ids:
@@ -226,12 +336,15 @@ class NativeOperationObserver:
         included_by_same_operation: bool = False,
     ) -> None:
         """Wrap an existing callable without altering its arguments or result."""
+        if self.event_pool is not None:
+            raise RuntimeError("native event pool hook declarations are already fixed")
         names = (name,) if isinstance(name, str) else name
         if not names or any(item not in entries for item in names for entries in self._entries.values()):
             raise ValueError(f"native hook {name!r} is absent from a production phase")
         original = getattr(owner, method)
         witness = dispatch_identity(owner, method)
         last_workload, calls = None, 0
+        binding = len(self._event_bindings)
 
         @functools.wraps(original)
         def observed(*args, **kwargs):
@@ -246,6 +359,17 @@ class NativeOperationObserver:
             calls += 1
             if self.torch.cuda.is_current_stream_capturing():
                 raise RuntimeError("eager operation observer encountered native graph capture")
+            pair = None
+            if self.event_pool is not None:
+                pair = self.event_pool.observe(
+                    binding,
+                    calls - 1,
+                    None if self.active_interval is None else self.active_interval["pool_slot"],
+                    self.active_interval is not None,
+                    args,
+                    kwargs,
+                    self.torch.cuda.current_stream(),
+                )
             if self.active_interval is not None:
                 if not included_by_same_operation or self.active_interval["name"] != selected_name:
                     raise RuntimeError("nested compute intervals cannot be summed as disjoint operations")
@@ -261,9 +385,15 @@ class NativeOperationObserver:
                 if validate_result is not None:
                     validate_result(result)
                 interval.setdefault("included_native_calls", []).append(witness)
+                if self.event_pool is not None:
+                    self.event_pool.complete_call(binding, calls - 1)
                 return result
             stream = self.torch.cuda.current_stream()
-            start, end = self.torch.cuda.Event(enable_timing=True), self.torch.cuda.Event(enable_timing=True)
+            start, end = (
+                pair
+                if pair is not None
+                else (self.torch.cuda.Event(enable_timing=True), self.torch.cuda.Event(enable_timing=True))
+            )
             interval = {
                 "name": selected_name,
                 "start": start,
@@ -272,6 +402,7 @@ class NativeOperationObserver:
                 "collectives": [],
                 "source": witness,
                 "scope_name": self._scope_name(selected_name),
+                **({"pool_slot": (binding, calls - 1)} if self.event_pool is not None else {}),
             }
             self.active_interval = interval
             start.record(stream)
@@ -284,19 +415,25 @@ class NativeOperationObserver:
                 if validate_result is not None:
                     validate_result(result)
                 self.events.append(interval)
+                if self.event_pool is not None:
+                    self.event_pool.complete_call(binding, calls - 1)
                 return result
             finally:
                 self.active_interval = None
 
         setattr(owner, method, observed)
         self.restorations.append((owner, method, original))
+        self._event_bindings.append((owner, method, observed, names))
 
     def wrap_collective(self, owner, method: str, names: tuple[str, ...] = ()) -> None:
         """Partition witnessed blocking collectives from native local modules."""
+        if self.event_pool is not None:
+            raise RuntimeError("native event pool hook declarations are already fixed")
         if any(name not in entries for name in names for entries in self._entries.values()):
             raise ValueError("native collective is absent from the production graph")
         original = getattr(owner, method)
         witness = dispatch_identity(owner, method)
+        binding = len(self._event_bindings)
 
         @functools.wraps(original)
         def observed(*args, **kwargs):
@@ -316,7 +453,19 @@ class NativeOperationObserver:
                 self.collective_calls += 1
             self.inside_collective = True
             scope_name = self._scope_name(selected or "unbound_collective")
-            start, end = self.torch.cuda.Event(enable_timing=True), self.torch.cuda.Event(enable_timing=True)
+            start, end = (
+                self.event_pool.observe(
+                    binding,
+                    self.collective_calls - 1,
+                    None if interval is None else interval["pool_slot"],
+                    False,
+                    args,
+                    kwargs,
+                    stream,
+                )
+                if self.event_pool is not None
+                else (self.torch.cuda.Event(enable_timing=True), self.torch.cuda.Event(enable_timing=True))
+            )
             start.record(stream)
             try:
                 with self._range(selected or "unbound_collective", scope_name=scope_name):
@@ -338,12 +487,15 @@ class NativeOperationObserver:
                             "parent_scope_name": None if interval is None else interval["scope_name"],
                         }
                     )
+                if self.event_pool is not None:
+                    self.event_pool.complete_call(binding, self.collective_calls - 1)
                 return result
             finally:
                 self.inside_collective = False
 
         setattr(owner, method, observed)
         self.restorations.append((owner, method, original))
+        self._event_bindings.append((owner, method, observed, names))
 
     def end(self) -> list[dict]:
         """Finalize one complete observed forward; preserve failed evidence upstream."""
@@ -426,11 +578,15 @@ class NativeOperationObserver:
             }
             validate_row(row, allow_zero_latency=self.profile_scope_ids)
             rows.append(row)
+        if self.event_pool is not None:
+            self.event_pool.consumed_operations()
         self.events.clear()
         self.workload = None
         return rows
 
     def close(self) -> None:
+        if self.event_pool is not None:
+            self.event_pool.close()
         if self.profiler is not None:
             self.profiler.stop()
             self.profiler = None
