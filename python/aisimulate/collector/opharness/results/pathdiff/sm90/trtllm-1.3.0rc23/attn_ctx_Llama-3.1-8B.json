@@ -19,7 +19,7 @@
  ],
  "capture_env": null,
  "capture_run_error": null,
- "kv_dtype": null,
+ "kv_dtype": "auto",
  "op_hint": "attn|attention|fmha|mha|flash|xqa",
  "serving_record": {
   "id": "32180b816d3d",

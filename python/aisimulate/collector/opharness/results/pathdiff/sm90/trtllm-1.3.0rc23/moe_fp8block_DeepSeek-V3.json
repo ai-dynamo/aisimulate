@@ -19,7 +19,7 @@
  ],
  "capture_env": null,
  "capture_run_error": null,
- "kv_dtype": null,
+ "kv_dtype": "auto",
  "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|routing|cutlass",
  "serving_record": {
   "id": "bad91e890026",

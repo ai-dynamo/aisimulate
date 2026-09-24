@@ -19,7 +19,7 @@
  ],
  "capture_env": null,
  "capture_run_error": null,
- "kv_dtype": null,
+ "kv_dtype": "auto",
  "op_hint": "attn|attention|flash|fwd|triton",
  "serving_record": {
   "id": "ad3b2b2d5423",

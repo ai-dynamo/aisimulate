@@ -19,7 +19,7 @@
  ],
  "capture_env": null,
  "capture_run_error": null,
- "kv_dtype": null,
+ "kv_dtype": "auto",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha",
  "serving_record": {
   "id": "bad91e890026",

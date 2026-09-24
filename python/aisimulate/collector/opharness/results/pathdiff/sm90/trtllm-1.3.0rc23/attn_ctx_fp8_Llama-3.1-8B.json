@@ -1,47 +1,40 @@
 {
  "verdict": "aligned",
- "repo": "Qwen/Qwen3.5-0.8B",
+ "repo": "meta-llama/Meta-Llama-3.1-8B",
  "framework": "trtllm",
  "version": "1.3.0rc23",
- "capture_file": "facts/pathdiff/opcov_trt_gdn_ctx.json",
+ "capture_file": "facts/pathdiff/opcov_trt_attn_ctx_fp8kv.json",
  "capture_cmd": [
-  "/work/s/caps/trt_gdn_ctx.py"
+  "/work/s/caps/trt_kv/trt_attn_ctx_fp8kv.py"
  ],
  "capture_env": null,
  "capture_run_error": null,
- "kv_dtype": "auto",
- "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
+ "kv_dtype": "fp8",
+ "op_hint": "attn|attention|fmha|mha|flash|xqa",
  "serving_record": {
-  "id": "cd173764db7a",
+  "id": "f44df8b942b5",
   "tp": 1,
-  "kv_cache_dtype": "auto",
+  "kv_cache_dtype": "fp8",
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
   "candidates": 1
  },
  "collector_backends": [
-  "causal_conv1d",
-  "flashinfer",
-  "trtllm_internal"
+  "trtllm_mha"
  ],
  "serving_backends": [
-  "causal_conv1d",
   "cublas",
-  "fla_triton",
-  "flashinfer",
-  "trtllm_internal",
   "trtllm_mha"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
-  "_cast_scatter_fp32_vk_to_vk_kernel",
-  "_gather_cast_vk_to_fp32_vk_kernel",
-  "kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel",
+  "fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel",
   "namespace",
-  "tensorrt_llm::_v1::kernels::causal_conv1d::causal_conv1d_fwd_kernel"
+  "tensorrt_llm::_v1::kernels::applyBiasRopeUpdateKVCacheV2",
+  "tensorrt_llm::_v1::kernels::computeSeqAndPaddingOffsets"
  ],
  "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

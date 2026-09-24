@@ -233,13 +233,14 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                             # kv-cache dtype is a first-class serving-config axis
                             # the collector sweeps; probe it on every backend
                             # whose probe can override it (vllm --kv-cache-dtype,
-                            # sglang --kv-dtype; trtllm takes it from the engine
-                            # yaml). The golden sglang CLI for fp8 profiles does
+                            # sglang --kv-dtype, trtllm --kv-dtype over the engine
+                            # yaml's kv_cache_config.dtype). The golden sglang CLI for fp8 profiles does
                             # NOT render a kv dtype, so without this variant the
                             # sglang fp8-KV DSA/MLA paths were never probed
                             # (found 2026-09-24: the old records' fp8 KV came
                             # from a retired probe injection, not the generator).
-                            kv_variants = {"vllm": [None, "fp8"], "sglang": [None, "fp8_e4m3"]}.get(backend, [None])
+                            kv_variants = {"vllm": [None, "fp8"], "sglang": [None, "fp8_e4m3"],
+                                           "trtllm": [None, "fp8"]}.get(backend, [None])
                             for kv in kv_variants:
                                 rid = hashlib.sha1(
                                     f"{ck['repo']}|{variant}|{backend}|{version}|{ck['profile']}|tp{topo['tp']}|kv{kv or 'rendered'}".encode()
@@ -346,10 +347,11 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             # any checkpoint with custom code (auto_map) needs it; cheapest
             # correct rule is to always pass it for dummy probing
             trc = "--trust-remote-code "
+            _kv = f"--kv-dtype {run['kv_dtype']} " if run.get("kv_dtype") else ""
             cmd = (head.replace("docker run --rm ",
                                 "docker run --rm -e TLLM_WORKER_USE_SINGLE_PROCESS=1 ")
                    + f"{run['image']} bash -lc 'python3 {WORK}/probe/probe_trtllm.py "
-                   f"--model {run['model_dir']} {trc}"
+                   f"--model {run['model_dir']} {trc}{_kv}"
                    f"--engine-yaml {WORK}/archive/run_sh/{run['id']}.engine.yaml "
                    f"--out {WORK}/archive/raw/{run['id']}.json' "
                    f"2>&1 | tail -1 ; }}")

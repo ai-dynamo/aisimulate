@@ -20,16 +20,16 @@
  ],
  "capture_env": null,
  "capture_run_error": null,
- "kv_dtype": null,
+ "kv_dtype": "auto",
  "op_hint": "attn|sparse|msa|topk|index|score|merge|block",
  "serving_record": {
-  "id": "a0ec7fb0a0d9",
+  "id": "9cf016bdbd38",
   "tp": 1,
-  "kv_cache_dtype": "fp8_e4m3",
+  "kv_cache_dtype": "auto",
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2
+  "candidates": 1
  },
  "collector_backends": [
   "cublas",

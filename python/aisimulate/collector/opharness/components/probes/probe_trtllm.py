@@ -115,6 +115,9 @@ def main() -> None:
     # sat below every length-conditional dispatch threshold.
     ap.add_argument("--isl", type=int,
                     default=int(os.environ.get("AIS_PROBE_ISL") or os.environ.get("AIC_PROBE_ISL") or "4096"))
+    ap.add_argument("--kv-dtype", default=None,
+                    help="override kv_cache_config.dtype (e.g. fp8): the kv-cache dtype variant "
+                         "axis the collector sweeps; recorded as probe_kv_cache_dtype")
     ap.add_argument("--eager", action="store_true",
                     help="drop the rendered cuda_graph_config (A/B only; default keeps the framework's own graph mode)")
     ap.add_argument("--engine-yaml", default=None,
@@ -161,10 +164,12 @@ def main() -> None:
             # profiled request into a residual of the warmup prompt — same
             # policy as vllm enable_prefix_caching=False / sglang disable_radix_cache
             kv_cache_config=KvCacheConfig(max_tokens=max(16384, args.isl + 256),
-                                          enable_block_reuse=False),
+                                          enable_block_reuse=False,
+                                          **({"dtype": args.kv_dtype} if args.kv_dtype else {})),
             max_batch_size=8,
             max_seq_len=args.isl + 64,
         )
+        rec["probe_kv_cache_dtype"] = args.kv_dtype  # None = the engine yaml's own value
         if args.engine_yaml:
             import yaml as _yaml
             eng = _yaml.safe_load(open(args.engine_yaml)) or {}
@@ -185,6 +190,12 @@ def main() -> None:
             if kvc.get("enable_block_reuse", True):
                 probe_overrides["kv_cache_config.enable_block_reuse"] = "False: profiled prefill must be cache-cold"
             kvc["enable_block_reuse"] = False
+            if args.kv_dtype:
+                # kv-cache dtype variant (probe_driver kv_variants): the
+                # collector sweeps fp8-KV on every backend; the rendered
+                # engine yaml says `auto` for most profiles
+                probe_overrides["kv_cache_config.dtype"] = f"{kvc.get('dtype', 'auto')} -> {args.kv_dtype} (kv variant probe)"
+                kvc["dtype"] = args.kv_dtype
             kwargs["kv_cache_config"] = KvCacheConfig(**kvc)
             # the rendered cuda_graph_config IS serving's execution mode; keep
             # it (owner decision 2026-09-24) — --eager drops it for A/B only
