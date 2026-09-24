@@ -376,6 +376,15 @@ def _verify_fpm_workflow() -> str:
         if not asset.is_file() or asset != exact_distribution_path(f"collector/fpm_forward/runtime/{relative}"):
             raise RuntimeError(f"installed tail qualification asset is missing or outside its RECORD path: {asset}")
 
+    # Exercise every admitted repair through the installed public reader. No
+    # serving framework, GPU or external evidence fetch is needed for this gate.
+    identity = importlib.import_module("collector.glm53flash_runtime_identity")
+    source_manifest = exact_distribution_path("collector/fpm_forward/runtime/glm53flash/runtime-source-sha256.json")
+    for version, summary_sha in identity.ADMITTED_VLLM_REPAIRS.items():
+        closure = identity.vllm_runtime_closure(version, source_manifest)
+        if not closure or closure["qualification_receipt_sha256"] != summary_sha:
+            raise RuntimeError(f"installed repair lacks its complete immutable qualification: {version}")
+
     env = {
         key: value for key, value in os.environ.items() if key not in {"FPM_COLLECTOR_SOURCE_REVISION", "PYTHONPATH"}
     }

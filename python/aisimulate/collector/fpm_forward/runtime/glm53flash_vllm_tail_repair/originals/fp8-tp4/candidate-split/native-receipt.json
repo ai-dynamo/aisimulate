@@ -1,0 +1,1119 @@
+{
+  "status": "native_requests_and_histories_verified",
+  "runtime_kind": "candidate",
+  "mode": "split",
+  "policy": "production",
+  "checkpoint": "fp8",
+  "tp": 4,
+  "evidence": {
+    "requests": 20,
+    "checkpoint_identity": {
+      "checkpoint": "fp8",
+      "model": "zai-org/GLM-5.3-Flash",
+      "revision": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "config_sha256": "971457b1bd1079cdeecd67a27194357f87e598045282e4dffee5a981de95688f"
+    },
+    "native_modes": [
+      "FULL",
+      "NONE",
+      "PIECEWISE"
+    ],
+    "all_tp_trace_digest": "4eabcd83c0f7bdcf0f5d3d94ba51d4e85389d6697d8797b620051895a50c17b0",
+    "external_to_native_request_ids": {
+      "0": "0-a203fbad",
+      "1": "1-950961cc",
+      "2": "2-93acbad0",
+      "3": "3-a064453a",
+      "4": "4-81e91b2a",
+      "5": "5-81bf5739",
+      "6": "6-bc48fa8c",
+      "7": "7-80d94840",
+      "8": "8-8d033faf",
+      "9": "9-b85656af",
+      "10": "10-b50a1b5d",
+      "11": "11-ba3efa10",
+      "12": "12-88a716ea",
+      "13": "13-b3d4c06f",
+      "14": "14-a322db1e",
+      "15": "15-b0ab31d6",
+      "16": "16-a7e31d03",
+      "17": "17-a5ba9df8",
+      "18": "18-95702f9d",
+      "19": "19-9853d51e"
+    },
+    "request_identity_protocol": "native_assign_request_id_v1",
+    "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+    "actual_prefill_splits": {
+      "0": {
+        "0-a203fbad": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "1-950961cc": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "2-93acbad0": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "3-a064453a": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "4-81e91b2a": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "5-81bf5739": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "6-bc48fa8c": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "7-80d94840": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "8-8d033faf": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "9-b85656af": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "10-b50a1b5d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "11-ba3efa10": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "12-88a716ea": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "13-b3d4c06f": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "14-a322db1e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "15-b0ab31d6": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "16-a7e31d03": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "17-a5ba9df8": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ],
+        "18-95702f9d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "19-9853d51e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ]
+      },
+      "1": {
+        "0-a203fbad": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "1-950961cc": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "2-93acbad0": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "3-a064453a": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "4-81e91b2a": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "5-81bf5739": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "6-bc48fa8c": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "7-80d94840": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "8-8d033faf": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "9-b85656af": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "10-b50a1b5d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "11-ba3efa10": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "12-88a716ea": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "13-b3d4c06f": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "14-a322db1e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "15-b0ab31d6": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "16-a7e31d03": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "17-a5ba9df8": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ],
+        "18-95702f9d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "19-9853d51e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ]
+      },
+      "2": {
+        "0-a203fbad": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "1-950961cc": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "2-93acbad0": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "3-a064453a": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "4-81e91b2a": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "5-81bf5739": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "6-bc48fa8c": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "7-80d94840": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "8-8d033faf": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "9-b85656af": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "10-b50a1b5d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "11-ba3efa10": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "12-88a716ea": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "13-b3d4c06f": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "14-a322db1e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "15-b0ab31d6": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "16-a7e31d03": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "17-a5ba9df8": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ],
+        "18-95702f9d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "19-9853d51e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ]
+      },
+      "3": {
+        "0-a203fbad": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "1-950961cc": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "2-93acbad0": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "3-a064453a": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "4-81e91b2a": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "5-81bf5739": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "6-bc48fa8c": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "7-80d94840": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "8-8d033faf": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "9-b85656af": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "10-b50a1b5d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "11-ba3efa10": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "12-88a716ea": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "13-b3d4c06f": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "14-a322db1e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "15-b0ab31d6": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "16-a7e31d03": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "17-a5ba9df8": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ],
+        "18-95702f9d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "19-9853d51e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ]
+      }
+    },
+    "native_tail_evidence": [
+      {
+        "tp_rank": 0,
+        "forwards": 332,
+        "tail_layers": [
+          3,
+          7,
+          11,
+          15,
+          19,
+          23,
+          27,
+          31,
+          35,
+          39,
+          43
+        ],
+        "checked_actual_token_addresses": 99006,
+        "cache_groups_sha256": "fcc064a548a52b2b9fa0944d3f265155e81bd762c9f71221c640a05e9eca4c66",
+        "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+        "latency_admission": false
+      },
+      {
+        "tp_rank": 1,
+        "forwards": 332,
+        "tail_layers": [
+          3,
+          7,
+          11,
+          15,
+          19,
+          23,
+          27,
+          31,
+          35,
+          39,
+          43
+        ],
+        "checked_actual_token_addresses": 99006,
+        "cache_groups_sha256": "e5ee362908196a40b4d7b195c0c26b5403d09c0bed2f273bf6b4e3301b181c2a",
+        "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+        "latency_admission": false
+      },
+      {
+        "tp_rank": 2,
+        "forwards": 332,
+        "tail_layers": [
+          3,
+          7,
+          11,
+          15,
+          19,
+          23,
+          27,
+          31,
+          35,
+          39,
+          43
+        ],
+        "checked_actual_token_addresses": 99006,
+        "cache_groups_sha256": "af8c674ceb7e91967fa590449bc21be161902271974164717b3ccdd0eea97f3e",
+        "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+        "latency_admission": false
+      },
+      {
+        "tp_rank": 3,
+        "forwards": 332,
+        "tail_layers": [
+          3,
+          7,
+          11,
+          15,
+          19,
+          23,
+          27,
+          31,
+          35,
+          39,
+          43
+        ],
+        "checked_actual_token_addresses": 99006,
+        "cache_groups_sha256": "c7b889d8e6a1ad91047e62196fd9a7dc4f81b05a268620a5572f402947d9c59a",
+        "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+        "latency_admission": false
+      }
+    ],
+    "files": [
+      {
+        "path": "cache-groups-rank-0.json",
+        "sha256": "fcc064a548a52b2b9fa0944d3f265155e81bd762c9f71221c640a05e9eca4c66"
+      },
+      {
+        "path": "cache-groups-rank-1.json",
+        "sha256": "e5ee362908196a40b4d7b195c0c26b5403d09c0bed2f273bf6b4e3301b181c2a"
+      },
+      {
+        "path": "cache-groups-rank-2.json",
+        "sha256": "af8c674ceb7e91967fa590449bc21be161902271974164717b3ccdd0eea97f3e"
+      },
+      {
+        "path": "cache-groups-rank-3.json",
+        "sha256": "c7b889d8e6a1ad91047e62196fd9a7dc4f81b05a268620a5572f402947d9c59a"
+      },
+      {
+        "path": "cohort-admission.jsonl",
+        "sha256": "89c075edcfa3f6a06ec6ebd0a12b12ddbc34b8ade2ab3b6c191500d780660f22"
+      },
+      {
+        "path": "effective-native-config.json",
+        "sha256": "74af22d87ed44f489bb37d5e39a69070edcc1d866bb33d851c54685adbcd2280"
+      },
+      {
+        "path": "forward-rank-0.jsonl",
+        "sha256": "e167f50e63912ccd1b50e0690b76aa8393ae0d117318e1342c0fb30e284f9164"
+      },
+      {
+        "path": "forward-rank-1.jsonl",
+        "sha256": "6b4de81f73b1bb9782b044152d05dab0f9d975408cbaad02304a9ccd891a8dd5"
+      },
+      {
+        "path": "forward-rank-2.jsonl",
+        "sha256": "82d4b76113bd3fdb69c9488a5cb5ba14c7dd07bc96abc122c0e4a339906bc0c2"
+      },
+      {
+        "path": "forward-rank-3.jsonl",
+        "sha256": "5b56b63c043c1b62af5b8c6eda4fda0530366f6ee2236a57512bc8861730d866"
+      },
+      {
+        "path": "outputs.jsonl",
+        "sha256": "22b3061d6b67996eab5c9579473862f3a7377be6cde9a404663d9ec2e35e83fc"
+      },
+      {
+        "path": "preflight.json",
+        "sha256": "54b1061e52b215fceaf2523b92b153e764ebdc2d942f5161e82bdeff391612dd"
+      },
+      {
+        "path": "prompts-rank-0.jsonl",
+        "sha256": "e567f6fc1cf2cc838b97d5e4e934e3957d7aa4d918676f7db80ec1911d767f32"
+      },
+      {
+        "path": "prompts-rank-1.jsonl",
+        "sha256": "e567f6fc1cf2cc838b97d5e4e934e3957d7aa4d918676f7db80ec1911d767f32"
+      },
+      {
+        "path": "prompts-rank-2.jsonl",
+        "sha256": "e567f6fc1cf2cc838b97d5e4e934e3957d7aa4d918676f7db80ec1911d767f32"
+      },
+      {
+        "path": "prompts-rank-3.jsonl",
+        "sha256": "e567f6fc1cf2cc838b97d5e4e934e3957d7aa4d918676f7db80ec1911d767f32"
+      },
+      {
+        "path": "request-id-map.jsonl",
+        "sha256": "01aed842e9e4baa4ccbb36d61eaa70b565a1ea8fe4e28a76d2d5fcbbdea60a0c"
+      },
+      {
+        "path": "tail-metadata-rank-0.jsonl",
+        "sha256": "e585ea0168c48efc81f5d54443df76ab6aeef431f2bb9a3c0e008ef993567955"
+      },
+      {
+        "path": "tail-metadata-rank-1.jsonl",
+        "sha256": "b9bf8ce3a642952364ae23620e2c56a0aa6eacfb794293b7e5b0ed7dc7b7c6bd"
+      },
+      {
+        "path": "tail-metadata-rank-2.jsonl",
+        "sha256": "598ae20df9a73fc1a58242e5c5a36b759efe8d122774cb529acbf7bf45a9ca33"
+      },
+      {
+        "path": "tail-metadata-rank-3.jsonl",
+        "sha256": "db8ddcdece1967db4a87f9595da46e50636e168024bcbfa3b9cd39d43ede536b"
+      },
+      {
+        "path": "worker-completion.json",
+        "sha256": "8ad60e3bcfbed94b070fbbc487a3397170ee17fe5a9899c2eecc72b29983726e"
+      },
+      {
+        "path": "worker-installation.json",
+        "sha256": "348320e43edd20a025bbd1ffcf92a10fc55455cf725d1ee09d91a3b19396e97d"
+      },
+      {
+        "path": "worker-rank-0.json",
+        "sha256": "110f0bd8cb1b7470d90f13bc2635cb8c0ca992f6201431f1e177e9caff657afe"
+      },
+      {
+        "path": "worker-rank-1.json",
+        "sha256": "33eece02d53448463ce1a76c52477d9a8148e879a1bb76a3dba82ff1290ca238"
+      },
+      {
+        "path": "worker-rank-2.json",
+        "sha256": "e89156eac2c22fb4cff603fe98b627a6466fb24264ec3022c2974190e15409a9"
+      },
+      {
+        "path": "worker-rank-3.json",
+        "sha256": "48279e2877f8a17886e64d3f82b18d6b95f0f3b59668616863c457aa98f99ac6"
+      }
+    ]
+  },
+  "correctness_comparison": "NOT_EVALUATED",
+  "accuracy_acceptance": "NOT_EVALUATED"
+}

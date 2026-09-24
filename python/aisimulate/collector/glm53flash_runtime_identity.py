@@ -21,10 +21,13 @@ from collector import glm53flash_tail_qualification as tail_qualification
 BASELINE_VERSIONS = {"vllm": "0.30.0", "sglang": "0.5.20"}
 VLLM_KPOOL_CANDIDATE = "0.30.0+glm53kpool.bf5f6b0e689d"
 VLLM_TAIL_CANDIDATE = tail_qualification.VERSIONS["candidate"]
-# The original functional qualification is historical. Diagnostic612960 showed
-# actual generic slot-mapping accesses beyond the circular tail table. Keep its
-# immutable evidence readable, but admit no repaired runtime until requalified.
-ADMITTED_VLLM_REPAIRS: dict[str, str] = {}
+# Diagnostic612960 quarantined the old KPool runtime after out-of-bounds tail
+# slot mapping. Only the new candidate has reviewed four-cell native evidence
+# plus the original 128K/cache-oracle regressions. Capacity and accuracy remain
+# separate per-deployment gates; the diagnostic reference is never admitted.
+ADMITTED_VLLM_REPAIRS: dict[str, str] = {
+    VLLM_TAIL_CANDIDATE: "8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45",
+}
 _BUILD_SHA256 = "3b72d70800e2ea244944580c1ce6a4faaa3dedf68af41b323aa690999abd9444"
 _WHEEL_SHA256 = "a3b63cb3c95cf976f717077102e8172a33501c7d05092bc84cc58e3aaef47d36"
 _ENGINE_IDENTITY_SHA256 = "d412233edffae84ae4b36a2e44d08bc4d3652a7e7f2bc62e8fc1193967a1cb22"

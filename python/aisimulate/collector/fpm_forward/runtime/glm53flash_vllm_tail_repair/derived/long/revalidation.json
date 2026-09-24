@@ -1,0 +1,129 @@
+{
+  "schema": "glm53flash_tail_revalidation_v1",
+  "status": "passed",
+  "scope": "original_nvfp4_tp2_131072_request",
+  "original_result_sha256": "754255749a8aeb16f2e6d4613f11b1db91257bf741d530a6f5731bae3dd05d43",
+  "derived_result_sha256": "754255749a8aeb16f2e6d4613f11b1db91257bf741d530a6f5731bae3dd05d43",
+  "input_files": [
+    {
+      "raw_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-functional-gpu-results/614560/nvfp4-tp2-ordinary-long/native",
+      "files": [
+        {
+          "path": "engine-config.json",
+          "sha256": "07c49f65e277b5e823ec21b47caae2d8f9f7f45e7af92e70e798f40beff91250"
+        },
+        {
+          "path": "native-output.json",
+          "sha256": "052f20a3b0134db56715981497161bd5e56659948688b8812755157e5fe8d061"
+        },
+        {
+          "path": "native-request-id-mapping.jsonl",
+          "sha256": "be2f38682e0e00a16bfc086323fd772c53c071a0d853038c99935915622a9cb2"
+        },
+        {
+          "path": "observer-finish.json",
+          "sha256": "2ee1bda420b5588405a3daa1c3e7e9a0557d42f217332398d079431411977a03"
+        },
+        {
+          "path": "observer-install.json",
+          "sha256": "8fa1cfcccca9b14a403a54830d0667ce6a238c3f8b21e1bbdc6adcd2ef56dbcc"
+        },
+        {
+          "path": "preflight.json",
+          "sha256": "340617b6eb8c3882b81e4c5f094a063220c627c9280aaf701eefb2ca298e49a2"
+        },
+        {
+          "path": "result.json",
+          "sha256": "754255749a8aeb16f2e6d4613f11b1db91257bf741d530a6f5731bae3dd05d43"
+        },
+        {
+          "path": "witness/cache-groups-rank-0.json",
+          "sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e"
+        },
+        {
+          "path": "witness/cache-groups-rank-1.json",
+          "sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef"
+        },
+        {
+          "path": "witness/forward-rank-0.jsonl",
+          "sha256": "842e1053dff14063b4ac1a74f86ec1e9034ecd39fe5670cec242a9a29d7b50ec"
+        },
+        {
+          "path": "witness/forward-rank-1.jsonl",
+          "sha256": "e426784306293853b8c8c12faca674d44b4c11b0257953b281b4ed31846e4df5"
+        },
+        {
+          "path": "witness/prompts-rank-0.jsonl",
+          "sha256": "6dc55081bc067986119f8753884dba89f1727a301d8836765095e2f41e1d0c53"
+        },
+        {
+          "path": "witness/prompts-rank-1.jsonl",
+          "sha256": "6dc55081bc067986119f8753884dba89f1727a301d8836765095e2f41e1d0c53"
+        },
+        {
+          "path": "witness/tail-metadata-rank-0.jsonl",
+          "sha256": "a1cae4245aec88db190d0719a4fbf1322ad738f1a5033e428005f8c858c33bbb"
+        },
+        {
+          "path": "witness/tail-metadata-rank-1.jsonl",
+          "sha256": "84c71e6c5139fc88abb0de1cd5eef14642b4e30e4764a1e5f90bd0fc2e96a1de"
+        },
+        {
+          "path": "witness/worker-rank-0.json",
+          "sha256": "17b45a16b4d84d398478e15806dc4da9b5912494b6380e71982c488e78181127"
+        },
+        {
+          "path": "witness/worker-rank-1.json",
+          "sha256": "38963ba6b3e80fa705c148fb4347164bf22847814aaca8f73958ee0d947c1e1a"
+        }
+      ]
+    }
+  ],
+  "consumer_reread_external_raw": false,
+  "validator_sources": {
+    "expected-runtime.json": {
+      "sha256": "cf7ab8b815ef16e41e178a17cb24effe1f31f54785f0c61b1931d6e3a134e910",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/expected-runtime.json"
+    },
+    "validate_tail.py": {
+      "sha256": "751457541eb3a2c16797b15e6a2c12913d7625cc96c116d1035ebb2e8e1bb44e",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/validate_tail.py"
+    },
+    "tail_metadata_probe.py": {
+      "sha256": "a8ccfd7866301cb838a179dc90688260617593ee4c91d7604ed15049b1af6704",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/tail_metadata_probe.py"
+    },
+    "worker_probe.py": {
+      "sha256": "6a8ca1b92d37119f21475f425499a66a7acada4879a48376e1488b370dcdf1ca",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/worker_probe.py"
+    },
+    "probe.py": {
+      "sha256": "f48b930f07e62b02064bcf2de243bf601303ce2609b0bc53801792c18b46fc91",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/probe.py"
+    },
+    "actual-engine-args.json": {
+      "sha256": "13108e457d2dec12f067934a34d6f72ed215593ae60f5e8eb33e446d5ca6761c",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/actual-engine-args.json"
+    },
+    "restore_args.py": {
+      "sha256": "d7e177ca79dcf9d3604daa69466660de8442e26ba2b16721ca247bc17d7f8731",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/restore_args.py"
+    },
+    "lineage.json": {
+      "sha256": "95bceef9e36dc84877332c1ed081d5f3dbecbba4ca15a58aa3eb3078fe787d17",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/lineage.json"
+    },
+    "receipt.json": {
+      "sha256": "8980b8490c41385fc43613fdfb467b88e3a3ea9a9a51a504aeb1f96b37b58daf",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/receipt.json"
+    },
+    "reconstructed-point4-request0.tokens.json": {
+      "sha256": "b39e2fde811f638e5e3e9a7c3a27c697fcf185e9f1f5a3d476d2092fa1fdb57e",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-ordinary-long-v1/reconstructed-point4-request0.tokens.json"
+    }
+  },
+  "assembler_source": {
+    "sha256": "b140f5dee3fc85f0631ad81ae9506feeb7c9ef360779850aa7dbcfd3e57bb408",
+    "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/tail-qualification-four-cell-results/617976/finalized/assembler/bundle-manifest.json"
+  }
+}
