@@ -256,6 +256,8 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
     node_types = {"kernel": 0, "gpu_memcpy": 1, "gpu_memset": 2}
     expected = {row["node_id"]: row for row in registry["nodes"] if row["node_type"] in node_types.values()}
     structural = [row for row in registry["nodes"] if row["node_type"] not in node_types.values()]
+    if any(row["node_type"] not in (5, 6, 7) for row in structural):
+        raise ValueError("native graph has an unqualified host/control/memory-allocation node")
     actual, streams = {}, set()
     for event in events:
         args = event.get("args", {})

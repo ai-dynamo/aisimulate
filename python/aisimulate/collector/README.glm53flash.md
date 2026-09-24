@@ -393,6 +393,38 @@ with zero capacity. Empty node/edge snapshots now use the actual native count
 query without submitting a zero-capacity array. Every later boundary queries
 again, and count/fill inconsistencies or edges to absent nodes fail explicitly.
 No model stage ran after that failed tiny prerequisite.
+`glm53flash_graph_callbacks.py` binds capture nodes to the executable through
+actual CUPTI resource callbacks. CUPTI13.0.85 passes `CUpti_ResourceData` to
+resource subscribers; its `resourceDescriptor` carries `CUpti_GraphData`.
+The independent ctypes declarations use the exact installed 24-byte wrapper
+(descriptor offset16) and 56-byte graph descriptor. The loaded CUPTI library
+must match SHA256 `a55e03ccab21830f5b9d1ca7a02ecd59c557e0d54c769a181ad1140a3cff8ac1`.
+The subscriber is active only around native capture/instantiation and is
+removed before Kineto starts. Callbacks perform only CUPTI ID queries and copy
+scalars; original callback progress and source registries are retained.
+
+Instantiation's source graph ID differs from the executable graph ID reported
+by activity records. The resolver joins the actual creation callback and all
+node-cloned callbacks by opaque native handles, verifies their original graph,
+and requires a complete one-to-one node/type mapping. It does not infer IDs
+from integer bit patterns or kernel order. Foreign-source nodes, clone chains,
+and unknown structural node kinds fail. Native dependencies, including PDL
+metadata, remain attached to the mapped nodes.
+
+The wrapper ABI was checked against NVIDIA's original
+`extras/CUPTI/samples/cuda_graphs_trace/cuda_graphs_trace.cu` in the immutable
+CUPTI13.0.85 Linux SBSA archive (archive SHA256
+`f6f34d534cce56f91b1496abf51be3b1559ba879985d34eb89c808004b77513a`,
+sample SHA256 `0458254b6d8ada6c6db82492f14f6bf029f70cafaf97a07dfc6168c95dc312f8`).
+No sample implementation is copied. Historical tiny GPU608141 failed from the
+incorrect direct descriptor cast; GPU608687 captured callbacks but its earlier
+resolver rejected the source/executable namespace difference. Both failures
+remain unchanged. A separately hashed, independently reviewed offline resolver
+mapped all2 nodes in both GPU608687 traces with unchanged launch inventories.
+This is node-identity evidence, not qualification of native GLM profiling or
+prediction accuracy; a fresh native mechanism gate and matched profiled versus
+unprofiled GLM controls are still required.
+
 Native SGLang source pin94602c9 additionally binds
 `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`
 and `python/sglang/srt/model_executor/runner/{shape_key,decode_cuda_graph_runner}.py`.

@@ -16,6 +16,7 @@ import json
 import math
 from pathlib import Path
 
+from collector.glm53flash_graph_callbacks import CloneCallbacks, resolve_registry
 from collector.glm53flash_graph_hooks import NativeGraphOperationObserver
 from collector.glm53flash_graph_nodes import (
     EXECUTION_RANGE,
@@ -64,6 +65,8 @@ def install(manifest, provenance, output, *, holdout=False):
         runner = backend._cuda_graph_runner
         if type(runner).__name__ != "DecodeCudaGraphRunner" or runner.enable_torch_compile is not False:
             raise RuntimeError("initial graph Ops requires actual uncompiled native FULL decode")
+        if getattr(runner, "enable_profile_cuda_graph", False):
+            raise RuntimeError("native capture profiler conflicts with the single CUPTI resource subscriber")
         if backend._reuse_output_buffer:
             raise RuntimeError("graph tail output copying needs a separately reviewed operation boundary")
         model_runner = runner.model_runner
@@ -94,16 +97,34 @@ def install(manifest, provenance, output, *, holdout=False):
             captured.append(observer.finish())
             return result
 
-        result = original_capture(backend, shape_key, forward, *args, **kwargs)
-        graph = backend._graphs[shape_key]
-        if observer is not None:
-            if len(captured) != 1:
-                raise RuntimeError("actual native graph did not capture exactly one complete model")
-            state["captures"][shape_key] = (graph, captured[0])
-            with (output / f"capture-nodes-rank-{state['rank']}.jsonl").open("a") as stream:
-                stream.write(json.dumps(captured[0], sort_keys=True) + "\n")
-        else:
-            state["captures"][shape_key] = (graph, None)
+        if shape_key in state["captures"]:
+            raise RuntimeError("native backend attempted to replace an already observed graph")
+        if observer is None:
+            result = original_capture(backend, shape_key, forward, *args, **kwargs)
+            state["captures"][shape_key] = (backend._graphs[shape_key], None)
+            return result
+        serial = len(state["captures"])
+        stem = f"graph-clones-rank-{state['rank']}-capture-{serial}"
+        with CloneCallbacks(observer.api, output / f"{stem}.progress.jsonl") as callbacks:
+            result = original_capture(backend, shape_key, forward, *args, **kwargs)
+            graph = backend._graphs[shape_key]
+            receipt = callbacks.receipt(graph)
+        # Persist original capture ownership and callbacks before any strict
+        # derived mapping. Kineto starts only later, after this unsubscribe.
+        with (output / f"{stem}.json").open("x") as stream:
+            json.dump(receipt, stream, indent=2)
+        if len(captured) != 1:
+            raise RuntimeError("actual native graph did not capture exactly one complete model")
+        with (output / f"capture-source-nodes-rank-{state['rank']}.jsonl").open("a") as stream:
+            stream.write(json.dumps(captured[0], sort_keys=True) + "\n")
+        registry = resolve_registry(captured[0], receipt)
+        registry["instantiation_receipt"] = {
+            "file": f"{stem}.json",
+            "sha256": hashlib.sha256((output / f"{stem}.json").read_bytes()).hexdigest(),
+        }
+        state["captures"][shape_key] = (graph, registry)
+        with (output / f"capture-nodes-rank-{state['rank']}.jsonl").open("a") as stream:
+            stream.write(json.dumps(registry, sort_keys=True) + "\n")
         return result
 
     @functools.wraps(original_replay)

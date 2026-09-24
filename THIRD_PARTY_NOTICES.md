@@ -993,6 +993,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 - Derived files: `python/aisimulate/collector/glm53flash_native_hooks.py`,
   `glm53flash_observer.py`, `glm53flash_contract.py`, `glm53flash_validation.py`,
   `glm53flash_graph_nodes.py`, `glm53flash_graph_hooks.py`,
+  `glm53flash_graph_callbacks.py`,
   `glm53flash_sglang_graph_ops.py`, `glm53flash_vllm_graph_ops.py`,
   and their graph-node/hook/execution CPU tests,
   `collect_glm53flash.py`, `{vllm,sglang}/collect_glm53flash.py`,
@@ -1029,6 +1030,19 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   admission, immutable provenance, and exact measured-key serialization. No
   native model, dispatch, cache population, or collective implementation is
   modified by these adapters.
+
+The graph callback adapter additionally uses independently authored ctypes
+bindings for NVIDIA CUPTI13.0.85's documented resource and graph descriptors.
+The ABI reference is NVIDIA's `extras/CUPTI/samples/cuda_graphs_trace/cuda_graphs_trace.cu`
+in the official Linux SBSA CUPTI13.0.85 archive, SHA256
+`f6f34d534cce56f91b1496abf51be3b1559ba879985d34eb89c808004b77513a`;
+original sample SHA256
+`0458254b6d8ada6c6db82492f14f6bf029f70cafaf97a07dfc6168c95dc312f8`.
+Source distribution: https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/linux-sbsa/.
+Copyright NVIDIA Corporation; the CUDA Toolkit license applies to the original
+SDK. No SDK headers, sample implementation, or binaries are redistributed here.
+The original adapter and its tests record API identities and native callbacks;
+they do not modify CUDA graphs or replace native kernels.
 
 The interpolation documentation also references FlashKDA,
 https://github.com/vllm-project/FlashKDA at

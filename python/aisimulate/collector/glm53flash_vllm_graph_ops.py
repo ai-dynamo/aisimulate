@@ -16,6 +16,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from collector.glm53flash_graph_callbacks import CloneCallbacks, resolve_registry
 from collector.glm53flash_graph_hooks import NativeGraphOperationObserver
 from collector.glm53flash_graph_nodes import NativeGraphAPI
 from collector.glm53flash_native_hooks import install_native_hooks
@@ -134,7 +135,33 @@ def install(manifest, provenance, output):
 
             return forward
 
-        return original_capture(manager, factory, *args, **kwargs)
+        serial = state.get("callback_serial", 0)
+        state["callback_serial"] = serial + 1
+        stem = f"vllm-graph-clones-rank-{state['rank']}-capture-{serial}"
+        receipts = {}
+        with CloneCallbacks(state["observer"].api, output / f"{stem}.progress.jsonl") as callbacks:
+            result = original_capture(manager, factory, *args, **kwargs)
+            for descriptor in manager._aisim_glm53_capture_pending:
+                graph = manager.graphs.get(descriptor)
+                if graph is None:
+                    raise RuntimeError("native FULL descriptor has no instantiated graph")
+                receipts[descriptor] = callbacks.receipt(graph)
+        for index, (descriptor, receipt) in enumerate(receipts.items()):
+            path = output / f"{stem}-{index}.json"
+            with path.open("x") as stream:
+                json.dump(receipt, stream, indent=2)
+            observations = manager._aisim_glm53_capture_pending[descriptor]
+            if len(observations) != 1:
+                raise RuntimeError("native FULL descriptor lacks one complete source capture")
+            with (output / f"{stem}-{index}-source.json").open("x") as stream:
+                json.dump(observations[0], stream, indent=2)
+            registry = resolve_registry(observations[0], receipt)
+            registry["instantiation_receipt"] = {
+                "file": path.name,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            manager._aisim_glm53_capture_pending[descriptor] = [registry]
+        return result
 
     ModelCudaGraphManager.capture = model_capture
     CudaGraphManager.capture = capture

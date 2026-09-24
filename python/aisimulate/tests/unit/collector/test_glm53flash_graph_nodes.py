@@ -321,3 +321,11 @@ def test_owned_activity_union_does_not_claim_cross_unit_overlap_or_idle_as_work(
     assert result["approximate_additive_operation_union_us"] == 12
     assert "not_critical_path" in result["composition"]
     assert result["formal_admission"] is False
+
+
+@pytest.mark.parametrize("node_type", [3, 4, 8, 9, 10, 11, 12, 13, 99])
+def test_unmeasured_host_or_other_gpu_work_cannot_be_called_structural(node_type):
+    registry, events = replay_fixture()
+    registry["nodes"].append({"node_id": 13, "node_type": node_type, "name": "native_graph_setup"})
+    with pytest.raises(ValueError, match="unqualified host/control"):
+        bind_replay_kernels(registry, events, correlation=7)
