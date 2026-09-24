@@ -479,3 +479,38 @@ def test_decode_context_groups_include_current_token(past, group):
     point = {"point_type": "decode", "batch_size": 2, "total_prefill_tokens": 0, "total_kv_read_tokens": past * 2}
     assert validation._geometry(point)[2] == 0
     assert validation._group(point) == group
+
+
+def test_sharded_consumer_binding_keeps_each_native_origin_and_rejects_donor(tmp_path):
+    import copy
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path, run, native, rows = calibration_table(tmp_path)
+    children, receipts = [], {}
+    for index, row in enumerate(rows, 1):
+        child = copy.deepcopy(run)
+        cid = f"shard-{index}"
+        child["cell"].update(cell_id=cid, weight_quantization="fp8_block")
+        child["plan"]["sha256"] = str(index) * 64
+        child["spec"]["attempt_id"] = f"attempt-{index}"
+        child["points"] = [dict(run["points"][index - 1], benchmark_id=1)]
+        receipt = dict(native, values={1: native["values"][index]}, runtime_run_id=f"run-{index}")
+        row.update(
+            cell_id=cid,
+            weight_quantization="fp8_block",
+            source_plan_sha256=child["plan"]["sha256"],
+            collector_attempt_id=child["spec"]["attempt_id"],
+            runtime_run_id=receipt["runtime_run_id"],
+        )
+        children.append(child)
+        receipts[cid] = receipt
+    parent = dict(run, children=children)
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    bound = validation._bind_fpm_rows([path], parent, {"_children": receipts})
+    assert len(bound["shards"]) == 3
+    assert all(item["rows"] == 1 for item in bound["shards"])
+    pq.write_table(pa.Table.from_pylist([*rows, dict(rows[0], cell_id="unfrozen-donor")]), path)
+    with pytest.raises(ValueError, match="donor cell"):
+        validation._bind_fpm_rows([path], parent, {"_children": receipts})

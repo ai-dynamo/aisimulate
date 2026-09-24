@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
 from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+from collector.glm53flash_jsonl import file_sha256, iter_records
 from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
 
 from .native_artifact import _expected_scheduled, validate_native_collection
@@ -96,7 +97,8 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         raise ValueError("plan must contain exactly one referenced cell")
     cell = cells[0]
     topology = cell["topology"]
-    key = (plan["backend"], cell["weight_quantization"], topology["tp"], cell["workload_kind"])
+    checkpoint_format = {"fp8_block": "fp8", "fp8": "fp8", "nvfp4": "nvfp4"}.get(cell["weight_quantization"])
+    key = (plan["backend"], checkpoint_format, topology["tp"], cell["workload_kind"])
     if key not in REQUIRED or cell.get("backend") != key[0] or cell.get("state_protocol") != PROTOCOL:
         raise ValueError("cell is outside the required GLM native matrix")
     if any(topology[k] != 1 for k in ("pp", "dp", "cp", "moe_ep")) or topology["moe_tp"] != topology["tp"]:
@@ -132,7 +134,7 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         topology=SimpleNamespace(**topology),
         execution_identity=tuple(identity[k] for k in EXECUTION_COLUMNS),
     )
-    return {
+    run = {
         "key": key,
         "plan": plan,
         "cell": cell,
@@ -143,6 +145,27 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         "spec": spec,
         "role": role,
     }
+    if "shards" in spec:
+        from collector.glm53flash_shard_contract import validate_point_union
+
+        shard_manifest = _read_json_receipt(spec["shard_manifest"], base)
+        children = [_plan_run(child, base, role) for child in spec["shards"]]
+        if any("children" in child or child["key"] != key or child["corpus"] != corpus for child in children):
+            raise ValueError("acceptance shards changed parent execution identity or corpus")
+        by_id = {child["cell"]["cell_id"]: child for child in children}
+        if len(by_id) != len(children):
+            raise ValueError("duplicate acceptance shard")
+        validate_point_union(
+            plan, shard_manifest, {cid: child["plan"] for cid, child in by_id.items()}, parent_cell_id=cell["cell_id"]
+        )
+        for shard in shard_manifest["shards"]:
+            if shard["parent_cell_id"] == cell["cell_id"]:
+                child = by_id[shard["child_cell_id"]]
+                child["original_point_ids"] = {
+                    entry["native_benchmark_id"]: entry["original_point_id"] for entry in shard["point_map"]
+                }
+        run.update(children=children, shard_manifest=shard_manifest, parent_cell_id=cell["cell_id"])
+    return run
 
 
 def _native_run(run: dict, base: Path) -> dict:
@@ -171,12 +194,10 @@ def _native_run(run: dict, base: Path) -> dict:
     receipts = []
     for path in sorted(root.rglob("*")):
         if path.is_file():
-            receipts.append(
-                {"path": str(path.relative_to(root)), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
-            )
+            receipts.append({"path": str(path.relative_to(root)), "sha256": file_sha256(path)})
     for path in sorted(root.rglob("*.token-streams.jsonl")):
-        for line in path.read_bytes().splitlines():
-            request_ids.update(row["request_id"] for row in json.loads(line)["requests"])
+        for observation in iter_records(path):
+            request_ids.update(row["request_id"] for row in observation["requests"])
     for path in sorted(root.rglob("benchmark*.json")):
         payload = json.loads(path.read_bytes())
         if payload.get("artifact_type") != "rank":
@@ -262,6 +283,40 @@ def installed_consumer_identity() -> dict:
 
 
 def _load_native(run: dict, base: Path, mode: str) -> dict:
+    if "children" in run:
+        values, request_ids, children, receipts = {}, set(), {}, []
+        boundaries = set()
+        for child in run["children"]:
+            native = _load_native(child, base, mode)
+            cid = child["cell"]["cell_id"]
+            if request_ids & native["request_ids"]:
+                raise ValueError("native requests were reused across independent shard attempts")
+            request_ids.update(native["request_ids"])
+            mapped = {child["original_point_ids"][bid]: value for bid, value in native.get("values", {}).items()}
+            if values.keys() & mapped.keys():
+                raise ValueError("native shard values overlap original frozen point IDs")
+            values.update(mapped)
+            children[cid] = native
+            receipts.append(
+                {
+                    "child_cell_id": cid,
+                    "source_plan_sha256": child["plan"]["sha256"],
+                    "original_point_ids": child["original_point_ids"],
+                    **{key: value for key, value in native.items() if key not in {"values", "request_ids"}},
+                }
+            )
+            boundaries.add(native.get("timing_boundary", TIMING_BOUNDARIES[run["key"][0]]))
+        if len(boundaries) != 1:
+            raise ValueError("native shard timing boundaries differ")
+        if run["role"] == "holdout" and set(values) != {point["benchmark_id"] for point in run["points"]}:
+            raise ValueError("native shards omit original frozen holdout point IDs")
+        return {
+            "values": values,
+            "request_ids": request_ids,
+            "shards": receipts,
+            "timing_boundary": boundaries.pop(),
+            "_children": children,
+        }
     if mode == "fpm":
         return _native_run(run, base)
     try:
@@ -285,9 +340,19 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
     return native
 
 
-def _bind_fpm_rows(paths: list[Path], run: dict, native: dict) -> dict:
+def _bind_fpm_rows(paths: list[Path], run: dict, native: dict, *, _allowed_cells: set[str] | None = None) -> dict:
     """Verify the consumer table is exactly this observed calibration cell."""
     import pyarrow.parquet as pq
+
+    if "children" in run:
+        allowed = {child["cell"]["cell_id"] for child in run["children"]}
+        return {
+            "parent_plan_sha256": run["plan"]["sha256"],
+            "shards": [
+                _bind_fpm_rows(paths, child, native["_children"][child["cell"]["cell_id"]], _allowed_cells=allowed)
+                for child in run["children"]
+            ],
+        }
 
     backend, quant, tp, phase = run["key"]
     selected = []
@@ -301,7 +366,12 @@ def _bind_fpm_rows(paths: list[Path], run: dict, native: dict) -> dict:
                 row.get("weight_quantization"),
                 row.get("tp"),
                 row.get("workload_kind"),
-            ) == (run["plan"]["model_path"], backend, quant, tp, phase):
+            ) == (run["plan"]["model_path"], backend, run["cell"]["weight_quantization"], tp, phase):
+                if _allowed_cells is not None:
+                    if row.get("cell_id") not in _allowed_cells:
+                        raise ValueError("consumer FPM contains a donor cell outside the frozen shard union")
+                    if row["cell_id"] != run["cell"]["cell_id"]:
+                        continue
                 selected.append(row)
     if not selected:
         raise FileNotFoundError("consumer has no receipted FPM calibration rows for this cell")
@@ -413,7 +483,19 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
             from collector.glm53flash_validation import bind_calibration
         except ImportError as error:
             raise FileNotFoundError("Ops calibration-evidence receipt adapter is required before acceptance") from error
-        binding = bind_calibration(paths, calibration, calibration_native)
+        if "children" in calibration:
+            from collector.glm53flash_validation import bind_sharded_calibration
+
+            binding = bind_sharded_calibration(
+                paths,
+                [
+                    (child, calibration_native["_children"][child["cell"]["cell_id"]])
+                    for child in calibration["children"]
+                ],
+                calibration["shard_manifest"],
+            )
+        else:
+            binding = bind_calibration(paths, calibration, calibration_native)
     config["systems_paths"] = roots
     model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
     rows = {}
@@ -556,7 +638,9 @@ def evaluate(manifest: dict, base: Path) -> dict:
             for role in ("calibration", "holdout"):
                 native = record.get(role + "_native")
                 if native:
-                    result[role + "_evidence"] = {k: v for k, v in native.items() if k not in {"values", "request_ids"}}
+                    result[role + "_evidence"] = {
+                        k: v for k, v in native.items() if k not in {"values", "request_ids"} and not k.startswith("_")
+                    }
             if not result["errors"] and not report["errors"]:
                 try:
                     prediction = _predict(
