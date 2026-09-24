@@ -54,6 +54,7 @@ _SGLANG_FPM_VALUE_FLAGS = frozenset(
         "--page-size",
         "--kv-cache-dtype",
         "--mem-fraction-static",
+        "--sglang-allocator-max-split-size-mb",
         "--max-total-tokens",
         "--context-length",
         "--max-running-requests",
@@ -277,6 +278,13 @@ def _sglang_fpm_args(context: dict[str, Any], extra_cli_args: list[str]) -> list
     if "--request-timeout-seconds" not in seen:
         args.extend(["--request-timeout-seconds", "900"])
     _positive_cli_int(args, "--request-timeout-seconds")
+    allocator_flag = "--sglang-allocator-max-split-size-mb"
+    if allocator_flag in seen:
+        # Match the native driver's MiB range without importing the collector
+        # into the generator. The byte count must fit signed memory statistics.
+        limit = _positive_cli_int(args, allocator_flag)
+        if not 20 <= limit <= ((1 << 63) - 1) // (1 << 20):
+            raise ValueError(f"{allocator_flag} requires an integer >=20 MiB representable in native memory statistics")
     return args
 
 

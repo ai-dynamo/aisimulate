@@ -1687,6 +1687,39 @@ def test_sglang_fpm_output_path_agrees_with_runtime_discovery():
         _render_sglang(params)
 
 
+@pytest.mark.parametrize(
+    "extra", [["--sglang-allocator-max-split-size-mb", "16384"], ["--sglang-allocator-max-split-size-mb=16384"]]
+)
+def test_sglang_fpm_preserves_explicit_allocator_policy(extra):
+    params = _sglang_params()
+    params["params"]["agg"]["extra_cli_args"].extend(extra)
+    script = _render_sglang(params)[FPM_RUN_SCRIPT_FILENAME]
+    command = next(line for line in script.splitlines() if line.startswith("engine_command=("))
+    argv = shlex.split(command.removeprefix("engine_command=(").removesuffix(")"))
+    assert argv[:3] == ["python3", "-m", "collector.fpm_forward.sglang_driver"]
+    start = argv.index(extra[0])
+    assert argv[start : start + len(extra)] == extra
+    assert sum(token.split("=", 1)[0] == "--sglang-allocator-max-split-size-mb" for token in argv) == 1
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--sglang-allocator-max-split-size-mb"],
+        ["--sglang-allocator-max-split-size-mb=16384", "--sglang-allocator-max-split-size-mb", "32768"],
+        ["--sglang-allocator-max-split-size-mb", "0"],
+        ["--sglang-allocator-max-split-size-mb", "19"],
+        ["--sglang-allocator-max-split-size-mb", "16384.5"],
+        ["--sglang-allocator-max-split-size-mb", str(1 << 43)],
+    ],
+)
+def test_sglang_fpm_rejects_invalid_allocator_policy(extra):
+    params = _sglang_params()
+    params["params"]["agg"]["extra_cli_args"].extend(extra)
+    with pytest.raises(ValueError, match="sglang-allocator-max-split-size-mb"):
+        _render_sglang(params)
+
+
 def test_sglang_fpm_preserves_native_graph_sizes_and_quantization():
     params = _sglang_params()
     params["params"]["agg"]["extra_cli_args"].extend(["--quantization", "modelopt_fp4"])
