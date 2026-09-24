@@ -12,13 +12,13 @@
  "kv_dtype": "fp8",
  "op_hint": "dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant",
  "serving_record": {
-  "id": "bc7245f116c1",
+  "id": "ec4c72fb384d",
   "tp": 1,
   "kv_cache_dtype": "fp8",
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 3
+  "candidates": 2
  },
  "collector_backends": [
   "cublas",
@@ -43,15 +43,15 @@
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_build_c128a_topk_metadata_kernel",
+  "_compressed_slot_mapping_kernel",
   "_compute_swa_indices_and_lens_kernel",
   "_fused_inv_rope_fp8_quant_per_head",
   "_fused_q_kv_rmsnorm_kernel",
   "_save_partial_states_kernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "compute_cuda_kernel",
-  "deep_gemm::fp8_gemm_kernel_swapAB",
-  "deep_gemm::sm90_fp8_gemm_1d2d_impl",
-  "kernel"
+  "deep_gemm::fp8_gemm_kernel_swapAB"
  ],
  "collector_unmatched_kernels": [
   "vllm::fused_inv_rope_fp8_quant_kernel"

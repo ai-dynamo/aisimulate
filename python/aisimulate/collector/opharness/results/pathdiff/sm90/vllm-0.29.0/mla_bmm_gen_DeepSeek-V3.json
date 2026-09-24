@@ -10,7 +10,7 @@
  "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": "auto",
- "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat",
+ "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
  "serving_record": {
   "id": "c6a1dad585a8",
   "tp": 1,
@@ -18,7 +18,7 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2
+  "candidates": 1
  },
  "collector_backends": [
   "cublas"
@@ -29,6 +29,7 @@
   "deepgemm",
   "fa3",
   "sgl_kernel",
+  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],

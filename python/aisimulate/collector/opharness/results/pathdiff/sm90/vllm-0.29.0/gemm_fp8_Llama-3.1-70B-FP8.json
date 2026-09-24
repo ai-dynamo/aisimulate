@@ -1,30 +1,33 @@
 {
  "verdict": "aligned",
- "repo": "Qwen/Qwen3-32B-FP8-Static-PerTensor",
+ "repo": "nvidia/Llama-3.1-70B-Instruct-FP8",
  "framework": "vllm",
  "version": "0.29.0",
- "capture_file": "facts/pathdiff/opcov_compute_scale.json",
+ "capture_file": "facts/pathdiff/opcov_gemm_fp8.json",
  "capture_cmd": [
-  "/work/s/caps/compute_scale.py"
+  "/work/s/caps/gemm_fp8.py"
  ],
  "capture_env": null,
  "capture_run_error": null,
- "kv_dtype": null,
- "op_hint": "quant|scale|per_token|fp8",
+ "kv_dtype": "auto",
+ "op_hint": "gemm|linear|proj|nvjet|cublas|deepgemm|scaled_mm|quant|cutlass",
  "serving_record": {
-  "id": "e69bd0eccd7e",
+  "id": "70764220f4aa",
   "tp": 1,
-  "kv_cache_dtype": "fp8",
+  "kv_cache_dtype": "auto",
   "isl": 4096,
-  "prefix_caching": null,
+  "prefix_caching": false,
   "raw_file": null,
-  "candidates": 3
+  "candidates": 1
  },
  "collector_backends": [
   "vllm_kernel"
  ],
  "serving_backends": [
+  "cublas",
+  "cutlass",
   "fa3",
+  "torch",
   "vllm_kernel"
  ],
  "collector_only_signal": [],
@@ -36,6 +39,7 @@
  },
  "serving_kernels_matched_in_collector": [
   "namespace",
+  "triton_",
   "vllm::scaled_fp8_quant_kernel_strided_group_shape"
  ],
  "collector_unmatched_kernels": [],

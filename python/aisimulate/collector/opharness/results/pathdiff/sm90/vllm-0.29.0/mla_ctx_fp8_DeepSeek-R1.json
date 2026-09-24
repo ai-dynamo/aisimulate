@@ -10,7 +10,7 @@
  "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": "fp8",
- "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat",
+ "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
  "serving_record": {
   "id": "a9460b301113",
   "tp": 1,
@@ -33,6 +33,7 @@
   "fa3",
   "flashmla",
   "sgl_kernel",
+  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -40,15 +41,16 @@
  "kernel_drift": null,
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
+  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "deep_gemm::sm90_fp8_gemm_1d2d_impl",
   "flash::FlashAttnFwdSm90",
   "flash::prepare_varlen_num_blocks_kernel",
-  "flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel",
   "flashinfer::ConcatMLAKKernel",
   "namespace",
   "per_token_group_quant_8bit_kernel",
-  "vllm::concat_and_cache_mla_kernel",
-  "vllm::rms_norm_kernel"
+  "triton_",
+  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_slice_view_",
+  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_view_zeros_"
  ],
  "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

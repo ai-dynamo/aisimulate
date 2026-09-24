@@ -23,7 +23,7 @@
  "kv_dtype": "auto",
  "op_hint": "attn|sparse|msa|topk|index|score|merge|block",
  "serving_record": {
-  "id": "9cf016bdbd38",
+  "id": "7f3cbb30557f",
   "tp": 1,
   "kv_cache_dtype": "auto",
   "isl": 4096,

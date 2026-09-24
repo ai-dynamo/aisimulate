@@ -22,7 +22,7 @@
  "kv_dtype": "auto",
  "op_hint": "attn|attention|fmha|mha|flash|xqa",
  "serving_record": {
-  "id": "32180b816d3d",
+  "id": "4f8983fdd5ce",
   "tp": 1,
   "kv_cache_dtype": "auto",
   "isl": 4096,

@@ -1033,6 +1033,65 @@ findings:
     - framework:sglang-0.5.16
     - framework:trtllm-1.3.0rc23
     - platform:sm90
+  full_reprobe_framework_mode_2026_09_24:
+    statement: |
+      FULL RE-PROBE in framework mode (owner "现在跑吧"): every roster model on
+      the three pins, rendered config + kv-dtype variant — sglang 98+98,
+      trtllm 98+98, vllm 98+98 (4 Qwen3.8 runs skipped: the golden CLI
+      rejects the architecture). Old evidence retired under
+      facts/raw_superseded/ (187 eager vllm raws that already sat under the
+      current ids — the queue had skipped them as "done"; 291 pre-kv-tag raws
+      at the pins; 219 other-version records kept). records.jsonl now 713.
+      OUTCOMES (rendered / fp8-KV variant): sglang 93+91 ok — fails MiniMax-
+      M3-MXFP8 (mxfp8 unsupported), Kimi-K3 (+NVFP4, model module missing on
+      0.5.16), Gemma-4-26B-A4B-NVFP4 (only gated SiLU), Llama-4-Scout (new
+      under graphs: sglang internal crash "Open an issue"), MiniMax-M2/M2.5
+      fp8-KV only (bf16 output dtype assert); trtllm 62+51 ok — the known
+      SM90 wall (DSV4 pre-Blackwell assert, NVFP4 DSA fp8-KV, MiMo, M3 sparse
+      needs the kv cache type) plus every DSA fp8-KV variant; vllm 93+96 ok.
+      GATES on the new records: vllm 32 / sglang 16 / trtllm 13 aligned,
+      after three evidence corrections that framework mode forced:
+        - gemm_fp8 was paired with Qwen/Qwen3-32B-FP8-Static-PerTensor, which
+          vLLM 0.29 loads UNQUANTIZED (UnquantizedLinearMethod on every
+          linear; its config.json carries no quant_method and the modelopt
+          hf_quant_config.json in the dir is ignored) — never a valid fp8
+          instance; the old "aligned" came from the fp8-KV variant record's
+          quant kernel. Re-paired with nvidia/Llama-3.1-70B-Instruct-FP8
+          (ModelOptFp8LinearMethod, cutlass_3x_gemm_sm90_fp8) -> aligned.
+        - compute_scale (standalone scaled_fp8_quant kernels) has no serving
+          instance under torch.compile: the norm_quant / act_quant fusion
+          passes fold activation quant into Inductor kernels
+          (triton_*_fused__to_copy_clamp_cutlass_scaled_mm_*). Removed from
+          the gate; report kept next to the facts. The collector row is
+          eager-only truth — flag to the SDK owner (the op-level model bills
+          it separately).
+        - vllm MLA fp8 (DeepSeek-R1): under CUDA graphs the DeepGEMM
+          projection kernels sit under quant spans the MLA hint excluded ->
+          false collector-only deepgemm drift; hint widened (gemm|deepgemm|quant)
+          like the sglang DSA hint.
+      MATRIX (results/sm90, 100 models per backend): vllm 85 pass / 9
+      pass+custom / 6 fail; sglang 87 / 6 / 7; trtllm 62 / 0 / 38. Flips vs
+      the eager matrix: GLM-5.1 / 5.2 / 5.3-NVFP4 vllm fail -> pass (the
+      generator now renders --kv-cache-dtype fp8; GLM-5-NVFP4 and
+      DeepSeek-V3.2-NVFP4 stay failed: bundled configs without
+      quantization_config, SDK data gap); Kimi-K3 (+NVFP4) vllm pass -> FAIL:
+      illegal memory access in kimi_k3 embed_input_ids during
+      compile_or_warm_up_model (CUDA-graph / compile warm-up) — --eager A/B
+      loads and serves (facts/full_reprobe/k3_eager.json), so it is a vLLM
+      0.29 K3 compile/graph defect on SM90; kda_ctx keeps its verdict against
+      the eager A/B record (raw_file recorded). sglang MiniMax-M2 / M2.5
+      fail -> pass under graphs; Llama-4-Scout pass -> fail (sglang crash).
+      Framework-mode probes: probe_eager False on all 588 new records.
+    applies_to:
+    - instrument:probe_driver
+    - instrument:path_diff
+    - framework:vllm-0.29.0
+    - framework:sglang-0.5.16
+    - framework:trtllm-1.3.0rc23
+    - platform:sm90
+    - moonshotai/Kimi-K3
+    - Qwen/Qwen3-32B-FP8-Static-PerTensor
+    - nvidia/Llama-3.1-70B-Instruct-FP8
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.

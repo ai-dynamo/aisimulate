@@ -4,25 +4,25 @@ _meta:
   version: 0.29.0
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 84
+    pass: 85
     pass+custom: 9
-    fail: 5
+    fail: 6
 results:
   MiniMaxAI/MiniMax-M2:
     verdict: pass
-    attention: MiniMaxM2Attention
+    attention: flash::FlashAttnFwdSm90
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M2.5:
     verdict: pass
-    attention: MiniMaxM2Attention
+    attention: flash::FlashAttnFwdSm90
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M2.7:
     verdict: pass
-    attention: MiniMaxM2Attention
+    attention: flash::FlashAttnFwdSm90
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
@@ -40,176 +40,184 @@ results:
     topology: tp1
   Qwen/Qwen1.5-MoE-A2.7B:
     verdict: pass
-    attention: Qwen2MoeAttention
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-0.6B:
     verdict: pass
-    attention: Qwen3Attention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-1.7B:
     verdict: pass
-    attention: Qwen3Attention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-235B-A22B:
     verdict: pass
-    attention: Qwen3MoeAttention
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-235B-A22B-FP8:
     verdict: pass
-    attention: Qwen3MoeAttention
+    attention: flash::FlashAttnFwdSm90
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-235B-A22B-Instruct-2507:
     verdict: pass
-    attention: Qwen3MoeAttention
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-30B-A3B:
     verdict: pass
-    attention: Qwen3MoeAttention
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-30B-A3B-FP8:
     verdict: pass
-    attention: Qwen3MoeAttention
+    attention: flash::FlashAttnFwdSm90
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-32B:
     verdict: pass
-    attention: Qwen3Attention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-32B-FP8:
     verdict: pass
-    attention: Qwen3Attention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-32B-FP8-Static-PerTensor:
     verdict: pass
-    attention: Qwen3Attention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-8B:
     verdict: pass
-    attention: Qwen3Attention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-Coder-480B-A35B-Instruct:
     verdict: pass
-    attention: Qwen3MoeAttention
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-235B-A22B-Instruct:
     verdict: pass
-    attention: RMSNorm
+    attention: UnquantizedFusedMoEMethod
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-2B-Instruct:
     verdict: pass
-    attention: RMSNorm
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-30B-A3B-Instruct:
     verdict: pass
-    attention: RMSNorm
+    attention: UnquantizedFusedMoEMethod
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-32B-Instruct:
     verdict: pass
-    attention: RMSNorm
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-32B-Thinking:
     verdict: pass
-    attention: RMSNorm
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-4B-Instruct:
     verdict: pass
-    attention: RMSNorm
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-8B-Instruct:
     verdict: pass
-    attention: RMSNorm
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-0.8B:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-122B-A10B:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-27B:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-2B:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-35B-A3B:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-397B-A17B:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-4B:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-9B:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     kv_allocated: auto
     topology: tp1
+  Qwen/Qwen3.8-2.4T-A95B:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: main.py generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-2.4T-A95B'' is not a valid HuggingFace model path or local path with '
+  Qwen/Qwen3.8-2.4T-A95B-FP8:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: main.py generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-2.4T-A95B-FP8'' is not a valid HuggingFace model path or local path w'
   XiaomiMiMo/MiMo-7B-Base:
     verdict: pass
-    attention: Qwen2Attention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   XiaomiMiMo/MiMo-V2-Flash:
     verdict: pass
-    attention: MiMoV2Attention
+    attention: kernel_cutlass_kernel_vllmvllm_flash_attncuteflash_fwd_sm90FlashAttentionForward
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   deepseek-ai/DeepSeek-R1:
     verdict: pass
-    attention: DeepseekV2MLAAttention
+    attention: flash::FlashAttnFwdSm90
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   deepseek-ai/DeepSeek-V3:
     verdict: pass
-    attention: DeepseekV2MLAAttention
+    attention: flash::FlashAttnFwdSm90
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
@@ -249,71 +257,69 @@ results:
     topology: tp1
   google/gemma-4-26B-A4B:
     verdict: pass
-    attention: Gemma4Attention
+    attention: kernel_cutlass_kernel_vllmvllm_flash_attncuteflash_fwd_sm90FlashAttentionForward
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   meta-llama/Llama-4-Maverick-17B-128E-Instruct:
     verdict: pass
-    attention: RMSNorm
+    attention: SiluAndMul
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   meta-llama/Llama-4-Scout-17B-16E-Instruct:
     verdict: pass
-    attention: RMSNorm
+    attention: SiluAndMul
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   meta-llama/Meta-Llama-3.1-405B:
     verdict: pass
-    attention: LlamaAttention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   meta-llama/Meta-Llama-3.1-70B:
     verdict: pass
-    attention: LlamaAttention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   meta-llama/Meta-Llama-3.1-8B:
     verdict: pass
-    attention: LlamaAttention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   mistralai/Mixtral-8x22B-v0.1:
     verdict: pass
-    attention: MixtralAttention
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   mistralai/Mixtral-8x7B-v0.1:
     verdict: pass
-    attention: MixtralAttention
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   moonshotai/Kimi-K2-Instruct:
     verdict: pass
-    attention: DeepseekV2MLAAttention
+    attention: flash::FlashAttnFwdSm90
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   moonshotai/Kimi-K2.5:
     verdict: pass
-    attention: RMSNorm
+    attention: SiluAndMul
     moe: CompressedTensorsWNA16MoE->marlin
     kv_allocated: auto
     topology: tp1
   moonshotai/Kimi-K3:
-    verdict: pass
-    attention: KimiK3DeltaAttention
-    moe: Mxfp4MoE->marlin
-    kv_allocated: auto
-    topology: tp1
+    verdict: fail
+    cause: framework gap
+    error: For debugging consider passing CUDA_LAUNCH_BLOCKING=1
   nvidia/DeepSeek-V3.1-NVFP4:
     verdict: pass
-    attention: DeepseekV2MLAAttention
-    moe: ModelOptNvFp4FusedMoE->fa3/marlin
+    attention: flash::flash_fwd_splitkv_mla_kernel
+    moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/DeepSeek-V3.2-NVFP4:
@@ -341,74 +347,75 @@ results:
     error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8_e4m3, block_size=None, use_mla=True, has_sink=False,
       use_spar'
   nvidia/GLM-5.1-NVFP4:
-    verdict: fail
-    cause: ckpt-forced fp8-KV
-    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8_e4m3, block_size=None, use_mla=True, has_sink=False,
-      use_spar'
+    verdict: pass
+    attention: FlashMLASparseImpl
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   nvidia/GLM-5.2-NVFP4:
-    verdict: fail
-    cause: ckpt-forced fp8-KV
-    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8_e4m3, block_size=None, use_mla=True, has_sink=False,
-      use_spar'
+    verdict: pass
+    attention: FlashMLASparseImpl
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   nvidia/GLM-5.3-NVFP4:
-    verdict: fail
-    cause: ckpt-forced fp8-KV
-    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8_e4m3, block_size=None, use_mla=True, has_sink=False,
-      use_spar'
+    verdict: pass
+    attention: FlashMLASparseImpl
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   nvidia/Gemma-4-26B-A4B-NVFP4:
     verdict: pass
-    attention: Gemma4Attention
+    attention: null
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Gemma-4-31B-IT-NVFP4:
     verdict: pass
-    attention: Gemma4Attention
+    attention: null
     kv_allocated: auto
     topology: tp1
   nvidia/Kimi-K2.5-NVFP4:
     verdict: pass
-    attention: RMSNorm
+    attention: SiluAndMul
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Kimi-K2.6-NVFP4:
     verdict: pass
-    attention: RMSNorm
+    attention: SiluAndMul
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Kimi-K2.7-Code-NVFP4:
     verdict: pass
-    attention: RMSNorm
+    attention: SiluAndMul
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Kimi-K3-NVFP4:
-    verdict: pass
-    attention: KimiK3DeltaAttention
-    moe: ModelOptNvFp4FusedMoE->marlin
-    kv_allocated: auto
-    topology: tp1
+    verdict: fail
+    cause: framework gap
+    error: For debugging consider passing CUDA_LAUNCH_BLOCKING=1
   nvidia/Llama-3.1-70B-Instruct-FP8:
     verdict: pass
-    attention: LlamaAttention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   nvidia/Llama-3_3-Nemotron-Super-49B-v1:
     verdict: pass
-    attention: DeciLMAttention
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   nvidia/MiniMax-M2.5-NVFP4:
     verdict: pass
-    attention: MiniMaxM2Attention
+    attention: flash::FlashAttnFwdSm90
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/MiniMax-M2.7-NVFP4:
     verdict: pass
-    attention: MiniMaxM2Attention
+    attention: flash::FlashAttnFwdSm90
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
@@ -420,96 +427,96 @@ results:
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     verdict: pass
-    attention: RMSNorm
+    attention: ReLUSquaredActivation
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
     verdict: pass
-    attention: RMSNorm
-    moe: ModelOptNvFp4FusedMoE->causal_conv1d/mamba_triton/marlin
+    attention: ReLUSquaredActivation
+    moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
     verdict: pass
-    attention: RMSNorm
+    attention: QuantFP8
     moe: ModelOptFp8MoE
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
     verdict: pass
-    attention: RMSNorm
+    attention: QuantFP8
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
     verdict: pass
-    attention: RMSNorm
+    attention: ReLUSquaredActivation
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
     verdict: pass
-    attention: RMSNorm
+    attention: ReLUSquaredActivation
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
     verdict: pass
-    attention: RMSNorm
+    attention: QuantFP8
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
     verdict: pass
-    attention: RMSNorm
+    attention: ReLUSquaredActivation
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Nemotron-H-56B-Base-8K:
     verdict: pass+custom
     extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.6"]
-    attention: RMSNorm
+    attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3-235B-A22B-NVFP4:
     verdict: pass
-    attention: Qwen3MoeAttention
-    moe: ModelOptNvFp4FusedMoE->fa3/marlin
+    attention: flash::FlashAttnFwdSm90
+    moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.5-122B-A10B-NVFP4:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.5-397B-A17B-NVFP4:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.6-27B-NVFP4:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.6-35B-A3B-NVFP4:
     verdict: pass
-    attention: GemmaRMSNorm
+    attention: ChunkGatedDeltaRule
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   openai/gpt-oss-120b:
     verdict: pass
-    attention: OAIAttention
+    attention: flash::FlashAttnFwdSm90
     moe: GptOssMxfp4MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   openai/gpt-oss-20b:
     verdict: pass
-    attention: OAIAttention
+    attention: flash::FlashAttnFwdSm90
     moe: GptOssMxfp4MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1

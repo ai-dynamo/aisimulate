@@ -18,7 +18,7 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2
+  "candidates": 1
  },
  "collector_backends": [
   "causal_conv1d",
@@ -29,7 +29,8 @@
   "cublas",
   "fa3",
   "fla_triton",
-  "flashinfer"
+  "flashinfer",
+  "torch"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,

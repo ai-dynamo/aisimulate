@@ -12,13 +12,13 @@
  "kv_dtype": "auto",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
  "serving_record": {
-  "id": "e55f5dd30dce",
+  "id": "6b26d2ab0781",
   "tp": 1,
   "kv_cache_dtype": "bfloat16",
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2
+  "candidates": 1
  },
  "collector_backends": [
   "cublas",

@@ -12,13 +12,13 @@
  "kv_dtype": null,
  "op_hint": "gemm|linear|proj|nvjet|cublas|deepgemm|scaled_mm|quant|cutlass",
  "serving_record": {
-  "id": "d76b8af8879c",
+  "id": "da6888f6c345",
   "tp": 1,
-  "kv_cache_dtype": "auto",
+  "kv_cache_dtype": "fp8",
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 3
+  "candidates": 2
  },
  "collector_backends": [
   "cublas"

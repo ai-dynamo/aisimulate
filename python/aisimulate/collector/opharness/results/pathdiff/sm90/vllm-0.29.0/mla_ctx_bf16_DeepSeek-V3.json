@@ -10,7 +10,7 @@
  "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": "auto",
- "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat",
+ "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat|gemm|deepgemm|quant",
  "serving_record": {
   "id": "c6a1dad585a8",
   "tp": 1,
@@ -18,7 +18,7 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2
+  "candidates": 1
  },
  "collector_backends": [
   "cublas",
@@ -31,6 +31,7 @@
   "deepgemm",
   "fa3",
   "sgl_kernel",
+  "torch",
   "triton_fused_moe",
   "vllm_kernel"
  ],
@@ -38,13 +39,15 @@
  "kernel_drift": null,
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
+  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "flash::FlashAttnFwdSm90",
   "flash::prepare_varlen_num_blocks_kernel",
-  "flashinfer::BatchQKApplyRotaryPosIdsCosSinCacheHeadParallelismKernel",
   "flashinfer::ConcatMLAKKernel",
   "namespace",
-  "vllm::concat_and_cache_mla_kernel",
-  "vllm::rms_norm_kernel"
+  "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
+  "nvjet_sm90_tst_176x128_64x5_1x2_h_bz_TNN",
+  "nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT",
+  "vllm::concat_and_cache_mla_kernel"
  ],
  "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

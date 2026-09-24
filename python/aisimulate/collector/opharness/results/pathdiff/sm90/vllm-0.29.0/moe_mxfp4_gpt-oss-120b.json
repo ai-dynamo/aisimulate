@@ -16,14 +16,17 @@
   "tp": 1,
   "kv_cache_dtype": "fp8",
   "isl": 4096,
-  "prefix_caching": null,
+  "prefix_caching": false,
   "raw_file": null,
-  "candidates": 3
+  "candidates": 2
  },
  "collector_backends": [
   "triton_fused_moe"
  ],
  "serving_backends": [
+  "cublas",
+  "fa3",
+  "torch",
   "triton_fused_moe"
  ],
  "collector_only_signal": [],
@@ -37,8 +40,9 @@
   "_reduce_grouped",
   "_sum_bitmatrix_rows",
   "_topk_forward",
+  "flashinfer::sampling::RadixTopKMaskLogitsKernel_MultiCTA",
   "namespace",
-  "operator"
+  "void at::native::mbtopk::gatherTopK<c10::BFloat16, unsigned int, 1>"
  ],
  "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

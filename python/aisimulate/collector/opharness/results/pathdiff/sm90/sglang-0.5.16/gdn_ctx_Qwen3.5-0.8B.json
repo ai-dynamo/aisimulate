@@ -12,11 +12,11 @@
  "kv_dtype": "auto",
  "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
  "serving_record": {
-  "id": "cacb0772b54f",
+  "id": "5aec08d64057",
   "tp": 1,
   "kv_cache_dtype": "auto",
-  "isl": null,
-  "prefix_caching": null,
+  "isl": 4096,
+  "prefix_caching": false,
   "raw_file": null,
   "candidates": 1
  },
@@ -26,6 +26,7 @@
  ],
  "serving_backends": [
   "causal_conv1d",
+  "cublas",
   "fa3",
   "fla_triton"
  ],
@@ -35,14 +36,14 @@
  "serving_kernels_matched_in_collector": [
   "ChunkGatedDeltaRuleFunction",
   "_causal_conv1d_fwd_kernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
   "chunk_fwd_kernel_o",
   "chunk_gated_delta_rule_fwd_kernel_h_blockdim64",
   "chunk_gated_delta_rule_fwd_kkt_solve_kernel",
   "chunk_local_cumsum_scalar_kernel",
   "l2norm_fwd_kernel",
-  "namespace",
-  "recompute_w_u_fwd_kernel"
+  "namespace"
  ],
  "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

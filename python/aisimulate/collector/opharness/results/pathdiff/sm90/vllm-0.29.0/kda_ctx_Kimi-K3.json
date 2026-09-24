@@ -12,13 +12,13 @@
  "kv_dtype": "auto",
  "op_hint": "kda|delta|conv1d|linear|attn_res|gated|recurr",
  "serving_record": {
-  "id": "32a94013fed2",
-  "tp": 1,
-  "kv_cache_dtype": "auto",
+  "id": "raw:k3_eager.json",
+  "tp": null,
+  "kv_cache_dtype": null,
   "isl": 4096,
   "prefix_caching": false,
-  "raw_file": null,
-  "candidates": 2
+  "raw_file": "facts/full_reprobe/k3_eager.json",
+  "candidates": 1
  },
  "collector_backends": [
   "causal_conv1d",

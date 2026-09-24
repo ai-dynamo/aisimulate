@@ -12,7 +12,7 @@
  "kv_dtype": "auto",
  "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurr",
  "serving_record": {
-  "id": "cd173764db7a",
+  "id": "92ad9d5eb0a8",
   "tp": 1,
   "kv_cache_dtype": "auto",
   "isl": 4096,

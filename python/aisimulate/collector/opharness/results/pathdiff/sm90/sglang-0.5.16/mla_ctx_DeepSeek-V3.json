@@ -22,7 +22,7 @@
  "kv_dtype": "auto",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
  "serving_record": {
-  "id": "4df52b61b921",
+  "id": "fd43089dfc3f",
   "tp": 1,
   "kv_cache_dtype": "auto",
   "isl": 4096,

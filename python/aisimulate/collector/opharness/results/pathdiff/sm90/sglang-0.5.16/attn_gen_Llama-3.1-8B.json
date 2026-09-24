@@ -22,11 +22,11 @@
  "kv_dtype": "auto",
  "op_hint": "attn|attention|flash|fwd|triton",
  "serving_record": {
-  "id": "9871bca36ca5",
+  "id": "d0eebc171e3d",
   "tp": 1,
   "kv_cache_dtype": "auto",
-  "isl": null,
-  "prefix_caching": null,
+  "isl": 4096,
+  "prefix_caching": false,
   "raw_file": null,
   "candidates": 1
  },

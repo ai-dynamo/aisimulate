@@ -6,7 +6,9 @@ OUT=ais/python/aisimulate/collector/opharness/results/pathdiff/sm90/vllm-0.29.0
 run() { local cap=$1 name=$2 repo=$3 kv=$4 hint=$5 kvarg=(); [ -n "$kv" ] && kvarg=(--kv-dtype "$kv")
   [ -f facts/pathdiff/opcov_$cap.json ] || { printf '%-40s MISSING CAPTURE\n' "$name"; return; }
   python3 $PD --diff --capture-file facts/pathdiff/opcov_$cap.json --repo "$repo" --framework vllm --version 0.29.0 "${kvarg[@]}" --op-hint "$hint" --save-verdict $OUT/$name.json 2>/dev/null | python3 -c "
-import sys,json;d=json.load(sys.stdin)
+import sys,json;t=sys.stdin.read()
+if '{' not in t: print('%-40s'%'$name','NO SERVING RECORD', t.strip()[:80]); sys.exit()
+d=json.loads(t[t.index('{'):])
 print('%-40s'%'$name', d['verdict'].upper().ljust(9), 'only_col=',d['collector_only_signal'], 'drift=',{k:v['collector_only_kernels'][:3] for k,v in (d['kernel_drift'] or {}).items()}, '| col=',d['collector_backends'], '| err=',d.get('capture_run_error'))"; }
 DSV4='dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant'
 MHC='mhc|hc_|tilelang|prenorm|norm'

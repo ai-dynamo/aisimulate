@@ -18,7 +18,7 @@
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 3
+  "candidates": 2
  },
  "collector_backends": [
   "triton_fused_moe",
@@ -26,6 +26,8 @@
  ],
  "serving_backends": [
   "cublas",
+  "torch",
+  "triton",
   "triton_fused_moe",
   "vllm_kernel"
  ],

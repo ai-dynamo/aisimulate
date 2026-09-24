@@ -12,13 +12,13 @@
  "kv_dtype": "fp8",
  "op_hint": "dsv4|dsa|csa|hca|compress|indexer|mqa|sparse|flash|attn|mla|topk|gemm|deepgemm|quant",
  "serving_record": {
-  "id": "bc7245f116c1",
+  "id": "ec4c72fb384d",
   "tp": 1,
   "kv_cache_dtype": "fp8",
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 3
+  "candidates": 2
  },
  "collector_backends": [
   "cublas",
@@ -41,16 +41,16 @@
  "kernel_drift": null,
  "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
-  "_apply_grammar_bitmask_kernel",
   "_apply_write_kernel",
   "_bad_words_kernel",
   "_build_c128a_topk_metadata_kernel",
+  "_compressed_slot_mapping_kernel",
   "_compute_global_topk_indices_and_lens_kernel",
-  "_compute_slot_mappings_kernel",
   "_compute_swa_indices_and_lens_kernel",
   "_dsv4_topk_kernel",
   "_fused_inv_rope_fp8_quant_per_head",
-  "_fused_q_kv_rmsnorm_kernel"
+  "_fused_q_kv_rmsnorm_kernel",
+  "_gather_block_tables_kernel"
  ],
  "collector_unmatched_kernels": [
   "vllm::fused_inv_rope_fp8_quant_kernel"

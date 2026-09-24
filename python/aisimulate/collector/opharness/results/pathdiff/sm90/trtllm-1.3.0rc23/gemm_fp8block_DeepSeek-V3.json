@@ -22,7 +22,7 @@
  "kv_dtype": "auto",
  "op_hint": "gemm|linear|proj|deepgemm|cutlass|cublas|quant",
  "serving_record": {
-  "id": "bad91e890026",
+  "id": "b814f7c9ef76",
   "tp": 1,
   "kv_cache_dtype": "auto",
   "isl": 4096,
