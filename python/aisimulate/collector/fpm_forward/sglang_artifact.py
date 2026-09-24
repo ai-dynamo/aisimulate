@@ -14,6 +14,7 @@ import json
 import math
 import statistics
 from pathlib import Path
+from types import SimpleNamespace
 
 from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
 
@@ -40,7 +41,26 @@ def read_receipt(parent: Path, receipt: dict) -> bytes:
     return raw
 
 
-def read_observations(manifest: dict, traces: dict[int, bytes], points: list[dict]) -> dict:
+def _trace_identity(record: dict) -> dict:
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+
+    identity = record.get("execution_identity")
+    if (
+        not isinstance(record.get("run_id"), str)
+        or not record["run_id"]
+        or not isinstance(identity, dict)
+        or set(identity) != set(EXECUTION_COLUMNS)
+        or any(not isinstance(value, str) or not value for value in identity.values())
+        or record.get("telemetry_policy") != TELEMETRY_POLICY
+        or not isinstance(record.get("context_policy"), dict)
+    ):
+        raise ValueError("SGLang raw forward execution provenance is missing or invalid")
+    return {key: record[key] for key in ("run_id", "execution_identity", "telemetry_policy", "context_policy")}
+
+
+def read_observations(
+    manifest: dict, traces: dict[int, bytes], points: list[dict], *, expected_provenance: dict | None = None
+) -> dict:
     """Reconstruct completed prefix chains and select exact frozen occurrences."""
     mappings = manifest.get("requests")
     if not isinstance(mappings, dict) or not mappings:
@@ -82,6 +102,11 @@ def read_observations(manifest: dict, traces: dict[int, bytes], points: list[dic
         selected = {}
         for line in raw.splitlines():
             record = json.loads(line)
+            identity = _trace_identity(record)
+            if expected_provenance is None:
+                expected_provenance = identity
+            if identity != expected_provenance:
+                raise ValueError("SGLang raw forward provenance differs from its expected run/execution identity")
             if record.get("tp_rank") != rank or record.get("state_protocol") != PROTOCOL:
                 raise ValueError("SGLang native rank/state protocol mismatch")
             if record.get("allocated_fake_tokens") != 0 or record.get("gpu_completed") is not True:
@@ -213,6 +238,107 @@ def read_observations(manifest: dict, traces: dict[int, bytes], points: list[dic
     return observations
 
 
+def _validate_runtime_receipts(cell, payload: dict, parent: Path, evidence: dict) -> dict:
+    """Bind the archived native runtime and both ServerArgs lifecycle views."""
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
+    from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+    from collector.glm53flash_protocol import SGLANG_CONTEXT_HEADROOM, sglang_runtime_context_length
+
+    from .sglang_driver import validate_server_args
+
+    receipts = {}
+    for key in ("runtime_preflight", "declared_config", "resolved_config"):
+        if not isinstance(evidence.get(key), dict):
+            raise ValueError(f"SGLang native {key} receipt is missing")
+        receipts[key] = json.loads(read_receipt(parent, evidence[key]))
+    pins = json.loads((Path(__file__).parent / "runtime/glm53flash_sglang/runtime-source-sha256.json").read_text())
+    audit = receipts["runtime_preflight"]
+    if (
+        audit.get("status") != "passed"
+        or audit.get("backend") != "sglang"
+        or audit.get("backend_version") != "0.5.20"
+        or audit.get("sources") != pins
+    ):
+        raise ValueError("SGLang native source audit differs from the pinned runtime")
+    policy = payload.get("context_policy")
+    if not isinstance(policy, dict) or set(policy) != {
+        "measured_context_limit",
+        "runtime_context_length",
+        "native_admission_headroom",
+    }:
+        raise ValueError("SGLang context policy is missing")
+    if any(type(value) is not int for value in policy.values()):
+        raise ValueError("SGLang context policy must contain integer limits")
+    measured = policy["measured_context_limit"]
+    if policy["native_admission_headroom"] != SGLANG_CONTEXT_HEADROOM or not 1 <= policy[
+        "runtime_context_length"
+    ] <= sglang_runtime_context_length(measured):
+        raise ValueError("SGLang native context headroom differs from the measured scope")
+    revision = payload["input_provenance"].get("tokenizer_revision")
+    models = [model for model, pin in MODEL_REVISIONS.items() if pin == revision]
+    if len(models) != 1:
+        raise ValueError("SGLang tokenizer/checkpoint revision is not pinned")
+    raw_config = get_model_config_from_model_path(models[0])["raw_config"]
+    expected_identity = dict(
+        zip(EXECUTION_COLUMNS, execution_identity(raw_config, backend="sglang", input_modality="text"), strict=True)
+    )
+    if payload.get("execution_identity") != expected_identity:
+        raise ValueError("SGLang execution identity differs from its pinned checkpoint")
+    if tuple(expected_identity[key] for key in EXECUTION_COLUMNS) != cell.execution_identity:
+        raise ValueError("SGLang native execution differs from the frozen cell")
+    declared, resolved = receipts["declared_config"], receipts["resolved_config"]
+    for label, config in (("declared", declared), ("resolved", resolved)):
+        required = {
+            "model_path",
+            "revision",
+            "tp_size",
+            "pp_size",
+            "dp_size",
+            "ep_size",
+            "attn_cp_size",
+            "nnodes",
+            "context_length",
+            "kv_cache_dtype",
+            "disable_radix_cache",
+            "chunked_prefill_size",
+        }
+        if not isinstance(config, dict) or not required.issubset(config):
+            raise ValueError(f"SGLang {label} native configuration is incomplete")
+        validate_server_args(SimpleNamespace(**config), measured_context_limit=measured)
+        if (
+            config["tp_size"] != cell.topology.tp
+            or config["revision"] != revision
+            or config["context_length"] != policy["runtime_context_length"]
+            or not isinstance(config["model_path"], str)
+            or not config["model_path"]
+            or config.get("attn_dcp_size", 1) != 1
+            or config.get("allow_auto_truncate", False)
+        ):
+            raise ValueError(f"SGLang {label} native configuration differs from the frozen execution")
+    if declared["model_path"] != resolved["model_path"]:
+        raise ValueError("SGLang resolved model path differs from its declaration")
+    graph = resolved.get("cuda_graph_config")
+    if not isinstance(graph, dict) or any(
+        not isinstance(graph.get(phase), dict) or not isinstance(graph[phase].get("backend"), str)
+        for phase in ("prefill", "decode")
+    ):
+        raise ValueError("SGLang resolved native graph policy is missing")
+    for result in payload["results"]:
+        point = result["point"]
+        query = point["total_prefill_tokens"] if point["point_type"] == "prefill" else point["batch_size"]
+        if query + point["total_kv_read_tokens"] > measured * point["batch_size"]:
+            raise ValueError("SGLang frozen point exceeds the measured context scope")
+    return _trace_identity(
+        {
+            "run_id": payload.get("run_id"),
+            "execution_identity": expected_identity,
+            "telemetry_policy": payload["producer"]["telemetry_policy"],
+            "context_policy": policy,
+        }
+    )
+
+
 def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
     if cell.state_protocol != PROTOCOL or payload.get("kvwarm", {}).get("state_protocol") != PROTOCOL:
         raise ValueError("SGLang hybrid state protocol mismatch")
@@ -226,6 +352,7 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
     ):
         raise ValueError("SGLang repetition/telemetry policy mismatch")
     evidence = payload["input_provenance"]["native_forward_manifest"]
+    expected_provenance = _validate_runtime_receipts(cell, payload, path.parent, evidence)
     manifest = json.loads(read_receipt(path.parent, evidence["requests"]))
     if manifest.get("corpus_sha256") != payload["input_provenance"]["text_sha256"]:
         raise ValueError("SGLang request manifest corpus mismatch")
@@ -258,7 +385,9 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
                 record.get("state_layout_sha256") != digest or record.get("state_layout_admitted") is not True
             ):
                 raise ValueError("SGLang forward is not bound to its allocated hybrid state")
-    observations = read_observations(manifest, traces, [result["point"] for result in payload["results"]])
+    observations = read_observations(
+        manifest, traces, [result["point"] for result in payload["results"]], expected_provenance=expected_provenance
+    )
     for result in payload["results"]:
         bid = result["point"]["benchmark_id"]
         values = [
