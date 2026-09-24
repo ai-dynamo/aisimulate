@@ -5,17 +5,17 @@ import json
 import shlex
 
 import pytest
+
+from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
 from collector.fpm_forward.cli import _parser
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.planner import build_collection_plan
 from collector.fpm_forward.runner import _render_cell
 
-from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
-
 pytestmark = pytest.mark.unit
 
 
-def plan(tmp_path, backend, model):
+def plan(tmp_path, backend, model, collector_config=None):
     points = tmp_path / "points.json"
     points.write_text(
         json.dumps(
@@ -53,7 +53,14 @@ def plan(tmp_path, backend, model):
         system="gb300",
         selected_ops=set(),
         options=FPMCollectionOptions.from_args(args),
+        collector_config=collector_config,
     )
+
+
+@pytest.mark.parametrize("backend, version", [("vllm", "0.30.0+unqualified"), ("sglang", "0.5.20+unqualified")])
+def test_explicit_unqualified_runtime_is_not_silently_relabelled(tmp_path, backend, version):
+    with pytest.raises(ValueError, match="unqualified GLM backend runtime"):
+        plan(tmp_path, backend, next(iter(MODEL_REVISIONS)), {"aic_database_version": version})
 
 
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
