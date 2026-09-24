@@ -135,11 +135,17 @@ def read_observations(manifest: dict, traces: dict[int, bytes], points: list[dic
                 if not isinstance(prompt, list) or not prompt or history[: len(prompt)] != prompt[: len(history)]:
                     raise ValueError("SGLang actual input differs from its prompt")
                 digest = hashlib.sha256(json.dumps(history, separators=(",", ":")).encode()).hexdigest()
+                if prior is not None and prompt != prior[2]:
+                    raise ValueError("SGLang request prompt changed during its native history")
+                if prefix >= len(prompt) and (
+                    prior is None or tokens != [prior[3]] or record.get("phase") != "generation"
+                ):
+                    raise ValueError("SGLang native decode input differs from its preceding sampled token")
                 if request.get("input_tokens_sha256") != digest:
                     raise ValueError("SGLang actual input history digest mismatch")
                 if type(request.get("sampled_token_id")) is not int or request["sampled_token_id"] < 0:
                     raise ValueError("SGLang lacks an actual completed sampled token")
-                previous[rid] = (forward_id, history)
+                previous[rid] = (forward_id, history, prompt, request["sampled_token_id"])
             if record.get("stage") != "measure":
                 continue
             key = (record.get("benchmark_id"), record.get("repetition"))
@@ -185,6 +191,16 @@ def read_observations(manifest: dict, traces: dict[int, bytes], points: list[dic
                 row["prefix_lengths"],
                 row["runtime_mode"],
                 row["num_padded_tokens"],
+                [
+                    (
+                        request["request_id"],
+                        request["prompt_token_ids"],
+                        request["native_query_token_ids"],
+                        request["input_tokens_sha256"],
+                        request["sampled_token_id"],
+                    )
+                    for request in row["requests"]
+                ],
             )
             for key, row in selected.items()
         }
