@@ -89,13 +89,13 @@ archive helper are deliberately insufficient. Binding verifies:
 
 ## Archive the closed campaigns on the storage host
 
-`raw_archive.py` and `raw_campaign.py` are original Apache-2.0 implementations
+`raw_archive.py`, `raw_campaign.py` and `external_control.py` are original Apache-2.0 implementations
 using only Python's standard library. They can run with Python 3.12 on the
 remote Lustre host without importing AISimulate, torch, Arrow or a GPU runtime.
 These are repository maintenance tools, not installed SDK entry points. For
-remote use, deploy `raw_archive.py` and `raw_campaign.py` together in a new
+remote use, deploy all three modules together in a new
 versioned bundle directory, retain the Apache-2.0 license, and record the exact
-AISimulate source commit and SHA256 of both files before transfer. Recheck both
+AISimulate source commit and SHA256 of every file before transfer. Recheck all
 hashes on the destination and invoke `python3.12 /bundle/raw_campaign.py`; do not
 add a generic `tools` package to the SDK wheel. The final dataset importer still
 runs the full accepted-stage/Arrow validator.
@@ -202,6 +202,83 @@ or claim an external URI was reached. Low-level archive receipts keep
 `native_or_accuracy_acceptance=NOT_EVALUATED`: byte preservation cannot grant
 native or prediction acceptance. Formal binding requires a separately accepted
 stage; synthetic/test/diagnostic markers are rejected with no production bypass.
+
+### Retain external cache-hook execution controls
+
+For a campaign using the task-private `sitecustomize.py` cache hook, the accepted
+input manifest must include an `external_control: {path, sha256}` receipt on each
+calibration/holdout role spec. This is a **post-execution attachment** preserving
+the existing launch chain: original `started.json` hashes the frozen admission
+and launcher manifest; those files enumerate the original source and CPU proof
+bytes. Attachment creation does not establish that new files existed before a
+measurement. The original native data and frozen plans remain unchanged.
+The current adapter is explicitly `sglang_pid_private_sitecustomize_v1`, pinned
+to the observed SGLang 0.5.20 launch. It requires the admitted hook at the first
+native PYTHONPATH entry and its read-only `/opt/glm53flash-cache` mount. A vLLM
+bootstrap that then invokes a packaged observer needs a separately validated
+adapter bound to its actual freeze; this adapter cannot qualify that chain.
+
+After all children have closed, create a request JSON with these fields:
+
+```json
+{
+  "original_task_root": "/lustre/task",
+  "anchors": {
+    "launcher_manifest": "launch/manifest.sha256",
+    "admission": "launch/admission.json",
+    "cache_hook": "preparation/cache-hook/sitecustomize.py",
+    "source_identity": "preparation/source.json",
+    "cache_cpu_result": "cache-cpu/609540/result.json"
+  },
+  "runs": [
+    {
+      "cell_id": "fpm-shard-<actual-child-id>",
+      "raw_root": "/lustre/task/runs/<child>/609709/artifacts/<plan-prefix>/cells/<child>/raw/node0000",
+      "started": "runs/<child>/609709/started.json",
+      "collector_provenance": "runs/<child>/609709/artifacts/<plan-prefix>/cells/<child>/raw/node0000/collector-provenance.json"
+    }
+  ]
+}
+```
+
+The abbreviated array above must enumerate **every** child from that original
+admission, with actual paths. The helper rejects missing, duplicate or wrong
+children. `--source-root` is the explicitly mapped local or storage-host task
+root, while `original_task_root` preserves the original absolute path spelling
+from the plans and launch. The physical source root and its members must be free
+of symlinks; where a site has a `/lustre` alias, use its known canonical physical
+root as `--source-root`. No original absolute path becomes an archive member.
+
+```sh
+python3.12 /bundle/external_control.py \
+  --source-root /scratch/canonical-task-root \
+  --request /scratch/new-evidence/external-control-request.json \
+  --output /scratch/new-evidence/external-control
+```
+
+Put the resulting `external-control.json` path and SHA in the original acceptance
+input manifest **before** acceptance and publication staging. Reference the same
+attachment for roles sharing one frozen launch. Only the finite launcher-manifest
+and admission-binding closure is copied, plus original per-child started/native
+provenance receipts. Source, hook, and CPU proof must already be hashed in the
+admission. Identical bytes are stored once, while distinct original paths remain
+visible. Historical failed-attempt or source-diff evidence in that closure is
+preserved as history; it is not promoted to a passing observation.
+
+Choose an archive source root containing the original per-child `started.json`
+as well as the accepted native roots. `bind` joins these original bytes to the
+archive inventory, accepted attempt/plan, frozen hook's read-only mount and native
+PYTHONPATH. It copies the small control attachment into the portable evidence
+bundle, deduplicated across roles; the dataset importer preserves and revalidates
+every byte. Neither arbitrary parent directories nor large raw payloads are
+copied into this attachment. A missing attachment is rejected when frozen plans
+mount the hook or native receipts contain `cache-setup-*`; campaigns without an
+external hook retain their existing behavior.
+
+For the first SG campaign, parent runtime preflight hashes 24 SGLang source files;
+rank evidence separately records state layout, GPU identity and cache startup.
+The control attachment preserves this distinction and creates no per-rank source
+hashes or accuracy acceptance claims.
 
 The new dataset contains the entire original publication stage and raw archive
 receipts under `campaigns/glm53flash-pr324/<stage-sha256>/`, and eight normal
