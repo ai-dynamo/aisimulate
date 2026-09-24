@@ -12,12 +12,82 @@ from aisimulate.compiler import _worker_engine_args
 from aisimulate.config.engine import EnginePredictionConfig
 from aisimulate.runner import _materialize_engine_role
 from aisimulate.sweeper.config import SearchSpace
-from aisimulate.sweeper.forward_pass_estimator import ForwardPassEstimatorResolver
+from aisimulate.sweeper.forward_pass_estimator import (
+    ForwardPassEstimatorResolutionError,
+    ForwardPassEstimatorResolver,
+)
 from aisimulate_core.sdk import RustForwardPassPerfModel
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError
 
 pytestmark = pytest.mark.unit
 SOURCE = "sglang_flashinfer_trtllm_moe"
+
+
+@pytest.mark.parametrize("source", ["", " ", "\t\n"])
+def test_sweeper_rejects_blank_kernel_source_at_input(source):
+    with pytest.raises(ValueError, match="moe_kernel_source must be a non-empty string or None"):
+        SearchSpace(model_name="Qwen/Qwen3-30B-A3B", hardware_sku="b200_sxm", moe_kernel_source=source)
+
+
+@pytest.mark.parametrize("source", [None, SOURCE, f" {SOURCE} "])
+def test_sweeper_round_trip_preserves_exact_kernel_source(source):
+    space = SearchSpace(model_name="Qwen/Qwen3-30B-A3B", hardware_sku="b200_sxm", moe_kernel_source=source)
+    restored = SearchSpace.model_validate_json(space.model_dump_json())
+    assert restored.moe_kernel_source == source
+
+
+@pytest.mark.parametrize(
+    ("mode", "fallback_policy"),
+    [
+        ("fpm_regression", "deny"),
+        ("fpm_regression", "allow"),
+        ("auto", "deny"),
+        ("auto", "allow"),
+        ("op_level", "allow"),
+    ],
+)
+def test_untrained_regression_preserves_source_but_cannot_run_offline(tmp_path, mode, fallback_policy):
+    controls = {
+        "backend_version": "0.5.17",
+        "estimation_mode": mode,
+        "fallback_policy": fallback_policy,
+        "moe_kernel_source": SOURCE,
+        # The empty root makes op-level data unavailable without a network dependency.
+        "systems_paths": [str(tmp_path)],
+    }
+    model = RustForwardPassPerfModel.best_available(
+        {"model": "Qwen/Qwen3-30B-A3B", "system": "gb300", "backend": "sglang", "worker_type": "aggregated", **controls}
+    )
+    try:
+        diagnostics = model.diagnostics()
+        assert diagnostics["provenance"]["selected_estimation_mode"] == "fpm_regression"
+        assert diagnostics["provenance"]["config"]["moe_kernel_source"] == SOURCE
+        assert diagnostics["readiness"] != "ready"
+        assert (
+            model.estimate_forward_pass_time_ms(
+                {"version": 1, "scheduled_requests": {"num_decode_requests": 1, "sum_decode_kv_tokens": 128}}
+            )
+            is None
+        )
+    finally:
+        model.close()
+
+    space = SearchSpace(model_name="Qwen/Qwen3-30B-A3B", hardware_sku="gb300", backend=["sglang"], **controls)
+    sample = {
+        "backend": "sglang",
+        "deployment_mode": "agg",
+        "hardware_sku": "gb300",
+        "tp": 1,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 1,
+        "agg_block_size": 1,
+    }
+    with pytest.raises(
+        ForwardPassEstimatorResolutionError, match="not ready; regression requires training observations"
+    ):
+        ForwardPassEstimatorResolver(space).resolve_candidate(sample)
 
 
 @pytest.mark.parametrize("source", [None, SOURCE])
