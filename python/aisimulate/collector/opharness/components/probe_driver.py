@@ -206,6 +206,13 @@ def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]
                 # per-checkpoint variants win (architectures in a mixed family
                 # each have their own layer kinds); else the family list
                 ck_variants = ck.get("variants") or variants
+                if not ck_variants:
+                    # roster repo with no dummy variant yet (config fetched, dummy
+                    # not generated): loud, not a crash — the plan still covers
+                    # every other checkpoint and the gap is visible in the log
+                    print(f"enumerate_runs: {ck['repo']} has no dummy variants — skipped "
+                          f"(run gen_dummy_models.py)", file=sys.stderr)
+                    continue
                 ck_override = (ck.get("variant_overrides") or {}).get(backend) or override
                 use_variants = ck_variants if full else [ck_override or ck_variants[0]]
                 for variant in use_variants:
@@ -648,6 +655,11 @@ def build_records() -> None:
                             # verdict must be able to select on them
                             "isl": f.get("probe_isl"),
                             "prefix_caching": f.get("probe_prefix_caching"),
+                            # execution mode: probes default to the framework's
+                            # own mode (torch.compile + CUDA graphs); eager is
+                            # an A/B. None = pre-2026-09-24 probe (eager).
+                            "probe_eager": f.get("probe_eager"),
+                            "probe_cuda_graph": f.get("probe_cuda_graph"),
                             "evidence": "real"},
                 "resolved": {k: v for k, v in sa.items() if v is not None},
                 # generator-rendered flags that differ from the framework's own

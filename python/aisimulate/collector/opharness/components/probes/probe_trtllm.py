@@ -115,6 +115,8 @@ def main() -> None:
     # sat below every length-conditional dispatch threshold.
     ap.add_argument("--isl", type=int,
                     default=int(os.environ.get("AIS_PROBE_ISL") or os.environ.get("AIC_PROBE_ISL") or "4096"))
+    ap.add_argument("--eager", action="store_true",
+                    help="drop the rendered cuda_graph_config (A/B only; default keeps the framework's own graph mode)")
     ap.add_argument("--engine-yaml", default=None,
                     help="generator-rendered extra_engine_args yaml (dynamo.trtllm contract)")
     args = ap.parse_args()
@@ -184,9 +186,11 @@ def main() -> None:
                 probe_overrides["kv_cache_config.enable_block_reuse"] = "False: profiled prefill must be cache-cold"
             kvc["enable_block_reuse"] = False
             kwargs["kv_cache_config"] = KvCacheConfig(**kvc)
-            # identity probe runs eager, matching the sglang probe
-            if eng.pop("cuda_graph_config", None) is not None:
-                probe_overrides["cuda_graph_config"] = "dropped: identity probe runs eager"
+            # the rendered cuda_graph_config IS serving's execution mode; keep
+            # it (owner decision 2026-09-24) — --eager drops it for A/B only
+            if args.eager and eng.pop("cuda_graph_config", None) is not None:
+                probe_overrides["cuda_graph_config"] = "dropped: --eager A/B run"
+            rec["probe_eager"] = bool(args.eager)
             kwargs.update(eng)
             if (kwargs.get("max_seq_len") or 0) < args.isl + 64:
                 probe_overrides["max_seq_len"] = f"raised to {args.isl + 64} to fit the {args.isl}-token probe prompt"

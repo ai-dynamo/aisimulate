@@ -126,6 +126,8 @@ def main() -> None:
     # exactly this reason, 2026-09-22). Overrides the rendered run.sh value.
     ap.add_argument("--kv-cache-dtype", default=None,
                     help="override serving --kv-cache-dtype (e.g. fp8) to probe that config")
+    ap.add_argument("--eager", action="store_true",
+                    help="force enforce_eager (A/B only; default runs the framework's own compile/graph mode)")
     args = ap.parse_args()
 
     rec: dict = {"run_sh": args.run_sh, "errors": {}, "probe_isl": None}
@@ -186,7 +188,17 @@ def main() -> None:
             rec["errors"]["config_delta"] = f"{type(e).__name__}: {e}"[:200]
         ea = EngineArgs.from_cli_args(ns)
         ea.load_format = "dummy"
-        ea.enforce_eager = True  # identity probe: no graph capture
+        # Run the framework's OWN execution mode (torch.compile + piecewise /
+        # full CUDA graphs as the rendered config resolves them). The probe
+        # used to force eager "for kernel visibility"; the device-stream
+        # tables see graph-replayed kernels, and eager is a fidelity
+        # liability: dispatch that reads capture-time shapes (sglang M3 top-k)
+        # or compile-time fusion (Inductor triton_*_fused_* kernels) differs
+        # from serving. --eager remains as an A/B escape hatch (owner
+        # decision 2026-09-24: prefill too must run under piecewise
+        # cudagraph + torch.compile to be the real serving state).
+        ea.enforce_eager = bool(args.eager)
+        rec["probe_eager"] = bool(args.eager)
         # The profiled request must be a CACHE-COLD prefill. vllm enables
         # prefix caching by default and the warmup request below uses the
         # same prompt, so with caching on the "prefill" step recomputed only

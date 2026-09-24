@@ -61,7 +61,9 @@ def main() -> None:
     # graph-replayed kernels, so the evidence stays complete. Recorded as
     # probe_cuda_graph so records can select on it.
     ap.add_argument("--cuda-graph", action="store_true",
-                    help="do not disable CUDA graphs (decode dispatch may depend on capture-time shapes)")
+                    help="(no-op alias, graphs are on by default) kept for older launchers")
+    ap.add_argument("--eager", action="store_true",
+                    help="disable CUDA graphs / piecewise graphs (A/B only; default runs the framework's own mode)")
     ap.add_argument("--trace", action="store_true",
                     help="run one eager prefill + decode under torch.profiler; record kernel names and MoE dispatch")
     ap.add_argument("--py-paths", action="store_true",
@@ -85,7 +87,10 @@ def main() -> None:
     # cuda-graph disable flags MUST be passed at construction: __post_init__
     # derives capture state from them, so post-hoc assignment is ignored
     # (verified: DSV4 decode-graph capture ran with all flags set post-hoc).
-    graph_off = {} if (args.run_forward or args.cuda_graph) else {
+    # Default: the framework's own execution mode (CUDA graphs / piecewise
+    # graphs / torch.compile as the rendered config resolves them). --eager
+    # is the A/B escape hatch; --cuda-graph is kept as a no-op alias.
+    graph_off = {} if not args.eager else {
         f: True for f in ServerArgs.__dataclass_fields__
         if "cuda_graph" in f and f.startswith("disable")
     }
@@ -134,7 +139,8 @@ def main() -> None:
             **({"kv_cache_dtype": args.kv_dtype} if args.kv_dtype else {}),
         )
     rec["cuda_graph_fields_disabled"] = sorted(graph_off)
-    rec["probe_cuda_graph"] = bool(args.run_forward or args.cuda_graph)
+    rec["probe_cuda_graph"] = not args.eager
+    rec["probe_eager"] = bool(args.eager)
     rec["probe_isl"] = args.isl
     rec["probe_prefix_caching"] = False  # disable_radix_cache on both construction paths
     rec["probe_kv_cache_dtype"] = args.kv_dtype  # kv-variant probes (fp8_e4m3); records key on it
