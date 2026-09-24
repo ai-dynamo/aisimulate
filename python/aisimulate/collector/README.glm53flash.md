@@ -214,3 +214,22 @@ interval is retained but never substituted as the Ops comparator. The common
 holdout validator checks disjoint workload geometry and request/corpus evidence,
 then calls the installed public strict Ops consumer with a 20% per-cell/phase
 MAPE gate. No graph-mode Ops data or accuracy pass is claimed by this code.
+
+## Bounded calibration shards
+
+The shared shard manifest preserves each original point ID and complete native
+5+10 repetition cohort. `glm53flash_shards.physical_ownership` computes each
+physical key's lowest original point ID from the frozen manifest before timing.
+All child shards must finish and retain separate native runs, request identities
+and evidence receipts. Shared keys require compatible runtime, dispatch, state
+and corpus; no measured latency influences ownership. Other observations remain
+in their original raw files.
+
+After `load_native` has admitted every child, call
+`publish_sharded_calibration(children, frozen_shard_manifest, destination)` with
+`children=[(child_frozen_run, child_native_receipt), ...]`. Child runs carry the
+verified `original_point_ids` mapping. Publication writes the complete parquet
+and its ownership/evidence sidecar, refusing an existing destination. The common
+acceptance utility calls `bind_sharded_calibration` with the same inputs to
+reaggregate original observations and reproduce ownership independently. Missing
+shards or unsupported requested points prevent full publication and acceptance.

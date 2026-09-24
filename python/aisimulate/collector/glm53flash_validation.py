@@ -484,7 +484,11 @@ def bind_calibration(paths: list[Path], frozen_run: dict, native_receipt: dict) 
         raise ValueError("Ops calibration manifest differs from the complete production graph")
     _bind_raw_to_forwards(root, tp)
     rows = aggregate_rank_records(
-        [root / f"rank-{rank}.jsonl" for rank in range(tp)], tp, manifest, evidence_sha256=digest
+        [root / f"rank-{rank}.jsonl" for rank in range(tp)],
+        tp,
+        manifest,
+        evidence_sha256=digest,
+        point_ids=frozen_run.get("original_point_ids"),
     )
     expected = {tuple(row[key] for key in KEY_COLUMNS): row for row in rows}
     selected = {}
@@ -517,3 +521,105 @@ def bind_calibration(paths: list[Path], frozen_run: dict, native_receipt: dict) 
         "native_runtime_run_id": native_receipt["runtime_run_id"],
         "source_plan_sha256": frozen_run["plan"]["sha256"],
     }
+
+
+def _sharded_calibration_rows(children: list[tuple[dict, dict]], frozen_shard_manifest: dict):
+    from collector.glm53flash_shards import merge_shard_rows
+
+    if not children or len({tuple(run["key"]) for run, _ in children}) != 1:
+        raise ValueError("Ops calibration shards must describe one complete deployment phase")
+    backend, fmt, tp, _ = children[0][0]["key"]
+    production = build_model_manifest(backend, fmt, tp)
+    declared = {shard["child_cell_id"]: shard for shard in frozen_shard_manifest["shards"]}
+    rows_by_shard, parents, evidence_receipts, request_ids, run_ids = {}, set(), [], set(), set()
+    for run, native in children:
+        shard = declared.get(run["cell"]["cell_id"])
+        if not shard or run["plan"]["sha256"] != shard["child_plan_sha256"] or run["role"] != "calibration":
+            raise ValueError("Ops calibration child differs from frozen shard identity")
+        point_ids = {item["native_benchmark_id"]: item["original_point_id"] for item in shard["point_map"]}
+        if run.get("original_point_ids") != point_ids:
+            raise ValueError("Ops child point ownership differs from frozen shard map")
+        if native["runtime_run_id"] in run_ids or request_ids.intersection(native["request_ids"]):
+            raise ValueError("Ops shards must preserve independent native runs and request identities")
+        run_ids.add(native["runtime_run_id"])
+        request_ids.update(native["request_ids"])
+        root = Path(native["evidence_root"])
+        receipt = _read_evidence(root)
+        if receipt["corpus_sha256"] != run["corpus"] or receipt["request_set"] != native["runtime_run_id"]:
+            raise ValueError("Ops shard evidence belongs to another native run or corpus")
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        if manifest.get("phases") != production["phases"]:
+            raise ValueError("Ops shard omits native production graph boundaries")
+        _bind_raw_to_forwards(root, tp)
+        digest = file_sha(root / "calibration-evidence.json")
+        rows = aggregate_rank_records(
+            [root / f"rank-{rank}.jsonl" for rank in range(tp)],
+            tp,
+            manifest,
+            evidence_sha256=digest,
+            point_ids=point_ids,
+        )
+        if shard["shard_id"] in rows_by_shard:
+            raise ValueError("Ops child shard was supplied twice")
+        rows_by_shard[shard["shard_id"]] = rows
+        parents.add(shard["parent_cell_id"])
+        evidence_receipts.append(
+            {"shard_id": shard["shard_id"], "evidence_sha256": digest, "runtime_run_id": native["runtime_run_id"]}
+        )
+    if len(parents) != 1:
+        raise ValueError("Ops calibration child shards belong to different parent cells")
+    rows, ownership = merge_shard_rows(production, frozen_shard_manifest, parents.pop(), rows_by_shard)
+    return rows, ownership, evidence_receipts
+
+
+def publish_sharded_calibration(
+    children: list[tuple[dict, dict]], frozen_shard_manifest: dict, destination: Path
+) -> dict:
+    """Publish only after callers admitted every child with load_native()."""
+    from collector.glm53flash_contract import write_parquet
+
+    rows, ownership, receipts = _sharded_calibration_rows(children, frozen_shard_manifest)
+    if destination.exists():
+        raise FileExistsError("never replace an existing native calibration publication")
+    write_parquet(rows, destination)
+    publication = {
+        "schema": "glm53flash_ops_shard_publication_v1",
+        "ownership": ownership,
+        "children": receipts,
+        "table_sha256": file_sha(destination),
+    }
+    destination.with_suffix(".evidence.json").write_text(canonical_json(publication) + "\n")
+    return publication
+
+
+def bind_sharded_calibration(paths: list[Path], children: list[tuple[dict, dict]], frozen_shard_manifest: dict) -> dict:
+    """Reproduce frozen ownership and validate a complete final table, without averaging shards."""
+    import pyarrow.parquet as pq
+
+    expected_rows, ownership, receipts = _sharded_calibration_rows(children, frozen_shard_manifest)
+    expected = {tuple(row[key] for key in KEY_COLUMNS): row for row in expected_rows}
+    selected = {}
+    backend, fmt, tp, phase = children[0][0]["key"]
+    for path in paths:
+        if path.name != "glm53flash_module_perf.parquet":
+            continue
+        for row in pq.read_table(path).to_pylist():
+            shape = json.loads(row["geometry"])
+            if (shape["backend"], shape["checkpoint_format"], shape.get("tp_size"), shape.get("is_context")) != (
+                backend,
+                fmt,
+                tp,
+                phase == "prefill",
+            ):
+                continue
+            key = tuple(row[column] for column in KEY_COLUMNS)
+            if (
+                key in selected
+                or key not in expected
+                or any(row[column] != expected[key][column] for column in ROW_COLUMNS)
+            ):
+                raise ValueError("consumer Ops shard rows differ from frozen ownership/native evidence")
+            selected[key] = row
+    if selected.keys() != expected.keys():
+        raise ValueError("consumer Ops table omits frozen calibration shard coverage")
+    return {"rows": len(selected), "physical_ownership_sha256": sha256_json(ownership), "children": receipts}

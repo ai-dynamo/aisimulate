@@ -448,3 +448,33 @@ def test_calibration_manifest_cannot_omit_production_graph_occurrences(tmp_path)
     native = evidence.load_native(run, tmp_path)
     with pytest.raises(ValueError, match="complete production graph"):
         evidence.bind_calibration([], run, native)
+
+
+def test_sharded_publication_revalidates_native_evidence_and_frozen_owner(tmp_path):
+    run, _, _, _, _ = native_fixture(tmp_path, "calibration")
+    run["cell"] = {"cell_id": "child"}
+    run["original_point_ids"] = {1: 7}
+    native = evidence.load_native(run, tmp_path)
+    shards = {
+        "schema_name": "aic_fpm_shard_manifest",
+        "schema_version": 1,
+        "shards": [
+            {
+                "shard_id": "only",
+                "child_cell_id": "child",
+                "child_plan_sha256": run["plan"]["sha256"],
+                "parent_cell_id": "parent",
+                "phase": "decode",
+                "point_map": [{"native_benchmark_id": 1, "original_point_id": 7, "point": run["points"][0]}],
+            }
+        ],
+    }
+    path = tmp_path / "glm53flash_module_perf.parquet"
+    publication = evidence.publish_sharded_calibration([(run, native)], shards, path)
+    assert publication["ownership"]["rows"][0]["original_point_id"] == 7
+    assert evidence.bind_sharded_calibration([path], [(run, native)], shards)["rows"] == 1
+    with pytest.raises(FileExistsError):
+        evidence.publish_sharded_calibration([(run, native)], shards, path)
+    run["original_point_ids"] = {1: 8}
+    with pytest.raises(ValueError, match="ownership differs"):
+        evidence.bind_sharded_calibration([path], [(run, native)], shards)

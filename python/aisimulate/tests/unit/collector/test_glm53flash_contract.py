@@ -195,6 +195,84 @@ def test_shared_physical_key_uses_frozen_point_owner_not_lower_latency(tmp_path)
         aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
 
 
+def shard_fixture():
+    row = {**sample_row(), "component": "mhc", "kv_seed_regime": "n/a", "state_mode": "token_only"}
+    shard_manifest = {
+        "schema_name": "aic_fpm_shard_manifest",
+        "schema_version": 1,
+        "shards": [
+            {
+                "shard_id": "a",
+                "parent_cell_id": "parent",
+                "phase": "prefill",
+                "point_map": [
+                    {
+                        "native_benchmark_id": 1,
+                        "original_point_id": 1,
+                        "point": {"batch_size": 1, "total_prefill_tokens": 128, "total_kv_read_tokens": 0},
+                    }
+                ],
+            },
+            {
+                "shard_id": "b",
+                "parent_cell_id": "parent",
+                "phase": "prefill",
+                "point_map": [
+                    {
+                        "native_benchmark_id": 1,
+                        "original_point_id": 2,
+                        "point": {"batch_size": 2, "total_prefill_tokens": 128, "total_kv_read_tokens": 128},
+                    }
+                ],
+            },
+        ],
+    }
+    rows = {
+        "a": [{**row, "owner_benchmark_id": 1, "original_point_id": 1, "latency": 9.0}],
+        "b": [
+            {
+                **row,
+                "owner_benchmark_id": 1,
+                "original_point_id": 2,
+                "latency": 1.0,
+                "request_set": "other-independent-run",
+                "evidence_sha256": "f" * 64,
+            }
+        ],
+    }
+    return manifest(row), shard_manifest, rows
+
+
+def test_frozen_shard_owner_keeps_slower_preselected_row_and_all_raw_provenance():
+    from collector.glm53flash_shards import merge_shard_rows, physical_ownership
+
+    model, shards, rows = shard_fixture()
+    frozen = physical_ownership(model, shards, "parent")["frozen"]
+    result, after = merge_shard_rows(model, shards, "parent", rows)
+    assert frozen == after
+    assert (result[0]["latency"], result[0]["evidence_sha256"]) == (9.0, "e" * 64)
+    assert rows["b"][0]["latency"] == 1.0
+
+
+@pytest.mark.parametrize("failure", ["missing_shard", "missing_row", "wrong_owner", "dispatch", "duplicate_point"])
+def test_shard_publication_rejects_incomplete_or_incompatible_evidence(failure):
+    from collector.glm53flash_shards import merge_shard_rows
+
+    model, shards, rows = shard_fixture()
+    if failure == "missing_shard":
+        rows.pop("b")
+    elif failure == "missing_row":
+        rows["b"] = []
+    elif failure == "wrong_owner":
+        rows["b"][0]["original_point_id"] = 1
+    elif failure == "dispatch":
+        rows["b"][0]["dispatch_fingerprint"] = "a" * 64
+    else:
+        shards["shards"][1]["point_map"][0]["original_point_id"] = 1
+    with pytest.raises(ValueError):
+        merge_shard_rows(model, shards, "parent", rows)
+
+
 def test_checkpoint_formats_remain_separate_physical_keys(tmp_path):
     pq = pytest.importorskip("pyarrow.parquet")
     fp8 = sample_row()
