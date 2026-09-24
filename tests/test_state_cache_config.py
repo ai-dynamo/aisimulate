@@ -291,3 +291,96 @@ def test_cli_rejects_state_cache_before_creating_unsupported_runner(tmp_path, mo
     assert error.value.code == 2
     assert "runner does not support state_cache" in capsys.readouterr().err
     assert not output.exists()
+
+
+def test_aligned_state_config_survives_public_export_and_engine_handoff(forbid_estimators):
+    state = STATE
+    config = CorePredictionConfig.model_validate(_public(state_cache=state, prefix_match_unit=16))
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    spec = prediction_to_replay_spec(config)
+    assert spec.backend_deployment.agg_engine_args["state_cache"] == state
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec["spec"]["engine"]["rank"]["state_cache"] == state
+    assert runtime.execution_spec["spec"]["engine"]["rank"]["prefix_match_unit"] == 16
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "1536", 1 << 64, 63, 65])
+def test_aligned_state_config_rejects_invalid_geometry(value):
+    with pytest.raises(ValidationError, match="prefix_match_unit"):
+        CorePredictionConfig.model_validate(_public(prefix_match_unit=value))
+
+
+def test_aligned_state_config_rejects_speculation():
+    config = _public(prefix_match_unit=16)
+    config["engine"]["speculation"] = {
+        "kind": "ngram",
+        "num_speculative_tokens": 1,
+        "acceptance_rates": [1.0],
+        "seed": 42,
+    }
+    with pytest.raises(ValidationError, match="speculative"):
+        CorePredictionConfig.model_validate(config)
+    with pytest.raises(ValueError, match="speculative"):
+        _materialize_engine_role("vllm", "", {}, {**RANK, "prefix_match_unit": 16, "aic_nextn": 1}, "agg")
+
+
+@pytest.mark.parametrize("nextn", [1, 5])
+def test_aligned_state_config_rejects_positive_nextn_at_public_validation(nextn):
+    config = _public(timing="default", prefix_match_unit=16)
+    config["engine"].update(nextn=nextn, nextn_accepted=float(nextn))
+    with pytest.raises(ValidationError, match="prefix_match_unit.*nextn > 0"):
+        CorePredictionConfig.model_validate(config)
+
+
+def test_aligned_state_config_allows_zero_nextn_through_engine_handoff(forbid_estimators):
+    raw = _public(timing="default", prefix_match_unit=16)
+    raw["engine"]["nextn"] = 0
+    config = CorePredictionConfig.model_validate(raw)
+    config = CorePredictionConfig.model_validate_json(config.model_dump_json())
+    spec = prediction_to_replay_spec(config)
+    assert "aic_nextn" not in spec.backend_deployment.agg_engine_args
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    rank = runtime.execution_spec["spec"]["engine"]["rank"]
+    assert rank.get("aic_nextn") is None
+    assert rank["prefix_match_unit"] == 16
+
+
+@pytest.mark.parametrize(
+    "shared_prefix_tokens, expected_reused_tokens",
+    [
+        pytest.param(24192, 24192, id="partial-checkpoint-hit"),
+        pytest.param(24191, 23040, id="one-token-before-checkpoint"),
+        pytest.param(0, 0, id="no-shared-prefix"),
+    ],
+)
+def test_aligned_state_config_reuses_retained_native_checkpoints(
+    forbid_estimators, shared_prefix_tokens, expected_reused_tokens
+):
+    raw = _public(
+        block_size=1536,
+        prefix_match_unit=128,
+        capacity={"type": "fixed", "blocks": 512},
+        state_cache={"bytes_per_request": 1536 * 16},
+    )
+    raw["engine"]["context_length"] = 32768
+    raw["engine"]["workers"]["aggregated"]["scheduler"] = {"max_batched_tokens": 8192}
+    raw["traffic"]["source"].update(input_tokens=24300, output_tokens=2, cached_prefix_tokens=shared_prefix_tokens)
+    raw["traffic"]["stop"]["requests"] = 2
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(raw))
+    result = EngineReplayRunnerFactory().create(0).run(spec)
+    assert result.metrics["completed_requests"] == 2
+    assert result.metrics["total_input_tokens"] == 48600
+    assert result.metrics["total_output_tokens"] == 4
+    # The first request is cold. Only the second can reuse a retained checkpoint;
+    # a positive hit ratio alone would also accept an incorrect full-block hit.
+    assert result.metrics["committed_prefill_tokens"] == 48600 - expected_reused_tokens
+    assert result.metrics["prefix_cache_reused_ratio"] == pytest.approx(expected_reused_tokens / 48600)
+
+
+def test_prefix_match_unit_requires_state_and_old_alignment_field_is_rejected():
+    with pytest.raises(ValidationError, match="requires state_cache"):
+        CorePredictionConfig.model_validate(_public(state_cache=None, prefix_match_unit=16))
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        CorePredictionConfig.model_validate(_public(state_cache={**STATE, "prefill_block_size": 1536}))

@@ -1028,6 +1028,7 @@ engine:
 | `engine.workers.<role>.kv_cache.capacity.blocks` | `null` | `x` | `-` | Positive; `fixed` capacity only. Required unless `predict` supplies `capacity.bytes`. |
 | `engine.workers.<role>.kv_cache.capacity.bytes` | `null` | `-` | `-` | `predict` only. Positive per-rank G1 byte budget; `fixed` capacity only, mutually exclusive with `blocks`. Requires explicit `block_size` and numeric `bytes_per_token`. |
 | `engine.workers.<role>.kv_cache.state_cache.bytes_per_request` | Disabled | `-` | `-` | `predict --stack engine` only, aggregated vLLM without host or G3 offload. Positive recurrent-state bytes per request per rank; requires fixed capacity and explicit block geometry. See [manual state-cache sizing](#manual-state-cache-sizing). |
+| `engine.workers.<role>.kv_cache.prefix_match_unit` | Omitted | `-` | `-` | `predict --stack engine` only. Positive divisor of `block_size`; requires manually sized aggregated vLLM G1 `state_cache`. Rejects `engine.speculation`, `engine.nextn > 0`, KV event export, and Belady eviction. See [manual state-cache sizing](#manual-state-cache-sizing). |
 | `engine.workers.<role>.kv_cache.capacity.cuda_graph_reserved_bytes` | `0` | `-` | `-` | `predict` only. Integer from `0` through `2**53`; `default` capacity only. |
 | `engine.workers.<role>.kv_cache.host_offload.num_host_blocks` | Required when `host_offload` is present | `x` | `-` | Positive; fixed descriptor, aggregated vLLM only. |
 | `engine.workers.<role>.kv_cache.host_offload.d2h_bandwidth_gbps` | `32.0` | `x` | `-` | Finite and nonnegative. |
@@ -1181,6 +1182,47 @@ Other runner stacks must explicitly advertise state-cache support; unsupported s
 It cannot be combined with host/G3 offload or disaggregated mode, and is not available in
 `recommend`. `block_size` must be explicitly set to at least two and `bytes_per_token`
 must be a positive integer, not `auto`.
+
+With state caching enabled, `prefix_match_unit` controls prefix-matching
+granularity while `block_size` still controls physical KV allocation. The match
+unit must be positive and divide `block_size`. Omitting it preserves existing
+state-cache behavior.
+
+For example, this aggregated-worker configuration allocates 1536-token KV blocks
+and allows prefix matches at 128-token boundaries. The byte sizes are
+illustrative, not measured K3 memory sizes or automatic TP/DCP sizing:
+
+```yaml
+scheduler:
+  max_batched_tokens: 8192
+kv_cache:
+  block_size: 1536
+  prefix_match_unit: 128
+  bytes_per_token: 16
+  capacity: {type: fixed, blocks: 64}
+  state_cache: {bytes_per_request: 24576}
+```
+
+Each physical block is 24576 bytes. `state_cache.bytes_per_request` specifies the
+size of one state copy, which occupies one block in this example.
+`capacity: {type: fixed, bytes: 1572864}` is equivalent to the 64-block capacity.
+Capacity covers token KV, working and cached states, and temporary copies; cached
+checkpoints may be evicted under pressure.
+
+With this configuration, a cold 24,300-token prompt finishes prefill steps at
+7680 / 15360 / 23040 / 24192 / 24300; the last step computes the remaining 108
+tokens. Only the snapshots at 23040 and 24192 are retained for reuse.
+A later request sharing 24192 tokens can resume there;
+one sharing 23700 tokens resumes at 23040. A finer match unit does not create
+state snapshots at every matching boundary.
+
+This follows [vLLM v0.29.0](https://github.com/vllm-project/vllm/blob/98dff2a81d747d1dba01a47f939f48c3526d4206/vllm/v1/core/sched/scheduler.py)
+align mode without internal prefill checkpoints or periodic retention.
+`kda_prefill_backend` and `prefix-cache-retention-interval` are not exposed;
+shared-prefix junction retention, native DCP cache-group layout and overlapping
+asynchronous forwards are not modeled. With explicit `prefix_match_unit`, use
+the default LRU eviction policy; speculative decoding, KV event export and Belady
+eviction are rejected. Prefill alignment is inactive when prefix caching is disabled.
 
 <a id="prompt-lookup-ngram-speculative-decoding"></a>
 

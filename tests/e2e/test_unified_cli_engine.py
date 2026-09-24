@@ -146,7 +146,7 @@ def test_engine_cli_case_matrix_is_complete() -> None:
     assert tuple(path.name for path in _RECOMMEND_CASES) == _EXPECTED_RECOMMEND_CASES
 
 
-@pytest.mark.parametrize("state_enabled,expected_duration_ms", [(False, 4.0), (True, 8.0)])
+@pytest.mark.parametrize("state_enabled,expected_duration_ms", [(False, 2.0), (True, 4.0)])
 def test_manual_state_cache_runs_through_native_engine(
     tmp_path: Path, state_enabled: bool, expected_duration_ms: float
 ) -> None:

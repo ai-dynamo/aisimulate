@@ -437,6 +437,10 @@ pub struct EngineConfig {
     /// Optional manual vLLM G1 token/state cache configuration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_cache: Option<StateCacheConfig>,
+    /// Prefix hash granularity; allocation still uses block_size. Explicit
+    /// values enable default align retention for manually sized vLLM G1 state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prefix_match_unit: Option<usize>,
     /// Modeled prefill-to-decode transfer bandwidth in decimal GB/s.
     pub kv_transfer_bandwidth: Option<f64>,
     /// Prompt footprint used to model disaggregated transfer time.
@@ -503,6 +507,8 @@ struct EngineConfigWire {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     state_cache: Option<StateCacheConfig>,
     #[serde(default)]
+    prefix_match_unit: Option<usize>,
+    #[serde(default)]
     g3_offload: Option<crate::engine::G3OffloadConfig>,
     #[serde(default)]
     kv_transfer_bandwidth: Option<f64>,
@@ -560,6 +566,7 @@ impl<'de> Deserialize<'de> for EngineConfig {
             native_host_offload: wire.native_host_offload,
             g3_offload: wire.g3_offload,
             state_cache: wire.state_cache,
+            prefix_match_unit: wire.prefix_match_unit,
             kv_transfer_bandwidth: wire.kv_transfer_bandwidth,
             kv_transfer_timing_mode: wire.kv_transfer_timing_mode,
             timing_model: wire.timing_model,
@@ -600,6 +607,7 @@ impl Default for EngineConfig {
             native_host_offload: None,
             g3_offload: None,
             state_cache: None,
+            prefix_match_unit: None,
             kv_transfer_bandwidth: None,
             kv_transfer_timing_mode: TransferTimingMode::FullPrompt,
             timing_model: TimingModelConfig::Polynomial,
@@ -623,6 +631,20 @@ impl EngineConfig {
     }
 
     fn validate_state_cache(&self) -> Result<()> {
+        if let Some(unit) = self.prefix_match_unit {
+            ensure!(
+                unit > 0 && self.block_size > 0 && self.block_size.is_multiple_of(unit),
+                "prefix_match_unit must be a positive divisor of block_size"
+            );
+            ensure!(
+                self.state_cache.is_some(),
+                "prefix_match_unit currently requires state_cache"
+            );
+            ensure!(
+                !self.emit_kv_events,
+                "prefix_match_unit does not yet support KV event export"
+            );
+        }
         if let Some(state_cache) = &self.state_cache {
             ensure!(
                 self.backend == Backend::Vllm,
@@ -648,6 +670,10 @@ impl EngineConfig {
             ensure!(
                 self.kv_transfer_timing_mode == TransferTimingMode::FullPrompt,
                 "state_cache does not support non-default kv_transfer_timing_mode"
+            );
+            ensure!(
+                self.prefix_match_unit.is_none() || self.aic_nextn.is_none(),
+                "prefix_match_unit does not support speculative decoding"
             );
             let bytes_per_token = self
                 .kv_cache_bytes_per_token
@@ -867,6 +893,54 @@ mod tests {
     }
 
     #[test]
+    fn state_cache_alignment_validates_and_round_trips() {
+        let mut input = state_cache_config_json();
+        input["prefix_match_unit"] = serde_json::json!(16);
+        let config: EngineConfig = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(config.prefix_match_unit, Some(16));
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(encoded["state_cache"], input["state_cache"]);
+        assert_eq!(encoded["prefix_match_unit"], input["prefix_match_unit"]);
+        serde_json::from_value::<EngineConfig>(encoded)
+            .unwrap()
+            .validate()
+            .unwrap();
+        for invalid in [0, 63, 65] {
+            input["prefix_match_unit"] = serde_json::json!(invalid);
+            assert!(
+                serde_json::from_value::<EngineConfig>(input.clone())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("prefix_match_unit")
+            );
+        }
+        input["prefix_match_unit"] = serde_json::json!(16);
+        let mut no_state = input.clone();
+        no_state.as_object_mut().unwrap().remove("state_cache");
+        assert!(
+            serde_json::from_value::<EngineConfig>(no_state)
+                .unwrap_err()
+                .to_string()
+                .contains("requires state_cache")
+        );
+        let mut events = input.clone();
+        events["emit_kv_events"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<EngineConfig>(events)
+                .unwrap_err()
+                .to_string()
+                .contains("event export")
+        );
+        input["aic_nextn"] = serde_json::json!(1);
+        assert!(
+            serde_json::from_value::<EngineConfig>(input)
+                .unwrap_err()
+                .to_string()
+                .contains("speculative")
+        );
+    }
+
+    #[test]
     fn state_cache_uses_shared_geometry_and_round_trips() {
         let config: EngineConfig = serde_json::from_value(state_cache_config_json()).unwrap();
         assert_eq!(
@@ -959,7 +1033,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             StateCacheConfig {
-                bytes_per_request: usize::MAX
+                bytes_per_request: usize::MAX,
             }
             .state_blocks(2, 1)
             .unwrap(),

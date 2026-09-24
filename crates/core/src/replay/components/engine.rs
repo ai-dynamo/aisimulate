@@ -997,6 +997,9 @@ where
 
     /// Earliest independently modeled deadline across every logical worker.
     pub(crate) fn next_internal_deadline_ms(&self) -> Option<f64> {
+        if !self.factory.can_have_internal_deadlines() {
+            return None;
+        }
         self.workers
             .iter()
             .filter_map(Option::as_ref)
@@ -1017,6 +1020,13 @@ where
         &mut self,
         now_ms: f64,
     ) -> Result<InternalEngineEffects<Observation::Batch>> {
+        if !self.factory.can_have_internal_deadlines() {
+            return Ok(InternalEngineEffects {
+                engine_events: Observation::Batch::default(),
+                made_progress: false,
+                artifact_kv_events: self.capture_artifact_kv_events.then(Box::default),
+            });
+        }
         let mut observations = Observation::Batch::default();
         let mut artifact_events = Vec::new();
         let mut made_progress = false;
@@ -1262,6 +1272,64 @@ mod tests {
             startup_time_ms,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn initially_empty_fleet_drains_later_workers_host_store() {
+        let config = ReplayEngineConfig {
+            rank: EngineConfig {
+                num_gpu_blocks: 1,
+                block_size: 4,
+                max_num_seqs: 1,
+                max_num_batched_tokens: 4,
+                kv_cache_bytes_per_token: Some(250_000),
+                native_host_offload: Some(
+                    crate::engine::NativeHostOffloadConfig::new(2).with_bandwidths(1.0, 1.0),
+                ),
+                timing_model: TimingModelConfig::Fixed {
+                    prefill_ms: 0.0,
+                    decode_ms: 0.0,
+                },
+                ..EngineConfig::default()
+            },
+            ..ReplayEngineConfig::default()
+        };
+        let factory = ReplayEngineFactory::new()
+            .role_factory(&config, WorkerStage::Aggregated, false)
+            .unwrap();
+        let mut component: EngineComponent = EngineComponent::new_with_factory(
+            SimulationWorkerStage::Aggregated,
+            EnginePassMode::Visible,
+            factory,
+            0,
+            None,
+        )
+        .unwrap();
+        assert_eq!(component.next_internal_deadline_ms(), None);
+        assert!(!component.process_internal_work(0.0).unwrap().made_progress);
+
+        let worker = component.add_worker().unwrap();
+        component
+            .dispatch(
+                worker,
+                DirectRequest {
+                    tokens: vec![1, 2, 3, 4],
+                    max_output_tokens: 0,
+                    uuid: Some(Uuid::from_u128(32)),
+                    ..Default::default()
+                },
+                0.0,
+            )
+            .unwrap();
+        component.drive_ready(0.0, None).unwrap();
+
+        assert_eq!(component.in_flight(), 0);
+        assert_eq!(component.next_internal_deadline_ms(), Some(1.0));
+        component.mark_for_removal(worker);
+        assert!(component.try_remove_drained().unwrap().is_empty());
+        assert!(!component.process_internal_work(0.5).unwrap().made_progress);
+        assert!(component.process_internal_work(1.0).unwrap().made_progress);
+        assert_eq!(component.try_remove_drained().unwrap(), vec![worker]);
     }
 
     #[test]
