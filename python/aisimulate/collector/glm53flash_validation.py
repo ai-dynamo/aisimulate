@@ -295,14 +295,18 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
     backend, fmt, tp, phase = run["key"]
     mode = run["spec"].get("ops_execution_mode", "eager")
     if mode not in ("eager", "native_full_graph") or (
-        mode == "native_full_graph" and (backend != "sglang" or phase != "decode")
+        mode == "native_full_graph" and (backend not in ("sglang", "vllm") or phase != "decode")
     ):
         raise ValueError("unsupported native Ops execution mode/backend/phase")
     graph = mode == "native_full_graph"
     if run["role"] not in ("calibration", "holdout") and not (graph and run["role"] == "control"):
         raise ValueError("unsupported native Ops dataset role")
     unprofiled = run["role"] in ("holdout", "control")
-    boundary = "native_full_graph_metadata_to_logits_gpu_v1" if graph else BOUNDARY
+    boundary = (
+        ("native_full_graph_metadata_to_logits_gpu_v1" if backend == "sglang" else "native_metadata_to_logits_gpu_v1")
+        if graph
+        else BOUNDARY
+    )
     version = expected_runtime_version(run)
     if version != BACKENDS[backend][0] and tp not in (2, 4):
         raise ValueError("repaired Ops runtime is qualified only at TP2/TP4")
@@ -381,6 +385,19 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
     rank_inputs = {}
     hardware_by_rank, hardware_uuids = {}, set()
     for rank in range(tp):
+        vllm_graph_snapshot = None
+        if graph and backend == "vllm":
+            from collector.glm53flash_vllm_graph_policy import validate_snapshot
+
+            vllm_graph_snapshot = validate_snapshot(
+                json.loads((root / f"vllm-graph-policy-rank-{rank}.json").read_bytes())
+            )
+            if (
+                vllm_graph_snapshot["tp_rank"] != rank
+                or vllm_graph_snapshot["tp_size"] != tp
+                or vllm_graph_snapshot["backend_version"] != version
+            ):
+                raise ValueError("native graph policy differs from frozen runtime/worker")
         layout = json.loads((root / f"state-layout-rank-{rank}.json").read_bytes())
         # The two adapters preserve their established semantic hash conventions.
         layout_hash = hashlib.sha256(
@@ -428,11 +445,16 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
                 raise ValueError("Ops forward lacks native rank/completion evidence")
             if row.get("state_layout_sha256") != layout_hash or row.get("state_layout_admitted") is not True:
                 raise ValueError("Ops forward state inventory differs from its retained allocation")
-            target_graph = graph and row.get("stage") == "measure"
-            if row.get("used_cuda_graph") is not target_graph or row.get("runtime_mode") != (
-                "FULL" if target_graph else "NONE"
-            ):
-                raise ValueError("Ops actual forward differs from declared eager/FULL execution")
+            if vllm_graph_snapshot is not None:
+                from collector.glm53flash_vllm_graph_export import check_dispatch
+
+                check_dispatch(row, vllm_graph_snapshot)
+            else:
+                target_graph = graph and row.get("stage") == "measure"
+                if row.get("used_cuda_graph") is not target_graph or row.get("runtime_mode") != (
+                    "FULL" if target_graph else "NONE"
+                ):
+                    raise ValueError("Ops actual forward differs from declared eager/FULL execution")
             if (
                 row.get("request_ids") != [request["request_id"] for request in row["requests"]]
                 or len(row["requests"]) != row["batch_size"]
@@ -567,6 +589,10 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         from collector.fpm_forward.glm53flash_validation import _sglang_execution_policy
 
         execution_policy = _sglang_execution_policy(json.loads((root / "sglang-resolved-config.json").read_bytes()))
+    elif graph:
+        from collector.glm53flash_vllm_graph_export import execution_policy as vllm_execution_policy
+
+        execution_policy = vllm_execution_policy(root)
     return {
         **execution_policy,
         "values": values,

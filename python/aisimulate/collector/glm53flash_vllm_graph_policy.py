@@ -14,10 +14,11 @@ from __future__ import annotations
 import bisect
 import dataclasses
 import hashlib
+import re
 from importlib.metadata import version
 from pathlib import Path
 
-from collector.glm53flash_contract import BACKENDS, canonical_json
+from collector.glm53flash_contract import BACKENDS, CHECKPOINTS, canonical_json, sha256_json
 from collector.glm53flash_runtime_identity import validate_backend_version
 
 SOURCE_PINS = {
@@ -258,3 +259,89 @@ def persist_snapshot(manager, model, rank, output):
         with path.open("xb") as stream:
             stream.write(encoded)
     return value
+
+
+def full_policy_fields(snapshot):
+    """Reduce a validated native inventory to its ordinary FULL query region.
+
+    PIECEWISE buckets outside max_num_reqs are never decode FULL coverage.
+    The complete original inventory remains in its hashed native receipt.
+    """
+    validate_snapshot(snapshot)
+    return {
+        "backend": "vllm",
+        "backend_version": snapshot["backend_version"],
+        "backend_revision": snapshot["backend_revision"],
+        "capture_sizes": [row["num_tokens"] for row in snapshot["full_graphs"]],
+        "disable_padding": False,
+        "captured_req_width": 1,
+        "native_flags": snapshot["native_flags"],
+        "source_pins": snapshot["source_pins"],
+    }
+
+
+def build_full_policy(
+    snapshots,
+    *,
+    checkpoint_format,
+    tp_size,
+    provenance,
+    resolved_config_sha256,
+    state_layout_sha256,
+    capture_registry_sha256,
+):
+    from collector.glm53flash_runtime_identity import vllm_source_pins
+
+    if checkpoint_format not in CHECKPOINTS or type(tp_size) is not int or tp_size not in (2, 4):
+        raise ValueError("native V2 graph policy has an unqualified checkpoint/topology")
+    if set(snapshots) != set(range(tp_size)):
+        raise ValueError("native V2 graph policy requires every actual TP worker")
+    common = None
+    for rank, value in snapshots.items():
+        validate_snapshot(value)
+        if value["tp_rank"] != rank or value["tp_size"] != tp_size:
+            raise ValueError("native V2 graph worker belongs to another topology")
+        candidate = {key: item for key, item in value.items() if key != "tp_rank"}
+        if common is not None and common != candidate:
+            raise ValueError("native V2 graph workers disagree on their initialized policy")
+        common = candidate
+    first = snapshots[0]
+    manifest = Path(__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-sha256.json"
+    pins = vllm_source_pins(first["backend_version"], manifest)
+    if (
+        provenance.get("backend") != "vllm"
+        or provenance.get("backend_version") != first["backend_version"]
+        or provenance.get("backend_revision") != first["backend_revision"]
+        or provenance.get("checkpoint_revision") != CHECKPOINTS[checkpoint_format][1]
+        or provenance.get("source_sha256") != sha256_json(pins)
+        or not re.fullmatch(r"[0-9a-f]{64}", provenance.get("config_sha256", ""))
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", provenance.get("runtime_digest", ""))
+        or not re.fullmatch(r"[0-9a-f]{64}", resolved_config_sha256)
+    ):
+        raise ValueError("native V2 graph policy differs from exact measured runtime/source/config")
+    fields = full_policy_fields(first)
+    for values in (state_layout_sha256, capture_registry_sha256):
+        if set(values) != set(range(tp_size)):
+            raise ValueError("native V2 graph policy omits worker state/capture evidence")
+    for rank in range(tp_size):
+        hashes = [state_layout_sha256[rank], *capture_registry_sha256[rank]]
+        if len(capture_registry_sha256[rank]) != len(fields["capture_sizes"]) or any(
+            not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value) for value in hashes
+        ):
+            raise ValueError("native V2 graph policy lacks exact FULL capture/state hashes")
+    return {
+        "schema_version": 2,
+        **fields,
+        "checkpoint_format": checkpoint_format,
+        "checkpoint_revision": CHECKPOINTS[checkpoint_format][1],
+        "tp_size": tp_size,
+        "phase": "generation",
+        "runtime_mode": "FULL",
+        "source_sha256": provenance["source_sha256"],
+        "config_sha256": provenance["config_sha256"],
+        "runtime_digest": provenance["runtime_digest"],
+        "resolved_config_sha256": resolved_config_sha256,
+        "native_policy_receipt_sha256": sha256_json({str(rank): value for rank, value in sorted(snapshots.items())}),
+        "state_layout_sha256": {str(rank): value for rank, value in sorted(state_layout_sha256.items())},
+        "capture_registry_sha256": {str(rank): value for rank, value in sorted(capture_registry_sha256.items())},
+    }

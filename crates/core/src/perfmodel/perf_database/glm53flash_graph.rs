@@ -24,13 +24,53 @@ const SG_DECODE: &str = "55892739b9c577ae43a60d5d31eac53f81e2b4aeca57ef5368b9c88
 const SG_BASE: &str = "03098df21a963d28f8075e0630a2bc1c356560449f9ca5f9e74dfb5f9892b7ed";
 const SG_FULL: &str = "0dc52a9a581636a20f5070cbb81d921bc56e4fb3394a9a1cf601747271c6905b";
 const SG_SHAPE: &str = "26e3f15209b654345a35966bd817ff8d0eb6c4c118527e78ca1e89942d5ea2c5";
+const VLLM_REVISION: &str = "ced6857afa0ea7b2e3f0846a62e1394e90f15607";
+const VLLM_STOCK_SOURCE: &str = "46cb601e49c399143db029d3cce33c2ee5216b8cdb6bf62385820b25fc67cba8";
+const VLLM_REPAIR_SOURCE: &str = "06a8cb8ab3fa89d4e82428fd32112074f50249c427a467787004ecb0a870f128";
+fn vllm_pins() -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            "v1/worker/gpu/cudagraph_utils.py".into(),
+            "6e9c042890603535e300a40df8ee159dbed1058a64a83ae50ff0329e332e05ff".into(),
+        ),
+        (
+            "v1/worker/gpu/model_runner.py".into(),
+            "174c93db921c23cf0396eee4764be25b2bd2d4b6a06e9fa41ce3598b884ce8ce".into(),
+        ),
+        (
+            "config/compilation.py".into(),
+            "c9cec5c7200e8e559810ec8c30113ad61dab6780f9f7fb3c116bd0d9b5a43065".into(),
+        ),
+        (
+            "compilation/breakable_cudagraph.py".into(),
+            "3cc427612a08e2b9b3fee47548026400c1d0776e2d4747535e59ef5512bdf1e8".into(),
+        ),
+    ])
+}
+fn vllm_flags() -> BTreeMap<String, bool> {
+    [
+        "compiled_model",
+        "varlen_decode",
+        "microbatch_runner",
+        "speculative",
+        "lora",
+        "encoder_decoder",
+        "async_scheduling",
+        "expert_parallel",
+        "prefix_caching",
+        "kda_recoverssm",
+    ]
+    .into_iter()
+    .map(|key| (key.into(), false))
+    .collect()
+}
 fn invalid(message: impl Into<String>) -> AicError {
     AicError::InvalidPerfData(message.into())
 }
 
 /// Actual initialized native policy, not a per-query table of observed answers.
-/// The initial reviewed implementation is ordinary, uncompiled SGLang FULL
-/// one-token decode. Other native backends/policies require their own audit.
+/// Ordinary uncompiled SGLang FULL (schema 1) and native V2 FULL (schema 2)
+/// one-token decode. V2 PIECEWISE buckets are excluded from this query region.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GraphPolicy {
@@ -100,21 +140,33 @@ impl GraphPolicy {
             ("metadata_glue_enabled".into(), false),
             ("reuse_output_buffer".into(), false),
         ]);
-        if self.schema_version != 1
-            || self.backend != "sglang"
-            || self.backend_version != "0.5.20"
-            || self.backend_revision != SG_REVISION
+        let sg_identity = self.schema_version == 1
+            && self.backend == "sglang"
+            && self.backend_version == "0.5.20"
+            && self.backend_revision == SG_REVISION
+            && self.source_sha256 == SG_SOURCE
+            && self.source_pins == pins
+            && self.native_flags == flags;
+        let vllm_identity = self.schema_version == 2
+            && self.backend == "vllm"
+            && self.backend_revision == VLLM_REVISION
+            && matches!(
+                (self.backend_version.as_str(), self.source_sha256.as_str()),
+                ("0.30.0", VLLM_STOCK_SOURCE)
+                    | ("0.30.0+glm53kpool.bf5f6b0e689d", VLLM_REPAIR_SOURCE)
+            )
+            && self.source_pins == vllm_pins()
+            && self.native_flags == vllm_flags()
+            && !self.disable_padding;
+        if !(sg_identity || vllm_identity)
             || self.checkpoint_revision != expected
             || !matches!(self.tp_size, 2 | 4)
             || self.phase != "generation"
             || self.runtime_mode != "FULL"
             || self.captured_req_width != 1
-            || self.source_pins != pins
-            || self.native_flags != flags
             || self.capture_sizes.is_empty()
             || self.capture_sizes[0] == 0
             || self.capture_sizes.windows(2).any(|p| p[0] >= p[1])
-            || self.source_sha256 != SG_SOURCE
             || !sha256(&self.config_sha256)
             || !sha256(&self.resolved_config_sha256)
             || !sha256(&self.native_policy_receipt_sha256)
@@ -795,6 +847,85 @@ pub(crate) mod tests {
         PerfDatabase::load(root, "testsys", "sglang", "0.5.20")
             .unwrap()
             .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL)
+    }
+    #[test]
+    fn vllm_full_table_requires_exact_runtime_and_preserves_padding_setup_geometry() {
+        for (version, source) in [
+            ("0.30.0", VLLM_STOCK_SOURCE),
+            ("0.30.0+glm53kpool.bf5f6b0e689d", VLLM_REPAIR_SOURCE),
+        ] {
+            let mut p = policy();
+            p.schema_version = 2;
+            p.backend = "vllm".into();
+            p.backend_version = version.into();
+            p.backend_revision = VLLM_REVISION.into();
+            p.source_sha256 = source.into();
+            p.native_flags = vllm_flags();
+            p.source_pins = vllm_pins();
+            p.validate().unwrap();
+            assert_eq!(p.padded_batch(3).unwrap(), 4);
+            assert!(p.padded_batch(5).is_err());
+            for defect in 0..4 {
+                let mut bad = p.clone();
+                match defect {
+                    0 => bad.source_sha256 = SG_SOURCE.into(),
+                    1 => bad.backend_version.push_str(".other"),
+                    2 => bad
+                        .native_flags
+                        .insert("compiled_model".into(), true)
+                        .map(|_| ())
+                        .unwrap(),
+                    _ => bad.disable_padding = true,
+                }
+                assert!(bad.validate().is_err());
+            }
+            let mut marker = marker();
+            if let Op::Glm53Runtime(ref mut value) = marker {
+                value.backend = "vllm".into();
+            }
+            let mut mhc = mhc();
+            if let Op::Glm53Mhc(ref mut value) = mhc {
+                value.backend = "vllm".into();
+            }
+            let mut rows = fixture();
+            let setup = literal(geometry(&body(&marker)).unwrap());
+            let physical = literal(geometry(&body(&mhc)).unwrap());
+            rows[1] = Col::Str("geometry", vec![setup, setup, physical, physical]);
+            let text = literal(serde_json::to_string(&serde_json::to_value(&p).unwrap()).unwrap());
+            rows[9] = Col::Str("graph_policy", vec![text; 4]);
+            rows[10] = Col::Str(
+                "graph_policy_sha256",
+                vec![literal(format!("{:x}", Sha256::digest(text.as_bytes()))); 4],
+            );
+            let root = tempfile::tempdir().unwrap();
+            let _ = write_energy_systems_root(root.path());
+            let path = root.path().join("data/vllm").join(version);
+            std::fs::create_dir_all(&path).unwrap();
+            write_parquet(&path.join(BASENAME), &rows);
+            let db = PerfDatabase::load(root.path(), "testsys", "vllm", version)
+                .unwrap()
+                .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL);
+            let ctx = RuntimeContext {
+                batch_size: 3,
+                num_tokens: 3,
+                s: 134,
+                ..RuntimeContext::default()
+            };
+            assert_eq!(marker.query(&db, &ctx).unwrap().latency_ms, 2.0);
+            assert_eq!(mhc.query(&db, &ctx).unwrap().latency_ms, 4.0);
+            assert!(
+                mhc.query(
+                    &db,
+                    &RuntimeContext {
+                        batch_size: 4,
+                        num_tokens: 4,
+                        ..ctx
+                    }
+                )
+                .is_err()
+            );
+            assert!(reject_mixed(&[mhc, marker], &db).is_err());
+        }
     }
     #[test]
     fn source_bound_padding_is_not_an_observed_holdout_answer_table() {

@@ -149,6 +149,7 @@ include = [
     { path = "collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/qualification/README.md", format = "wheel" },
     { path = "collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/qualification/LICENSE", format = "wheel" },
     { path = "collector/README.glm53flash.md", format = "wheel" },
+    { path = "collector/README.glm53flash-vllm-full.md", format = "wheel" },
     # Ship estimator models and profiles with their canonical implementation.
     "src/aisimulate_core/sdk/**/*.md",
     "src/aisimulate_core/systems/*.yaml",

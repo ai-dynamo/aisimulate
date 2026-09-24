@@ -189,6 +189,10 @@ def _compact_units(binding, entries):
 def read_graph_run(root: Path, run: dict) -> dict:
     """Validate graph-specific evidence; the common loader verifies native state."""
     backend, fmt, tp, phase = run["key"]
+    if backend == "vllm":
+        from collector.glm53flash_vllm_graph_export import read_vllm_run
+
+        return read_vllm_run(root, run)
     if (backend, phase) != ("sglang", "decode") or run["role"] not in ("calibration", "holdout", "control"):
         raise ValueError("graph evidence supports ordinary SGLang FULL decode only")
     calibrated = run["role"] == "calibration"
@@ -446,9 +450,19 @@ def verify_evidence(root, proof):
     return receipt
 
 
+def _same_execution_policy(left, right, label):
+    if left.get("execution_policy", {}).get("normalization") == "native_vllm_engine_args_except_seed_v1":
+        from collector.glm53flash_vllm_graph_export import same_execution_policy
+
+        same_execution_policy(left, right)
+    else:
+        from collector.fpm_forward.glm53flash_validation import _same_sglang_policy
+
+        _same_sglang_policy(left, right, label)
+
+
 def profile_control(root, proof, control_root, control_run):
     """Retain profiled/unprofiled elapsed differences, without fitting unit costs."""
-    from collector.fpm_forward.glm53flash_validation import _same_sglang_policy
     from collector.glm53flash_validation import load_native
 
     if control_run["role"] != "control" or control_run["spec"].get("ops_execution_mode") != "native_full_graph":
@@ -457,7 +471,7 @@ def profile_control(root, proof, control_root, control_run):
     if Path(native["evidence_root"]) != control_root.resolve() or control_root.resolve() == root.resolve():
         raise ValueError("graph profiling control must retain a separate original native run")
     control = read_graph_run(control_root, control_run)
-    _same_sglang_policy(proof, control, "graph calibration/profile control")
+    _same_execution_policy(proof, control, "graph calibration/profile control")
     if control["native_snapshot"] != proof["native_snapshot"] or control["provenance"] != proof["provenance"]:
         raise ValueError("graph profiling control changes actual native policy/runtime identity")
     if control["forwards"].keys() != proof["forwards"].keys():
@@ -605,7 +619,6 @@ def predict_homogeneous(run, base, config, calibration_native):
     """
     from aisimulate_core.sdk.engine import EngineHandle
     from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig
-    from collector.fpm_forward.glm53flash_validation import _same_sglang_policy
     from collector.glm53flash_validation import load_native
 
     if run["spec"].get("ops_execution_mode") != "native_full_graph" or run["role"] != "holdout":
@@ -613,10 +626,14 @@ def predict_homogeneous(run, base, config, calibration_native):
     if len(config["systems_paths"]) != 1:
         raise ValueError("initial graph prediction requires one fully receipted calibration root")
     holdout = load_native(run, base)
-    _same_sglang_policy(calibration_native, holdout, "graph calibration/holdout")
+    _same_execution_policy(calibration_native, holdout, "graph calibration/holdout")
     policy = calibration_native["graph_policy"]
     actual = holdout["graph_policy"]
     snapshot = actual["native_snapshot"]
+    if policy["backend"] == "vllm":
+        from collector.glm53flash_vllm_graph_policy import full_policy_fields
+
+        snapshot = full_policy_fields({**snapshot, "tp_rank": 0})
     policy_fields = (
         "backend",
         "backend_version",
@@ -635,7 +652,7 @@ def predict_homogeneous(run, base, config, calibration_native):
     cfg = ForwardPassPerfModelConfig(**config)
     if (
         (cfg.backend, cfg.backend_version, cfg.tp, cfg.database_mode, cfg.estimation_mode, cfg.fallback_policy)
-        != ("sglang", "0.5.20", policy["tp_size"], "SILICON", "op_level", "deny")
+        != (policy["backend"], policy["backend_version"], policy["tp_size"], "SILICON", "op_level", "deny")
         or not cfg.strict_provenance
         or cfg.nextn
         or cfg.speculation
