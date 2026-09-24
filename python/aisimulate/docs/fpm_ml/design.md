@@ -790,31 +790,116 @@ prefill 10} × trees {400, 200, 100, 50} × leaves {31, 15, 7}.
 
 **Accuracy on the GB300 SGLang data** (ten runs; same 4 × 3 layout as §3.1: rows = training
 data, columns = test data; diagonal and last row use the 60/40 time split, other cells
-train on every run of the row workload and test on every run of the column workload; MAPE).
-Each cell is **default / small**, where default = 18 features, 400 trees × 31 leaves and
-small = the recommended configuration.
+train on every run of the row workload and test on every run of the column workload;
+MAPE %). One table per configuration; the first in each group is the shipped default.
 
-Decode, small = 5 features, 100 trees × 7 leaves (lr 0.2):
+Decode:
 
-| train \ test | AgentX | ShareGPT | LongBench |
+18 features, 400 trees × 31 leaves, lr 0.05 (default)
+
+| train \\ test | AgentX | ShareGPT | LongBench |
 | --- | --- | --- | --- |
-| AgentX only | 2.34 / 2.20 | 13.5 / 15.4 | 3.0 / 2.3 |
-| ShareGPT only | 4.6 / 4.0 | 2.27 / 2.19 | 5.5 / 3.1 |
-| LongBench only | 2.8 / 3.0 | 22.5 / 24.1 | 1.86 / 1.83 |
-| all three | 2.23 / 2.15 | 2.10 / 2.09 | 1.84 / 1.84 |
+| AgentX only | 2.34 | 13.5 | 3.04 |
+| ShareGPT only | 4.63 | 2.27 | 5.52 |
+| LongBench only | 2.80 | 22.5 | 1.86 |
+| all three | 2.23 | 2.10 | 1.84 |
 
-Prefill, small = 18 features, 100 trees × 15 leaves (lr 0.2):
+5 features, 400 × 31, lr 0.05
 
-| train \ test | AgentX | ShareGPT | LongBench |
+| train \\ test | AgentX | ShareGPT | LongBench |
 | --- | --- | --- | --- |
-| AgentX only | 2.35 / 2.29 | 4.6 / 5.5 | 0.91 / 0.96 |
-| ShareGPT only | 28.8 / 29.5 | 2.74 / 2.70 | 43.3 / 39.6 |
-| LongBench only | 5.2 / 6.8 | 34.7 / 36.1 | 0.63 / 0.65 |
-| all three | 2.29 / 2.32 | 2.68 / 2.61 | 0.60 / 0.64 |
+| AgentX only | 2.33 | 14.1 | 2.68 |
+| ShareGPT only | 3.83 | 2.21 | 3.95 |
+| LongBench only | 3.01 | 22.4 | 1.85 |
+| all three | 2.23 | 2.09 | 1.84 |
 
-Same-workload cells (diagonal and last row) are equal to within 0.1 pp. Cross-workload
-cells move by up to 2–3 pp in both directions; those cells are 25–45 % for both models.
-The full grid (12 model sizes × 2 feature sets × 2 roles) is in the playground
+5 features, 200 × 7, lr 0.10
+
+| train \\ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.21 | 14.8 | 2.33 |
+| ShareGPT only | 4.50 | 2.19 | 3.03 |
+| LongBench only | 3.01 | 24.8 | 1.83 |
+| all three | 2.14 | 2.10 | 1.84 |
+
+5 features, 100 × 7, lr 0.20 (recommended)
+
+| train \\ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.20 | 15.4 | 2.34 |
+| ShareGPT only | 4.03 | 2.19 | 3.08 |
+| LongBench only | 3.02 | 24.1 | 1.83 |
+| all three | 2.15 | 2.09 | 1.84 |
+
+5 features, 50 × 7, lr 0.30
+
+| train \\ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.19 | 16.0 | 2.36 |
+| ShareGPT only | 6.72 | 2.20 | 5.14 |
+| LongBench only | 2.91 | 23.9 | 1.82 |
+| all three | 2.14 | 2.13 | 1.85 |
+
+Prefill:
+
+18 features, 400 trees × 31 leaves, lr 0.05 (default)
+
+| train \\ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.35 | 4.64 | 0.91 |
+| ShareGPT only | 28.8 | 2.74 | 43.3 |
+| LongBench only | 5.22 | 34.7 | 0.63 |
+| all three | 2.29 | 2.68 | 0.60 |
+
+18 features, 200 × 7, lr 0.10
+
+| train \\ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.21 | 3.58 | 0.95 |
+| ShareGPT only | 30.9 | 2.57 | 36.9 |
+| LongBench only | 5.31 | 42.2 | 0.62 |
+| all three | 2.30 | 2.51 | 0.65 |
+
+18 features, 100 × 15, lr 0.20 (recommended)
+
+| train \\ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.29 | 5.48 | 0.96 |
+| ShareGPT only | 29.5 | 2.70 | 39.6 |
+| LongBench only | 6.82 | 36.1 | 0.65 |
+| all three | 2.32 | 2.61 | 0.64 |
+
+18 features, 50 × 7, lr 0.30
+
+| train \\ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.34 | 3.39 | 1.06 |
+| ShareGPT only | 26.9 | 2.59 | 40.3 |
+| LongBench only | 6.44 | 67.4 | 0.66 |
+| all three | 2.36 | 2.53 | 0.78 |
+
+10 atomic features, 400 × 31, lr 0.05
+
+| train \\ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.38 | 3.28 | 0.92 |
+| ShareGPT only | 28.3 | 2.72 | 48.0 |
+| LongBench only | 7.17 | 69.1 | 0.64 |
+| all three | 2.27 | 2.66 | 0.60 |
+
+10 atomic features, 100 × 15, lr 0.20
+
+| train \\ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.35 | 3.15 | 0.95 |
+| ShareGPT only | 25.6 | 2.70 | 40.0 |
+| LongBench only | 5.16 | 71.8 | 0.64 |
+| all three | 2.30 | 2.60 | 0.64 |
+
+Same-workload cells (diagonal and last row) are equal to within 0.1 pp across every
+configuration. Cross-workload cells move by up to 2–3 pp in both directions and stay at
+the 25–70 % level for every configuration; the exceptions are the 10-feature prefill
+tables, where LongBench → ShareGPT rises to 69–72 % (§3.1, §8.8 b). Full grid: playground
 `reports/simplify_matrix_sglang_gb300.txt`.
 
 **Accuracy and time per estimate on the vLLM V4-Flash AgentX pair** (§7.2 data: one run
