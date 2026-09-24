@@ -12,15 +12,23 @@ distribution and direct Sweeper entry points emit targeted migration warnings.
 
 ## Install the replacement
 
+For the commands documented here, use a current source checkout. Follow the
+[source-install prerequisites](../../../docs/installation.md#use-current-source),
+then run these commands from the repository root:
+
 ```bash
-python -m pip uninstall -y aiconfigurator aiconfigurator-core
-python -m pip install "aisimulate==0.12.0"
+uv sync --project python/aisimulate --extra dev
+source python/aisimulate/.venv/bin/activate
+aisimulate --help
+aiconfigurator --help
 ```
 
-The `aisimulate` wheel contains the complete application and installs the
-established `aiconfigurator` command. It does not install a second top-level
-application command named `aisimulate`. The command name is independent of the
-distribution name and does not represent a separately published AIC artifact.
+The `aisimulate` wheel contains the complete application and installs both the
+established `aiconfigurator` command and the `aisimulate` command for `predict`
+and `recommend`. Both commands belong to the same wheel. The `aisimulate`
+command performs automatic host-resource admission and supervised execution.
+See the [installation guide](../../../docs/installation.md) for current
+published versions and source-install instructions.
 
 ## Keep CLI commands unchanged
 
@@ -39,7 +47,7 @@ owner without renaming the user-facing CLI.
 
 ## Migrate Sweeper code
 
-Replace direct calls to `aiconfigurator.sdk.sweep.sweep_agg`,
+Replace direct calls to `aisimulate.sdk.sweep.sweep_agg`,
 `sweep_disagg`, or `sweep_afd` with the AISimulate Sweeper and an explicit
 runner:
 
@@ -60,7 +68,7 @@ for configuration, runner, result, and adapter guidance.
 
 ## Temporary compatibility
 
-Code installed from `aisimulate==0.12.0` may temporarily continue importing
+Code using the 0.12 compatibility APIs may temporarily continue importing
 the migrated AIC namespace while it moves to the supported AISimulate APIs.
 Do not use that compatibility namespace for new integrations: it is retained
 only to make the one-release migration window non-breaking.

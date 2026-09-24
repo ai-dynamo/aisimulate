@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 
+use crate::engine::belady::BeladyOracle;
 use crate::engine::generalized::{EngineIdentity, GeneralizedMockerEngine, RankIdentity};
 use crate::engine::scheduler::{SchedulerRank, engine_seed_offset};
 use crate::engine::{EngineConfig, TimingModel};
@@ -24,6 +25,7 @@ pub type Engine = GeneralizedMockerEngine<SchedulerRank>;
 pub struct EngineFactory {
     config: EngineConfig,
     timing: Arc<dyn TimingModel>,
+    belady_oracle: Option<BeladyOracle>,
 }
 
 impl EngineFactory {
@@ -31,24 +33,52 @@ impl EngineFactory {
     pub fn new(config: EngineConfig) -> Result<Self> {
         config.validate()?;
         let timing = config.built_in_timing_model()?;
-        Ok(Self { config, timing })
+        Ok(Self {
+            config,
+            timing,
+            belady_oracle: None,
+        })
     }
 
     /// Construct a factory with a process-local timing provider.
     pub fn with_timing_model(config: EngineConfig, timing: Arc<dyn TimingModel>) -> Result<Self> {
         config.validate()?;
-        Ok(Self { config, timing })
+        Ok(Self {
+            config,
+            timing,
+            belady_oracle: None,
+        })
+    }
+
+    pub(crate) fn with_belady_oracle(mut self, oracle: BeladyOracle) -> Self {
+        self.belady_oracle = Some(oracle);
+        self
+    }
+
+    pub(crate) fn reset_timing_evidence(&self) -> Result<()> {
+        self.timing.reset_evidence()
+    }
+
+    /// Whether any rank built by this factory can produce internal deadlines.
+    /// This is a configuration capability, not whether work is currently pending.
+    pub(crate) fn can_have_internal_deadlines(&self) -> bool {
+        // G3 also uses the native host-offload adapter and requires it during validation.
+        self.config.native_host_offload.is_some()
     }
 
     /// Build one scheduler/KV/timing rank with an explicit identity.
     pub fn build_rank(&self, identity: RankIdentity) -> Result<SchedulerRank> {
         let seed_offset = engine_seed_offset(identity)?;
-        SchedulerRank::new_with_timing_model(
+        let mut rank = SchedulerRank::new_with_timing_model(
             identity,
             &self.config,
             Arc::clone(&self.timing),
             seed_offset,
-        )
+        )?;
+        if let Some(oracle) = &self.belady_oracle {
+            rank.set_belady_oracle(oracle.clone());
+        }
+        Ok(rank)
     }
 
     /// Build a single-rank or attention-DP logical engine.

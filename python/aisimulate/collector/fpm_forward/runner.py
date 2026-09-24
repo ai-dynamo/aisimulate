@@ -17,6 +17,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -30,7 +31,7 @@ from typing import Any
 
 import yaml
 
-from aiconfigurator.fpm_contract import (
+from aisimulate.fpm_contract import (
     FPM_AUXILIARY_KINDS,
     FPM_BENCHMARK_RESULT_GLOB,
     FPM_CELL_LABEL,
@@ -51,6 +52,9 @@ from .types import KVWARM_STRATEGIES
 logger = logging.getLogger(__name__)
 
 CHECKPOINT_SCHEMA = "aic-fpm-collector-checkpoint-v3"
+RUNTIME_ENV_FILENAME = "collector-runtime-env.sh"
+READINESS_TIMEOUT_ENV = "FPM_READINESS_TIMEOUT_SECONDS"
+DEFAULT_READINESS_TIMEOUT_SECONDS = 900
 # KV warm-up dominates a decode cell's wall clock (~80 min for a tep4 decode
 # sweep on MiniMax M2.7); one hour would kill the engine mid-warm-up. 10800
 # matches the r15 parity protocol's budget.
@@ -176,23 +180,180 @@ def _kubectl_command() -> list[str]:
     raise RuntimeError("neither kubectl nor tsh is available")
 
 
-# Live kubectl children, registered so an interrupt can terminate them: a
+# Live transport children, registered so an interrupt can terminate them: a
 # worker thread blocked in a subprocess wait cannot be interrupted by the main
 # thread's signal, so without this a detached campaign stopped with SIGINT or
 # SIGTERM would sit in ThreadPoolExecutor joins for up to the full exec
 # timeout before salvage/teardown could start.
 _ACTIVE_COMMANDS: set[subprocess.Popen[str]] = set()
 _ACTIVE_COMMANDS_LOCK = threading.Lock()
+_COMMAND_TERMINATION_GRACE_SECONDS = 10.0
+
+
+_COMMAND_SCOPE = threading.local()
+
+
+class _CommandCancelled(RuntimeError):
+    """An execution closed admission before this transport could run."""
+
+
+class CommandScope:
+    """One execute invocation's launch admission and owned transport groups.
+
+    Workers reserve before Popen. Cancellation closes admission under the same
+    lock used by registration, so a child returned by an in-flight Popen is
+    stopped by its launching worker even if it missed the cancellation snapshot.
+    Pool shutdown then joins those in-flight launch owners. Salvage and later
+    execute invocations have independent scopes.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.cancelled = False
+        self.inflight = 0
+        self.processes: set[subprocess.Popen[str]] = set()
+
+    def run(self, function, *args):
+        previous = getattr(_COMMAND_SCOPE, "current", None)
+        _COMMAND_SCOPE.current = self
+        try:
+            with self.lock:
+                if self.cancelled:
+                    raise _CommandCancelled("FPM execution was cancelled before worker launch")
+            return function(*args)
+        finally:
+            _COMMAND_SCOPE.current = previous
+
+    def reserve(self) -> None:
+        with self.lock:
+            if self.cancelled:
+                raise _CommandCancelled("FPM execution was cancelled before command launch")
+            self.inflight += 1
+
+    def register(self, process: subprocess.Popen[str]) -> bool:
+        with self.lock:
+            self.processes.add(process)
+            return self.cancelled
+
+    def finish(self, process: subprocess.Popen[str] | None) -> None:
+        with self.lock:
+            self.inflight -= 1
+            if process is not None:
+                self.processes.discard(process)
+
+    def cancel(self) -> None:
+        with self.lock:
+            self.cancelled = True
+            processes = list(self.processes)
+        _stop_commands(processes)
+
+
+def _cancel_preserving_interrupt(scope: CommandScope, error: BaseException) -> None:
+    try:
+        scope.cancel()
+    except Exception as cleanup_error:
+        error.add_note(f"FPM transport cleanup failed: {cleanup_error!r}")
+        logger.error("FPM transport cleanup failed during interruption", exc_info=True)
+
+
+def _darwin_group_gone_after_reap(process: subprocess.Popen[str]) -> bool:
+    # Darwin may report EPERM for a group containing only an unreaped zombie.
+    # Reap our direct child, then require ESRCH: its exit alone says nothing
+    # about surviving descendants, and EPERM can also mean genuine denial.
+    if sys.platform != "darwin" or process.poll() is None:
+        return False
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    return False
+
+
+def _signal_command(process: subprocess.Popen[str], *, force: bool) -> None:
+    with suppress(ProcessLookupError):
+        if os.name == "posix":
+            # _run_command starts each transport in its own session. Include
+            # pipe-sharing descendants even when the direct child has exited.
+            try:
+                os.killpg(process.pid, signal.SIGKILL if force else signal.SIGTERM)
+            except PermissionError:
+                if not _darwin_group_gone_after_reap(process):
+                    raise
+        elif force:
+            process.kill()
+        else:
+            process.terminate()
+
+
+def _command_group_running(process: subprocess.Popen[str]) -> bool:
+    direct_running = process.poll() is None
+    if os.name != "posix":
+        return direct_running
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        if _darwin_group_gone_after_reap(process):
+            return False
+        raise
+    return True
+
+
+def _stop_commands(processes: list[subprocess.Popen[str]]) -> None:
+    errors: list[Exception] = []
+
+    def send(process, *, force):
+        try:
+            _signal_command(process, force=force)
+        except OSError as error:
+            # On Darwin the owner may still be reaping a zombie while holding
+            # Popen's wait lock. Defer TERM EPERM to the group grace probes;
+            # persistent denial still fails, and KILL failures are never hidden.
+            if force or sys.platform != "darwin" or not isinstance(error, PermissionError):
+                errors.append(error)
+
+    for process in processes:
+        send(process, force=False)
+    deadline = time.monotonic() + _COMMAND_TERMINATION_GRACE_SECONDS
+    pending = list(processes)
+    while pending:
+        running = []
+        for process in pending:
+            try:
+                if _command_group_running(process):
+                    running.append(process)
+            except OSError as error:
+                # EPERM is not evidence of disappearance. Give Darwin's
+                # communicate owner the grace period to reap; persistent denial
+                # is reported before escalation, without skipping other groups.
+                if sys.platform != "darwin" or not isinstance(error, PermissionError) or time.monotonic() >= deadline:
+                    errors.append(error)
+                running.append(process)
+        pending = running
+        remaining = deadline - time.monotonic()
+        if not pending or remaining <= 0 or errors:
+            break
+        time.sleep(min(0.05, remaining))
+    for process in pending:
+        send(process, force=True)
+    for process in processes:
+        try:
+            process.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            errors.append(error)
+    if errors:
+        raise ExceptionGroup("FPM transport groups could not be fully cleaned up", errors)
 
 
 def terminate_active_commands() -> int:
-    """TERM every live kubectl child; returns how many were signalled."""
+    """Stop registered transport groups with bounded TERM-to-KILL escalation."""
 
     with _ACTIVE_COMMANDS_LOCK:
         processes = list(_ACTIVE_COMMANDS)
-    for process in processes:
-        with suppress(OSError):
-            process.terminate()
+    _stop_commands(processes)
     return len(processes)
 
 
@@ -245,42 +406,41 @@ def _run_command(
     check: bool = True,
     timeout: int | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    def _stop(process: subprocess.Popen[str]) -> None:
-        # Never wait on pipes here and never rely on SIGKILL alone: `tsh
-        # kubectl` re-execs itself as a pipe-sharing grandchild that SIGKILL
-        # on the wrapper cannot reach (an unbounded drain would then hang on
-        # the orphan's open pipe forever), while terminate() IS forwarded.
-        # Signal politely, give the wrapper a moment, then kill and reap the
-        # direct child only.
-        process.terminate()
-        with suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=10)
-        process.kill()
-        process.wait()
-
-    with subprocess.Popen(
-        args,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=_command_env(),
-    ) as process:
+    scope = getattr(_COMMAND_SCOPE, "current", None)
+    if scope is not None:
+        scope.reserve()
+    process = None
+    try:
+        process = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=_command_env(),
+            start_new_session=os.name == "posix",
+        )
         with _ACTIVE_COMMANDS_LOCK:
             _ACTIVE_COMMANDS.add(process)
-        try:
-            stdout, stderr = process.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired as error:
-            _stop(process)
-            raise subprocess.TimeoutExpired(args, timeout or 0, output=error.output, stderr=error.stderr) from None
-        except BaseException:
-            # Mirror subprocess.run: never abandon a live child (a hung
-            # kubectl would otherwise block Popen.__exit__'s untimed wait
-            # forever, unreachable after the registry discard below).
-            _stop(process)
-            raise
-        finally:
+        if scope is not None and scope.register(process):
+            raise _CommandCancelled("FPM execution was cancelled during command launch")
+        stdout, stderr = process.communicate(timeout=timeout)
+    except BaseException as error:
+        if process is not None:
+            try:
+                _stop_commands([process])
+            except Exception as cleanup_error:
+                error.add_note(f"FPM transport cleanup failed: {cleanup_error!r}")
+                logger.error("FPM transport cleanup failed", exc_info=True)
+        raise
+    finally:
+        if process is not None:
             with _ACTIVE_COMMANDS_LOCK:
                 _ACTIVE_COMMANDS.discard(process)
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        if scope is not None:
+            scope.finish(process)
     if check and process.returncode != 0:
         raise subprocess.CalledProcessError(process.returncode, args, output=stdout, stderr=stderr)
     return subprocess.CompletedProcess(args, process.returncode, stdout, stderr)
@@ -712,9 +872,10 @@ class KubernetesCellRunner:
         logs_dir = self.cell_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         failures = []
+        scope = CommandScope()
         pool = ThreadPoolExecutor(max_workers=len(pods))
         try:
-            futures = {pool.submit(self._run_pod, pod, timeout_seconds): pod for pod in pods}
+            futures = {pool.submit(scope.run, self._run_pod, pod, timeout_seconds): pod for pod in pods}
             for future in as_completed(futures):
                 pod = futures[future]
                 try:
@@ -725,15 +886,15 @@ class KubernetesCellRunner:
                     continue
                 (logs_dir / f"{pod}.run.stdout.log").write_text(completed.stdout)
                 (logs_dir / f"{pod}.run.stderr.log").write_text(completed.stderr)
-        except BaseException:
+        except BaseException as error:
             # An interrupt lands here while worker threads sit in kubectl
             # waits they cannot be signalled out of; kill the children first
             # so the pool join below returns promptly and salvage/teardown
             # can start.
-            terminate_active_commands()
+            _cancel_preserving_interrupt(scope, error)
             raise
         finally:
-            pool.shutdown(wait=True)
+            pool.shutdown(wait=True, cancel_futures=True)
         if failures:
             raise RuntimeError(f"staged FPM fpm_exec.sh failed: {failures}")
 
@@ -890,6 +1051,85 @@ class KubernetesCellRunner:
             time.sleep(CLEANUP_PROBE_INTERVAL_SECONDS)
 
 
+POINTS_FILENAME = "benchmark-points.json"
+POINTS_RECEIPT_FILENAME = "point_manifest_receipt.json"
+
+
+def _frozen_points(plan: FPMCollectionPlan) -> str | None:
+    canonical = getattr(plan.options, "benchmark_points_json", None)
+    if canonical is None:
+        return None
+    expected = getattr(plan.options, "benchmark_points_sha256", None)
+    if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != expected:
+        raise ValueError("frozen benchmark-points payload and SHA256 disagree")
+    return canonical
+
+
+def _stage_points_file(plan: FPMCollectionPlan, cell_dir: Path) -> list[Path]:
+    canonical = _frozen_points(plan)
+    if canonical is None:
+        return []
+    path = cell_dir / POINTS_FILENAME
+    path.write_bytes(canonical.encode("utf-8"))
+    return [path]
+
+
+def _record_points_receipts(resource, pods, plan, cell, attempt_id: str, *, phase: str) -> None:
+    if _frozen_points(plan) is None:
+        return
+    payload = json.dumps(
+        {
+            "plan_sha256": plan.sha256,
+            "cell_id": cell.cell_id,
+            "attempt_id": attempt_id,
+            "sha256": plan.options.benchmark_points_sha256,
+            "phase": phase,
+        },
+        sort_keys=True,
+    )
+    # The same check runs inside Kubernetes and Slurm containers, before and
+    # after native execution. It does not modify Generator's emitted scripts.
+    script = (
+        "import hashlib,json,pathlib,sys; receipt=json.loads(sys.argv[1]); "
+        "actual=hashlib.sha256(pathlib.Path(sys.argv[2]).read_bytes()).hexdigest()\n"
+        "if actual != receipt['sha256']: raise ValueError('runtime benchmark-points SHA256 mismatch')\n"
+        "pathlib.Path(sys.argv[3]).write_text(json.dumps(receipt,sort_keys=True))"
+    )
+    execute = getattr(resource, "_exec_checked", None) or resource._exec
+    for pod in pods:
+        execute(
+            pod,
+            [
+                "python3",
+                "-c",
+                script,
+                payload,
+                f"{REMOTE_WORKDIR}/{POINTS_FILENAME}",
+                f"{FPM_RESULTS_DIR}/{POINTS_RECEIPT_FILENAME}",
+            ],
+            timeout=300,
+        )
+
+
+def _validate_points_receipts(plan, cell, raw_root: Path, attempt_id: str) -> None:
+    if _frozen_points(plan) is None:
+        return
+    owners = sorted(raw_root.rglob(COLLECTOR_PROVENANCE_FILENAME))
+    if not owners:
+        raise ValueError("explicit benchmark points have no runtime receipt owners")
+    expected = {
+        "plan_sha256": plan.sha256,
+        "cell_id": cell.cell_id,
+        "attempt_id": attempt_id,
+        "sha256": plan.options.benchmark_points_sha256,
+        "phase": "after",
+    }
+    for owner in owners:
+        path = owner.parent / POINTS_RECEIPT_FILENAME
+        if json.loads(path.read_text()) != expected:
+            raise ValueError(f"runtime benchmark-points receipt mismatch: {path}")
+
+
 def _cell_generator_overrides(
     plan: FPMCollectionPlan,
     cell: FPMCell,
@@ -897,6 +1137,10 @@ def _cell_generator_overrides(
     *,
     smoke: bool = False,
 ) -> dict[str, Any]:
+    explicit_points = _frozen_points(plan)
+    enforce_eager = bool(getattr(plan.options, "enforce_eager", False))
+    if explicit_points is not None and smoke:
+        raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
     unsupported_base = set(base) - {"K8sConfig", "generator_dynamo_version"}
     if unsupported_base:
         raise ValueError(f"FPM runner accepts deployment-only Generator inputs, got {sorted(unsupported_base)}")
@@ -926,6 +1170,15 @@ def _cell_generator_overrides(
         "--max-model-len",
         str(plan.options.vllm_max_model_len),
     ]
+    if enforce_eager:
+        scheduler_args.append("--enforce-eager")
+    if explicit_points is not None:
+        payload = json.loads(explicit_points)
+        if not payload[cell.workload_kind]:
+            raise ValueError(f"benchmark-points manifest has no {cell.workload_kind} points for this cell")
+        scheduler_args.extend(["--benchmark-points-file", f"{REMOTE_WORKDIR}/{POINTS_FILENAME}"])
+    if cell.workload_kind == "decode" and getattr(plan.options, "max_decode_batch_size", None):
+        scheduler_args.extend(["--max-num-seqs", str(plan.options.max_decode_batch_size)])
     if cell.workload_kind == "prefill" and not smoke:
         profile = plan.options.prefill_sampling
         compilation_config = {
@@ -936,14 +1189,16 @@ def _cell_generator_overrides(
             [
                 "--max-num-batched-tokens",
                 str(profile.max_total_prefill_tokens),
-                "--compilation-config",
-                json.dumps(compilation_config, sort_keys=True, separators=(",", ":")),
                 "--prefill-max-new-token-samples",
                 str(profile.max_new_token_samples),
                 "--prefill-max-kv-read-token-samples",
                 str(profile.max_kv_read_token_samples),
             ]
         )
+        if not enforce_eager:
+            scheduler_args.extend(
+                ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
+            )
         if profile.max_batch_size is not None:
             scheduler_args.extend(["--max-num-seqs", str(profile.max_batch_size)])
     elif smoke:
@@ -969,6 +1224,16 @@ def _cell_generator_overrides(
             )
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
+    if architecture == "DeepseekV41ForCausalLM":
+        if plan.options.decoder_replay:
+            raise NotImplementedError("vLLM DeepSeek-V4.1 true decoder replay is not verified")
+        model_args.extend(
+            ["--language-model-only", "--tokenizer-mode=deepseek_v41", '--engram-config={"cpu_offload":false}']
+        )
+        if cell.workload_kind == "decode" or smoke:
+            model_args.extend(["--max-num-batched-tokens", str(plan.options.max_prefill_isl)])
+        if cell.workload_kind == "prefill" and smoke and plan.options.max_prefill_batch_size:
+            model_args.extend(["--max-num-seqs", str(plan.options.max_prefill_batch_size)])
     if architecture == "GlmMoeDsaForCausalLM":
         # This is the serving path validated by the pinned GLM-5.2 vLLM image.
         # The parser does not alter FPM scheduling, but keeping the model's
@@ -978,6 +1243,16 @@ def _cell_generator_overrides(
         {"name": FPM_ENGINE_BENCHMARK_OUTPUT_ENV, "value": f"{FPM_RESULTS_DIR}/benchmark.json"},
         {"name": FPM_RUN_ID_ENV, "value": cell.cell_id},
     ]
+    if architecture == "DeepseekV41ForCausalLM":
+        from aisimulate_core.sdk.deepseek_v41 import MODEL_REVISION
+
+        env.extend(
+            [
+                {"name": "DYN_FPM_DSV41_REAL_KV", "value": "1"},
+                {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
+                {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISION},
+            ]
+        )
     total_gpus = cell.topology.total_gpus
     generated = {
         "ServiceConfig": service,
@@ -1030,9 +1305,34 @@ def _cell_generator_overrides(
         if existing is not None and existing != item:
             raise ValueError(f"conflicting FPM environment value for {name}")
         resolved_env[name] = copy.deepcopy(item)
+    if architecture == "DeepseekV41ForCausalLM":
+        # Image layout belongs to this source-pinned adapter. An explicitly
+        # configured path uses the existing deployment environment interface;
+        # both preflight and generated run.sh receive the same resolved value.
+        configured = resolved_env.get("PYTHONPATH")
+        if configured is None:
+            adapter = Path(__file__).parent / "runtime" / "dsv41" / "runtime-paths.json"
+            python_path = json.loads(adapter.read_text())["python_path"]
+        else:
+            python_path = configured.get("value")
+        if not isinstance(python_path, str) or not python_path:
+            raise ValueError("V4.1 PYTHONPATH must name explicit absolute runtime paths")
+        paths = python_path.split(":")
+        if any(not part or not PurePosixPath(part).is_absolute() or "\n" in part or "\r" in part for part in paths):
+            raise ValueError("V4.1 PYTHONPATH must name explicit absolute runtime paths")
+        python_path = ":".join([REMOTE_WORKDIR, *(part for part in paths if part != REMOTE_WORKDIR)])
+        resolved_env["PYTHONPATH"] = {"name": "PYTHONPATH", "value": python_path}
+    readiness = resolved_env.get(READINESS_TIMEOUT_ENV, {}).get("value", DEFAULT_READINESS_TIMEOUT_SECONDS)
+    if isinstance(readiness, bool) or not re.fullmatch(r"[1-9][0-9]*", str(readiness)) or int(readiness) > 3600:
+        raise ValueError(f"{READINESS_TIMEOUT_ENV} must be an integer from 1 through 3600")
+    resolved_env[READINESS_TIMEOUT_ENV] = {"name": READINESS_TIMEOUT_ENV, "value": str(readiness)}
     merged.setdefault("K8sConfig", {})["extra_env"] = list(resolved_env.values())
 
     policy_args = ((policy.get("params") or {}).get("agg") or {}).get("extra_cli_args") or []
+    if any(str(arg).split("=", 1)[0] in {"--enforce-eager", "--no-enforce-eager"} for arg in policy_args):
+        raise ValueError("eager execution must be supplied through --fpm-enforce-eager")
+    if any(str(arg).split("=", 1)[0] == "--benchmark-points-file" for arg in policy_args):
+        raise ValueError("benchmark points must be supplied through --fpm-benchmark-points-file")
     if cell.workload_kind == "decode":
         prefix_caching = _decode_prefix_caching_mode(cell)
         policy_disables = any(
@@ -1080,6 +1380,14 @@ def _configured_sampling_metadata(
     *,
     smoke: bool,
 ) -> dict[str, int | str]:
+    canonical = _frozen_points(plan)
+    if canonical is not None:
+        if smoke:
+            raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
+        return {
+            "benchmark_points_sha256": plan.options.benchmark_points_sha256,
+            "requested_point_count": len(json.loads(canonical)[cell.workload_kind]),
+        }
     if cell.workload_kind != "prefill":
         # Derive checkpoint evidence from the same strategy predicate used to
         # render the engine flags. _cell_generator_overrides rejects policy
@@ -1095,6 +1403,27 @@ def _configured_sampling_metadata(
     }
 
 
+def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> None:
+    # Generator owns run.sh and fpm_env.sh. Mirror only startup inputs through
+    # this Collector-owned file because Slurm does not start a Kubernetes Pod
+    # with extra_env, and run.sh's exports happen after the preflight process.
+    names = {
+        READINESS_TIMEOUT_ENV,
+        "PYTHONPATH",
+        "DYN_FPM_DSV41_REAL_KV",
+        "DYN_FPM_INPUT_TEXT",
+        "DYN_FPM_TOKENIZER_REVISION",
+    }
+    lines = ["# Generated Collector startup environment; engine settings remain in run.sh."]
+    for item in overrides["K8sConfig"]["extra_env"]:
+        if item["name"] in names:
+            value = item.get("value")
+            if not isinstance(value, str):
+                raise ValueError(f"Collector startup environment {item['name']} requires a literal string")
+            lines.append(f"export {item['name']}={shlex.quote(value)}")
+    (cell_dir / RUNTIME_ENV_FILENAME).write_text("\n".join(lines) + "\n")
+
+
 def _render_cell(
     plan: FPMCollectionPlan,
     cell: FPMCell,
@@ -1103,9 +1432,9 @@ def _render_cell(
     *,
     smoke: bool = False,
 ) -> dict[str, Any]:
-    from aiconfigurator.generator.api import generate_from_request
-    from aiconfigurator.generator.naive import build_naive_generator_params
-    from aiconfigurator.generator.request import from_legacy_params
+    from aisimulate.generator.api import generate_from_request
+    from aisimulate.generator.naive import build_naive_generator_params
+    from aisimulate.generator.request import from_legacy_params
 
     overrides = _cell_generator_overrides(
         plan,
@@ -1149,6 +1478,7 @@ def _render_cell(
         raise ValueError(f"invalid GeneratorRequest for {cell.cell_id}: {errors}")
     artifacts = generate_from_request(request, output_dir=str(cell_dir))
     _atomic_json(cell_dir / "generator-request.json", params)
+    _write_runtime_environment(cell_dir, overrides)
     return artifacts
 
 
@@ -1241,7 +1571,24 @@ def _runtime_timing_summary(raw_root: Path) -> dict[str, int | float]:
     }
 
 
-def _salvage_artifacts(resource: KubernetesCellRunner, cell_id: str) -> None:
+def _cell_runner(plan: FPMCollectionPlan, cell: FPMCell, manifest: Path, cell_dir: Path):
+    executor = getattr(plan.options, "executor", "kubernetes")
+    if executor == "slurm":
+        from .slurm import SlurmCellRunner
+
+        return SlurmCellRunner(
+            manifest,
+            cell_dir,
+            image=plan.options.slurm_container_image,
+            mounts=plan.options.slurm_container_mounts,
+            total_gpus=cell.topology.total_gpus,
+        )
+    if executor != "kubernetes":
+        raise ValueError(f"unknown FPM executor {executor!r}")
+    return KubernetesCellRunner(manifest, cell_dir)
+
+
+def _salvage_artifacts(resource, cell_id: str) -> None:
     """Best-effort artifact salvage after a failed or interrupted attempt.
 
     kubectl-exec disconnects do not stop pod processes, so the runtime may
@@ -1311,6 +1658,7 @@ def _recover_completed_attempt(
     cell_dir = root / "cells" / cell.cell_id
     try:
         attempt_id = _required_attempt_id(entry, cell.cell_id)
+        _validate_points_receipts(plan, cell, cell_dir / "raw", attempt_id)
         _runtime_collection_summary(
             cell,
             cell_dir / "raw",
@@ -1342,7 +1690,7 @@ def _recover_completed_attempt(
             )
             return None
         try:
-            KubernetesCellRunner(manifest, cell_dir).cleanup()
+            _cell_runner(plan, cell, manifest, cell_dir).cleanup()
         except Exception as error:
             logger.warning(
                 "FPM cell %s recovery refused: teardown of the abandoned workload failed: %s",
@@ -1466,6 +1814,8 @@ def _run_collection_impl(
     database_root: str | None = None,
     publish_partial: bool = False,
 ) -> list[dict[str, object]]:
+    if _frozen_points(plan) is not None and smoke:
+        raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
     run_started_at = _utc_now()
     root = Path(artifact_root).expanduser().resolve() / plan.sha256[:16]
     if smoke:
@@ -1498,6 +1848,12 @@ def _run_collection_impl(
                 Path(str(database_entry.get("parquet", ""))).expanduser(),
                 Path(str(database_entry.get("metadata", ""))).expanduser(),
                 plan,
+                expected_attempt_ids={
+                    cell.cell_id: _required_attempt_id(checkpoint["cells"].get(cell.cell_id, {}), cell.cell_id)
+                    for cell in plan.cells
+                },
+                reused_cell_ids=tuple(database_entry.get("skipped_first_publisher_wins", ())),
+                expected_cell_rows=database_entry.get("cell_rows"),
             )
         except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as error:
             logger.warning("Completed FPM database checkpoint failed validation; rebuilding: %s", error)
@@ -1533,6 +1889,12 @@ def _run_collection_impl(
         entry = checkpoint["cells"].get(cell.cell_id)
         if not isinstance(entry, dict) or entry.get("status") != "passed":
             continue
+        # A validated terminal database no longer depends on retained raw
+        # receipts. Unpublished cells still need them before publication.
+        if not formal_database_terminal and _frozen_points(plan) is not None:
+            _validate_points_receipts(
+                plan, cell, root / "cells" / cell.cell_id / "raw", _required_attempt_id(entry, cell.cell_id)
+            )
         # This refresh only polishes checkpoint metadata for cells whose
         # results were already validated and published; raw artifacts that
         # are no longer readable (disk reclaimed, resume from a different
@@ -1576,6 +1938,31 @@ def _run_collection_impl(
             continue
 
         cell_dir = root / "cells" / cell.cell_id
+        if getattr(plan.options, "executor", "kubernetes") == "slurm":
+            abandoned_manifest = cell_dir / FPM_MANIFEST_FILENAME
+            if abandoned_manifest.exists():
+                # Shared result mounts stay writable until the old step exits.
+                # Verify teardown before replacing any part of that directory.
+                try:
+                    _cell_runner(plan, cell, abandoned_manifest, cell_dir).cleanup()
+                except Exception as error:
+                    checkpoint["cells"][cell.cell_id] = {
+                        **previous,
+                        "status": "cleanup_failed",
+                        "cleanup_error": str(error),
+                        "artifact_dir": str(cell_dir),
+                    }
+                    errors.append(
+                        {
+                            "module": "fpm_forward",
+                            "cell_id": cell.cell_id,
+                            "error_type": type(error).__name__,
+                            "error_message": str(error),
+                            "classification": "resource_cleanup_failed",
+                        }
+                    )
+                    _atomic_json(checkpoint_path, checkpoint)
+                    continue
         if cell_dir.exists() and not resume:
             shutil.rmtree(cell_dir)
         cell_dir.mkdir(parents=True, exist_ok=True)
@@ -1615,12 +2002,13 @@ def _run_collection_impl(
             manifest = cell_dir / FPM_MANIFEST_FILENAME
             run_script = cell_dir / FPM_RUN_SCRIPT_FILENAME
             env_script = cell_dir / FPM_ENV_FILENAME
-            if not manifest.exists() or not run_script.exists() or not env_script.exists():
+            runtime_env = cell_dir / RUNTIME_ENV_FILENAME
+            if not manifest.exists() or not run_script.exists() or not env_script.exists() or not runtime_env.exists():
                 raise RuntimeError(
                     f"Generator FPM target did not emit {FPM_MANIFEST_FILENAME}, "
-                    f"{FPM_ENV_FILENAME}, and {FPM_RUN_SCRIPT_FILENAME}"
+                    f"{FPM_ENV_FILENAME}, {FPM_RUN_SCRIPT_FILENAME}, and {RUNTIME_ENV_FILENAME}"
                 )
-            resource = KubernetesCellRunner(manifest, cell_dir)
+            resource = _cell_runner(plan, cell, manifest, cell_dir)
             # A prior invocation may have left the same-named workload alive
             # (cleanup timeout, killed collector host) even when THIS
             # checkpoint has no record of the cell: workload names derive
@@ -1641,8 +2029,18 @@ def _run_collection_impl(
                 [
                     run_script,
                     env_script,
+                    runtime_env,
                     runtime_exec,
                     runtime_preflight,
+                    *_stage_points_file(plan, cell_dir),
+                    *(
+                        [
+                            runtime_preflight.parent / "fpm_text.txt",
+                            *sorted(p for p in (runtime_preflight.parent / "dsv41").iterdir() if p.is_file()),
+                        ]
+                        if cell.execution_identity[0]
+                        else []
+                    ),
                 ],
             )
             resource.prepare_attempt(
@@ -1651,13 +2049,16 @@ def _run_collection_impl(
                 plan_sha256=plan.sha256,
                 attempt_id=attempt_id,
             )
+            _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="before")
             phase_marks["stage_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
             resource.execute(pods)
+            _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="after")
             phase_marks["execute_wall_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
             resource.collect(pods)
             phase_marks["collect_s"] = round(time.monotonic() - mark, 3)
+            _validate_points_receipts(plan, cell, cell_dir / "raw", attempt_id)
             runtime_collection = _runtime_collection_summary(
                 cell,
                 cell_dir / "raw",
@@ -1772,7 +2173,7 @@ def _run_collection_impl(
             for cell in plan.cells
         )
     ):
-        from .database import aggregate_cell, write_formal_database
+        from .database import aggregate_cell, validate_formal_database_commit, write_formal_database
 
         # Explicit partial publication: rows from passed cells only; the
         # missing cells are recorded so coverage is auditable, never implied.
@@ -1802,6 +2203,13 @@ def _run_collection_impl(
             parquet_path, metadata_path, first_wins_skipped = write_formal_database(
                 plan, formal_rows, systems_root=systems_root
             )
+            committed = validate_formal_database_commit(
+                parquet_path,
+                metadata_path,
+                plan,
+                reused_cell_ids=first_wins_skipped,
+                required_cells=tuple(publishable_cells),
+            )
             checkpoint["database"] = {
                 "status": "passed",
                 "parquet": str(parquet_path),
@@ -1811,6 +2219,7 @@ def _run_collection_impl(
                 "plan_cells": len(plan.cells),
                 "missing_cells": missing_cells,
                 "skipped_first_publisher_wins": list(first_wins_skipped),
+                "cell_rows": committed["cell_rows"],
             }
             if partial:
                 logger.warning(

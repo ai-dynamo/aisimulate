@@ -13,6 +13,8 @@ use super::policy::apply_schedule_policy;
 use super::prefill::get_new_batch_prefill;
 use super::request::SglangRequest;
 use crate::engine::HandoffId;
+use crate::engine::belady::BeladyOracle;
+use crate::engine::common::hashing::{compute_block_hash_for_seq, compute_seq_hash_for_block};
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, KvEventPublishers, MockEngineArgs, OutputSignal, SglangArgs,
 };
@@ -71,6 +73,145 @@ fn direct_request(tokens: Vec<u32>, max_output_tokens: usize) -> DirectRequest {
         arrival_timestamp_ms: None,
         ..Default::default()
     }
+}
+
+#[rstest::rstest]
+fn rejects_prompt_at_or_above_max_model_len(
+    #[values(8, 9)] prompt_len: u32,
+    #[values(false, true)] handoff: bool,
+) {
+    let mut args = test_args(16, 4, 4);
+    args.max_model_len = Some(8);
+    let mut core = SglangCore::new(args);
+    let mut req = direct_request((0..prompt_len).collect(), 1);
+    let request_id = Uuid::from_u128(899);
+    req.uuid = Some(request_id);
+    let hashes = crate::engine::belady::input_sequence_hashes(&req.tokens, 4);
+    let oracle = BeladyOracle::new(vec![(request_id, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
+    let handoff_id = HandoffId::from(Uuid::from_u128(900));
+    let command = if handoff {
+        SchedulerCommand::SubmitHandoffPrefill {
+            handoff_id,
+            request: req,
+        }
+    } else {
+        SchedulerCommand::Submit(req)
+    };
+    core.apply_command(command).unwrap();
+    let pass = core.execute_hidden_pass(0.0);
+    assert!(matches!(
+        pass.output_signals.as_slice(),
+        [OutputSignal {
+            token_id: None,
+            completed: true,
+            rejected: true,
+            ..
+        }]
+    ));
+    assert!(pass.admissions.is_empty());
+    for hash in hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
+    assert_eq!(pass.end_ms, 0.0);
+    assert!(core.waiting.is_empty());
+    assert!(core.running.is_empty());
+    assert_eq!(core.kv_manager.cache().available_tokens(), 64);
+    if handoff {
+        assert_eq!(
+            core.apply_command(SchedulerCommand::CancelSource { handoff_id })
+                .unwrap(),
+            SchedulerCommandResult::Noop
+        );
+    }
+    // A rejected request must not block later valid work.
+    core.receive(direct_request(vec![1; 7], 10));
+    let mut signals = Vec::new();
+    for step in 0..4 {
+        signals.extend(
+            core.execute_hidden_pass(step as f64 * 1000.0)
+                .output_signals,
+        );
+    }
+    assert_eq!(signals.len(), 1);
+    assert!(signals[0].completed && !signals[0].rejected);
+}
+
+#[rstest::rstest]
+fn destination_rejects_prompt_at_or_above_max_model_len(#[values(8, 9)] prompt_len: u32) {
+    let mut args = test_args(16, 4, 4);
+    args.max_model_len = Some(8);
+    let mut core = SglangCore::new(args);
+    let error = core
+        .apply_command(SchedulerCommand::ReserveDestination {
+            handoff_id: HandoffId::from(Uuid::from_u128(901)),
+            request: direct_request((0..prompt_len).collect(), 1),
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("max_model_len"));
+    assert_eq!(core.kv_manager.cache().available_tokens(), 64);
+}
+
+#[test]
+fn belady_retires_whole_prompt_once_on_first_chunk_and_includes_full_hits() {
+    let tokens = (0..8).collect::<Vec<_>>();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let first = Uuid::from_u128(1);
+    let next = Uuid::from_u128(2);
+    let oracle = BeladyOracle::new(vec![(first, hashes.clone()), (next, hashes.clone())]).unwrap();
+    let mut core = SglangCore::new(test_args(32, 4, 4));
+    core.set_belady_oracle(oracle.clone());
+    let mut request = direct_request(tokens.clone(), 0);
+    request.uuid = Some(first);
+    core.receive(request);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    let pass1 = core.execute_pass(&mut collector, 0.0);
+    assert_eq!(pass1.fpm.as_ref().unwrap().sum_prefill_tokens, 4);
+    assert_eq!(
+        oracle.next_use(hashes[1]),
+        1,
+        "even the uncomputed chunk is retired"
+    );
+    let pass2 = core.execute_pass(&mut collector, pass1.end_ms);
+    assert_eq!(
+        oracle.next_use(hashes[0]),
+        1,
+        "continuation does not retire another request"
+    );
+    assert!(core.is_empty());
+
+    let mut request = direct_request(tokens, 0);
+    request.uuid = Some(next);
+    core.receive(request);
+    let pass3 = core.execute_pass(&mut collector, pass2.end_ms);
+    assert_eq!(pass3.admissions[0].reused_input_tokens, 8);
+    assert_eq!(pass3.fpm.as_ref().unwrap().sum_prefill_tokens, 0);
+    assert_eq!(oracle.next_use(hashes[0]), usize::MAX);
+    assert!(core.is_empty());
+}
+
+#[test]
+fn belady_keeps_failed_admission_outstanding_until_terminal_cancellation() {
+    let tokens = (0..8).collect::<Vec<_>>();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let uuid = Uuid::from_u128(1);
+    let oracle = BeladyOracle::new(vec![(uuid, hashes.clone())]).unwrap();
+    let mut core = SglangCore::new(test_args(1, 4, 8));
+    core.set_belady_oracle(oracle.clone());
+    let mut request = direct_request(tokens, 0);
+    request.uuid = Some(uuid);
+    core.receive(request);
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    let pass = core.execute_pass(&mut collector, 0.0);
+    assert!(pass.admissions.is_empty());
+    assert_eq!(oracle.next_use(hashes[0]), 0);
+    assert_eq!(core.waiting.len(), 1);
+    core.apply_command(SchedulerCommand::CancelRequest { request_id: uuid })
+        .unwrap();
+    assert_eq!(oracle.next_use(hashes[0]), usize::MAX);
+    assert!(core.is_empty());
 }
 
 #[test]
@@ -1165,36 +1306,6 @@ mod core_behavior {
     }
 
     #[test]
-    fn test_chunked_prefill_budget_is_page_aware() {
-        let config = SglangConfig {
-            chunked_prefill_size: 8,
-            ..SglangConfig::from_args(
-                &MockEngineArgs::builder()
-                    .block_size(4)
-                    .speedup_ratio(1.0)
-                    .build()
-                    .unwrap(),
-            )
-        };
-        let mut kv_manager = SglangKvManager::new(10000, 4, KvEventPublishers::default(), 0);
-        let mut waiting = VecDeque::from([SglangRequest {
-            uuid: Uuid::new_v4(),
-            sequence_tokens: vec![1; 6],
-            prompt_len: 6,
-            max_output_tokens: 3,
-            planned_output_ids: None,
-            materialized_tokens: 0,
-            kv_lease: RadixRequestLease::default(),
-            allocated_tokens: 0,
-        }]);
-
-        let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
-        assert_eq!(admit.can_run.len(), 1);
-        assert_eq!(admit.can_run[0].materialized_tokens, 6);
-        assert_eq!(admit.can_run[0].allocated_tokens, 8);
-    }
-
-    #[test]
     fn test_chunked_prefill_admits_next_chunk_when_full_prompt_does_not_fit() {
         let config = SglangConfig {
             chunked_prefill_size: 8,
@@ -1221,52 +1332,6 @@ mod core_behavior {
         let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
         assert_eq!(admit.can_run.len(), 1);
         assert_eq!(admit.can_run[0].materialized_tokens, 8);
-    }
-
-    #[test]
-    fn test_chunked_prefill_subpage_budget_defers_next_request() {
-        let config = SglangConfig {
-            chunked_prefill_size: 8,
-            ..SglangConfig::from_args(
-                &MockEngineArgs::builder()
-                    .block_size(4)
-                    .speedup_ratio(1.0)
-                    .build()
-                    .unwrap(),
-            )
-        };
-
-        let first_uuid = Uuid::new_v4();
-        let second_uuid = Uuid::new_v4();
-        let mut kv_manager = SglangKvManager::new(10000, 4, KvEventPublishers::default(), 0);
-        let mut waiting = VecDeque::from([
-            SglangRequest {
-                uuid: first_uuid,
-                sequence_tokens: vec![1; 7],
-                prompt_len: 7,
-                max_output_tokens: 3,
-                planned_output_ids: None,
-                materialized_tokens: 0,
-                kv_lease: RadixRequestLease::default(),
-                allocated_tokens: 0,
-            },
-            SglangRequest {
-                uuid: second_uuid,
-                sequence_tokens: vec![2; 8],
-                prompt_len: 8,
-                max_output_tokens: 3,
-                planned_output_ids: None,
-                materialized_tokens: 0,
-                kv_lease: RadixRequestLease::default(),
-                allocated_tokens: 0,
-            },
-        ]);
-
-        let admit = get_new_batch_prefill(&mut waiting, &mut kv_manager, &config, 0.7, &[]);
-        assert_eq!(admit.can_run.len(), 1);
-        assert_eq!(admit.can_run[0].uuid, first_uuid);
-        assert_eq!(waiting.len(), 1);
-        assert_eq!(waiting[0].uuid, second_uuid);
     }
 
     #[test]
@@ -2531,5 +2596,429 @@ mod forward_pass_metrics {
             let pass = core.execute_hidden_pass(10.0);
             assert!(pass.fpm.is_some(), "FPM should always be present");
         }
+    }
+}
+
+#[test]
+fn prefill_provider_validation_receives_actual_chunk_geometry() {
+    use std::sync::{Arc, Mutex};
+    struct GeometryTiming(Arc<Mutex<Vec<Vec<(usize, usize)>>>>);
+    impl crate::engine::TimingModel for GeometryTiming {
+        fn validate_prefill_batch(&self, requests: &[(usize, usize)]) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push(requests.to_vec());
+            anyhow::ensure!(
+                requests.windows(2).all(|pair| pair[0] == pair[1]),
+                "heterogeneous geometry"
+            );
+            Ok(())
+        }
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(0.6)
+        }
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(0.6)
+        }
+    }
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let mut args = test_args(128, 4, 8);
+    args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+        timing: Arc::new(GeometryTiming(Arc::clone(&observed))),
+    }
+    .into();
+    let mut core = SglangCore::new(args);
+    core.receive(direct_request((0..16).collect(), 1));
+    core.try_execute_pass_internal(None, 0.0).unwrap();
+    core.try_execute_pass_internal(None, 1.0).unwrap();
+    assert_eq!(*observed.lock().unwrap(), vec![vec![(8, 0)], vec![(8, 8)]]);
+
+    let mut args = test_args(128, 4, 32);
+    args.perf_model = crate::engine::common::perf_model::PerfModel::External {
+        timing: Arc::new(GeometryTiming(Arc::clone(&observed))),
+    }
+    .into();
+    let mut core = SglangCore::new(args);
+    core.receive(direct_request((0..4).collect(), 1));
+    core.receive(direct_request((100..112).collect(), 1));
+    let error = core.try_execute_pass_internal(None, 0.0).unwrap_err();
+    assert_eq!(error.root_cause().to_string(), "heterogeneous geometry");
+    assert_eq!(
+        observed.lock().unwrap().last().unwrap(),
+        &vec![(4, 0), (12, 0)]
+    );
+}
+
+mod admission_validation_rollback {
+    use super::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct FallibleTiming {
+        fail: Arc<AtomicBool>,
+        fail_in_prediction: bool,
+    }
+
+    impl crate::engine::TimingModel for FallibleTiming {
+        fn prefill_batch_validation_can_fail(&self) -> bool {
+            !self.fail_in_prediction
+        }
+
+        fn validate_prefill_batch(&self, _: &[(usize, usize)]) -> anyhow::Result<()> {
+            anyhow::ensure!(
+                self.fail_in_prediction || !self.fail.load(Ordering::Relaxed),
+                "rejected prefill geometry"
+            );
+            Ok(())
+        }
+
+        fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            anyhow::ensure!(
+                !self.fail_in_prediction || !self.fail.load(Ordering::Relaxed),
+                "prefill timing unavailable"
+            );
+            Ok(0.6)
+        }
+
+        fn predict_decode_ms(&self, _: usize, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+            Ok(0.6)
+        }
+    }
+
+    fn install_timing(core: &mut SglangCore, fail: &Arc<AtomicBool>, fail_in_prediction: bool) {
+        core.config.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(FallibleTiming {
+                fail: Arc::clone(fail),
+                fail_in_prediction,
+            }),
+        }
+        .into();
+    }
+
+    fn capacity(core: &SglangCore) -> (usize, usize, usize, usize) {
+        let cache = core.kv_manager.cache();
+        (
+            cache.available_tokens(),
+            cache.evictable_size,
+            cache.protected_size,
+            cache.num_nodes(),
+        )
+    }
+
+    #[rstest::rstest]
+    fn overlength_rejections_survive_failed_prefill_passes(
+        #[values(false, true)] fail_in_prediction: bool,
+        #[values(false, true)] handoff: bool,
+    ) {
+        let mut args = test_args(32, 4, 32);
+        args.max_model_len = Some(8);
+        let mut core = SglangCore::new_with_kv_capture(args, 0);
+        let handoff_id = HandoffId::from(Uuid::from_u128(91_000));
+        let ids = [91_001, 91_002, 91_003].map(Uuid::from_u128);
+        let requests = [(0..8), (100..104), (200..209)]
+            .into_iter()
+            .zip(ids)
+            .map(|(tokens, uuid)| DirectRequest {
+                tokens: tokens.collect(),
+                max_output_tokens: 1,
+                uuid: Some(uuid),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        let forecasts = requests
+            .iter()
+            .map(|request| {
+                (
+                    request.uuid.unwrap(),
+                    crate::engine::belady::input_sequence_hashes(&request.tokens, 4),
+                )
+            })
+            .collect::<Vec<_>>();
+        let oracle = BeladyOracle::new(forecasts.clone()).unwrap();
+        core.set_belady_oracle(oracle.clone());
+        for request in requests {
+            let command = if handoff && request.uuid == Some(ids[0]) {
+                SchedulerCommand::SubmitHandoffPrefill {
+                    handoff_id,
+                    request,
+                }
+            } else {
+                SchedulerCommand::Submit(request)
+            };
+            core.apply_command(command).unwrap();
+        }
+        let fail = Arc::new(AtomicBool::new(true));
+        install_timing(&mut core, &fail, fail_in_prediction);
+        let waiting_before = format!("{:?}", core.waiting);
+        let capacity_before = capacity(&core);
+        for now_ms in [1.0, 2.0] {
+            assert!(core.try_execute_hidden_pass(now_ms).is_err());
+            assert_eq!(format!("{:?}", core.waiting), waiting_before);
+            assert!(core.running.is_empty());
+            assert_eq!(capacity(&core), capacity_before);
+            assert!(core.drain_kv_events().is_empty());
+            assert_eq!(core.source_is_registered(handoff_id), handoff);
+            for (index, (_, hashes)) in forecasts.iter().enumerate() {
+                for hash in hashes {
+                    assert_eq!(oracle.next_use(*hash), index);
+                }
+            }
+        }
+
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_hidden_pass(3.0).unwrap();
+        assert_eq!(pass.admissions.len(), 1);
+        assert_eq!(pass.admissions[0].uuid, ids[1]);
+        assert_eq!(pass.output_signals.len(), 3);
+        for id in [ids[0], ids[2]] {
+            let signals = pass
+                .output_signals
+                .iter()
+                .filter(|signal| signal.uuid == id)
+                .collect::<Vec<_>>();
+            assert_eq!(signals.len(), 1);
+            assert!(signals[0].completed && signals[0].rejected);
+            assert_eq!(signals[0].token_id, None);
+        }
+        assert!(!core.source_is_registered(handoff_id));
+        for (_, hashes) in forecasts {
+            for hash in hashes {
+                assert_eq!(oracle.next_use(hash), usize::MAX);
+            }
+        }
+        assert!(core.is_empty());
+        assert!(
+            core.try_execute_hidden_pass(4.0)
+                .unwrap()
+                .output_signals
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn overlength_rejection_survives_failed_decode_prediction() {
+        struct FallibleDecode(Arc<AtomicBool>);
+
+        impl crate::engine::TimingModel for FallibleDecode {
+            fn predict_prefill_ms(&self, _: usize, _: usize, _: usize) -> anyhow::Result<f64> {
+                Ok(0.6)
+            }
+
+            fn predict_decode_ms(
+                &self,
+                _: usize,
+                _: usize,
+                _: usize,
+                _: usize,
+            ) -> anyhow::Result<f64> {
+                anyhow::ensure!(!self.0.load(Ordering::Relaxed), "decode timing unavailable");
+                Ok(0.6)
+            }
+        }
+
+        let mut args = test_args(32, 4, 32);
+        args.max_model_len = Some(8);
+        let mut core = SglangCore::new(args);
+        let valid = core.receive(direct_request((100..104).collect(), 2));
+        core.try_execute_hidden_pass(0.0).unwrap();
+        let rejected = core.receive(direct_request((0..8).collect(), 1));
+        let fail = Arc::new(AtomicBool::new(true));
+        core.config.perf_model = crate::engine::common::perf_model::PerfModel::External {
+            timing: Arc::new(FallibleDecode(Arc::clone(&fail))),
+        }
+        .into();
+        assert!(core.try_execute_hidden_pass(1.0).is_err());
+        assert_eq!(core.waiting[0].uuid, rejected);
+        assert_eq!(core.running[0].uuid, valid);
+
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_hidden_pass(2.0).unwrap();
+        assert_eq!(pass.output_signals.len(), 2);
+        let signal = pass
+            .output_signals
+            .iter()
+            .find(|signal| signal.uuid == rejected)
+            .unwrap();
+        assert!(signal.completed && signal.rejected);
+        assert!(core.is_empty());
+        assert!(
+            core.try_execute_hidden_pass(3.0)
+                .unwrap()
+                .output_signals
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn fresh_requests_survive_failed_passes_and_are_admitted_only_on_retry() {
+        for fail_in_prediction in [false, true] {
+            let mut core = SglangCore::new_with_kv_capture(test_args(32, 4, 32), 0);
+            let mut collector = crate::engine::trace::TraceCollector::default();
+            let ids = [
+                core.receive(direct_request((0..4).collect(), 1)),
+                core.receive(direct_request((100..112).collect(), 1)),
+            ];
+            for id in ids {
+                collector.on_arrival(id, 0.0, 0, 1);
+            }
+            let fail = Arc::new(AtomicBool::new(true));
+            install_timing(&mut core, &fail, fail_in_prediction);
+            let waiting_before = format!("{:?}", core.waiting);
+            let capacity_before = capacity(&core);
+            let ratio_before = core.new_token_ratio;
+            for now_ms in [1.0, 2.0] {
+                assert!(core.try_execute_pass(&mut collector, now_ms).is_err());
+                assert_eq!(format!("{:?}", core.waiting), waiting_before);
+                assert!(core.running.is_empty());
+                assert_eq!(capacity(&core), capacity_before);
+                assert_eq!(core.new_token_ratio, ratio_before);
+                assert!(core.drain_kv_events().is_empty());
+                for id in ids {
+                    let snapshot = collector.snapshot(id).unwrap();
+                    assert_eq!(snapshot.arrival_ms, Some(0.0));
+                    assert_eq!(snapshot.first_admit_ms, None);
+                    assert_eq!(snapshot.first_token_ms, None);
+                }
+            }
+            fail.store(false, Ordering::Relaxed);
+            let pass = core.try_execute_pass(&mut collector, 10.0).unwrap();
+            assert_eq!(pass.admissions.len(), 2);
+            assert_eq!(pass.completed_requests, 2);
+            assert!(core.is_empty());
+            assert_eq!(pass.kv_events.first().unwrap().event_id, 0);
+            for id in ids {
+                assert_eq!(collector.snapshot(id).unwrap().first_admit_ms, Some(10.0));
+                assert!(collector.snapshot(id).unwrap().first_token_ms.unwrap() >= 10.0);
+            }
+        }
+    }
+
+    #[test]
+    fn continuation_failure_restores_cache_eviction_leases_queue_order_and_trace() {
+        let mut core = SglangCore::new_with_kv_capture(test_args(12, 4, 32), 0);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let seed: Vec<u32> = (1000..1016).collect();
+        core.receive(direct_request(seed.clone(), 0));
+        core.try_execute_pass(&mut collector, 0.0).unwrap();
+        let running = core.receive(direct_request((100..104).collect(), 8));
+        core.try_execute_pass(&mut collector, 1.0).unwrap();
+        core.config.chunked_prefill_size = 8;
+        let continuation = core.receive(direct_request((0..20).collect(), 1));
+        core.try_execute_pass(&mut collector, 2.0).unwrap();
+        assert_eq!(core.waiting[0].materialized_tokens, 8);
+        assert!(core.waiting[0].kv_lease.is_active());
+        let fresh = core.receive(direct_request((200..212).collect(), 1));
+        // LPM changes this order during the rejected pass. Rollback must restore
+        // the original order, including the continuation's existing ownership.
+        core.waiting.swap(0, 1);
+        core.config.schedule_policy = SchedulePolicy::Lpm;
+        core.config.chunked_prefill_size = 32;
+        let fail = Arc::new(AtomicBool::new(true));
+        install_timing(&mut core, &fail, false);
+        let waiting_before = format!("{:?}", core.waiting);
+        let running_before = format!("{:?}", core.running);
+        let capacity_before = capacity(&core);
+        let snapshots =
+            [running, continuation, fresh].map(|id| format!("{:?}", collector.snapshot(id)));
+        assert_eq!(core.kv_manager.cache().prefix_match_len(&seed), 16);
+        assert!(core.drain_kv_events().is_empty());
+
+        for now_ms in [3.0, 4.0] {
+            assert!(core.try_execute_pass(&mut collector, now_ms).is_err());
+            assert_eq!(format!("{:?}", core.waiting), waiting_before);
+            assert_eq!(format!("{:?}", core.running), running_before);
+            assert_eq!(capacity(&core), capacity_before);
+            assert_eq!(core.kv_manager.cache().prefix_match_len(&seed), 16);
+            assert!(core.drain_kv_events().is_empty());
+            assert_eq!(
+                [running, continuation, fresh].map(|id| format!("{:?}", collector.snapshot(id))),
+                snapshots
+            );
+        }
+
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_pass(&mut collector, 10.0).unwrap();
+        assert_eq!(pass.admissions.len(), 1, "continuation is not readmitted");
+        assert_eq!(pass.admissions[0].uuid, fresh);
+        assert_eq!(pass.completed_requests, 2);
+        assert!(
+            removed_event_count(&pass.kv_events) > 0,
+            "fixture must force eviction"
+        );
+        assert_eq!(
+            collector.snapshot(continuation).unwrap().first_admit_ms,
+            Some(2.0)
+        );
+        assert_eq!(
+            collector.snapshot(fresh).unwrap().first_admit_ms,
+            Some(10.0)
+        );
+        assert_eq!(core.running.len(), 1);
+        assert_eq!(core.running[0].uuid, running);
+    }
+
+    #[test]
+    fn failed_validation_restores_promoted_destination_without_duplicate_admission() {
+        let mut core = SglangCore::new_with_kv_capture(test_args(32, 4, 32), 0);
+        let mut collector = crate::engine::trace::TraceCollector::default();
+        let destination = Uuid::from_u128(90_101);
+        let handoff_id = HandoffId::from(Uuid::from_u128(90_102));
+        core.apply_command(SchedulerCommand::ReserveDestination {
+            handoff_id,
+            request: DirectRequest {
+                tokens: (0..8).collect(),
+                max_output_tokens: 2,
+                uuid: Some(destination),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+            .unwrap();
+        core.drain_kv_events();
+        let fail = Arc::new(AtomicBool::new(true));
+        install_timing(&mut core, &fail, false);
+        let capacity_before = capacity(&core);
+        assert!(core.try_execute_pass(&mut collector, 1.0).is_err());
+        assert!(core.running.is_empty());
+        assert!(core.prebuilt_request(destination).is_some());
+        assert_eq!(capacity(&core), capacity_before);
+        assert!(collector.snapshot(destination).is_none());
+        fail.store(false, Ordering::Relaxed);
+        let pass = core.try_execute_pass(&mut collector, 2.0).unwrap();
+        assert_eq!(pass.admissions.len(), 1);
+        assert_eq!(pass.admissions[0].uuid, destination);
+        assert_eq!(
+            collector.snapshot(destination).unwrap().first_admit_ms,
+            Some(2.0)
+        );
+    }
+
+    #[test]
+    fn failed_group_pass_retry_does_not_advance_prefill_interval_twice() {
+        let mut args = test_args(32, 4, 32);
+        args.prefill_decode_interval = 2;
+        let mut core = SglangCore::new(args);
+        core.receive(direct_request((0..4).collect(), 1));
+        // A peer's prefill has armed two synchronized decode/idle rounds.
+        core.prepare_group_pass();
+        core.finish_group_pass(true, true);
+        let fail = Arc::new(AtomicBool::new(true));
+        install_timing(&mut core, &fail, false);
+
+        core.prepare_group_pass();
+        assert!(core.try_execute_hidden_pass(1.0).is_err());
+        fail.store(false, Ordering::Relaxed);
+        let retried = core.try_execute_hidden_pass(1.0).unwrap();
+        assert!(retried.admissions.is_empty());
+        core.finish_group_pass(false, false);
+
+        core.prepare_group_pass();
+        let second_interval_round = core.try_execute_hidden_pass(2.0).unwrap();
+        assert!(second_interval_round.admissions.is_empty());
+        core.finish_group_pass(false, false);
+
+        core.prepare_group_pass();
+        let admitted = core.try_execute_hidden_pass(3.0).unwrap();
+        assert_eq!(admitted.admissions.len(), 1);
+        assert_eq!(admitted.completed_requests, 1);
     }
 }

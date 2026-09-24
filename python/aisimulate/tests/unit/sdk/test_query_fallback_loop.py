@@ -18,10 +18,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.sdk.config import RuntimeConfig
-from aiconfigurator.sdk.inference_session import AFDInferenceSession
-from aiconfigurator.sdk.operations import KDAKernel
-from aiconfigurator.sdk.perf_database import get_database
+from aisimulate.sdk.config import RuntimeConfig
+from aisimulate.sdk.inference_session import AFDInferenceSession
+from aisimulate.sdk.operations import KDAKernel
+from aisimulate.sdk.perf_database import get_database
 
 pytestmark = pytest.mark.unit
 
@@ -91,7 +91,7 @@ def test_verify_kda_spec_serialization_keeps_phase_and_draft_tokens(database):
     draft_tokens."""
     import json
 
-    from aiconfigurator_core.sdk.engine import build_ops_json
+    from aisimulate_core.sdk.engine import build_ops_json
 
     spec = json.loads(build_ops_json([_verify_kda()]))[0]
     (_, payload) = next(iter(spec.items()))

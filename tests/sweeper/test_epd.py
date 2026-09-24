@@ -11,8 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 import aisimulate.sweeper.search as search_mod
-from aiconfigurator.sdk.sweep import _overlay_encoder_stage
 from aisimulate.runner import EngineReplayRunnerFactory, InvalidRunnerError
+from aisimulate.sdk.sweep import _overlay_encoder_stage
 from aisimulate.sweeper import (
     BackendDeploymentSpec,
     EncoderPoolSpec,
@@ -176,7 +176,7 @@ def test_positive_power_is_encoder_only():
     report = apply_encoder_overlay(_report(), _spec(power_w=200.0, power_coverage=0.75))
     assert report.metrics["encoder_power_w"] == 200
     assert report.metrics["encoder_power_coverage"] == 0.75
-    assert "power_w" not in report.metrics
+    assert report.metrics["power_w"] is None
 
 
 @pytest.mark.parametrize(
@@ -246,6 +246,9 @@ def test_goodput_and_implicit_sla_are_not_claimed():
         with pytest.raises(ValueError, match="goodput"):
             _config(goal=goal)
     _config(goal={"target": "throughput", "sla": {"ttft_ms": 500.0}, "strict_sla": True})
+    _config(goal={"target": "min_gpus", "sla": {"ttft_ms": 500.0}})
+    with pytest.raises(ValueError, match="analytical EPD cannot enforce min_goodput_rps"):
+        _config(goal={"target": "min_gpus", "sla": {"ttft_ms": 500.0}, "min_goodput_rps": 1})
 
 
 def test_runner_and_export_guards():
@@ -257,7 +260,7 @@ def test_runner_and_export_guards():
     ):
         with pytest.raises(InvalidRunnerError, match="per-request"):
             EngineReplayRunnerFactory().create(0).run(_spec(), output_requirements=outputs)
-    from aiconfigurator.generator.request.sweeper import (
+    from aisimulate.generator.request.sweeper import (
         SweeperCandidateError,
         from_sweeper_candidate,
     )
@@ -386,8 +389,8 @@ def test_unresolved_parallel_snapshot_keeps_encoder_without_inventing_gpu_total(
 
 
 def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
-    import aiconfigurator.sdk.sweep as aic_sweep
-    from aiconfigurator_core.sdk import perf_database
+    import aisimulate.sdk.sweep as aic_sweep
+    from aisimulate_core.sdk import perf_database
 
     calls = []
     monkeypatch.setattr(
@@ -432,8 +435,8 @@ def test_catalog_uses_aic_geometry_memory_and_identity(monkeypatch):
 def test_encoder_catalog_preserves_version_precedence(
     monkeypatch, encoder_hardware, language_version, encoder_version, implicit
 ):
-    from aiconfigurator_core.sdk import perf_database
     from aisimulate.sweeper import kv_estimate
+    from aisimulate_core.sdk import perf_database
 
     original_version = kv_estimate.get_latest_database_version
     original_database = perf_database.get_database_view
@@ -469,9 +472,9 @@ def test_encoder_catalog_preserves_version_precedence(
     + [(stage, NoPerfDatabase) for stage in ("database", "estimator")],
 )
 def test_encoder_catalog_does_not_hide_failures(monkeypatch, stage, error_type):
-    import aiconfigurator.sdk.sweep as aic_sweep
-    from aiconfigurator_core.sdk import perf_database
+    import aisimulate.sdk.sweep as aic_sweep
     from aisimulate.sweeper import kv_estimate
+    from aisimulate_core.sdk import perf_database
 
     error = error_type(f"unexpected {stage} failure")
 
@@ -491,7 +494,7 @@ def test_encoder_catalog_does_not_hide_failures(monkeypatch, stage, error_type):
 
 @pytest.mark.parametrize("modes", [["agg", "disagg"], ["disagg", "agg"], ["agg"]])
 def test_epd_native_search_preserves_available_modes(monkeypatch, caplog, modes):
-    from aiconfigurator_core.sdk import perf_database
+    from aisimulate_core.sdk import perf_database
 
     class LimitedFactory:
         def capabilities(self):
@@ -707,3 +710,16 @@ def test_afd_qualification_rejects_image_or_encoder_composition(encoder_present)
     )
     with pytest.raises(AFDQualificationError, match="AFD qualification does not support analytical EPD"):
         build_afd_qualification(spec)
+
+
+@pytest.mark.parametrize("invalid", [None, True, "1"])
+def test_replay_report_rejects_nonnumeric_general_metrics(invalid):
+    with pytest.raises(ValueError, match="completed_requests must be numeric"):
+        ReplayReport({"completed_requests": invalid, "power_w": None, "power_coverage": None})
+
+
+def test_replay_report_allows_nullable_power_with_numeric_general_metrics():
+    report = ReplayReport({"completed_requests": 1.0, "power_w": None, "power_coverage": None})
+    assert report.metrics["completed_requests"] == 1.0
+    assert report.metrics["power_w"] is None
+    assert report.metrics["power_coverage"] is None

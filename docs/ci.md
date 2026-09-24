@@ -63,12 +63,16 @@ Full CI when a review finishes.
 ```mermaid
 flowchart TD
     subgraph MainNightly["Main branch nightly CI"]
-        MainGuard["Check for a new main commit"] -->|Changed| Build["Build nightly wheels and crate"]
-        Build --> Smoke["Installed-wheel smoke tests"]
-        Build --> MainFPE["FPE Support Matrix: main<br/>Discover and probe all shards"]
+        MainGuard["Check for a new main commit"] -->|Changed| Licenses["Check Python dependency licenses"]
+        Licenses --> Build["Build nightly wheels and crate"]
+        Build --> NightlyStage["Protected Artifactory staging"]
+        NightlyStage --> Verify["Download and verify staged wheel<br/>Preserve artifacts and provenance"]
+        Verify --> Smoke["Installed-wheel smoke tests"]
+        Smoke --> MainFPE["FPE Support Matrix: main<br/>Discover and probe all shards"]
+        Smoke --> Evidence["Generate license evidence"]
         MainFPE --> MainQualified["Qualify main matrix artifact"]
-        Smoke --> NightlyStage["Protected nightly package staging"]
-        MainQualified --> NightlyStage
+        MainQualified --> Security["GitLab security handoff when enabled"]
+        Evidence --> Security
     end
 
     subgraph ReleaseNightly["Release branch nightly CI"]
@@ -78,18 +82,21 @@ flowchart TD
         ReleaseQualified --> AllReleases["Require every release to succeed"]
     end
 
-    NightlyStage -.->|Main branch nightly CI succeeds| Pages["GitHub Pages<br/>Select and validate branch snapshots<br/>Build site from trusted main"]
+    MainQualified -.->|Main branch nightly CI succeeds| Pages["GitHub Pages<br/>Select and validate branch snapshots<br/>Build site from trusted main"]
+    Evidence -.->|Main branch nightly CI succeeds| Pages
     AllReleases -.->|Release branch nightly CI succeeds| Pages
     Pages --> Deploy["Deploy support matrix pages"]
 ```
 
 The two nightly schedules are independent. **FPE Support Matrix** and
 **FPE Support Matrix (release)** are reusable workflows called by those schedules;
-they have no separate nightly timers. Within main's nightly run, wheel smoke
-tests and FPE qualification run in parallel. Release qualification processes
+they have no separate nightly timers. Within main's nightly run, FPE qualification
+starts after the staged-wheel smoke tests succeed. Release qualification processes
 branches sequentially, with up to 20 shard jobs within each release.
 Each release uses the commit SHA recorded at the start of the run, even if its
 branch receives new commits while the checks are running.
+Pages requires a successful completed nightly; the optional GitLab security
+job is skipped when disabled and must succeed when enabled.
 
 The release path runs **only FPE support-matrix qualification**. Its scheduler
 discovers branches and calls the per-release helper, whose jobs prepare the
@@ -111,9 +118,9 @@ Manual dispatches and site-change triggers are listed below.
 
 | Workflow | When it runs | Role |
 | --- | --- | --- |
-| [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen, ready-for-review and label changes; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
+| [Fast CI](../.github/workflows/fast-ci.yml) | PR open/update/reopen and ready-for-review; pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Quick checks and `Fast CI Success` |
 | [Full CI](../.github/workflows/ci.yml) | Pushes to `main`, `release/*`, and trusted `pull-request/*`; manual dispatch with `expected_sha` | Selects and aggregates compiled validation |
-| [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC | Builds, qualifies, and stages nightly artifacts; skips rebuilding when `main` matches the last successful nightly |
+| [Main branch nightly CI](../.github/workflows/nightly-ci.yml) | Daily at 08:00 UTC; manual dispatch from `main` | Builds, stages, qualifies, and hands off artifacts for publication; skips unchanged scheduled `main` and requires approval for manual sources |
 | [Validate platform wheels](../.github/workflows/validate-platform-wheels.yml) | Called by Full CI; manual dispatch | Linux x86-64/ARM64 and macOS ARM64 package validation |
 | [Collector Data Check](../.github/workflows/collector-check.yml) | Called by Full CI; manual dispatch | Collector-data integrity and informational sanity reports |
 | [Prediction Regression Gate](../.github/workflows/prediction-regression-gate.yml) | Called by Full CI; manual dispatch | Before/after prediction comparison |
@@ -121,11 +128,30 @@ Manual dispatches and site-change triggers are listed below.
 | [Release branch nightly CI](../.github/workflows/release-nightly-ci.yml) | Daily at 09:23 UTC; manual dispatch on `main` | Schedules FPE support-matrix refreshes for discovered `release/*` branches |
 | [FPE Support Matrix (release)](../.github/workflows/fpe-release-qualify.yml) | Called once per release by Release branch nightly CI | Builds the release wheel, probes all shards, and uploads its qualified matrix artifact |
 | [codeowners](../.github/workflows/codeowners.yml) | PRs and pushes to `main` | Independent ownership coverage and generated-file checks; overlaps with Fast CI |
-| [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Relevant path changes on trusted `pull-request/*` pushes; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
-| [GitHub Pages](../.github/workflows/pages.yml) | Successful FPE Support Matrix, Main branch nightly CI, or Release branch nightly CI completion; relevant site changes on PRs/`main`; manual dispatch | Validates branch snapshots, tests FPE branch selection in Chromium, and builds dashboard/support-matrix pages; deployment is restricted to trusted `main` |
+| [Forward Prediction Performance (advisory)](../.github/workflows/performance.yml) | Every trusted `pull-request/*` push; selects relevant PR files before benchmarking; manual dispatch for a PR | Paired base/head prediction-runtime benchmark, outside Full CI |
+| [E2E Accuracy Matrix](../.github/workflows/e2e-accuracy.yml) | Daily at 10:17 UTC for `main` and all `release/*` heads; manual dispatch for one explicit SHA | Advisory accuracy campaigns using one wheel for both CLIs; publishes qualified artifacts |
+| [GitHub Pages](../.github/workflows/pages.yml) | FPE Support Matrix, Main branch nightly CI, Release branch nightly CI, or E2E Accuracy Matrix completion; relevant site changes on PRs/`main`; daily at 09:17 UTC; manual dispatch | Validates qualified FPE and accuracy snapshots, tests FPE branch selection in Chromium, and builds public pages; deployment is restricted to trusted `main` |
 
-CODEOWNERS and advisory performance checks run alongside the validation
-pipelines. Pages consumes qualification evidence after producer completion.
+Forward performance uses the same selection pattern as Full CI: a small
+GitHub-hosted job checks the complete PR file list before allocating the benchmark
+runner. This includes the first copied-branch push, whose event can contain no
+commits. The selector checks current and previous filenames, validates the PR
+head and base, and reports an explicit skip for unrelated changes. API failures
+or changed revisions fail selection; empty, incomplete, or oversized file lists
+run the benchmark conservatively. Manual dispatch forces a comparison after the
+same revision checks: the trusted copy must match the current PR head.
+
+If the PR changes the performance gate's Python files or the shared prediction
+grid, the benchmark job also runs the PR's controller against the same base and
+head installations. This validates new matrix cases before merge and reports
+them separately, alongside the normal comparison made with the base controller. It reuses the built
+packages and requires no additional runner or manual dispatch.
+Gate documentation-only changes do not select a benchmark or an additional
+controller run.
+
+Ownership checks, prediction performance, E2E accuracy, and Pages run independently
+of the Fast/Full validation gates. E2E accuracy does not gate nightly staging.
+Pages consumes qualification evidence after producer completion.
 The DCO sign-off check and review services are additional PR signals, not jobs
 inside Fast CI. See [CONTRIBUTING.md](../CONTRIBUTING.md) for DCO requirements.
 
@@ -135,8 +161,9 @@ The [review contract](../REVIEW.md#risk-tiered-review-and-ci) defines review
 depth and merge policy. The root [CodeRabbit configuration](../.coderabbit.yaml)
 configures automated review separately from GitHub Actions.
 
-1. Mark the PR non-draft and apply `review-ready`. Fast CI and CodeRabbit run
-   in parallel. The label admits work for review; it is not an approval.
+1. Open or update the PR to run Fast CI automatically, including while it is a
+   draft. Mark the PR non-draft for automatic CodeRabbit review, subject to its
+   configured title and label exclusions. No `review-ready` label is needed.
 2. Complete the reviews required for the risk level on the current commit:
    CodeRabbit for all tiers, plus Codex for medium/high risk.
 3. A maintainer admits Full CI after the required initial reviews complete with
@@ -163,12 +190,12 @@ Fast CI has three substantive jobs, followed by an aggregate result:
 | Repository Policy | Copyright and packaged legal files; CODEOWNERS policy tests, ownership coverage, and generated artifacts; workflow/selection and qualification contract tests |
 | Python Static Checks | Ruff lint and formatting on the configured AISimulate/test paths, Python syntax compilation, and changed-line whitespace |
 | Rust Format | `cargo fmt --all -- --check` |
-| Fast CI Success | Requires the three jobs to succeed for an admitted PR, branch push, or manual run |
+| Fast CI Success | Requires the three jobs to succeed for every PR, branch push, or manual run |
 
-Draft PRs skip substantive work and report Fast CI as not applicable. A
-non-draft PR missing `review-ready` fails the aggregate. The exact Ruff paths
-are listed in [the workflow](../.github/workflows/fast-ci.yml); this is not a
-claim that every migrated source file is linted.
+Draft and non-draft PRs run the same Fast CI checks without a label requirement.
+The aggregate fails if any required job fails, is canceled, or is skipped.
+The exact Ruff paths are listed in [the workflow](../.github/workflows/fast-ci.yml);
+this is not a claim that every migrated source file is linted.
 
 Every standalone run publishes `Fast CI Success`. Full CI contains only a
 lightweight **Require Fast CI** job, which reads the standalone run and verifies
@@ -232,12 +259,58 @@ marked it N/A.
 ### Numerical and installed-package evidence
 
 [Native numerical checks](../scripts/check_prediction_numerics.py) exercise
-eight frozen queries: dense Qwen3-32B and MoE MiniMax-M2.5, prefill/decode, and
-short/long sequences. The [manifest](../.github/prediction-numerical-sentinels.json)
-records a full baseline commit that must resolve in the checkout. Tolerances
-are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
+16 frozen queries on B200: eight vLLM 0.24.0 queries for dense Qwen3-32B and
+MoE MiniMax-M2.5, plus four Qwen3-32B queries each for TRT-LLM 1.3.0rc20 and
+SGLang 0.5.14. Every backend covers prefill/decode and short/long sequences.
+The [manifest](../.github/prediction-numerical-sentinels.json)
+records a full baseline commit that must resolve in the checkout. Fast CI and
+the numerical-check job explicitly fetch that SHA from `origin` if missing;
+full branch history alone can omit a baseline from a squashed PR. Fetch or
+commit-validation failures remain errors. Fetch-only mode does not load the
+AISimulate runtime; the subsequent checks validate the complete manifest.
+To prepare a checkout locally, run:
+
+```sh
+python scripts/check_prediction_numerics.py --fetch-baseline-only
+```
+
+Tolerances are 2% relative and 0.0001 ms absolute. Missing, duplicate, failed, nonfinite,
 nonpositive, or out-of-tolerance results fail. Intentional modeling changes
 need explained before/after evidence; do not refresh goldens merely to pass CI.
+
+Composition/correction tests use the measured FP8 GEMM lane in the vLLM 0.24.0
+fixture after removal of its invalid FP8-block rows. Installed-wheel checks
+resolve the canonical `ForwardPassPerfModelConfig` and `ForwardPassPerfOptions`
+exports and verify their object identity. The AFD qualification golden retains
+all numerical values; its replay hash includes the empty
+`forward_pass_estimators` field added by the unified estimator schema.
+The heterogeneous prefill/decode CLI round trip verifies each role's system
+inside `timing_model.config`, along with the external AIC provider, and retains
+the recommendation-versus-replay metric checks.
+
+The FP8-block data correction in PR #244 changes only the MiniMax cases to
+enable declared reuse: their vLLM 0.24.0 primary data no longer contains
+invalid eager FP8-block measurements, so corrected GEMMs come from 0.25.0.
+With the original data, enabling reuse reproduces all four old baselines
+exactly. With corrected data, the prefill baselines change from
+42.676331 / 116.409355 ms to 21.898890 / 98.968257 ms, and decode from
+39.364559 / 7396.437641 ms to 6.956580 / 2192.966039 ms (short/long cases).
+The four Qwen baselines and all tolerances remain unchanged. These are
+prediction-stability values, not measured whole-model accuracy.
+
+After the PR #244 squash merge, its original baseline commit was no longer
+reachable in fresh CI checkouts. All eight sentinels were revalidated at
+`ba64235a645580a8a1b20a424fffef6514ff0103`; the manifest now references that
+permanent main-branch merge commit, which survives subsequent squash merges.
+Expected values, query inputs, and tolerances are unchanged.
+
+The 16-case manifest was reproduced from runtime and packaged data at
+`d066e918705b98e2d55eed55743ce8d225f129ea`. The original eight vLLM values
+were reproduced exactly and retained unchanged. The eight added backend values
+use the same four dense-model query shapes and SILICON mode, without shared
+layer reuse. These operator-level queries complement the engine integration
+tests for context limits; they do not measure E2E gym MAPE or incorporate the
+separate TRT-LLM data collection in PR #264.
 
 The broader [prediction comparison](../python/aisimulate/tools/prediction_regression_gate/report.py)
 reports numerical drift, gains, and added/removed rows for review. It blocks
@@ -310,15 +383,40 @@ timeout behavior. Local editable installs do not replace installed-wheel CI.
 
 Main branch nightly CI builds the approved release surface: one `aisimulate` wheel per Linux
 architecture and one `aisimulate-core` Rust source crate. A changes guard compares
-`main` with the last successful nightly. The build stamps a date-based dev
-version, uses pinned build tooling, and records checksums and provenance.
+`main` with the last successful scheduled nightly. The build stamps a dev version using the original UTC run-creation date followed
+by its zero-padded ten-digit workflow run number, for example
+`0.13.0.dev202609170000001234`. Scheduled and manual runs have distinct versions;
+retries retain the same version, and later dates sort after earlier dates. Builds
+use pinned tooling and record checksums and provenance.
 
-After artifacts are stored, two kinds of validation run:
+Development nightlies must be available before downstream consumers can validate
+and merge an API migration. Pending entries in
+[the stable-release migration checklist](../.github/release-gates.json) therefore
+do not block scheduled or approved manual nightlies. Build, compliance, wheel-smoke,
+FPE qualification, and security requirements continue to apply. Publish the nightly,
+validate and merge the downstream migration against that wheel, then complete the
+migration checklist before a stable release.
+
+Python dependency licenses are checked in isolated jobs on both architectures
+before building or staging. Artifacts are then staged directly to internal
+Artifactory through the protected `automated-release` environment. Each wheel
+is downloaded again and checked against the build. Immutable copies and their
+checksums/provenance are retained as `nightly-dist-<arch>` GitHub artifacts
+before runtime dependencies execute, preserving the accuracy and installation
+consumer contract.
+
+Python license evidence covers the installed audit environment, including
+the runtime dependency closure and audit tools such as `pip` and `pip-licenses`.
+Package names are not exempted through a hard-coded ignore list. Detailed
+license failures remain suppressed in public job logs; reproduce with
+`pip-licenses --with-system` in the affected environment.
+
+Two kinds of validation then run:
 
 - **Wheel smoke tests:** fresh installations on amd64/arm64, each tested with
   Python 3.11, 3.12, and 3.13; dependencies, package identity/version, imports,
-  and console commands are checked without a source checkout.
-- **FPE Support Matrix:** the amd64 nightly wheel is reused and checked against
+  and console commands are checked using the downloaded wheel.
+- **FPE Support Matrix (scheduled and approved manual runs):** the amd64 nightly wheel is reused and checked against
   the expected source SHA and checksum. The installed SDK discovers live
   system/backend combinations, then shards native `op_level` evaluation across
   them. Qualification requires complete reports from the same wheel and the
@@ -329,10 +427,35 @@ builds one wheel for the requested source SHA and uses that same wheel for all
 shards. This is native operation-level support qualification; it does not
 certify hardware accuracy, backend serving performance, or FPM coverage.
 
-Nightly staging depends on both smoke tests and FPE qualification. It uploads
-checksum-verified artifacts to internal Artifactory under `nightly/<run_id>/`
-through the protected `automated-release` environment. FPE output is retained
-as workflow artifacts; publishing dashboard pages is a separate Pages workflow.
+Internal staging uses `nightly/<run_id>/`; staging alone does not certify the
+run. The GitLab security handoff requires both smoke tests, FPE qualification,
+and license evidence to succeed, and only runs when
+`GITLAB_SECURITY_TRIGGER_ENABLED` is enabled. Every rerun also requires approval
+recorded for that run attempt through `manual-release-approver`; environment
+reviewer protections must be configured to enforce it. FPE output is retained
+as workflow artifacts; publishing dashboard pages is a separate Pages workflow
+that consumes successful nightlies.
+
+The GitLab request contract was checked against release-automation revision
+`cdabacabb50e589c08b97b776b5c2f2644b5473e`, specifically the root
+`.gitlab-ci.yml` variable forwarding and `projects/aisimulate.yml` consumer.
+The endpoint comes from `GITLAB_PIPELINE_URL`; the authenticated multipart
+request selects `ref=main` and forwards these fields:
+
+| Variable | Nightly value |
+| --- | --- |
+| `PROJECT` | `aisimulate` |
+| `PIPELINE_TYPE` / `RELEASE_TYPE` | `security` / `nightly` |
+| `NIGHTLY_TAG` | `nightly-YYYYMMDDNNNNNNNNNN-<first-seven-commit-characters>` |
+| `WHEEL_VERSION` | Exact stamped wheel version |
+| `GITHUB_RUN_ID` / `COMMIT_SHA` | Producing GitHub run and full source commit |
+| `AISIMULATE_TOOLING_SHA` | Trusted workflow commit providing the version stamper |
+| `SLACK_THREAD_TS` / `SLACK_CHANNEL_ID` | Notification thread and channel, optionally empty |
+| `DRY_RUN` | `false` |
+
+The workflow-contract test executes the real trigger script against a fake
+HTTP client, including missing credentials and HTTP errors. It validates the
+request boundary; it does not certify GitLab scan or publication outcomes.
 
 [Release branch nightly CI](../.github/workflows/release-nightly-ci.yml) separately
 discovers every `release/<version>` branch each day, including new releases and
@@ -355,13 +478,64 @@ trigger Pages; this job does not publish packages.
 Release branches without retained qualified CI evidence appear unavailable.
 See the [FPE publication contract](../python/aisimulate/docs/support-matrix/fpe.md#main-and-release-branches).
 
+To build, stage, qualify, and publish a specific commit, dispatch from `main` and supply a full
+40-character SHA reachable from `main` or a `release/*` branch:
+
+```bash
+gh workflow run nightly-ci.yml --ref main -f commit_sha=<full-source-sha>
+```
+
+An empty `commit_sha` selects `main` at dispatch time. Manual builds require
+approval for the current run attempt, always build even when the source is
+unchanged, and use current license-check tooling against the selected source's
+package manifest. They run both architectures' wheel smoke tests and retain
+checksums, source provenance, and license evidence. Staging paths include the
+unique run ID, and manual runs neither block the scheduled concurrency group nor
+count toward its unchanged-source guard.
+
+Approved manual dispatches run FPE qualification and may trigger the GitLab
+public publisher under the same successful-build, license, and FPE gates as the
+cron. The selected source supplies the package and model inventory; trusted
+workflow tooling supplies version stamping, the artifact contract, and FPE
+probes, including for older release sources. Qualification records source and
+tooling commits separately and uses the exact staged wheel. The GitLab crate
+publisher uses that same pinned version stamper and unique numeric suffix.
+
+The GitLab consumer must support `AISIMULATE_TOOLING_SHA` and the 18-digit
+nightly suffix before this producer is enabled. Successful GitHub staging or
+handoff alone does not establish that the asynchronous GitLab public publication
+completed; inspect its wheel and crate publish jobs.
+
+### E2E accuracy campaigns
+
+The independent [E2E Accuracy Matrix](../.github/workflows/e2e-accuracy.yml)
+evaluates the scheduled main SHA and every discovered `release/*` head against
+checksum-pinned public measurements. A branch matrix runs at most two campaigns
+at once, with separate wheels, artifacts, and provenance. Main reuses a qualified
+amd64 wheel for its exact SHA when available, even while nightly staging waits for
+approval; otherwise it builds one. Each release builds its own wheel. Both the
+AISimulate replay and bundled legacy AIC baseline use their branch's wheel. Manual
+runs evaluate one explicit `main` or `release/*` SHA from the trusted main workflow.
+
+Complete campaigns upload sanitized `e2e-accuracy-web-<branch-key>` artifacts.
+Pages validates the branch's successful qualification job in the artifact's exact
+run attempt, producer, revision, coverage, and checksums before combining it with
+qualified FPE data. One branch's failure does not cancel other campaigns or block
+their publication. Retried jobs preserve successful branches' original run-attempt
+provenance. Failed campaigns retain previous evidence. Accuracy numbers are advisory;
+incomplete campaigns cannot publish. A release selector may still show a historical
+snapshot until that release has a qualified campaign. See the
+[accuracy campaign contract](../pages/e2e-accuracy/README.md)
+for pinned scheduler settings, measurement selection, and provenance.
+
 ## Reading results and troubleshooting
 
 | What you see | Meaning and next check |
 | --- | --- |
 | **Require Fast CI** failed or timed out | Open the linked/latest standalone Fast run for the same branch and SHA; resolve its failure or dispatch Fast CI first, then rerun Full CI |
-| `Fast CI Success` failed with no substantive jobs | Check that the PR is non-draft and has `review-ready` |
+| `Fast CI Success` failed with missing or skipped substantive jobs | Inspect the required job results and cancellation history; draft status and labels do not skip Fast CI |
 | Full CI job skipped | Read **Select Full CI Scope** and the aggregate summary; only explicit N/A is acceptable |
+| Full CI canceled after another PR run starts | A newer run replaced validation in the same PR/branch concurrency group; inspect the replacement run's SHA and results |
 | `Full CI Success` green, workflow still `waiting` | Validation finished; main/release wheel staging may be waiting for `automated-release` approval |
 | New nightly pending, earlier nightly waiting | Nightly's single concurrency group includes protected staging; an unapproved run can hold later validation behind it |
 | Prediction Regression green with reported drift | Working-case regression checks passed; review the numerical changes in the report |
@@ -399,6 +573,35 @@ gh workflow run fast-ci.yml --repo ai-dynamo/aisimulate \
 gh workflow run ci.yml --repo ai-dynamo/aisimulate \
   --ref "${ci_branch}" -f expected_sha="${ci_sha}"
 ```
+
+Manual runs provide diagnostic validation. GitHub does not count job checks
+from `workflow_dispatch` toward required PR status checks, even when the run
+uses the current PR SHA. See [GitHub's required-check troubleshooting guide](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#checks-from-some-workflow-jobs-are-not-evaluated).
+For PR merge-gate validation, a maintainer admits the reviewed current head
+through copy-pr-bot; the resulting trusted-copy **push** launches eligible
+Fast and Full CI runs:
+
+```bash
+ci_pr=123  # Replace with the reviewed PR to validate.
+ci_sha="$(gh pr view "${ci_pr}" --repo ai-dynamo/aisimulate --json headRefOid --jq .headRefOid)"
+gh pr comment "${ci_pr}" --repo ai-dynamo/aisimulate \
+  --body "/ok to test ${ci_sha}"
+```
+
+Full CI cancels older queued and running validation for the same trusted
+`pull-request/N` copy. Manual dispatches on that copy share the push run's
+concurrency group: they can cancel an eligible push run without satisfying its
+required check. Preserve the push-triggered validation for the current PR
+head. If it fails transiently, retry its failed jobs with `gh run rerun RUN_ID
+--failed` after confirming that the run still targets the current head.
+
+Manual source-branch runs replace only runs on the same branch. Different PRs
+remain independent. Main, `release/*`, and tag runs use unique groups, so later
+runs cannot cancel their validation or protected staging. Concurrency only
+applies to runs using the updated workflow; existing runs and older branches
+are not retroactively covered. A replacement still needs successful eligible
+checks for its exact SHA. Re-running an old revision can replace a newer run
+in the same group: always verify the current PR head before retrying validation.
 
 Standalone Fast CI accepts these manual inputs:
 
@@ -520,3 +723,13 @@ an executed shard or an explicit exception; verify actual collection.
 - [AIC-1916](https://linear.app/nvidia/issue/AIC-1916): the separate combined
   Model Data Quality Gate. Existing collector and prediction jobs alone do not
   establish that combined gate.
+
+## FPM accuracy
+
+`FPM Accuracy Matrix` runs at 10:47 UTC daily and supports manual evaluation of
+an exact SHA on main or a release >= 0.12.0. It pins HF data once per campaign,
+uses verified exact wheels, and evaluates FPM with KV warmup on/off and regression
+on CPU. Branch results remain in Actions artifacts for 90 days. Pages validates
+and publishes successful branch results independently; failed refreshes retain
+the prior qualified result. Accuracy is advisory, outside PR prediction campaigns
+and release staging gates. See [FPM details](../pages/fpm-accuracy/README.md).

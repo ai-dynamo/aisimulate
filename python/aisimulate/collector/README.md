@@ -20,6 +20,17 @@ platform alignment ledger, a local campaign record kept outside the repo
 campaign workspace).
 
 # Preparation
+
+SGLang 0.5.14 standalone MLA rows distinguish kernel compute from KV storage.
+On B200/B300, `trtllm_mla` quantizes Q/K/V internally when the KV cache is FP8,
+so those rows use `mla_dtype=fp8, kv_cache_dtype=fp8`. On H200, the absorbed
+576-dimensional FA3 path uses BF16 compute, including when KV storage is FP8.
+BF16 inputs to the collector do not determine the kernel's compute precision.
+Compute-precision labels are restricted to the audited `trtllm_mla`, `fa3`,
+and `triton` backends; an unknown backend raises instead of receiving a BF16 label.
+Legacy Blackwell rows labeled `bfloat16/fp8` need fresh measurements with the
+correct label; do not copy their timings into a second precision key.
+
 Before collecting the data, make sure you own the whole node and no interfierence happens.
 Next, please enable persistent-mode and lock frequency of the node. Make sure the cooling system of the node is working well.
 ```bash
@@ -60,7 +71,7 @@ It will also collect nccl allreduce, all_gather, all2all, reduce_scatter using n
 The standalone scripts stage `nccl_perf.txt`, `oneccl_perf.txt`, and
 `custom_allreduce_perf.txt`. Collector finalization converts accepted output
 to parquet under
-`python/aisimulate/src/aiconfigurator_core/systems/data/<system>/comm/<backend>/<version>/`.
+`python/aisimulate/src/aisimulate_core/systems/data/<system>/comm/<backend>/<version>/`.
 
 # Model-centric cases and healing runs
 
@@ -115,6 +126,9 @@ capabilities.py                        — generation-time capability/denylist f
 
 The plan is one equation: cases = dedup(base grid ∪ model shapes), then
 intersected with hardware capability floors and minus the hang denylist.
+
+TRT-LLM MLA precision and GPT-OSS TP profile collection evidence is recorded
+in [the September 17 campaign](trtllm/gym-profiles-20260917.md).
 
 ## Whole-forward FPM campaign
 
@@ -190,7 +204,7 @@ deserves a denylist entry, a registry `unverified` marker, or a capability
 floor — live in `.claude/rules/collector/failure_handling.md`.
 
 `--gpu <type>` resolves the SM version from
-`src/aiconfigurator/systems/<gpu>.yaml`; use `--sm <version>` on an
+`src/aisimulate_core/systems/<gpu>.yaml`; use `--sm <version>` on an
 unregistered GPU. Without either, the local device capability is detected
 automatically.
 
@@ -481,7 +495,7 @@ python3 collect.py --backend trtllm
 ```
 For trtllm, the whole collecting process takes about 30 gpu-hours. On 8-gpu, it takes 3-4 hours.
 Please note that the whole process will report a lot of missing datapoints with errors. But it's okay. Our system is kindof robust to fair amount of missing data.
-Once everything is done, you might see mutliple xxx.txt files under the same folder. Refer to src/aiconfigurator/systems/ folder to prepare the database including
+Once everything is done, you might see mutliple xxx.txt files under the same folder. Refer to src/aisimulate_core/systems/ folder to prepare the database including
 how many files are needed accordingly.
 
 ## Resume Collection (Checkpoint)
@@ -601,7 +615,7 @@ design for hardware, not a column to fake. The loaders treat absent (or
 null) power as 0.0.
 
 # Test
-Rebuild and install the new aiconfigurator. Please make sure you have your new system definition file prepared. It's src/aiconfigurator/systems/xxx.yaml
+Rebuild and install the new aiconfigurator. Please make sure you have your new system definition file prepared. It's src/aisimulate_core/systems/xxx.yaml
 
 # Validate the correctness
 Today, we have limited method to validate the database. You can try tools/sanity_check to validate the database a little bit. But it highly depends on your understanding
@@ -621,6 +635,44 @@ of the GPU system and kernel optimization.
 
 Browse the [Legacy AIC Support Matrix](https://ai-dynamo.org/aisimulate/support-matrix/)
 for CLI compatibility coverage, or inspect the
-[per-system CSV files](../src/aiconfigurator_core/systems/support_matrix/).
+[per-system CSV files](../src/aisimulate_core/systems/support_matrix/).
 For strict-native estimator coverage, use the
 [FPE Support Matrix](https://ai-dynamo.org/aisimulate/fpe-support-matrix/).
+
+## SGLang ordinary MLA context modules
+
+For uniform-projection checkpoints, `run_attention_torch(..., ordinary_mla=True)`
+collects the complete context attention module into
+`mla_context_module_perf.txt`. It invokes SGLang's real `prepare_qkv_latent`
+and creates fresh `AttentionInputs` on every warmup and timed iteration, so
+Q/KV down-projection is included. Prefill is timed eagerly. The loaded projection
+weights must match the requested single `gemm_type`; mixed BF16/NVFP4 modules
+are rejected instead of mislabeled.
+
+The CLI flag `--ordinary-mla` requires `--mode context --attn-type mla`.
+Other combinations fail during argument parsing, before collection starts.
+If any dispatch fails, the CLI reports its traceback, finishes the remaining
+dispatches, and exits with status 1 so partial collection is not reported as success.
+
+Pass `--target-tp-size 4` (or `8`) to derive the per-rank head count from the
+model. It must be positive and divide the model's native head count. If
+`--num-heads` is also supplied, it must equal native heads divided by TP.
+Without an explicit TP size, ordinary MLA derives TP separately for each
+per-rank head count. Python callers pass the actual per-rank head count and
+`target_tp_size`. Set
+`--chunked-prefill-size 16384` on the CLI, or `chunked_prefill_size=16384`
+on `run_mla_module()` or `run_mla_module_worker()`, to reproduce a serving
+chunk limit of 16,384 tokens. The worker forwards the limit into its subprocess.
+Explicit limits must be positive for one-shot module collection.
+Omitting the option keeps SGLang's default. The existing
+wide-EP and DSA paths keep their separate behavior. The ordinary context table
+uses the existing consumer schema; this does not add mixed-precision modeling.
+
+## TRT-LLM MoE autotuning failures
+
+TRT-LLM MoE collection requires either a loaded tactic cache or at least one
+successful autotuning attempt before measuring a tuning-enabled case. Ordinary
+failures may try smaller eligible token counts; if every attempt fails, the
+case raises before timing or publishing rows. CUDA accelerator errors propagate
+immediately. The successful collection path and historical profile values are
+unchanged by this failure guard.

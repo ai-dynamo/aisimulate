@@ -15,9 +15,64 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
+from ..power import POWER_FIELDS, normalize_power_summary
 from .provider import AdapterReplaySpec, JSONValue, RuntimeHookSpec
 
 REPLAY_SPEC_API_VERSION = 1
+
+
+@dataclass(frozen=True)
+class ForwardPassEstimatorSpec:
+    """Resolved output of Core's canonical forward-pass constructor.
+
+    The config is the sole estimator identity carried by Sweeper and Replay.
+    Convenience properties below are projections, never independently authored
+    values. Diagnostics preserve Core's selection result for artifacts.
+    """
+
+    config: dict[str, JSONValue]
+    options: dict[str, JSONValue] | None = None
+    diagnostics: dict[str, JSONValue] = field(default_factory=dict)
+
+    @property
+    def model_path(self) -> str:
+        return str(self.config["model"])
+
+    @property
+    def system(self) -> str:
+        return str(self.config["system"])
+
+    @property
+    def backend(self) -> str:
+        return str(self.config["backend"])
+
+    @property
+    def backend_version(self) -> str:
+        return str(self.config["backend_version"])
+
+    @property
+    def database_mode(self) -> str:
+        return str(self.config["database_mode"])
+
+    @property
+    def transfer_policy(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.config.get("transfer_policy") or ())
+
+    @property
+    def forward_model(self) -> str:
+        return str(self.config["estimation_mode"])
+
+    @property
+    def systems_paths(self) -> tuple[str, ...]:
+        return tuple(str(value) for value in self.config.get("systems_paths") or ())
+
+    @property
+    def performance_data_root(self) -> str:
+        provenance = self.diagnostics.get("provenance")
+        if isinstance(provenance, dict):
+            return str(provenance.get("selected_systems_root") or "")
+        return ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +149,7 @@ class BackendDeploymentSpec:
     num_prefill_workers: int = 0
     num_decode_workers: int = 0
     performance_model_metadata: dict[str, JSONValue] = field(default_factory=dict)
+    forward_pass_estimators: dict[str, ForwardPassEstimatorSpec] = field(default_factory=dict)
     encoder: EncoderPoolSpec | None = None
 
 
@@ -120,8 +176,23 @@ class ReplaySpec:
 class ReplayReport:
     """Runner output consumed by Sweeper scoring."""
 
-    metrics: dict[str, float]
+    metrics: dict[str, float | None]
     metadata: dict[str, JSONValue] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        power = normalize_power_summary(self.metrics)
+        for name, value in self.metrics.items():
+            if name in POWER_FIELDS:
+                continue
+            if isinstance(value, bool) or not isinstance(value, Real):
+                raise ValueError(f"runner metric {name} must be numeric; only power fields may be null")
+            try:
+                number = float(value)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"runner metric {name} must be finite") from exc
+            if not math.isfinite(number):
+                raise ValueError(f"runner metric {name} must be finite")
+        object.__setattr__(self, "metrics", {**self.metrics, **power})
 
 
 @dataclass(frozen=True)
@@ -133,6 +204,7 @@ class ReplayOutputRequirements:
     capture_telemetry: bool = False
     telemetry_sample_interval_ms: float = 1000.0
     capture_memory_diagnostics: bool = False
+    capture_performance_diagnostics: bool = False
 
     def __post_init__(self) -> None:
         interval = self.telemetry_sample_interval_ms
@@ -182,6 +254,12 @@ class RunnerCapabilities:
     supported_agentic_backends: tuple[str, ...] = ("*",)
     supports_agentic_host_offload: bool = True
     supports_agentic_speculative_decoding: bool = True
+    supports_agentic_snapshots: bool = False
+    supports_agentic_warmup: bool = False
+    supports_cached_prefix_tokens: bool = False
+    supported_engine_model_controls: tuple[str, ...] = ()
+    supports_mtp_expected_acceptance: bool = False
+    supports_state_cache: bool = False
 
     def supports_backend_topology(self, backend: str, topology: str) -> bool:
         """Return whether a backend/topology pair is supported.
@@ -232,6 +310,56 @@ class RunnerCapabilities:
         if not self.supports_execution_mode(spec.execution_mode):
             raise ValueError(f"runner does not support execution mode {spec.execution_mode!r}")
         deployment = spec.backend_deployment
+        is_afd = deployment.deployment_mode in {"afd", "afd+pd"}
+        if spec.workload.get("cached_prefix_tokens"):
+            if is_afd:
+                raise ValueError("cached_prefix_tokens is unsupported for AFD")
+            if not self.supports_cached_prefix_tokens:
+                raise ValueError("runner does not support cached_prefix_tokens; use --stack engine")
+        for args in (deployment.agg_engine_args, deployment.prefill_engine_args, deployment.decode_engine_args):
+            if not isinstance(args, Mapping):
+                continue
+            rank = args.get("rank", args)
+            if not isinstance(rank, Mapping):
+                continue
+            timing = rank.get("timing_model")
+            identity = timing.get("config", {}) if isinstance(timing, Mapping) else {}
+            if not isinstance(identity, Mapping):
+                # The timing validator handles malformed identities; still inspect flat controls.
+                identity = {}
+            active_controls = [
+                name
+                for name in ENGINE_MODEL_CONTROL_FIELDS
+                if any(
+                    is_active_engine_model_control(name, value)
+                    for value in (identity.get(name), rank.get(name), rank.get(f"aic_{name}"))
+                )
+            ]
+            if is_afd and active_controls:
+                raise ValueError(f"engine model controls {active_controls} are unsupported for AFD")
+            unsupported_controls = [
+                name for name in active_controls if name not in self.supported_engine_model_controls
+            ]
+            if unsupported_controls:
+                raise ValueError(
+                    f"runner does not support engine model controls {unsupported_controls}; use --stack engine"
+                )
+            if any(rank.get(name) is not None for name in ("aic_nextn_accepted", "nextn_accepted")):
+                if is_afd:
+                    raise ValueError("explicit MTP expected acceptance is unsupported for AFD")
+                if not self.supports_mtp_expected_acceptance:
+                    raise ValueError("runner does not support explicit MTP expected acceptance; use --stack engine")
+            if is_afd and rank.get("enable_chunked_prefill") is not None:
+                raise ValueError("enable_chunked_prefill is unsupported for AFD")
+        if not self.supports_state_cache:
+            for args in (deployment.agg_engine_args, deployment.prefill_engine_args, deployment.decode_engine_args):
+                if not args:
+                    continue
+                rank = args.get("rank", args)
+                if isinstance(rank, Mapping) and rank.get("state_cache") is not None:
+                    raise ValueError(
+                        "runner does not support state_cache; select a stack that advertises this capability"
+                    )
         if deployment.encoder is not None and deployment.deployment_mode not in {"agg", "disagg"}:
             raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
         if deployment.encoder is not None and not self.supports_analytical_epd:
@@ -257,6 +385,29 @@ class RunnerCapabilities:
                 raise ValueError("agentic_lanes requires weka, agentic_mooncake, or agentic dynamo input")
             if not self.supports_agentic_lanes:
                 raise ValueError("runner does not support agentic_lanes")
+        agentic_snapshot = spec.workload.get("agentic_snapshot")
+        agentic_warmup = spec.workload.get("agentic_warmup", False)
+        if type(agentic_warmup) is not bool:
+            raise ValueError("agentic_warmup must be a boolean")
+        if agentic_warmup:
+            if agentic_snapshot is None:
+                raise ValueError("agentic_warmup requires agentic_snapshot")
+            if not self.supports_agentic_warmup:
+                raise ValueError("runner does not support agentic warmup")
+        if agentic_snapshot is not None:
+            if (
+                not isinstance(agentic_snapshot, Mapping)
+                or set(agentic_snapshot) != {"seed"}
+                or type(agentic_snapshot["seed"]) is not int
+                or not 0 <= agentic_snapshot["seed"] <= 0xFFFF_FFFF_FFFF_FFFF
+            ):
+                raise ValueError("agentic_snapshot requires exactly one unsigned 64-bit integer seed")
+            if agentic_lanes is None or spec.workload.get("load_type") != "trace_timestamps":
+                raise ValueError("agentic_snapshot requires trace_timestamps load with positive agentic_lanes")
+            if spec.workload.get("source_type") != "trace" or spec.workload.get("replay_concurrency") is not None:
+                raise ValueError("agentic_snapshot requires agentic trace input without replay_concurrency")
+            if not self.supports_agentic_snapshots:
+                raise ValueError("runner does not support agentic snapshots")
         agentic_topology_required = trace_format in {"weka", "agentic_mooncake"} or (
             trace_format == "dynamo" and agentic_lanes is not None
         )
@@ -280,11 +431,11 @@ class RunnerCapabilities:
                 if not isinstance(rank, Mapping):
                     continue  # The engine descriptor validator reports malformed ranks.
                 if not self.supports_agentic_host_offload and rank.get("native_host_offload") is not None:
-                    raise ValueError("agentic M1 execution requires HBM-only KV cache; host offload is unsupported")
+                    raise ValueError("agentic replay requires HBM-only KV cache; host offload is unsupported")
                 if not self.supports_agentic_speculative_decoding and any(
-                    rank.get(key) is not None for key in ("aic_nextn", "nextn")
+                    rank.get(key) is not None for key in ("aic_nextn", "nextn", "speculation")
                 ):
-                    raise ValueError("agentic M1 execution requires speculative decoding disabled")
+                    raise ValueError("agentic replay requires speculative decoding disabled")
         unsupported = [hook for hook in spec.runtime_hooks if not self.supports_hook(hook)]
         if unsupported:
             labels = ", ".join(f"{hook.provider}:{hook.kind}@{hook.api_version}" for hook in unsupported)

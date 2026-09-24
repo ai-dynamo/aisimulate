@@ -5,10 +5,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
-from ..aic import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
-from .replay import BackendDeploymentSpec, EncoderPoolSpec
+from ..capacity import estimate_kv_bytes_per_token, materialize_aic_num_gpu_blocks
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control, omit_inactive_moe_controls
+from ..config.engine import NgramSpeculationConfig
+from .replay import BackendDeploymentSpec, EncoderPoolSpec, ForwardPassEstimatorSpec
 
 
 def _role_prefix(role: str) -> str:
@@ -44,11 +48,25 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
             else "op_level"
         ),
     }
+    if sample.get(f"{role}_fpm_parquet_path") is not None:
+        config["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
+    if sample.get("speculation") is not None:
+        config["speculation"] = NgramSpeculationConfig.model_validate(sample["speculation"]).cost_config()
     return {"provider": "aic", "config": config}
 
 
-def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: str) -> dict[str, Any]:
+def _engine_args_payload(
+    sample: dict[str, Any],
+    role: str,
+    *,
+    backend_version: str,
+    forward_pass_estimator: ForwardPassEstimatorSpec | None = None,
+) -> dict[str, Any]:
     """Build the runner-neutral engine argument payload for one role."""
+    if any(is_active_engine_model_control(name, sample.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS) and (
+        forward_pass_estimator is None or sample.get(f"{role}_timing_model") is not None
+    ):
+        raise ValueError("engine model controls require a resolved canonical forward-pass estimator for every role")
     prefix = _role_prefix(role)
     tp = int(sample[f"{prefix}tp"])
     attention_dp = int(sample[f"{prefix}attention_dp"])
@@ -81,16 +99,20 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
-    if backend == "vllm" and sample.get("context_length") is not None:
+    if sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
         payload["aic_moe_tp_size"] = moe_tp
         payload["aic_moe_ep_size"] = moe_ep
-    if sample.get("aic_nextn") is not None:
+    if sample.get("speculation") is not None:
+        payload["speculation"] = dict(sample["speculation"])
+    if sample.get("aic_nextn"):
         payload["aic_nextn"] = int(sample["aic_nextn"])
     forward_model = sample.get(f"{role}_forward_model")
     if forward_model is not None and forward_model != "op_level":
         payload["aic_forward_model"] = str(forward_model)
+    if sample.get(f"{role}_fpm_parquet_path") is not None:
+        payload["aic_fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
     startup = sample.get(f"{role}_startup_time")
     if startup is None:
         startup = sample.get("startup_time")
@@ -111,8 +133,28 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
             "aic_moe_ep_size",
             "aic_nextn",
             "aic_forward_model",
+            "aic_fpm_parquet_path",
         ):
             payload.pop(name, None)
+    if forward_pass_estimator is not None and sample.get(f"{role}_timing_model") is None:
+        payload["timing_model"] = {
+            "type": "external",
+            "provider": "aic",
+            "config": omit_inactive_moe_controls(forward_pass_estimator.config),
+        }
+        if memory_fraction_field in payload:
+            payload["timing_model"]["config"][memory_fraction_field] = payload[memory_fraction_field]
+        payload["tensor_parallel_size"] = tp
+        payload["dp_size"] = attention_dp
+        if forward_pass_estimator.performance_data_root:
+            payload["systems_path"] = forward_pass_estimator.performance_data_root
+        for key in tuple(payload):
+            if key.startswith("aic_") and key != "aic_nextn":
+                payload.pop(key)
+    if sample.get("enable_chunked_prefill") is not None and role != "decode":
+        payload["enable_chunked_prefill"] = sample["enable_chunked_prefill"]
+    if sample.get("nextn_accepted") is not None:
+        payload["aic_nextn_accepted"] = sample["nextn_accepted"]
     host_offload = sample.get(f"{role}_native_host_offload")
     if host_offload is not None:
         configured_bytes = sample[f"{role}_kv_bytes_per_token"]
@@ -123,6 +165,7 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
                 pp_size=int(sample[f"{prefix}pp"]),
                 moe_tp_size=moe_tp,
                 moe_ep_size=moe_ep,
+                **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if configured_bytes == "auto"
             else int(configured_bytes)
@@ -136,6 +179,7 @@ def _engine_args_payload(sample: dict[str, Any], role: str, *, backend_version: 
                 pp_size=int(sample["prefill_pp"]),
                 moe_tp_size=int(sample["prefill_moe_tp"]),
                 moe_ep_size=int(sample["prefill_moe_ep"]),
+                **({"kvcache_quant_mode": sample["kvcache_quant_mode"]} if sample.get("kvcache_quant_mode") else {}),
             )
             if transfer_geometry == "auto"
             else int(transfer_geometry)
@@ -155,8 +199,10 @@ def build_backend_deployment(
     *,
     backend_version: str,
     encoder: EncoderPoolSpec | None = None,
+    forward_pass_estimators: Mapping[str, ForwardPassEstimatorSpec] | None = None,
 ) -> BackendDeploymentSpec:
     """Build the Dynamo-independent backend part of a :class:`ReplaySpec`."""
+    forward_pass_estimators = dict(forward_pass_estimators or {})
     mode = sample["deployment_mode"]
     if encoder is not None and mode not in {"agg", "disagg"}:
         raise ValueError("analytical EPD supports only agg/disagg language deployments; AFD is unsupported")
@@ -206,6 +252,7 @@ def build_backend_deployment(
         )
 
     common = {
+        "forward_pass_estimators": forward_pass_estimators,
         "encoder": encoder,
         "deployment_mode": mode,
         "backend": sample["backend"],
@@ -247,14 +294,32 @@ def build_backend_deployment(
             for role in (("agg",) if mode == "agg" else ("prefill", "decode"))
         },
     }
+    for role, estimator in forward_pass_estimators.items():
+        common["performance_model_metadata"]["aggregated" if role == "agg" else role] = {
+            "provider": "aic",
+            "config": deepcopy(estimator.config),
+            "selection": deepcopy(estimator.diagnostics),
+        }
     if mode == "agg":
         return BackendDeploymentSpec(
-            agg_engine_args=_engine_args_payload(sample, "agg", backend_version=backend_version),
+            agg_engine_args=_engine_args_payload(
+                sample,
+                "agg",
+                backend_version=backend_version,
+                forward_pass_estimator=forward_pass_estimators.get("agg"),
+            ),
             num_workers=int(sample["replicas"]),
             **common,
         )
-    prefill_args = _engine_args_payload(sample, "prefill", backend_version=backend_version)
-    decode_args = _engine_args_payload(sample, "decode", backend_version=backend_version)
+    prefill_args = _engine_args_payload(
+        sample,
+        "prefill",
+        backend_version=backend_version,
+        forward_pass_estimator=forward_pass_estimators.get("prefill"),
+    )
+    decode_args = _engine_args_payload(
+        sample, "decode", backend_version=backend_version, forward_pass_estimator=forward_pass_estimators.get("decode")
+    )
     return BackendDeploymentSpec(
         prefill_engine_args=prefill_args,
         decode_engine_args=decode_args,

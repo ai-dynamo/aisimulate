@@ -9,7 +9,9 @@
 //! headroom are implementation details of those hooks, not separate schedulers.
 
 use crate::engine::common::protocols::{PrefillCost, SchedulingPolicy};
-use crate::engine::kv_manager::{DestinationReservationMode, G1Manager};
+use crate::engine::kv_manager::{AllocationRequirement, DestinationReservationMode, G1Manager};
+#[cfg(test)]
+use crate::engine::kv_manager::{apply_mtp_prefix_recompute, apply_prefix_recompute};
 use crate::engine::scheduler::vllm::request::RequestKvState;
 
 pub(super) trait PolicySequence {
@@ -21,6 +23,12 @@ pub(super) trait PolicySequence {
     fn current_known_blocks(&self) -> usize;
     fn to_completion_blocks(&self) -> usize;
     fn prefill_cost(&self, kv_manager: &G1Manager) -> PrefillCost;
+    fn admission_requirement(
+        &self,
+        kv_manager: &G1Manager,
+        cost: &PrefillCost,
+        reserved_blocks: usize,
+    ) -> AllocationRequirement;
 }
 
 impl PolicySequence for RequestKvState {
@@ -54,6 +62,15 @@ impl PolicySequence for RequestKvState {
 
     fn prefill_cost(&self, kv_manager: &G1Manager) -> PrefillCost {
         kv_manager.get_native_prefill_cost(&self.sequence, &self.lease)
+    }
+
+    fn admission_requirement(
+        &self,
+        kv_manager: &G1Manager,
+        cost: &PrefillCost,
+        reserved_blocks: usize,
+    ) -> AllocationRequirement {
+        kv_manager.admission_requirement(&self.lease, self.len(), cost, reserved_blocks)
     }
 }
 
@@ -103,13 +120,27 @@ pub(super) fn destination_capacity_error<S: PolicySequence>(
     exceeds.then_some(message)
 }
 
-pub(super) fn should_reject_for_model_len<S: PolicySequence>(
+/// TRT-LLM reserves through completion, so admission uses the realizable output
+/// budget. vLLM keeps its requested budget and enforces the limit during decode.
+pub(super) fn cap_output_for_model_len(
     policy: SchedulingPolicy,
+    prompt_len: usize,
+    max_output_tokens: usize,
+    max_model_len: Option<usize>,
+) -> usize {
+    match (policy, max_model_len) {
+        (SchedulingPolicy::TrtllmGuaranteedNoEvict, Some(limit)) => {
+            max_output_tokens.min(limit.saturating_sub(prompt_len))
+        }
+        _ => max_output_tokens,
+    }
+}
+
+pub(super) fn should_reject_for_model_len<S: PolicySequence>(
     sequence: &S,
     max_model_len: Option<usize>,
 ) -> bool {
-    policy == SchedulingPolicy::Vllm
-        && max_model_len.is_some_and(|limit| sequence.num_input_tokens() >= limit)
+    max_model_len.is_some_and(|limit| sequence.num_input_tokens() >= limit)
 }
 
 /// Number of additional tokens the request may generate before reaching
@@ -132,76 +163,6 @@ pub(super) fn generation_complete<S: PolicySequence>(
     max_model_len: Option<usize>,
 ) -> bool {
     remaining_generation_tokens(sequence, max_model_len) == 0
-}
-
-/// Apply vLLM's EAGLE/MTP prefix-cache rule.
-///
-/// The drafter needs hidden states from the final matched block, so vLLM
-/// removes one block from every non-empty prefix-cache hit and recomputes it
-/// during prefill. Keep that backend-specific accounting here rather than in
-/// the shared scheduler core.
-pub(super) fn apply_mtp_prefix_recompute(
-    policy: SchedulingPolicy,
-    block_size: usize,
-    mtp_enabled: bool,
-    mut prefill_cost: PrefillCost,
-) -> PrefillCost {
-    if policy != SchedulingPolicy::Vllm || !mtp_enabled || prefill_cost.cached_tokens < block_size {
-        return prefill_cost;
-    }
-
-    prefill_cost.cached_tokens -= block_size;
-    prefill_cost.new_tokens += block_size;
-    prefill_cost.new_blocks += 1;
-    prefill_cost.active_cached_tokens = prefill_cost
-        .active_cached_tokens
-        .min(prefill_cost.cached_tokens);
-    prefill_cost
-}
-
-/// Apply the ordinary vLLM prefix-cache rule before any speculative-decoding
-/// adjustment. A request whose complete known context is cached must still
-/// recompute its final token to produce logits. For a preempted request this
-/// context includes retained generated tokens, matching vLLM's
-/// `request.num_tokens - 1` lookup bound. Because the shared scheduler
-/// allocates whole blocks, an exactly block-aligned context recomputes its
-/// final block.
-///
-/// TensorRT-LLM uses the same physical G1 manager but owns its compute policy,
-/// so this adjustment is deliberately selected by [`SchedulingPolicy`] rather
-/// than embedded in the block manager.
-pub(super) fn apply_prefix_recompute(
-    policy: SchedulingPolicy,
-    known_tokens: usize,
-    block_size: usize,
-    mtp_enabled: bool,
-    requires_logits: bool,
-    mut prefill_cost: PrefillCost,
-) -> PrefillCost {
-    if !requires_logits {
-        return prefill_cost;
-    }
-
-    if policy == SchedulingPolicy::Vllm {
-        let max_cached_tokens = known_tokens
-            .saturating_sub(1)
-            .checked_div(block_size)
-            .unwrap_or(0)
-            .saturating_mul(block_size);
-        if prefill_cost.cached_tokens > max_cached_tokens {
-            let recompute_tokens = prefill_cost.cached_tokens - max_cached_tokens;
-            debug_assert_eq!(recompute_tokens % block_size, 0);
-            prefill_cost.cached_tokens = max_cached_tokens;
-            prefill_cost.active_cached_tokens =
-                prefill_cost.active_cached_tokens.min(max_cached_tokens);
-            prefill_cost.new_tokens = prefill_cost.new_tokens.saturating_add(recompute_tokens);
-            prefill_cost.new_blocks = prefill_cost
-                .new_blocks
-                .saturating_add(recompute_tokens / block_size);
-        }
-    }
-
-    apply_mtp_prefix_recompute(policy, block_size, mtp_enabled, prefill_cost)
 }
 
 /// Decide whether the FIFO head can enter the shared scheduler core.
@@ -277,10 +238,9 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
         }
     }
 
-    let prefill_cost = apply_prefix_recompute(
+    let prefill_cost = kv_manager.resolve_prefill_cost(
         policy,
         sequence.len(),
-        block_size,
         mtp_enabled,
         !generation_complete(sequence, None),
         raw_prefill_cost,
@@ -300,9 +260,13 @@ pub(super) fn decide_waiting_admission_with_cost<'a, S: PolicySequence + 'a>(
         }
     };
     let needed = match policy {
-        SchedulingPolicy::Vllm => sequence.current_known_blocks().saturating_sub(
-            (prefill_cost.active_cached_tokens / block_size).max(reserved_request_blocks),
-        ),
+        SchedulingPolicy::Vllm => {
+            match sequence.admission_requirement(kv_manager, &prefill_cost, reserved_request_blocks)
+            {
+                AllocationRequirement::Blocks(count) => count,
+                AllocationRequirement::Impossible => return AdmissionDecision::Reject,
+            }
+        }
         SchedulingPolicy::TrtllmGuaranteedNoEvict => {
             blocks_needed_to_finish(sequence, block_size, kv_manager, Some(&prefill_cost))
         }

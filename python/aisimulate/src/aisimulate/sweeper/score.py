@@ -21,6 +21,10 @@ Three steps, mirroring the profiler replay optimizer in the ``ai-dynamo/dynamo``
    Over-budget and strict-SLA-violating candidates are dropped.
 3. **rank** — feasible candidates best-first by score, ties broken toward fewer GPUs.
 
+``min_gpus`` scores the concrete provisioned GPU count negatively, always gates aggregate
+latency, and enforces the optional measured request-goodput floor. Its final ordering is
+fewest GPUs, then higher goodput, then lower E2E latency.
+
 For a ``pareto`` goal the score is a *vector* instead: :func:`objective_vector` reads one
 value per objective, :func:`make_candidate` stores them on the candidate, and
 :func:`pareto_front` returns the non-dominated set (step 3 becomes Pareto dominance, not a
@@ -34,6 +38,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 
+from ..power import normalize_power_summary
 from .config import (
     Candidate,
     OptimizationGoal,
@@ -54,8 +59,13 @@ _METRIC_KEYS = (
     "mean_e2e_latency_ms",
     "mean_output_token_throughput_per_user",
     "goodput_output_throughput_tok_s",
+    "request_throughput_rps",
+    "goodput_request_throughput_rps",
+    "goodput_completed_requests",
     "gpu_hours",
     "duration_ms",
+    "power_w",
+    "power_coverage",
     "planner_total_ticks",
     "encoder_latency_ms",
     "encoder_gpus",
@@ -94,8 +104,12 @@ def _avg_gpu(report: dict[str, float]) -> float:
     return gpu_hours / (duration_ms / 3_600_000.0)
 
 
-def objective_value(report: dict[str, float], target: OptimizationTarget) -> float:
+def objective_value(report: dict[str, float], target: OptimizationTarget, *, used_gpus: int | None = None) -> float:
     """The raw objective metric (NOT yet signed for direction)."""
+    if target is OptimizationTarget.MIN_GPUS:
+        if type(used_gpus) is not int or used_gpus <= 0:
+            raise ValueError("min_gpus requires a concrete positive provisioned GPU count")
+        return float(used_gpus)
     if target is OptimizationTarget.THROUGHPUT:
         return float(report.get("output_throughput_tok_s", 0.0))
     if target is OptimizationTarget.E2E_LATENCY:
@@ -125,9 +139,9 @@ def objective_value(report: dict[str, float], target: OptimizationTarget) -> flo
     raise ValueError(f"unknown optimization target: {target!r}")
 
 
-def score_report(report: dict[str, float], target: OptimizationTarget) -> float:
+def score_report(report: dict[str, float], target: OptimizationTarget, *, used_gpus: int | None = None) -> float:
     """Objective normalized so **higher is better** (minimized targets negated)."""
-    value = objective_value(report, target)
+    value = objective_value(report, target, used_gpus=used_gpus)
     return value if target.maximize else -value
 
 
@@ -140,6 +154,18 @@ def is_feasible(used_gpus: int, gpu_budget: int) -> bool:
     aggregate gating is implemented by :func:`analyze_candidates` and the search loop.
     """
     return used_gpus <= gpu_budget
+
+
+def minimum_goodput_violations(report: Mapping[str, float], minimum: float | None) -> tuple[str, ...]:
+    """Require measured SLA-compliant request throughput, never offered load or token throughput."""
+    if minimum is None:
+        return ()
+    value = report.get("goodput_request_throughput_rps")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+        return ("goodput_request_throughput_rps is missing or invalid",)
+    if value < minimum:
+        return (f"goodput_request_throughput_rps={value:g} < min_goodput_rps={minimum:g}",)
+    return ()
 
 
 def aggregate_sla_violations(
@@ -260,7 +286,8 @@ def make_candidate(
     ``pareto`` target, ``pareto_objectives`` must be given; the per-objective raw values are
     stored in ``Candidate.objectives`` (Pareto dominance reads these) and ``score`` carries
     the first objective's value as a headline number (it is not used for ranking)."""
-    metrics = {key: float(report[key]) for key in _METRIC_KEYS if key in report}
+    metrics = {key: float(report[key]) for key in _METRIC_KEYS if key in report and report[key] is not None}
+    metrics.update(normalize_power_summary(report))
     if target is OptimizationTarget.PARETO:
         if not pareto_objectives:
             raise ValueError("a pareto candidate needs pareto_objectives")
@@ -275,7 +302,7 @@ def make_candidate(
     return Candidate(
         config=config,
         used_gpus=int(config.get("used_gpus", 0)),
-        score=score_report(report, target),
+        score=score_report(report, target, used_gpus=config.get("used_gpus")),
         metrics=metrics,
     )
 
@@ -298,7 +325,20 @@ def analyze_candidates(
 ) -> list[Candidate]:
     """Apply strict SLA filtering before scalar ranking or Pareto dominance."""
     pool = list(candidates)
-    if goal.strict_sla:
+    if goal.requires_aggregate_sla:
         assert goal.sla is not None  # OptimizationGoal validates this invariant.
         pool = [candidate for candidate in pool if meets_aggregate_sla(candidate.metrics, goal.sla)]
+    if goal.target is OptimizationTarget.MIN_GPUS:
+        pool = [
+            candidate for candidate in pool if not minimum_goodput_violations(candidate.metrics, goal.min_goodput_rps)
+        ]
+        return sorted(
+            pool,
+            key=lambda c: (
+                c.used_gpus,
+                -c.metrics.get("goodput_output_throughput_tok_s", 0.0),
+                _qualified_latency_value(c.metrics, "mean_e2e_latency_ms", "num_e2e_latency_samples"),
+                json.dumps(c.config, sort_keys=True, separators=(",", ":")),
+            ),
+        )
     return pareto_front(pool, goal.resolved_pareto_objectives) if goal.is_pareto else rank(pool)

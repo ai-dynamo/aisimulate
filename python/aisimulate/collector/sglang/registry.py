@@ -12,6 +12,14 @@ from collector.registry_types import OpEntry, PerfFile
 
 REGISTRY: list[OpEntry] = [
     OpEntry(
+        op="dsv41_module",
+        module="collector.sglang.collect_dsv41_module",
+        get_func="get_dsv41_module_test_cases",
+        run_func="run_dsv41_module_worker",
+        perf_filename=PerfFile.DSV41_MODULE,
+        unverified=True,
+    ),
+    OpEntry(
         op="gemm",
         module="collector.sglang.collect_gemm",
         get_func="get_gemm_test_cases",

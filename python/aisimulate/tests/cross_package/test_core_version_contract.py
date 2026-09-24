@@ -9,8 +9,8 @@ import re
 import tomllib
 from pathlib import Path
 
-import aiconfigurator_core
-from aiconfigurator_core.sdk import engine
+import aisimulate_core
+from aisimulate_core.sdk import engine
 
 APPLICATION_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
@@ -56,4 +56,4 @@ def test_plotext_support_contract_excludes_incompatible_v6() -> None:
 def test_engine_schema_versions_match_across_python_and_rust() -> None:
     assert _rust_u32_constant(RUST_CONFIG, "ENGINE_CONFIG_SCHEMA_VERSION") == engine.ENGINE_CONFIG_SCHEMA_VERSION
     assert _rust_u32_constant(RUST_CONFIG, "ENGINE_SPEC_SCHEMA_VERSION") == engine.ENGINE_SPEC_SCHEMA_VERSION
-    assert aiconfigurator_core._build_smoke() == engine.ENGINE_CONFIG_SCHEMA_VERSION
+    assert aisimulate_core._build_smoke() == engine.ENGINE_CONFIG_SCHEMA_VERSION

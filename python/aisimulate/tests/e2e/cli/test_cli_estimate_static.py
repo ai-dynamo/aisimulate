@@ -14,13 +14,20 @@ CLI estimate detail report rollout:
 """
 
 import argparse
+import hashlib
+import json
+import shutil
 import subprocess as sp
+from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
-from aiconfigurator.cli.api import EstimateResult, cli_estimate
-from aiconfigurator.cli.main import configure_parser as configure_cli_parser
-from aiconfigurator.sdk import common
+import aisimulate_core
+from aisimulate.legacy_cli.api import EstimateResult, cli_estimate
+from aisimulate.legacy_cli.main import configure_parser as configure_cli_parser
+from aisimulate.sdk import common
 
 pytestmark = pytest.mark.e2e
 
@@ -281,10 +288,74 @@ def test_static_estimate_source_tag_empirical_in_empirical_mode():
     )
 
 
+@pytest.fixture
+def glm52_fpm_systems(tmp_path):
+    """An FPM-only database with the checkpoint's FP8 attention identity."""
+    shutil.copyfile(Path(aisimulate_core.__file__).parent / "systems" / "b200_sxm.yaml", tmp_path / "b200_sxm.yaml")
+    data_dir = tmp_path / "data" / "b200_sxm" / "vllm" / "0.25.1"
+    data_dir.mkdir(parents=True)
+    identity = {
+        "model_path": "nvidia/GLM-5.2-NVFP4",
+        "system": "b200_sxm",
+        "backend": "vllm",
+        "backend_version": "0.25.1",
+        "weight_quantization": "nvfp4",
+        "gemm_quant_mode": "nvfp4",
+        "moe_quant_mode": "nvfp4",
+        # Keep this independent of model construction so a fallback to
+        # op-level BF16 attention cannot silently change the test's oracle.
+        "fmha_quant_mode": "fp8",
+        "comm_quant_mode": "half",
+        "kv_cache_dtype": "fp8",
+        "tp": 8,
+        "pp": 1,
+        "dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 8,
+        "cp": 1,
+        "moe_backend": "auto",
+        "attention_backend": "auto",
+        "enable_wideep": False,
+        "enable_eplb": False,
+    }
+    rows = [
+        {
+            **identity,
+            "cell_id": f"glm52-test-{phase}",
+            "workload_kind": phase,
+            "batch_size": 1,
+            "total_prefill_tokens": prefill_tokens,
+            "total_kv_read_tokens": kv_tokens,
+            "partition_policy": "balanced_v1",
+            "latency_ms": latency,
+        }
+        for phase, prefill_tokens, kv_tokens, latency in (
+            ("prefill", 1024, 0, 100.0),
+            ("decode", 0, 1024, 30.0),
+            ("decode", 0, 1028, 30.0),
+        )
+    ]
+    parquet_path = data_dir / "fpm_forward_perf.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), parquet_path)
+    metadata = {
+        "schema_name": "aic_fpm_forward_perf",
+        "schema_version": 6,
+        "coordinate_system": "iteration_totals_balanced_v1",
+        "measurement_policy": "dynamo_native_single_sample_v1",
+        "row_count": len(rows),
+        "parquet_sha256": hashlib.sha256(parquet_path.read_bytes()).hexdigest(),
+        "system": identity["system"],
+        "backend": identity["backend"],
+        "backend_version": identity["backend_version"],
+    }
+    parquet_path.with_suffix(".metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    return tmp_path
+
+
 @pytest.mark.build
 @pytest.mark.parametrize("mode", ["static", "agg"])
 @pytest.mark.parametrize("fmha_quant_mode", [None, "fp8"])
-def test_glm52_fpm_estimate_uses_whole_model_fmha_identity(monkeypatch, mode, fmha_quant_mode):
+def test_glm52_fpm_estimate_uses_whole_model_fmha_identity(monkeypatch, glm52_fpm_systems, mode, fmha_quant_mode):
     """Public FPM estimates must not be gated by unrelated op-level FMHA data."""
     monkeypatch.setenv("AIC_ALLOW_UNLISTED_VERSIONS", "1")
     monkeypatch.setenv("HF_HUB_OFFLINE", "1")
@@ -295,6 +366,7 @@ def test_glm52_fpm_estimate_uses_whole_model_fmha_identity(monkeypatch, mode, fm
         system_name="b200_sxm",
         backend_name="vllm",
         backend_version="0.25.1",
+        systems_paths=str(glm52_fpm_systems),
         forward_model="fpm",
         tp_size=8,
         pp_size=1,
@@ -348,7 +420,7 @@ def test_agg_estimate_responds_to_common_nextn():
 
 def test_agg_estimate_resolves_lightning_nvfp4_for_hopper_before_model_construction(monkeypatch):
     """Hopper must use the weight-only MoE lane before its ops are built."""
-    import aiconfigurator.sdk.models as models
+    import aisimulate.sdk.models as models
 
     class ModelConstructionObservedError(Exception):
         pass

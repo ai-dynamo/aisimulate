@@ -23,12 +23,11 @@ try:
     )
 except Exception:
     print("No maybe_post_process_fp8_weight_block found, please check your vLLM version.")
-from vllm.utils.deep_gemm import per_block_cast_to_fp8
-from vllm.version import __version__ as vllm_version
-
 from collector.case_generator import get_gemm_case_specs, get_gemm_type_specs
 from collector.helper import benchmark_with_power, get_device_module, log_perf
 from collector.vllm.utils_xpu import create_vllm_config, setup_distributed, with_exit_stack
+from vllm.utils.deep_gemm import per_block_cast_to_fp8
+from vllm.version import __version__ as vllm_version
 
 FP8_BLOCK_SHAPE = (128, 128)
 

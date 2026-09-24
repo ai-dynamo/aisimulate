@@ -81,6 +81,14 @@ def _pure_prediction() -> dict:
     }
 
 
+@pytest.mark.parametrize("enabled", [True, False])
+def test_afd_rejects_unsupported_chunked_prefill_control(enabled) -> None:
+    raw = _pure_prediction()
+    raw["engine"]["enable_chunked_prefill"] = enabled
+    with pytest.raises(ValidationError, match="enable_chunked_prefill is unsupported for AFD"):
+        CorePredictionConfig.model_validate(raw)
+
+
 def test_afd_prediction_lowers_to_measured_replay_contract() -> None:
     performance_model = _AFDPerformanceModel()
     config = CorePredictionConfig.model_validate(_pure_prediction())
@@ -163,6 +171,35 @@ def test_public_afd_companion_forward_model_reaches_estimator(phase, companion_r
     assert len(calls) == 1
     assert calls[0].get("forward_model") == expected_model
     assert report.metadata["afd_replay"]["companion"]["forward_model"] == expected_model
+
+
+@pytest.mark.parametrize("mode", ["auto", "fpm_regression"])
+def test_afd_legacy_fpm_does_not_bypass_estimator_policy_validation(mode):
+    raw = _pure_prediction()
+    raw["engine"]["afd"].update(phase="decode", combined_with_pd=True)
+    raw["engine"]["workers"] = {
+        "prefill": {"parallelism": {"tensor": 2}, "timing": {"forward_model": "fpm", "estimation_mode": mode}}
+    }
+    with pytest.raises(ValueError, match="estimator policies"):
+        CorePredictionConfig.model_validate(raw)
+
+
+@pytest.mark.parametrize("forward_model", ["op_level", "fpm"])
+def test_afd_recommendation_preserves_legacy_companion_selection(forward_model):
+    from aisimulate.recommend import recommendation_to_sweeper
+    from aisimulate.sweeper.config import SmartSearchConfig
+
+    raw = _pure_prediction()
+    raw["engine"]["afd"].update(phase="decode", combined_with_pd=True)
+    raw["engine"]["afd"].pop("n_a_nodes")
+    raw["engine"]["afd"].pop("n_f_nodes")
+    raw["engine"]["workers"] = {"prefill": {"timing": {"forward_model": forward_model}}}
+    config = CoreRecommendationConfig.model_validate({**raw, "optimization": {}})
+    search = recommendation_to_sweeper(config, stack="engine")
+    for _ in range(2):
+        assert search.search_space.prefill_forward_model == forward_model
+        assert search.search_space.role_estimator_controls == {}
+        search = SmartSearchConfig.model_validate_json(search.model_dump_json())
 
 
 @pytest.mark.parametrize(
@@ -282,3 +319,22 @@ def test_afd_recommendation_emits_prediction_ready_candidate() -> None:
     assert selected.prediction_config["engine"]["afd"]["combined_with_pd"] is True
     assert set(selected.prediction_config["engine"]["workers"]) == {"prefill"}
     CorePredictionConfig.model_validate(selected.prediction_config)
+
+
+@pytest.mark.parametrize("command", ["prediction", "recommendation"])
+@pytest.mark.parametrize("combined", [False, True])
+def test_afd_rejects_cached_prefix_at_public_boundary(command, combined):
+    raw = _pure_prediction()
+    raw["traffic"]["source"]["cached_prefix_tokens"] = 4
+    raw["engine"]["afd"]["combined_with_pd"] = combined
+    if combined:
+        raw["engine"]["afd"]["phase"] = "decode"
+        raw["engine"]["workers"] = {"prefill": {}}
+    cls = CorePredictionConfig
+    if command == "recommendation":
+        cls = CoreRecommendationConfig
+        raw["optimization"] = {}
+        raw["engine"]["afd"].pop("n_a_nodes")
+        raw["engine"]["afd"].pop("n_f_nodes")
+    with pytest.raises(ValidationError, match="cached_prefix_tokens is unsupported for AFD"):
+        cls.model_validate(raw)

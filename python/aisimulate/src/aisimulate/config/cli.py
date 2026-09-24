@@ -13,6 +13,7 @@ from pydantic import Field, model_validator
 
 from .common import (
     EvaluationConfig,
+    ExecutionConfig,
     OptimizationConfig,
     OptimizerConfig,
     StrictModel,
@@ -31,18 +32,17 @@ class CorePredictionConfig(StrictModel):
     traffic: TrafficPredictionConfig = Field(default_factory=TrafficPredictionConfig.default)
     engine: EnginePredictionConfig
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
 
     @model_validator(mode="after")
     def _validate_cross_component(self) -> CorePredictionConfig:
         _validate_epd(self.traffic, self.engine)
         source = self.traffic.source
+        if self.engine.mode == "afd" and isinstance(source, SyntheticSource) and source.cached_prefix_tokens:
+            raise ValueError("cached_prefix_tokens is unsupported for AFD")
         if self.engine.mode == "afd" and not isinstance(source, SyntheticSource):
             raise ValueError("AFD prediction requires fixed-length synthetic request traffic")
-        if (
-            isinstance(source, TraceSource)
-            and source.format in {"mooncake-delta", "agentic_mooncake", "weka"}
-            and self.engine.mode != "aggregated"
-        ):
+        if isinstance(source, TraceSource) and source.format == "mooncake-delta" and self.engine.mode != "aggregated":
             raise ValueError(f"{source.format} requires aggregated engine mode")
         return self
 
@@ -55,6 +55,7 @@ class CoreRecommendationConfig(StrictModel):
     traffic: TrafficRecommendationConfig | None = None
     engine: EngineRecommendationConfig
     evaluation: EvaluationConfig = Field(default_factory=EvaluationConfig)
+    execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     optimization: OptimizationConfig
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
 
@@ -65,21 +66,34 @@ class CoreRecommendationConfig(StrictModel):
             raise ValueError("engine.hardware='auto' requires one optimization.hardware")
         source = self.traffic.source if self.traffic is not None else None
         modes = set(self.engine.mode.choices) if hasattr(self.engine.mode, "choices") else {self.engine.mode}
+        if "afd" in modes and isinstance(source, SyntheticSource) and source.cached_prefix_tokens:
+            raise ValueError("cached_prefix_tokens is unsupported for AFD")
         if "afd" in modes and source is not None and not isinstance(source, SyntheticSource):
             raise ValueError("AFD recommendation requires fixed-length synthetic request traffic")
         if "afd" in modes and self.traffic is not None and self.traffic.load.type == "kv_capacity_fraction":
             raise ValueError("AFD recommendation requires an absolute traffic load, not kv_capacity_fraction")
-        if (
-            isinstance(source, TraceSource)
-            and source.format in {"mooncake-delta", "agentic_mooncake", "weka"}
-            and "disaggregated" in modes
-        ):
+        if isinstance(source, TraceSource) and source.format == "mooncake-delta" and "disaggregated" in modes:
             raise ValueError(f"{source.format} requires aggregated engine mode")
         sla = self.evaluation.sla
         if self.optimization.strict_sla and (sla is None or not sla.has_bound):
             raise ValueError("optimization.strict_sla requires at least one evaluation.sla bound")
-        if self.optimization.target in {"goodput", "goodput_per_gpu"} and (sla is None or not sla.has_bound):
+        if self.optimization.target in {"goodput", "goodput_per_gpu", "min_gpus"} and (
+            sla is None or not sla.has_bound
+        ):
             raise ValueError(f"optimization target {self.optimization.target!r} requires an evaluation.sla bound")
+        if self.optimization.target == "min_gpus":
+            if self.traffic is None or not isinstance(source, SyntheticSource):
+                raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
+            load = self.traffic.load
+            value = load.concurrency if load.type == "concurrency" else load.requests_per_second
+            if load.type not in {"concurrency", "constant_rate", "poisson"} or type(value) not in (int, float):
+                raise ValueError("min_gpus requires fixed synthetic request-rate or concurrency traffic")
+            minimum = self.optimization.constraints.min_goodput_rps
+            if load.type != "concurrency":
+                if minimum is None:
+                    raise ValueError("min_gpus with request-rate traffic requires constraints.min_goodput_rps")
+                if minimum > value:
+                    raise ValueError("min_goodput_rps cannot exceed the offered request rate")
         return self
 
     @classmethod

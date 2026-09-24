@@ -25,6 +25,17 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  # Trusted PR copies share a group across push/manual events. Manual source
+  # branches replace their own runs. Unique lifecycle/tag groups preserve
+  # every validation and protected staging run.
+  group: >-
+    full-ci-${{ (startsWith(github.ref, 'refs/heads/pull-request/') ||
+      (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/') &&
+       github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/')))
+      && github.ref || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   verify-target:
     name: Verify Exact Target
@@ -73,22 +84,27 @@ jobs:
             echo "::error::PR comparison base must resolve to a full commit SHA"
             exit 1
           fi
+          printf 'base=%s\n' "${pr_base}" >> "${GITHUB_OUTPUT}"
       - name: Resolve immutable comparison base
         id: comparison-base
         shell: bash
         env:
           BEFORE_SHA: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ steps.pr-target.outputs.base }}
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           comparison_sha=""
-          if [[ "${GITHUB_EVENT_NAME}" == "push" &&
+          if [[ "${GITHUB_REF}" == refs/heads/pull-request/* ]]; then
+            # Compare a stacked PR with its validated target, not later main changes.
+            comparison_sha="${PR_BASE_SHA}"
+          elif [[ "${GITHUB_EVENT_NAME}" == "push" &&
                 ( "${GITHUB_REF}" == "refs/heads/main" || "${GITHUB_REF}" == refs/heads/release/* ) &&
                 -n "${BEFORE_SHA}" && "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]]; then
             comparison_sha="${BEFORE_SHA}"
           else
-            # PR/manual runs and newly created release branches compare with
+            # Other manual runs and newly created release branches compare with
             # one snapshot of main, shared by the collector and prediction gates.
             comparison_sha="$(gh api -X GET "repos/${REPOSITORY}/commits/main" --jq '.sha')"
           fi
@@ -382,7 +398,7 @@ jobs:
 
   application-wheel:
     name: Application Wheel (${{ matrix.arch }})
-    needs: [fast-ci, select-full-ci, application-test-wheel]
+    needs: [fast-ci, select-full-ci, application-test-wheel, python-compliance]
     if: >-
       ${{
         always() &&
@@ -422,7 +438,7 @@ jobs:
           python -m venv staged-wheel-smoke
           staged-wheel-smoke/bin/python -m pip install --no-deps dist/aisimulate-*.whl
           staged-wheel-smoke/bin/python -c \
-            "import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core; \
+            "import aisimulate, aisimulate_core; \
             assert aisimulate_core._build_smoke() > 0"
       - name: Preserve wheel for trusted staging
         if: github.event_name == 'push'
@@ -662,12 +678,17 @@ jobs:
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
+          python -m pip install pip-licenses==5.5.5
+          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" -r scripts/fpm_accuracy/requirements.in
+          python -m pip check
+          python scripts/check_prediction_numerics.py --fetch-baseline-only
           python scripts/check_application_test_inventory.py --output application-test-inventory.json
           python -m pytest -q \
             python/aisimulate/tests/unit/cli/test_aisimulate_compatibility.py \
             python/aisimulate/tests/cross_package
           aiconfigurator version
-          python -m pytest -q -c pytest.ini tests -n 4
+          python -m pytest -q -c pytest.ini tests -n 4 \
+            --ignore=tests/test_ci_workflow_contracts.py
       - name: Run unit tests
         if: matrix.shard.suite == 'unit'
         run: >-
@@ -727,6 +748,40 @@ jobs:
           -n auto
           --timeout=600
         working-directory: python/aisimulate
+
+  python-compliance:
+    name: Python Dependency Licenses
+    # SPDX headers are covered by the spdx-headers checks in fast-ci; this
+    # job is only the dependency-license gate, which is architecture-
+    # independent. Gated on the application-wheel scope (and listed in that
+    # job's needs) so a disallowed license blocks wheel builds and staging.
+    needs: [fast-ci, select-full-ci]
+    if: >-
+      ${{
+        always() &&
+        !failure() &&
+        !cancelled() &&
+        needs.fast-ci.result == 'success' &&
+        needs.select-full-ci.result == 'success' &&
+        needs.select-full-ci.outputs.application_wheel == 'true'
+      }}
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 15
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Check Python dependency licenses
+        run: python scripts/check_python_licenses.py
 
   python-compatibility:
     name: Python ${{ matrix.python-version }} compatibility
@@ -793,7 +848,9 @@ jobs:
           -c python/aisimulate/pytest.ini
           crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
       - name: Check native prediction numerical sentinels
-        run: python scripts/check_prediction_numerics.py --output numerical-sentinels.json
+        run: |
+          python scripts/check_prediction_numerics.py --fetch-baseline-only
+          python scripts/check_prediction_numerics.py --output numerical-sentinels.json
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
@@ -837,10 +894,11 @@ jobs:
       - run: release-smoke/bin/python -m pip check
       - run: >-
           release-smoke/bin/python -c
-          "import importlib.metadata as metadata;
-          import aisimulate, aisimulate_core, aiconfigurator, aiconfigurator_core;
-          assert aisimulate.__version__ == aisimulate_core.__version__ == '0.12.0';
-          assert metadata.version('aisimulate') == '0.12.0';
+          "import importlib.metadata as metadata; import pathlib, tomllib;
+          expected = tomllib.loads(pathlib.Path('python/aisimulate/pyproject.toml').read_text())['project']['version'];
+          import aisimulate, aisimulate_core;
+          assert aisimulate.__version__ == aisimulate_core.__version__ == expected;
+          assert metadata.version('aisimulate') == expected;
           installed = {dist.metadata['Name'].lower() for dist in metadata.distributions()};
           forbidden = {'aisimulate-core', 'aiconfigurator', 'aiconfigurator-core'};
           assert installed.isdisjoint(forbidden), installed & forbidden"
@@ -864,6 +922,7 @@ jobs:
       - application-wheel
       - application-test-wheel
       - application-tests
+      - python-compliance
       - python-compatibility
       - engine-golden-regression
       - release-artifact-contract
@@ -890,6 +949,7 @@ jobs:
               "rust-feature-modes": "rust_feature_modes",
               "public-api-rust": "public_api_rust",
               "application-wheel": "application_wheel",
+              "python-compliance": "application_wheel",
               "application-test-wheel": "application_tests",
               "application-tests": "application_tests",
               "python-compatibility": "python_compatibility",

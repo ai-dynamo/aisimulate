@@ -8,7 +8,7 @@ with AISimulate. For the unified `aisimulate` CLI, see the
 ## Basic Command
 As mentioned in root Readme, CLI supports six modes: `default`, `recommend`, `exp`, `generate`, `estimate`, and `support`. We'll go through these modes one by one.
 
-Quantization defaults are inferred from the Hugging Face model config (`config.json` plus optional `hf_quant_config.json`).  
+Quantization defaults are inferred from the Hugging Face model config (`config.json` plus optional `hf_quant_config.json`).
 For low-precision models, use a quantized HF ID (for example, `Qwen/Qwen3-32B-FP8`) or a local model directory containing those files.
 
 ## Common Arguments (all modes)
@@ -21,7 +21,7 @@ These flags are shared across modes (a few are sweep-only, as noted):
 - `--save-dir DIR`: Directory to write results and generated deployment artifacts. (`default`, `exp`, `generate`, `estimate`)
 - `--top-n N`: Number of top configurations to output — per experiment in `exp` mode, or per serving mode (agg/disagg) in `default` mode. Default: `5`. (`default`, `exp`, `generate`, `estimate`)
 - `--systems-paths`: System search paths (comma-separated). Use `default` for the built-in systems path; the first match wins for an identical system/backend/version. (`default`, `exp`, `generate`, `estimate`)
-- `--deployment-target`: Generated-artifact platform — `dynamo-j2` (default), `dynamo-python`, `llm-d-helm`, `llm-d-kustomize`, or `fpm`. See [Deployment Target Selection](#deployment-target-selection). (`default`, `exp`, `generate`, `estimate`)
+- `--deployment-target`: Generated-artifact platform — `dynamo-j2` (default), `dynamo-python`, `llm-d-helm`, `llm-d-kustomize`, `fpm`, or `slurm`. See [Deployment Target Selection](#deployment-target-selection). (`default`, `exp`, `generate`, `estimate`)
 - `--engine-step-backend`: Engine-step latency backend. The compiled Rust engine is the only step executor; `rust` is the only accepted value (the deprecated `python` no-op was removed after its one-release window); any other value raises an error. Accepted by the five modes below (not `support`) but inert in `generate`, which performs no latency estimation. (`default`, `recommend`, `exp`, `generate`, `estimate`)
 - `--forward-model`: Forward-pass modeling mode — `op_level` (default; granular per-op modeling) or `fpm` (predicts from collected whole-model forward-pass data; requires `fpm_forward_perf` data for the exact model/system/backend/version and never extrapolates outside the collected domain). Evaluates on the compiled engine's native FPM operation. `fpm` predictions are only as accurate as the match between the deployed engine configuration and the collected data — in particular the CUDA-graph capture surface: regime cliffs are encoded in the data, not modeled, so a deployment whose capture config differs from the collection will mispredict. V1 accepts only vLLM identities the standard deployment path can reproduce: automatic MoE/attention backend selection with EPLB disabled. Pinned backend or EPLB identities are rejected until structured generator support lands. Not supported in the `afd` estimate mode. (`default`, `exp`, `generate`, `estimate`)
 
@@ -104,7 +104,7 @@ The `generate` mode calculates the smallest tensor parallel (TP) size that fits 
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_generate
+from aisimulate.legacy_cli import cli_generate
 
 result = cli_generate(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -211,7 +211,7 @@ aiconfigurator cli estimate \
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli.api import cli_estimate
+from aisimulate.legacy_cli.api import cli_estimate
 
 # Aggregated estimation
 result = cli_estimate(
@@ -371,7 +371,7 @@ aiconfigurator cli support --model-path Qwen/Qwen3-32B-FP8 --system h200_sxm
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_support
+from aisimulate.legacy_cli import cli_support
 
 agg_supported, disagg_supported = cli_support(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -420,7 +420,7 @@ The output includes `total_gpus_needed` and `replicas_needed` columns, showing b
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_recommend
+from aisimulate.legacy_cli import cli_recommend
 
 result = cli_recommend(
     model_path="Qwen/Qwen3-32B",
@@ -541,7 +541,7 @@ aiconfigurator cli default \
 - Use `default` to include the built-in systems path.
 - If the same system/backend/version exists in multiple paths, the first match is used.
 
-The command will print out the result to your terminal with the basic info of the comparison, the pareto curve (the best point is tagged as `x`), 
+The command will print out the result to your terminal with the basic info of the comparison, the pareto curve (the best point is tagged as `x`),
 the worker setup for your reference. Let's split them into sections.
 
 Let's run `aiconfigurator cli default --model-path Qwen/Qwen3-32B-FP8 --total-gpus 32 --system h200_sxm --ttft 1000 --tpot 10 --isl 3000 --osl 512 --prefix 0`
@@ -564,7 +564,7 @@ This shows that for model `Qwen/Qwen3-32B-FP8` to deploy on 32 H200, if you requ
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_default
+from aisimulate.legacy_cli import cli_default
 
 result = cli_default(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -582,7 +582,7 @@ print(result.best_configs["disagg"])
 2. Pareto frontier
 ```
   Pareto Frontier:
-              Qwen/Qwen3-32B-FP8 Pareto Frontier: tokens/s/gpu vs tokens/s/user          
+              Qwen/Qwen3-32B-FP8 Pareto Frontier: tokens/s/gpu vs tokens/s/user
     ┌──────────────────────────────────────────────────────────────────────────┐
 2250┤ •• disagg                                                                │
     │ ff agg                                                                   │
@@ -610,8 +610,8 @@ print(result.best_configs["disagg"])
     │                                                                          │
    0┤                                                                          │
     └┬─────────────────┬──────────────────┬─────────────────┬─────────────────┬┘
-     0                60                 120               180              240 
-tokens/s/gpu                        tokens/s/user                               
+     0                60                 120               180              240
+tokens/s/gpu                        tokens/s/user
 ```
 Pareto frontier shows the trade-off betwen generation speed `tokens/s/user` and throughput `tokens/s/gpu`. The best points is tagged as `x`. As you want the TPOT to be less than 10ms, which means the generation speed is faster than 1000/10ms = 100 tokens/s/user, then by reading the pareto froniter, you will get the point tagged as x. You can see that, if you want different TPOT, you will have different result. Sometimes, agg will be better than disagg (higher throughput at same tokens/s/user)
 
@@ -646,11 +646,11 @@ agg Top Configurations: (Sorted by tokens/s/gpu)
 +------+--------------+---------------+--------+-------------+------------------+----------+--------------+-------------+----------+----+
 ```
 
-If you want to reproduce the result we esimated, you need to follow the suggestions here. Take the disagg top1 result as an example.  
-We're expecting to achieve 913.82 tokens/s/gpu and 123.92 tokens/s/user with this config.  
-We have 1 definition `replica`, it means the number of copies of your xPyD disagg system. Say, here, we have 4 replicas, each replica contains 8 GPUs.  
-Each replica has a system of 4 prefill workers and 1 decode workers. Each prefill worker is using tp1pp1 which is 1 GPU per worker; while each decoder worker is using tp4pp1 which is 4 GPU per workers. These workers compose a 4P1D replica with 8 GPUs. As you want to deploy on 32 GPUs, then you will have 4 replicas.  
-`bs` is required to be set in framework as it limits the largest batch_size of the worker which is crucial to control the TPOT of the deployment.  
+If you want to reproduce the result we esimated, you need to follow the suggestions here. Take the disagg top1 result as an example.
+We're expecting to achieve 913.82 tokens/s/gpu and 123.92 tokens/s/user with this config.
+We have 1 definition `replica`, it means the number of copies of your xPyD disagg system. Say, here, we have 4 replicas, each replica contains 8 GPUs.
+Each replica has a system of 4 prefill workers and 1 decode workers. Each prefill worker is using tp1pp1 which is 1 GPU per worker; while each decoder worker is using tp4pp1 which is 4 GPU per workers. These workers compose a 4P1D replica with 8 GPUs. As you want to deploy on 32 GPUs, then you will have 4 replicas.
+`bs` is required to be set in framework as it limits the largest batch_size of the worker which is crucial to control the TPOT of the deployment.
 `concurrency` = `concurrency * replicas` Use it to benchmark your deployment on total GPUs. If you only want to benchmark 1 replica, divide it by `replicas`
 
 As this is still a little bit challenging to get the right configs for your deployment, we can further specify `--save-dir DIR` to output all the results here as well as **generate the configs for frameworks automatically**. Here is the output folder structure:
@@ -666,7 +666,7 @@ results/Qwen_Qwen3-32B-FP8_h200_sxm_trtllm_isl4000_osl1000_ttft1000_tpot20_90449
 │   │   │   ├── bench_run.sh          # aiperf benchmark sweep script (bare-metal)
 │   │   │   ├── k8s_bench.yaml        # aiperf benchmark sweep Job (Kubernetes)
 │   │   │   ├── k8s_deploy.yaml
-│   │   │   └── node_0_run.sh 
+│   │   │   └── node_0_run.sh
 │   │   └── generator_config.yaml
 │   ...
 ├── disagg
@@ -689,8 +689,9 @@ By default, we output the top 5 configs we have found. You can get the configs a
 - **Dynamo** (default): `k8s_deploy.yaml` for Kubernetes deployment, plus engine configs (`agg_config.yaml`, `prefill_config.yaml`, `decode_config.yaml`) and run scripts (`node_0_run.sh`)
 - **llm-d**: `llm-d-values.yaml` for Helm deployment with the llm-d-modelservice chart
 - **FPM V1**: exactly `k8s_deploy.yaml` (a reusable keepalive Pod, LeaderWorkerSet, or Grove PodCliqueSet), `fpm_env.sh` (rank discovery plus the per-cell collection facts), and `run.sh` (the launch-only vLLM command)
+- **Slurm**: `deploy.sbatch`, `benchmark.sbatch`, `submit.sh`, `environment.sh`, `deployment.json`, `slurm_runtime.py`, and `bench_run.sh`, plus TRT-LLM engine configs when applicable. See [Generate a Slurm deployment](#generate-a-slurm-deployment).
 
-For benchmarking, see the [Benchmark Artifacts](#benchmark-artifacts) section below. Refer to [deployment guide](../../python/aisimulate/docs/dynamo_deployment_guide.md) for Dynamo deployments or the [README llm-d section](../../python/aisimulate/README.md#deploying-to-llm-d-platform) for llm-d deployments.
+For benchmarking, see the [Benchmark Artifacts](#benchmark-artifacts) section below. Refer to [deployment guide](../../python/aisimulate/docs/dynamo_deployment_guide.md) for Dynamo deployments or the [generator usage guide](../../python/aisimulate/docs/generator_overview.md#using-the-generator) for llm-d deployments.
 
 `--save-dir DIR` allows you to specify more information such as generating the config for a different version of the backend, say estimating the performance using trtllm 1.0.0rc3 but generate config for 1.0.0rc6. This is allowed and feasible. By passing `--generated-config-version 1.0.0rc6` can give you the right result.
 
@@ -702,6 +703,7 @@ Use `--deployment-target` to choose which orchestration platform to deploy to:
 - `llm-d-helm`: Generates Helm values for the llm-d-modelservice chart
 - `llm-d-kustomize`: Generates Kustomize overlays for llm-d modelserver guides
 - `fpm`: Generates a reusable Kubernetes resource workload and a complete FPM launch script, `run.sh`
+- `slurm`: Generates single-node Dynamo service and AIPerf benchmark jobs for Slurm/Pyxis. See [Generate a Slurm deployment](#generate-a-slurm-deployment).
 
 The backend (`--backend trtllm/vllm/sglang`) and deployment target are generally orthogonal choices. Note that TRT-LLM only supports Dynamo platforms. FPM V1 is the exception: it supports only a vLLM single aggregated-worker topology with exactly one worker replica; that worker may span multiple nodes. Router/planner configurations and invalid FPM topologies fail closed.
 
@@ -789,16 +791,16 @@ Use `--generator-config path/to/file.yaml` to provide ServiceConfig/K8sConfig/Dy
 - `--generator-set K8sConfig.k8s_namespace=dynamo \`
 
 #### Rule Plugin Selection
-You can switch the generator rule set via `--generator-set rule=benchmark`. This selects a rule plugin folder under `src/aiconfigurator/generator/rule_plugin/`.
+You can switch the generator rule set via `--generator-set rule=benchmark`. This selects a rule plugin folder under `src/aisimulate/generator/rule_plugin/`.
 
 - **Default (production)**: if `rule` is not provided, the generator uses the default production rules. These are tuned for deployment (e.g., adjusted max batch size and CUDA graph batch sizes).
 - **Benchmark**: `--generator-set rule=benchmark` enables rules designed to align generated configs with AIC sdk results, including:
   - wider CUDA graph batch size coverage to match simulated results
   - stricter max batch size that follows the simulated batch size
 
-You can also define your own rule sets by adding a new folder under `src/aiconfigurator/generator/rule_plugin/` and selecting it with `--generator-set rule=<folder_name>`.
+You can also define your own rule sets by adding a new folder under `src/aisimulate/generator/rule_plugin/` and selecting it with `--generator-set rule=<folder_name>`.
 
-Run `aiconfigurator cli default --generator-help` to print information that is sourced directly from `src/aiconfigurator/generator/config/deployment_config.yaml` and `backend_config_mapping.yaml`. 
+Run `aiconfigurator cli default --generator-help` to print information that is sourced directly from `src/aisimulate/generator/config/deployment_config.yaml` and `backend_config_mapping.yaml`.
 
 The `--generator-help` command supports three section options:
 - `--generator-help` or `--generator-help all` (default): Shows both the full deployment schema and the backend parameter mappings
@@ -849,7 +851,7 @@ The summary will highlight the fastest configuration whose estimated request lat
     - Request Latency: 9222.18ms
   ----------------------------------------------------------------------------
   Pareto Frontier:
-          Qwen/Qwen3-32B-FP8 Pareto Frontier: tokens/s/gpu_cluster vs request_latency    
+          Qwen/Qwen3-32B-FP8 Pareto Frontier: tokens/s/gpu_cluster vs request_latency
       ┌────────────────────────────────────────────────────────────────────────┐
 1150.0┤ •• agg                                                                 │
       │ ff disagg                                                              │
@@ -877,8 +879,8 @@ The summary will highlight the fastest configuration whose estimated request lat
       │                                                                        │
    0.0┤                                                                        │
       └┬─────────────────┬─────────────────┬────────────────┬─────────────────┬┘
-       0               3220              6440             9660            12880 
-tokens/s/gpu_cluster                request_latency                             
+       0               3220              6440             9660            12880
+tokens/s/gpu_cluster                request_latency
 
   ----------------------------------------------------------------------------
   Deployment Details:
@@ -907,7 +909,7 @@ disagg Top Configurations: (Sorted by tokens/s/gpu)
 |  4   |    746.33    |     43.72     | 542.58 |     11955.71    | 496 (=496x1) |    16 (16=1x16)   |    1     | 16 (=8x1+1x8)  |     8      |    1 (=1x1)    |    tp1pp1   |   1   |     1      |    8 (=8x1)    |    tp8pp1   |  496  |
 +------+--------------+---------------+--------+-----------------+--------------+-------------------+----------+----------------+------------+----------------+-------------+-------+------------+----------------+-------------+-------+
 ********************************************************************************
-2025-12-01 23:36:41,892 - aiconfigurator.cli.main - INFO - All experiments completed in 1.92 seconds
+2025-12-01 23:36:41,892 - aisimulate.legacy_cli.main - INFO - All experiments completed in 1.92 seconds
 ```
 
 #### Inclusive TPOT reporting (`--inclusive-tpot`)
@@ -940,7 +942,7 @@ aiconfigurator cli default \
 The Python API equivalent accepts a `strict_sla` keyword argument:
 
 ```python
-from aiconfigurator.cli import cli_default
+from aisimulate.legacy_cli import cli_default
 
 result = cli_default(
     model_path="Qwen/Qwen3-32B-FP8",
@@ -1022,7 +1024,7 @@ aiconfigurator cli default \
 
 **Python API equivalent:**
 ```python
-from aiconfigurator.cli import cli_exp
+from aisimulate.legacy_cli import cli_exp
 
 # Run experiments from a YAML file
 result = cli_exp(yaml_path="example.yaml")
@@ -1039,11 +1041,11 @@ config = {
 result = cli_exp(config=config)
 ```
 
-See `src/aiconfigurator/cli/exps/database_mode_comparison.yaml` for an example comparing different database modes.
+See `src/aisimulate/legacy_cli/exps/database_mode_comparison.yaml` for an example comparing different database modes.
 
 ### Benchmark Artifacts
 
-For non-FPM deployment targets, each `topN` directory includes two benchmark helpers alongside the deployment artifacts when `--save-dir` is used. The FPM target emits only `k8s_deploy.yaml` and `run.sh`, so it does not include these helpers.
+For Dynamo and llm-d deployment targets, each `topN` directory includes two benchmark helpers alongside the deployment artifacts when `--save-dir` is used. Slurm emits `bench_run.sh` and `benchmark.sbatch`, as described in [Generate a Slurm deployment](#generate-a-slurm-deployment). The FPM target does not emit benchmark helpers.
 
 - **`bench_run.sh`** -- A shell script for bare-metal benchmarking. It loops over a concurrency array and calls [`aiperf profile`](https://github.com/ai-dynamo/aiperf) for each level. Before running it, make sure the deployed service is reachable at the endpoint printed in the script, and that `aiperf` is installed (`pip install aiperf`). Usage:
   ```bash
@@ -1056,7 +1058,7 @@ For non-FPM deployment targets, each `topN` directory includes two benchmark hel
   kubectl apply -f results/.../disagg/top1/disagg/k8s_bench.yaml
   ```
 
-**Concurrency sweep.** Both artifacts iterate over a base concurrency list `[1, 2, 8, 16, 32, 64, 128]`. When an estimated concurrency is available from the AIConfigurator run, three additional points are added: the estimate itself and its +/-5% neighbors. This targets the operating point AIConfigurator found optimal.
+**Concurrency sweep.** The Dynamo and llm-d benchmark artifacts iterate over a base concurrency list `[1, 2, 8, 16, 32, 64, 128]`. When an estimated concurrency is available from the AIConfigurator run, three additional points are added: the estimate itself and its +/-5% neighbors. This targets the operating point AIConfigurator found optimal. Slurm uses `SlurmConfig.benchmark_concurrency` and `SlurmConfig.benchmark_rounds`.
 
 **Templated values.** The scripts are pre-filled with the model name, tokenizer, ISL/OSL, endpoint URL, and streaming mode from the run that generated them -- no manual editing is needed for the common case.
 
@@ -1067,7 +1069,7 @@ aiconfigurator cli exp --yaml-path example.yaml
 ```
 > **YAML format:** Experiment YAML uses the flat `Task` schema — every key maps
 > 1:1 to a `Task` field, with no `mode:` selector and no `config:` /
-> `worker_config:` nesting. See [`example.yaml`](../../python/aisimulate/src/aiconfigurator/cli/example.yaml)
+> `worker_config:` nesting. See [`example.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml)
 > for the annotated template.
 >
 > The legacy V1 nested format (`mode` / `config` / `worker_config` /
@@ -1075,11 +1077,11 @@ aiconfigurator cli exp --yaml-path example.yaml
 > compatibility shim remains: V1 YAML still loads, but it is auto-converted to V2
 > with a `DeprecationWarning`, and any field with no V2 equivalent is rejected
 > (not silently dropped). See
-> [`example_v1_deprecated.yaml`](../../python/aisimulate/src/aiconfigurator/cli/example_v1_deprecated.yaml)
+> [`example_v1_deprecated.yaml`](../../python/aisimulate/src/aisimulate/legacy_cli/example_v1_deprecated.yaml)
 > for the old shape. Write all new configs in the flat V2 format below.
 
-An example YAML file looks like this; see the [annotated experiment template](../../python/aisimulate/src/aiconfigurator/cli/example.yaml).
-Let's split the yaml file into several sections.  
+An example YAML file looks like this; see the [annotated experiment template](../../python/aisimulate/src/aisimulate/legacy_cli/example.yaml).
+Let's split the yaml file into several sections.
 1. exps
 ```yaml
 exps:
@@ -1156,13 +1158,13 @@ disagg_full:
   prefill_max_batch_size: 1
   decode_max_batch_size: 512
 ```
-This is long; the basics:  
-    - `serving_mode`: `agg` or `disagg` for this experiment.  
-    - `total_gpus`: total GPU budget for the deployment.  
-    - For `disagg`, the worker spec is per-role: set `prefill_*` / `decode_*` for `model_path`, `system_name`, `backend_name`, the `*_quant_mode` fields, and the `*_candidates` search lists. `decode_model_path` must equal `prefill_model_path` (hetero-disagg means different *systems*, not models).  
-    - For `agg`, the same fields are top-level (`model_path`, `system_name`, `gemm_quant_mode`, `agg_tp_candidates`, ...) — see `agg_full` in the template.  
-    - `backend_name`: `trtllm` (default), `vllm`, or `sglang`.  
-    - `backend_version`, `isl`, `osl`, `ttft`, `tpot`: same meaning as in `default` mode (shared, top-level).  
+This is long; the basics:
+    - `serving_mode`: `agg` or `disagg` for this experiment.
+    - `total_gpus`: total GPU budget for the deployment.
+    - For `disagg`, the worker spec is per-role: set `prefill_*` / `decode_*` for `model_path`, `system_name`, `backend_name`, the `*_quant_mode` fields, and the `*_candidates` search lists. `decode_model_path` must equal `prefill_model_path` (hetero-disagg means different *systems*, not models).
+    - For `agg`, the same fields are top-level (`model_path`, `system_name`, `gemm_quant_mode`, `agg_tp_candidates`, ...) — see `agg_full` in the template.
+    - `backend_name`: `trtllm` (default), `vllm`, or `sglang`.
+    - `backend_version`, `isl`, `osl`, `ttft`, `tpot`: same meaning as in `default` mode (shared, top-level).
     - Large-EP (wideEP) has no key: it is explored automatically whenever the performance database covers the model's MoE shape on the role's system/backend (MoE all-to-all dispatch/combine plus EP compute data). Restrict or force EP sizes with `*_moe_ep_candidates`. The deprecated keys (`enable_wideep`, `prefill_enable_wideep`, `decode_enable_wideep`, `moe_backend: deepep_moe`) are still accepted with a one-time warning and have no modeling effect. One search-default residue remains: on SGLang, a config that spells `enable_wideep` / `moe_backend: deepep_moe` still narrows the *default* `moe_tp` candidates to `[1]` (a resolved-config compatibility behavior) — an explicit `*_moe_tp_candidates` list always wins.
     - `nextn` / `nextn_accepted`: MTP speculative decoding (never auto-enabled; `nextn_accepted` is required when the resolved `nextn > 0`).
     - The replica/correction knobs (`num_gpu_per_replica`, `max_*_workers`, `*_latency_correction`, ...) are covered in [Advanced Tuning](../../python/aisimulate/docs/advanced_tuning.md). Typically the only thing you need to touch is the quantization.
@@ -1184,8 +1186,8 @@ disagg_simplified:
 Everything omitted falls back to defaults / HF inference. With large-EP candidates in play the replica budget widens automatically (`max_gpu_per_replica` defaults to 512). To pin a role to large EP sizes only, add e.g. `decode_moe_ep_candidates: [16, 32, 64]`.
 
 Let's go through some pre-defined experiments for reference.
-1. homegeneous vs. heterogenous  
-The example [yaml](../../python/aisimulate/src/aiconfigurator/cli/exps/hetero_disagg.yaml)
+1. homegeneous vs. heterogenous
+The example [yaml](../../python/aisimulate/src/aisimulate/legacy_cli/exps/hetero_disagg.yaml)
 ```yaml
 exps:
   - exp_h200_h200
@@ -1223,8 +1225,8 @@ We defined two experiments. `exp_h200_h200` uses H200 for both prefill and decod
 
 **Note**: You can also compare different backends by setting different `backend_name` values (trtllm, vllm, sglang) in your experiments.
 
-2. use a specific quantization  
-The example [yaml](../../python/aisimulate/src/aiconfigurator/cli/exps/qwen3_32b_pertensor.yaml)
+2. use a specific quantization
+The example [yaml](../../python/aisimulate/src/aisimulate/legacy_cli/exps/qwen3_32b_pertensor.yaml)
 ```yaml
 exps:
   - exp_agg
@@ -1273,7 +1275,7 @@ exp_disagg:
 ```
 Here we override the quantization of Qwen/Qwen3-32B-FP8: the default is blockwise FP8 for GEMM, and we set per-tensor FP8 explicitly via the `*_quant_mode` fields. (The deprecated V1 way was `profiles: ["fp8"]`, which expanded to exactly these fields.)
 
-You can refer to [src/aiconfigurator/cli/exps](../../python/aisimulate/src/aiconfigurator/cli/exps) to find more reference yaml files.
+You can refer to [src/aisimulate/legacy_cli/exps](../../python/aisimulate/src/aisimulate/legacy_cli/exps) to find more reference yaml files.
 
 Use `exp` mode for flexible experiments, `default` mode for convenient agg vs disagg comparison with SLA optimization, and `generate` mode for quick config generation without sweeping. All modes support generating configs for frameworks automatically by `--save-dir DIR`.
 
@@ -1365,3 +1367,31 @@ kubectl apply -f results/.../disagg/top1/disagg/k8s_bench.yaml
 ```
 
 Compare the measured TTFT, TPOT, and tokens/s/gpu against the AIConfigurator estimates printed in Step 2. See [Benchmark Artifacts](#benchmark-artifacts) for details on the generated scripts.
+
+### Generate a Slurm deployment
+
+Use `--deployment-target slurm` with `--generator-config` containing a
+`SlurmConfig` section. Supply `account`, `partition`, `container_image` and any
+`container_mounts`; resource/time limits and benchmark concurrency can also be
+set there. For example, `--generator-set SlurmConfig.partition=batch` overrides
+the partition. Backend and Dynamo version options retain their normal meaning.
+
+For generation without an SLA search, use `aiconfigurator cli generate
+--model-path MODEL --system SYSTEM --backend vllm --total-gpus N
+--deployment-target slurm --generator-config slurm.yaml --save-dir ./results`.
+This compatibility CLI is included in AISimulate. Put `rule: benchmark` in the
+input YAML when using the benchmark sizing rules.
+
+The target produces `deploy.sbatch` for persistent serving and `benchmark.sbatch`
+for a complete deploy/health-check/AIPerf/cleanup run. On the cluster, run
+`bash submit.sh benchmark --test-only`, then `bash submit.sh benchmark` (or
+`bash submit.sh serve`). Submissions save a job receipt and prevent duplicate runs
+from the same bundle directory. V1 generates single-node NVIDIA agg/P-D topologies
+for vLLM, SGLang and TRT-LLM. Automated tests cover emitted artifacts for all three
+backends and CPU supervisor behavior using simulated launches and local HTTP
+services. GPU execution and Slurm/Pyxis integration require validation with the
+chosen container and cluster. The image must contain Dynamo, etcd/NATS and, for
+benchmarks, AIPerf. Readiness retries temporary HTTP 404/503 and transport errors
+within the startup deadline; other HTTP errors fail immediately. See the
+[Slurm target section](../../python/aisimulate/docs/generator_overview.md#slurm-target)
+for the complete input example, outputs and current scope.

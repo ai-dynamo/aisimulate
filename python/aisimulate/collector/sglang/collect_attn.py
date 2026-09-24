@@ -18,6 +18,12 @@ from typing import NamedTuple
 
 import pkg_resources
 import torch
+from collector.case_generator import (
+    get_attention_context_shape_sweeps,
+    get_attention_generation_shape_sweeps,
+    get_attention_head_configs,
+)
+from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from sglang.srt.configs.model_config import AttentionArch
 from sglang.srt.layers.attention.flashattention_backend import FlashAttentionBackend
 from sglang.srt.layers.radix_attention import RadixAttention
@@ -25,13 +31,6 @@ from sglang.srt.mem_cache.memory_pool import MHATokenToKVPool, ReqToTokenPool
 from sglang.srt.model_executor.forward_batch_info import ForwardBatch, ForwardMode
 from sglang.srt.model_executor.forward_context import ForwardContext, forward_context
 from sglang.srt.runtime_context import get_parallel
-
-from collector.case_generator import (
-    get_attention_context_shape_sweeps,
-    get_attention_generation_shape_sweeps,
-    get_attention_head_configs,
-)
-from collector.helper import benchmark_with_power, get_sm_version, log_perf
 
 DISABLE_BACKWARD = os.getenv("FLASH_ATTENTION_DISABLE_BACKWARD", "FALSE") == "TRUE"
 

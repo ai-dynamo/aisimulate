@@ -2,10 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import pytest
-
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.utils import get_model_config_from_model_path
 from tools.support_matrix.support_matrix import SupportMatrix
+
+from aisimulate.sdk import common
+from aisimulate.sdk.utils import get_model_config_from_model_path
 
 pytestmark = pytest.mark.unit
 
@@ -31,7 +31,7 @@ def test_retired_matrix_models_keep_bundled_offline_configs(model, monkeypatch):
     def fail_network(*_args, **_kwargs):
         raise AssertionError("retired bundled model unexpectedly attempted a network download")
 
-    monkeypatch.setattr("aiconfigurator.sdk.utils._download_hf_config", fail_network)
+    monkeypatch.setattr("aisimulate.sdk.utils._download_hf_config", fail_network)
     get_model_config_from_model_path.cache_clear()
 
     try:

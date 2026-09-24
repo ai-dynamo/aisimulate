@@ -28,7 +28,7 @@ Three surfaces:
    source) from ``goldens/per_op.json`` — the Gate-3 precondition that per-op
    values cross the FFI with real op names.
 
-These tests require the maturin-built ``aiconfigurator_core`` extension.
+These tests require the maturin-built ``aisimulate_core`` extension.
 """
 
 from __future__ import annotations
@@ -51,9 +51,9 @@ from test_engine_step_parity import (
     load_parity_golden,
 )
 
-from aiconfigurator.sdk import config, engine, perf_database
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.models import get_model
+from aisimulate.sdk import config, engine, perf_database
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.models import get_model
 
 pytestmark = pytest.mark.integration
 
@@ -80,7 +80,7 @@ pytestmark = pytest.mark.integration
 #            Fallback-MLA path and the sglang perf tables.
 #   trtllm : gpt-oss-20b (MoE -> exercises the `TrtllmAlltoall` flavor +
 #            trtllm comm quant + trtllm MoE) and Nemotron-Super-49B (dense,
-#            CustomAllReduce-heavy), both b200_sxm/trtllm/1.3.0rc10. The MoE
+#            CustomAllReduce-heavy), both b200_sxm/trtllm/current (1.3.0rc20). The MoE
 #            case is the load-bearing one: it is the only subset member that
 #            hits the trtllm dispatch-flavor branch.
 _SUBSET_IDS_BY_BACKEND = {
@@ -101,12 +101,13 @@ _SUBSET_IDS_BY_BACKEND = {
     ],
 }
 
-# Subset members on power-carrying database identities: their per-op goldens
-# must carry nonzero energy_wms, so the energy comparison branch is proven to
-# execute (anti-vacuous guard in TestCompileEnginePerOpParity). EMPTY since
-# the 2026-08 prune removed the last engine-step-complete power identity —
-# repopulate when a current-slot power collection lands.
-_POWER_SUBSET_IDS: set[str] = set()
+# The B200 TRT-LLM current slot carries imported 1.3.0rc20 power data.
+# Require a nonzero energy comparison for both covered subset members so a
+# future all-zero golden refresh cannot make energy parity pass vacuously.
+_POWER_SUBSET_IDS = {
+    "gpt-oss-20b-b200-trtllm-isl1024-osl2",
+    "nemotron-nas-b200-trtllm-isl1024-osl2",
+}
 
 # Preserve the per-backend ordering (vllm, then sglang, then trtllm) so the
 # parametrize ids group readably and the determinism sweep covers vllm first.
@@ -402,6 +403,40 @@ _ACCEPTED_SOURCE_TAG_DIVERGENCES = {
 
 class TestCompileEnginePerOpParity:
     @pytest.mark.parametrize("case", _SUBSET_CASES)
+    @pytest.mark.parametrize("phase", ["prefill", "decode"])
+    def test_phase_per_op_matches_scalar_prediction(self, case: EngineStepParityCase, phase: str) -> None:
+        """Replay's evidence path must preserve the original scalar latency."""
+        handle = _compile_handle(case)
+        prefill = phase == "prefill"
+        # Match AicTimingModel's per-phase inputs, including one decode step
+        # and its default stride. The scalar helpers call run_static with
+        # these same coordinates; no golden values are regenerated here.
+        prefix = case.prefix if prefill else 0
+        ctx_entries, gen_entries = handle.run_static_per_op(
+            batch_size=case.batch_size,
+            beam_width=1,
+            isl=case.isl,
+            osl=1 if prefill else 2,
+            prefix=prefix,
+            seq_imbalance_correction_scale=1.0,
+            gen_seq_imbalance_correction_scale=1.0,
+            mode="static_ctx" if prefill else "static_gen",
+            stride=32,
+        )
+        if prefill:
+            scalar_ms = handle.predict_prefill_latency(case.batch_size, case.isl, prefix)
+            entries = ctx_entries
+            assert not gen_entries
+        else:
+            scalar_ms = handle.predict_decode_latency(case.batch_size, case.isl, 2)
+            entries = gen_entries
+            assert not ctx_entries
+        assert entries and scalar_ms > 0.0
+        # Permit only floating-point reduction-order roundoff, rather than
+        # the wider cross-implementation tolerance used for frozen goldens.
+        assert sum(entry[1] for entry in entries) == pytest.approx(scalar_ms, rel=1e-12, abs=1e-12)
+
+    @pytest.mark.parametrize("case", _SUBSET_CASES)
     def test_static_per_op_matches_golden(self, case: EngineStepParityCase) -> None:
         case_id = _SUBSET_CASE_IDS[case]
         golden = load_parity_golden("per_op.json")["cases"].get(case_id)
@@ -556,7 +591,7 @@ def _build_wideep_sglang():
     ``wideep_sglang`` goldens exercise measured DeepEP expert compute alongside
     the new LL communication model.
     """
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     database = _quiet(
         perf_database.get_database,
@@ -607,7 +642,7 @@ def _build_wideep_sglang():
 
 def _build_gb200_wideep_sglang():
     """Runnable GB200 Stage-1 DeepEP config for parity and golden capture."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     database = _quiet(
         perf_database.get_database,
@@ -660,9 +695,9 @@ def _build_gb200_wideep_sglang():
 
 
 def _handle_from_spec_json(spec_json: str) -> engine.EngineHandle:
-    import aiconfigurator_core
+    import aisimulate_core
 
-    return engine.EngineHandle(bytes(aiconfigurator_core.engine_spec_bincode_from_json(spec_json)))
+    return engine.EngineHandle(bytes(aisimulate_core.engine_spec_bincode_from_json(spec_json)))
 
 
 class TestWideEpDeepEpParity:
@@ -789,7 +824,7 @@ class TestGb200WideEpDeepEpParity:
 def _build_wideep_trtllm():
     """(model, backend, database, spec_json) for the TRT-LLM WideEP config;
     shared by the parity test (handle side) and the golden capture."""
-    from aiconfigurator.sdk import common
+    from aisimulate.sdk import common
 
     database = _quiet(perf_database.get_database, "gb200", "trtllm", "1.3.0rc20")
     if database is None:

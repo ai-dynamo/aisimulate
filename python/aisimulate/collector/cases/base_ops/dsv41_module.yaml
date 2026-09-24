@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+schema_version: 1
+op: dsv41_module
+description: Native V4.1 local component workload sweeps with real prefix state.
+common_case_values:
+  dsv41_module:
+    batch_sizes: [1, 2]
+    query_lengths: [3, 128, 129, 256, 512, 1024]
+    prefix_lengths: [0, 256, 1024]
+    decode_steps: 2

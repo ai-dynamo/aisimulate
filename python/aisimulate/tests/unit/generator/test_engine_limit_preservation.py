@@ -9,9 +9,9 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from aiconfigurator.generator.module_bridge import task_config_to_generator_config
-from aiconfigurator.generator.rendering.rule_engine import apply_rule_plugins
-from aiconfigurator.generator.request import from_legacy_params, to_legacy_params
+from aisimulate.generator.module_bridge import task_config_to_generator_config
+from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
+from aisimulate.generator.request import from_legacy_params, to_legacy_params
 
 
 def _params(*, preserve: bool, rule: str | None = None) -> dict:

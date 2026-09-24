@@ -110,6 +110,10 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             )
         })?);
     }
+    let recorded_starts = raw_rows
+        .iter()
+        .filter_map(|raw| raw.timestamp.map(|start| (raw.request_id.clone(), start)))
+        .collect::<FxHashMap<_, _>>();
     let mut rows = raw_rows
         .into_iter()
         .map(|raw| -> Result<AgenticMooncakeRow> {
@@ -170,7 +174,7 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
         })
         .collect::<Result<Vec<_>>>()?;
     assign_dependency_component_play_ids(&mut rows, "legacy-play");
-    AgenticTrace::from_agentic_mooncake_rows(
+    let mut graph = AgenticTrace::from_agentic_mooncake_rows(
         AgenticMooncakeHeader {
             schema: AGENTIC_MOONCAKE_SCHEMA.to_string(),
             version: AGENTIC_MOONCAKE_VERSION,
@@ -182,7 +186,15 @@ pub fn load_agentic_mooncake(path: &Path, legacy_trace_block_size: usize) -> Res
             },
         },
         rows,
-    )
+    )?;
+    // Dependent requests execute relative to completion, but snapshots need
+    // their original starts. Legacy rows do not record completion timestamps.
+    for node in &mut graph.nodes {
+        node.recorded_interval_ms = recorded_starts
+            .get(&node.request_id)
+            .map(|&start| (start, None));
+    }
+    Ok(graph)
 }
 
 pub(super) fn assign_dependency_component_play_ids(rows: &mut [AgenticMooncakeRow], prefix: &str) {
@@ -787,6 +799,13 @@ impl Trace {
                 spec.shared_prefix_ratio
             );
         }
+        if spec.cached_prefix_tokens % spec.block_size != 0 {
+            bail!(
+                "cached_prefix_tokens {} must align to synthetic trace block_size {}",
+                spec.cached_prefix_tokens,
+                spec.block_size
+            );
+        }
 
         let mut rng = StdRng::seed_from_u64(spec.seed);
         let mut sessions = Vec::with_capacity(spec.num_sessions);
@@ -806,13 +825,24 @@ impl Trace {
             for turn_idx in 0..spec.turns_per_session {
                 let input_length = sample_length(&spec.input_tokens, 1, &mut rng);
                 let max_output_tokens = sample_length(&spec.output_tokens, 1, &mut rng);
+                if spec.cached_prefix_tokens > input_length {
+                    bail!(
+                        "cached_prefix_tokens {} exceeds sampled synthetic input length {}",
+                        spec.cached_prefix_tokens,
+                        input_length
+                    );
+                }
                 let num_blocks = input_length.div_ceil(spec.block_size);
-                let prefix_blocks =
+                let grouped_prefix_blocks =
                     ((num_blocks as f64) * spec.shared_prefix_ratio).round() as usize;
-                let prefix_blocks = prefix_blocks.min(num_blocks);
+                let grouped_prefix_blocks = grouped_prefix_blocks.min(num_blocks);
+                let cached_prefix_blocks = spec.cached_prefix_tokens / spec.block_size;
                 let mut hash_ids = Vec::with_capacity(num_blocks);
 
-                for block_idx in 0..prefix_blocks {
+                for block_idx in 0..cached_prefix_blocks {
+                    hash_ids.push(0xCA_C0_0000_0000_0000 | block_idx as u64);
+                }
+                for block_idx in cached_prefix_blocks..grouped_prefix_blocks {
                     if let Some(group_id) = group_id {
                         hash_ids.push(0xD00D_0000_0000_0000 | (group_id << 32) | block_idx as u64);
                     }
@@ -863,7 +893,7 @@ impl Trace {
         let Some(min_timestamp_ms) = self
             .sessions
             .iter()
-            .filter_map(|session| session.first_arrival_timestamp_ms)
+            .map(|session| session.first_arrival_timestamp_ms.unwrap_or(0.0))
             .min_by(|left, right| left.total_cmp(right))
         else {
             return Ok(self);
@@ -1440,6 +1470,7 @@ impl AgenticTraceBuilder {
             hash_ids,
             not_before_ms: raw.not_before_ms,
             recorded_api_time_ms: raw.recorded_api_time_ms,
+            recorded_interval_ms: None,
             priority: raw.priority.unwrap_or(0),
             strict_priority: raw.strict_priority.unwrap_or(0),
             policy_class: raw.policy_class,

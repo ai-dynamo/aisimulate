@@ -4,7 +4,7 @@
 use std::cell::RefCell;
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use aisimulate_core::engine::generalized::{EngineIdentity, SameTimestampRetry, SchedulerCommand};
 use aisimulate_core::engine::{
@@ -133,6 +133,93 @@ fn spec(config: ReplayEngineConfig) -> ReplaySpec {
         record_per_request: true,
         sla: Default::default(),
         requests: vec![request("request-a", 0.0, 4, 2)],
+    }
+}
+
+#[test]
+fn every_backend_stops_at_max_model_len() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for speculative in [false, true] {
+            for planned in [false, true] {
+                for (prompt, output, expected) in [(3, 10, 5), (7, 10, 1), (3, 2, 2), (3, 0, 0)] {
+                    let mut config = engine_config(TimingModelConfig::Fixed {
+                        prefill_ms: 1.0,
+                        decode_ms: 1.0,
+                    });
+                    config.rank.backend = backend;
+                    config.rank.max_model_len = Some(8);
+                    config.rank.sglang.chunked_prefill_size = 4;
+                    if speculative {
+                        config.rank.aic_nextn = Some(2);
+                        config.rank.aic_nextn_accept_rates = Some("1,1".to_string());
+                    }
+                    let mut replay = spec(config);
+                    let mut req = request("limited", 0.0, prompt, output);
+                    if planned {
+                        req.output_token_ids = Some((100..100 + output as u32).collect());
+                    }
+                    replay.requests = vec![req];
+                    let report = run_engine_replay(replay).unwrap();
+                    assert_eq!(report.request_counts.completed_requests, 1, "{backend:?}");
+                    assert_eq!(
+                        report.per_request[0].output_length, expected,
+                        "{backend:?}, speculative={speculative}, planned={planned}, prompt={prompt}"
+                    );
+                    assert_eq!(report.request_counts.total_output_tokens, expected);
+                    assert_eq!(report.per_request[0].requested_output_length, output);
+                }
+            }
+        }
+    }
+}
+
+#[rstest::rstest]
+fn backends_reserve_only_context_capped_output(
+    #[values(Backend::Trtllm, Backend::Sglang)] backend: Backend,
+) {
+    let mut config = engine_config(TimingModelConfig::Fixed {
+        prefill_ms: 1.0,
+        decode_ms: 1.0,
+    });
+    config.rank.backend = backend;
+    config.rank.max_model_len = Some(8);
+    config.rank.num_gpu_blocks = 5;
+    config.rank.enable_prefix_caching = false;
+    let mut replay = spec(config);
+    replay.requests = vec![request("a", 0.0, 4, 100), request("b", 0.0, 4, 100)];
+    let report = run_engine_replay(replay).unwrap();
+    assert_eq!(report.request_counts.completed_requests, 2);
+    assert_eq!(report.request_counts.total_output_tokens, 8);
+    assert_eq!(report.per_request[0].first_admit_ms, Some(0.0));
+    assert_eq!(
+        report.per_request[0].first_admit_ms,
+        report.per_request[1].first_admit_ms
+    );
+}
+
+#[test]
+fn disaggregated_backends_stop_at_max_model_len() {
+    for backend in [Backend::Vllm, Backend::Sglang, Backend::Trtllm] {
+        for prompt in [3, 7] {
+            let timing = TimingModelConfig::Fixed {
+                prefill_ms: 1.0,
+                decode_ms: 1.0,
+            };
+            let mut replay = disaggregated_spec(backend, timing.clone(), timing);
+            let mut config: ReplayEngineConfig =
+                serde_json::from_value(replay.engine.clone()).unwrap();
+            config.prefill.as_mut().unwrap().rank.max_model_len = Some(8);
+            config.decode.as_mut().unwrap().rank.max_model_len = Some(8);
+            replay.engine = serde_json::to_value(config).unwrap();
+            replay.requests = vec![request("limited", 0.0, prompt, 10)];
+            let report = run_engine_replay(replay).unwrap();
+            assert_eq!(report.request_counts.completed_requests, 1, "{backend:?}");
+            assert_eq!(
+                report.per_request[0].output_length,
+                8 - prompt,
+                "{backend:?}"
+            );
+        }
     }
 }
 
@@ -472,6 +559,125 @@ fn assert_interval_work(round: &IntervalRound, rank: usize, prefill: u32, decode
 }
 
 #[test]
+fn sglang_split_prefixes_remain_reusable_across_cache_pressure() {
+    let mut config = sglang_interval_config(0);
+    config.block_size = 4;
+    config.num_gpu_blocks = 64;
+    config.enable_prefix_caching = true;
+    config.sglang.chunked_prefill_size = 256;
+    config.max_num_batched_tokens = 256;
+    let mut engine = sglang_interval_engine(config, 1);
+    let mut now_ms = 0.0;
+    let seed: Vec<u32> = (0..64).collect();
+    let mut cases = vec![(seed.clone(), Some(64))];
+    for prefix_len in (4..64).step_by(4) {
+        let mut tokens = seed[..prefix_len].to_vec();
+        tokens.extend([1_000 + prefix_len as u32; 4]);
+        cases.push((tokens, Some(4)));
+    }
+    // Force eviction after repeatedly splitting the original long edge.
+    cases.push((vec![10_000; 252], Some(252)));
+    cases.push((seed.clone(), None));
+    let mut tokens = seed[..32].to_vec();
+    tokens.extend([20_000; 4]);
+    cases.push((tokens, Some(4)));
+
+    for (index, (tokens, expected_prefill)) in cases.into_iter().enumerate() {
+        let request_id = Uuid::from_u128(index as u128 + 1);
+        engine
+            .apply_command_effects(
+                SchedulerCommand::new(
+                    0,
+                    Command::Submit(Request {
+                        request_id,
+                        tokens,
+                        max_output_tokens: 0,
+                        output_token_ids: None,
+                    }),
+                ),
+                now_ms,
+            )
+            .unwrap();
+        let round = step_interval_engine(&mut engine, &mut now_ms);
+        if let Some(expected) = expected_prefill {
+            assert_eq!(
+                round.ranks[0].forward_pass_metrics.sum_prefill_tokens, expected,
+                "request {index}"
+            );
+        }
+        let outputs = &round.ranks[0].outputs;
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].request_id, request_id);
+        assert!(outputs[0].completed && !outputs[0].rejected);
+        assert!(engine.is_drained());
+    }
+}
+
+#[test]
+fn sglang_prefill_packs_remaining_pages_and_completes_partial_chunks() {
+    for (budget, cached_prefix, prompts, expected_work) in [
+        (8, 0, vec![4, 8], vec![8, 4]),
+        (6, 0, vec![5], vec![4, 1]),
+        (8, 0, vec![6], vec![6]),
+        (8, 0, vec![7, 8], vec![7, 8]),
+        (8, 4, vec![4, 8], vec![8, 4]),
+        (6, 4, vec![5], vec![4, 1]),
+    ] {
+        let mut config = sglang_interval_config(0);
+        config.block_size = 4;
+        config.sglang.chunked_prefill_size = budget;
+        config.enable_prefix_caching = cached_prefix > 0;
+        let mut engine = sglang_interval_engine(config, 1);
+        let mut now_ms = 0.0;
+        if cached_prefix > 0 {
+            submit_interval_request(&mut engine, 0, 0, cached_prefix, 0, now_ms);
+            let seed = step_interval_engine(&mut engine, &mut now_ms);
+            assert!(seed.ranks[0].outputs[0].completed);
+        }
+        for (index, &prompt) in prompts.iter().enumerate() {
+            let mut tokens = vec![0; cached_prefix];
+            tokens.extend(std::iter::repeat_n(index as u32 + 1, prompt));
+            engine
+                .apply_command_effects(
+                    SchedulerCommand::new(
+                        0,
+                        Command::Submit(Request {
+                            request_id: Uuid::from_u128(index as u128 + 1),
+                            tokens,
+                            max_output_tokens: 0,
+                            output_token_ids: None,
+                        }),
+                    ),
+                    now_ms,
+                )
+                .unwrap();
+        }
+
+        let mut completed = Vec::new();
+        for expected_tokens in expected_work {
+            let round = step_interval_engine(&mut engine, &mut now_ms);
+            assert_eq!(
+                round.ranks[0].forward_pass_metrics.sum_prefill_tokens, expected_tokens,
+                "budget={budget}, cached_prefix={cached_prefix}, prompts={prompts:?}"
+            );
+            for output in &round.ranks[0].outputs {
+                assert!(output.completed && !output.rejected);
+                assert_eq!(output.token_id, None);
+                completed.push(output.request_id);
+            }
+        }
+        completed.sort_unstable();
+        assert_eq!(
+            completed,
+            (1..=prompts.len() as u128)
+                .map(Uuid::from_u128)
+                .collect::<Vec<_>>()
+        );
+        assert!(engine.is_drained());
+    }
+}
+
+#[test]
 fn sglang_interval_default_zero_preserves_consecutive_prefill_chunks() {
     assert_eq!(
         EngineConfig::for_backend(Backend::Sglang).prefill_decode_interval,
@@ -731,10 +937,194 @@ fn built_in_aggregated_replay_produces_a_deterministic_report() {
     assert_eq!(first.request_counts.completed_requests, 1);
     assert_eq!(first.request_counts.total_input_tokens, 4);
     assert_eq!(first.request_counts.total_output_tokens, 2);
-    assert_eq!(first.throughput.duration_ms, 14.0);
+    assert_eq!(first.throughput.duration_ms, 12.0);
     assert_eq!(first.throughput.decode_gpus_per_worker, 1);
-    assert_eq!(first.per_request[0].first_token_ms, Some(12.0));
-    assert_eq!(first.per_request[0].terminal_time_ms, 14.0);
+    assert_eq!(first.per_request[0].first_token_ms, Some(10.0));
+    assert_eq!(first.per_request[0].terminal_time_ms, 12.0);
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TimingCall {
+    Prefill(usize, usize, usize),
+    Decode(usize, usize, usize),
+}
+
+#[derive(Default)]
+struct RecordingTiming {
+    calls: Mutex<Vec<TimingCall>>,
+}
+
+impl TimingModel for RecordingTiming {
+    fn predict_prefill_ms(
+        &self,
+        batch_size: usize,
+        mean_isl: usize,
+        mean_prefix: usize,
+    ) -> Result<f64> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(TimingCall::Prefill(batch_size, mean_isl, mean_prefix));
+        Ok(10.0)
+    }
+
+    fn predict_decode_ms(
+        &self,
+        batch_size: usize,
+        active_kv_tokens: usize,
+        mean_context_length: usize,
+        _total_kv_tokens: usize,
+    ) -> Result<f64> {
+        self.calls.lock().unwrap().push(TimingCall::Decode(
+            batch_size,
+            active_kv_tokens,
+            mean_context_length,
+        ));
+        Ok(2.0)
+    }
+}
+
+fn recording_timing_spec(backend: Backend) -> ReplaySpec {
+    let mut config = engine_config(TimingModelConfig::External {
+        provider: "recording".to_string(),
+        config: serde_json::Value::Null,
+    });
+    config.rank.backend = backend;
+    spec(config)
+}
+
+#[rstest::rstest]
+fn aggregated_prefill_batch_uses_the_final_prefill_forward_once(
+    #[values(Backend::Vllm, Backend::Trtllm)] backend: Backend,
+) {
+    for output_tokens in [0, 1, 2] {
+        let timing = Arc::new(RecordingTiming::default());
+        let mut replay = recording_timing_spec(backend);
+        replay.requests = vec![
+            request_with_tokens("first", 0.0, vec![1, 2, 3, 4], output_tokens),
+            request_with_tokens("second", 0.0, vec![5, 6, 7, 8], output_tokens),
+        ];
+        let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+        assert_eq!(report.per_request.len(), 2);
+        for record in &report.per_request {
+            assert_eq!(record.output_length, output_tokens);
+            assert_eq!(record.first_token_ms, (output_tokens > 0).then_some(10.0));
+            assert_eq!(
+                record.terminal_time_ms,
+                if output_tokens == 2 { 12.0 } else { 10.0 }
+            );
+        }
+        let mut expected = vec![TimingCall::Prefill(2, 4, 0)];
+        if output_tokens == 2 {
+            expected.push(TimingCall::Decode(2, 10, 5));
+        }
+        assert_eq!(*timing.calls.lock().unwrap(), expected);
+    }
+}
+
+#[test]
+fn first_token_timing_fix_preserves_speculative_verification() {
+    let timing = Arc::new(RecordingTiming::default());
+    let mut replay = recording_timing_spec(Backend::Vllm);
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
+    config.rank.aic_nextn = Some(1);
+    config.rank.aic_nextn_accept_rates = Some("1.0".to_string());
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![request("request", 0.0, 4, 1)];
+    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+    assert_eq!(report.per_request[0].first_token_ms, Some(12.0));
+    assert_eq!(report.per_request[0].terminal_time_ms, 12.0);
+    assert_eq!(
+        *timing.calls.lock().unwrap(),
+        vec![TimingCall::Prefill(1, 4, 0), TimingCall::Decode(1, 4, 4),]
+    );
+}
+
+#[rstest::rstest]
+fn aggregated_mixed_pass_prices_only_ongoing_decoders_and_completes_together(
+    #[values(Backend::Vllm, Backend::Trtllm)] backend: Backend,
+) {
+    let timing = Arc::new(RecordingTiming::default());
+    let mut replay = recording_timing_spec(backend);
+    replay.requests = vec![
+        request_with_tokens("decoding", 0.0, vec![1, 2, 3, 4], 2),
+        request_with_tokens("prefilling", 5.0, (10..18).collect(), 1),
+    ];
+    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+    let decoding = report
+        .per_request
+        .iter()
+        .find(|row| row.request_id.as_deref() == Some("decoding"))
+        .unwrap();
+    let prefilling = report
+        .per_request
+        .iter()
+        .find(|row| row.request_id.as_deref() == Some("prefilling"))
+        .unwrap();
+    assert_eq!(decoding.first_token_ms, Some(10.0));
+    assert_eq!(decoding.terminal_time_ms, 22.0);
+    assert_eq!(prefilling.first_token_ms, Some(22.0));
+    assert_eq!(prefilling.terminal_time_ms, 22.0);
+    assert_eq!(
+        *timing.calls.lock().unwrap(),
+        vec![
+            TimingCall::Prefill(1, 4, 0),
+            TimingCall::Prefill(1, 8, 0),
+            TimingCall::Decode(1, 5, 5),
+        ]
+    );
+}
+
+#[test]
+fn vllm_chunked_prefill_waits_for_the_final_chunk_before_sampling() {
+    let timing = Arc::new(RecordingTiming::default());
+    let mut replay = recording_timing_spec(Backend::Vllm);
+    let mut config: ReplayEngineConfig = serde_json::from_value(replay.engine).unwrap();
+    config.rank.max_num_batched_tokens = 4;
+    replay.engine = serde_json::to_value(config).unwrap();
+    replay.requests = vec![request("chunked", 0.0, 10, 2)];
+    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+    assert_eq!(report.per_request[0].first_token_ms, Some(30.0));
+    assert_eq!(report.per_request[0].terminal_time_ms, 32.0);
+    assert_eq!(
+        *timing.calls.lock().unwrap(),
+        vec![
+            TimingCall::Prefill(1, 4, 0),
+            TimingCall::Prefill(1, 8, 4),
+            TimingCall::Prefill(1, 10, 8),
+            TimingCall::Decode(1, 11, 11),
+        ]
+    );
+}
+
+#[rstest::rstest]
+#[case(Backend::Vllm, 4, 30.0, TimingCall::Prefill(1, 8, 4))]
+#[case(Backend::Trtllm, 8, 22.0, TimingCall::Decode(1, 8, 8))]
+fn full_prefix_hit_prices_the_forward_required_by_the_backend(
+    #[case] backend: Backend,
+    #[case] reused_input_tokens: usize,
+    #[case] completion_ms: f64,
+    #[case] reuse_forward: TimingCall,
+) {
+    let timing = Arc::new(RecordingTiming::default());
+    let mut replay = recording_timing_spec(backend);
+    replay.requests = vec![
+        request_with_tokens("seed", 0.0, (1..9).collect(), 0),
+        request_with_tokens("reuse", 20.0, (1..9).collect(), 1),
+    ];
+    let report = run_engine_replay_with_timing(replay, timing.clone()).unwrap();
+    let reuse = report
+        .per_request
+        .iter()
+        .find(|row| row.request_id.as_deref() == Some("reuse"))
+        .unwrap();
+    assert_eq!(reuse.reused_input_tokens, reused_input_tokens);
+    assert_eq!(reuse.first_token_ms, Some(completion_ms));
+    assert_eq!(reuse.terminal_time_ms, completion_ms);
+    assert_eq!(
+        *timing.calls.lock().unwrap(),
+        vec![TimingCall::Prefill(1, 8, 0), reuse_forward]
+    );
 }
 
 #[test]
@@ -1277,7 +1667,7 @@ fn runner_must_resolve_external_timing_before_execution() {
         }),
     )
     .unwrap();
-    assert_eq!(report.throughput.duration_ms, 7.0);
+    assert_eq!(report.throughput.duration_ms, 6.0);
 }
 
 #[test]

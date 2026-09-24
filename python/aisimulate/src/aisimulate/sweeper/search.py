@@ -41,11 +41,14 @@ from typing import Any
 
 from tqdm import tqdm
 
+from ..power import POWER_FIELDS, normalize_power_summary
+from ..resources import ResourceLimitError
 from .afd_perfmodel import AFDPerformanceModel, AICAFDPerformanceModel, attach_afd_measurements
 from .config import Candidate, OptimizationGoal, OptimizationTarget, SmartSearchConfig
 from .deploy import build_backend_deployment
 from .discovery import resolve_providers
 from .epd import add_encoder_choices, resolve_encoder_catalog
+from .forward_pass_estimator import ForwardPassEstimatorResolver
 from .kv_estimate import resolve_backend_version
 from .kv_load import InfeasibleKVCapacity, resolve_kv_load
 from .provider import (
@@ -85,7 +88,7 @@ from .result import (
 )
 from .sample import unroll_sample
 from .sampler import BranchSampler, Suggestion, make_branch_sampler
-from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate
+from .score import aggregate_sla_violations, analyze_candidates, is_feasible, make_candidate, minimum_goodput_violations
 from .search_space import BranchSpace, ConditionalDimensionSpace, enumerate_branches
 
 logger = logging.getLogger(__name__)
@@ -97,18 +100,18 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class _EvalResult:
     candidate: Candidate | None
-    observe_metrics: dict[str, float] | None
+    observe_metrics: dict[str, float | None] | None
     outcome: str
     reason: str
     reason_category: ReasonCategory | None
     runner_metadata: dict[str, Any]
-    report_metrics: dict[str, float] | None = None
+    report_metrics: dict[str, float | None] | None = None
     config_snapshot: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
 class _ReplayEvaluation:
-    metrics: dict[str, float] | None
+    metrics: dict[str, float | None] | None
     metadata: dict[str, Any]
     outcome: str
     reason: str
@@ -573,6 +576,7 @@ def _materialize_one(
     afd_performance_model: AFDPerformanceModel | None = None,
     prediction_config_factory: Callable[[dict[str, Any], ReplaySpec], dict[str, Any]] | None = None,
     encoder_catalog: Mapping[str, Any] | None = None,
+    estimator_resolver: ForwardPassEstimatorResolver | None = None,
 ) -> tuple[_PreparedCandidate | None, _EvalResult | None]:
     """Build a complete replay specification on the main process."""
     epd_snapshot = None
@@ -601,7 +605,13 @@ def _materialize_one(
                     runner_metadata={},
                     config_snapshot=epd_snapshot,
                 )
-        backend_version = config.search_space.backend_version
+        estimator_resolver = estimator_resolver or ForwardPassEstimatorResolver(config.search_space)
+        forward_pass_estimators = estimator_resolver.resolve_candidate(sample)
+        backend_version = (
+            next(iter(forward_pass_estimators.values())).backend_version
+            if forward_pass_estimators
+            else config.search_space.requested_backend_version(selection["backend"])
+        )
         if backend_version is None:
             if sample["deployment_mode"] == "disagg":
                 role_hardware = {role: sample[f"{role}_hardware_sku"] for role in ("prefill", "decode")}
@@ -625,6 +635,7 @@ def _materialize_one(
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.
         sample["backend_version"] = backend_version
+        sample["forward_pass_estimators"] = {role: asdict(value) for role, value in forward_pass_estimators.items()}
         concurrency = config.workload.concurrency
         workload_payload = config.workload.model_dump(mode="json")
         if "traffic_load" in selection:
@@ -666,7 +677,9 @@ def _materialize_one(
             sample["concurrency"] = concurrency
         if encoder is not None:
             epd_snapshot = deepcopy(sample)
-        backend_deployment = build_backend_deployment(sample, backend_version=backend_version, encoder=encoder)
+        backend_deployment = build_backend_deployment(
+            sample, backend_version=backend_version, encoder=encoder, forward_pass_estimators=forward_pass_estimators
+        )
         if sample["deployment_mode"] in {"afd", "afd+pd"}:
             backend_deployment = attach_afd_measurements(
                 backend_deployment,
@@ -758,6 +771,8 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
     try:
         try:
             report = runner.run(spec)
+        except ResourceLimitError:
+            raise
         except Exception as exc:
             logger.exception("Sweeper candidate replay failed")
             return _ReplayEvaluation(
@@ -791,7 +806,7 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
                 reason="replay failed: TypeError: runner report metadata must be a dictionary",
                 reason_category=ReasonCategory.RUNNER_CONTRACT,
             )
-        metrics: dict[str, float] = {}
+        metrics: dict[str, float | None] = {}
         for name, value in report.metrics.items():
             if type(name) is not str:
                 return _ReplayEvaluation(
@@ -801,6 +816,9 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
                     reason=(f"replay failed: TypeError: runner metric names must be strings, got {name!r}"),
                     reason_category=ReasonCategory.INVALID_METRICS,
                 )
+            if value is None and name in POWER_FIELDS:
+                metrics[name] = None
+                continue
             if isinstance(value, bool) or not isinstance(value, Real):
                 return _ReplayEvaluation(
                     metrics=None,
@@ -820,6 +838,7 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
                 )
             metrics[name] = normalized
         try:
+            metrics.update(normalize_power_summary(metrics))
             validate_json_value(report.metadata, path="runner report metadata")
         except (TypeError, ValueError) as exc:
             return _ReplayEvaluation(
@@ -836,6 +855,8 @@ def _run_replay_detailed(spec: ReplaySpec, runner: Runner) -> _ReplayEvaluation:
             reason="",
             reason_category=None,
         )
+    except ResourceLimitError:
+        raise
     except Exception as exc:  # fail closed if contract normalization itself regresses
         logger.exception("Sweeper candidate replay failed")
         return _ReplayEvaluation(
@@ -883,6 +904,17 @@ def _score_prepared(
             reason_category=ReasonCategory.RUNNER_CONTRACT,
             runner_metadata=replay_result.metadata,
         )
+    phases = replay_result.metadata.get("agentic_phases")
+    if isinstance(phases, Mapping) and phases.get("phase") == "aborted":
+        return _EvalResult(
+            candidate=None,
+            observe_metrics=None,
+            outcome="failed",
+            reason=f"agentic preparation aborted: {phases.get('failure_reason') or 'preparation did not complete'}",
+            reason_category=ReasonCategory.REPLAY_RUNTIME,
+            runner_metadata=replay_result.metadata,
+            report_metrics=report,
+        )
     effective_targets = set(goal.resolved_pareto_objectives) if goal.is_pareto else {goal.target}
     if (
         effective_targets.intersection({OptimizationTarget.GOODPUT, OptimizationTarget.GOODPUT_PER_GPU})
@@ -917,7 +949,7 @@ def _score_prepared(
             runner_metadata=replay_result.metadata,
             report_metrics=report,
         )
-    if goal.strict_sla:
+    if goal.requires_aggregate_sla:
         assert goal.sla is not None  # OptimizationGoal validates this invariant.
         violations = aggregate_sla_violations(report, goal.sla)
         if violations:
@@ -930,6 +962,19 @@ def _score_prepared(
                 runner_metadata=replay_result.metadata,
                 report_metrics=report,
             )
+    load_violations = minimum_goodput_violations(report, goal.min_goodput_rps)
+    if load_violations:
+        measured_goodput = report.get("goodput_request_throughput_rps")
+        invalid_metric = measured_goodput is None or measured_goodput < 0
+        return _EvalResult(
+            candidate=None,
+            observe_metrics=None,
+            outcome="failed" if invalid_metric else "infeasible",
+            reason=f"minimum goodput constraint: {'; '.join(load_violations)}",
+            reason_category=ReasonCategory.RUNNER_CONTRACT if invalid_metric else ReasonCategory.LOAD_CONSTRAINT,
+            runner_metadata=replay_result.metadata,
+            report_metrics=report,
+        )
     # A completed replay with no qualifying latency samples is a modeled
     # infeasible outcome, not a runner failure. This preserves the intent of the
     # former worst-rank sentinel without putting non-finite scores in SweepResult.
@@ -1080,6 +1125,7 @@ class Sweeper:
         prediction_config_factory = self._prediction_config_factory
         afd_performance_model = self._afd_performance_model
 
+        estimator_resolver = ForwardPassEstimatorResolver(config.search_space)
         goal = config.goal
         capabilities = runner_factory.capabilities()
         capabilities.require_replay_spec_version(REPLAY_SPEC_API_VERSION)
@@ -1126,6 +1172,7 @@ class Sweeper:
             branch_budgets = [base + (1 if index < remainder else 0) for index in range(len(branches))]
         candidates: list[Candidate] = []
         tally = {
+            "resource_limited": 0,
             "feasible": 0,
             "infeasible": 0,
             "failed": 0,
@@ -1160,8 +1207,11 @@ class Sweeper:
 
         # Parallel across worker processes when parallel_evals > 1. Spawn keeps
         # runner runtimes isolated and lets each worker reuse one runner instance.
-        use_pool = (sweep.parallel_evals > 1 and per_round > 1) or (
-            sweep.max_trials is not None and sweep.max_eval_seconds is not None
+        resource_aware = callable(getattr(runner_factory, "admit_wave", None))
+        use_pool = (
+            resource_aware
+            or (sweep.parallel_evals > 1 and per_round > 1)
+            or (sweep.max_trials is not None and sweep.max_eval_seconds is not None)
         )
         max_eval_seconds = sweep.max_eval_seconds
         worker_count = min(sweep.parallel_evals, per_round)
@@ -1177,17 +1227,14 @@ class Sweeper:
 
         # One-element box so a runtime timeout can kill the hung pool and swap in a fresh one
         # (the closures below read/replace pool_box[0]).
-        pool_box: list[Any] = [_new_pool() if use_pool else None]
+        pool_box: list[Any] = [_new_pool() if use_pool and not resource_aware else None]
 
         def _terminate_pool(pool: ProcessPoolExecutor | None) -> None:
             if pool is None:
                 return
-            for process in list((getattr(pool, "_processes", None) or {}).values()):
-                try:
-                    process.terminate()
-                except ProcessLookupError:
-                    pass
-            pool.shutdown(wait=False, cancel_futures=True)
+            from ..supervision import terminate_pool
+
+            terminate_pool(pool)
 
         def _replace_pool() -> None:
             _terminate_pool(pool_box[0])
@@ -1206,11 +1253,12 @@ class Sweeper:
                     sequential_runner.close()
                 raise
             else:
-                # A completed sweep shuts workers down normally so their Runner
-                # finalizers execute.  Only the timeout-recovery path above sends a
-                # terminate signal, where cleanup is necessarily best-effort.
+                # Allow Runner finalizers to finish, then stop workers that exceed
+                # the grace period instead of hanging the calling process.
                 if pool_box[0] is not None:
-                    pool_box[0].shutdown(wait=True, cancel_futures=True)
+                    from ..supervision import close_pool
+
+                    close_pool(pool_box[0])
                 pool_box[0] = None
                 if sequential_runner is not None:
                     sequential_runner.close()
@@ -1230,6 +1278,36 @@ class Sweeper:
             infeasible ("exceed runtime") and the wave's workers are force-killed (a shared
             pool can't cancel a running task), then a fresh pool handles later waves.
             """
+            if resource_aware:
+                from ..resource_scheduler import InterruptedEvaluation, evaluate_waves
+
+                for index, result in evaluate_waves(
+                    [prepared.replay_spec for _, prepared in todo],
+                    factory=runner_factory,
+                    initializer=_init_worker,
+                    evaluate=_worker_eval,
+                    workers=worker_count,
+                    timeout=max_eval_seconds,
+                ):
+                    suggestion, prepared = todo[index]
+                    if isinstance(result, InterruptedEvaluation):
+                        evaluation = _EvalResult(
+                            candidate=None,
+                            observe_metrics=None,
+                            outcome="resource_limited" if result.resource_limited else "infeasible",
+                            reason=result.reason,
+                            reason_category=(
+                                ReasonCategory.RESOURCE_LIMIT
+                                if result.resource_limited
+                                else ReasonCategory.RUNTIME_TIMEOUT
+                            ),
+                            runner_metadata=result.metadata,
+                        )
+                    else:
+                        evaluation = _score_prepared(prepared, result, config=config, goal=goal)
+                    yield suggestion, evaluation
+                return
+
             if pool_box[0] is None:
                 assert sequential_runner is not None
                 for suggestion, prepared in todo:
@@ -1271,6 +1349,8 @@ class Sweeper:
                     for future in done:
                         try:
                             replay_result = future.result()
+                        except ResourceLimitError:
+                            raise
                         except BrokenProcessPool as exc:
                             raise _pool_error("collecting a candidate result") from exc
                         except Exception as exc:
@@ -1317,7 +1397,7 @@ class Sweeper:
                 reason: str = "",
                 reason_category: ReasonCategory | None = None,
                 runner_metadata: dict[str, Any] | None = None,
-                provenance_metrics: dict[str, float] | None = None,
+                provenance_metrics: dict[str, float | None] | None = None,
                 replay_spec: ReplaySpec | None = None,
             ) -> None:
                 tally[outcome] += 1
@@ -1326,6 +1406,8 @@ class Sweeper:
                     bar.update(1)
                 if outcome == "feasible":
                     status = CandidateStatus.FEASIBLE
+                elif outcome == "resource_limited":
+                    status = CandidateStatus.RESOURCE_LIMITED
                 elif outcome == "unsupported":
                     status = CandidateStatus.UNSUPPORTED
                 elif reason_category is ReasonCategory.RUNTIME_TIMEOUT:
@@ -1335,11 +1417,12 @@ class Sweeper:
                 else:
                     status = CandidateStatus.FAILED
                 snapshot = deepcopy(candidate.config if candidate is not None else candidate_config or {})
-                record_metrics = deepcopy(
+                reported_metrics = (
                     provenance_metrics
                     if provenance_metrics is not None
-                    else (candidate.metrics if candidate is not None else {})
+                    else (candidate.metrics if candidate is not None else None)
                 )
+                record_metrics = deepcopy(reported_metrics) if reported_metrics is not None else {}
                 record = CandidateRecord(
                     candidate_id=f"candidate-{len(candidate_records) + 1:06d}",
                     status=status,
@@ -1362,11 +1445,15 @@ class Sweeper:
                     provenance=make_candidate_provenance(
                         snapshot,
                         replay_spec=replay_spec,
-                        metrics=record_metrics,
+                        metrics=reported_metrics,
                         runner_metadata=runner_metadata,
                     ),
                 )
                 candidate_records.append(record)
+                if resource_aware:
+                    from ..supervision import checkpoint
+
+                    checkpoint("candidate_completed", record.model_dump(mode="json"))
                 if candidate is not None:
                     record_id_by_candidate_object[id(candidate)] = record.candidate_id
                 best = _best()
@@ -1483,6 +1570,7 @@ class Sweeper:
                         prepared, build_result = _materialize_one(
                             suggestion.selection,
                             suggestion.parallel_config,
+                            estimator_resolver=estimator_resolver,
                             config=config,
                             goal=goal,
                             providers=resolved_providers,
@@ -1526,7 +1614,10 @@ class Sweeper:
                         reason = evaluation.reason
                         key = _suggestion_cache_key(suggestion, cache_context)
                         duplicates = duplicates_by_key.get(key, [])
-                        if outcome in ("failed", "infeasible"):
+                        if outcome in ("failed", "infeasible", "resource_limited"):
+                            if outcome == "resource_limited":
+                                # A terminal host refusal consumes its trial without a fabricated score.
+                                unique_this_round += 1
                             preserve_ranked_observation = (
                                 evaluation.reason_category is ReasonCategory.NO_SAMPLES and observe_metrics is not None
                             )
@@ -1620,7 +1711,8 @@ class Sweeper:
             summary = (
                 f"Sweeper done: {tally['feasible']}/{replay_attempts} replay attempt(s) feasible, "
                 f"{tally['infeasible']} gated, {tally['unsupported']} backend-unsupported, "
-                f"{tally['failed']} replay-failed, {tally['cache_hit']} cache hit(s)"
+                f"{tally['failed']} replay-failed, {tally['resource_limited']} resource-limited, "
+                f"{tally['cache_hit']} cache hit(s)"
             )
             if not candidates:
                 summary += " — NO feasible candidate (check backends / SLA / gpu_budget / replay errors)"
@@ -1656,6 +1748,7 @@ class Sweeper:
             unsupported=status_counts[CandidateStatus.UNSUPPORTED],
             timed_out=status_counts[CandidateStatus.TIMED_OUT],
             failed=status_counts[CandidateStatus.FAILED],
+            resource_limited=status_counts[CandidateStatus.RESOURCE_LIMITED],
             cache_hits=tally["cache_hit"],
         )
         return SweepResult(

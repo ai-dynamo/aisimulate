@@ -21,7 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from aiconfigurator.fpm_contract import (
+from aisimulate.fpm_contract import (
     FPM_ENV_EXPORTED_VARS,
     FPM_NATIVE_BENCHMARK_RESULT_SCHEMA_VERSION,
 )
@@ -112,6 +112,7 @@ def _stage(
         exports = "\n".join(f"export {name}={shlex.quote(str(values[name]))}" for name in FPM_ENV_EXPORTED_VARS)
         env_script = f"#!/usr/bin/env bash\n{exports}\n"
     (workdir / "fpm_env.sh").write_text(env_script)
+    (workdir / "collector-runtime-env.sh").write_text("export FPM_READINESS_TIMEOUT_SECONDS=900\n")
     (workdir / "preflight.py").write_text("")
     (workdir / "run.sh").write_text(run_script)
     _write_executable(bin_dir / "etcd", _ETCD_STUB)
@@ -149,7 +150,7 @@ def test_fpm_exec_starts_leader_etcd_before_preflight():
 
     script = FPM_EXEC.read_text()
     assert script.index("etcd_pid=$!") < script.index('python3 "${workdir}/preflight.py"')
-    assert "time.monotonic() + 120" in script
+    assert "time.monotonic() + float(sys.argv[2])" in script
 
 
 def test_fpm_exec_leader_starts_etcd_and_cleanup_stops_it(tmp_path):
@@ -304,3 +305,26 @@ def test_fpm_exec_propagates_fail_closed_env_source(tmp_path):
     assert "requires rank and leader discovery" in completed.stderr
     assert not staged.etcd_trace.exists()
     assert not engine_trace.exists()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError("pinned source mismatch"), ValueError("adapter activation failed")])
+def test_preflight_preserves_non_importerror_runtime_failure(tmp_path, monkeypatch, failure):
+    import builtins
+
+    from collector.fpm_forward.runtime import preflight
+
+    original_import = builtins.__import__
+
+    def fail(name, *args, **kwargs):
+        if name == "dynamo.vllm.instrumented_scheduler":
+            raise failure
+        return original_import(name, *args, **kwargs)
+
+    audit = tmp_path / "runtime-preflight.json"
+    monkeypatch.setattr(preflight, "_AUDIT_PATH", audit)
+    monkeypatch.setattr(builtins, "__import__", fail)
+    with pytest.raises(RuntimeError, match="runtime activation or identity preflight failed") as caught:
+        preflight.main()
+    assert caught.value.__cause__ is failure
+    receipt = json.loads(audit.read_text())
+    assert receipt["status"] == "failed" and receipt["import_error"] == str(failure)

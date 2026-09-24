@@ -11,10 +11,10 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations import warm_all_op_data as _warm_lazy_op_caches
-from aiconfigurator.sdk.operations.base import Operation
-from aiconfigurator.sdk.perf_database import PerfDatabase
+from aisimulate.sdk import common
+from aisimulate.sdk.operations import warm_all_op_data as _warm_lazy_op_caches
+from aisimulate.sdk.operations.base import Operation
+from aisimulate.sdk.perf_database import PerfDatabase
 
 # ``_warm_lazy_op_caches`` is a thin alias for ``warm_all_op_data`` —
 # the public helper that walks every ``Operation`` subclass and calls
@@ -45,7 +45,7 @@ def _reset_op_load_counts():
 # overridden fetches as ``None`` ("no source files"), which the binding wraps
 # as an unloaded ``LoadedOpData`` (or ``None`` where the loader did).
 # ---------------------------------------------------------------------------
-_FETCH_VIEW_TARGET = "aiconfigurator_core.sdk.engine_table_view.fetch_table_view"
+_FETCH_VIEW_TARGET = "aisimulate_core.sdk.engine_table_view.fetch_table_view"
 
 
 def _fake_fetch_table_view(overrides: dict[str, object]):
@@ -65,7 +65,7 @@ def _fake_fetch_table_view(overrides: dict[str, object]):
 # _COMPREHENSIVE_OVERRIDES (set when the singleton is built); until then the
 # router is a transparent pass-through.
 # ---------------------------------------------------------------------------
-from aiconfigurator_core.sdk import engine_table_view as _etv
+from aisimulate_core.sdk import engine_table_view as _etv
 
 _COMPREHENSIVE_OVERRIDES: dict[str, object] | None = None
 _REAL_FETCH_TABLE_VIEW = _etv.fetch_table_view
@@ -402,7 +402,7 @@ def _get_comprehensive_db_singleton() -> PerfDatabase:
     same-object singleton contract.
     """
     global _comprehensive_db_singleton, _comprehensive_db_generation
-    from aiconfigurator_core.sdk import engine as _engine
+    from aisimulate_core.sdk import engine as _engine
 
     if _comprehensive_db_singleton is not None and _comprehensive_db_generation == _engine._PROBE_CACHE_GENERATION:
         return _comprehensive_db_singleton

@@ -42,7 +42,7 @@ checks against the frozen references, and the per-op FFI anchor
 latency/energy/source dicts). Both suites run in the
 `rust-engine-step-parity` CI job (`build-test.yml`).
 
-Build the `aiconfigurator_core` extension first (the CI job does this with
+Build the `aisimulate_core` extension first (the CI job does this with
 `maturin develop --release`; from a clean checkout run
 `cd aic-core && ../.venv/bin/maturin develop --release`), then return to the
 repository root and run:
@@ -97,10 +97,34 @@ requirement, pinned thread caps, byte-reproducible output, and
 all-payloads-before-any-write. `TestGoldenComparisonGuards` proves the
 comparison itself still bites.
 
+### FP8-block correction in PR #244
+
+The selective refresh from `0a51476b6ab90bc0e475bd41d4b1c7abbef07b95`
+covers 68 engine-step records, 19 compiled-engine references, and three
+per-op cases. It follows removal of eager vLLM 0.24.0 FP8-block timings
+and explicit reuse of the graph-timed 0.25.0 GEMM table. Declared reuse
+also fills missing GEMM shapes for the other retained precisions.
+Hand-built Rust engine/FPM fixtures that query this 0.24.0 FP8-block identity
+must use `PerfDatabase::load_resolved` with shared-layer reuse enabled, as the
+production engine does. Primary-only `PerfDatabase::load` intentionally cannot
+answer those removed rows.
+
+The three per-op cases change only 12 QKV/projection GEMM latency values;
+other per-op latencies, energies, and source labels are unchanged. For
+MiniMax-M2.5 (B200, ISL 1024, OSL 2), context QKV GEMM changes from
+11.926155 to 0.948021 ms and generation QKV GEMM from 16.582272 to
+0.565109 ms. Static, mixed-step, aggregated/disaggregated, chunked-prefill,
+and imbalance-scale references inherit these data changes.
+
+Only records implicated by the failed golden comparisons were refreshed,
+using `pin_goldens.py --refresh`. Each refreshed record retains its source
+commit in `post_freeze_pins`; test matrices and tolerances are unchanged.
+These are prediction-regression baselines, not whole-model silicon validation.
+
 ## Engine-Step Benchmark
 
 Historical Python-vs-Rust speedup numbers (dated + commit-stamped) live in
-[`perf-speedup-report.md`](../docs/perf-speedup-report.md); they cannot be
+[`perf-speedup-report.md`](../../perfmodel/docs/perf-speedup-report.md); they cannot be
 regenerated (the Python arm is gone). The benchmark now times the rust
 engine-step alone:
 
@@ -117,3 +141,66 @@ The relative Rust-vs-Python CI perf gate (`test_engine_step_perf.py`)
 retired with the Python step: its floors encoded "Rust must not lose to
 Python", which the migration completed. If an absolute perf tripwire is
 wanted, pin per-case wall-clock budgets from this benchmark on a quiet host.
+
+### B200 power-import golden delta
+
+The power import from AIConfigurator commit
+`915f590680d8a79fe9c39f6f3a9ff13bc267fcce` adds measured B200 TensorRT-LLM
+1.3.0rc20 power columns while preserving timing identities. The per-op goldens
+for GPT-OSS-20B and Nemotron-Super-49B were regenerated with the repository
+`pin_goldens.py --refresh` workflow at AISimulate commit
+`36dcc8f3afe9e6e2e9de976737b6337fad8c4d74`, using that checkout's rebuilt native
+extension. All 29 changed numeric fields are energy values moving from zero
+to positive W-ms. Every latency and source tag is unchanged. For example,
+GPT-OSS context attention changes from 0 to 443.84428875568517 W-ms and
+Nemotron context all-reduce changes from 0 to 1241.060314309411 W-ms.
+Both cases now require a nonzero energy comparison in `_POWER_SUBSET_IDS`.
+These are regression expectations derived from imported operation measurements,
+not independent silicon-accuracy qualification.
+
+#### Recorded refresh commands
+
+The following commands ran from the repository root at
+`36dcc8f3afe9e6e2e9de976737b6337fad8c4d74`, after rebuilding the native extension
+for that checkout. The pin script requires a clean input tree; reproduce a
+historical refresh in an isolated checkout of that revision.
+
+```bash
+python/aisimulate/.venv/bin/python crates/core/parity_tests/perfmodel/pin_goldens.py \
+  --refresh gpt-oss-20b-b200-trtllm-isl1024-osl2 \
+  nemotron-nas-b200-trtllm-isl1024-osl2
+
+python/aisimulate/.venv/bin/python -m pytest -q -p no:timeout \
+  crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+```
+
+Recorded results: **2 per-op records pinned**, followed by **67 compile-engine
+tests passed**. The refreshed goldens and nonzero-energy guards were committed
+as `574c0d9ce64438c4a1c4e0fbbe58c5a9d4cd4de8`. An engine-step suite result was
+not recorded with that historical refresh.
+
+Both suites subsequently passed in the
+[Engine Golden Regression job](https://github.com/ai-dynamo/aisimulate/actions/runs/35043503755/job/104628335804)
+at `a83ad4f162669b318786cc279f320650ec09d5b1`, using a release native build:
+**298 engine-step tests passed** and **67 compile-engine tests passed**. The
+job ran these exact commands from the repository root:
+
+```bash
+python -m pytest -q -rx -n 4 -c python/aisimulate/pytest.ini \
+  crates/core/parity_tests/perfmodel/test_engine_step_parity.py
+
+python -m pytest -q -rx -n 4 -c python/aisimulate/pytest.ini \
+  crates/core/parity_tests/perfmodel/test_compile_engine_parity.py
+```
+
+For local reproduction, activate the repository environment with a native
+extension built from matching source. On macOS, add `-p no:timeout` as described
+in `AGENTS.md`. Later PR heads require their own CI results; the linked run
+records the verified revision rather than certifying future changes.
+
+The two identity-merged B200 attention tables include pinned upstream artifacts
+in `power_upstream/*.parquet.source`. Focused tests in
+`python/aisimulate/tests/unit/tools/test_power_data.py` check their upstream
+SHA-256, every imported schema, identity and measurement, and the paired-zero
+sentinel on local-only identities. These evidence files are excluded from
+`*.parquet` runtime-table discovery.

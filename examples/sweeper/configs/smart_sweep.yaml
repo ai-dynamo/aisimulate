@@ -28,9 +28,10 @@ workload:
   #   concurrency: 64          # always one fixed value
   #   num_request_ratio: 10    # -> 640 requests at concurrency 64
 goal:
-  # throughput | throughput_per_gpu | throughput_per_user | e2e_latency | goodput | goodput_per_gpu | pareto
+  # throughput | throughput_per_gpu | throughput_per_user | ttft | e2e_latency | goodput | goodput_per_gpu | min_gpus | pareto
   target: goodput_per_gpu
-  sla: {ttft_ms: 2000, itl_ms: 30}  # required only for goodput / goodput_per_gpu (or a pareto with a goodput objective)
+  # Required for min_gpus, goodput / goodput_per_gpu, or Pareto with a goodput objective.
+  sla: {ttft_ms: 2000, itl_ms: 30}
 sweep:
   max_rounds: 40
   parallel_evals: 16

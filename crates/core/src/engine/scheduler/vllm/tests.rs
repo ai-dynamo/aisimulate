@@ -5,6 +5,8 @@ use rstest::rstest;
 use uuid::Uuid;
 
 use crate::engine::HandoffId;
+use crate::engine::belady::BeladyOracle;
+use crate::engine::common::hashing::{compute_block_hash_for_seq, compute_seq_hash_for_block};
 use crate::engine::common::protocols::{
     DirectRequest, EngineType, MockEngineArgs, OutputSignal, PreemptionMode,
 };
@@ -44,6 +46,134 @@ fn prefix_cache_args() -> MockEngineArgs {
         .speedup_ratio(0.0)
         .build()
         .unwrap()
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_committed_chunk_but_keeps_queued_demand(#[case] engine_type: EngineType) {
+    let args = MockEngineArgs::builder()
+        .engine_type(engine_type)
+        .block_size(4)
+        .num_gpu_blocks(16)
+        .max_num_batched_tokens(Some(4))
+        .max_num_seqs(Some(1))
+        .enable_chunked_prefill(true)
+        .enable_prefix_caching(true)
+        .speedup_ratio(0.0)
+        .build()
+        .unwrap();
+    let mut core = VllmCore::new(args);
+    let first = Uuid::from_u128(81_001);
+    let queued = Uuid::from_u128(81_002);
+    let first_tokens: Vec<_> = (0..8).collect();
+    let queued_tokens: Vec<_> = (100..108).collect();
+    let first_hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&first_tokens, 4));
+    let queued_hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&queued_tokens, 4));
+    let oracle = BeladyOracle::new(vec![
+        (first, first_hashes.clone()),
+        (queued, queued_hashes.clone()),
+    ])
+    .unwrap();
+    core.set_belady_oracle(oracle.clone());
+    for (uuid, tokens) in [(first, first_tokens), (queued, queued_tokens)] {
+        core.receive(DirectRequest {
+            tokens,
+            max_output_tokens: 1,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+    }
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    core.execute_pass(&mut collector, 1_000.0);
+    assert_eq!(core.state.requests[&first].num_computed_tokens, 4);
+    for &hash in &first_hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
+    assert_eq!(oracle.next_use(queued_hashes[0]), 1);
+    core.apply_command(SchedulerCommand::CancelRequest { request_id: queued })
+        .unwrap();
+    assert_eq!(oracle.next_use(queued_hashes[0]), usize::MAX);
+
+    if engine_type == EngineType::Vllm {
+        assert!(core.policy_preempt(1_000.0).is_some());
+        assert_eq!(core.state.requests[&first].num_preemptions, 1);
+        assert_eq!(oracle.next_use(first_hashes[0]), usize::MAX);
+        core.execute_pass(&mut collector, 1_000.0);
+        assert_eq!(oracle.next_use(first_hashes[0]), usize::MAX);
+    }
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_full_hit_zero_output_requests(#[case] engine_type: EngineType) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    let mut core = VllmCore::new(args);
+    let tokens: Vec<_> = (0..8).collect();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let first = Uuid::from_u128(81_003);
+    let second = Uuid::from_u128(81_004);
+    let oracle =
+        BeladyOracle::new(vec![(first, hashes.clone()), (second, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
+    let mut collector = crate::engine::trace::TraceCollector::default();
+
+    for (uuid, expected_next) in [(first, 1), (second, usize::MAX)] {
+        core.receive(DirectRequest {
+            tokens: tokens.clone(),
+            max_output_tokens: 0,
+            uuid: Some(uuid),
+            ..Default::default()
+        });
+        let pass = core.execute_pass(&mut collector, 0.0);
+        assert!(
+            pass.output_signals
+                .iter()
+                .any(|signal| signal.uuid == uuid && signal.completed)
+        );
+        if uuid == second {
+            assert_eq!(pass.admissions[0].reused_input_tokens, tokens.len());
+        }
+        for &hash in &hashes {
+            assert_eq!(oracle.next_use(hash), expected_next);
+        }
+    }
+}
+
+#[rstest]
+#[case::vllm(EngineType::Vllm)]
+#[case::trtllm(EngineType::Trtllm)]
+fn belady_retires_terminal_rejection_without_computing_prompt(#[case] engine_type: EngineType) {
+    let mut args = prefix_cache_args();
+    args.engine_type = engine_type;
+    args.num_gpu_blocks = 1;
+    let mut core = VllmCore::new(args);
+    let uuid = Uuid::from_u128(81_005);
+    let tokens: Vec<_> = (0..8).collect();
+    let hashes = compute_seq_hash_for_block(&compute_block_hash_for_seq(&tokens, 4));
+    let oracle = BeladyOracle::new(vec![(uuid, hashes.clone())]).unwrap();
+    core.set_belady_oracle(oracle.clone());
+    core.receive(DirectRequest {
+        tokens,
+        max_output_tokens: 0,
+        uuid: Some(uuid),
+        ..Default::default()
+    });
+
+    let mut collector = crate::engine::trace::TraceCollector::default();
+    let pass = core.execute_pass(&mut collector, 0.0);
+    assert!(
+        pass.output_signals
+            .iter()
+            .any(|signal| signal.uuid == uuid && signal.rejected)
+    );
+    assert!(pass.admissions.is_empty());
+    for hash in hashes {
+        assert_eq!(oracle.next_use(hash), usize::MAX);
+    }
 }
 
 #[rstest]
@@ -336,8 +466,6 @@ fn speculative_batch_drains_zero_output_before_emitting_tokens() {
             .count(),
         3
     );
-    assert_eq!(pass.accept_length_output_tokens, 3);
-    assert_eq!(pass.accept_length_decode_forwards, 1);
 }
 
 mod source_holds {
@@ -575,50 +703,60 @@ mod destination_lifecycle {
         panic!("pending destination was not reserved");
     }
 
-    #[test]
-    fn materialized_prompt_above_max_model_len_is_rejected() {
-        let args = MockEngineArgs::builder()
-            .block_size(4)
-            .num_gpu_blocks(12)
-            .max_model_len(Some(8))
-            .max_num_batched_tokens(Some(16))
-            .max_num_seqs(Some(1))
-            .enable_chunked_prefill(true)
-            .enable_prefix_caching(true)
-            .worker_type(WorkerType::Decode)
-            .speedup_ratio(0.0)
-            .build()
-            .unwrap();
+    #[rstest]
+    fn destination_rejects_over_limit_prompt_before_reserving_kv(
+        #[values(EngineType::Vllm, EngineType::Trtllm)] engine_type: EngineType,
+        #[values(8, 9)] prompt_len: usize,
+        #[values(false, true)] allow_destination_admission: bool,
+    ) {
+        let mut args = args(WorkerType::Decode);
+        args.engine_type = engine_type;
+        args.max_model_len = Some(8);
         let mut core = VllmCore::new(args);
         let handoff_id = HandoffId::from(Uuid::from_u128(30_001));
         let uuid = Uuid::from_u128(30_002);
+        let active_before = core.kv_manager.num_active_blocks();
 
-        assert!(matches!(
-            core.apply_command(SchedulerCommand::ReserveDestination {
-                handoff_id,
-                request: request(uuid, vec![1; 9], 1),
-            })
-            .unwrap(),
-            SchedulerCommandResult::DestinationAccepted { request_id } if request_id == uuid
-        ));
+        let error = core
+            .apply_command_effects(
+                SchedulerCommand::ReserveDestination {
+                    handoff_id,
+                    request: request(uuid, vec![1; prompt_len], 1),
+                },
+                allow_destination_admission,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("max_model_len"));
+        assert!(!core.destination_is_held(handoff_id));
+        assert_eq!(core.destination_block_count(handoff_id), 0);
+        assert_eq!(core.destination_reservation_attempts(), 0);
+        assert_eq!(core.kv_manager.num_active_blocks(), active_before);
+        assert!(core.retry_pending_destinations().is_empty());
+        assert!(core.is_drained());
+        assert_eq!(
+            core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
+                .unwrap(),
+            SchedulerCommandResult::Noop
+        );
+
+        // Rejection must leave both IDs and KV capacity reusable by valid work.
+        assert!(reserve_destination(&mut core, handoff_id, uuid, &[1; 7], 1).is_some());
         assert_eq!(
             core.apply_command(SchedulerCommand::ActivateDestination { handoff_id })
                 .unwrap(),
             SchedulerCommandResult::Applied
         );
-
         let pass = execute(&mut core, 0.0);
         assert!(matches!(
             pass.output_signals.as_slice(),
             [OutputSignal {
                 uuid: signal_uuid,
-                token_id: None,
+                token_id: Some(_),
                 completed: true,
-                rejected: true,
+                rejected: false,
                 ..
             }] if *signal_uuid == uuid
         ));
-        assert!(!core.state().requests.contains_key(&uuid));
     }
 
     #[test]

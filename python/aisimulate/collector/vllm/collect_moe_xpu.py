@@ -19,8 +19,6 @@ try:
     from vllm.model_executor.layers.fused_moe.layer import determine_expert_map
 except ImportError:
     from vllm.model_executor.layers.fused_moe.expert_map_manager import determine_expert_map
-from vllm.version import __version__ as vllm_version
-
 from collector.case_generator import (
     get_moe_backend_model_activation,
     get_moe_backend_test_cases,
@@ -34,6 +32,7 @@ from collector.helper import (
     log_perf,
     power_law_logits_v3,
 )
+from vllm.version import __version__ as vllm_version
 
 if torch.xpu.is_available():
     try:

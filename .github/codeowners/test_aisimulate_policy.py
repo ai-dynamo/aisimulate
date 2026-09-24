@@ -9,6 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -68,11 +69,11 @@ def test_representative_routing_contract() -> None:
         FPE,
         MAINTAINERS,
     }
-    assert _owners("python/aisimulate/src/aiconfigurator_core/sdk/engine.py") == {
+    assert _owners("python/aisimulate/src/aisimulate_core/sdk/engine.py") == {
         FPE,
         MAINTAINERS,
     }
-    assert _owners("python/aisimulate/src/aiconfigurator/generator/__init__.py") == {
+    assert _owners("python/aisimulate/src/aisimulate/generator/__init__.py") == {
         FPE,
         MAINTAINERS,
     }
@@ -87,7 +88,7 @@ def test_representative_routing_contract() -> None:
     assert _owners("docs/core-api.md") == {FPE, MAINTAINERS}
 
     # Unified application Replay, Sweeper, and Mocker surface.
-    assert _owners("python/aisimulate/src/aisimulate/aic.py") == {
+    assert _owners("python/aisimulate/src/aisimulate/capacity.py") == {
         FPE,
         MAINTAINERS,
     }
@@ -272,9 +273,10 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "synchronize",
         "reopened",
         "ready_for_review",
-        "labeled",
-        "unlabeled",
     }
+    # Fast checks must run for draft and unlabeled PRs as well as trusted pushes.
+    for job_id in ("policy", "python-static", "rust-format"):
+        assert "if" not in fast_config["jobs"][job_id]
 
     fast_readiness = fast_config["jobs"]["readiness"]
     assert fast_readiness["name"] == "Fast CI Success"
@@ -285,15 +287,11 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "rust-format",
     }
     assert fast_readiness["env"] == {
-        "IS_DRAFT": "${{ github.event.pull_request.draft || false }}",
-        "HAS_REVIEW_READY": "${{ github.event_name != 'pull_request' || "
-        "contains(github.event.pull_request.labels.*.name, 'review-ready') }}",
         "POLICY_RESULT": "${{ needs.policy.result }}",
         "PYTHON_STATIC_RESULT": "${{ needs.python-static.result }}",
         "RUST_FORMAT_RESULT": "${{ needs.rust-format.result }}",
     }
     fast_readiness_script = fast_readiness["steps"][0]["run"]
-    assert "must have the review-ready label" in fast_readiness_script
     for result in (
         "${POLICY_RESULT}",
         "${PYTHON_STATIC_RESULT}",
@@ -331,6 +329,7 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
         "engine-golden-regression",
         "release-artifact-contract",
         "application-wheel",
+        "python-compliance",
     }
     assert set(full_readiness["needs"]) == set(full_config["jobs"]) - {"readiness", "stage-application-wheel"}
     full_readiness_script = full_readiness["steps"][0]["run"]
@@ -368,15 +367,15 @@ def test_fast_and_full_ci_keep_their_cost_boundary() -> None:
     )
 
 
-def test_fast_ci_readiness_fails_closed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("event", ["pull_request", "push", "workflow_dispatch"])
+def test_fast_ci_readiness_fails_closed(tmp_path: Path, event: str) -> None:
     config = yaml.load(
         (ROOT / ".github/workflows/fast-ci.yml").read_text(),
         Loader=yaml.BaseLoader,
     )
     script = config["jobs"]["readiness"]["steps"][0]["run"]
     passing = {
-        "IS_DRAFT": "false",
-        "HAS_REVIEW_READY": "true",
+        "GITHUB_EVENT_NAME": event,
         "POLICY_RESULT": "success",
         "PYTHON_STATIC_RESULT": "success",
         "RUST_FORMAT_RESULT": "success",
@@ -384,14 +383,11 @@ def test_fast_ci_readiness_fails_closed(tmp_path: Path) -> None:
 
     assert _run_readiness_script(script, tmp_path, passing).returncode == 0
 
-    missing_label = {**passing, "HAS_REVIEW_READY": "false"}
-    assert _run_readiness_script(script, tmp_path, missing_label).returncode != 0
-
-    skipped_job = {**passing, "PYTHON_STATIC_RESULT": "skipped"}
-    assert _run_readiness_script(script, tmp_path, skipped_job).returncode != 0
-
-    draft = {**passing, "IS_DRAFT": "true", "HAS_REVIEW_READY": "false"}
-    assert _run_readiness_script(script, tmp_path, draft).returncode == 0
+    for job_result in ("POLICY_RESULT", "PYTHON_STATIC_RESULT", "RUST_FORMAT_RESULT"):
+        for outcome in ("failure", "cancelled", "skipped", ""):
+            failing = {**passing, job_result: outcome}
+            result = _run_readiness_script(script, tmp_path, failing)
+            assert result.returncode != 0, (event, job_result, outcome)
 
 
 def test_full_ci_readiness_fails_closed(tmp_path: Path) -> None:
@@ -488,7 +484,7 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
     }
 
     assert _run_readiness_script(copy_script, tmp_path, matching).returncode == 0
-    assert not (tmp_path / "output.txt").exists()
+    assert (tmp_path / "output.txt").read_text() == f"base={base_sha}\n"
 
     mismatched = {**matching, "FAKE_PR_HEAD": "fedcba9876543210"}
     assert _run_readiness_script(copy_script, tmp_path, mismatched).returncode != 0
@@ -500,12 +496,12 @@ def test_full_ci_trusted_copy_verification(tmp_path: Path) -> None:
     assert _run_readiness_script(copy_script, tmp_path, api_failure).returncode != 0
 
 
-def test_coderabbit_is_opted_in_by_review_ready_label() -> None:
+def test_coderabbit_reviews_non_draft_prs_without_opt_in() -> None:
     policy = yaml.safe_load((ROOT / ".coderabbit.yaml").read_text())
     auto_review = policy["reviews"]["auto_review"]
 
-    assert auto_review["enabled"] is False
-    assert auto_review["labels"] == ["review-ready", "!wip", "!do-not-review"]
+    assert auto_review["enabled"] is True
+    assert auto_review["labels"] == ["!wip", "!do-not-review"]
     assert auto_review["drafts"] is False
     assert auto_review["base_branches"] == ["release/.*"]
     assert auto_review["ignore_title_keywords"] == [

@@ -16,18 +16,18 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
-from aiconfigurator.sdk import common
-from aiconfigurator.sdk.config import ModelConfig, RuntimeConfig
-from aiconfigurator.sdk.inference_session import DisaggInferenceSession, InferenceSession
-from aiconfigurator.sdk.inference_summary import InferenceSummary
-from aiconfigurator.sdk.performance_result import MoECommFallback
-from aiconfigurator.sdk.step_estimate import MixedStepInput, StepEstimate
+from aisimulate.sdk import common
+from aisimulate.sdk.config import ModelConfig, RuntimeConfig
+from aisimulate.sdk.inference_session import DisaggInferenceSession, InferenceSession
+from aisimulate.sdk.inference_summary import InferenceSummary
+from aisimulate.sdk.performance_result import MoECommFallback
+from aisimulate.sdk.step_estimate import MixedStepInput, StepEstimate
 
 pytestmark = pytest.mark.unit
 
 
 def test_step_estimate_preserves_existing_positional_field_order() -> None:
-    assert [field.name for field in fields(StepEstimate)][:-1] == [
+    original_fields = [
         "latency_ms",
         "energy_wms",
         "component_latency_ms",
@@ -37,8 +37,25 @@ def test_step_estimate_preserves_existing_positional_field_order() -> None:
         "context_tokens",
         "num_decode_requests",
         "num_decode_query_tokens",
+        "moe_comm_fallbacks",
     ]
-    assert fields(StepEstimate)[-1].name == "moe_comm_fallbacks"
+    assert [field.name for field in fields(StepEstimate)][: len(original_fields)] == original_fields
+    original_values = (
+        12.5,
+        50.0,
+        {"context": 4.0},
+        {"context": 16.0},
+        {"gemm": 3.0},
+        {"gemm": "silicon"},
+        4096,
+        7,
+        14,
+        (MoECommFallback("context", "deepep_ht", 32, 8, 8, 1),),
+    )
+    estimate = StepEstimate(*original_values)
+    assert tuple(getattr(estimate, name) for name in original_fields) == original_values
+    assert estimate.per_op_energy_wms == {}
+    assert estimate.covered_latency_ms == 0.0
 
 
 def test_inference_session_exposes_structured_mixed_step() -> None:
@@ -189,7 +206,7 @@ def _patch_get_model(monkeypatch):
         return m
 
     monkeypatch.setattr(
-        "aiconfigurator.sdk.inference_session.models.get_model",
+        "aisimulate.sdk.inference_session.models.get_model",
         _fake_get_model,
     )
 
@@ -260,7 +277,7 @@ def test_legacy_disagg_sweep_uses_nested_qwen35_vision_config(monkeypatch, model
         vision_config=vision_config,
     )
     monkeypatch.setattr(
-        "aiconfigurator_core.sdk.utils.get_model_config_from_model_path",
+        "aisimulate_core.sdk.utils.get_model_config_from_model_path",
         lambda _model_path: {"extra_params": qwen_config},
     )
 
@@ -491,7 +508,7 @@ class TestRateMatchingDegradationFactors:
             captured.update(kwargs)
             return {"best_config_df": pd.DataFrame()}
 
-        monkeypatch.setattr("aiconfigurator.sdk.picking.pick_autoscale", fake_pick_autoscale)
+        monkeypatch.setattr("aisimulate.sdk.picking.pick_autoscale", fake_pick_autoscale)
         disagg_session.set_rate_matching_degradation_factors(0.61, 0.73)
         summary = InferenceSummary(runtime_config=runtime_config)
 

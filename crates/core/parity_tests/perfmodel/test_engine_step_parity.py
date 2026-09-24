@@ -26,11 +26,11 @@ from pathlib import Path
 
 import pytest
 
-from aiconfigurator.cli.api import cli_estimate
-from aiconfigurator.sdk import common, config, errors, perf_database, rust_engine_step
-from aiconfigurator.sdk.backends.factory import get_backend
-from aiconfigurator.sdk.models import get_model
-from aiconfigurator.sdk.operations import util_empirical
+from aisimulate.legacy_cli.api import cli_estimate
+from aisimulate.sdk import common, config, errors, perf_database, rust_engine_step
+from aisimulate.sdk.backends.factory import get_backend
+from aisimulate.sdk.models import get_model
+from aisimulate.sdk.operations import util_empirical
 
 pytestmark = pytest.mark.integration
 
@@ -673,7 +673,10 @@ class _MemoizedCall:
 
 def _quiet_call(func, *args, **kwargs):
     """Keep interpolation loader chatter out of parity test output."""
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+    with (
+        contextlib.redirect_stdout(io.StringIO()),
+        contextlib.redirect_stderr(io.StringIO()),
+    ):
         return func(*args, **kwargs)
 
 
@@ -1135,7 +1138,9 @@ def _comparison_metrics(
     return {name: (python_metrics[name], rust_metrics[name]) for name in rust_metrics}
 
 
-def _static_comparison_metrics(case: EngineStepParityCase) -> dict[str, tuple[float, float]]:
+def _static_comparison_metrics(
+    case: EngineStepParityCase,
+) -> dict[str, tuple[float, float]]:
     return _comparison_metrics(case, "static")
 
 
@@ -1145,11 +1150,15 @@ def _mixed_step_comparison_metrics(
     return _comparison_metrics(case, "mixed")
 
 
-def _agg_comparison_metrics(case: EngineStepParityCase) -> dict[str, tuple[float, float]]:
+def _agg_comparison_metrics(
+    case: EngineStepParityCase,
+) -> dict[str, tuple[float, float]]:
     return _comparison_metrics(case, "agg")
 
 
-def _disagg_comparison_metrics(case: EngineStepParityCase) -> dict[str, tuple[float, float]]:
+def _disagg_comparison_metrics(
+    case: EngineStepParityCase,
+) -> dict[str, tuple[float, float]]:
     return _comparison_metrics(case, "disagg")
 
 
@@ -1231,12 +1240,12 @@ def _golden_python_metrics(
 
 def _prepare_rust_core(monkeypatch: pytest.MonkeyPatch) -> None:
     # The live path is the compiled-engine ``EngineHandle`` (Python builds the
-    # ``EngineSpec``, the PyO3 ``aiconfigurator_core`` extension executes it).
+    # ``EngineSpec``, the PyO3 ``aisimulate_core`` extension executes it).
     # The legacy ctypes dylib is gone, so the only requirement is that the
     # maturin-built extension is importable.
     pytest.importorskip(
-        "aiconfigurator_core",
-        reason="maturin-built aiconfigurator_core extension is required "
+        "aisimulate_core",
+        reason="maturin-built aisimulate_core extension is required "
         "(`uv run maturin develop -m aic-core/rust/aiconfigurator-core/Cargo.toml`)",
     )
     rust_engine_step._engine_handle_cache_clear()
@@ -1432,7 +1441,14 @@ class TestRustEngineHandleDatabasePolicyIdentity:
     """
 
     def _static_ctx_ms(self, model, view) -> float:
-        rc = config.RuntimeConfig(batch_size=1, beam_width=1, isl=1024, osl=8, prefix=0, engine_step_backend="rust")
+        rc = config.RuntimeConfig(
+            batch_size=1,
+            beam_width=1,
+            isl=1024,
+            osl=8,
+            prefix=0,
+            engine_step_backend="rust",
+        )
         ctx_latency, _gen, *_ = rust_engine_step.estimate_static_latency_breakdown_with_rust(
             model, view, rc, "static_ctx", 1, 1.0
         )
@@ -1962,7 +1978,7 @@ class TestRustTypedErrorsAcrossFfi:
     (`perf_database.has_perf_data_not_available_cause`, the support-matrix
     HYBRID-miss triage on `EmpiricalNotImplementedError`) could not recognize
     rust-path misses. The boundary now raises the canonical
-    `aiconfigurator.sdk.errors` classes for the typed variants."""
+    `aisimulate.sdk.errors` classes for the typed variants."""
 
     def test_silicon_data_gap_raises_typed_perf_data_miss(
         self,
@@ -2042,8 +2058,8 @@ class TestRustTypedErrorsAcrossFfi:
         assert not perf_database.has_perf_data_not_available_cause(excinfo.value)
         # Python classifies the same query point identically.
         database = _case_database(case)
-        from aiconfigurator_core.sdk.engine import _evaluate_single_op
-        from aiconfigurator_core.sdk.operations.mla import MLABmm
+        from aisimulate_core.sdk.engine import _evaluate_single_op
+        from aisimulate_core.sdk.operations.mla import MLABmm
 
         with pytest.raises(errors.MissingSystemFlopsError):
             # The retired query_mla_bmm shim's exact twin, through the
@@ -2065,8 +2081,8 @@ class TestRustTypedErrorsAcrossFfi:
         # demanding an fp8_tc_flops entry a100 must never define (the
         # support-matrix FP8 gate is keyed on that entry's presence).
         database = _quiet_call(perf_database.get_database, "a100_sxm", "trtllm", "1.0.0")
-        from aiconfigurator_core.sdk.engine import _evaluate_single_op
-        from aiconfigurator_core.sdk.operations.mla import GenerationMLA
+        from aisimulate_core.sdk.engine import _evaluate_single_op
+        from aisimulate_core.sdk.operations.mla import GenerationMLA
 
         def _gen_mla(kv_mode):
             # The retired query_generation_mla shim's exact twin (the
@@ -2294,8 +2310,8 @@ class TestRustEngineStepFpmHybridParity:
     """Hybrid (fpm target + speculative scheme) parity pins."""
 
     def _build_ngram(self):
-        from aiconfigurator.sdk.config_builders import build_model_config
-        from aiconfigurator_core.sdk.speculation import SpeculationConfig
+        from aisimulate.sdk.config_builders import build_model_config
+        from aisimulate_core.sdk.speculation import SpeculationConfig
 
         cfg = build_model_config(
             tp_size=2,
@@ -2328,11 +2344,16 @@ class TestRustEngineStepFpmHybridParity:
             assert abs(value - _FPM_HYBRID_STATIC_GEN_FROZEN) <= allowed
 
     def test_hybrid_ngram_mixed_pin(self, fpm_systems_root):
-        from aiconfigurator_core.sdk.backends.base_backend import MixedStepInput
+        from aisimulate_core.sdk.backends.base_backend import MixedStepInput
 
         model, backend, database = self._build_ngram()
         rc = config.RuntimeConfig(batch_size=4, beam_width=1, isl=1024, osl=2)
-        est = backend.run_mixed(model, database, rc, MixedStepInput(context_tokens=1024, num_decode_requests=1))
+        est = backend.run_mixed(
+            model,
+            database,
+            rc,
+            MixedStepInput(context_tokens=1024, num_decode_requests=1),
+        )
         value = est.latency_ms
         if _FPM_HYBRID_MIXED_FROZEN is None:
             print(f"\nPIN mixed: {value!r}")
@@ -2342,6 +2363,77 @@ class TestRustEngineStepFpmHybridParity:
 
 
 class TestRustEngineStepFpmParity:
+    @pytest.mark.parametrize("database_mode", ["SILICON", "HYBRID"])
+    def test_auto_skips_absent_op_tables(self, fpm_systems_root, database_mode):
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+        cfg = ForwardPassPerfModelConfig(
+            model=_FPM_MODEL,
+            system="b200_sxm",
+            backend="vllm",
+            backend_version=_FPM_VERSION,
+            worker_type="decode",
+            tp=2,
+            moe_tp_size=1,
+            moe_ep_size=2,
+            gemm_quant_mode="fp8_block",
+            moe_quant_mode="fp8_block",
+            fmha_quant_mode="bfloat16",
+            kvcache_quant_mode="fp8",
+            comm_quant_mode="half",
+            systems_paths=(str(fpm_systems_root),),
+            database_mode=database_mode,
+        )
+        model = RustForwardPassPerfModel.best_available(cfg)
+        try:
+            provenance = model.diagnostics()["provenance"]
+            assert provenance["selected_estimation_mode"] == "fpm_interpolation"
+            assert "gemm_perf.parquet" in provenance["selection_failures"][0]
+            # Exact measured fixture row: four decode requests, 4,100 total KV.
+            assert model.estimate_forward_pass_time_ms(
+                {
+                    "version": 1,
+                    "scheduled_requests": {"num_decode_requests": 4, "sum_decode_kv_tokens": 4100},
+                }
+            ) == pytest.approx(4.5)
+        finally:
+            model.close()
+        from dataclasses import replace
+
+        from aisimulate_core.sdk.errors import PerfDataNotAvailableError
+
+        with pytest.raises(PerfDataNotAvailableError, match="required op-level data unavailable"):
+            RustForwardPassPerfModel.best_available(replace(cfg, estimation_mode="op_level"))
+
+    def test_sol_does_not_require_op_tables(self, fpm_systems_root):
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+        model = RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig(
+                model="Qwen/Qwen3-32B",
+                system="b200_sxm",
+                backend="vllm",
+                backend_version=_FPM_VERSION,
+                worker_type="decode",
+                tp=2,
+                systems_paths=(str(fpm_systems_root),),
+                database_mode="SOL",
+            )
+        )
+        try:
+            assert model.diagnostics()["provenance"]["selected_estimation_mode"] == "op_level"
+            assert (
+                model.estimate_forward_pass_time_ms(
+                    {
+                        "version": 1,
+                        "scheduled_requests": {"num_decode_requests": 4, "sum_decode_kv_tokens": 4100},
+                    }
+                )
+                > 0
+            )
+        finally:
+            model.close()
+
     """forward_model='fpm' regression vs the frozen Python reference.
 
     The Python FPM walk is gone (Phase 2 PR-3); the live side below is the
@@ -2349,7 +2441,7 @@ class TestRustEngineStepFpmParity:
     """
 
     def _build(self):
-        from aiconfigurator.sdk.config_builders import build_model_config
+        from aisimulate.sdk.config_builders import build_model_config
 
         cfg = build_model_config(
             tp_size=2,
@@ -2395,7 +2487,7 @@ class TestRustEngineStepFpmParity:
         # estimate hitting the fpm_forward table's exact row proves the
         # whole-model engine was selected through the supported predictor API.
         _prepare_rust_core(monkeypatch)
-        from aiconfigurator_core.sdk.rust_engine_step import RustForwardPassPerfModel
+        from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
         config = {
             "schema_version": 1,
@@ -2417,7 +2509,11 @@ class TestRustEngineStepFpmParity:
             "nextn": None,
             "forward_model": "fpm",
         }
-        model = RustForwardPassPerfModel.from_native(config)
+        from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+        model = RustForwardPassPerfModel.best_available(
+            ForwardPassPerfModelConfig.from_legacy_engine_config(config, "aggregated")
+        )
         decode_only = [
             {
                 "version": 1,
@@ -2434,7 +2530,7 @@ class TestRustEngineStepFpmParity:
         _prepare_rust_core(monkeypatch)
         import json as _json
 
-        from aiconfigurator.sdk import engine as sdk_engine
+        from aisimulate.sdk import engine as sdk_engine
 
         model, _backend, database = self._build()
         spec = _json.loads(
@@ -2457,7 +2553,9 @@ class TestRustEngineStepFpmParity:
         ctx_op = spec["context_ops"][0]["FpmForward"]
         assert ctx_op["phase"] == "prefill"
         assert spec["generation_ops"][0]["FpmForward"]["phase"] == "decode"
-        assert len(ctx_op["match_identity"]) == 15
+        assert len(ctx_op["match_identity"]) == 19
+        assert ctx_op["match_identity"][-4:] == ["", "full", "none", "text"]
+        assert spec["generation_ops"][0]["FpmForward"]["match_identity"] == ctx_op["match_identity"]
         assert ctx_op["sol_ops"], "sol_ops must carry the original granular list"
 
     @pytest.mark.parametrize(
@@ -2471,7 +2569,13 @@ class TestRustEngineStepFpmParity:
             ("static_gen", 4, 1024, 2, 0),  # exact decode hit at B=4
             ("static_gen", 2, 1024, 2, 0),  # uncollected batch -> transfer (SOL)
             ("static_gen", 4, 9_000_000, 2, 0),  # out of domain -> both error
-            ("static_ctx", 16, 256, 1, 0),  # above the batch ceiling -> pure clamp (kv/T = 0)
+            (
+                "static_ctx",
+                16,
+                256,
+                1,
+                0,
+            ),  # above the batch ceiling -> pure clamp (kv/T = 0)
             ("static_ctx", 16, 320, 1, 256),  # high KV pressure -> SOL-rescaled clamp
         ],
     )
@@ -2490,7 +2594,12 @@ class TestRustEngineStepFpmParity:
             (0, 4, 1024, 2),  # gen-only keeps full decode
             (0, 600, 100, 2),  # gen-only across the decode regime boundary (eager side)
             (1024, 0, 1024, 2),  # prefill-only chunk
-            (4096, 0, 256, 1),  # 16 whole prefills: certified batch clamp to the ceiling
+            (
+                4096,
+                0,
+                256,
+                1,
+            ),  # 16 whole prefills: certified batch clamp to the ceiling
         ],
     )
     def test_fpm_mixed_step_parity(self, fpm_systems_root, monkeypatch, ctx_tokens, gen_tokens, isl, osl):

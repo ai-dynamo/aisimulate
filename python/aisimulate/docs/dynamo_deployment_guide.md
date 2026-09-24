@@ -32,7 +32,7 @@ the workflow; it does not establish the best possible deployment.
 | Serving image | `nvcr.io/nvidia/ai-dynamo/vllm-runtime:1.3.0`; record the pulled digest. |
 
 The Dynamo/backend pair is recorded in the generator's
-[version matrix](../src/aiconfigurator/generator/facts/runtimes/dynamo.yaml).
+[version matrix](../src/aisimulate/generator/facts/runtimes/dynamo.yaml).
 These pins make the intended environment explicit; local artifact generation
 is not a GPU deployment qualification. Before serving, verify the image's
 actual versions and the target machine's driver/GPU requirements using the
@@ -60,9 +60,12 @@ aisimulate predict --stack engine \
 
 The [example YAML](../../../examples/cli/dynamo-deployment-recommend.yaml)
 fixes concurrency and compares two TP shapes under a two-GPU limit. Inspect
-`recommendation.json` for failures and selected candidate IDs. If there is no
-feasible result, `recommend` exits `1` and produces no numbered YAML. Stop and
-investigate that ledger before proceeding. Use a fresh output directory for
+`recommendation.json` for failures and selected candidate IDs. If no configuration
+is selected and there are zero resource-limited candidates, `recommend` exits `1`
+and produces no numbered YAML. Any resource-limited candidate makes the exit
+status `3`, including when the result is empty or some selected YAML files remain
+available. Inspect the ledger and [resource diagnostics](../../../docs/local-resources.md)
+before proceeding. Use a fresh output directory for
 another study, or apply the CLI's explicit `--overwrite` policy.
 
 ## 3. Render the selected candidate
@@ -81,8 +84,8 @@ import json
 from dataclasses import replace
 from pathlib import Path
 
-from aiconfigurator.generator.api import generate_from_request
-from aiconfigurator.generator.request import from_sweeper_candidate
+from aisimulate.generator.api import generate_from_request
+from aisimulate.generator.request import from_sweeper_candidate
 
 parser = argparse.ArgumentParser(description="Render a selected recommendation")
 parser.add_argument("--candidate-id", help="Explicit candidate ID; required for Pareto results")

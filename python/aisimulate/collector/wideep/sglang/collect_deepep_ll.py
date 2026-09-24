@@ -6,7 +6,7 @@
 Runs the DeepEP low-latency (decode EP) dispatch/combine micro-benchmark once
 across all visible GPUs of a single node (full node: 4 on GB200, 8 on
 B200/H200). It sweeps the MoE ``(hidden_size, num_experts, topk)`` shapes used
-by the MoE models under ``src/aiconfigurator/model_configs`` against a token
+by the MoE models under ``src/aisimulate_core/model_configs`` against a token
 list, and writes ``wideep_deepep_ll_perf.txt`` rows (``node_num=1``) that match
 the schema consumed by ``operations.moe.load_wideep_deepep_ll_data``.
 
@@ -27,7 +27,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 COLLECTOR_ROOT = os.path.dirname(os.path.dirname(THIS_DIR))  # collector/
 REPO_ROOT = os.path.dirname(COLLECTOR_ROOT)
 DEEPEP_DIR = os.path.join(THIS_DIR, "deepep")
-MODEL_CONFIGS_DIR = os.path.join(REPO_ROOT, "src", "aiconfigurator", "model_configs")
+MODEL_CONFIGS_DIR = os.path.join(REPO_ROOT, "src", "aisimulate_core", "model_configs")
 
 try:
     from collector.registry_types import PerfFile

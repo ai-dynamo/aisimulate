@@ -1,7 +1,7 @@
 Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 
 NOTICE: The file
-python/aisimulate/src/aiconfigurator_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json
+python/aisimulate/src/aisimulate_core/model_configs/deepseek-ai--DeepSeek-V3.2_config.json
 is a verbatim copy of config.json from the DeepSeek-V3.2 model repository at
 commit c69397ecfd1fd142e90e3fbad51f4c7e40b9f3d3 and is licensed under the MIT
 License. Its license text, and attribution for other third-party material, is

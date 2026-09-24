@@ -22,9 +22,8 @@ _COLLECTOR = REPO_ROOT / "collector" / "network" / "collect_all_reduce.py"
 _SLURM_WORKER = REPO_ROOT / "collector" / "network" / "slurm" / "collect_allreduce.py"
 _GB300_TRTLLM_DATA = (
     REPO_ROOT
-    / "aic-core"
     / "src"
-    / "aiconfigurator_core"
+    / "aisimulate_core"
     / "systems"
     / "data"
     / "gb300"

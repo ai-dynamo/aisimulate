@@ -5,7 +5,7 @@
 
 import pytest
 
-from aiconfigurator.generator import api
+from aisimulate.generator import api
 
 pytestmark = pytest.mark.unit
 
@@ -90,7 +90,7 @@ def test_generate_naive_config_uses_perf_database_without_overrides(monkeypatch)
         assert backend == "vllm"
         return "0.19.0"
 
-    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_latest_database_version", fake_latest_version)
+    monkeypatch.setattr("aisimulate.sdk.perf_database.get_latest_database_version", fake_latest_version)
 
     result = api.generate_naive_config(
         model_path="Qwen/Qwen3-32B",

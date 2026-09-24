@@ -6,7 +6,7 @@ subtitle: A lossless candidate ledger with scalar and Pareto views
 ---
 
 > [!WARNING]
-> **Experimental.** Schema version `1.0` is the first machine-readable Sweeper result contract.
+> **Experimental.** Schema version `1.1` adds explicit resource-limited candidate outcomes; `1.0` remains readable.
 > Within a schema version, fields keep their meaning and units; incompatible changes require a new
 > `schema_version` and an explicit converter.
 
@@ -31,12 +31,16 @@ run provenance, and counts remain available on the same result envelope.
 
 Strict aggregate SLA filtering happens before scalar ranking or Pareto dominance. Rejected candidates
 remain in the ledger with status `infeasible` and reason category `sla_constraint`.
+With `min_gpus`, measured goodput below the requested rate floor is `infeasible` with
+`load_constraint`; missing rate evidence is `failed` with `runner_contract`. Candidate metrics
+retain `request_throughput_rps`, `goodput_request_throughput_rps`, and `goodput_completed_requests`
+when supplied by the runner. GPU-count selection happens before the top-N view is truncated.
 
 ## Envelope
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Result contract version. The only accepted value in this release is `1.0`. |
+| `schema_version` | Result contract version. New results emit `1.1`; reading `1.0` explicitly upgrades the envelope and defaults resource-limited counts to zero. |
 | `candidate_retention` | `all`, `feasible`, or `views`; counts always describe the complete run. |
 | `counts` | Outcome and cache counts for the complete run. |
 | `candidates` | Retained candidate records in evaluation order. |
@@ -56,7 +60,7 @@ Every materialized or capability-gated candidate attempt has one record when ret
 | Field | Meaning |
 |---|---|
 | `candidate_id` | Stable within the result, formatted `candidate-NNNNNN`. |
-| `status` | `feasible`, `infeasible`, `unsupported`, `timed_out`, or `failed`. |
+| `status` | `feasible`, `infeasible`, `unsupported`, `timed_out`, `failed`, or `resource_limited`. |
 | `config` | Concrete backend, topology, engine knobs, load, and adapter configuration available at the terminal status. |
 | `prediction_config` | Concrete public `aisimulate predict` configuration when produced by the unified CLI. |
 | `used_gpus` | Provisioned GPU count, or `null` if materialization failed before it was known. Unit: GPUs. |
@@ -71,11 +75,37 @@ Metric names and units are explicit: throughput is `*_tok_s`, latency is `*_ms`,
 power is `*_w`, duration is `duration_ms`, and `gpu_hours` is GPU-hours. `score` is not assumed to
 have a unit; use the named metric or `objectives` for display and comparisons.
 
+`power_w` and `power_coverage` follow the
+[modeled-power contract](../power-model.md): active-forward-pass power per GPU,
+energy-over-active-latency aggregation, and AIC's existing coverage rule.
+Coverage is the share of modeled active time with operation-energy evidence.
+For every candidate with a valid replay report, both keys must be present in
+metrics and power provenance. Exactly 90% is sufficient to publish numeric
+`power_w`; below 90%, `power_coverage` remains numeric while `power_w` is `null`.
+A runner without typed operation-energy evidence must return `null` for both
+values. Zero coverage is reserved for an energy-aware path with no covered
+active latency. Null values must never be treated as zero watts or zero coverage.
+Failed attempts without a valid replay report retain the empty `metrics`
+envelope described above; they do not contain a power summary.
+
+Valid replay reports preserve both nullable keys through runner normalization,
+candidate metrics, power provenance, and `SweepResult.to_json()`. Publication
+validation rejects numeric watts below the coverage gate. Null values never
+become zero or enter objective arithmetic.
+
+This contract applies to AISimulate `ReplayReport` and `SweepResult` outputs.
+Raw DataFrames from the compatibility `aiconfigurator` sweep/picking APIs retain
+their legacy schema and sentinels; the mapping below describes conversion targets,
+not an automatic converter. They do not satisfy this power contract as-is. A
+converter must establish coverage and preserve unavailable values before emitting
+a conforming result; it cannot infer coverage from a legacy wattage column alone.
+
 ### Counts
 
 `evaluated` is the number of candidate attempts that reached materialization or replay and equals
 `feasible + infeasible + timed_out + failed`. `unsupported` is separate because capability gating
-rejects it before evaluation. `cache_hits` counts repeated optimizer suggestions served from the
+rejects it before evaluation. `resource_limited` is also separate: the host could not complete
+an evaluation, so it is not a modeled constraint failure. `cache_hits` counts repeated optimizer suggestions served from the
 run-local completed-result cache or coalesced with an identical suggestion in the same ask batch.
 Each such suggestion consumes a trial budget slot and is counted explicitly as a cache hit, but does
 not create a duplicate ledger row.
@@ -87,10 +117,11 @@ not create a duplicate ledger row.
 | `unsupported` | The runner does not support the backend/topology pair. |
 | `timed_out` | Replay exceeded `max_eval_seconds`. It remains infeasible to the optimizer, but is distinct in results. |
 | `failed` | Materialization, runner execution, or the runner/result contract failed. |
+| `resource_limited` | Host memory admission or bounded runtime recovery could not complete this candidate. |
 
-Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `backend_topology`, `runtime_timeout`,
+Stable reason categories are `gpu_budget`, `kv_capacity`, `sla_constraint`, `load_constraint`, `backend_topology`, `runtime_timeout`,
 `candidate_materialization`, `replay_runtime`, `runner_contract`, `invalid_metrics`, `no_samples`,
-`parallel_projection`, `adapter_constraint`, and `unknown`.
+`parallel_projection`, `adapter_constraint`, `resource_limit`, and `unknown`.
 
 ## Provenance
 
@@ -159,7 +190,7 @@ field names.
 | `tokens/s/user` | `metrics.mean_output_token_throughput_per_user` | Tokens/s/user. |
 | `seq/s`, `seq/s/gpu`, role worker rates | `metrics` | Sequences/s, with the legacy label preserved in migration metadata until a typed metric is added. |
 | `balance_score`, `num_ctx_reqs`, `num_gen_reqs`, `num_tokens`, `ctx_tokens`, `gen_tokens` | `metrics` | Exact numeric values; request/token counts are counts. |
-| `power_w` | `provenance.power.power_w` | Watts. |
+| `power_w`, `power_coverage` | `metrics` and `provenance.power` | Both keys are required in a conforming summary. Use watts per GPU and a latency-weighted ratio in `[0, 1]`, or `null` for each unavailable value; `power_w` is `null` below the gate. |
 | `gemm`, `kvcache`, `fmha`, `moe`, `comm`, `memory`, role variants | `metrics` | Legacy component estimates remain named metrics with original units recorded by the converter. |
 | EPD `(a)workers` and `(e)workers`, `(e)tp`, `(e)pp`, `(e)bs`, `(e)parallel`, `(e)memory` | `config` and `provenance.topology` | Preserve the rate-matched aggregate and encoder cell as explicit roles. |
 | AFD `phase`, `(a)nodes/tp/bs/micro_bs/workers`, `(f)nodes/tp/ep/workers` | `config` and `provenance.topology` | Preserve attention/FFN role topology and whether AFD applies to prefill, decode, or both. |
@@ -238,8 +269,8 @@ between calls, even when the same `Sweeper` instance is reused.
 A `Candidate` is a ranked simulation result, not a deployment manifest. The downstream
 AIConfigurator generator owns artifact rendering. In the unified AISimulate application, pass the
 selected candidate and its matching workload to
-`aiconfigurator.generator.request.from_sweeper_candidate`, then render the resulting typed request
-with `aiconfigurator.generator.api.generate_from_request`.
+`aisimulate.generator.request.from_sweeper_candidate`, then render the resulting typed request
+with `aisimulate.generator.api.generate_from_request`.
 
 The bridge preserves evaluated engine limits and supported adapter configuration, and rejects
 candidate data it cannot lower without loss. Pareto output has no implicit winner: callers must
@@ -249,3 +280,12 @@ AFD candidates are intentionally outside that native generator bridge because it
 no A/F worker or routing contract. Pass a selected AFD recommendation to `aisimulate predict`
 instead; the prediction writes deterministic `afd-replay-spec.json` and
 `afd-qualification.json` analytical artifacts and marks native launch generation unsupported.
+
+### Host resource interruptions
+
+`resource_limited` candidates have reason category `resource_limit` and no
+simulated metrics or score. `counts.resource_limited` is separate from
+`counts.evaluated`: a host admission refusal is not evidence about model
+feasibility. A recommendation with resource-limited candidates covers only
+completed evaluations. The CLI preserves completed results and exits with
+status 3 to make this partial coverage visible. See [local execution resources](../local-resources.md).
