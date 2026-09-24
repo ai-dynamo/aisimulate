@@ -133,6 +133,15 @@ def _uint32(value, label: str, *, positive: bool = False) -> None:
         raise ValueError(f"{label} must be an exact {'positive ' if positive else ''}uint32")
 
 
+def validate_native_workload(backend: str, phase: str, prefix: int, query: int) -> None:
+    """Conservative stock-native admission after source and GB300 cache oracle."""
+    if backend == "vllm" and phase in ("context", "prefill") and prefix % 4 and query >= 2:
+        raise ValueError(
+            "stock vLLM GLM cached prefill with unaligned IndexPool start is unqualified "
+            "(prefix % 4 != 0, query >= 2); native cache oracle failed crossing pools"
+        )
+
+
 def validate_row(row: dict) -> None:
     """Reject unverifiable identities before they can enter a measured table."""
     if row.get("component") not in COMPONENTS.values():
@@ -187,10 +196,11 @@ def validate_row(row: dict) -> None:
         if not isinstance(shape.get("is_context"), bool):
             raise ValueError("attention is_context must be boolean")
         if shape["is_context"]:
+            validate_native_workload(row["backend"], "context", row["prefix"], row["x"])
             expected_modes = ("cached_prefill", "chunked_prefill") if row["prefix"] else ("full_prefill",)
             if row["state_mode"] not in expected_modes:
                 raise ValueError("prefill state mode disagrees with its measured prefix")
-            if row["prefix"] + row["x"] + 1 > 131072:
+            if row["prefix"] + row["x"] > 131072:
                 raise ValueError("prefill exceeds the qualified 128K context")
         elif row["prefix"] or row["state_mode"] != "decode" or row["x"] + 1 > 131072:
             raise ValueError("decode requires absolute past-KV x, prefix=0, and decode state mode")

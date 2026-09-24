@@ -24,6 +24,7 @@ from collector.glm53flash_contract import (
     aggregate_rank_records,
     build_model_manifest,
     sha256_json,
+    validate_native_workload,
 )
 from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, sglang_runtime_context_length
 
@@ -237,6 +238,25 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
     provenance.update(source_sha256=sha256_json(pins), runtime_digest=runtime_digest)
     for name, value in (("manifest.json", manifest), ("points.json", {phase: points}), ("provenance.json", provenance)):
         (output / name).write_text(json.dumps(value, sort_keys=True, indent=2))
+    unsupported = []
+    for benchmark_id, point in enumerate(points, start=1):
+        batch = point["batch_size"]
+        prefix = point["total_kv_read_tokens"] // batch
+        query = point["total_prefill_tokens"] // batch if phase == "prefill" else 1
+        try:
+            validate_native_workload(backend, phase, prefix, query)
+        except ValueError as error:
+            unsupported.append({"benchmark_id": benchmark_id, "point": point, "reason": str(error)})
+    if unsupported:
+        (output / "qualification-failures.json").write_text(
+            json.dumps(
+                {"status": "unqualified_native_geometry", "requested_points": len(points), "failures": unsupported},
+                indent=2,
+            )
+        )
+        raise ValueError(
+            f"{len(unsupported)} frozen GLM points require unsupported native cached-prefill starts; evidence: {output}"
+        )
     env = {
         **os.environ,
         "AISIM_GLM53_PURPOSE": "ops",

@@ -144,9 +144,12 @@ class _TraceState:
             stream.write(json.dumps(value, sort_keys=True) + "\n")
 
     def before(self, scheduler_output, input_ids, forward_context):
+        from collector.glm53flash_contract import validate_native_workload
         from collector.glm53flash_observer import NativeWorkload
 
         coords = native_coordinates(self.runner, scheduler_output)
+        for prefix, query in zip(coords["prefix_lengths"], coords["query_lengths"], strict=True):
+            validate_native_workload("vllm", coords["phase"], prefix, query)
         runtime_mode = forward_context.cudagraph_runtime_mode.name
         if runtime_mode != "NONE":
             raise RuntimeError("vLLM eager Ops policy encountered native CUDA graph dispatch")

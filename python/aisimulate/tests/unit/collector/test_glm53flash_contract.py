@@ -13,6 +13,7 @@ from collector.glm53flash_contract import (
     CHECKPOINTS,
     aggregate_rank_records,
     canonical_json,
+    validate_native_workload,
     validate_row,
     write_parquet,
 )
@@ -99,6 +100,24 @@ def test_reject_unqualified_measurements(updates, match):
     row = {**sample_row(), **updates}
     with pytest.raises(ValueError, match=match):
         validate_row(row)
+
+
+def test_native_pool_start_guard_and_inclusive_context_admission():
+    for prefix, query in ((4097, 3), (4097, 4), (1, 2)):
+        with pytest.raises(ValueError, match="unaligned IndexPool start"):
+            validate_native_workload("vllm", "context", prefix, query)
+    for backend, phase, prefix, query in (
+        ("vllm", "context", 4096, 3),
+        ("vllm", "context", 4097, 1),
+        ("vllm", "generation", 4097, 1),
+        ("sglang", "context", 4097, 3),
+    ):
+        validate_native_workload(backend, phase, prefix, query)
+    validate_row({**sample_row(), "x": 131072})
+    with pytest.raises(ValueError, match="unaligned IndexPool start"):
+        validate_row(
+            {**sample_row(), "prefix": 4097, "x": 3, "state_mode": "cached_prefill", "kv_seed_regime": "real_kv"}
+        )
 
 
 def rank_files(tmp_path, rows):

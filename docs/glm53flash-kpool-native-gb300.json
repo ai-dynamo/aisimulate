@@ -1,0 +1,99 @@
+{
+  "allocation_id": "604200",
+  "cases": [
+    {
+      "batch": 1,
+      "mismatching_request_pool_indices": [],
+      "one_shot_matches_pooling_oracle": true,
+      "prefix": 4096,
+      "query": 3,
+      "snapshot_sha256": "56118981fbc4ec6d19a0ca6938d8455f658fc9204d225ea7228578997d1963db",
+      "split_matches_pooling_oracle": true,
+      "tail_matches_one_shot": true
+    },
+    {
+      "batch": 1,
+      "mismatching_request_pool_indices": [],
+      "one_shot_matches_pooling_oracle": true,
+      "prefix": 4096,
+      "query": 4,
+      "snapshot_sha256": "661fbd92b5fa86f3991400a1dff0d15e325ea3cd6796bde39333b78a80eb4f20",
+      "split_matches_pooling_oracle": true,
+      "tail_matches_one_shot": true
+    },
+    {
+      "batch": 1,
+      "mismatching_request_pool_indices": [
+        [
+          0,
+          1024
+        ]
+      ],
+      "one_shot_matches_pooling_oracle": true,
+      "prefix": 4097,
+      "query": 3,
+      "snapshot_sha256": "37346efe9cc76d878f7e8bac10bdeb5c7e524759d70910d3c14f95aecd4838a8",
+      "split_matches_pooling_oracle": false,
+      "tail_matches_one_shot": true
+    },
+    {
+      "batch": 2,
+      "mismatching_request_pool_indices": [
+        [
+          0,
+          1024
+        ],
+        [
+          1,
+          1024
+        ]
+      ],
+      "one_shot_matches_pooling_oracle": true,
+      "prefix": 4097,
+      "query": 3,
+      "snapshot_sha256": "cceb1147d83d015e9eb561bab49c4e865ba2691d81d7ad1ba8ee4816f3472067",
+      "split_matches_pooling_oracle": false,
+      "tail_matches_one_shot": true
+    },
+    {
+      "batch": 1,
+      "mismatching_request_pool_indices": [
+        [
+          0,
+          1024
+        ]
+      ],
+      "one_shot_matches_pooling_oracle": true,
+      "prefix": 4097,
+      "query": 4,
+      "snapshot_sha256": "7d01dc22f868d790095060bf23f33eb7300dcf55acfac633b7cceb0f9c596b2a",
+      "split_matches_pooling_oracle": false,
+      "tail_matches_one_shot": true
+    }
+  ],
+  "device": "NVIDIA GB300",
+  "original_result_sha256": "1e5b3ea0b2d585bcbc4f2b8478b7bc4f4cdead785834f7626f15a0da1dc91418",
+  "performance_data": false,
+  "probe_inventory_sha256": "c83c741db70482b7e11dd6e269adce45e4a06a0c2c298fc5da5bd71a91284a38",
+  "purpose": "native_correctness_probe_only",
+  "scope_limit": "Native compressed mapping, prefill helper and tail seeding; independent uniform-gate pooling followed by native FWHT/FP8. No whole-model accuracy or latency claim.",
+  "source_receipt": {
+    "vllm.model_executor.layers.sparse_attn_indexer_kpool": {
+      "sha256": "625d30d17ad3c66164f83fea59fc86e0e5edc53b4642e8a3a724aa90276f98ab",
+      "url": "https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/model_executor/layers/sparse_attn_indexer_kpool.py"
+    },
+    "vllm.models.glm5next.nvidia.ops.kpool_compress": {
+      "sha256": "bd6f1d7b5e88a10d9756799a744d3e201421b6caabd32f7b3319d31904a91a0a",
+      "url": "https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/models/glm5next/nvidia/ops/kpool_compress.py"
+    },
+    "vllm.v1.attention.backends.mla.compressor_utils": {
+      "sha256": "3589e94105368ea285c40b82db1a0332682ff5d071fe363627cf4c0d10f3facf",
+      "url": "https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/attention/backends/mla/compressor_utils.py"
+    },
+    "vllm.v1.attention.backends.mla.indexer": {
+      "sha256": "2acbc1c4fa57c3424ad95e6ecbe76eb7141747773c3e867ce704f4adccba892a",
+      "url": "https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/attention/backends/mla/indexer.py"
+    }
+  },
+  "torch": "2.13.0+cu130"
+}

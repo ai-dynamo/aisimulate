@@ -205,6 +205,9 @@ impl Glm53Table {
         prefix: u32,
         x: u32,
     ) -> Result<Option<LeafValue>, AicError> {
+        let encoded = geometry(op)?;
+        let shape: Value = serde_json::from_str(&encoded).map_err(|e| invalid(e.to_string()))?;
+        validate_native_workload(component, &shape, prefix, x)?;
         let points = self.points.get_or_init(|| match &self.path {
             Some(path) => {
                 load(path, self.request.as_ref()).map_err(|e| format!("{}: {e}", path.display()))
@@ -214,7 +217,7 @@ impl Glm53Table {
         let points = points.as_ref().map_err(|e| invalid(e.clone()))?;
         let key = Key {
             component: component.into(),
-            geometry: geometry(op)?,
+            geometry: encoded,
             batch_size,
             prefix,
             x,
@@ -224,6 +227,25 @@ impl Glm53Table {
         }
         interpolate(points, &key)
     }
+}
+
+fn validate_native_workload(
+    component: &str,
+    shape: &Value,
+    prefix: u32,
+    query: u32,
+) -> Result<(), AicError> {
+    if component == "attention"
+        && shape["backend"] == "vllm"
+        && shape["is_context"] == true
+        && prefix % 4 != 0
+        && query >= 2
+    {
+        return Err(invalid(
+            "stock vLLM GLM cached prefill with unaligned IndexPool start is unqualified (prefix % 4 != 0, query >= 2); native cache oracle failed crossing pools",
+        ));
+    }
+    Ok(())
 }
 
 // Structural partitions supplement (never replace) observed CUDA kernel names.
@@ -430,6 +452,7 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
         let encoded = row.str(geometry)?;
         let shape = validate_geometry(component, encoded)?;
         let (batch, prefix, x) = (row.u32(batch_size)?, row.u32(prefix)?, row.u32(x)?);
+        validate_native_workload(component, &shape, prefix, x)?;
         let latency = row.f64(latency)?;
         if batch == 0
             || x == 0
@@ -717,6 +740,38 @@ mod tests {
         points.insert(key(2044), measured(3.0, SHA));
         points.insert(key(2052), measured(7.0, SHA));
         assert!(interpolate(&points, &key(2048)).unwrap().is_none());
+    }
+
+    #[test]
+    fn stock_vllm_unaligned_cached_prefill_is_rejected_before_lookup() {
+        let mut attention = crate::operators::glm53flash::tests::attention("sparse_mla");
+        attention.backend = "vllm".into();
+        attention.is_context = true;
+        let root = tempfile::tempdir().unwrap();
+        let table = Glm53Table::new(root.path().into());
+        let error = table
+            .query("attention", &attention, 1, 4097, 3)
+            .unwrap_err();
+        assert!(error.to_string().contains("unaligned IndexPool start"));
+        assert!(
+            table
+                .query("attention", &attention, 1, 4096, 3)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            table
+                .query("attention", &attention, 1, 4097, 1)
+                .unwrap()
+                .is_none()
+        );
+        attention.backend = "sglang".into();
+        assert!(
+            table
+                .query("attention", &attention, 1, 4097, 3)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

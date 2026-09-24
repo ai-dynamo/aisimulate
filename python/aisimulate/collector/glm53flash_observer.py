@@ -18,7 +18,7 @@ from collections import defaultdict
 from contextlib import nullcontext
 from dataclasses import dataclass
 
-from collector.glm53flash_contract import sha256_json, validate_row
+from collector.glm53flash_contract import sha256_json, validate_native_workload, validate_row
 
 
 @dataclass(frozen=True)
@@ -107,6 +107,7 @@ class NativeOperationObserver:
         }
 
     def begin(self, workload: NativeWorkload) -> None:
+        validate_native_workload(self.provenance["backend"], workload.phase, workload.prefix, workload.query)
         if self.workload is not None or self.events:
             raise RuntimeError("previous native invocation was not finalized")
         if self.torch.cuda.is_current_stream_capturing():

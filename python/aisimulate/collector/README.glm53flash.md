@@ -82,6 +82,26 @@ These rules only establish interpolation eligibility. They do not establish
 numerical correctness of native cached starts or the required independent
 whole-forward MAPE <=20%.
 
+## Stock vLLM cached-start qualification failure
+
+GB300 native correctness probe 604200 tested the pinned vLLM mapping, prefill
+compression and tail-seed APIs. One-shot writes matched the independent
+uniform-gate pooling oracle in every case. Split execution matched for
+P4096/Q3 and P4096/Q4, but P4097/Q3 at B1/B2 and P4097/Q4 at B1 produced an
+incorrect pool1024. Tail contents matched. The preserved result, source hashes
+and cache-snapshot hashes are in `docs/glm53flash-kpool-native-gb300.json`.
+This diagnostic does not measure model quality or latency.
+
+The native prefill helper gathers current-chunk K and assumes pool-aligned
+starts; previous raw-tail reconstruction occurs only on the decode path.
+Current stock-vLLM measurement admission conservatively rejects cached-prefill
+P%4!=0 with Q>=2, including starts not individually proven wrong. Q1 follows
+the native decode-threshold path and requires its own normal admission. The
+collector preserves requested points and writes `qualification-failures.json`;
+the reader rejects both rows and queries. It does not delete points, silently
+round prefixes, substitute a kernel, or claim the complete requested matrix.
+SGLang and explicit analytical SOL are separate contracts.
+
 ## Upstream integration sources
 
 These are original observation adapters calling upstream implementations, not

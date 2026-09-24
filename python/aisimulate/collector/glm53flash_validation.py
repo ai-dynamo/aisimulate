@@ -26,6 +26,7 @@ from collector.glm53flash_contract import (
     canonical_json,
     sha256_json,
     validate_calibration_row,
+    validate_native_workload,
 )
 from collector.glm53flash_jsonl import file_sha256, iter_records
 
@@ -284,6 +285,7 @@ def load_native(run: dict, base: Path) -> dict:
             for request, query, prefix in zip(
                 row["requests"], row["query_lengths"], row["prefix_lengths"], strict=True
             ):
+                validate_native_workload(backend, row["phase"], prefix, query)
                 rid = request["request_id"]
                 if rid not in requests["requests"]:
                     raise ValueError("Ops observed an unfrozen request")
