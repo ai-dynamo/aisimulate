@@ -337,7 +337,9 @@ def installed_consumer_identity() -> dict:
 
 def _load_native(run: dict, base: Path, mode: str) -> dict:
     if "children" in run:
-        serving = mode == "ops" and run["spec"].get("ops_execution_mode") == "native_serving"
+        serving = (
+            mode == "ops" and run["key"][0] == "vllm" and run["spec"].get("ops_execution_mode") == "native_serving"
+        )
         if serving:
             from collector.glm53flash_serving_shards import same_native_policy, validate_children
 
