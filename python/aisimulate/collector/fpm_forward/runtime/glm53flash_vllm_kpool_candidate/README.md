@@ -141,3 +141,67 @@ copied by this manifest. Each repaired worker must hash the effective vLLM
 source files and all 19 native binaries before timing. Python and Rust repair
 allowlists remain empty until an immutable native Engine qualification receipt
 has been reviewed and explicitly admitted.
+
+## Packaged admission evidence (closed)
+
+`ADMITTED_VLLM_REPAIRS` is still empty. Merely inserting a version/hash no longer
+admits the candidate: the consumer requires the actual SHA256 of
+`qualification/admission-summary.json` and checks its complete packaged receipt
+chain. No such summary or accepted comparison is supplied by this preparation.
+The Rust exception also remains closed and requires a separate reviewed change.
+
+The future summary has `schema_version: 1`, status
+`native_engine_qualification_passed`, and scope
+`native_Engine_functional_correctness_for_frozen_geometry_suite_only`. It binds
+`backend_version`, `build_receipt_sha256`, `wheel_sha256`, and
+`expected_runtime_sha256` to the constants in `glm53flash_runtime_identity.py`.
+`accuracy_acceptance` and `formal_8_cell_coverage` must both remain
+`NOT_EVALUATED`; native functional correctness does not establish performance
+accuracy or eight-configuration coverage.
+
+The remaining required fields are:
+
+- `source_commit`: the immutable 40-character revision of the strict validator.
+  `validator_sources` maps `validate.py`, `probe.py`, `worker_probe.py`,
+  `request-id-source.json`, and `cohort-source.json` to SHA256 values of the
+  actual files in this packaged `qualification/` directory. These identify the
+  current full-raw revalidation, independently of historical collection code.
+- `cells`: exactly four entries with `checkpoint` (`fp8` or `nvfp4`) and `tp`
+  (`2` or `4`). Each `comparison` contains `path`, `sha256`, and `source_uri` for
+  the original strict comparison JSON. It must report production policy,
+  20 requests per profile, 32 greedy output tokens per request, 40 comparisons,
+  `status: passed`, and no differences.
+- Each cell's `profiles` contains, in order, stock/reference,
+  candidate/reference, and candidate/split. Each profile has `runtime_kind`,
+  `mode`, `raw_uri`, `preflight: {path, sha256}`, and
+  `native_receipt: {path, sha256}`. Paths are distinct flat JSON basenames in
+  `qualification/`; the existing wheel include rule ships them. Preserve the
+  original preflight and native receipt bytes, even when the original receipt
+  was written by an older validator.
+- Each profile's `original_validator: {sha256, source_uri}` records the actual
+  frozen historical `validate.py` bytes and their external location. Obtain this
+  identity from the original frozen job bundle, not from the current checkout.
+  `revalidation_added_fields` explicitly lists only the newly derived fields:
+  `checkpoint_identity` when absent from the historical receipt, followed by
+  `files.native-receipt.json`. No other native evidence or original raw file
+  hash may change. A new original receipt already containing checkpoint proof
+  lists only `files.native-receipt.json`.
+
+All external URIs use `https`, `s3`, `gs`, or `ssh`, without credentials, query
+strings, fragments, or traversal. Each profile has a distinct raw directory.
+The comparison retains the complete original raw inventory: all worker,
+prompt, forward, output, request-ID, cohort, and configuration files remain
+externally available by location and SHA256. The consumer checks every packaged
+small-file SHA against that inventory, the actual checkpoint config and both
+loader revisions, the runtime/source/19-binary closure, native cohort protocol,
+all TP ranks, and FULL graph evidence.
+
+Promotion requires running the current `qualification/validate.py` against all
+original raw files for all four cells, preserving those exact comparison JSON
+bytes, and reviewing the resulting summary SHA in the same admission change.
+For historical evidence, retain the original invocation and frozen bundle as
+well as the current revalidation command and source identity. This small-file
+consumer verifies the reviewed evidence chain offline; it does not reread large
+external token arrays or independently recreate a GPU execution. Unit tests
+construct only temporary `TEST_ONLY` contracts and do not supply publication or
+admission artifacts.
