@@ -350,9 +350,10 @@ impl FpmForwardOp {
         }
         let query = coords[1] / coords[0];
         let prefix = coords[2] / coords[0];
-        // Kept empty until a native Engine qualification receipt is accepted.
-        // Never infer repair support from a version prefix or a local suffix.
-        const ADMITTED_GLM53FLASH_VLLM_REPAIRS: &[&str] = &[];
+        // Four-cell Engine receipt packaged with the collector, SHA256
+        // d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67.
+        // Exact runtime only; this does not qualify a performance dataset.
+        const ADMITTED_GLM53FLASH_VLLM_REPAIRS: &[&str] = &["0.30.0+glm53kpool.bf5f6b0e689d"];
         let repaired = ADMITTED_GLM53FLASH_VLLM_REPAIRS.contains(&version);
         if !repaired && prefix % 4.0 != 0.0 && query >= 2.0 {
             return Err(data_err("GLM-5.3-Flash stock vLLM IndexPool cached-prefill start is unqualified; separately qualified runtime repair required".into()));
@@ -809,13 +810,47 @@ mod tests {
     fn unqualified_glm_repair_suffix_does_not_bypass_native_pool_start() {
         let mut prefill = op(FpmPhase::Prefill);
         prefill.model_path = "zai-org/GLM-5.3-Flash".into();
-        for version in ["0.30.0", "0.30.0+unknown", "0.30.0+glm53kpool.bf5f6b0e689d"] {
+        for version in [
+            "0.30.0",
+            "0.30.0+unknown",
+            "0.30.0+glm53kpool.bf5f6b0e689d.other",
+        ] {
             assert!(
                 prefill
                     .validate_glm53flash_native_start("vllm", version, &[1.0, 3.0, 4097.0])
                     .unwrap_err()
                     .to_string()
                     .contains("cached-prefill start is unqualified")
+            );
+        }
+    }
+
+    #[test]
+    fn reviewed_glm_repair_admits_unaligned_native_coordinates() {
+        let mut prefill = op(FpmPhase::Prefill);
+        for model in ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"] {
+            prefill.model_path = model.into();
+            for coords in [[1.0, 3.0, 4097.0], [2.0, 6.0, 14.0], [4.0, 28.0, 32780.0]] {
+                assert!(
+                    prefill
+                        .validate_glm53flash_native_start(
+                            "vllm",
+                            "0.30.0+glm53kpool.bf5f6b0e689d",
+                            &coords
+                        )
+                        .is_ok()
+                );
+            }
+            assert!(
+                prefill
+                    .validate_glm53flash_native_start(
+                        "vllm",
+                        "0.30.0+glm53kpool.bf5f6b0e689d",
+                        &[2.0, 3.0, 14.0]
+                    )
+                    .unwrap_err()
+                    .to_string()
+                    .contains("homogeneous integral")
             );
         }
     }

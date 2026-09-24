@@ -13,7 +13,7 @@ from collector.fpm_forward import hybrid_artifact
 pytestmark = pytest.mark.unit
 
 
-@pytest.mark.parametrize("version", [None, "0.30", "0.30.0+unknown", "0.30.0+glm53kpool.bf5f6b0e689d", "0.31.0"])
+@pytest.mark.parametrize("version", [None, "0.30", "0.30.0+unknown", "0.30.0+glm53kpool.bf5f6b0e689d.other", "0.31.0"])
 def test_candidate_versions_are_not_implicitly_qualified(version):
     with pytest.raises(ValueError, match="unqualified"):
         identity.validate_backend_version("vllm", version)
@@ -44,8 +44,8 @@ def source_manifest():
     return Path(hybrid_artifact.__file__).parent / "runtime/glm53flash/runtime-source-sha256.json"
 
 
-def test_closed_candidate_cannot_generate_a_source_or_binary_admission():
-    assert identity.ADMITTED_VLLM_REPAIRS == {}
+def test_closed_candidate_cannot_generate_a_source_or_binary_admission(monkeypatch):
+    monkeypatch.setattr(identity, "ADMITTED_VLLM_REPAIRS", {})
     for function in (identity.vllm_source_pins, identity.vllm_runtime_closure, identity.vllm_source_manifest_sha256):
         with pytest.raises(ValueError, match="unqualified"):
             function(identity.VLLM_KPOOL_CANDIDATE, source_manifest())
@@ -55,7 +55,7 @@ def test_closed_candidate_cannot_generate_a_source_or_binary_admission():
 
 
 def test_reviewed_repair_contract_binds_distinct_sources_and_all_native_binaries(monkeypatch):
-    # TEST ONLY: exercise the dormant contract. This does not qualify the runtime.
+    # TEST ONLY: isolate runtime binding from the independently tested receipt gate.
     # TEST_ONLY: this test isolates downstream runtime binding; summary validation has its own suite.
     monkeypatch.setattr(identity, "_validate_qualification_summary", lambda _: {})
     monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, identity.VLLM_KPOOL_CANDIDATE, "a" * 64)

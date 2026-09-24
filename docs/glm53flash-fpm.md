@@ -62,9 +62,15 @@ requested coordinates remain in coverage. A source-pinned runtime repair must
 pass independent qualification before those points can be collected. The
 [versioned repair candidate](../python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/README.md)
 preserves the exact patch, native binary lineage, actual build receipt and
-qualification commands. It remains explicitly `NOT_QUALIFIED`; building and
-installing a wheel does not remove the stock-runtime gate. No new profile is
-claimed as accepted.
+qualification commands. The exact runtime `0.30.0+glm53kpool.bf5f6b0e689d`
+is admitted by the packaged four-cell Engine summary, SHA256
+`d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67`.
+All four cells passed stock/reference, repaired/reference and repaired/split
+comparisons (20 requests per profile, 32 output tokens, 40 comparisons per cell).
+The original raw inventories and source identities remain linked in the summary.
+This functional qualification preserves the stock-runtime gate. Formal hardware
+qualification, campaign coverage and independent FPM accuracy are separate gates;
+no performance profile is accepted by the Engine result alone.
 
 Formal collection retains at least five warmups and ten observations per point, and separate calibration/holdout token streams and geometry. Exact table self-queries verify integrity, not independent accuracy. Record complete coverage, phase MAPE, WAPE and tail errors. Existing data remains unchanged.
 
@@ -81,6 +87,23 @@ FPM translates the shared Generator's legacy decode graph-size options to
 `--cuda-graph-bs-decode` and `--cuda-graph-max-bs-decode`. The normal plan/run/resume/checkpoint workflow and
 `--fpm-executor slurm` transport are retained. A Slurm run requires an existing
 owned allocation, an explicit container image, and checkpoint/runtime mounts.
+
+Keep writable runtime caches separate from a read-only checkpoint mount.
+The generated launcher defaults an unset `FLASHINFER_CUBIN_DIR` to
+`${HF_HOME}/flashinfer-cubins`; this requires a writable `HF_HOME`. A campaign
+that mounts its model/HF directory read-only must explicitly set the cubin
+directory through `extra_env` or its frozen pre-import environment hook.
+Set `FLASHINFER_WORKSPACE_BASE` separately: relocating that workspace does not
+relocate downloaded cubins. Use allocation-private, node-local directories and
+separate each worker's Triton cache before framework imports.
+
+Qualify the complete generated shell environment and fresh worker startup,
+including any inherited cache settings. In the actual container, check
+FlashInfer's resolved cubin path and an owned write/read/delete there; printing
+an environment variable alone does not prove the directory is usable. Retain
+the hook source/hash and process-specific cache receipts with the campaign.
+Preserve an original startup failure and freeze changed environment inputs for
+its replacement attempt without changing the requested point set or corpus.
 
 The SGLang driver uses the native Scheduler, ScheduleBatch and request/cache
 objects. Its retained-request benchmark protocol seeds each request through
