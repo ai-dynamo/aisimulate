@@ -39,6 +39,9 @@ def write_json(path: Path, value) -> None:
 
 def wait_retained_release(output: Path, request_ids: list[str], tp: int, timeout_seconds: int) -> None:
     """Responses can precede worker-side release receipts; wait before hashing."""
+    if not request_ids or len(set(request_ids)) != len(request_ids):
+        raise ValueError("retained release requires a nonempty unique request cohort")
+    expected_ids = set(request_ids)
     deadline = time.monotonic() + timeout_seconds
     pending = set(range(tp))
     while pending:
@@ -58,10 +61,16 @@ def wait_retained_release(output: Path, request_ids: list[str], tp: int, timeout
             except (FileNotFoundError, json.JSONDecodeError, IndexError):
                 continue
             rows = event.get("requests", [])
+            released_ids = [row.get("request_id") for row in rows]
             if (
                 event.get("producer_protocol") == PRODUCER_PROTOCOL
                 and event.get("tp_rank") == rank
-                and [row.get("request_id") for row in rows] == request_ids
+                # Native cohort order may differ from API submission order,
+                # e.g. sorted manifest keys q0,q1,q10,...,q2 for B>=16. Raw
+                # forward traces retain the actual ordered inputs; completion
+                # waits require exactly the same unique members on every rank.
+                and len(released_ids) == len(request_ids)
+                and set(released_ids) == expected_ids
                 and all(row.get("released") is True and row.get("parked") is None for row in rows)
             ):
                 pending.remove(rank)
