@@ -55,6 +55,7 @@ def _required_files(tp_size: int, backend: str) -> set[str]:
     )
     if backend == "sglang":
         files.update({"sglang-provenance.json", "sglang-declared-config.json", "sglang-resolved-config.json"})
+        files.update(f"retained-rank-{rank}.jsonl" for rank in range(tp_size))
     return files
 
 
@@ -203,6 +204,14 @@ def load_native(run: dict, base: Path) -> dict:
     requests = json.loads((root / "requests.json").read_bytes())
     if requests["dataset_role"] != run["role"] or requests["corpus_sha256"] != run["corpus"]:
         raise ValueError("Ops request role/corpus differs from frozen plan")
+    if backend == "sglang":
+        from collector.glm53flash_sglang_retained import validate_retained_states
+
+        validate_retained_states(
+            requests,
+            {rank: (root / f"forward-rank-{rank}.jsonl").read_bytes() for rank in range(tp)},
+            {rank: (root / f"retained-rank-{rank}.jsonl").read_bytes() for rank in range(tp)},
+        )
     expected = {
         p["benchmark_id"]: (
             p["batch_size"],

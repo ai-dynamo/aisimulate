@@ -19,6 +19,7 @@ from collector.glm53flash_contract import (
     sha256_json,
     write_parquet,
 )
+from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL
 
 pytestmark = pytest.mark.unit
 
@@ -87,6 +88,7 @@ def native_fixture(tmp_path, role="holdout"):
         "source_sha256": sha256_json(pins),
         "runtime_digest": "sha256:" + "b" * 64,
         "run_id": "authored-unit-run",
+        "producer_protocol": PRODUCER_PROTOCOL,
         "execution_identity": dict(
             zip(
                 EXECUTION_COLUMNS,
@@ -229,6 +231,52 @@ def native_fixture(tmp_path, role="holdout"):
                     )
         put_lines(root / f"forward-rank-{rank}.jsonl", records)
         put_lines(root / f"rank-{rank}.jsonl", modules)
+        retained, parked = [], {}
+        for row in records:
+            rid = row["request_ids"][0]
+            prefix, query = row["prefix_lengths"][0], row["query_lengths"][0]
+            before = parked.get(rid)
+            complete = {
+                "req_pool_idx": 1,
+                "mamba_pool_idx": 2,
+                "committed_tokens": prefix + query,
+                "allocated_tokens": prefix + query,
+                "cached_prefix_tokens": prefix,
+                "retained_tokens": prefix,
+                "committed_indices_sha256": sha256_json(list(range(prefix + query))),
+                "cached_prefix_indices_sha256": sha256_json(list(range(prefix))),
+                "retained_indices_sha256": sha256_json(list(range(prefix))),
+            }
+            released = row["stage"] == "measure"
+            after = (
+                None
+                if released
+                else {
+                    **complete,
+                    "cached_prefix_tokens": prefix + query,
+                    "retained_tokens": prefix + query,
+                    "cached_prefix_indices_sha256": complete["committed_indices_sha256"],
+                    "retained_indices_sha256": complete["committed_indices_sha256"],
+                }
+            )
+            parked[rid] = after
+            retained.append(
+                {
+                    "producer_protocol": PRODUCER_PROTOCOL,
+                    "tp_rank": rank,
+                    "forward_id": row["forward_id"],
+                    "requests": [
+                        {
+                            "request_id": rid,
+                            "before": before,
+                            "completed": complete,
+                            "parked": after,
+                            "released": released,
+                        }
+                    ],
+                }
+            )
+        put_lines(root / f"retained-rank-{rank}.jsonl", retained)
         all_records[rank], all_modules[rank] = records, modules
     manifest = {
         "backend": "sglang",
