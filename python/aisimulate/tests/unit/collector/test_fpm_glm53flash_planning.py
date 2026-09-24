@@ -88,5 +88,15 @@ def test_all_required_glm_deployments_render_native_precision_and_scope(tmp_path
             assert "collector.fpm_forward.sglang_driver" in argv
             assert "--disable-radix-cache" in argv
             assert "--max-model-len" not in argv
+            assert "--enable-mixed-chunk" not in argv
+            assert argv[argv.index("--moe-runner-backend") + 1] == "auto"
+            assert "--cuda-graph-bs" not in argv
+            graph_start = argv.index("--cuda-graph-bs-decode") + 1
+            graph_sizes = []
+            for value in argv[graph_start:]:
+                if value.startswith("--"):
+                    break
+                graph_sizes.append(int(value))
+            assert graph_sizes == list(range(1, 33))
             if "NVFP4" in model:
                 assert argv[argv.index("--quantization") + 1] == "modelopt_fp4"

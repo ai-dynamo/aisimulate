@@ -1179,9 +1179,9 @@ def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
         "--chunked-prefill-size",
         str(plan.options.max_prefill_isl),
     ]
-    native_args.extend(
-        ["--max-running-requests", str(plan.options.max_decode_batch_size or plan.options.max_prefill_batch_size or 32)]
-    )
+    max_batch = max(plan.options.max_decode_batch_size or 32, plan.options.max_prefill_batch_size or 32)
+    native_args.extend(["--max-running-requests", str(max_batch)])
+    native_args.extend(["--cuda-graph-bs-decode", *map(str, range(1, max_batch + 1))])
     native_args.extend(["--revision", MODEL_REVISIONS[plan.model_path]])
     if cell.weight_quantization == "nvfp4":
         native_args.extend(["--quantization", "modelopt_fp4"])
@@ -1218,6 +1218,13 @@ def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
                 "moe_expert_parallel_size": 1,
                 "gpus_per_worker": cell.topology.total_gpus,
                 "kv_cache_dtype": "fp8_e4m3",
+                # This campaign uses native pure TP. Hardware serving defaults
+                # may request a legacy wide-EP runner or mixed-phase batches,
+                # neither of which implements this measurement contract.
+                "moe_backend": "auto",
+                "enable_mixed_chunk": False,
+                "preserve_engine_limits": True,
+                "max_batch_size": max_batch,
                 "extra_cli_args": native_args,
             }
         },
@@ -2276,7 +2283,7 @@ def _run_collection_impl(
     )
     if formal_database_terminal:
         return errors
-    if plan.options.dataset_role == "holdout":
+    if getattr(plan.options, "dataset_role", "calibration") == "holdout":
         checkpoint["holdout"] = {
             "status": "passed"
             if not errors

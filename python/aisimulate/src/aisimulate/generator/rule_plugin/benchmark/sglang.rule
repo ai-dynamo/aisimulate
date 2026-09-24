@@ -8,9 +8,11 @@ when not (preserve_engine_limits or false):
 
 when not (preserve_engine_limits or false):
     agg_prefill_decode max_prefill_tokens = SlaConfig.isl + 1500
-agg enable_mixed_chunk = true
+when not (preserve_engine_limits or false):
+    agg enable_mixed_chunk = true
 
-agg_prefill_decode cuda_graph_batch_sizes = ((range(1, max_batch_size + 1) | list) if max_batch_size else [])
+when not (preserve_engine_limits or false):
+    agg_prefill_decode cuda_graph_batch_sizes = ((range(1, max_batch_size + 1) | list) if max_batch_size else [])
 
 # Enforce SGLang MoE parallelism: SGLang uses unified TP for both attention and MoE,
 # so tensor_parallel_size must account for moe_tp × moe_ep (same constraint as TRT-LLM).
