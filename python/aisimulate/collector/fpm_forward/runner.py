@@ -1332,6 +1332,8 @@ def _cell_generator_overrides(
         # The adapter owns five real warmups for every exact point.
         scheduler_args[scheduler_args.index("--benchmark-warmup-iterations") + 1] = "0"
         model_args.extend(["--language-model-only", "--cudagraph-metrics"])
+        if cell.workload_kind == "prefill":
+            model_args.append("--no-enable-prefix-caching")
         if cell.workload_kind == "decode":
             model_args.extend(["--max-num-batched-tokens", str(plan.options.max_prefill_isl)])
     if architecture == "DeepseekV41ForCausalLM":
@@ -1496,6 +1498,8 @@ def _cell_generator_overrides(
 def _decode_prefix_caching_mode(cell: FPMCell) -> str:
     """Return the rendering/checkpoint policy for one decode strategy."""
 
+    if getattr(cell, "state_protocol", ""):
+        return "disabled"  # Real history remains on the same request; no prefix-cache lookup.
     return "enabled" if cell.parallel_strategy in KVWARM_STRATEGIES else "disabled"
 
 

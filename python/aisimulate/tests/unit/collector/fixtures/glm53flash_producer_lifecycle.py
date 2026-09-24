@@ -123,4 +123,46 @@ for phase, context, suffix in [("prefill", 0, 64), ("prefill", 4099, 3), ("decod
         assert "missing actual graph dispatch" in str(error)
     else:
         raise AssertionError("missing dispatch silently accepted")
-print("GLM real-state repetition, tail, median and dispatch gates passed")
+candidate = precedent.point("prefill", batch=1, context=4096, new=3)
+scheduler = precedent.scheduler(candidate)
+scheduler._bench_hash_block_size = 4352
+scheduler._bench_capacity_limit = {
+    "max_num_running_reqs": 4,
+    "max_num_scheduled_tokens": 8192,
+    "max_model_len": 131072,
+}.__getitem__
+scheduler._bench_grid_usable_blocks = lambda batch: 4067
+
+
+class NativeManager:
+    def __init__(self, recurrent):
+        self.recurrent = recurrent
+
+    def get_num_blocks_to_allocate(self, **kwargs):
+        assert kwargs["new_computed_blocks"] == []
+        assert not kwargs["apply_admission_cap"]
+        return 1 if self.recurrent else math.ceil(kwargs["num_tokens"] / 4352)
+
+
+scheduler.kv_cache_manager.coordinator = SimpleNamespace(
+    single_type_managers=[NativeManager(False), NativeManager(True)]
+)
+assert scheduler._bench_prefill_kv_read_lengths(8195, 2, rows=[[3, 4096], [3, 4099]]) == [4096, 4099]
+assert scheduler._bench_prefill_kv_read_lengths(4096, 1) == [4096]
+assert scheduler._bench_prefill_point_feasible(3, 1, 4096)
+assert scheduler._bench_prefill_point_feasible(3, 1, 4099)
+assert scheduler._bench_prefill_point_feasible(8192, 1, 122880)
+assert not scheduler._bench_prefill_point_feasible(8192, 1, 122881)
+assert not scheduler._bench_prefill_point_feasible(8193, 1, 0)
+scheduler._bench_grid_usable_blocks = lambda batch: 1
+assert not scheduler._bench_prefill_point_feasible(3, 1, 4096)
+
+for prefix, admitted in [(131071, True), (131072, False)]:
+    scheduler = precedent.scheduler(precedent.point("decode", batch=1, context=prefix))
+    try:
+        scheduler._real_validate_grid()
+    except ValueError:
+        assert not admitted
+    else:
+        assert admitted
+print("GLM real-state repetition, unaligned-tail capacity, inclusive-context, median and dispatch gates passed")
