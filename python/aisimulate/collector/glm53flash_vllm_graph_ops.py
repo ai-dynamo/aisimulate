@@ -28,6 +28,56 @@ SOURCE_PINS = {
 }
 
 
+def install_holdout_capture(output):
+    """Retain initialized native graph objects without node/profiler hooks.
+
+    The independent whole-forward observer uses this path. It observes the
+    original capture return, before native warmup/requests, and never recovers
+    a missing snapshot from a later validation forward.
+    """
+    import vllm
+    from vllm.distributed import get_tensor_model_parallel_rank
+    from vllm.model_executor.offloader.base import NoopOffloader, get_offloader
+    from vllm.v1.worker.gpu.cudagraph_utils import ModelCudaGraphManager
+
+    from collector.glm53flash_vllm_graph_policy import SOURCE_PINS as POLICY_SOURCES
+
+    package = Path(vllm.__file__).resolve().parent
+    for relative, wanted in (POLICY_SOURCES | SOURCE_PINS).items():
+        if hashlib.sha256((package / relative).read_bytes()).hexdigest() != wanted:
+            raise RuntimeError("native graph holdout differs from its initialized dispatch source")
+    if getattr(ModelCudaGraphManager, "_aisim_node_observer", False) or getattr(
+        ModelCudaGraphManager, "_aisim_holdout_capture", False
+    ):
+        raise RuntimeError("native graph holdout capture cannot share calibration hooks")
+    original = ModelCudaGraphManager.capture
+
+    @functools.wraps(original)
+    def capture(manager, model, *args, **kwargs):
+        if hasattr(manager, "_aisim_glm53_holdout_capture"):
+            raise RuntimeError("native graph holdout manager was captured more than once")
+        if type(get_offloader()) is not NoopOffloader:
+            raise RuntimeError("native graph holdout does not cover offloaded state or transfers")
+        result = original(manager, model, *args, **kwargs)
+        value = persist_snapshot(manager, model, get_tensor_model_parallel_rank(), output)
+        manager._aisim_glm53_holdout_capture = (model, value, dict(manager.graphs))
+        return result
+
+    ModelCudaGraphManager.capture = capture
+    ModelCudaGraphManager._aisim_holdout_capture = True
+
+
+def holdout_policy(manager, model):
+    """Require the exact graph objects observed when initialization completed."""
+    captured = getattr(manager, "_aisim_glm53_holdout_capture", None)
+    if captured is None or captured[0] is not model:
+        raise RuntimeError("native graph holdout lacks its pre-request initialization snapshot")
+    graphs = captured[2]
+    if graphs.keys() != manager.graphs.keys() or any(manager.graphs[key] is not graph for key, graph in graphs.items()):
+        raise RuntimeError("native graph holdout changed its initialized graph objects")
+    return captured[1]
+
+
 def bind_captured_graphs(manager, pending):
     """Bind only complete native captures to their actual graph objects."""
     existing = getattr(manager, "_aisim_glm53_node_captures", {})
@@ -68,7 +118,9 @@ def install(manifest, provenance, output):
     for relative, wanted in SOURCE_PINS.items():
         if hashlib.sha256((package / relative).read_bytes()).hexdigest() != wanted:
             raise RuntimeError("native vLLM graph manager differs from the reviewed capture source")
-    if getattr(ModelCudaGraphManager, "_aisim_node_observer", False):
+    if getattr(ModelCudaGraphManager, "_aisim_node_observer", False) or getattr(
+        ModelCudaGraphManager, "_aisim_holdout_capture", False
+    ):
         raise RuntimeError("native vLLM graph observer was already installed")
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)

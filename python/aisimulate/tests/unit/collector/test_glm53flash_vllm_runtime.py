@@ -284,3 +284,162 @@ def test_native_compile_lifecycle_returns_readiness_only_after_success(monkeypat
         assert worker.compile_or_warm_up_model() == "original-native-result"
         assert worker.model_runner._aisim_glm53_ops_serving_ready is True
     assert worker.model_runner._aisim_glm53_ops_warming_up is False
+
+
+def test_v2_graph_coordinates_bind_real_and_physical_geometry_separately():
+    from dataclasses import make_dataclass
+    from enum import Enum
+
+    from collector.glm53flash_vllm_runtime import native_v2_coordinates
+    from tests.unit.collector.test_glm53flash_vllm_graph_policy import snapshot
+
+    class Lengths(Tensor):
+        def __getitem__(self, key):
+            return Lengths(self.values[key])
+
+    modes = Enum("NativeModes", "NONE PIECEWISE FULL")
+    descriptor_type = make_dataclass("NativeDescriptor", [(key, object) for key in snapshot()["full_graphs"][0]])
+    values = dict(snapshot()["full_graphs"][-1], cg_mode=modes.FULL)
+    desc = descriptor_type(**values)
+    ids = ["a", "b", "c"]
+    actual = SimpleNamespace(req_states=SimpleNamespace(req_id_to_index=dict(zip(ids, [4, 7, 8], strict=True))))
+    batch = SimpleNamespace(
+        req_ids=ids,
+        num_scheduled_tokens=[1] * 3,
+        num_computed_tokens_np=[128] * 3,
+        seq_lens=Lengths([129, 129, 129, 0]),
+        is_prefilling_np=[False] * 3,
+        num_tokens=3,
+        num_tokens_after_padding=4,
+        num_reqs_after_padding=4,
+        num_draft_tokens=0,
+        idx_mapping_np=[4, 7, 8],
+    )
+    schedule = SimpleNamespace(num_scheduled_tokens=dict.fromkeys(ids, 1))
+    kwargs = {"graph_policy": snapshot(), "native_descriptor": desc}
+    result = native_v2_coordinates(actual, schedule, batch, **kwargs)
+    assert result["batch_size"] == result["total_new_tokens"] == 3
+    assert result["prefix_lengths"] == [128] * 3
+    assert result["native_dispatch"]["physical_tokens"] == result["native_dispatch"]["physical_requests"] == 4
+    with pytest.raises(RuntimeError, match="eager inputs"):
+        native_v2_coordinates(actual, schedule, batch)
+    batch.num_tokens_after_padding = 3
+    with pytest.raises(RuntimeError, match="physical padding"):
+        native_v2_coordinates(actual, schedule, batch, **kwargs)
+    batch.num_tokens_after_padding = 4
+    batch.is_prefilling_np = [True] * 3
+    with pytest.raises(RuntimeError, match="selected descriptor"):
+        native_v2_coordinates(actual, schedule, batch, **kwargs)
+    batch.is_prefilling_np = [False] * 3
+    batch.num_computed_tokens_np = [128, 127, 128]
+    with pytest.raises(RuntimeError, match="homogeneous"):
+        native_v2_coordinates(actual, schedule, batch, **kwargs)
+
+
+def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_later_logits(monkeypatch, tmp_path):
+    import importlib.metadata
+    import sys
+
+    from collector import glm53flash_vllm_graph_ops as graph
+    from collector import glm53flash_vllm_runtime as runtime
+
+    calls = []
+    descriptor = object()
+    batch = SimpleNamespace(input_ids="native_padded_ids")
+    model = SimpleNamespace(forward=lambda: calls.append("must_not_call_python_model"))
+
+    class Manager:
+        def run_fullgraph(self, desc):
+            assert desc is descriptor
+            calls.append("native_replay")
+            return "original-result"
+
+    class NativeRunner:
+        def prepare_inputs(self, schedule, state, desc):
+            calls.append("native_inputs")
+            return batch
+
+        def execute_model(self, schedule):
+            self.prepare_inputs(schedule, "native_state", descriptor)
+            calls.append("native_attention_metadata")
+            self.cudagraph_manager.run_fullgraph(descriptor)
+
+        def sample(self):
+            calls.extend(["native_logits", "end_gpu_window", "native_sample"])
+            return SimpleNamespace(sampled_token_ids=Tensor([[7]])), None, None
+
+        def sample_tokens(self):
+            return self.sample()
+
+    class Trace:
+        rank = 0
+
+        def __init__(self, runner, output, provenance, manifest):
+            assert manifest is None
+            calls.append("no_eager_hooks")
+
+        def before(self, schedule, ids, context, **kwargs):
+            assert ids == "native_padded_ids" and context is None
+            assert kwargs["native_batch"] is batch and kwargs["native_descriptor"] is descriptor
+            calls.append("start_gpu_window")
+            return {"runtime_mode": "FULL", "requests": [{}]}, {}
+
+        def after(self, record, completed):
+            assert record["native_graph_replay_completed"] is True
+            assert record["requests"][0]["sampled_token_id"] == 7
+            calls.append("completed_receipt")
+
+    monkeypatch.setenv("AISIM_GLM53_TRACE_DIR", str(tmp_path))
+    path = tmp_path / "provenance.json"
+    path.write_text('{"backend_version":"0.30.0"}')
+    monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(path))
+    monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_graph_holdout")
+    monkeypatch.delenv("AISIM_GLM53_OPS_MANIFEST", raising=False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.30.0")
+    monkeypatch.setitem(sys.modules, "vllm.forward_context", SimpleNamespace(get_forward_context=lambda: None))
+    monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu.model_runner", SimpleNamespace(GPUModelRunner=NativeRunner))
+    monkeypatch.setitem(
+        sys.modules, "vllm.v1.worker.gpu.cudagraph_utils", SimpleNamespace(ModelCudaGraphManager=Manager)
+    )
+    monkeypatch.setattr(graph, "install_holdout_capture", lambda output: calls.append("pre_request_capture_hook"))
+    monkeypatch.setattr(graph, "holdout_policy", lambda manager, model: {"backend_version": "0.30.0", "tp_rank": 0})
+    monkeypatch.setattr(runtime, "_TraceState", Trace)
+    runtime.install_v2()
+    runner = NativeRunner()
+    runner.model, runner.cudagraph_manager = model, Manager()
+    runner._aisim_glm53_ops_serving_ready = True
+    schedule = SimpleNamespace(total_num_scheduled_tokens=1)
+    runner.execute_model(schedule)
+    assert "completed_receipt" not in calls and "native_logits" not in calls
+    runner.sample_tokens()
+    assert calls == [
+        "pre_request_capture_hook",
+        "native_inputs",
+        "no_eager_hooks",
+        "start_gpu_window",
+        "native_attention_metadata",
+        "native_replay",
+        "native_logits",
+        "end_gpu_window",
+        "native_sample",
+        "completed_receipt",
+    ]
+    with pytest.raises(RuntimeError, match="lacks its same-runner"):
+        foreign = Manager()
+        original_prepare = runner.prepare_inputs
+        runner.prepare_inputs = lambda *args: (original_prepare(*args), foreign.run_fullgraph(descriptor))[0]
+        runner.execute_model(schedule)
+
+
+def test_graph_holdout_cannot_adopt_late_or_replaced_capture():
+    from collector.glm53flash_vllm_graph_ops import holdout_policy
+
+    model, original = object(), object()
+    manager = SimpleNamespace(graphs={"native_descriptor": original})
+    with pytest.raises(RuntimeError, match="pre-request"):
+        holdout_policy(manager, model)
+    manager._aisim_glm53_holdout_capture = (model, {"TEST_ONLY": True}, dict(manager.graphs))
+    assert holdout_policy(manager, model) == {"TEST_ONLY": True}
+    manager.graphs["native_descriptor"] = object()
+    with pytest.raises(RuntimeError, match="changed its initialized"):
+        holdout_policy(manager, model)

@@ -473,6 +473,21 @@ PIECEWISE for a prefill; physical padding never replaces the actual request
 geometry. Out-of-range tokens retain the native NONE identity. No holdout
 dispatch is used to populate this pre-request policy.
 
+The separate `ops_graph_holdout` V2 purpose observes unprofiled native FULL
+decode without installing Python operation hooks. After original
+`GPUModelRunner.prepare_inputs` returns, it verifies the actual descriptor,
+unpadded per-request tokens/KV history and physical padding against that
+initialized policy. Its GPU window starts after observer input readback,
+before native attention metadata/state preparation, and ends when original
+`compute_logits` returns. Sampling and completed-token readback remain outside
+the window. The same runner must complete exactly one replay of its original
+registered graph. Native dummy/compile warmups are excluded by the existing
+worker lifecycle. Seed forwards keep their actual NONE/PIECEWISE/FULL identity;
+measured targets require FULL Q1 decode. This producer boundary has CPU tests;
+actual native class/GPU qualification and the vLLM graph exporter/consumer
+integration remain pending. It does not supply measured PIECEWISE operations
+or replace the independent whole-forward error gate.
+
 
 ## Native graph measured consumer and dispatch policy
 

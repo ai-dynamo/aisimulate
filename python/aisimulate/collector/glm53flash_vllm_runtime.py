@@ -118,7 +118,7 @@ def native_coordinates(runner, scheduler_output) -> dict:
     }
 
 
-def native_v2_coordinates(runner, scheduler_output, batch) -> dict:
+def native_v2_coordinates(runner, scheduler_output, batch, *, graph_policy=None, native_descriptor=None) -> dict:
     """Read the actual V2 InputBatch; never reconstruct native hybrid metadata."""
     ids = list(batch.req_ids)
     queries = list(map(int, batch.num_scheduled_tokens))
@@ -137,8 +137,10 @@ def native_v2_coordinates(runner, scheduler_output, batch) -> dict:
         raise RuntimeError("native V2 Ops requires homogeneous actual request coordinates")
     if (
         batch.num_tokens != sum(queries)
-        or batch.num_tokens_after_padding != batch.num_tokens
         or batch.num_draft_tokens
+        or len(queries) != len(ids)
+        or len(prefixes) != len(ids)
+        or len(batch.is_prefilling_np) != len(ids)
         or gpu_lengths != [p + q for p, q in zip(prefixes, queries, strict=True)]
         or queries != [scheduler_output.num_scheduled_tokens[rid] for rid in ids]
         or list(map(int, batch.idx_mapping_np)) != [runner.req_states.req_id_to_index[rid] for rid in ids]
@@ -147,7 +149,7 @@ def native_v2_coordinates(runner, scheduler_output, batch) -> dict:
     phase = phases.pop()
     if phase == "generation" and queries[0] != 1:
         raise RuntimeError("native V2 Ops excludes speculative decode")
-    return {
+    result = {
         "phase": phase,
         "batch_size": len(ids),
         "request_ids": ids,
@@ -156,6 +158,28 @@ def native_v2_coordinates(runner, scheduler_output, batch) -> dict:
         "total_new_tokens": sum(queries),
         "total_past_kv_tokens": sum(prefixes),
     }
+    if graph_policy is None and native_descriptor is None:
+        if batch.num_tokens_after_padding != batch.num_tokens:
+            raise RuntimeError("native V2 eager inputs unexpectedly include graph padding")
+        return result
+    if graph_policy is None or native_descriptor is None:
+        raise RuntimeError("native V2 graph padding needs both initialized policy and actual descriptor")
+    from collector.glm53flash_vllm_graph_policy import descriptor, select_descriptor
+
+    actual = descriptor(native_descriptor)
+    expected = select_descriptor(graph_policy, batch=len(ids), query=queries[0], is_context=phase == "context")
+    if actual != expected:
+        raise RuntimeError("native V2 selected descriptor differs from its initialized source-bound policy")
+    physical_requests = actual["num_reqs"] or len(ids)
+    if batch.num_tokens_after_padding != actual["num_tokens"] or batch.num_reqs_after_padding != physical_requests:
+        raise RuntimeError("native V2 physical padding differs from the actual selected descriptor")
+    result["native_dispatch"] = {
+        "descriptor": actual,
+        "policy_sha256": _digest(graph_policy),
+        "physical_tokens": int(batch.num_tokens_after_padding),
+        "physical_requests": int(batch.num_reqs_after_padding),
+    }
+    return result
 
 
 class _TraceState:
@@ -208,7 +232,16 @@ class _TraceState:
         with path.open("a") as stream:
             stream.write(json.dumps(value, sort_keys=True) + "\n")
 
-    def before(self, scheduler_output, input_ids, forward_context, *, native_batch=None):
+    def before(
+        self,
+        scheduler_output,
+        input_ids,
+        forward_context,
+        *,
+        native_batch=None,
+        graph_policy=None,
+        native_descriptor=None,
+    ):
         from collector.glm53flash_contract import validate_native_workload
         from collector.glm53flash_observer import NativeWorkload
 
@@ -216,20 +249,31 @@ class _TraceState:
         coords = (
             native_coordinates(self.runner, scheduler_output)
             if native_batch is None
-            else native_v2_coordinates(self.runner, scheduler_output, native_batch)
+            else native_v2_coordinates(
+                self.runner,
+                scheduler_output,
+                native_batch,
+                graph_policy=graph_policy,
+                native_descriptor=native_descriptor,
+            )
         )
         for prefix, query in zip(coords["prefix_lengths"], coords["query_lengths"], strict=True):
             validate_native_workload("vllm", coords["phase"], prefix, query, self.provenance["backend_version"])
             if prefix + query > context_receipt["context_policy"]["measured_context_limit"]:
                 raise RuntimeError("actual native forward exceeds frozen measured context")
-        runtime_mode = forward_context.cudagraph_runtime_mode.name
-        if runtime_mode != "NONE":
+        graph = graph_policy is not None
+        runtime_mode = (
+            coords["native_dispatch"]["descriptor"]["cg_mode"] if graph else forward_context.cudagraph_runtime_mode.name
+        )
+        if not graph and runtime_mode != "NONE":
             raise RuntimeError("vLLM eager Ops policy encountered native CUDA graph dispatch")
         if input_ids is None:
             raise RuntimeError("initial GLM Ops requires native text token IDs")
         tokens = list(map(int, input_ids.detach().cpu().reshape(-1).tolist()))
-        if len(tokens) != coords["total_new_tokens"]:
+        physical_tokens = coords["native_dispatch"]["physical_tokens"] if graph else coords["total_new_tokens"]
+        if len(tokens) != physical_tokens:
             raise RuntimeError("eager native input tensor differs from unpadded scheduled tokens")
+        tokens = tokens[: coords["total_new_tokens"]]
         self.counter += 1
         invocation = self.counter
         records, completed, history = [], {}, []
@@ -286,6 +330,8 @@ class _TraceState:
             raise RuntimeError("native serving request is absent from the frozen request manifest")
         record.update(match_frozen_requests(record, mapping))
         if record["stage"] == "measure":
+            if graph and (runtime_mode != "FULL" or coords["phase"] != "generation" or self.observer is not None):
+                raise RuntimeError("native V2 graph holdout requires actual FULL decode without eager operation hooks")
             if not self.layout["admitted"]:
                 raise RuntimeError("actual vLLM hybrid cache layout is outside admitted GLM identity")
             identity = (record["benchmark_id"], record["repetition"])
@@ -314,6 +360,7 @@ class _TraceState:
             end = self.torch.cuda.Event(enable_timing=True)
             self.whole_events = start, end, stream
             self.whole_end_recorded = False
+            self.whole_boundary = "native_metadata_to_logits_gpu_v1" if graph else "embedding_to_logits_gpu_v1"
             start.record(stream)
         return record, completed
 
@@ -346,7 +393,7 @@ class _TraceState:
             record["whole_forward_gpu_ms"] = start.elapsed_time(end)
             if record["whole_forward_gpu_ms"] <= 0:
                 raise RuntimeError("whole-GPU forward must have positive elapsed time")
-            record["whole_forward_boundary"] = "embedding_to_logits_gpu_v1"
+            record["whole_forward_boundary"] = getattr(self, "whole_boundary", "embedding_to_logits_gpu_v1")
             self.whole_events = None
         for request in record["requests"]:
             rid = request["request_id"]
@@ -367,6 +414,10 @@ class _TraceState:
 
 def install():
     """Call in each worker before execution; model hooks install after native load."""
+    if os.environ.get("AISIM_GLM53_PURPOSE") == "ops_graph_holdout":
+        # V2 owns explicit native FULL replay; importing the legacy runner must
+        # not install an eager observer on a graph-serving control.
+        return
     from importlib.metadata import version
 
     from collector.glm53flash_runtime_identity import validate_backend_version
@@ -480,8 +531,16 @@ def install_v2():
         raise RuntimeError("actual native worker package differs from frozen Ops provenance")
     manifest_path = os.environ.get("AISIM_GLM53_OPS_MANIFEST")
     purpose = os.environ.get("AISIM_GLM53_PURPOSE")
-    if purpose not in ("ops", "ops_holdout") or bool(manifest_path) != (purpose == "ops"):
+    if purpose not in ("ops", "ops_holdout", "ops_graph_holdout") or bool(manifest_path) != (purpose == "ops"):
         raise RuntimeError("native V2 instrumentation must match explicit Ops/holdout purpose")
+    graph_holdout = purpose == "ops_graph_holdout"
+    if graph_holdout:
+        from vllm.v1.worker.gpu.cudagraph_utils import ModelCudaGraphManager
+
+        from collector.glm53flash_vllm_graph_ops import holdout_policy, install_holdout_capture
+
+        install_holdout_capture(output)
+        original_replay = ModelCudaGraphManager.run_fullgraph
     manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
     original_execute = GPUModelRunner.execute_model
     original_prepare = GPUModelRunner.prepare_inputs
@@ -520,10 +579,27 @@ def install_v2():
                 binding["pending"] = record, completed
                 return result
 
-            runner.model.forward = forward
+            if not graph_holdout:
+                runner.model.forward = forward
         if binding["pending"] is not None:
             raise RuntimeError("native V2 previous forward did not complete its sampling step")
         binding["batch"] = batch
+        if graph_holdout:
+            descriptor = kwargs.get("batch_desc", args[1] if len(args) > 1 else None)
+            policy = holdout_policy(runner.cudagraph_manager, runner.model)
+            if policy["backend_version"] != provenance["backend_version"] or policy["tp_rank"] != binding["state"].rank:
+                raise RuntimeError("native graph policy differs from actual worker version/rank")
+            record, completed = binding["state"].before(
+                scheduler_output,
+                batch.input_ids,
+                None,
+                native_batch=batch,
+                graph_policy=policy,
+                native_descriptor=descriptor,
+            )
+            record.update(native_runner="v2", native_graph_replay_completed=False)
+            binding["pending"] = record, completed
+            binding["descriptor"] = descriptor
         return batch
 
     @functools.wraps(original_execute)
@@ -537,15 +613,40 @@ def install_v2():
         if getattr(current, "scheduler_output", None) is not None:
             raise RuntimeError("nested native V2 execution cannot share an Ops receipt")
         current.scheduler_output = scheduler_output
+        current.runner = runner
         try:
             result = original_execute(runner, scheduler_output, *args, **kwargs)
             if scheduler_output.total_num_scheduled_tokens:
                 binding = bindings.get(id(runner))
                 if binding is None or binding["pending"] is None:
-                    raise RuntimeError("native V2 scheduled tokens bypassed the observed eager model call")
+                    raise RuntimeError("native V2 scheduled tokens bypassed the observed serving boundary")
+                record = binding["pending"][0]
+                if graph_holdout and record["runtime_mode"] == "FULL" and not record["native_graph_replay_completed"]:
+                    raise RuntimeError("native V2 FULL forward omitted its actual registered graph replay")
             return result
         finally:
             current.scheduler_output = None
+            current.runner = None
+
+    if graph_holdout:
+
+        @functools.wraps(original_replay)
+        def replay(manager, descriptor, *args, **kwargs):
+            runner = getattr(current, "runner", None)
+            if runner is None or getattr(runner, "_aisim_glm53_ops_warming_up", False):
+                return original_replay(manager, descriptor, *args, **kwargs)
+            binding = bindings.get(id(runner))
+            if manager is not runner.cudagraph_manager or binding is None or binding["pending"] is None:
+                raise RuntimeError("native FULL replay lacks its same-runner prepared request")
+            record = binding["pending"][0]
+            if descriptor != binding["descriptor"] or record["native_graph_replay_completed"]:
+                raise RuntimeError("native FULL replay changed descriptor or executed twice")
+            holdout_policy(manager, runner.model)
+            result = original_replay(manager, descriptor, *args, **kwargs)
+            record["native_graph_replay_completed"] = True
+            return result
+
+        ModelCudaGraphManager.run_fullgraph = replay
 
     @functools.wraps(original_sample)
     def sample(runner, *args, **kwargs):

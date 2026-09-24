@@ -100,6 +100,7 @@ if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
             ) and os.environ.get("AISIM_GLM53_PURPOSE") in (
                 "ops",
                 "ops_holdout",
+                "ops_graph_holdout",
             )
             if fullname != _TARGET and not worker:
                 return None

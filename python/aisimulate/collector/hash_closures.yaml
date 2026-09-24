@@ -322,6 +322,12 @@ collector.sglang.collect_glm53flash: &glm53flash_native_closure
   - collector/glm53flash_protocol.py
   - collector/glm53flash_sglang_runtime.py
   - collector/glm53flash_vllm_runtime.py
+  - collector/glm53flash_vllm_graph_ops.py
+  - collector/glm53flash_vllm_graph_policy.py
+  - collector/glm53flash_graph_nodes.py
+  - collector/glm53flash_graph_libraries.py
+  - collector/glm53flash_graph_hooks.py
+  - collector/glm53flash_graph_callbacks.py
   - collector/fpm_forward/sglang_driver.py
   - collector/fpm_forward/sglang_artifact.py
   - collector/fpm_forward/native_artifact.py
