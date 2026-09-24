@@ -672,6 +672,7 @@ DefaultHFModels = {
     "moonshotai/Kimi-K2.5",
     # Kimi K3
     "moonshotai/Kimi-K3",
+    "nvidia/Kimi-K3-NVFP4",
     "nvidia/Kimi-K2.5-NVFP4",
     "nvidia/Kimi-K2.6-NVFP4",
     "nvidia/Kimi-K2.7-Code-NVFP4",
