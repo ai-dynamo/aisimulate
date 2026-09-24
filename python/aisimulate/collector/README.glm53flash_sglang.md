@@ -88,3 +88,19 @@ Additional integration sources at SGLang revision `94602c9c2b7cbdb8efd5c52802dac
 `python/sglang/srt/model_executor/runner/{eager_runner,decode_cuda_graph_runner}.py`,
 and `python/sglang/srt/utils/device_timer.py`. Their implementations are called
 without modification; the wrappers and trace schema are original adapter code.
+
+
+### Event-loop entry state
+
+The pinned native `Scheduler.__init__` calls `init_overlap` before serving;
+that method owns FutureMap, forward/copy streams and the two-slot batch lifetime
+ring. `run_event_loop` owns the schedule-stream context and WAR-barrier policy.
+The retained loop leaves both native initialization stages intact. The native
+`event_loop_overlap` initializes its `result_queue` only at loop entry
+(`scheduler.py:1944–1948`); the replacement also initializes this empty queue
+before request ingestion and idle checks, and refuses to discard a pending
+result. Each completed result is drained synchronously, so this queue remains
+empty. Idle gaps and paused-engine accounting call the native paths. These are
+scheduler bookkeeping changes; they do not seed or repair GPU hybrid state.
+The first retained GPU attempt exposed this missing queue before any request or
+timing; its failure remains a failed qualification, not a data observation.

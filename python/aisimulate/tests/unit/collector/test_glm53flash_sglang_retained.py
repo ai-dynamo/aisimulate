@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL, RetainedRequestLoop, validate_retained_states
 
 pytestmark = pytest.mark.unit
@@ -247,3 +248,59 @@ def test_response_publication_waits_for_each_native_rank_release(tmp_path):
     (tmp_path / "retained-failed-rank-1.json").write_text('{"error":"native allocation failed"}')
     with pytest.raises(RuntimeError, match="allocation failed"):
         wait_retained_release(tmp_path, ["request"], 2, 0)
+
+
+@pytest.mark.parametrize("overlap", [False, True])
+def test_loop_initializes_native_idle_state_before_ingesting_requests(tmp_path, overlap):
+    scheduler = Scheduler({})
+    scheduler.enable_overlap = overlap
+    scheduler.gracefully_exit = False
+    scheduler._engine_paused = False
+    scheduler.waiting_queue = []
+    scheduler._sched_idled = False
+    seen = []
+
+    def ingest():
+        if overlap:
+            assert not scheduler.result_queue
+        seen.append("ingest")
+
+    def idle():
+        assert scheduler._sched_idled
+        if overlap:
+            assert not scheduler.result_queue
+        seen.append("idle")
+        scheduler.gracefully_exit = True
+
+    scheduler.ingest_requests = ingest
+    scheduler.on_idle = idle
+    RetainedRequestLoop(scheduler, {"requests": {}}, tmp_path, batch_type=NativeBatch).run()
+    assert seen == ["ingest", "idle"]
+
+
+def test_loop_refuses_to_discard_pending_native_overlap_result(tmp_path):
+    scheduler = Scheduler({})
+    scheduler.enable_overlap = True
+    pending = object()
+    scheduler.result_queue = [pending]
+    with pytest.raises(RuntimeError, match="pending native overlap"):
+        RetainedRequestLoop(scheduler, {"requests": {}}, tmp_path, batch_type=NativeBatch)
+    assert scheduler.result_queue == [pending]
+
+
+def test_paused_loop_uses_native_scheduler_state_accounting(tmp_path):
+    scheduler = Scheduler({})
+    scheduler.enable_overlap = True
+    scheduler.gracefully_exit = False
+    scheduler._engine_paused = True
+    scheduler.ingest_requests = lambda: None
+    seen = []
+
+    def paused():
+        assert not scheduler.result_queue
+        seen.append("paused")
+        scheduler.gracefully_exit = True
+
+    scheduler._record_scheduler_state_for_paused_engine = paused
+    RetainedRequestLoop(scheduler, {"requests": {}}, tmp_path, batch_type=NativeBatch).run()
+    assert seen == ["paused"]
