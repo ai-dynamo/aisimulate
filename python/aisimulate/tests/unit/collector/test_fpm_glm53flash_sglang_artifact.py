@@ -246,3 +246,21 @@ def test_native_sglang_offload_disabled_sentinel_and_active_group():
     args.cpu_offload_gb = 1
     with pytest.raises(ValueError, match="rejects cpu_offload_gb"):
         validate_server_args(args)
+
+
+def test_ops_graph_policy_checks_native_declaration_then_resolution():
+    from collector.fpm_forward.sglang_driver import validate_eager_args
+
+    args = SimpleNamespace(
+        cuda_graph_config=None, cuda_graph_backend_decode="disabled", cuda_graph_backend_prefill="disabled"
+    )
+    validate_eager_args(args, resolved=False)
+    with pytest.raises(ValueError, match="resolved"):
+        validate_eager_args(args, resolved=True)
+    args.cuda_graph_config = SimpleNamespace(
+        decode=SimpleNamespace(backend="disabled"), prefill=SimpleNamespace(backend="disabled")
+    )
+    validate_eager_args(args, resolved=True)
+    args.cuda_graph_config.prefill.backend = "piecewise"
+    with pytest.raises(ValueError, match="resolved"):
+        validate_eager_args(args, resolved=True)

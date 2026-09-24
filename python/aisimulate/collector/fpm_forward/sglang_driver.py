@@ -103,6 +103,26 @@ def freeze_requests(points: list[dict], *, request_set: str, dataset_role: str, 
     }
 
 
+def validate_eager_args(server, *, resolved: bool) -> None:
+    """Respect native ServerArgs' separate declaration/resolution lifecycle."""
+    config = server.cuda_graph_config
+    if resolved:
+        if (
+            config is None
+            or isinstance(config, dict)
+            or any(getattr(config, phase).backend != "disabled" for phase in ("decode", "prefill"))
+        ):
+            raise ValueError("resolved SGLang Ops execution must disable both native graph phases")
+    elif config is None:
+        if server.cuda_graph_backend_decode != "disabled" or server.cuda_graph_backend_prefill != "disabled":
+            raise ValueError("declared SGLang Ops execution must disable both native graph phases")
+    elif isinstance(config, dict):
+        if any(config.get(phase, {}).get("backend") != "disabled" for phase in ("decode", "prefill")):
+            raise ValueError("declared SGLang Ops graph config must disable both phases")
+    else:
+        validate_eager_args(server, resolved=True)
+
+
 def validate_server_args(args) -> None:
     for name in ("pp_size", "dp_size", "ep_size", "attn_cp_size", "nnodes"):
         if getattr(args, name, 1) != 1:
@@ -265,12 +285,9 @@ def main(argv=None) -> None:
     server = ServerArgs.from_cli_args(args)
     validate_server_args(server)
     if args.observation_purpose in ("ops", "ops_holdout"):
-        if (
-            bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")) != (args.observation_purpose == "ops")
-            or server.cuda_graph_config.decode.backend != "disabled"
-            or server.cuda_graph_config.prefill.backend != "disabled"
-        ):
+        if bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")) != (args.observation_purpose == "ops"):
             raise ValueError("SGLang Ops requires an explicit manifest and native eager execution")
+        validate_eager_args(server, resolved=False)
     elif os.environ.get("AISIM_GLM53_OPS_MANIFEST"):
         raise ValueError("SGLang FPM cannot run with Ops instrumentation")
     output = args.benchmark_output
@@ -332,7 +349,7 @@ def main(argv=None) -> None:
         }
     provenance_path = output.parent / "sglang-provenance.json"
     write_json(provenance_path, provenance)
-    write_json(output.parent / "sglang-resolved-config.json", server.resolved_dict())
+    write_json(output.parent / "sglang-declared-config.json", server.resolved_dict())
     os.environ.update(
         AISIM_GLM53_PURPOSE=args.observation_purpose,
         AISIM_GLM53_TRACE_DIR=str(output.parent),
@@ -344,6 +361,9 @@ def main(argv=None) -> None:
     engine = None
     try:
         engine = Engine(server_args=server)
+        if args.observation_purpose in ("ops", "ops_holdout"):
+            validate_eager_args(engine.server_args, resolved=True)
+        write_json(output.parent / "sglang-resolved-config.json", engine.server_args.resolved_dict())
         for point in points:
             for repetition in range(WARMUPS + MEASUREMENTS):
                 selected = [
