@@ -22,6 +22,8 @@ VLLM_KPOOL_CANDIDATE = "0.30.0+glm53kpool.bf5f6b0e689d"
 ADMITTED_VLLM_REPAIRS: dict[str, str] = {}
 _BUILD_SHA256 = "3b72d70800e2ea244944580c1ce6a4faaa3dedf68af41b323aa690999abd9444"
 _WHEEL_SHA256 = "a3b63cb3c95cf976f717077102e8172a33501c7d05092bc84cc58e3aaef47d36"
+_ENGINE_IDENTITY_SHA256 = "d412233edffae84ae4b36a2e44d08bc4d3652a7e7f2bc62e8fc1193967a1cb22"
+_V2_SOURCE_SHA256 = "48a6f6689d176be79d0ac38db0e68078050e63f73669c649b332d32dff076f1e"
 
 
 def _canonical_sha256(value: dict) -> str:
@@ -55,6 +57,18 @@ def vllm_source_pins(version: str, manifest: Path) -> dict[str, str]:
         if pins.get(patch["source_path"]) != patch["base_sha256"]:
             raise ValueError("GLM repair source base differs from its reviewed build")
         pins[patch["source_path"]] = patch["patched_sha256"]
+        root = Path(__file__).parent / "fpm_forward/runtime/glm53flash_vllm_kpool_candidate"
+        native_identity = (root / "qualification/expected-runtime.json").read_bytes()
+        v2_source = (root / "v2-source-sha256.json").read_bytes()
+        if (
+            hashlib.sha256(native_identity).hexdigest() != _ENGINE_IDENTITY_SHA256
+            or hashlib.sha256(v2_source).hexdigest() != _V2_SOURCE_SHA256
+        ):
+            raise ValueError("GLM repaired Engine/V2 source manifest differs")
+        for name, sha in {**json.loads(native_identity)["source_pins"], **json.loads(v2_source)}.items():
+            if name in pins and pins[name] != sha:
+                raise ValueError("GLM repair source closure has conflicting identities")
+            pins[name] = sha
     return pins
 
 

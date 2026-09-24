@@ -64,6 +64,8 @@ def test_reviewed_repair_contract_binds_distinct_sources_and_all_native_binaries
         "vllm/model_executor/layers/sparse_attn_indexer_kpool.py"
     ]
     assert contract["files"]["vllm/vllm-rs"] == "e918038efcc755733f3ffacbe35cd3c133c9d0b146f9ec05a88bcdc2519ff1a3"
+    for path in ["model_runner.py", "cudagraph_utils.py", "model_states/mamba_hybrid.py", "warmup.py"]:
+        assert "vllm/v1/worker/gpu/" + path in contract["files"]
     assert len(contract["files"]) == len([name for name in repaired if name.startswith("vllm/")]) + 19
     assert contract["runtime_source_manifest_sha256"] != identity.vllm_source_manifest_sha256(
         "0.30.0", source_manifest()

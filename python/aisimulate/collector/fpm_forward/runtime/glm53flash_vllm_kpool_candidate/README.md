@@ -128,3 +128,16 @@ only after the original assignment returns. The declared
 every completed worker chain; missing or altered assignments fail validation.
 Historical runs without that declaration continue using the explicitly named
 `pinned_source_offline_bijection` correction above.
+
+The dormant repaired-runtime consumer contract preserves stock manifest bytes
+and extends its own closure with the native Engine qualification sources plus
+`v2-source-sha256.json`. These additional hashes identify upstream
+vllm-project/vllm@ced6857afa0ea7b2e3f0846a62e1394e90f15607 under
+`vllm/v1/worker/gpu/{cudagraph_utils,attn_utils,warmup}.py` and
+`vllm/v1/worker/gpu/model_states/mamba_hybrid.py` (Apache-2.0). They cover the
+actual V2 graph, attention-cache initialization, warmup and hybrid state path;
+the legacy runner file alone is insufficient. No upstream implementation is
+copied by this manifest. Each repaired worker must hash the effective vLLM
+source files and all 19 native binaries before timing. Python and Rust repair
+allowlists remain empty until an immutable native Engine qualification receipt
+has been reviewed and explicitly admitted.
