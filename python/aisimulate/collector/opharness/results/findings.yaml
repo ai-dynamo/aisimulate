@@ -1132,9 +1132,14 @@ findings:
       a KDA layer present. So: a real dummy defect existed and is fixed, and
       independently vLLM 0.29's K3 (KDA) decode warm-up faults at batch 512
       on SM90 (256 passes) — the generator's 512 is what real deployments
-      get. Upstream draft 7 updated. The corrected all_kinds dummy is
-      re-probed at the end of the batch (result in the matrix); kda_ctx
-      keeps the eager A/B evidence if it fails again.
+      get. Upstream draft 7 updated. The corrected all_kinds dummy (one KDA
+      + one full-attention layer) re-probed: the same warm-up crash —
+      attribution stands; kda_ctx keeps the eager A/B evidence (verdict
+      helper passes it explicitly). Side fact: the K3 fp8-KV variant is
+      rejected by vLLM at load — "Kimi-K3 fp8 KV cache requires an fp8
+      prefill query; enable --attention-config use_prefill_q..." — an
+      extra flag the generator would have to render if fp8 KV were ever
+      chosen for K3 (it is not today).
       (4) Dummy dirs: no step provisioned the tokenizer / custom-code files
       (Kimi needs tiktoken.model + tokenization_kimi.py + modeling_*.py).
       dummies.py now copies every auxiliary artifact file from

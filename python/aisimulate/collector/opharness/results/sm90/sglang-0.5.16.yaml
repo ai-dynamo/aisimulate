@@ -392,9 +392,8 @@ results:
     topology: tp1
   nvidia/Kimi-K3-NVFP4:
     verdict: fail
-    cause: arch not registered
-    error: 'ValueError: Cannot find model module. ''KimiK3ForConditionalGeneration'' is not a registered model in the Transformers library and loading the custom model from auto_map failed. The remote model
-      code ma'
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/Kimi-K3-NVFP4'' is not a valid HuggingFace model path or local path '
   nvidia/Llama-3.1-70B-Instruct-FP8:
     verdict: pass
     attention: FlashAttentionBackend
