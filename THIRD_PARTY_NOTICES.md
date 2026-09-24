@@ -1133,6 +1133,7 @@ the repository Apache-2.0 license text applies to these adaptations.
 ## GLM-5.3-Flash vLLM native worker telemetry
 
 - Derived files: `python/aisimulate/collector/glm53flash_vllm_runtime.py`,
+  `python/aisimulate/collector/glm53flash_vllm_none.py` and its CPU tests,
   `python/aisimulate/tests/unit/collector/test_glm53flash_vllm_runtime.py`,
   `python/aisimulate/collector/glm53flash_graph_observer.py`,
   `python/aisimulate/tests/unit/collector/test_glm53flash_graph_observer.py`,
@@ -1143,9 +1144,12 @@ the repository Apache-2.0 license text applies to these adaptations.
   `vllm/v1/worker/gpu/warmup.py` (initialization lifecycle),
   `vllm/v1/worker/gpu/{model_runner,input_batch,states,cudagraph_utils}.py`, `vllm/forward_context.py`,
   `vllm/compilation/breakable_cudagraph.py` (original PIECEWISE entry replay),
+  `vllm/model_executor/models/glm4_1v.py` (inherited text forward/logits calls),
   `vllm/models/glm5next/nvidia/{model,attention,kda}.py`,
   and `vllm/model_executor/layers/{mla,logits_processor}.py`.
-- Copyright: vLLM contributors. License: Apache-2.0 (full text above).
+- Copyright: vLLM contributors; the GLM4V source also credits Copyright 2025
+  The vLLM team, The ZhipuAI Team, and The HuggingFace Inc. team.
+  License: Apache-2.0 (full text above).
 - Modified/adapted: independently authored wrappers preserve original native
   calls and inspect real worker requests, allocated cache metadata and dispatch.
   No upstream compute, request construction or scheduling code is copied.

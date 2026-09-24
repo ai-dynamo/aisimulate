@@ -184,7 +184,17 @@ def native_v2_coordinates(runner, scheduler_output, batch, *, graph_policy=None,
 
 
 class _TraceState:
-    def __init__(self, runner, output, provenance, manifest, *, graph_calibration=False, piecewise_replay=False):
+    def __init__(
+        self,
+        runner,
+        output,
+        provenance,
+        manifest,
+        *,
+        graph_calibration=False,
+        piecewise_replay=False,
+        serving_none=False,
+    ):
         import torch
         from vllm.distributed import get_tensor_model_parallel_rank
 
@@ -196,6 +206,13 @@ class _TraceState:
         self.rank = get_tensor_model_parallel_rank()
         self.previous, self.matched = {}, set()
         self.counter = 0
+        self.serving_none = serving_none
+        self.none_witness, self.none_boundaries = None, None
+        if serving_none:
+            from collector.glm53flash_vllm_none import NativeNoneModelWitness
+
+            self.none_witness = NativeNoneModelWitness(runner.model)
+            self.none_identity_sha256 = _digest(self.none_witness.receipt)
         self.observer = NativeOperationObserver(manifest, provenance, self.rank) if manifest is not None else None
         self.whole_events = None
         self.graph_execution = None
@@ -209,6 +226,10 @@ class _TraceState:
                 runner, output, self.rank, include_piecewise=piecewise_replay
             )
         output.mkdir(parents=True, exist_ok=True)
+        if self.none_witness is not None:
+            (output / f"serving-none-model-rank-{self.rank}.json").write_text(
+                json.dumps(self.none_witness.receipt, indent=2)
+            )
         if self.observer is not None:
             inventory = install_native_hooks(runner.model, self.observer, "vllm")
             (output / f"inventory-rank-{self.rank}.json").write_text(json.dumps(inventory, indent=2))
@@ -216,6 +237,11 @@ class _TraceState:
 
         @functools.wraps(original_logits)
         def compute_logits(*args, **kwargs):
+            if self.none_boundaries is not None:
+                if len(self.none_boundaries) != 2:
+                    raise RuntimeError("serving NONE logits preceded or repeated its original model return")
+                self.none_witness.validate()
+                self.mark_none_boundary()
             result = original_logits(*args, **kwargs)
             if self.whole_events is not None:
                 start, end, stream = self.whole_events
@@ -228,6 +254,8 @@ class _TraceState:
             return result
 
         runner.model.compute_logits = compute_logits
+        if self.none_witness is not None:
+            self.none_witness.bind_observer_wrapper("compute_logits", compute_logits)
         self.layout = allocated_state_inventory(runner.model, runner.cache_config.cache_dtype)
         from collector.glm53flash_runtime_identity import observe_vllm_runtime_closure
 
@@ -244,6 +272,14 @@ class _TraceState:
         path = self.output / (f"rank-{self.rank}.jsonl" if name == "ops" else f"{name}-rank-{self.rank}.jsonl")
         with path.open("a") as stream:
             stream.write(json.dumps(value, sort_keys=True) + "\n")
+
+    def mark_none_boundary(self):
+        stream = self.torch.cuda.current_stream()
+        if self.whole_events is None or stream != self.whole_events[2]:
+            raise RuntimeError("serving NONE runtime boundary changed the actual whole-forward stream")
+        event = self.torch.cuda.Event(enable_timing=True)
+        event.record(stream)
+        self.none_boundaries.append(event)
 
     def before(
         self,
@@ -346,7 +382,14 @@ class _TraceState:
             allowed_graph_target = (runtime_mode == "FULL" and coords["phase"] == "generation") or (
                 runtime_mode == "PIECEWISE" and getattr(self, "piecewise_replay", False)
             )
-            if graph and (not allowed_graph_target or self.observer is not None):
+            serving_none = getattr(self, "serving_none", False)
+            if serving_none:
+                from collector.glm53flash_vllm_none import validate_none_target
+
+                validate_none_target(record)
+                record["measurement_admission"] = "DIAGNOSTIC_ONLY_NO_TABLE_EXPORT"
+                record["serving_none_model_sha256"] = self.none_identity_sha256
+            elif graph and (not allowed_graph_target or self.observer is not None):
                 raise RuntimeError("native V2 graph target requires actual FULL decode or explicit PIECEWISE replay")
             if not self.layout["admitted"]:
                 raise RuntimeError("actual vLLM hybrid cache layout is outside admitted GLM identity")
@@ -381,13 +424,24 @@ class _TraceState:
             self.whole_end_recorded = False
             self.whole_boundary = "native_metadata_to_logits_gpu_v1" if graph else "embedding_to_logits_gpu_v1"
             start.record(stream)
+            if serving_none:
+                self.none_boundaries = []
             if graph_execution is not None:
                 graph_execution.start_range()
         return record, completed
 
     def after(self, record, completed):
         if record["stage"] == "measure" and self.observer is not None:
-            for row in self.observer.end():
+            if getattr(self, "serving_none", False):
+                from collections import Counter
+
+                record["native_operation_calls"] = dict(Counter(event["name"] for event in self.observer.events))
+            rows = self.observer.end()
+            if getattr(self, "serving_none", False):
+                from collector.glm53flash_vllm_none import diagnostic_operation_rows
+
+                rows = diagnostic_operation_rows(record, rows)
+            for row in rows:
                 row.update(
                     {
                         key: record[key]
@@ -402,7 +456,7 @@ class _TraceState:
                         )
                     }
                 )
-                self.append("ops", row)
+                self.append("serving-none-ops" if getattr(self, "serving_none", False) else "ops", row)
         else:
             # Establish a completed real-prefix receipt; synchronization stays
             # outside every measured module interval and never populates state.
@@ -415,6 +469,17 @@ class _TraceState:
             if record["whole_forward_gpu_ms"] <= 0:
                 raise RuntimeError("whole-GPU forward must have positive elapsed time")
             record["whole_forward_boundary"] = getattr(self, "whole_boundary", "embedding_to_logits_gpu_v1")
+            if getattr(self, "serving_none", False):
+                if len(self.none_boundaries or ()) != 3 or not record.get("native_none_forward_completed"):
+                    raise RuntimeError("serving NONE lacks actual model/logits runtime boundaries")
+                model_start, model_end, logits_start = self.none_boundaries
+                record["native_runtime_boundary_gpu_ms"] = {
+                    "prepared_inputs_to_raw_model_entry": start.elapsed_time(model_start),
+                    "raw_model_return_to_logits_entry": model_end.elapsed_time(logits_start),
+                }
+                if any(value < 0 for value in record["native_runtime_boundary_gpu_ms"].values()):
+                    raise RuntimeError("serving NONE runtime boundary interval is negative")
+                self.none_boundaries = None
             self.whole_events = None
         for request in record["requests"]:
             rid = request["request_id"]
@@ -558,6 +623,20 @@ def _piecewise_replay_enabled(purpose):
     return value == "1"
 
 
+def _serving_none_enabled(purpose):
+    value = os.environ.get("AISIM_GLM53_SERVING_NONE_DIAGNOSTIC", "0")
+    if value not in ("0", "1") or (
+        value == "1"
+        and (
+            purpose not in ("ops_graph", "ops_graph_holdout")
+            or os.environ.get("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", "0") != "0"
+            or os.environ.get("AISIM_GLM53_PIECEWISE_REPLAY", "0") != "0"
+        )
+    ):
+        raise RuntimeError("serving NONE diagnostic requires its own explicit graph-purpose observation")
+    return value == "1"
+
+
 def install_v2():
     """Bind the pinned native V2 model forward and its later logits/sample step."""
     from importlib.metadata import version
@@ -584,6 +663,7 @@ def install_v2():
     graph_calibration = purpose == "ops_graph"
     include_piecewise = _piecewise_capture_enabled(purpose)
     piecewise_replay = _piecewise_replay_enabled(purpose)
+    serving_none = _serving_none_enabled(purpose)
     manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
     if graph_mode:
         from vllm.v1.worker.gpu.cudagraph_utils import ModelCudaGraphManager
@@ -597,11 +677,11 @@ def install_v2():
             install as install_graph_capture,
         )
 
-        if graph_calibration:
+        if graph_calibration and not serving_none:
             install_graph_capture(manifest, provenance, output, include_piecewise=include_piecewise or piecewise_replay)
         else:
             install_holdout_capture(output, **({"include_piecewise": True} if piecewise_replay else {}))
-        graph_policy_for = calibration_policy if graph_calibration else holdout_policy
+        graph_policy_for = calibration_policy if graph_calibration and not serving_none else holdout_policy
         original_replay = ModelCudaGraphManager.run_fullgraph
         if piecewise_replay:
             import inspect
@@ -657,9 +737,10 @@ def install_v2():
                 runner,
                 output,
                 provenance,
-                None if graph_mode else manifest,
-                graph_calibration=graph_calibration,
+                manifest if serving_none or not graph_mode else None,
+                graph_calibration=graph_calibration and not serving_none,
                 **({"piecewise_replay": True} if piecewise_replay else {}),
+                **({"serving_none": True} if serving_none else {}),
             )
             binding = bindings[id(runner)] = {"state": state, "pending": None, "sampled": None}
             original_forward = runner.model.forward
@@ -669,6 +750,22 @@ def install_v2():
                 schedule = getattr(current, "scheduler_output", None)
                 if schedule is None:
                     return original_forward(*forward_args, **forward_kwargs)
+                if serving_none:
+                    if binding["pending"] is None:
+                        raise RuntimeError("serving NONE model call lacks its actual prepared request")
+                    record = binding["pending"][0]
+                    if record["runtime_mode"] != "NONE" or record.get("native_none_forward_completed"):
+                        raise RuntimeError("serving NONE model call changed dispatch or executed twice")
+                    state.none_witness.validate()
+                    measured = record["stage"] == "measure"
+                    if measured:
+                        state.mark_none_boundary()
+                    result = original_forward(*forward_args, **forward_kwargs)
+                    if measured:
+                        state.mark_none_boundary()
+                    state.none_witness.validate()
+                    record["native_none_forward_completed"] = True
+                    return result
                 if binding["pending"] is not None:
                     raise RuntimeError("native V2 forward repeated before its logits/sample completion")
                 ids = forward_kwargs.get("input_ids", forward_args[0] if forward_args else None)
@@ -682,8 +779,10 @@ def install_v2():
                 binding["pending"] = record, completed
                 return result
 
-            if not graph_mode:
+            if not graph_mode or serving_none:
                 runner.model.forward = forward
+                if serving_none:
+                    state.none_witness.bind_observer_wrapper("forward", forward)
         if binding["pending"] is not None:
             raise RuntimeError("native V2 previous forward did not complete its sampling step")
         binding["batch"] = batch
@@ -703,6 +802,8 @@ def install_v2():
             record.update(native_runner="v2", native_graph_replay_completed=False)
             if piecewise_replay and record["runtime_mode"] == "PIECEWISE":
                 record["native_piecewise_replay_completed"] = False
+            if serving_none and record["runtime_mode"] == "NONE":
+                record["native_none_forward_completed"] = False
             binding["pending"] = record, completed
             binding["descriptor"] = descriptor
         return batch
@@ -726,6 +827,8 @@ def install_v2():
                 if binding is None or binding["pending"] is None:
                     raise RuntimeError("native V2 scheduled tokens bypassed the observed serving boundary")
                 record = binding["pending"][0]
+                if serving_none and record["runtime_mode"] == "NONE" and not record["native_none_forward_completed"]:
+                    raise RuntimeError("serving NONE execution bypassed its original raw model forward")
                 if graph_mode and record["runtime_mode"] == "FULL" and not record["native_graph_replay_completed"]:
                     raise RuntimeError("native V2 FULL forward omitted its actual registered graph replay")
                 if (
@@ -861,6 +964,7 @@ def install_v2():
                 "class": GPUModelRunner.__module__ + "." + GPUModelRunner.__name__,
                 "purpose": purpose,
                 "piecewise_replay_enabled": piecewise_replay,
+                "serving_none_diagnostic_enabled": serving_none,
                 "pid": os.getpid(),
                 "status": "wrappers_installed_no_gpu_execution_claim",
             }

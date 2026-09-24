@@ -504,18 +504,19 @@ def test_graph_holdout_cannot_adopt_late_or_replaced_capture():
 
 
 @pytest.mark.parametrize(
-    "mode,physical,stage,piecewise",
+    "mode,physical,stage,piecewise,serving_none",
     [
-        ("FULL", 4, "measure", False),
-        ("PIECEWISE", 4, "seed", False),
-        ("NONE", 3, "seed", False),
-        ("PIECEWISE", 4, "measure", True),
-        ("PIECEWISE", 4, "measure", False),
-        ("NONE", 3, "measure", True),
+        ("FULL", 4, "measure", False, False),
+        ("PIECEWISE", 4, "seed", False, False),
+        ("NONE", 3, "seed", False, False),
+        ("PIECEWISE", 4, "measure", True, False),
+        ("PIECEWISE", 4, "measure", False, False),
+        ("NONE", 3, "measure", True, False),
+        ("NONE", 3, "measure", False, True),
     ],
 )
 def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_tokens(
-    monkeypatch, tmp_path, mode, physical, stage, piecewise
+    monkeypatch, tmp_path, mode, physical, stage, piecewise, serving_none
 ):
     from collector import glm53flash_vllm_runtime as runtime
 
@@ -544,6 +545,7 @@ def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_toke
     state.layout, state.layout_sha256 = {"admitted": True}, "b" * 64
     state.observer = None
     state.piecewise_replay = piecewise
+    state.serving_none, state.none_identity_sha256 = serving_none, "d" * 64
     state.torch = SimpleNamespace(cuda=SimpleNamespace(current_stream=lambda: 1, Event=lambda **kwargs: Event()))
     coords = {
         "phase": "generation" if mode == "FULL" else "context",
@@ -553,7 +555,11 @@ def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_toke
         "prefix_lengths": [prefix] * 3,
         "total_new_tokens": 3,
         "total_past_kv_tokens": prefix * 3,
-        "native_dispatch": {"descriptor": {"cg_mode": mode}, "physical_tokens": physical},
+        "native_dispatch": {
+            "descriptor": {"cg_mode": mode, "num_tokens": physical, "num_reqs": 3},
+            "physical_tokens": physical,
+            "physical_requests": 3,
+        },
     }
     monkeypatch.setattr(runtime, "native_v2_coordinates", lambda *args, **kwargs: coords)
     path = tmp_path / "request-map.json"
@@ -579,7 +585,7 @@ def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_toke
         )
     )
     monkeypatch.setenv("AISIM_GLM53_REQUEST_MANIFEST", str(path))
-    if stage == "measure" and (mode == "NONE" or (mode == "PIECEWISE" and not piecewise)):
+    if not serving_none and stage == "measure" and (mode == "NONE" or (mode == "PIECEWISE" and not piecewise)):
         with pytest.raises(RuntimeError, match="actual FULL decode or explicit PIECEWISE"):
             state.before(
                 object(),
@@ -606,6 +612,10 @@ def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_toke
     assert all(999 not in tokens for tokens in completed.values())
     if stage == "measure":
         assert state.whole_boundary == "native_metadata_to_logits_gpu_v1"
+    if serving_none:
+        assert record["measurement_admission"] == "DIAGNOSTIC_ONLY_NO_TABLE_EXPORT"
+        assert record["serving_none_model_sha256"] == "d" * 64
+        assert state.none_boundaries == []
 
 
 @pytest.mark.parametrize(

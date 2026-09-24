@@ -714,6 +714,34 @@ PIECEWISE table admission or native GPU qualification yet. Measured NONE targets
 remain unsupported; their serving-policy operation route requires separate
 native call evidence and cannot borrow enforced-eager calibration.
 
+### Native serving NONE diagnostic
+
+`AISIM_GLM53_SERVING_NONE_DIAGNOSTIC=1` selects a separate, default-disabled
+raw observation for native prefill outside the initialized capture buckets.
+It requires an `ops_graph` or `ops_graph_holdout` purpose and rejects either
+PIECEWISE opt-in. The native graph policy and dispatch remain unchanged.
+Both roles retain their independently initialized policy; calibration installs
+inactive operation hooks only after initialization and activates them solely
+for an actual unpadded NONE target. It installs no graph operation hooks.
+
+The actual conditional model inherits `forward` and `compute_logits` from
+`vllm/model_executor/models/glm4_1v.py` at the pinned vLLM revision. The diagnostic
+binds that file, the GLM5 text source, exact original classes and methods, and
+rejects compiled or substituted callables. It requires one completed original
+model call and all 277 physical operation calls with the same native forward.
+Its independent control installs no operation hooks or profiler. Whole events
+retain the prepared-inputs-to-logits boundary; additional events directly record
+prepared inputs to raw model entry, and raw model return to logits entry.
+These are elapsed GPU event windows and can include host enqueue gaps.
+
+Rows go only to `serving-none-ops-rank-N.jsonl`, carrying the actual dispatch,
+model-source receipt hash, and `DIAGNOSTIC_ONLY_NO_TABLE_EXPORT`. They are not
+eager query tables. The raw call inventory, setup windows and independent whole
+timing are the next native qualification evidence, not accepted costs or accuracy.
+No residual allocation or serving-NONE table admission is implemented. Actual
+native class, GPU call coverage, control overhead and the independent 20% gate
+remain required after runtime requalification.
+
 ### CUDA graph runtime provider
 
 The qualified SGLang GPU import path can load two separate instances of the
