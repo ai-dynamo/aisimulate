@@ -40,7 +40,13 @@ WORK = "/work"  # container mount of ROOT
 SCRATCH_QUEUES = ROOT / "archive" / "queues"
 
 GOLDEN_TARGET = {"sglang": "dynamo-python", "vllm": "fpm", "trtllm": "dynamo-python"}
-VENV_PY = ROOT / "venv_aic" / "bin" / "python"
+# The golden renderer is THIS repository's generator (aisimulate), run through
+# its own console script from an environment that has the native runtime
+# built (uv pip install -e python/aisimulate). Until 2026-09-25 it was the
+# aic checkout's `aiconfigurator.main` — every generator change had to be
+# mirrored there, and models only aisimulate knows (Qwen3.8) rendered as
+# "generator rejects". AIS_GENERATOR_CLI overrides the binary.
+GEN_CLI = Path(os.environ.get("AIS_GENERATOR_CLI") or ROOT / "venv_ais" / "bin" / "aiconfigurator")
 
 
 def render_golden(run: dict) -> Path | None:
@@ -56,7 +62,7 @@ def render_golden(run: dict) -> Path | None:
     import shutil
     import subprocess
     gdir = ROOT / "archive" / "golden" / run["id"]
-    cmd = [str(VENV_PY), "-m", "aiconfigurator.main", "cli", "generate",
+    cmd = [str(GEN_CLI), "cli", "generate",
            "--model-path", run["repo"],
            "--total-gpus", str(run["tp"]),
            "--system", run["system"],
@@ -67,7 +73,7 @@ def render_golden(run: dict) -> Path | None:
     cmd += list(run.get("cli_extra_args") or [])
     cmd_txt = shlex.join(cmd)
     import subprocess as _sp
-    gen_commit = _sp.run(["git", "-C", str(ROOT / "aic"), "rev-parse", "--short", "HEAD"],
+    gen_commit = _sp.run(["git", "-C", str(Path(AIS_SRC).parent), "rev-parse", "--short", "HEAD"],
                          capture_output=True, text=True).stdout.strip()
     stamp = gdir / "command.txt"
     # cache valid only for the SAME command rendered by the SAME generator code
@@ -79,7 +85,7 @@ def render_golden(run: dict) -> Path | None:
         shutil.rmtree(gdir)
     gdir.mkdir(parents=True)
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(ROOT / "aic" / "aic-core" / "src")
+    env["PYTHONPATH"] = AIS_SRC
     r = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=900)
     stamp.write_text(cmd_txt + f"\n# generator={gen_commit}\n# exit={r.returncode}\n")
     (gdir / "render.log").write_text((r.stdout or "")[-8000:] + (r.stderr or "")[-8000:])

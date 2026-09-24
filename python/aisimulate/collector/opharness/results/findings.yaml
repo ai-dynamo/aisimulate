@@ -1130,6 +1130,25 @@ findings:
       what the record shows; the generator's 512 is what real deployments
       get. Upstream draft 7 updated. K3 records stay on the eager A/B for
       kda_ctx.
+      (4) Dummy dirs: no step provisioned the tokenizer / custom-code files
+      (Kimi needs tiktoken.model + tokenization_kimi.py + modeling_*.py).
+      dummies.py now copies every auxiliary artifact file from
+      configs/aux_files/<org>_<name>/ (exported once from the existing dirs,
+      100 repos), else an earlier variant of the repo, else the declared
+      targets.yaml dummy_overrides.tokenizer_from sibling; otherwise a loud
+      MISSING caveat. A fresh regeneration of all 196 variants from configs/
+      is complete without hand copies (commit a2f34f3c).
+      (5) NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4 on trtllm rc23 ("no raw"):
+      the engine aborts right after model init — "CUDA runtime error in
+      ::cudaStreamDestroy(stream): an illegal memory access was encountered"
+      (tensorrt_llm TllmException, SIGABRT, so the probe cannot dump).
+      Same SM90 NVFP4 wall class as the other NVFP4 trtllm cells; log
+      facts/full_reprobe/nemotron_ultra_nvfp4_trt.full.log.
+      (6) Golden renderer switched from the aic checkout to THIS repository's
+      generator (venv_ais, `aiconfigurator cli generate` console script,
+      stamp = this repo's HEAD): vllm/trtllm renders byte-identical to the
+      aic ones for Llama-3.1-8B, sglang flags identical; Qwen3.8-2.4T-A95B
+      now renders (was "generator rejects" on aic). No more aic mirroring.
     applies_to:
     - instrument:dummies
     - instrument:probe_vllm
