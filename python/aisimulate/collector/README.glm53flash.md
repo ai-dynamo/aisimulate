@@ -49,6 +49,14 @@ The reader normalizes only these two entrypoints, with the exact source-manifest
 digest and mHC-pre geometry required. Original entrypoint names remain in the
 hashed raw records. This source equivalence does not supply a CUDA kernel
 fingerprint: observations without one remain eligible for exact lookup only.
+The pinned vLLM `hc_pre`, `hc_post` and `hc_fused_post_pre` similarly call only
+their corresponding mHC CustomOp
+([source, lines 557–619](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/models/glm5next/nvidia/model.py#L557)).
+Their source witness includes that loaded CustomOp dispatch. Historical raw
+witnesses also enumerated unrelated attention and FFN descendants of the owning
+decoder layer. The reader retains those original records and narrows only these
+three pinned forwarding identities to the observed callee, rejecting a missing,
+changed or ambiguous callee instead of merging it.
 The whole native FFN includes FP32 gate projection, sigmoid/top-k routing,
 shared and routed experts, and clamp10. Its analytical children never query
 generic measured GEMM/MoE rows. All45 FFNs are required on every rank.

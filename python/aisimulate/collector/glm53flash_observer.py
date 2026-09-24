@@ -56,6 +56,18 @@ def dispatch_identity(owner, method: str) -> str:
     native = getattr(owner, method)
     function = getattr(native, "__func__", native)
     identity = f"{function.__module__}.{function.__qualname__}"
+    # These pinned native forwarding methods call one CustomOp, not their
+    # owning DecoderLayer's unrelated attention/FFN descendants. Keep the
+    # actually loaded forward implementation in the source witness.
+    if identity in {
+        f"vllm.models.glm5next.nvidia.model.Glm5NextDecoderLayer.{name}"
+        for name in ("hc_pre", "hc_post", "hc_fused_post_pre")
+    }:
+        child_name = f"m{method}_op"
+        selected = getattr(getattr(owner, child_name), "_forward_method", None)
+        if selected is None or not hasattr(selected, "__qualname__"):
+            raise RuntimeError("native vLLM mHC selected CustomOp forward is missing")
+        return f"{identity}/{child_name}:forward={selected.__module__}.{selected.__qualname__}"
     quant = getattr(owner, "quant_method", None)
     if quant is not None:
         identity += f"/{type(quant).__module__}.{type(quant).__qualname__}"

@@ -605,3 +605,61 @@ def test_native_completion_streams_raw_forwards_and_requires_boolean_receipts(tm
     path.write_text(json.dumps(record) + "\n")
     with pytest.raises(ValueError, match="completion/state"):
         verify_target_completeness(tmp_path, 1)
+
+
+@pytest.mark.parametrize(
+    "method,role,native_class",
+    [
+        ("hc_pre", "pre", "MHCPreOp"),
+        ("hc_post", "post", "MHCPostOp"),
+        ("hc_fused_post_pre", "fused_post_pre", "MHCFusedPostPreOp"),
+    ],
+)
+def test_vllm_mhc_source_owns_only_called_custom_op(method, role, native_class):
+    from collector.glm53flash_contract import canonical_native_source, sha256_json
+    from collector.glm53flash_observer import dispatch_identity
+
+    module = "vllm.models.glm5next.nvidia.model.Glm5NextDecoderLayer"
+    selected = f"m{method}_op:forward=vllm.model_executor.layers.mhc.{native_class}.forward_cuda"
+    pins = json.loads(
+        (Path(__file__).parents[3] / "collector/fpm_forward/runtime/glm53flash/runtime-source-sha256.json").read_bytes()
+    )
+    row = {
+        **sample_row(),
+        "component": "mhc",
+        "source_sha256": sha256_json(pins),
+        "geometry": canonical_json({"backend": "vllm", "checkpoint_format": "fp8", "role": role}),
+        "kernel_source": (
+            f"{module}.{method}/{selected};mlp.gate:quant_method=loaded.fp8;self_attn.indexer:forward=loaded.index"
+        ),
+    }
+    expected = f"{module}.{method}/{selected}"
+    assert canonical_native_source(row) == expected
+    assert canonical_native_source({**row, "kernel_source": expected}) == expected
+    for updates in (
+        {"source_sha256": "a" * 64},
+        {"geometry": canonical_json({"backend": "vllm", "role": "other"})},
+        {"kernel_source": row["kernel_source"].replace(".forward_cuda", ".forward_native")},
+        {"kernel_source": row["kernel_source"] + ";unknown:forward=unknown"},
+        {"kernel_source": row["kernel_source"] + ";" + selected},
+    ):
+        with pytest.raises(ValueError, match="vLLM mHC"):
+            canonical_native_source({**row, **updates})
+
+    def native():
+        pass
+
+    native.__module__ = module.rsplit(".", 1)[0]
+    native.__qualname__ = f"Glm5NextDecoderLayer.{method}"
+
+    def forward():
+        pass
+
+    forward.__module__ = "vllm.model_executor.layers.mhc"
+    forward.__qualname__ = f"{native_class}.forward_cuda"
+    owner = SimpleNamespace(**{method: native, f"m{method}_op": SimpleNamespace(_forward_method=forward)})
+    owner.named_modules = lambda: pytest.fail("unrelated DecoderLayer descendants must not be enumerated")
+    assert dispatch_identity(owner, method) == expected
+    setattr(owner, f"m{method}_op", SimpleNamespace())
+    with pytest.raises(RuntimeError, match="selected CustomOp"):
+        dispatch_identity(owner, method)

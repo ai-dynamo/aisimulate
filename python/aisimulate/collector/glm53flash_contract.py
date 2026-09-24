@@ -221,7 +221,7 @@ def validate_calibration_row(row: dict) -> None:
 
 
 def canonical_native_source(row: dict) -> str:
-    """Normalize only the two pinned SGLang mHC pre forwarding entrypoints.
+    """Normalize source ownership for the explicitly pinned mHC forwarding calls.
 
     glm5_next.py@94602c9:727-746 contains two unconditional calls to the same
     _hc_pre method, which calls the imported hc_pre implementation at 710-725.
@@ -230,6 +230,49 @@ def canonical_native_source(row: dict) -> str:
     labels and measured windows stay intact. No kernel fingerprint is invented.
     """
     source = row["kernel_source"]
+    vllm_module = "vllm.models.glm5next.nvidia.model.Glm5NextDecoderLayer"
+    entrypoint = source.split("/", 1)[0]
+    vllm_roles = {
+        "hc_pre": ("pre", "MHCPreOp"),
+        "hc_post": ("post", "MHCPostOp"),
+        "hc_fused_post_pre": ("fused_post_pre", "MHCFusedPostPreOp"),
+    }
+    for method, (role, native_class) in vllm_roles.items():
+        if entrypoint != f"{vllm_module}.{method}":
+            continue
+        pins = json.loads(
+            (Path(__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-sha256.json").read_bytes()
+        )
+        geometry = json.loads(row["geometry"])
+        if (
+            row["backend"] != "vllm"
+            or (row["backend_version"], row["backend_revision"]) != BACKENDS["vllm"]
+            or row["component"] != "mhc"
+            or geometry.get("backend") != "vllm"
+            or geometry.get("role") != role
+            or pins.get("vllm/models/glm5next/nvidia/model.py")
+            != "d7353ea0c5708e40d65364b6a32ab63372aafbbebbf954722d635a125252a813"
+            or row["source_sha256"] != sha256_json(pins)
+        ):
+            raise ValueError("vLLM mHC source ownership lacks its exact native source/geometry identity")
+        # Pinned model.py:557-619 calls only the corresponding mHC CustomOp.
+        # Historical observers enumerated the entire owning DecoderLayer,
+        # including attention/FFN modules this method never calls. Preserve
+        # those raw labels, but require the actual selected mHC dispatch.
+        selected = f"m{method}_op:forward=vllm.model_executor.layers.mhc.{native_class}.forward_cuda"
+        parts = source.split("/", 1)[1].split(";") if "/" in source else []
+        allowed = (
+            "input_layernorm:",
+            "post_attention_layernorm:",
+            "mhc_pre_op:",
+            "mhc_post_op:",
+            "mhc_fused_post_pre_op:",
+            "mlp.",
+            "self_attn.",
+        )
+        if parts.count(selected) != 1 or any(not part.startswith(allowed) for part in parts):
+            raise ValueError("vLLM mHC selected native callee is missing, changed or ambiguous")
+        return f"{entrypoint}/{selected}"
     module = "sglang.srt.models.glm5_next.Glm5NextDecoderLayer"
     if source not in (f"{module}.hc_attn_pre", f"{module}.hc_ffn_pre"):
         return source
