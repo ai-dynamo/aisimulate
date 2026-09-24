@@ -148,19 +148,24 @@ rules:
 
   # ---------------------------------------------------------------- kvcache
   - {backend: framework_native, role: kvcache,
-     match: "reshape_and_cache|concat_and_cache|set_mla_kv_buffer|concat_and_cast_mha_k|applyBiasRopeUpdateKVCache|applyMLARopeAppendPagedKV|applyMLARopeAndAssignQKV|indexerKCacheScatter|write_req_to_token_pool|create_flashinfer_kv_indices|alloc_extend_kernel|_convert_req_index_to_global|convertReqIndexToGlobal|ConcatMLAQKernel"}
+     match: "reshape_and_cache|concat_and_cache|set_mla_kv_buffer|concat_and_cast_mha_k|applyBiasRopeUpdateKVCache|applyMLARopeAppendPagedKV|applyMLARopeAndAssignQKV|indexerKCacheScatter|write_req_to_token_pool|create_flashinfer_kv_indices|alloc_extend_kernel|_convert_req_index_to_global|convertReqIndexToGlobal|ConcatMLAQKernel|_fused_dsa_decode_metadata_kernel|_fused_metadata_kernel_general"}
 
   # ------------------------------------------------------------ norm / rope
   - {backend: framework_native, role: norm_rope,
      match: "rmsnorm|RMSNorm|rms_norm|LayerNormFn|_layer_norm_fwd|l2norm_fwd|rotary_embedding|BatchQKApplyRotary|fusedQKNormRope|_fused_qk_rmsnorm_rope|_gemma_(dual_rmsnorm|qkv_rmsnorm)"}
 
   # -------------------------------------------------- activation / elementwise
+  # triton_{poi,red,per}_fused_* are torch.compile (Inductor) fusions. Probes
+  # run the framework's own execution mode (2026-09-24), so on vLLM paths
+  # where compile disables the custom elementwise ops these replace
+  # act_and_mul / rms_norm / rotary kernels one-for-one (Llama-3.1-8B A/B:
+  # attention + GEMM kernels identical, only this glue changed). No identity.
   - {backend: framework_native, role: activation,
-     match: "act_and_mul|silu_and_mul|situ_and_mul|_run_activation|_sigmoid_gate_mul|_fused_(gate_)?sigmoid_mul|triton_poi_fused_add.*sigmoid|triton_poi_fused_copy|triton_per_fused|triton_red_fused|_split_qkv_contiguous|_typeConvert|fusedMiniMaxM3QNormRope|^_attn_res_kernel$|^layer_norm_gated_fwd_kernel$"}
+     match: "act_and_mul|silu_and_mul|situ_and_mul|_run_activation|_sigmoid_gate_mul|_fused_(gate_)?sigmoid_mul|triton_poi_fused|triton_per_fused|triton_red_fused|_split_qkv_contiguous|_typeConvert|fusedMiniMaxM3QNormRope|^_attn_res_kernel$|^layer_norm_gated_fwd_kernel$"}
 
   # ----------------------------------------------------------------- infra
   - {backend: infra, role: infra,
-     match: "^cuda[A-Z]|^cuLaunch|^Activity$|^Buffer$|^at_cuda_detail::|^_ragged_tensor_metadata|computeSeqAndPaddingOffsets|^get_num_kv_splits|^namespace$|^operator$|^_reduce$|vectorized_gather|DeviceScan|sglang\\.vlm\\.|^tensorrt_llm::_v1::kernels$"}
+     match: "^cuda[A-Z]|^cuLaunch|^Activity$|^Buffer$|^Compiled$|^at_cuda_detail::|^_ragged_tensor_metadata|computeSeqAndPaddingOffsets|^get_num_kv_splits|^namespace$|^operator$|^_reduce$|vectorized_gather|DeviceScan|sglang\\.vlm\\.|^tensorrt_llm::_v1::kernels$"}
   # vLLM v1 model-runner / sampler Triton glue (0.29): input prep, slot
   # mappings, block tables, sampling, spec-decode bookkeeping, mamba state
   # alignment. Present in every record; carries no path identity.

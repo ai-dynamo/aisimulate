@@ -509,8 +509,7 @@ _TAXONOMY = load_taxonomy()
 
 # Orphan keep-rule (build_ops): labels that carry no path identity — a kernel
 # whose ONLY labels are these is noise for path_diff and may be capped.
-_ORPHAN_NOISE = {"cublas", "vllm_kernel", "sgl_kernel", "torch"}
-_ORPHAN_REST_CAP = 24  # unlabeled/noise orphans kept per record, by device time
+_ORPHAN_REST_CAP = 24  # unlabeled orphans kept per record, by device time
 
 
 def label_kernels(kernels):
@@ -592,7 +591,13 @@ def build_ops(facts: dict) -> tuple[list[dict], list[str]]:
             n = normalize_kernel(name)
             if n and n not in attributed:
                 orphans_t[n] = orphans_t.get(n, 0.0) + float(k.get("us") or 0.0)
-    signal = {n for n in orphans_t if label_kernels([n])[0] - _ORPHAN_NOISE}
+    # Every taxonomy-labeled orphan is kept — including the cublas /
+    # vllm_kernel / sgl_kernel / torch families: under CUDA graphs and
+    # torch.compile (framework-mode probes, 2026-09-24) the Python spans that
+    # used to attribute GEMM and quant kernels vanish, so those kernels arrive
+    # here, and path_diff grades gemm-class ops on exactly their names.
+    # Only unlabeled kernels fall under the time-ranked cap.
+    signal = {n for n in orphans_t if label_kernels([n])[0]}
     rest = sorted((n for n in orphans_t if n not in signal), key=lambda n: -orphans_t[n])
     return ops, sorted(signal | set(rest[:_ORPHAN_REST_CAP]))
 
@@ -676,8 +681,14 @@ def build_records() -> None:
                     "attn_backend": ((f.get("attn_backend") or "").rsplit(".", 1)[-1]
                                      or next((s.split("::")[2] for s in (f.get("api_trace") or {})
                                               if "::attn::" in s), None)
+                                     # graph-replayed / compiled forwards emit no
+                                     # Python spans (framework-mode probes,
+                                     # 2026-09-24): the attention kernel family
+                                     # in the device-stream tables is the identity
                                      or next((normalize_kernel(k["kernel"])
-                                              for k in (f.get("kernels") or [])
+                                              for k in ((f.get("kernels") or [])
+                                                        + (f.get("decode_kernels") or [])
+                                                        + (f.get("prefill_kernels") or []))
                                               if re.search(r"fmha|flash_?attn|flash_fwd|"
                                                            r"mla_|attention_kernel|paged_kv",
                                                            k["kernel"], re.I)

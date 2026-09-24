@@ -21,6 +21,12 @@ Two modes:
                 diverged  collector executed backend families serving never
                           did (the wrong-path signal), or vice versa for the
                           op under test
+                no-collector-signal  the capture ran no kernel the vocabulary
+                          can attribute (empty set = subset of everything —
+                          refused). GEMM-class ops whose only families are
+                          infra (cublas/vllm_kernel/...) are graded on
+                          kernel-NAME overlap inside those families instead.
+                invalid-capture  the capture command itself failed
 
 Usage (capture, in-container):
   python3 path_diff.py --capture --out /out/cap.json -- \
@@ -192,20 +198,23 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
     # family can hide different kernels (0.29 DSA indexer did exactly this) —
     # for every signal family on both sides, the collector's kernels must
     # name-overlap serving's, else it is kernel drift and the gate stays red
-    def fam_kernels(kerns):
+    def fam_kernels(kerns, keep=None):
+        """family -> kernel names; signal families by default, or only `keep`."""
         out = {}
         for k in kerns:
             labels, _ = label_kernels([k])
-            for b in labels - infra:
+            for b in (labels & keep if keep is not None else labels - infra):
                 out.setdefault(b, set()).add(k.split("<")[0])
         return out
+
+    def name_hits(ck, sk):
+        return {c for c in ck if any(c in s or s in c for s in sk)}
     col_fam = fam_kernels(col_kernels)
     srv_fam = fam_kernels(srv_kernels)
     kernel_drift = {}
     for fam in (col_sig & srv_sig):
         ck, sk = col_fam.get(fam, set()), srv_fam.get(fam, set())
-        hits = {c for c in ck if any(c in s or s in c for s in sk)}
-        misses = sorted(ck - hits)
+        misses = sorted(ck - name_hits(ck, sk))
         if misses:
             kernel_drift[fam] = {"collector_only_kernels": misses,
                                  "serving_kernels": sorted(sk)}
@@ -214,10 +223,26 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
     # as "aligned". Found 2026-09-24 when six broken sglang captures (mock
     # runner drift, subprocess collectors invisible to the parent profiler)
     # all came back aligned with col=[] — refuse to grade them.
+    # GEMM-class ops (gemm bf16/fp8, compute_scale, mla_bmm) have NO signal
+    # family by construction — cuBLAS / the vllm quant kernels ARE their
+    # backend and sit in the infra set so they never masquerade as a
+    # wrong-path signal elsewhere. For them the evidence is kernel-NAME
+    # overlap inside those infra families (the collector's nvjet /
+    # cutlass_scaled_mm / per_token_group_quant instantiations must be ones
+    # serving also launched); a capture whose infra kernels share no name
+    # with serving is still no-collector-signal. Found when the first
+    # recompute after the rule above flipped four gemm-class verdicts that
+    # had been graded before it existed (2026-09-24).
+    infra_name_matches = None
     if cap.get("error"):
         verdict = "invalid-capture"
     elif not col_sig:
-        verdict = "no-collector-signal"
+        col_inf = fam_kernels(col_kernels, infra)
+        srv_inf = fam_kernels(srv_kernels, infra)
+        infra_name_matches = {fam: sorted(name_hits(ck, srv_inf.get(fam, set())))
+                              for fam, ck in col_inf.items()}
+        infra_name_matches = {f: h for f, h in infra_name_matches.items() if h} or None
+        verdict = "aligned" if infra_name_matches else "no-collector-signal"
     else:
         verdict = "aligned" if not only_col and not kernel_drift else "diverged"
     report = {
@@ -237,6 +262,9 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
         "serving_backends": sorted(srv_backends),
         "collector_only_signal": only_col,
         "kernel_drift": kernel_drift or None,
+        # set only when the op has no signal family (gemm-class): the infra
+        # kernel names the collector and serving both launched
+        "infra_family_name_matches": infra_name_matches,
         "serving_kernels_matched_in_collector": sorted(
             k for k in srv_kernels if any(k.split("<")[0] in c or c in k for c in col_kernels))[:10],
         "collector_unmatched_kernels": sorted(col_unmatched)[:10],
