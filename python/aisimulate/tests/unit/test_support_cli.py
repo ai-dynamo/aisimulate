@@ -483,13 +483,10 @@ def test_init_plan_and_preview_use_real_public_configs_without_launching_collect
 
 
 def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, monkeypatch) -> None:
+    from .test_support_plan import _mock_collector_execution
+
     calls = []
-
-    def collector_main(argv):
-        calls.append(argv)
-        return 7
-
-    monkeypatch.setitem(sys.modules, "collector.fpm_forward.cli", SimpleNamespace(main=collector_main))
+    _mock_collector_execution(monkeypatch, calls)
     request_path = tmp_path / "request.yaml"
     output = tmp_path / "plan"
     assert cli.main(_init_args(request_path, tensor_parallel=2)) == 0
@@ -511,7 +508,7 @@ def test_explicit_execute_forwards_diagnostic_options_and_exit_status(tmp_path, 
                 "--resume",
             ]
         )
-        == 7
+        == 1
     )
 
     assert len(calls) == 1
@@ -604,7 +601,16 @@ def test_plan_guides_both_collection_executors_without_launching_workers(tmp_pat
     assert not (tmp_path / "plan/fpm-checkpoint").exists()
 
 
-def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):
+@pytest.fixture
+def timing_ready(monkeypatch):
+    # These tests isolate deployment forwarding and frozen-plan resume guards;
+    # native readiness behavior is exercised with real artifacts separately.
+    from aisimulate.support import collection_readiness
+
+    monkeypatch.setattr(collection_readiness, "assess_readiness", lambda *a, **k: {"ready_for_full_collection": True})
+
+
+def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch, timing_ready):
     from collector.fpm_forward import runner
 
     calls = []
@@ -645,7 +651,9 @@ def test_deployment_options_reach_frozen_collector_plan(tmp_path, monkeypatch):
     assert kwargs["database_root"] == str(tmp_path / "plan/systems/data")
 
 
-def test_slurm_deployment_preview_and_execution_reach_frozen_collector_plan(tmp_path, monkeypatch, capsys):
+def test_slurm_deployment_preview_and_execution_reach_frozen_collector_plan(
+    tmp_path, monkeypatch, capsys, timing_ready
+):
     from collector.fpm_forward import runner
 
     calls = []
@@ -781,7 +789,9 @@ def test_deployment_options_reject_invalid_or_unrestricted_inputs(tmp_path, caps
         ("--image-pull-secret", "first", "second"),
     ],
 )
-def test_deployment_resume_requires_the_same_frozen_identity(tmp_path, monkeypatch, capsys, option, first, changed):
+def test_deployment_resume_requires_the_same_frozen_identity(
+    tmp_path, monkeypatch, capsys, option, first, changed, timing_ready
+):
     from collector.fpm_forward import planner, runner
 
     command = [*_local_collection_command(tmp_path), option, first]
@@ -826,7 +836,9 @@ def test_deployment_resume_requires_the_same_frozen_identity(tmp_path, monkeypat
         ["--executor", "kubernetes"],
     ],
 )
-def test_slurm_collection_resume_rejects_changed_deployment(tmp_path, monkeypatch, capsys, changed_options):
+def test_slurm_collection_resume_rejects_changed_deployment(
+    tmp_path, monkeypatch, capsys, changed_options, timing_ready
+):
     from collector.fpm_forward import planner, runner, slurm
 
     command = [*_local_collection_command(tmp_path), "--executor", "slurm", "--image", "registry.example/fpm:pinned"]
@@ -863,8 +875,9 @@ def test_slurm_collection_resume_rejects_changed_deployment(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("stage", ["input", "execution"])
 @pytest.mark.parametrize("error_type", [RuntimeError, ValueError, OSError, KeyboardInterrupt])
-def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, capsys, stage, error_type):
-    from collector.fpm_forward import cli as collector_cli
+def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, capsys, stage, error_type, timing_ready):
+    from collector import model_cases
+    from collector.fpm_forward import entry
 
     request_path = tmp_path / "request.yaml"
     root = tmp_path / "plan"
@@ -875,9 +888,11 @@ def test_collector_failures_keep_public_cli_exit_codes(tmp_path, monkeypatch, ca
     def fail(*args, **kwargs):
         raise error_type("test collection failure")
 
-    monkeypatch.setattr(collector_cli, "build_collection_case_plan", lambda **kwargs: SimpleNamespace(model_path=None))
-    monkeypatch.setattr(collector_cli, "resolve_run_inputs", fail if stage == "input" else lambda *args: None)
-    monkeypatch.setattr(collector_cli, "run_resolved", fail)
+    monkeypatch.setattr(model_cases, "build_collection_case_plan", lambda **kwargs: SimpleNamespace(model_path=None))
+    monkeypatch.setattr(
+        entry, "resolve_run_inputs", fail if stage == "input" else lambda *args: (SimpleNamespace(cells=()), {})
+    )
+    monkeypatch.setattr(entry, "run_resolved", fail)
     command = ["onboard", "collect-fpm", "-c", str(request_path), "--output-dir", str(root), "--execute"]
 
     if error_type is KeyboardInterrupt:

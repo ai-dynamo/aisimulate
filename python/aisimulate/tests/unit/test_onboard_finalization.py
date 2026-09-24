@@ -447,28 +447,28 @@ def test_public_slurm_collect_to_finalize_preserves_frozen_deployment(tmp_path, 
     monkeypatch.setenv("SLURM_JOB_ID", "1234")
     monkeypatch.setattr("collector.fpm_forward.slurm.shutil.which", lambda name: f"/fake/{name}")
     monkeypatch.setattr(runner, "_run_command", cluster_command)
-    assert (
-        cli.main(
-            [
-                "onboard",
-                "collect-fpm",
-                "--config",
-                str(root / "request.yaml"),
-                "--output-dir",
-                str(root),
-                "--executor",
-                "slurm",
-                "--image",
-                image,
-                "--container-mount",
-                "/cache:/cache",
-                "--container-mount",
-                "/models:/models",
-                "--execute",
-            ]
-        )
-        == 0
-    )
+    command = [
+        "onboard",
+        "collect-fpm",
+        "--config",
+        str(root / "request.yaml"),
+        "--output-dir",
+        str(root),
+        "--executor",
+        "slurm",
+        "--image",
+        image,
+        "--container-mount",
+        "/cache:/cache",
+        "--container-mount",
+        "/models:/models",
+        "--execute",
+    ]
+    assert cli.main([*command, "--smoke"]) == 0
+    smoke = json.loads((root / "fpm-readiness.json").read_text())
+    assert smoke["ready_for_full_collection"]
+    assert {item["cell"]["workload_kind"] for item in smoke["selected_cells"]} == {"prefill", "decode"}
+    assert cli.main(command) == 0
     collection_path = next(root.glob("fpm-artifacts/*/collection-plan.json"))
     payload = json.loads(collection_path.read_text())
     assert payload["options"]["executor"] == "slurm"

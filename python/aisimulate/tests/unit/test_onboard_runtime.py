@@ -619,7 +619,21 @@ def test_plan_carries_explicit_formal_observer_flags_and_execution_requires_acce
     assert "acceptance" in capsys.readouterr().err
     state = _load(checkpoint)
     save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    from types import SimpleNamespace
+
     from collector.fpm_forward import cli as collector_cli
+    from collector.fpm_forward import entry
+
+    from aisimulate.support import collection_readiness, fpm
+
+    commands = []
+
+    def resolve(command):
+        commands.append(command[3:])
+        return collector_cli._parser().parse_args(command[3:]), (SimpleNamespace(cells=()), {})
+
+    monkeypatch.setattr(fpm, "_resolve_execution", resolve)
+    monkeypatch.setattr(collection_readiness, "assess_readiness", lambda *a, **k: {"ready_for_full_collection": True})
 
     def fake_collect(argv):
         assert "--fpm-runtime-instrumentation" in argv
@@ -634,7 +648,7 @@ def test_plan_carries_explicit_formal_observer_flags_and_execution_requires_acce
         )
         return 0
 
-    monkeypatch.setattr(collector_cli, "main", fake_collect)
+    monkeypatch.setattr(entry, "run_resolved", lambda *_: fake_collect(commands[-1]) or [])
     assert cli.main(execute) == 0
     comparison = json.loads((root / "runtime-compatibility.json").read_text())
     assert comparison["compatibility"]["status"] == "compatible"

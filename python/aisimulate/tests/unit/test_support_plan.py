@@ -16,6 +16,7 @@ import subprocess
 import sys
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
@@ -686,17 +687,29 @@ def test_preview_is_shell_safe_and_does_not_create_outputs_or_import_collector(t
     assert not root.exists()
 
 
-def test_execute_delegates_only_for_matching_plan(tmp_path, monkeypatch):
-    from collector.fpm_forward import cli
+def _mock_collector_execution(monkeypatch, calls):
+    from collector.fpm_forward import cli, entry
 
+    from aisimulate.support import collection_readiness, fpm
+
+    def resolve(command):
+        calls.append(command[3:])
+        return cli._parser().parse_args(command[3:]), (SimpleNamespace(cells=(), sha256="a" * 64), {})
+
+    monkeypatch.setattr(fpm, "_resolve_execution", resolve)
+    monkeypatch.setattr(entry, "run_resolved", lambda *_: [{"error_message": "synthetic collection failure"}])
+    monkeypatch.setattr(collection_readiness, "assess_readiness", lambda *a, **k: {"ready_for_full_collection": True})
+
+
+def test_execute_delegates_only_for_matching_plan(tmp_path, monkeypatch):
     calls = []
-    monkeypatch.setattr(cli, "main", lambda argv: calls.append(argv) or 7)
+    _mock_collector_execution(monkeypatch, calls)
     request = _request()
     with pytest.raises(ValueError, match="plan"):
         run_fpm(request, execute=True, output_dir=tmp_path)
     assert not calls
     create_plan(request, tmp_path)
-    assert run_fpm(request, execute=True, output_dir=tmp_path, smoke=True, limit=1) == 7
+    assert run_fpm(request, execute=True, output_dir=tmp_path, smoke=True, limit=1) == 1
     assert calls[0][calls[0].index("--limit") + 1] == "1"
     assert "--smoke" in calls[0]
     assert "--plan-only" not in calls[0]
@@ -821,40 +834,36 @@ def test_resume_occupied_campaign_requires_usable_selected_checkpoint(tmp_path, 
 
 @pytest.mark.parametrize("smoke", [False, True])
 def test_matching_explicit_resume_delegates_and_preserves_campaign(tmp_path, monkeypatch, smoke):
-    from collector.fpm_forward import cli
-
     request = _request()
     create_plan(request, tmp_path)
     checkpoint, _ = _seed_campaign(tmp_path, smoke=smoke, checkpoint_dir=tmp_path / "fpm-checkpoint/custom")
     before = _file_contents(tmp_path)
     calls = []
-    monkeypatch.setattr(cli, "main", lambda argv: calls.append(argv) or 7)
+    _mock_collector_execution(monkeypatch, calls)
 
     assert (
         run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke, resume=True, checkpoint_dir=checkpoint.parent)
-        == 7
+        == 1
     )
 
     assert "--resume" in calls[0]
     assert calls[0][calls[0].index("--checkpoint-dir") + 1] == str(checkpoint.parent)
-    assert _file_contents(tmp_path) == before
+    assert {key: value for key, value in _file_contents(tmp_path).items() if key != "fpm-readiness.json"} == before
 
 
 @pytest.mark.parametrize("smoke", [False, True])
 def test_fresh_smoke_and_formal_campaigns_are_independent(tmp_path, monkeypatch, smoke):
-    from collector.fpm_forward import cli
-
     request = _request()
     create_plan(request, tmp_path)
     _seed_campaign(tmp_path, smoke=not smoke)
     before = _file_contents(tmp_path)
     calls = []
-    monkeypatch.setattr(cli, "main", lambda argv: calls.append(argv) or 7)
+    _mock_collector_execution(monkeypatch, calls)
 
-    assert run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke) == 7
+    assert run_fpm(request, output_dir=tmp_path, execute=True, smoke=smoke) == 1
 
     assert len(calls) == 1
-    assert _file_contents(tmp_path) == before
+    assert {key: value for key, value in _file_contents(tmp_path).items() if key != "fpm-readiness.json"} == before
 
 
 def test_execute_checks_for_campaign_outputs_while_holding_lock(tmp_path, monkeypatch):

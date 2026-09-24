@@ -62,10 +62,11 @@ def load_repeatability_deployment(source_campaign_dir: str | Path) -> dict[str, 
     overrides = json.loads(path.read_text())
     saved = json.loads((root / "collection-plan.json").read_text())
     validate_saved_plan(saved)
-    if (
-        not isinstance(overrides, dict)
-        or _canonical_hash(with_kv_warmup_defaults(overrides)) != saved["generator_config_sha256"]
-    ):
+    if not isinstance(overrides, dict):
+        raise ValueError("archived deployment inputs must be an object")
+    if not isinstance(overrides.get("K8sConfig", {}), dict):
+        raise ValueError("archived K8sConfig must be an object")
+    if _canonical_hash(with_kv_warmup_defaults(overrides)) != saved["generator_config_sha256"]:
         raise ValueError("archived deployment inputs differ from the source plan")
     return overrides
 

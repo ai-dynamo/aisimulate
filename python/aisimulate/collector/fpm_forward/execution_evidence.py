@@ -67,18 +67,24 @@ def _effective_launch(plan: FPMCollectionPlan, cell_dir: Path) -> dict[str, Any]
         script = (cell_dir / "run.sh").read_text()
     except FileNotFoundError as error:
         raise _MissingExecutionEvidence(f"frozen generated launch is missing: {error.filename}") from error
-    if (
-        not isinstance(deployment, dict)
-        or _canonical_hash(with_kv_warmup_defaults(deployment)) != plan.generator_config_sha256
-    ):
+    if not isinstance(deployment, dict):
+        raise ValueError("archived deployment inputs must be an object")
+    mount = deployment.get("K8sConfig", {})
+    if not isinstance(mount, dict):
+        raise ValueError("archived K8sConfig must be an object")
+    if _canonical_hash(with_kv_warmup_defaults(deployment)) != plan.generator_config_sha256:
         raise ValueError("archived deployment inputs differ from the source plan")
     expected_model = plan.model_path
-    mount = deployment.get("K8sConfig") or {}
     if mount.get("k8s_model_path_in_pvc"):
         if not mount.get("k8s_pvc_mount_path"):
             raise ValueError("checkpoint mount has no explicit container mount path")
         expected_model = str(PurePosixPath(mount["k8s_pvc_mount_path"]) / mount["k8s_model_path_in_pvc"])
-    if not isinstance(request, dict) or (request.get("ServiceConfig") or {}).get("model_path") != expected_model:
+    if not isinstance(request, dict):
+        raise ValueError("generated request must be an object")
+    service = request.get("ServiceConfig")
+    if not isinstance(service, dict):
+        raise ValueError("generated ServiceConfig must be an object")
+    if service.get("model_path") != expected_model:
         raise ValueError("generated model path differs from the plan and its explicit checkpoint mount")
     commands = re.findall(r"^engine_command=\((.*)\)$", script, re.MULTILINE)
     if len(commands) != 1:
@@ -307,7 +313,11 @@ def inspect_execution_evidence(
     ranks = set()
     for path in sorted(raw_root.glob("**/fpm-execution-worker-*.json")):
         payload = json.loads(path.read_text())
+        if not isinstance(payload, dict):
+            raise ValueError(f"runtime execution evidence must be an object: {path}")
         provenance = payload.get("collector_provenance", {})
+        if not isinstance(provenance, dict):
+            raise ValueError(f"runtime execution collector_provenance must be an object: {path}")
         if (
             payload.get("schema_name") != "aisimulate_fpm_runtime_execution"
             or payload.get("schema_version") != 1

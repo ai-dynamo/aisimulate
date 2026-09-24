@@ -197,7 +197,14 @@ def add_support_parser(subparsers: Any) -> None:
         "--execute", action="store_true", help="Execute collection using a matching saved onboarding plan."
     )
     collect.add_argument(
-        "--smoke", action="store_true", help="Diagnostic smoke collection; does not publish formal data."
+        "--check-readiness",
+        action="store_true",
+        help="Inspect saved native timing evidence as JSON without GPU work or writes.",
+    )
+    collect.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Bounded collection of every selected cell, including both phases; no formal publication.",
     )
     collect.add_argument(
         "--limit", type=int, help="Limit diagnostic cases; requires --smoke, no formal data publication."
@@ -1206,6 +1213,7 @@ def run_support_command(args: argparse.Namespace) -> int:
             SupportRequest.from_yaml(args.config),
             output_dir=args.output_dir,
             execute=args.execute,
+            check_readiness=args.check_readiness,
             smoke=args.smoke,
             limit=args.limit,
             resume=args.resume,

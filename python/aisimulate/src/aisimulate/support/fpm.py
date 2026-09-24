@@ -161,11 +161,46 @@ def _check_campaign_outputs(root: Path, *, smoke: bool, resume: bool, checkpoint
     # The collector remains responsible for the checkpoint schema and frozen-plan identity.
 
 
+def _resolve_execution(command: list[str]):
+    """Use the collector's public entry boundary, resolving the plan once."""
+    from collector.fpm_forward.cli import _INPUT_ERRORS, _parser
+    from collector.fpm_forward.entry import resolve_run_inputs
+    from collector.model_cases import build_collection_case_plan
+
+    parser = _parser()
+    args = parser.parse_args(command[3:])
+    try:
+        case_plan = build_collection_case_plan(
+            backend=args.backend,
+            model_path=args.model_path,
+            model_architecture=args.model_architecture,
+            gpu_type=args.gpu,
+            sm_version=args.sm,
+            model_cases_path=args.model_cases,
+        )
+        resolved = resolve_run_inputs(args, case_plan)
+    except _INPUT_ERRORS as error:
+        parser.error(str(error))
+    if args.smoke and args.limit is None:
+        # Native smoke defaults to one cell. Onboarding must exercise decode
+        # and every selected backend/precision cell, regardless of ordering.
+        args.limit = len(resolved[0].cells)
+    return args, resolved
+
+
+def _checkpoint_root(root: Path, checkpoint_dir: str | Path | None) -> Path:
+    selected = Path(checkpoint_dir).expanduser().resolve() if checkpoint_dir else root / "fpm-checkpoint"
+    if selected != root / "fpm-checkpoint" and root / "fpm-checkpoint" not in selected.parents:
+        raise ValueError("checkpoint_dir must stay within the plan's fpm-checkpoint directory")
+    return selected
+
+
 def run_fpm(
     request: SupportRequest,
     *,
     output_dir: str | Path,
     execute: bool = False,
+    check_readiness: bool = False,
     smoke: bool = False,
     limit: int | None = None,
     resume: bool = False,
@@ -177,6 +212,16 @@ def run_fpm(
     from .plan import check_plan, plan_lock
 
     root = Path(output_dir).expanduser().resolve()
+    selected_checkpoint = _checkpoint_root(root, checkpoint_dir)
+    if check_readiness:
+        if execute or smoke or limit is not None or resume:
+            raise ValueError("--check-readiness is read-only and cannot use --execute, --smoke, --limit or --resume")
+        check_plan(request, root)
+        from .collection_readiness import assess_readiness
+
+        report = assess_readiness(request, root, selected_checkpoint)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 0 if report["ready_for_full_collection"] else 1
     command = fpm_cli_args(
         request,
         output_dir=root,
@@ -199,23 +244,45 @@ def run_fpm(
     with plan_lock(root):
         check_plan(request, root)
         _check_campaign_outputs(root, smoke=smoke, resume=resume, checkpoint_dir=checkpoint_dir)
-        from collector.fpm_forward.cli import main as fpm_main
+        from collector.fpm_forward.entry import run_resolved
+        from collector.fpm_forward.runner import _atomic_json
 
-        # The collector reports input/plan failures through argparse before
-        # entering run_resolved; only execution failures escape this call.
+        from .collection_readiness import REPORT_FILENAME, assess_readiness, resume_without_workers
+
+        frozen = None
+        collector_status = None
+        execution_error = None
+        recovery_only = False
         try:
-            status = fpm_main(command[3:])
+            args, resolved = _resolve_execution(command)
+            frozen = resolved[0]
+            if not smoke:
+                before = assess_readiness(request, root, selected_checkpoint, expected_plan=frozen)
+                recovery_only = resume and resume_without_workers(frozen, selected_checkpoint / "fpm_forward.json")
+                if not before["ready_for_full_collection"] and not recovery_only:
+                    raise ValueError(
+                        "full collection requires usable prefill and decode readiness for this exact runtime/launch; "
+                        "inspect --check-readiness and run --smoke --execute first"
+                    )
+            errors = run_resolved(args, resolved)
+            status = collector_status = 1 if errors else 0
+            if errors:
+                print(json.dumps(errors, indent=2, sort_keys=True), file=sys.stderr)
             if status == 0 and not smoke and runtime_probe_manifest(request) is not None:
-                selected_checkpoint = (
-                    Path(checkpoint_dir).expanduser().resolve() if checkpoint_dir else root / "fpm-checkpoint"
-                )
                 payload = json.loads((selected_checkpoint / "fpm_forward.json").read_text(encoding="utf-8"))
                 index = Path(payload["runtime_observations"])
                 if not index.resolve().is_relative_to(root):
                     raise ValueError("formal runtime observation index must stay inside the collection directory")
                 observed = verify_collection_runtime(request, index, collection_checkpoint=payload)
                 (root / "runtime-compatibility.json").write_text(json.dumps(observed, indent=2, sort_keys=True) + "\n")
-            return status
         except Exception as exc:
             print(f"aisimulate onboard collect-fpm failed: {exc}", file=sys.stderr)
-            return 1
+            execution_error = str(exc)
+            status = 1
+        report = assess_readiness(request, root, selected_checkpoint, expected_plan=frozen)
+        report.update(collector_exit_status=collector_status, recovery_only=recovery_only)
+        if execution_error is not None:
+            report["execution_error"] = execution_error
+        _atomic_json(root / REPORT_FILENAME, report)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return status or (0 if report["ready_for_full_collection"] else 1)
