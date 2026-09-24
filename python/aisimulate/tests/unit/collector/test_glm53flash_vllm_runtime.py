@@ -6,7 +6,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from collector.glm53flash_vllm_runtime import _TraceState, native_context_receipt, native_coordinates
 
 pytestmark = pytest.mark.unit
@@ -180,6 +179,10 @@ def test_v2_reads_real_input_batch_and_rejects_gpu_cpu_state_disagreement():
 
 @pytest.mark.parametrize("backend_version", ["0.30.0", "0.30.0+glm53kpool.bf5f6b0e689d"])
 def test_v2_finalizes_after_native_later_logits_and_sample_not_execute(monkeypatch, tmp_path, backend_version):
+    if backend_version != "0.30.0":
+        from .test_glm53flash_contract import _test_only_historical_candidate_admission
+
+        _test_only_historical_candidate_admission(monkeypatch)
     import importlib.metadata
     import sys
 
@@ -292,6 +295,7 @@ def test_v2_graph_coordinates_bind_real_and_physical_geometry_separately():
     from enum import Enum
 
     from collector.glm53flash_vllm_runtime import native_v2_coordinates
+
     from tests.unit.collector.test_glm53flash_vllm_graph_policy import snapshot
 
     class Lengths(Tensor):
@@ -599,3 +603,20 @@ def test_piecewise_capture_default_remains_off(monkeypatch):
 
     monkeypatch.delenv("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", raising=False)
     assert _piecewise_capture_enabled("ops_graph") is False
+
+
+@pytest.mark.parametrize("purpose", ["ops", "ops_holdout", "ops_graph", "ops_graph_holdout"])
+def test_quarantined_native_v2_fails_before_importing_or_wrapping_model(monkeypatch, purpose):
+    import importlib.metadata
+    import sys
+
+    from collector import glm53flash_vllm_runtime as runtime
+    from collector.glm53flash_runtime_identity import ADMITTED_VLLM_REPAIRS, VLLM_KPOOL_CANDIDATE
+
+    assert ADMITTED_VLLM_REPAIRS == {}
+    monkeypatch.setenv("AISIM_GLM53_PURPOSE", purpose)
+    monkeypatch.setattr(importlib.metadata, "version", lambda _: VLLM_KPOOL_CANDIDATE)
+    monkeypatch.setitem(sys.modules, "vllm.forward_context", None)
+    monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu.model_runner", None)
+    with pytest.raises(ValueError, match="unqualified"):
+        runtime.install_v2()
