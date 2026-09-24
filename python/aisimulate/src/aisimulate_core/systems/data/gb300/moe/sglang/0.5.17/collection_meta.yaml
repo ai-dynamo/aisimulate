@@ -37,6 +37,11 @@ tables:
     #     kernel_source sglang_flashinfer_trtllm_moe): 3159 rows, full grid,
     #     zero failures. This is the deployment-pinned FlashInfer TRT-LLM MoE
     #     lane and intentionally coexists with the stock fp8_block triton lane.
+    # The optional Boolean default_eligible column is false for all 3159
+    # fp8_block FlashInfer TRT-LLM rows, including the 324 TP32 rows; these
+    # rows require explicit kernel_source selection. It is true for the
+    # other 9153 rows. This selection annotation preserves every recorded
+    # measurement and the collection provenance below.
     # Concatenated 12312 rows total; keys are disjoint by kernel_source and
     # moe_dtype (verified zero duplicate keys across all non-latency columns)
     # and disjoint from every other version. The archived
