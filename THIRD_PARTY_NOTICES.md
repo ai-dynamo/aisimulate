@@ -1096,3 +1096,25 @@ the repository Apache-2.0 license text applies to these adaptations.
   forward/graph execution, sampling, chunk stashing and release APIs are called
   directly. No upstream source is copied. Lifecycle fixtures are independent
   synthetic CPU test data and do not establish GPU qualification.
+
+## GLM-5.3-Flash native IndexPool repair candidate
+
+- Derived file:
+  `python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/retained-tail-prefill.patch`.
+  Adjacent build/qualification scripts and receipts document its native API
+  integration and provenance.
+- Source: https://github.com/vllm-project/vllm at immutable revision
+  `ced6857afa0ea7b2e3f0846a62e1394e90f15607`, original path
+  `vllm/model_executor/layers/sparse_attn_indexer_kpool.py`; build APIs in
+  `setup.py`, public Engine APIs in `vllm/{entrypoints/llm,engine/arg_utils}.py`
+  and native worker/request APIs under `vllm/v1/worker/gpu/` and
+  `vllm/v1/core/sched/scheduler.py` at the same revision.
+- Copyright: contributors to the vLLM project; modified by NVIDIA CORPORATION
+  & AFFILIATES, 2026. License: Apache-2.0, with the complete upstream LICENSE
+  preserved adjacent. The immutable upstream root has no NOTICE file.
+- Modified: the patch completes partial retained IndexPool groups from native
+  circular tail state. Original copyright/license identifiers remain and the
+  modification is marked. Build and qualification wrappers are original code;
+  source hashes, image-derived binary lineage, preserved binary legal material
+  and separate candidate qualification status are retained. No binary wheel is
+  vendored and this unqualified candidate does not replace stock admission.
