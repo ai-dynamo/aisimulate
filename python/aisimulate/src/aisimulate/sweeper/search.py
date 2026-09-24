@@ -616,10 +616,18 @@ def _materialize_one(
             if sample["deployment_mode"] == "disagg":
                 role_hardware = {role: sample[f"{role}_hardware_sku"] for role in ("prefill", "decode")}
                 if len(set(role_hardware.values())) == 1:
-                    backend_version = resolve_backend_version(role_hardware["prefill"], selection["backend"])
+                    backend_version = resolve_backend_version(
+                        role_hardware["prefill"],
+                        selection["backend"],
+                        systems_paths=config.search_space.systems_paths_for("prefill"),
+                    )
                 else:
                     role_versions = {
-                        role: resolve_backend_version(hardware, selection["backend"])
+                        role: resolve_backend_version(
+                            hardware,
+                            selection["backend"],
+                            systems_paths=config.search_space.systems_paths_for(role),
+                        )
                         for role, hardware in role_hardware.items()
                     }
                     if len(set(role_versions.values())) != 1:
@@ -630,7 +638,11 @@ def _materialize_one(
                         )
                     backend_version = role_versions["prefill"]
             else:
-                backend_version = resolve_backend_version(config.search_space.hardware_sku, selection["backend"])
+                backend_version = resolve_backend_version(
+                    config.search_space.hardware_sku,
+                    selection["backend"],
+                    systems_paths=config.search_space.systems_paths_for("agg"),
+                )
         # The resolved perf-model version is part of the evaluated contract. Keep it
         # on the candidate so downstream artifact generation cannot independently
         # select a different backend version.

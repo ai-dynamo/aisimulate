@@ -263,8 +263,8 @@ def _literal_backend_version(
     (an omitted version means the ``current`` slot). Slot-policy errors
     (unlisted versions, unpopulated aliases) PROPAGATE — the spec builder is
     a user-level surface and must not smuggle ungated coordinates onto the
-    wire. Trees without a slots file (synthetic/external) keep the ungated
-    passthrough.
+    wire. Trees without a slots file (synthetic/external) keep explicit
+    versions unchanged and resolve an omitted version to the latest database.
     """
     resolved = getattr(database, "version", None) if database is not None else None
     if resolved:
@@ -273,7 +273,11 @@ def _literal_backend_version(
 
     slots = perf_database.get_version_slots(system, backend, systems_paths=systems_path)
     if slots is None:
-        return backend_version
+        return (
+            backend_version
+            if backend_version is not None
+            else perf_database.get_latest_database_version(system, backend, systems_paths=systems_path)
+        )
     requested = "current" if backend_version is None else backend_version
     return perf_database.resolve_query_version(system, backend, requested, systems_paths=systems_path)
 

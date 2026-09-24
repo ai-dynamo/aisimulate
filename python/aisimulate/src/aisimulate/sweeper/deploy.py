@@ -52,6 +52,8 @@ def _performance_model_metadata(sample: dict[str, Any], role: str, *, backend_ve
         config["fpm_parquet_path"] = sample[f"{role}_fpm_parquet_path"]
     if sample.get("speculation") is not None:
         config["speculation"] = NgramSpeculationConfig.model_validate(sample["speculation"]).cost_config()
+    if sample.get("systems_paths") is not None:
+        config["systems_paths"] = sample["systems_paths"]
     return {"provider": "aic", "config": config}
 
 
@@ -99,6 +101,10 @@ def _engine_args_payload(
         memory_fraction_field: float(memory_fraction),
         "enable_prefix_caching": bool(sample[f"{role}_enable_prefix_caching"]),
     }
+    if sample.get("systems_paths") is not None and sample.get(f"{role}_timing_model") is not None:
+        from .forward_pass_estimator import resolve_systems_paths
+
+        payload["systems_path"] = list(resolve_systems_paths(sample["systems_paths"]))
     if sample.get("context_length") is not None:
         payload["max_model_len"] = int(sample["context_length"])
     if moe_tp * moe_ep > 1:
@@ -126,6 +132,7 @@ def _engine_args_payload(
         if sample.get(f"{role}_num_gpu_blocks") is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
+            "systems_path",
             "aic_backend_version",
             "aic_system",
             "aic_model_path",

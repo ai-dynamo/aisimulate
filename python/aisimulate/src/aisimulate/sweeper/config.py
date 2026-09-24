@@ -29,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serial
 
 from aisimulate.config.traffic import AgenticSnapshotOptions
 
-from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, is_active_engine_model_control
+from ..config.common import ENGINE_MODEL_CONTROL_FIELDS, SystemsPath, is_active_engine_model_control
 from ..config.engine import NgramSpeculationConfig
 
 
@@ -526,6 +526,7 @@ class SearchSpace(BaseModel):
     database_mode: Literal["SILICON", "HYBRID", "EMPIRICAL", "SOL"] = "SILICON"
     transfer_policy: str | list[str] | None = None
     systems_paths: list[str] | None = Field(default=None, min_length=1)
+    systems_path: SystemsPath | None = Field(default=None, exclude=True)
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] = "auto"
     fallback_policy: Literal["deny", "allow"] = "deny"
     estimator_config: dict[str, Any] = Field(default_factory=dict)
@@ -650,6 +651,10 @@ class SearchSpace(BaseModel):
     @model_validator(mode="after")
     def _validate_search_choices(self) -> SearchSpace:
         """Every backend dimension is a non-empty subset of its allowed choices."""
+        if self.systems_path is not None:
+            if self.systems_paths is not None and self.systems_paths != [self.systems_path]:
+                raise ValueError("systems_path conflicts with systems_paths")
+            self.systems_paths = [self.systems_path]
         if self.speculation is not None:
             if self.aic_nextn is not None:
                 raise ValueError("speculation cannot be combined with aic_nextn")
@@ -885,7 +890,6 @@ class SearchSpace(BaseModel):
         nondefault = (
             self.database_mode != "SILICON"
             or self.transfer_policy is not None
-            or self.systems_paths not in (None, ["default"])
             or self.estimation_mode != "auto"
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)
@@ -893,6 +897,9 @@ class SearchSpace(BaseModel):
         roles = ({"agg"} if "agg" in self.deployment_mode else set()) | (
             {"prefill", "decode"} if "disagg" in self.deployment_mode else set()
         )
+        if self.systems_paths not in (None, ["default"]) and self._uses_legacy_estimator_provider():
+            unsupported = "AFD" if set(self.deployment_mode) & {"afd", "afd+pd"} else "analytical encoder pools"
+            raise ValueError(f"systems_paths does not support {unsupported}")
         if nondefault and (
             set(self.deployment_mode) & {"afd", "afd+pd"}
             or self.encoder is not None

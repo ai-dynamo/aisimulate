@@ -342,6 +342,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
     args = parser.parse_args(arguments)
+    if args.command == "onboard":
+        from .support.cli import run_support_command
+
+        try:
+            return run_support_command(args)
+        except (ValueError, OSError) as exc:
+            parser.error(str(exc))
+        except KeyboardInterrupt:
+            return 130
     raw = None
     try:
         raw = _load_mapping(args.config)

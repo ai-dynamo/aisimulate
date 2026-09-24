@@ -92,6 +92,8 @@ def _role_capacity_tokens(
         roots = resolved.get("systems_paths")
         if not roots and resolved.get("systems_path"):
             roots = [resolved["systems_path"]]
+        if not roots:
+            roots = sample.get("systems_paths")
         per_rank_tokens = _per_rank_capacity_tokens(
             config.shape,
             model_name=str(resolved.get("model", resolved.get("model_path", sample["model_name"]))),
