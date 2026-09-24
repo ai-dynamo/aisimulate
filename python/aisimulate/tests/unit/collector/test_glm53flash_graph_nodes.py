@@ -280,3 +280,44 @@ def test_actual_graph_memory_activity_is_required_and_retained(category, node_ty
     events[-1]["cat"] = "gpu_memset" if category == "gpu_memcpy" else "gpu_memcpy"
     with pytest.raises(ValueError, match="unique captured"):
         bind_replay_kernels(registry, events, correlation=7)
+
+
+def test_owned_activity_union_does_not_claim_cross_unit_overlap_or_idle_as_work():
+    registry, events = replay_fixture()
+    # Attention has overlapping kernels [1, 6] and [3, 5], then [10, 12].
+    # A separate collective overlaps [4, 7]; runtime setup is [12, 14].
+    registry["nodes"] = [
+        {"node_id": 11, "node_type": 0, "name": "attention"},
+        {"node_id": 12, "node_type": 0, "name": "allreduce"},
+        {"node_id": 13, "node_type": 0, "name": "attention"},
+        {"node_id": 14, "node_type": 0, "name": "attention"},
+        {"node_id": 15, "node_type": 2, "name": "native_graph_setup"},
+    ]
+    template = events[0]
+    events = []
+    for node, start, duration, category in [
+        (11, 1, 5, "kernel"),
+        (12, 4, 3, "kernel"),
+        (13, 3, 2, "kernel"),
+        (14, 10, 2, "kernel"),
+        (15, 12, 2, "gpu_memset"),
+    ]:
+        events.append(
+            {
+                **template,
+                "cat": category,
+                "ts": start,
+                "dur": duration,
+                "args": {**template["args"], "graph node id": node, "bytes": 3088},
+            }
+        )
+    result = bind_replay_kernels(registry, events, correlation=7)
+    units = {row["operation"]: row for row in result["operation_activity_unions"]}
+    assert units["attention"]["active_union_us"] == 7
+    assert units["attention"]["activity_interval_sum_us"] == 9
+    assert units["attention"]["activity_envelope_us"] == 11
+    assert units["native_graph_setup"]["active_union_us"] == 2
+    assert result["activity_union_us"] == 10
+    assert result["approximate_additive_operation_union_us"] == 12
+    assert "not_critical_path" in result["composition"]
+    assert result["formal_admission"] is False

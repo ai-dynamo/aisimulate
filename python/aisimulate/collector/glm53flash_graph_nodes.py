@@ -232,6 +232,20 @@ class CaptureNodeRegistry:
         }
 
 
+def _active_union_us(rows: list[dict]) -> float:
+    """Union of measured device activity intervals, excluding idle gaps."""
+    total, start, end = 0.0, None, None
+    for row in sorted(rows, key=lambda row: row["start_us"]):
+        if start is None:
+            start, end = row["start_us"], row["end_us"]
+        elif row["start_us"] > end:
+            total += end - start
+            start, end = row["start_us"], row["end_us"]
+        else:
+            end = max(end, row["end_us"])
+    return total + (end - start if start is not None else 0.0)
+
+
 def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int) -> dict:
     """Join one real graph launch by CUPTI IDs, retaining overlap explicitly.
 
@@ -297,6 +311,19 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
         for right in rows[index + 1 :]
         if right["start_us"] < left["end_us"]
     ]
+    groups = {}
+    for row in rows:
+        groups.setdefault(row["operation"], []).append(row)
+    units = [
+        {
+            "operation": operation,
+            "node_ids": [row["node_id"] for row in owned],
+            "active_union_us": _active_union_us(owned),
+            "activity_interval_sum_us": sum(row["end_us"] - row["start_us"] for row in owned),
+            "activity_envelope_us": max(row["end_us"] for row in owned) - min(row["start_us"] for row in owned),
+        }
+        for operation, owned in groups.items()
+    ]
     return {
         "graph_id": registry["graph_id"],
         "correlation": correlation,
@@ -309,6 +336,10 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
         "kernel_envelope_us": max(row["end_us"] for row in kernels) - min(row["start_us"] for row in kernels),
         "activity_interval_sum_us": sum(row["end_us"] - row["start_us"] for row in rows),
         "activity_envelope_us": max(row["end_us"] for row in rows) - min(row["start_us"] for row in rows),
+        "activity_union_us": _active_union_us(rows),
+        "operation_activity_unions": units,
+        "approximate_additive_operation_union_us": sum(row["active_union_us"] for row in units),
+        "composition": "disjoint_node_ownership_additive_active_unions_not_critical_path",
         "whole_forward_accuracy": "NOT_EVALUATED",
         "formal_admission": False,
     }

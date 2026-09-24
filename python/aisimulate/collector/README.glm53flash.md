@@ -296,6 +296,17 @@ callbacks are included once; collectives own disjoint captured nodes.
 `graph node id` and actual launch correlation. `glm53flash_graph_hooks.py`
 retains native shape/padding and full operation boundaries. Kernel launch
 geometry, interval overlaps and in-graph setup nodes are kept explicitly.
+Kernels, memcpy and memset require complete activity records; structural nodes
+remain separately visible. For each operation, the raw diagnostic reports the
+union of its owned activity intervals (including memory activity). It also
+reports their explicitly approximate additive sum, global activity union and
+interval envelope. These distinct values are never labeled a critical path.
+Cross-operation overlap and PDL edges remain intact, and no whole-forward
+measurement is distributed back into operation costs. Runtime preparation and
+output-copy nodes retain `native_graph_setup` ownership; they cannot disappear
+from a future complete measured prediction. Future graph admission also needs
+actual active batch/padding, runtime/phase/cache/capture identity and the same
+independent 20% whole-forward gate, without changing the SOL theoretical graph.
 Missing nodes, recaptured/unregistered graphs, child graphs and unknown fusion
 scopes fail. Native selected requests/sample histories and hardware/state
 receipts are still required from the shared retained lifecycle.
