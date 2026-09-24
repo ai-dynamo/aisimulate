@@ -17,10 +17,12 @@ from pathlib import Path
 import pytest
 
 import aisimulate_core._native as core
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel, rust_engine_step
 from aisimulate_core.sdk.config_builders import build_model_config
 from aisimulate_core.sdk.engine import EngineHandle, build_engine_spec_json, build_ops_json
 from aisimulate_core.sdk.errors import PrefillGraphProfileError
 from aisimulate_core.sdk.models import get_model
+from aisimulate_core.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 VERSION = "0.5.18+nvinternal.rubin.0.8full.66997102"
@@ -116,6 +118,69 @@ def test_all_seven_public_coordinates_match_reviewed_forward_ledger():
     assert len(PREDICTED_MS) == 7
     for call, expected in zip(PUBLIC_CALLS, PREDICTED_MS, strict=True):
         assert engine.predict_prefill_latency(*call) == pytest.approx(expected, abs=1e-10, rel=1e-12)
+
+
+@pytest.mark.parametrize("worker_type", ["prefill", "decode"])
+@pytest.mark.parametrize(
+    "selector,identity",
+    [
+        (PROFILE, core.prefill_graph_profile_identity()[1]),
+        (PROFILE, None),
+        (PROFILE, "invalid"),
+        (None, core.prefill_graph_profile_identity()[1]),
+        (None, "invalid"),
+        (None, ""),
+        ("", None),
+    ],
+)
+def test_public_legacy_migration_rejects_graph_selector_or_identity(worker_type, selector, identity):
+    legacy = json.loads(spec_json())["engine"]
+    legacy.update(prefill_graph_profile=selector, prefill_graph_profile_id=identity)
+    with pytest.raises(PrefillGraphProfileError, match="cannot be migrated"):
+        ForwardPassPerfModelConfig.from_legacy_engine_config(legacy, worker_type)
+
+
+@pytest.mark.parametrize("explicit_nulls", [False, True])
+def test_public_legacy_migration_preserves_profile_free_prediction(explicit_nulls):
+    legacy = json.loads(spec_json(False))["engine"]
+    if explicit_nulls:
+        legacy.update(prefill_graph_profile=None, prefill_graph_profile_id=None, decode_workload_distribution=None)
+    migrated = ForwardPassPerfModelConfig.from_legacy_engine_config(legacy, "prefill")
+    prediction = RustForwardPassPerfModel.best_available(migrated)
+    assert prediction.static_phase_latency(batch_size=1, input_tokens=1024, output_tokens=2, prefill=True) == handle(
+        False
+    ).predict_prefill_latency(1, 1024)
+
+
+@pytest.mark.parametrize("selected_first", [False, True])
+def test_warm_engine_cache_cannot_bypass_graph_profile_query_restrictions(selected_first):
+    database = PerfDatabase(
+        "vr200_hecate", "sglang", VERSION, str(systems_root()), shared_layer=False, strict_provenance=True
+    )
+    ordinary, selected = model(False), model(True)
+    identity = json.loads(json.loads(rust_engine_step._engine_config_json(ordinary, database))["extra"]["identity"])
+    assert identity["model_config"]["prefill_graph_profile"] is None
+    assert identity["model_config"]["decode_workload_distribution"] is None
+    rust_engine_step._engine_handle_cache_clear()
+    try:
+        for chosen in [selected, ordinary] if selected_first else [ordinary, selected]:
+            if chosen is selected:
+                with pytest.raises(PrefillGraphProfileError):
+                    rust_engine_step.estimate_mixed_step_latency_with_rust(
+                        chosen, database, ctx_tokens=0, gen_tokens=1, isl=1024, osl=2, prefix=0
+                    )
+            else:
+                assert (
+                    rust_engine_step.estimate_mixed_step_latency_with_rust(
+                        chosen, database, ctx_tokens=0, gen_tokens=1, isl=1024, osl=2, prefix=0
+                    )
+                    > 0
+                )
+        assert rust_engine_step._engine_config_json(ordinary, database) != rust_engine_step._engine_config_json(
+            selected, database
+        )
+    finally:
+        rust_engine_step._engine_handle_cache_clear()
 
 
 def multiply_collected_latencies(path):

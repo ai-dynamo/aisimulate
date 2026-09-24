@@ -1891,8 +1891,28 @@ impl PyForwardPassPerfModel {
         options_json: Option<&str>,
         allow_regression: bool,
     ) -> PyResult<String> {
-        let legacy: EngineConfig =
+        let value: serde_json::Value =
             serde_json::from_str(config_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+        if ["prefill_graph_profile", "prefill_graph_profile_id"]
+            .iter()
+            .any(|field| value.get(field).is_some_and(|item| !item.is_null()))
+        {
+            return Err(aic_to_py(crate::perf_database::prefill_graph::error(
+                "prefill_graph_profile or prefill_graph_profile_id cannot be migrated from a legacy EngineConfig; use ForwardPassPerfModelConfig.estimator_config.op_level",
+            )));
+        }
+        // EngineConfig has no decode selector field, so reject it before serde
+        // can discard it as an unknown field.
+        if value
+            .get("decode_workload_distribution")
+            .is_some_and(|item| !item.is_null())
+        {
+            return Err(aic_to_py(AicError::DecodeMoeProfile(
+                "decode_workload_distribution cannot be migrated from a legacy EngineConfig; use ForwardPassPerfModelConfig.estimator_config.op_level".into(),
+            )));
+        }
+        let legacy: EngineConfig =
+            serde_json::from_value(value).map_err(|e| PyValueError::new_err(e.to_string()))?;
         let options = options_json
             .map(serde_json::from_str::<crate::ForwardPassPerfOptions>)
             .transpose()

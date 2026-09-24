@@ -14,11 +14,12 @@ import pytest
 import yaml
 
 import aisimulate_core as core
-from aisimulate_core.sdk import common
+from aisimulate_core.sdk import ForwardPassPerfModelConfig, common, rust_engine_step
 from aisimulate_core.sdk.config_builders import build_model_config
 from aisimulate_core.sdk.engine import build_ops_json, compile_engine
 from aisimulate_core.sdk.errors import DecodeMoeProfileError, PerfDataNotAvailableError
 from aisimulate_core.sdk.models import get_model
+from aisimulate_core.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
 PROFILE = "observed_glm52_nvfp4_decode_1ab2c747975e_v1"
@@ -188,6 +189,61 @@ def test_exact_profile_wins_over_uniform_decoy_and_default_fallback_survives(tmp
     assert [handle.predict_decode_latency(n, 1024, 2) for n in (1, 8, 32)] == [1.0, 2.0, 3.0]
     default = load(spec(root, selected="missing", exact=False))
     assert default.predict_decode_latency(1, 1024, 2) == 50.0
+
+
+@pytest.mark.parametrize("power", [float("nan"), float("inf"), float("-inf"), -1.0])
+def test_decode_profile_loader_rejects_invalid_power(tmp_path, power):
+    root = dataset(tmp_path / "invalid-power", row_change=lambda row: row.update(power=power))
+    with pytest.raises(DecodeMoeProfileError, match="invalid profile power at node 1"):
+        load(spec(root))
+
+
+@pytest.mark.parametrize("power", [None, 0.0, 125.0])
+def test_decode_profile_loader_accepts_optional_nonnegative_power(tmp_path, power):
+    root = dataset(tmp_path / "valid-power", row_change=lambda row: row.update(power=power))
+    engine = load(spec(root))
+    result = engine.evaluate_generation_ops([0], 1, 1024)
+    # The synthetic N=1 profile has 1 ms latency; Rust carries W*ms energy.
+    assert result[0][1:3] == (1.0, power or 0.0)
+
+
+@pytest.mark.parametrize("distribution", [PROFILE, "uniform", ""])
+def test_public_legacy_migration_rejects_decode_distribution(distribution):
+    legacy = spec()["engine"]
+    legacy["decode_workload_distribution"] = distribution
+    with pytest.raises(DecodeMoeProfileError, match="cannot be migrated"):
+        ForwardPassPerfModelConfig.from_legacy_engine_config(legacy, "decode")
+
+
+@pytest.mark.parametrize("selected_first", [False, True])
+def test_warm_engine_cache_preserves_decode_distribution_and_exact_profile_limits(selected_first):
+    from pathlib import Path
+
+    root = Path(core.__file__).parent / "systems"
+    database = PerfDatabase(SYSTEM, "sglang", VERSION, str(root), shared_layer=False, strict_provenance=True)
+    ordinary = get_model(MODEL, build_model_config(**KWARGS), "sglang")
+    selected = get_model(MODEL, build_model_config(**KWARGS, decode_workload_distribution=PROFILE), "sglang")
+    rust_engine_step._engine_handle_cache_clear()
+    try:
+        for chosen in [selected, ordinary] if selected_first else [ordinary, selected]:
+            if chosen is selected:
+                with pytest.raises(DecodeMoeProfileError, match="1..=32"):
+                    rust_engine_step.estimate_decode_step_latency_with_rust(
+                        chosen, database, gen_tokens=33, isl=1024, osl=2
+                    )
+            else:
+                assert (
+                    rust_engine_step.estimate_decode_step_latency_with_rust(
+                        chosen, database, gen_tokens=33, isl=1024, osl=2
+                    )
+                    > 0
+                )
+        default_handle = rust_engine_step._cached_engine_handle(ordinary, database)
+        selected_handle = rust_engine_step._cached_engine_handle(selected, database)
+        assert default_handle is not selected_handle
+        assert default_handle.predict_decode_latency(1, 1024) != selected_handle.predict_decode_latency(1, 1024)
+    finally:
+        rust_engine_step._engine_handle_cache_clear()
 
 
 @pytest.mark.parametrize("selected", ["typo", "", "uniform"])

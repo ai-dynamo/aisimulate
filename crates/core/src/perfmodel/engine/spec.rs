@@ -921,14 +921,27 @@ mod tests {
             TOKEN_SCALE_INDEX,
             "TokenScale index moved"
         );
-        let variants = all_op_variants();
         assert_eq!(
-            index_of(&variants[PREFILL_ATTENTION_INDEX as usize]),
-            PREFILL_ATTENTION_INDEX
+            index_of(&OpSpec::SglangPrefillAttentionSequence(
+                crate::operators::prefill_graph::SglangPrefillAttentionSequenceOp {
+                    name: "context_attention_sequence".into(),
+                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
+                    weight_bytes: 123456.0,
+                },
+            )),
+            PREFILL_ATTENTION_INDEX,
+            "SglangPrefillAttentionSequence index moved"
         );
         assert_eq!(
-            index_of(&variants[PREFILL_BOUNDARY_INDEX as usize]),
-            PREFILL_BOUNDARY_INDEX
+            index_of(&OpSpec::SglangPrefillCommNormBoundary(
+                crate::operators::prefill_graph::SglangPrefillCommNormBoundaryOp {
+                    name: "context_post_attention_boundary".into(),
+                    profile_id: crate::perf_database::prefill_graph::PROFILE_ID.into(),
+                    boundary_role: "post_attention".into(),
+                },
+            )),
+            PREFILL_BOUNDARY_INDEX,
+            "SglangPrefillCommNormBoundary index moved"
         );
         // Appending is the only safe growth direction.
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);

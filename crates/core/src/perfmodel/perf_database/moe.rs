@@ -621,6 +621,12 @@ fn load_decode_profile(
             let power = row
                 .f64_optional(reader.col_optional("power"))?
                 .unwrap_or(0.0);
+            if !power.is_finite() || power < 0.0 {
+                return Err(selected.error(format!(
+                    "{}: invalid profile power at node {tokens}",
+                    path.display()
+                )));
+            }
             if points
                 .insert(tokens, LeafValue::with_power(latency, power))
                 .is_some()

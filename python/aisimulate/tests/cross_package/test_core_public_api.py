@@ -292,6 +292,37 @@ def test_distribution_carries_typing_contract() -> None:
 
 
 @pytest.mark.unit
+def test_prefill_graph_identity_stub_matches_native_contract() -> None:
+    native = importlib.import_module("aisimulate_core._native")
+    root = importlib.resources.files("aisimulate_core")
+    stub = ast.parse((root / "_native.pyi").read_text(encoding="utf-8"))
+    function = next(
+        (
+            node
+            for node in stub.body
+            if isinstance(node, ast.FunctionDef) and node.name == "prefill_graph_profile_identity"
+        ),
+        None,
+    )
+    assert function is not None, "The shipped native stub omits prefill_graph_profile_identity"
+    assert function.args.args == function.args.posonlyargs == function.args.kwonlyargs == []
+    assert not inspect.signature(native.prefill_graph_profile_identity).parameters
+    assert ast.unparse(function.returns) == "tuple[str, str]"
+    identity = native.prefill_graph_profile_identity()
+    assert isinstance(identity, tuple) and len(identity) == 2
+    assert all(isinstance(value, str) for value in identity)
+
+    engine = next(node for node in stub.body if isinstance(node, ast.ClassDef) and node.name == "AicEngine")
+    for name in ("prefill_graph_profile_id", "prefill_graph_profile_json"):
+        prop = next((node for node in engine.body if isinstance(node, ast.FunctionDef) and node.name == name), None)
+        assert prop is not None, f"The shipped AicEngine stub omits {name}"
+        assert [ast.unparse(decorator) for decorator in prop.decorator_list] == ["property"]
+        assert [argument.arg for argument in prop.args.args] == ["self"]
+        assert ast.unparse(prop.returns) == "str | None"
+        assert inspect.isdatadescriptor(getattr(native.AicEngine, name))
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize("namespace", ["aisimulate_core", "aisimulate_core"])
 def test_regression_bucket_diagnostics_stub_matches_native_contract(namespace: str) -> None:
     root = importlib.resources.files("aisimulate_core")

@@ -1240,6 +1240,8 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "decoder_replay": bool(getattr(model_config, "decoder_replay", False)),
                         "cp_style": getattr(model_config, "cp_style", None),
                         "workload_distribution": getattr(model_config, "workload_distribution", None),
+                        "decode_workload_distribution": getattr(model_config, "decode_workload_distribution", None),
+                        "prefill_graph_profile": getattr(model_config, "prefill_graph_profile", None),
                         "overwrite_num_layers": getattr(model_config, "overwrite_num_layers", None),
                         "sms": getattr(model_config, "sms", None),
                         "moe_backend": getattr(model_config, "moe_backend", None),
