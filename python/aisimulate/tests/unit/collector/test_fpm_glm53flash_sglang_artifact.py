@@ -191,3 +191,28 @@ def test_ops_provenance_is_bound_to_loaded_config_and_native_source(tmp_path):
     path.write_text(json.dumps({**provenance, "execution_identity": {}}))
     with pytest.raises(ValueError, match="cannot replace"):
         read_ops_provenance(path, raw_config=config, checkpoint_revision="pinned-checkpoint", runtime_audit=audit)
+
+
+def test_native_sglang_offload_disabled_sentinel_and_active_group():
+    from types import SimpleNamespace
+
+    from collector.fpm_forward.sglang_driver import validate_server_args
+
+    args = SimpleNamespace(
+        tp_size=2,
+        context_length=131072,
+        kv_cache_dtype="fp8_e4m3",
+        disable_radix_cache=True,
+        chunked_prefill_size=8192,
+        cpu_offload_gb=0,
+        offload_group_size=-1,
+        offload_num_in_group=1,
+    )
+    validate_server_args(args)
+    args.offload_group_size = 4
+    with pytest.raises(ValueError, match="grouped offloading disabled"):
+        validate_server_args(args)
+    args.offload_group_size = -1
+    args.cpu_offload_gb = 1
+    with pytest.raises(ValueError, match="rejects cpu_offload_gb"):
+        validate_server_args(args)

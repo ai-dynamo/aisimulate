@@ -115,12 +115,15 @@ def validate_server_args(args) -> None:
         "speculative_algorithm",
         "enable_eplb",
         "cpu_offload_gb",
-        "offload_group_size",
         "enable_dp_attention",
         "enable_dp_lm_head",
     ):
         if getattr(args, name, None):
             raise ValueError(f"GLM SGLang collection rejects {name}")
+    # Native 0.5.20 uses -1 as the disabled group-size sentinel. A truthiness
+    # check would reject every default ServerArgs before loading the model.
+    if getattr(args, "offload_group_size", -1) > 0:
+        raise ValueError("GLM SGLang requires grouped offloading disabled (offload_group_size <= 0)")
     if not 1 <= args.chunked_prefill_size <= 8192:
         raise ValueError("GLM SGLang requires a positive native chunk budget <= 8192")
 
