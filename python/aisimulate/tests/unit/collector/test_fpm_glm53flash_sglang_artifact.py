@@ -428,6 +428,25 @@ def test_ops_provenance_is_bound_to_loaded_config_and_native_source(tmp_path):
         read_ops_provenance(path, raw_config=config, checkpoint_revision="pinned-checkpoint", runtime_audit=audit)
 
 
+@pytest.mark.parametrize("model", ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"])
+def test_ops_hashes_original_checkpoint_file_not_sdk_inferred_quant_fields(tmp_path, model):
+    from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+    from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config, get_model_config_from_model_path
+    from collector.fpm_forward.sglang_driver import raw_checkpoint_config
+
+    original = _load_pre_downloaded_hf_config(model)
+    normalized = get_model_config_from_model_path(model)["raw_config"]
+    assert original != normalized
+    raw = json.dumps(original, indent=2).encode()
+    (tmp_path / "config.json").write_bytes(raw)
+    config, digest = raw_checkpoint_config(str(tmp_path), MODEL_REVISIONS[model], model)
+    assert config == original
+    assert digest == hashlib.sha256(raw).hexdigest()
+    (tmp_path / "config.json").write_text(json.dumps({**original, "unexpected": True}))
+    with pytest.raises(ValueError, match="pinned original config"):
+        raw_checkpoint_config(str(tmp_path), MODEL_REVISIONS[model], model)
+
+
 @pytest.mark.parametrize("all_ranks", [False, True])
 def test_native_sglang_rejects_rehashed_wrong_sample_chain(all_ranks):
     point, manifest, records = fixture()
