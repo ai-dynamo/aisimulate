@@ -179,15 +179,23 @@ def _remap_layer_index_lists(cfg: dict, n_layers: int, sel: list[int], edits: li
     mentions ``layers`` and every element is an int in [0, n_layers).
     """
     new_index = {orig: new for new, orig in enumerate(sel)}
-    for key, val in cfg.items():
-        # all ints, at least one inside the decoder range (Kimi-K3 lists the
-        # MTP layer 93 next to the 93 decoder layers — still a layer list)
-        if (isinstance(val, list) and val and "layers" in key.lower()
+
+    def _is_layer_list(key, val):
+        return (isinstance(val, list) and val and "layers" in key.lower()
                 and all(isinstance(x, int) and not isinstance(x, bool) for x in val)
-                and any(0 <= x < n_layers for x in val)):
-            kept = [new_index[x] for x in val if x in new_index]
+                and any(0 <= x <= n_layers for x in val))
+    # Kimi-K3's lists are 1-BASED (configuration_kimi_k3.is_kda_layer:
+    # `layer_idx + 1 in kda_layers`): they never contain 0 and run up to
+    # n_layers. The base is a property of the CONFIG, so detect it once over
+    # the union of the sibling lists (kda_layers alone tops out below
+    # n_layers and would look 0-based) — never assume.
+    union = {x for k, v in cfg.items() if _is_layer_list(k, v) for x in v}
+    base = 1 if union and 0 not in union and max(union) >= n_layers else 0
+    for key, val in cfg.items():
+        if _is_layer_list(key, val):
+            kept = [new_index[x - base] + base for x in val if (x - base) in new_index]
             cfg[key] = kept
-            edits.append(f"remapped {prefix}{key}: {len(val)} layer indices -> {kept}")
+            edits.append(f"remapped {prefix}{key} ({'1' if base else '0'}-based): {len(val)} layer indices -> {kept}")
         elif isinstance(val, dict):
             _remap_layer_index_lists(val, n_layers, sel, edits, prefix=f"{prefix}{key}.")
 
@@ -257,7 +265,8 @@ def _check_no_stale_layer_refs(cfg: dict, max_layer: int) -> list[str]:
             # (Kimi-K3 kda_layers / full_attn_layers)
             if ("layers" in path.rsplit(".", 1)[-1].lower()
                     and obj and all(isinstance(x, int) and not isinstance(x, bool) for x in obj)
-                    and max(obj) >= max_layer):
+                    # 0-based lists are stale at >= max_layer; 1-based ones (no 0) may reach max_layer
+                    and (max(obj) >= max_layer if 0 in obj else max(obj) > max_layer)):
                 stale.append(f"{path} = {obj[:6]}...")
             for i, v in enumerate(obj):
                 walk(v, f"{path}[{i}]")
@@ -449,7 +458,9 @@ def _layer_axis(cfg: dict) -> tuple[str | None, list]:
     la = tc.get("linear_attn_config")
     if isinstance(la, dict) and n and (la.get("kda_layers") or la.get("full_attn_layers")):
         kda, full = set(la.get("kda_layers") or []), set(la.get("full_attn_layers") or [])
-        values = ["kda" if i in kda else "full" if i in full else "dense" for i in range(n)]
+        # the lists are 1-based (is_kda_layer checks layer_idx + 1); detect from data
+        base = 1 if (0 not in (kda | full) and max(kda | full) >= n) else 0
+        values = ["kda" if i + base in kda else "full" if i + base in full else "dense" for i in range(n)]
         if len(set(values)) > 1:
             return "linear_attn_config", values
     for key in ("layer_types", "attn_type_list", "hybrid_layer_pattern",
