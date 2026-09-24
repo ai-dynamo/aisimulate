@@ -6,9 +6,25 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+
 from collector.glm53flash_sglang_runtime import _TraceState, actual_coordinates, match_frozen_requests
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)
+def selected_device(monkeypatch):
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    monkeypatch.setattr(
+        "collector.glm53flash_sglang_runtime.native_gpu_identity",
+        lambda _: {
+            "schema": "glm53flash_gpu_identity_v1",
+            "name": "NVIDIA GB300",
+            "compute_capability": [10, 3],
+            "total_memory_bytes": 288 * 1024**3,
+            "cuda_device_index": 0,
+        },
+    )
 
 
 class Tensor:
@@ -101,6 +117,16 @@ def test_native_futuremap_input_does_not_depend_on_lagging_req_outputs(monkeypat
     assert request["previous_forward_id"] == records[0]["forward_id"]
     assert request["same_request_real_prefix"] is True
     assert records[1]["used_cuda_graph"] is False
+
+
+def test_rejected_native_device_retains_actual_identity(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "sglang.srt.utils.device_timer", SimpleNamespace(DeviceTimer=Timer))
+    monkeypatch.setattr("collector.glm53flash_sglang_runtime.native_gpu_identity", lambda _: {"name": "NVIDIA B300"})
+    with pytest.raises(ValueError, match="GPU identity"):
+        _TraceState(SimpleNamespace(ps=SimpleNamespace(tp_rank=1)), tmp_path, {}, None)
+    receipt = json.loads((tmp_path / "state-layout-rank-1.json").read_text())
+    assert receipt["hardware"] == {"name": "NVIDIA B300"}
+    assert receipt["tp_rank"] == 1
 
 
 def test_unobserved_cached_prefix_retains_failed_admission_evidence(monkeypatch, tmp_path):

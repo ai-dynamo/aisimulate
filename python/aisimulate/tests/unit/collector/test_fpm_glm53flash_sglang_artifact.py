@@ -163,6 +163,20 @@ def artifact(tmp_path):
         },
     }
     for rank, rows in records.items():
+        layout.update(
+            tp_rank=rank,
+            hardware={
+                "schema": "glm53flash_gpu_identity_v1",
+                "name": "NVIDIA GB300",
+                "compute_capability": [10, 3],
+                "total_memory_bytes": 288 * 1024**3,
+                "cuda_device_index": rank,
+                "uuid": f"GPU-{rank}",
+            },
+        )
+        for tensors in layout["groups"].values():
+            for tensor in tensors:
+                tensor["device"] = f"cuda:{rank}"
         (tmp_path / f"state-layout-rank-{rank}.json").write_text(json.dumps(layout))
         for row in rows:
             row.update(
@@ -249,6 +263,33 @@ def test_native_sglang_median_excludes_warmup_and_roundtrips(tmp_path):
     validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
     payload["results"][0]["fpms"][0]["wall_time"] = 0.999
     with pytest.raises(ValueError, match="median"):
+        validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
+
+
+@pytest.mark.parametrize("corruption", ["missing", "b300", "capability", "rank", "boolean_rank", "uuid", "tensor"])
+def test_rehashed_native_hardware_must_attest_actual_gb300_rank(tmp_path, corruption):
+    cell, payload = artifact(tmp_path)
+    evidence = payload["input_provenance"]["native_forward_manifest"]
+    entry = evidence["state_layouts"][1]
+    path = tmp_path / entry["file"]
+    layout = json.loads(path.read_text())
+    if corruption == "missing":
+        layout.pop("hardware")
+    elif corruption == "b300":
+        layout["hardware"]["name"] = "NVIDIA B300"
+    elif corruption == "capability":
+        layout["hardware"]["compute_capability"] = [10, 0]
+    elif corruption == "rank":
+        layout["tp_rank"] = 0
+    elif corruption == "boolean_rank":
+        layout["tp_rank"] = True
+    elif corruption == "uuid":
+        layout["hardware"]["uuid"] = "GPU-0"
+    else:
+        layout["groups"]["kda_conv"][0]["device"] = "cuda:0"
+    path.write_text(json.dumps(layout))
+    entry["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="GPU|actual CUDA device"):
         validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
 
 

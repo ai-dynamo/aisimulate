@@ -17,7 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from collector.glm53flash_jsonl import file_sha256, iter_records
-from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
+from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES, validate_gb300_identity
 from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL, validate_retained_states
 
 WARMUPS = 5
@@ -394,7 +394,16 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
         "index_tail_key": "torch.bfloat16",
         "index_tail_score": "torch.bfloat16",
     }
+    observed_uuids = set()
     for rank, layout in layouts.items():
+        if type(layout.get("tp_rank")) is not int or layout["tp_rank"] != rank:
+            raise ValueError("SGLang native GPU identity is not bound to its TP rank")
+        validate_gb300_identity(layout.get("hardware"))
+        hardware = layout["hardware"]
+        if hardware.get("uuid") is not None:
+            if hardware["uuid"] in observed_uuids:
+                raise ValueError("SGLang TP ranks report the same native GPU UUID")
+            observed_uuids.add(hardware["uuid"])
         if layout.get("admitted") is not True or layout.get("logical_kv_dtype") != "torch.float8_e4m3fn":
             raise ValueError("SGLang actual hybrid state layout is not admitted")
         groups = layout.get("groups", {})
@@ -403,6 +412,12 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
         for group, dtype in expected_dtypes.items():
             if not groups.get(group) or any(t.get("dtype") != dtype for t in groups[group]):
                 raise ValueError(f"SGLang allocated {group} dtype differs from the frozen contract")
+        if any(
+            tensor.get("device") != f"cuda:{hardware['cuda_device_index']}"
+            for tensors in groups.values()
+            for tensor in tensors
+        ):
+            raise ValueError("SGLang allocated state differs from the worker's actual CUDA device")
         digest = hashlib.sha256(json.dumps(layout, sort_keys=True).encode()).hexdigest()
         for record in iter_records(traces[rank]):
             if record.get("stage") == "measure" and (

@@ -19,6 +19,8 @@ import threading
 from collections import deque
 from pathlib import Path
 
+from collector.glm53flash_protocol import native_gpu_identity, validate_gb300_identity
+
 
 def _tokens_digest(tokens: list[int]) -> str:
     return hashlib.sha256(json.dumps(tokens, separators=(",", ":")).encode()).hexdigest()
@@ -120,6 +122,7 @@ def allocated_state_inventory(runner) -> dict:
 
 class _TraceState:
     def __init__(self, runner, output: Path, provenance: dict, manifest: dict | None, request_manifest=None):
+        import torch
         from sglang.srt.utils.device_timer import DeviceTimer
 
         self.runner = runner
@@ -139,9 +142,12 @@ class _TraceState:
         self.current_invocation = None
         self.prefill_receipt = None
         self.state_layout = allocated_state_inventory(runner)
+        self.state_layout.update(tp_rank=self.rank, hardware=native_gpu_identity(torch))
         self.state_layout_sha256 = hashlib.sha256(json.dumps(self.state_layout, sort_keys=True).encode()).hexdigest()
         output.mkdir(parents=True, exist_ok=True)
         (output / f"state-layout-rank-{self.rank}.json").write_text(json.dumps(self.state_layout, indent=2))
+        # Retain the observed identity even when this allocation is rejected.
+        validate_gb300_identity(self.state_layout["hardware"])
         native_prefill = getattr(runner, "prefill_cuda_graph_runner", None)
         # Pinned setup aliases this slot to EagerRunner when prefill capture is
         # disabled. EagerRunner.load_batch has no graph backend/padding state.
