@@ -70,6 +70,60 @@ def save(path, value):
         json.dump(value, f, indent=2)
 
 
+def cohort_sources():
+    """Verify the native documented scheduling-only admission API."""
+    import vllm
+
+    package = Path(vllm.__file__).resolve().parent.parent
+    sources = json.loads(Path(__file__).with_name("cohort-source.json").read_text())["sources"]
+    result = {}
+    for source in sources:
+        actual = hashlib.sha256((package / source["path"]).read_bytes()).hexdigest()
+        if actual != source["sha256"]:
+            raise RuntimeError("native cohort admission source differs")
+        result[source["path"]] = actual
+    for method in ("sleep", "enqueue", "wake_up", "wait_for_completion"):
+        if not callable(getattr(vllm.LLM, method, None)):
+            raise RuntimeError("native public cohort admission API is missing")
+    return result
+
+
+def generate_cohort(llm, inputs, params, output, case, repetition):
+    """Queue a whole cohort through the public API before native scheduling."""
+    if llm.llm_engine.has_unfinished_requests():
+        raise RuntimeError("previous native cohort is still active")
+
+    def record(name, **fields):
+        row = {"case": case, "repetition": repetition, "event": name, **fields}
+        with (output / "cohort-admission.jsonl").open("a") as stream:
+            stream.write(json.dumps(row, sort_keys=True) + "\n")
+
+    llm.sleep(level=0, mode="keep")
+    if llm.llm_engine.is_sleeping() is not True:
+        raise RuntimeError("native scheduling-only pause did not complete")
+    record("scheduling_paused", level=0, mode="keep")
+    ids = llm.enqueue(inputs, params, use_tqdm=False)
+    if len(ids) != len(inputs) or len(set(ids)) != len(inputs) or not llm.llm_engine.is_sleeping():
+        raise RuntimeError("native cohort did not enqueue completely while paused")
+    record(
+        "cohort_enqueued",
+        native_request_ids=ids,
+        prompt_sha256=[
+            hashlib.sha256(json.dumps(item["prompt_token_ids"], separators=(",", ":")).encode()).hexdigest()
+            for item in inputs
+        ],
+    )
+    llm.wake_up(tags=["scheduling"])
+    if llm.llm_engine.is_sleeping() is not False:
+        raise RuntimeError("native scheduling-only resume did not complete")
+    record("scheduling_resumed", tags=["scheduling"])
+    outputs = llm.wait_for_completion(use_tqdm=False)
+    if llm.llm_engine.has_unfinished_requests() or len(outputs) != len(ids):
+        raise RuntimeError("native completed requests differ from enqueued cohort")
+    record("cohort_completed", external_request_ids=[row.request_id for row in outputs])
+    return outputs
+
+
 def main():
     args = parse()
     root = Path(__file__).resolve().parent
@@ -110,6 +164,8 @@ def main():
             "checkpoint_config_sha256": config_sha,
             "request_identity_protocol": "native_assign_request_id_v1",
             "request_identity_source_sha256": request_identity_sources(),
+            "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+            "cohort_admission_source_sha256": cohort_sources(),
             "public_engine_args": kwargs,
             "actual_engine_args_class": type(actual_args).__module__ + "." + type(actual_args).__name__,
             "gpu_execution": False,
@@ -153,10 +209,13 @@ def main():
         for case, lengths in CASES.items():
             for rep in range(2):
                 inputs = [{"prompt_token_ids": prompts[(case, i)]} for i in range(len(lengths))]
-                outputs = llm.generate(
+                outputs = generate_cohort(
+                    llm,
                     inputs,
                     SamplingParams(temperature=0, seed=0, max_tokens=32, min_tokens=32, ignore_eos=True, logprobs=5),
-                    use_tqdm=False,
+                    args.output,
+                    case,
+                    rep,
                 )
                 if len(outputs) != len(inputs):
                     raise RuntimeError("native Engine did not complete every actual request")

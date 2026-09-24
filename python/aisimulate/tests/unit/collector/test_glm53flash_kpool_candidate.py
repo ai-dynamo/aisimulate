@@ -299,3 +299,107 @@ def test_assignment_witness_calls_original_and_preserves_its_result(tmp_path):
         "prompt_sha256": token_digest([1, 3]),
         "original_assignment_returned": True,
     }
+
+
+def test_public_cohort_pause_only_scheduling_and_preserves_original_outputs(tmp_path):
+    from types import SimpleNamespace
+
+    calls = []
+    paused = False
+    outputs = [SimpleNamespace(request_id="external")]
+
+    class NativeAPI:
+        llm_engine = SimpleNamespace(has_unfinished_requests=lambda: False, is_sleeping=lambda: paused)
+
+        def sleep(self, **kwargs):
+            nonlocal paused
+            calls.append(("sleep", kwargs))
+            paused = True
+
+        def enqueue(self, inputs, params, **kwargs):
+            assert paused
+            calls.append(("enqueue", inputs, params, kwargs))
+            return ["external-012abcde"]
+
+        def wake_up(self, **kwargs):
+            nonlocal paused
+            calls.append(("wake_up", kwargs))
+            paused = False
+
+        def wait_for_completion(self, **kwargs):
+            assert not paused
+            calls.append(("wait", kwargs))
+            return outputs
+
+    inputs = [{"prompt_token_ids": [1, 2]}]
+    params = object()
+    assert probe.generate_cohort(NativeAPI(), inputs, params, tmp_path, "case", 0) is outputs
+    assert [call[0] for call in calls] == ["sleep", "enqueue", "wake_up", "wait"]
+    assert calls[0][1] == {"level": 0, "mode": "keep"}
+    assert calls[2][1] == {"tags": ["scheduling"]}
+    assert calls[1][1] is inputs and calls[1][2] is params
+    rows = [json.loads(row) for row in (tmp_path / "cohort-admission.jsonl").read_text().splitlines()]
+    assert rows[1]["native_request_ids"] == ["external-012abcde"]
+    assert rows[3]["external_request_ids"] == ["external"]
+
+
+@pytest.mark.parametrize("defect", [None, "missing", "level", "order", "ids", "prompt", "stagger"])
+def test_cohort_receipts_require_actual_complete_native_batches(evidence, defect):
+    from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification.validate import (
+        validate_cohort_admission,
+    )
+
+    sources = json.loads(Path(probe.__file__).with_name("cohort-source.json").read_text())["sources"]
+    preflight = {
+        "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+        "cohort_admission_source_sha256": {row["path"]: row["sha256"] for row in sources},
+    }
+    outputs = [json.loads(row) for row in (evidence / "outputs.jsonl").read_text().splitlines()]
+    mapping = {row["request_id"]: row["request_id"] + "-012abcde" for row in outputs}
+    events = []
+    for case in CASES:
+        for rep in range(2):
+            group = [row for row in outputs if (row["case"], row["repetition"]) == (case, rep)]
+            common = {"case": case, "repetition": rep}
+            events.extend(
+                [
+                    {**common, "event": "scheduling_paused", "level": 0, "mode": "keep"},
+                    {
+                        **common,
+                        "event": "cohort_enqueued",
+                        "native_request_ids": [mapping[row["request_id"]] for row in group],
+                        "prompt_sha256": [token_digest(row["prompt_token_ids"]) for row in group],
+                    },
+                    {**common, "event": "scheduling_resumed", "tags": ["scheduling"]},
+                    {
+                        **common,
+                        "event": "cohort_completed",
+                        "external_request_ids": [row["request_id"] for row in group],
+                    },
+                ]
+            )
+    if defect == "level":
+        events[0]["level"] = 1
+    elif defect == "order":
+        events[0], events[1] = events[1], events[0]
+    elif defect == "ids":
+        events[1]["native_request_ids"][0] += "bad"
+    elif defect == "prompt":
+        events[1]["prompt_sha256"][0] = "0" * 64
+    elif defect == "stagger":
+        path = evidence / "forward-rank-0.jsonl"
+        raw = [json.loads(row) for row in path.read_text().splitlines()]
+        row = next(row for row in raw if len(row["requests"]) == 2 and row["requests"][0]["prefix"] == 0)
+        moved = row["requests"].pop()
+        raw.append({**row, "requests": [moved]})
+        lines(path, raw)
+    if defect != "missing":
+        lines(evidence / "cohort-admission.jsonl", events)
+    if defect:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            validate_cohort_admission(evidence, preflight, outputs, mapping, 2)
+    else:
+        assert (
+            validate_cohort_admission(evidence, preflight, outputs, mapping, 2)
+            == preflight["cohort_admission_protocol"]
+        )

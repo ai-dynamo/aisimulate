@@ -1,0 +1,31 @@
+{
+  "upstream_revision": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+  "protocol": "native_scheduling_pause_enqueue_v1",
+  "sources": [
+    {
+      "path": "vllm/entrypoints/llm.py",
+      "sha256": "52de4ac99489e004ef6c61d0bedc84aa96020dd58b8bd1ae500814b548b2b83e",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/entrypoints/llm.py"
+    },
+    {
+      "path": "vllm/entrypoints/offline_utils.py",
+      "sha256": "da427e190c1439c98cdc44e9c05117dcac6c65febb042c89327c33dec2a8af2d",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/entrypoints/offline_utils.py"
+    },
+    {
+      "path": "vllm/v1/engine/llm_engine.py",
+      "sha256": "d4d5fba309db4d3f271ac7479e3ddaa623045499e4c6cfac41c0c7710012413c",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/llm_engine.py"
+    },
+    {
+      "path": "vllm/v1/engine/core_client.py",
+      "sha256": "fd6ca0cb7499b3086eef2fc57674b7ace56ef1c648f09e92e144b255b79018f8",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/core_client.py"
+    },
+    {
+      "path": "vllm/v1/engine/core.py",
+      "sha256": "268bf40534a853812867ae8e80040f190983cb364b41182b55969aace20c93f5",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/core.py"
+    }
+  ]
+}

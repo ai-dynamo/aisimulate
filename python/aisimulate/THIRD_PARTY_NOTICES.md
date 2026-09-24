@@ -1113,6 +1113,10 @@ the repository Apache-2.0 license text applies to these adaptations.
   External/internal request identity validation references
   `vllm/v1/engine/{input_processor,output_processor}.py` and
   `vllm/utils/__init__.py` at that immutable revision.
+  Scheduling-only public cohort admission additionally references
+  `vllm/entrypoints/offline_utils.py` and
+  `vllm/v1/engine/{llm_engine,core_client,core}.py` at the same revision;
+  no upstream implementation is copied into these wrappers.
 - Copyright: contributors to the vLLM project; modified by NVIDIA CORPORATION
   & AFFILIATES, 2026. License: Apache-2.0, with the complete upstream LICENSE
   preserved adjacent. The immutable upstream root has no NOTICE file.
