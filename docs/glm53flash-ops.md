@@ -43,7 +43,7 @@ SILICON and HYBRID; neither mode silently falls back to SOL. The installed wheel
 constructs all eight required model graphs and rejects missing measurements in
 all eight SILICON and all eight HYBRID checks.
 
-Current graph-node/hook validation passes 39 CPU tests, including CUDA13 ABI
+Current graph-node/hook validation passes 40 CPU tests, including CUDA13 ABI
 pointer writes, complete kernel/memcpy/memset activity matching, native
 enumeration consistency and retention of nondefault dependency metadata. The preceding
 graph/runtime change passed 112 focused tests. Historical validation passed
@@ -77,8 +77,15 @@ relaxed for that exact runtime. A separate source-overlay diagnostic on GB300
 passed all 16 uniform/nonuniform-gate, heterogeneous-batch and retained-tail
 cache comparisons. That result does not qualify a built runtime or model outputs.
 The private versioned-wheel build preserves the actual container binaries and
-records the observed PyPI/container Rust executable difference. Stock support is
-not claimed to be repaired.
+records the observed PyPI/container Rust executable difference. The FP8 TP4
+versioned candidate passed the frozen native Engine suite in GPU job 606669:
+20 requests per profile with 32 generated tokens, actual heterogeneous B2/B4
+cached-prefill cohorts, complete TP state/token chains and exact output agreement
+between stock/reference, candidate/reference and candidate/split. An independent
+recheck reproduced the receipt and verified all 60 raw file hashes, plus the
+original checkpoint config and revision identity. This is bounded functional
+qualification of that deployment; the other three vLLM deployments and latency
+acceptance remain separate requirements. Stock support is not claimed repaired.
 
 The first native vLLM Ops attempt completed request execution but produced no
 rank observations because the runtime selected its V2 runner. The observer now
