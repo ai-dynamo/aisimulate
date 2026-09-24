@@ -5,7 +5,7 @@
  # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +# Modified by NVIDIA CORPORATION & AFFILIATES, 2026: retained-tail prefill pooling.
  """Custom Sparse Attention Indexer layers."""
- 
+
  from typing import TYPE_CHECKING
 @@ -59,32 +60,47 @@
      kpool: int,

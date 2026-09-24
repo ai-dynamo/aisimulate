@@ -15,6 +15,22 @@ not a collector-side reconstruction of attention state.
 
 ## Immutable source and attribution
 
+The lossless `retained-tail-prefill.patch.b64` decodes to the exact original
+patch bytes/hash. `retained-tail-prefill.review.diff` is a readable display with
+blank context-line trailing whitespace removed; it is not a build input. This
+keeps the original candidate identity unchanged while respecting repository
+whitespace checks. The build decodes and verifies the original patch before
+applying it. Reproduce the lossless conversion with Python:
+
+```python
+import base64
+from pathlib import Path
+original = Path("retained-tail-prefill.patch").read_bytes()
+Path("retained-tail-prefill.patch.b64").write_bytes(base64.b64encode(original) + b"\n")
+restored = base64.b64decode(Path("retained-tail-prefill.patch.b64").read_bytes().strip(), validate=True)
+assert restored == original
+```
+
 The patch modifies
 [vllm/model_executor/layers/sparse_attn_indexer_kpool.py](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/model_executor/layers/sparse_attn_indexer_kpool.py)
 at revision `ced6857afa0ea7b2e3f0846a62e1394e90f15607`. Copyright contributors to
