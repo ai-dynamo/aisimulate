@@ -313,6 +313,10 @@ def _validate_runtime_receipts(cell, payload: dict, parent: Path, evidence: dict
     if tuple(expected_identity[key] for key in EXECUTION_COLUMNS) != cell.execution_identity:
         raise ValueError("SGLang native execution differs from the frozen cell")
     declared, resolved = receipts["declared_config"], receipts["resolved_config"]
+    from .config import validate_sglang_mem_fraction_static
+
+    requested_fraction = getattr(cell, "sglang_mem_fraction_static", None)
+    validate_sglang_mem_fraction_static(requested_fraction)
     for label, config in (("declared", declared), ("resolved", resolved)):
         required = {
             "model_path",
@@ -331,6 +335,11 @@ def _validate_runtime_receipts(cell, payload: dict, parent: Path, evidence: dict
         if not isinstance(config, dict) or not required.issubset(config):
             raise ValueError(f"SGLang {label} native configuration is incomplete")
         validate_server_args(SimpleNamespace(**config), measured_context_limit=measured)
+        if requested_fraction is not None and (
+            type(config.get("mem_fraction_static")) not in (int, float)
+            or config["mem_fraction_static"] != requested_fraction
+        ):
+            raise ValueError(f"SGLang {label} memory fraction differs from the frozen requested value")
         if (
             config["tp_size"] != cell.topology.tp
             or config["revision"] != revision

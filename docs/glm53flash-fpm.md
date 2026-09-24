@@ -88,6 +88,16 @@ FPM translates the shared Generator's legacy decode graph-size options to
 `--fpm-executor slurm` transport are retained. A Slurm run requires an existing
 owned allocation, an explicit container image, and checkpoint/runtime mounts.
 
+For SGLang, `--sglang-mem-fraction-static 0.82` explicitly passes the native
+static-memory fraction. The value must be finite and strictly between zero and
+one; the option is rejected for other backends. Omitting it preserves SGLang's
+runtime default. An explicit value is frozen in the plan, cell and shard
+identities, and both archived declared and resolved ServerArgs must match it.
+Calibration and holdout must also have identical actual serving settings
+(except the native per-process random seed). A changed fraction requires a new
+qualified campaign; it does not turn a historical OOM or earlier default-setting
+measurement into a successful observation.
+
 Keep writable runtime caches separate from a read-only checkpoint mount.
 The generated launcher defaults an unset `FLASHINFER_CUBIN_DIR` to
 `${HF_HOME}/flashinfer-cubins`; this requires a writable `HF_HOME`. A campaign

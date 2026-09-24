@@ -452,10 +452,16 @@ class FPMCell:
     input_text_sha256: str = ""
     backend: str = "vllm"
     state_protocol: str = ""
+    sglang_mem_fraction_static: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "cell_id": self.cell_id,
+            **(
+                {"sglang_mem_fraction_static": self.sglang_mem_fraction_static}
+                if self.sglang_mem_fraction_static is not None
+                else {}
+            ),
             **({"backend": self.backend, "state_protocol": self.state_protocol} if self.state_protocol else {}),
             "execution_identity": dict(zip(EXECUTION_COLUMNS, self.execution_identity, strict=True)),
             "input_text_sha256": self.input_text_sha256,
@@ -596,6 +602,7 @@ def _cell_id(
     policy: BackendPolicy,
     execution: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY,
     input_text_sha256: str = "",
+    sglang_mem_fraction_static: float | None = None,
 ) -> str:
     payload = {
         "backend": backend,
@@ -610,6 +617,8 @@ def _cell_id(
         "input_text_sha256": input_text_sha256,
         "point_source": "dynamo_native_self_benchmark",
     }
+    if sglang_mem_fraction_static is not None:
+        payload["sglang_mem_fraction_static"] = sglang_mem_fraction_static
     return f"fpm-{_canonical_hash(payload)[:16]}"
 
 
@@ -628,6 +637,8 @@ def build_collection_plan(
 ) -> FPMCollectionPlan:
     if backend not in {"vllm", "sglang"}:
         raise ValueError("FPM collection supports backend=vllm or sglang")
+    if options.sglang_mem_fraction_static is not None and backend != "sglang":
+        raise ValueError("--sglang-mem-fraction-static requires backend=sglang")
     collector_config = collector_config or {}
     generator_config_sha256 = _canonical_hash(generator_overrides or {})
     capability = resolve_model_capability(
@@ -738,8 +749,10 @@ def build_collection_plan(
                 policy=policy,
                 execution=execution,
                 input_text_sha256=input_text_sha256,
+                sglang_mem_fraction_static=options.sglang_mem_fraction_static,
             ),
             execution_identity=execution,
+            sglang_mem_fraction_static=options.sglang_mem_fraction_static,
             backend=backend,
             state_protocol="glm53flash_same_request_real_hybrid_v1" if is_glm else "",
             input_text_sha256=input_text_sha256,
