@@ -251,16 +251,19 @@ def test_native_sglang_offload_disabled_sentinel_and_active_group():
 def test_ops_graph_policy_checks_native_declaration_then_resolution():
     from collector.fpm_forward.sglang_driver import validate_eager_args
 
+    resolved = {"cuda_graph_config": None}
     args = SimpleNamespace(
-        cuda_graph_config=None, cuda_graph_backend_decode="disabled", cuda_graph_backend_prefill="disabled"
+        cuda_graph_config=None,
+        cuda_graph_backend_decode="disabled",
+        cuda_graph_backend_prefill="disabled",
+        resolved_dict=lambda: resolved,
     )
     validate_eager_args(args, resolved=False)
     with pytest.raises(ValueError, match="resolved"):
         validate_eager_args(args, resolved=True)
-    args.cuda_graph_config = SimpleNamespace(
-        decode=SimpleNamespace(backend="disabled"), prefill=SimpleNamespace(backend="disabled")
-    )
+    resolved["cuda_graph_config"] = {"decode": {"backend": "disabled"}, "prefill": {"backend": "disabled"}}
     validate_eager_args(args, resolved=True)
-    args.cuda_graph_config.prefill.backend = "piecewise"
+    assert args.cuda_graph_config is None  # Pinned native resolution preserves raw fields.
+    resolved["cuda_graph_config"]["prefill"]["backend"] = "tc_piecewise"
     with pytest.raises(ValueError, match="resolved"):
         validate_eager_args(args, resolved=True)
