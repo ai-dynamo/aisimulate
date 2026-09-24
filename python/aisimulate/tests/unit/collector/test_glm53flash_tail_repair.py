@@ -86,6 +86,25 @@ def test_packaged_inputs_retain_original_executed_bytes_or_explicit_formatting_l
     for name, expected in original["files"].items():
         if name != formatted["file"]:
             assert digest(root / name) == expected
+    execution = lineage["packaged_verifier_execution"]
+    actual = load(root / execution["receipt"])
+    launch = load(root / execution["launch"])
+    frozen = load(root / execution["executed_inventory"])
+    assert digest(root / execution["receipt"]) == execution["receipt_sha256"] == launch["actual_receipt_sha256"]
+    assert digest(root / execution["launch"]) == execution["launch_sha256"]
+    assert digest(root / execution["executed_inventory"]) == execution["executed_inventory_sha256"]
+    assert launch["executed_inventory_sha256"] == execution["executed_inventory_sha256"]
+    assert frozen["files"][f"{kind}/verify_install.py"] == digest(root / "verify_install.py")
+    assert launch["job"] == execution["job"] == 614605
+    assert launch["exit"]["returncode"] == 0
+    assert launch["exit"]["argv"] == launch["started"]["argv"]
+    assert f"/probe/{kind}/verify_install.py" in launch["started"]["argv"]
+    original_install = load(root / "actual-install-receipt.json")
+    for key in ("version", "wheel_sha256", "build_receipt_sha256", "observed_files", "native_binary_names"):
+        assert actual[key] == original_install[key]
+    assert actual["pytorch_cuda_initialized"] is False
+    assert actual["formal_admission"] is False
+    assert actual["model_correctness"] == "NOT_EVALUATED"
 
 
 def test_cpu_build_receipts_do_not_open_production_admission():
