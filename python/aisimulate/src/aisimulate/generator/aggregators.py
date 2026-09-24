@@ -42,6 +42,7 @@ def collect_generator_params(
     generator_dynamo_version: Optional[str] = None,
     encode_params: Optional[dict[str, Any]] = None,
     encode_workers: Optional[int] = None,
+    slurm: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     prefill_params = prefill_params or {}
     decode_params = decode_params or {}
@@ -168,6 +169,8 @@ def collect_generator_params(
         "NodeConfig": {"num_gpus_per_node": int(num_gpus_per_node)},
         "params": role_params,
     }
+    if slurm:
+        result["SlurmConfig"] = apply_defaults("SlurmConfig", slurm, backend=backend_key)
     if generator_dynamo_version:
         result["generator_dynamo_version"] = generator_dynamo_version
     return result
@@ -254,6 +257,8 @@ def generate_config_from_input_dict(
                 dest = ".".join(["SlaConfig"] + rest)
             elif group == "BenchConfig":
                 dest = ".".join(["BenchConfig"] + rest)
+            elif group == "SlurmConfig":
+                dest = ".".join(["SlurmConfig"] + rest)
             elif group == "SflowConfig":
                 dest = ".".join(["SflowConfig"] + rest)
             elif group == "ModelConfig":
@@ -309,6 +314,7 @@ def generate_config_from_input_dict(
         sla=target.get("SlaConfig", {}),
         bench=target.get("BenchConfig", {}),
         sflow=target.get("SflowConfig", {}),
+        slurm=target.get("SlurmConfig", {}),
         dyn_config=target.get("DynConfig", {}),
         backend=backend_key,
         generator_dynamo_version=target.get("generator_dynamo_version"),

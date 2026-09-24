@@ -243,11 +243,11 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_twenty():
-    """Exact MoE kernel-source selection extends the positional operation payload."""
+def test_engine_spec_schema_version_is_twenty_one():
+    """Exact MoE source extends the payload after the schema-20 FPM selector."""
     from aisimulate.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 20
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 21
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():

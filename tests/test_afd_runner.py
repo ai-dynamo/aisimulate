@@ -543,6 +543,44 @@ def test_aic_companion_propagates_missing_fpm_data_without_fallback(phase, compa
     assert calls[0]["forward_model"] == "fpm"
 
 
+@pytest.mark.parametrize(("phase", "companion_role"), [("decode", "prefill"), ("prefill", "decode")])
+def test_aic_companion_routes_packaged_fpm_selector_through_canonical_model(phase, companion_role, monkeypatch):
+    spec = _spec(_topology(phase=phase, combined_with_pd=True), companion_role=companion_role)
+    engine_args = getattr(spec.backend_deployment, f"{companion_role}_engine_args")
+    engine_args.pop("timing_model")
+    engine_args.update(
+        aic_model_path="test-model",
+        aic_system="test-system",
+        aic_forward_model="fpm",
+        aic_fpm_fmha_dtype="fp8",
+    )
+    configs = []
+
+    class CanonicalModel:
+        def static_phase_latency(self, **_kwargs):
+            return 2.0
+
+        def close(self):
+            pass
+
+    def best_available(config):
+        configs.append(config)
+        return CanonicalModel()
+
+    monkeypatch.setattr("aisimulate.runner.RustForwardPassPerfModel.best_available", best_available)
+
+    def unexpected_legacy_estimation(*args, **kwargs):
+        pytest.fail("packaged FPM selector must not be dropped by the legacy estimator path")
+
+    timing = AICAFDCompanionPerformanceModel(unexpected_legacy_estimation).measure(spec)
+
+    assert timing.latency_ms == pytest.approx(2.0 if companion_role == "prefill" else 1.0)
+    assert len(configs) == 1
+    assert configs[0].estimation_mode == "fpm_interpolation"
+    assert configs[0].fpm_fmha_quant_mode == "fp8"
+    assert timing.provenance["fpm_fmha_dtype"] == "fp8"
+
+
 def test_afd_runner_rejects_unresolved_measurement_before_execution():
     spec = _spec(_topology())
     spec.backend_deployment.performance_model_metadata["afd"]["measurement_required"] = True

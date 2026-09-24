@@ -105,8 +105,13 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 19 (DeepSeek-V4.1 review): Dsv41AttentionOp gained kv_cache_layout,
 //   separating physical backend KV payload from attention arithmetic precision.
 //   Its appended enum changes positional bincode layout; old JSON defaults only.
-// - 20 (AIC-1781): MoeOp gained exact `moe_kernel_source` lane identity.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 20;
+// - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
+//   for selector diagnostics. This appends a positional field after the schema-19
+//   release; serde defaults support legacy JSON, not legacy bincode.
+// - 21 (AIC-1781): EngineConfig and MoeOp gained exact `moe_kernel_source`
+//   identity. Renumbered from the branch's concurrent v20 claim after the
+//   DeepSeek-V4.1 FPM layout landed first.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 21;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -259,6 +264,9 @@ pub struct QuantizationConfig {
     #[serde(default)]
     pub moe_dtype: Option<DataType>,
     pub activation_dtype: Option<DataType>,
+    /// FPM cell selector only; does not override model arithmetic or memory.
+    #[serde(default)]
+    pub fpm_fmha_dtype: Option<DataType>,
     pub kv_cache_dtype: Option<DataType>,
 }
 
