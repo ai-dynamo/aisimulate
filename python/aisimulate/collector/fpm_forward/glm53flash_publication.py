@@ -131,7 +131,8 @@ def partition_table(source: Path, metadata: Path, destination: Path) -> list[dic
 def stage(manifest_path: Path, destination: Path) -> dict:
     """Require fresh full-matrix acceptance before writing any publishable rows."""
     manifest_path = manifest_path.resolve()
-    manifest = json.loads(manifest_path.read_text())
+    manifest_raw = manifest_path.read_bytes()
+    manifest = json.loads(manifest_raw)
     if manifest.get("mode") != "fpm":
         raise ValueError("FPM publication cannot export Ops or unspecified measurements")
     destination.mkdir(parents=True, exist_ok=False)
@@ -140,7 +141,7 @@ def stage(manifest_path: Path, destination: Path) -> dict:
     if report["acceptance"] != "PASSED":
         _write_json(destination / "stage.json", {"schema": SCHEMA, "status": "NOT_QUALIFIED", "files": []})
         raise ValueError("all sixteen phase cells must pass fresh installed-consumer acceptance before publication")
-    sources = {}
+    sources, origins = {}, {}
     for entry in manifest["entries"]:
         for receipt in entry["consumer_data"]:
             path = (manifest_path.parent / receipt["path"]).resolve()
@@ -150,6 +151,7 @@ def stage(manifest_path: Path, destination: Path) -> dict:
             if path in sources and sources[path] != digest:
                 raise ValueError("consumer source has inconsistent receipts")
             sources[path] = digest
+            origins.setdefault(path, set()).add(receipt["path"])
     tables = [path for path in sources if path.name == "fpm_forward_perf.parquet"]
     if not tables:
         raise ValueError("accepted manifest has no native FPM tables")
@@ -173,12 +175,27 @@ def stage(manifest_path: Path, destination: Path) -> dict:
         if not target.exists():
             with target.open("xb") as stream:
                 stream.write(raw)
-        source_receipts.append({"path": target.relative_to(destination).as_posix(), "sha256": digest})
+        source_receipts.append(
+            {
+                "path": target.relative_to(destination).as_posix(),
+                "sha256": digest,
+                "original_consumer_paths": sorted(origins[path]),
+            }
+        )
+    if manifest_path.read_bytes() != manifest_raw:
+        raise ValueError("acceptance input manifest changed during publication staging")
+    input_target = destination / "validation/input-manifest.json"
+    with input_target.open("xb") as stream:
+        stream.write(manifest_raw)
     index = {
         "schema": SCHEMA,
         "status": "STAGED_NOT_PUBLISHED",
         "repo_id": REPO_ID,
-        "input_manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+        "input_manifest_sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        "input_manifest": {
+            "path": "validation/input-manifest.json",
+            "sha256": hashlib.sha256(manifest_raw).hexdigest(),
+        },
         "acceptance": {
             "path": "validation/acceptance.json",
             "sha256": file_sha256(destination / "validation/acceptance.json"),
