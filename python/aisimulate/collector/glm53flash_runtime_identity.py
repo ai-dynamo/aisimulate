@@ -16,8 +16,11 @@ import re
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from collector import glm53flash_tail_qualification as tail_qualification
+
 BASELINE_VERSIONS = {"vllm": "0.30.0", "sglang": "0.5.20"}
 VLLM_KPOOL_CANDIDATE = "0.30.0+glm53kpool.bf5f6b0e689d"
+VLLM_TAIL_CANDIDATE = tail_qualification.VERSIONS["candidate"]
 # The original functional qualification is historical. Diagnostic612960 showed
 # actual generic slot-mapping accesses beyond the circular tail table. Keep its
 # immutable evidence readable, but admit no repaired runtime until requalified.
@@ -41,6 +44,52 @@ def _candidate_build() -> dict:
     if build["version"] != VLLM_KPOOL_CANDIDATE or build["wheel_sha256"] != _WHEEL_SHA256:
         raise ValueError("GLM repair wheel identity differs from its reviewed build")
     return build
+
+
+def _tail_root() -> Path:
+    return Path(__file__).parent / "fpm_forward/runtime/glm53flash_vllm_tail_repair"
+
+
+def _tail_runtime_files() -> tuple[dict, dict[str, str]]:
+    """Read the actual new build; reading it does not grant admission."""
+    root = _tail_root() / "candidate"
+    build = _qualification_json(
+        root, {"path": "actual-build-receipt.json", "sha256": tail_qualification.BUILDS["candidate"]}
+    )
+    sources = _qualification_json(
+        root,
+        {
+            "path": "expected-source-sha256.json",
+            "sha256": tail_qualification.BUILD_RECEIPTS["candidate"]["sources"],
+        },
+    )
+    binaries = _qualification_json(
+        root, {"path": "expected-native-binaries.json", "sha256": tail_qualification.BINARIES_SHA}
+    )
+    if (
+        build["version"] != VLLM_TAIL_CANDIDATE
+        or build["wheel_sha256"] != tail_qualification.WHEELS["candidate"]
+        or build["unchanged_native_binaries"] != binaries
+        or len(sources) != 31
+        or len(binaries) != 19
+        or sources.keys() & binaries.keys()
+    ):
+        raise ValueError("GLM tail repair build/source/native binary closure differs")
+    return build, sources
+
+
+def _v2_source_pins() -> dict[str, str]:
+    # Both repairs use the same immutable upstream V2 worker sources. The new
+    # tail repair modifies only the two paths named by its actual build receipt.
+    path = Path(__file__).parent / "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/v2-source-sha256.json"
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != _V2_SOURCE_SHA256:
+        raise ValueError("GLM repaired V2 source manifest differs")
+    return json.loads(raw)
+
+
+def _validate_tail_runtime_summary(expected_sha256: str) -> dict:
+    return tail_qualification.validate_tail_qualification(_tail_root(), expected_summary_sha256=expected_sha256)
 
 
 _QUALIFICATION_SCOPE = "native_Engine_functional_correctness_for_frozen_geometry_suite_only"
@@ -327,11 +376,18 @@ def _validate_qualification_summary(expected_sha256: str) -> dict:
 
 
 def validate_backend_version(backend: str, version: str) -> str:
-    repaired = backend == "vllm" and version == VLLM_KPOOL_CANDIDATE and version in ADMITTED_VLLM_REPAIRS
+    repaired = (
+        backend == "vllm"
+        and version in (VLLM_KPOOL_CANDIDATE, VLLM_TAIL_CANDIDATE)
+        and version in ADMITTED_VLLM_REPAIRS
+    )
     if backend not in BASELINE_VERSIONS or (version != BASELINE_VERSIONS[backend] and not repaired):
         raise ValueError(f"unqualified GLM backend runtime: {backend} {version!r}")
     if repaired:
-        _validate_qualification_summary(ADMITTED_VLLM_REPAIRS[version])
+        validator = (
+            _validate_tail_runtime_summary if version == VLLM_TAIL_CANDIDATE else _validate_qualification_summary
+        )
+        validator(ADMITTED_VLLM_REPAIRS[version])
     return version
 
 
@@ -339,7 +395,22 @@ def vllm_source_pins(version: str, manifest: Path) -> dict[str, str]:
     """Return the effective source closure for an admitted exact runtime."""
     validate_backend_version("vllm", version)
     pins = json.loads(manifest.read_bytes())
-    if version == VLLM_KPOOL_CANDIDATE:
+    if version == VLLM_TAIL_CANDIDATE:
+        build, native_sources = _tail_runtime_files()
+        for patch in build["patch"]["sources"]:
+            name = patch["source_path"]
+            if name in pins and pins[name] != patch["base_sha256"]:
+                raise ValueError("GLM tail repair source base differs from its reviewed build")
+            if native_sources[name] != patch["patched_sha256"]:
+                raise ValueError("GLM tail repair patched source differs from its reviewed build")
+            pins[name] = patch["patched_sha256"]
+        for name, sha in {**native_sources, **_v2_source_pins()}.items():
+            if name in pins and pins[name] != sha:
+                raise ValueError("GLM tail repair source closure has conflicting identities")
+            if name in native_sources and native_sources[name] != sha:
+                raise ValueError("GLM tail repair V2 source closure has conflicting identities")
+            pins[name] = sha
+    elif version == VLLM_KPOOL_CANDIDATE:
         patch = _candidate_build()["patch"]
         if pins.get(patch["source_path"]) != patch["base_sha256"]:
             raise ValueError("GLM repair source base differs from its reviewed build")
@@ -372,12 +443,14 @@ def vllm_runtime_closure(version: str, manifest: Path) -> dict | None:
     sources = vllm_source_pins(version, manifest)
     if version == BASELINE_VERSIONS["vllm"]:
         return None
-    build = _candidate_build()
+    build = _tail_runtime_files()[0] if version == VLLM_TAIL_CANDIDATE else _candidate_build()
     return {
         "schema_version": 1,
         "backend_version": version,
         "wheel_sha256": build["wheel_sha256"],
-        "build_receipt_sha256": _BUILD_SHA256,
+        "build_receipt_sha256": tail_qualification.BUILDS["candidate"]
+        if version == VLLM_TAIL_CANDIDATE
+        else _BUILD_SHA256,
         "qualification_receipt_sha256": ADMITTED_VLLM_REPAIRS[version],
         "runtime_source_manifest_sha256": vllm_source_manifest_sha256(version, manifest),
         "files": {
