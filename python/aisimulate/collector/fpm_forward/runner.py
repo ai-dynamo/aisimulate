@@ -1134,9 +1134,8 @@ def _validate_points_receipts(plan, cell, raw_root: Path, attempt_id: str) -> No
 
 
 def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
-    from collector.glm53flash_protocol import sglang_runtime_context_length
-
     from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+    from collector.glm53flash_protocol import sglang_runtime_context_length
 
     if smoke or not cell.state_protocol or _frozen_points(plan) is None:
         raise ValueError("SGLang GLM FPM requires a frozen explicit real-state campaign")

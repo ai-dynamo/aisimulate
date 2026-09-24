@@ -66,6 +66,7 @@ _SGLANG_FPM_VALUE_FLAGS = frozenset(
         "--benchmark-mode",
         "--benchmark-points-file",
         "--benchmark-output",
+        "--benchmark-max-context-length",
         "--input-text",
         "--dataset-role",
         "--run-id",
@@ -258,8 +259,16 @@ def _sglang_fpm_args(context: dict[str, Any], extra_cli_args: list[str]) -> list
             raise ValueError(f"Unsupported SGLang FPM option: {flag}")
     for flag in ("--context-length", "--benchmark-points-file", "--tokenizer-revision"):
         _require_cli_option(args, flag)
-    if _positive_cli_int(args, "--context-length") > 131072:
-        raise ValueError("SGLang FPM supports context length at most 131072")
+    measured_limit = (
+        _positive_cli_int(args, "--benchmark-max-context-length")
+        if "--benchmark-max-context-length" in seen
+        else 131072
+    )
+    # The native driver reserves seven internal slots for SGLang's strict
+    # request admission. Its measured workload remains at most inclusive128K.
+    headroom = 7 if "--benchmark-max-context-length" in seen else 0
+    if measured_limit > 131072 or _positive_cli_int(args, "--context-length") > measured_limit + headroom:
+        raise ValueError("SGLang FPM supports measured context length at most 131072 plus declared native slots")
     _require_cli_option(args, "--kv-cache-dtype", expected="fp8_e4m3")
     if "--disable-radix-cache" not in seen:
         raise ValueError("SGLang FPM requires --disable-radix-cache")
