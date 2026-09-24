@@ -20,10 +20,13 @@ from collector.glm53flash_contract import (
     BACKENDS,
     CHECKPOINTS,
     KEY_COLUMNS,
+    PER_OPERATION_TP_MAX,
     ROW_COLUMNS,
+    WHOLE_FORWARD_RANK,
     aggregate_rank_records,
     build_model_manifest,
     canonical_json,
+    select_forward_ranks,
     sha256_json,
     validate_calibration_row,
     validate_native_workload,
@@ -152,12 +155,20 @@ def _state_layout(layout: dict, backend: str) -> None:
         raise ValueError("Ops allocated state does not cover all native layers")
 
 
-def freeze_evidence(output: Path, tp_size: int, manifest: dict) -> str:
+def freeze_evidence(
+    output: Path, tp_size: int, manifest: dict, *, aggregation_policy: str = PER_OPERATION_TP_MAX
+) -> str:
     """Freeze only after native execution and completeness checks have succeeded."""
     requests = json.loads((output / "requests.json").read_text())
     if requests["dataset_role"] != "calibration":
         raise ValueError("only calibration observations may produce measured rows")
     required = _required_files(tp_size, manifest["backend"])
+    if aggregation_policy == WHOLE_FORWARD_RANK:
+        selection = select_forward_ranks([output / f"rank-{rank}.jsonl" for rank in range(tp_size)], tp_size)
+        (output / "rank-selection.json").write_text(canonical_json(selection) + "\n")
+        required.add("rank-selection.json")
+    elif aggregation_policy != PER_OPERATION_TP_MAX:
+        raise ValueError("unknown native Ops TP aggregation policy")
     if not all((output / name).is_file() for name in required):
         raise FileNotFoundError("native calibration evidence is incomplete")
     audit = json.loads((output / "runtime-preflight.json").read_text())
@@ -165,6 +176,7 @@ def freeze_evidence(output: Path, tp_size: int, manifest: dict) -> str:
         raise ValueError("native calibration source preflight did not pass")
     receipt = {
         "schema": "glm53flash_ops_calibration_evidence_v1",
+        "aggregation_policy": aggregation_policy,
         "dataset_role": "calibration",
         "request_set": requests["request_set"],
         "corpus_sha256": requests["corpus_sha256"],
@@ -196,6 +208,17 @@ def _read_evidence(root: Path) -> dict:
             raise ValueError("retained native Ops evidence changed after calibration")
     if not _required_files(receipt["tp_size"], receipt["backend"]) <= names:
         raise ValueError("Ops calibration evidence omits required native files")
+    policy = receipt.get("aggregation_policy", PER_OPERATION_TP_MAX)
+    if policy == WHOLE_FORWARD_RANK:
+        if "rank-selection.json" not in names:
+            raise ValueError("coherent native Ops calibration omits rank-selection proof")
+        actual = select_forward_ranks(
+            [root / f"rank-{rank}.jsonl" for rank in range(receipt["tp_size"])], receipt["tp_size"]
+        )
+        if json.loads((root / "rank-selection.json").read_bytes()) != json.loads(canonical_json(actual)):
+            raise ValueError("native Ops rank-selection sidecar differs from actual whole-forward evidence")
+    elif policy != PER_OPERATION_TP_MAX:
+        raise ValueError("unknown native Ops TP aggregation policy")
     _runtime_audit(root, receipt["backend"])
     return receipt
 
@@ -512,7 +535,7 @@ def bind_calibration(paths: list[Path], frozen_run: dict, native_receipt: dict) 
     import pyarrow.parquet as pq
 
     root = Path(native_receipt["evidence_root"])
-    _read_evidence(root)
+    evidence = _read_evidence(root)
     digest = file_sha(root / "calibration-evidence.json")
     manifest = json.loads((root / "manifest.json").read_bytes())
     backend, fmt, tp, phase = frozen_run["key"]
@@ -526,6 +549,7 @@ def bind_calibration(paths: list[Path], frozen_run: dict, native_receipt: dict) 
         manifest,
         evidence_sha256=digest,
         point_ids=frozen_run.get("original_point_ids"),
+        aggregation_policy=evidence.get("aggregation_policy", PER_OPERATION_TP_MAX),
     )
     expected = {tuple(row[key] for key in KEY_COLUMNS): row for row in rows}
     selected = {}
@@ -533,6 +557,8 @@ def bind_calibration(paths: list[Path], frozen_run: dict, native_receipt: dict) 
         if path.name != "glm53flash_module_perf.parquet":
             continue
         for row in pq.read_table(path).to_pylist():
+            row.setdefault("aggregation_policy", PER_OPERATION_TP_MAX)
+            row.setdefault("rank_selection_sha256", "")
             geometry = json.loads(row["geometry"])
             if (
                 geometry["backend"],
@@ -595,6 +621,7 @@ def _sharded_calibration_rows(children: list[tuple[dict, dict]], frozen_shard_ma
             manifest,
             evidence_sha256=digest,
             point_ids=point_ids,
+            aggregation_policy=receipt.get("aggregation_policy", PER_OPERATION_TP_MAX),
         )
         if shard["shard_id"] in rows_by_shard:
             raise ValueError("Ops child shard was supplied twice")
@@ -641,6 +668,8 @@ def bind_sharded_calibration(paths: list[Path], children: list[tuple[dict, dict]
         if path.name != "glm53flash_module_perf.parquet":
             continue
         for row in pq.read_table(path).to_pylist():
+            row.setdefault("aggregation_policy", PER_OPERATION_TP_MAX)
+            row.setdefault("rank_selection_sha256", "")
             shape = json.loads(row["geometry"])
             if (shape["backend"], shape["checkpoint_format"], shape.get("tp_size"), shape.get("is_context")) != (
                 backend,

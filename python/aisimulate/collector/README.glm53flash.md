@@ -71,11 +71,22 @@ occurrences per phase/rank; decoder observations alone cannot certify it.
 
 Raw rank JSONL records retain every layer occurrence, request/history identity,
 sample, invocation and excluded collective. Publication first requires complete
-graph occurrences on every rank, then takes the median of per-invocation rank
-maxima per operation. Adding these per-operation maxima is a conservative
-approximation, not a reconstructed timeline of one TP worker. Every rank's raw
-operation and whole-forward values remain available to assess this approximation
-against the independent 20% gate. Distinct checkpoint formats, runtimes, graph modes, seed policies or
+graph occurrences on every rank. New collection uses
+`whole_forward_slowest_rank_v1`: within each exact native forward, select the
+rank with the largest recorded whole-forward interval (ties choose the lowest
+TP rank), retain all its operation intervals, then apply the existing shape/layer
+median. `rank-selection.json` preserves every rank's whole interval, the exact
+forward/request join, selected rank and raw file hashes; the table binds its
+digest. SGLang eager uses its native DeviceTimer; vLLM uses embedding-to-logits
+GPU events, also recorded during calibration. No operation sum, fitted target
+or residual selects or scales a rank. This is an explicit representative-rank
+approximation, assessed against the independent 20% gate.
+
+Historical `per_operation_tp_max_v1` tables retain their conservative behavior;
+their maxima need not belong to one rank timeline. The reader rejects mixed
+aggregation policies. Old vLLM calibration without whole-forward intervals
+cannot be retrospectively relabelled with coherent rank selection. All original
+raw records and failed attempts remain available. Distinct checkpoint formats, runtimes, graph modes, seed policies or
 state modes never silently collapse onto the same physical key. Failed attempts
 remain separate evidence. A collector success is not accuracy acceptance; the
 formal Ops gate is phase/cell MAPE <=20% against independent whole-forward truth.
@@ -230,8 +241,9 @@ from the initial eager event smoke.
 forward histories, source preflight and actual allocated state layouts. Table
 rows preserve calibration role, corpus digest, request set and the evidence
 file's digest. The acceptance adapter rechecks those files, joins each module
-observation to its admitted native forward, and reaggregates rank maxima and
-medians before accepting the table. Content hashes alone are insufficient.
+observation to its admitted native forward, verifies the declared rank-selection
+policy and reaggregates the original intervals before accepting the table.
+Content hashes alone are insufficient.
 
 Independent `ops_holdout` runs disable module hooks and record one GPU event
 window from embedding through logits. The separate native scheduler/DeviceTimer

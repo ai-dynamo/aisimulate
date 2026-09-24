@@ -521,3 +521,31 @@ def test_native_hardware_guard_rejects_rehashed_non_gb300_or_unbound_inventory(t
     put_lines(trace, rows)
     with pytest.raises(ValueError, match="native GPU|worker GPU|TP rank|physical GPU UUID"):
         evidence.load_native(run, tmp_path)
+
+
+def test_coherent_calibration_freezes_and_rechecks_actual_rank_selection(tmp_path):
+    from collector.glm53flash_contract import WHOLE_FORWARD_RANK
+
+    run, root, _, _, manifest = native_fixture(tmp_path, "calibration")
+    digest = evidence.freeze_evidence(root, 2, manifest, aggregation_policy=WHOLE_FORWARD_RANK)
+    native = evidence.load_native(run, tmp_path)
+    rows = aggregate_rank_records(
+        [root / "rank-0.jsonl", root / "rank-1.jsonl"],
+        2,
+        manifest,
+        evidence_sha256=digest,
+        aggregation_policy=WHOLE_FORWARD_RANK,
+    )
+    table = tmp_path / "glm53flash_module_perf.parquet"
+    write_parquet(rows, table)
+    assert evidence.bind_calibration([table], run, native)["rows"] == 1
+    receipt = json.loads((root / "calibration-evidence.json").read_bytes())
+    selection = json.loads((root / "rank-selection.json").read_bytes())
+    selection["forwards"][0]["selected_rank"] = 1 - selection["forwards"][0]["selected_rank"]
+    put(root / "rank-selection.json", selection)
+    for item in receipt["files"]:
+        if item["path"] == "rank-selection.json":
+            item["sha256"] = evidence.file_sha(root / "rank-selection.json")
+    put(root / "calibration-evidence.json", receipt)
+    with pytest.raises(ValueError, match="rank-selection sidecar differs"):
+        evidence.load_native(run, tmp_path)

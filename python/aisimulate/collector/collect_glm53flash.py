@@ -21,6 +21,7 @@ from collector.case_generator import _framework_specific_model_case_values, get_
 from collector.glm53flash_contract import (
     BACKENDS,
     CHECKPOINTS,
+    WHOLE_FORWARD_RANK,
     aggregate_rank_records,
     build_model_manifest,
     sha256_json,
@@ -285,12 +286,13 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
         verify_target_completeness(output, tp_size)
         from collector.glm53flash_validation import freeze_evidence
 
-        evidence_sha256 = freeze_evidence(output, tp_size, manifest)
+        evidence_sha256 = freeze_evidence(output, tp_size, manifest, aggregation_policy=WHOLE_FORWARD_RANK)
         rows = aggregate_rank_records(
             [output / f"rank-{rank}.jsonl" for rank in range(tp_size)],
             tp_size,
             manifest,
             evidence_sha256=evidence_sha256,
+            aggregation_policy=WHOLE_FORWARD_RANK,
         )
         for row in rows:
             log_perf(

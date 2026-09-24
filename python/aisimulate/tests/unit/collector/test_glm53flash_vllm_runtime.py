@@ -6,7 +6,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from collector.glm53flash_vllm_runtime import _TraceState, native_context_receipt, native_coordinates
 
 pytestmark = pytest.mark.unit
@@ -48,6 +47,14 @@ class Tensor:
         return self.values
 
 
+class Event:
+    def record(self, stream):
+        self.stream = stream
+
+    def elapsed_time(self, end):
+        return 7.0
+
+
 def test_dynamic_frozen_mapping_requires_real_worker_prefix(monkeypatch, tmp_path):
     path = tmp_path / "request-map.json"
     path.write_text(
@@ -78,6 +85,7 @@ def test_dynamic_frozen_mapping_requires_real_worker_prefix(monkeypatch, tmp_pat
     state.layout, state.layout_sha256 = {"admitted": True}, "b" * 64
     started = []
     state.observer = SimpleNamespace(begin=started.append)
+    state.torch = SimpleNamespace(cuda=SimpleNamespace(current_stream=lambda: 1, Event=lambda **kwargs: Event()))
     schedule = SimpleNamespace(num_scheduled_tokens={"real-rid": 1})
     context = SimpleNamespace(cudagraph_runtime_mode=SimpleNamespace(name="NONE"))
     record, _ = state.before(schedule, Tensor([900]), context)
@@ -124,6 +132,7 @@ def test_completed_native_targets_retire_host_history_but_keep_raw_receipts():
     state.previous = {}
     state.torch = SimpleNamespace(cuda=SimpleNamespace(synchronize=lambda: None))
     state.observer = SimpleNamespace(end=lambda: [])
+    state.whole_events, state.whole_end_recorded = (Event(), Event(), 1), True
     saved = []
     state.append = lambda kind, record: saved.append((kind, record))
     seed = {"stage": "seed", "forward_id": "seed-1", "requests": [{"request_id": "r", "computed_tokens_after": 2}]}
@@ -135,6 +144,8 @@ def test_completed_native_targets_retire_host_history_but_keep_raw_receipts():
         "requests": [{"request_id": "r", "computed_tokens_after": 3}],
     }
     state.after(target, {"r": [11, 12, 13]})
+    assert target["whole_forward_gpu_ms"] == 7.0
+    assert target["whole_forward_boundary"] == "embedding_to_logits_gpu_v1"
     assert not state.previous
     assert [row["forward_id"] for _, row in saved] == ["seed-1", "target-1"]
     assert all(row["gpu_completed"] is True for _, row in saved)

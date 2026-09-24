@@ -177,21 +177,20 @@ class _TraceState:
         if self.observer is not None:
             inventory = install_native_hooks(runner.model, self.observer, "vllm")
             (output / f"inventory-rank-{self.rank}.json").write_text(json.dumps(inventory, indent=2))
-        else:
-            original_logits = runner.model.compute_logits
+        original_logits = runner.model.compute_logits
 
-            @functools.wraps(original_logits)
-            def compute_logits(*args, **kwargs):
-                result = original_logits(*args, **kwargs)
-                if self.whole_events is not None:
-                    start, end, stream = self.whole_events
-                    if self.whole_end_recorded or self.torch.cuda.current_stream() != stream:
-                        raise RuntimeError("whole-forward logits receipt changed stream or repeated")
-                    end.record(stream)
-                    self.whole_end_recorded = True
-                return result
+        @functools.wraps(original_logits)
+        def compute_logits(*args, **kwargs):
+            result = original_logits(*args, **kwargs)
+            if self.whole_events is not None:
+                start, end, stream = self.whole_events
+                if self.whole_end_recorded or self.torch.cuda.current_stream() != stream:
+                    raise RuntimeError("whole-forward logits receipt changed stream or repeated")
+                end.record(stream)
+                self.whole_end_recorded = True
+            return result
 
-            runner.model.compute_logits = compute_logits
+        runner.model.compute_logits = compute_logits
         self.layout = allocated_state_inventory(runner.model, runner.cache_config.cache_dtype)
         self.layout.update(tp_rank=self.rank, hardware=native_gpu_identity(torch))
         self.layout_sha256 = _digest(self.layout)
@@ -301,13 +300,15 @@ class _TraceState:
             )
             if self.observer is not None:
                 self.observer.begin(workload)
-            else:
-                stream = self.torch.cuda.current_stream()
-                start = self.torch.cuda.Event(enable_timing=True)
-                end = self.torch.cuda.Event(enable_timing=True)
-                self.whole_events = start, end, stream
-                self.whole_end_recorded = False
-                start.record(stream)
+            # Calibration also needs one coherent native rank timeline. The
+            # window ends at logits, before sampling/readback, exactly as the
+            # independent uninstrumented holdout window does.
+            stream = self.torch.cuda.current_stream()
+            start = self.torch.cuda.Event(enable_timing=True)
+            end = self.torch.cuda.Event(enable_timing=True)
+            self.whole_events = start, end, stream
+            self.whole_end_recorded = False
+            start.record(stream)
         return record, completed
 
     def after(self, record, completed):
@@ -332,15 +333,15 @@ class _TraceState:
             # Establish a completed real-prefix receipt; synchronization stays
             # outside every measured module interval and never populates state.
             self.torch.cuda.synchronize()
-            if record["stage"] == "measure":
-                if self.whole_events is None or not self.whole_end_recorded:
-                    raise RuntimeError("whole-GPU forward lacks its native logits completion")
-                start, end, _ = self.whole_events
-                record["whole_forward_gpu_ms"] = start.elapsed_time(end)
-                if record["whole_forward_gpu_ms"] <= 0:
-                    raise RuntimeError("whole-GPU forward must have positive elapsed time")
-                record["whole_forward_boundary"] = "embedding_to_logits_gpu_v1"
-                self.whole_events = None
+        if record["stage"] == "measure":
+            if self.whole_events is None or not self.whole_end_recorded:
+                raise RuntimeError("whole-GPU forward lacks its native logits completion")
+            start, end, _ = self.whole_events
+            record["whole_forward_gpu_ms"] = start.elapsed_time(end)
+            if record["whole_forward_gpu_ms"] <= 0:
+                raise RuntimeError("whole-GPU forward must have positive elapsed time")
+            record["whole_forward_boundary"] = "embedding_to_logits_gpu_v1"
+            self.whole_events = None
         for request in record["requests"]:
             rid = request["request_id"]
             if record["stage"] == "measure":

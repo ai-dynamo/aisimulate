@@ -13,6 +13,7 @@ import json
 
 from collector.glm53flash_contract import (
     KEY_COLUMNS,
+    PER_OPERATION_TP_MAX,
     PROVENANCE_COLUMNS,
     sha256_json,
     validate_calibration_row,
@@ -94,7 +95,7 @@ def merge_shard_rows(
             seen.add(key)
             if any(row.get(field) != expected[key][field] for field in ("owner_benchmark_id", "original_point_id")):
                 raise ValueError("Ops shard row does not use its frozen physical owner")
-            signature = tuple(
+            signature = (row.get("aggregation_policy", PER_OPERATION_TP_MAX),) + tuple(
                 row[field]
                 for field in (
                     *PROVENANCE_COLUMNS,

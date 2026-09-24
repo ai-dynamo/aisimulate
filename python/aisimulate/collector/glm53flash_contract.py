@@ -17,7 +17,10 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
-from collector.glm53flash_jsonl import iter_records
+from collector.glm53flash_jsonl import file_sha256, iter_records
+
+PER_OPERATION_TP_MAX = "per_operation_tp_max_v1"
+WHOLE_FORWARD_RANK = "whole_forward_slowest_rank_v1"
 
 COMPONENTS = {
     "Glm53Attention": "attention",
@@ -56,6 +59,8 @@ ROW_COLUMNS = (
     "measurement_scope",
     "kv_seed_regime",
     "dispatch_fingerprint",
+    "aggregation_policy",
+    "rank_selection_sha256",
     *PROVENANCE_COLUMNS,
     *EVIDENCE_COLUMNS,
 )
@@ -211,6 +216,14 @@ def validate_row(row: dict) -> None:
 
 
 def validate_calibration_row(row: dict) -> None:
+    policy = row.get("aggregation_policy", PER_OPERATION_TP_MAX)
+    if policy not in (PER_OPERATION_TP_MAX, WHOLE_FORWARD_RANK):
+        raise ValueError("unknown native Ops TP aggregation policy")
+    selection = row.get("rank_selection_sha256", "")
+    if (policy == WHOLE_FORWARD_RANK and not re.fullmatch(r"[0-9a-f]{64}", selection)) or (
+        policy == PER_OPERATION_TP_MAX and selection
+    ):
+        raise ValueError("native Ops TP aggregation lacks its rank-selection evidence")
     if row.get("dataset_role") != "calibration" or not row.get("request_set"):
         raise ValueError("measured rows require a frozen calibration request set")
     for key in ("corpus_sha256", "evidence_sha256"):
@@ -292,13 +305,103 @@ def canonical_native_source(row: dict) -> str:
     return f"{module}._hc_pre/sglang.kernels.ops.layernorm.mhc.hc_pre"
 
 
-def aggregate_rank_records(
-    paths: list[Path], tp_size: int, manifest: dict, *, evidence_sha256: str, point_ids: dict[int, int] | None = None
-) -> list[dict]:
-    """Median of per-invocation rank maxima, after complete graph/rank coverage.
+def select_forward_ranks(paths: list[Path], tp_size: int) -> dict:
+    """Choose one complete native rank timeline, never an op sum or fitted target."""
+    records = {}
+    inputs = []
+    joins = ("request_set", "phase", "benchmark_id", "repetition", "invocation", "sampling_role", "request_ids")
+    for rank in range(tp_size):
+        path = paths[rank].parent / f"forward-rank-{rank}.jsonl"
+        inputs.append({"path": path.name, "sha256": file_sha256(path)})
+        for row in iter_records(path):
+            if row.get("stage") != "measure":
+                continue
+            if (
+                type(row.get("tp_rank")) is not int
+                or row.get("tp_rank") != rank
+                or row.get("gpu_completed") is not True
+                or row.get("state_layout_admitted") is not True
+            ):
+                raise ValueError("rank selection requires actual completed native forward evidence")
+            key = tuple(row[k] for k in ("phase", "benchmark_id", "repetition", "invocation"))
+            join = {k: row[k] for k in joins}
+            native_identity = {
+                k: row.get(k)
+                for k in (
+                    "backend",
+                    "backend_version",
+                    "backend_revision",
+                    "checkpoint_revision",
+                    "source_sha256",
+                    "config_sha256",
+                    "runtime_digest",
+                    "used_cuda_graph",
+                    "batch_size",
+                    "query_lengths",
+                    "prefix_lengths",
+                    "num_padded_tokens",
+                )
+            }
+            if (
+                row.get("whole_forward_boundary") == "embedding_to_logits_gpu_v1"
+                or row.get("whole_forward_boundary") == "native_full_graph_metadata_to_logits_gpu_v1"
+            ):
+                value, boundary = row.get("whole_forward_gpu_ms"), row["whole_forward_boundary"]
+            elif (
+                row.get("backend") == "sglang"
+                and row.get("used_cuda_graph") is False
+                and row.get("timing_boundary") == "sglang_native_forward_device_timer"
+            ):
+                value, boundary = row.get("native_forward_ms"), row["timing_boundary"]
+            else:
+                raise ValueError("rank selection requires a recorded whole-forward interval; op sums cannot substitute")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+                raise ValueError("rank selection whole-forward interval must be finite positive milliseconds")
+            group = records.setdefault(
+                key,
+                {"join": join, "native_identity": native_identity, "timing_boundary": boundary, "whole_forward_ms": {}},
+            )
+            if (
+                group["join"] != join
+                or group["native_identity"] != native_identity
+                or group["timing_boundary"] != boundary
+                or rank in group["whole_forward_ms"]
+            ):
+                raise ValueError("rank selection cannot join different or repeated native forwards")
+            group["whole_forward_ms"][rank] = value
+    selected = []
+    for key, group in sorted(records.items()):
+        if set(group["whole_forward_ms"]) != set(range(tp_size)):
+            raise ValueError("rank selection requires every TP rank of the same native forward")
+        group["selected_rank"] = max(range(tp_size), key=lambda rank: (group["whole_forward_ms"][rank], -rank))
+        selected.append(group)
+    if not selected:
+        raise ValueError("rank selection has no native target forwards")
+    return {
+        "schema": "glm53flash_rank_selection_v1",
+        "aggregation_policy": WHOLE_FORWARD_RANK,
+        "tie_policy": "lowest_tp_rank",
+        "raw_forward_files": inputs,
+        "raw_module_files": [{"path": path.name, "sha256": file_sha256(path)} for path in sorted(paths)],
+        "forwards": selected,
+    }
 
-    This is a per-operation conservative approximation. Summing maxima across
-    operations does not reconstruct any one TP worker's physical timeline.
+
+def aggregate_rank_records(
+    paths: list[Path],
+    tp_size: int,
+    manifest: dict,
+    *,
+    evidence_sha256: str,
+    point_ids: dict[int, int] | None = None,
+    aggregation_policy: str = PER_OPERATION_TP_MAX,
+) -> list[dict]:
+    """Reduce native intervals after complete graph/rank coverage.
+
+    The historical default takes a conservative per-operation TP maximum.
+    New collection explicitly selects all operations from the rank with the
+    largest recorded whole-forward interval. Ties choose the lowest TP rank.
+    Neither reduction reconstructs an exact cross-rank critical path.
     The raw records retain layer occurrence, workload and sample identities.
     Identical shapes in different layers may reduce together only after every
     occurrence in each observed phase has been observed. Failed/incomplete attempts
@@ -309,6 +412,18 @@ def aggregate_rank_records(
     """
     if {path.name for path in paths} != {f"rank-{rank}.jsonl" for rank in range(tp_size)}:
         raise ValueError("missing or unexpected TP rank files")
+    if aggregation_policy not in (PER_OPERATION_TP_MAX, WHOLE_FORWARD_RANK):
+        raise ValueError("unknown native Ops TP aggregation policy")
+    selection = select_forward_ranks(sorted(paths), tp_size) if aggregation_policy == WHOLE_FORWARD_RANK else None
+    selected = (
+        {}
+        if selection is None
+        else {
+            tuple(item["join"][k] for k in ("phase", "benchmark_id", "repetition", "invocation")): item
+            for item in selection["forwards"]
+        }
+    )
+    selection_sha = sha256_json(selection) if selection is not None else ""
     if point_ids is not None:
         for native, original in point_ids.items():
             _uint32(native, "native benchmark ID", positive=True)
@@ -333,6 +448,8 @@ def aggregate_rank_records(
             if not re.fullmatch(r"[0-9a-f]{64}", row.get("corpus_sha256", "")):
                 raise ValueError("raw native observations must identify their frozen calibration corpus")
             row["evidence_sha256"] = evidence_sha256
+            row["aggregation_policy"] = aggregation_policy
+            row["rank_selection_sha256"] = selection_sha
             if row.get("stage") != "measure" or row.get("sampling_role") not in ("warmup", "measurement"):
                 raise ValueError("formal native measurements require frozen target and sampling roles")
             for label in ("benchmark_id", "repetition"):
@@ -383,7 +500,14 @@ def aggregate_rank_records(
             if sample[0] & rank_bit:
                 raise ValueError("duplicate rank within one native invocation")
             sample[0] |= rank_bit
-            sample[1] = max(sample[1], row["latency"])
+            if selection is None:
+                sample[1] = max(sample[1], row["latency"])
+            else:
+                chosen = selected.get((phase, row["benchmark_id"], row["repetition"], row["invocation"]))
+                if chosen is None or any(row.get(k) != value for k, value in chosen["join"].items()):
+                    raise ValueError("operation cannot borrow rank selection from a different native forward")
+                if expected_rank == chosen["selected_rank"]:
+                    sample[1] = row["latency"]
     if not groups:
         raise ValueError("no native measurements")
     for (_, phase, _, _), observed in coverage.items():
@@ -421,6 +545,10 @@ def write_parquet(rows: list[dict], destination: Path) -> None:
         raise ValueError("cannot publish an empty measured table")
     keys = set()
     identities = {}
+    policies = {row.get("aggregation_policy", PER_OPERATION_TP_MAX) for row in rows}
+    if len(policies) != 1:
+        raise ValueError("table mixes native Ops TP aggregation policies")
+    rows = [{"aggregation_policy": PER_OPERATION_TP_MAX, "rank_selection_sha256": "", **row} for row in rows]
     for row in rows:
         validate_row(row)
         validate_calibration_row(row)

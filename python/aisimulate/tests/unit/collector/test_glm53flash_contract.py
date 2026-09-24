@@ -663,3 +663,86 @@ def test_vllm_mhc_source_owns_only_called_custom_op(method, role, native_class):
     setattr(owner, f"m{method}_op", SimpleNamespace())
     with pytest.raises(RuntimeError, match="selected CustomOp"):
         dispatch_identity(owner, method)
+
+
+def test_coherent_rank_selection_uses_whole_forward_and_keeps_all_operations(tmp_path):
+    from collector.glm53flash_contract import WHOLE_FORWARD_RANK, select_forward_ranks, sha256_json
+
+    a = sample_row()
+    b = {
+        **a,
+        "name": "attention_1",
+        "geometry": canonical_json({**json.loads(a["geometry"]), "layer_kind": "sparse_mla"}),
+    }
+    graph = {"phases": {"context": [{k: r[k] for k in ("name", "component", "geometry")} for r in (a, b)]}}
+    all_rows = []
+    for rank in range(2):
+        rows, forwards = [], []
+        for repetition in range(15):
+            label = "warmup" if repetition < 5 else "measurement"
+            fields = {
+                "sample": repetition,
+                "repetition": repetition,
+                "invocation": repetition + 1,
+                "benchmark_id": 1,
+                "sampling_role": label,
+                "request_ids": [f"fixture-{repetition}"],
+                "tp_rank": rank,
+            }
+            for operation, latency in [(a, 7 if rank == 0 else 3), (b, 3 if rank == 0 else 7)]:
+                rows.append({**operation, **fields, "latency": latency})
+            forwards.append(
+                {
+                    **a,
+                    **fields,
+                    "gpu_completed": True,
+                    "state_layout_admitted": True,
+                    "whole_forward_gpu_ms": 11 if rank == 0 else 10,
+                    "whole_forward_boundary": "embedding_to_logits_gpu_v1",
+                }
+            )
+        all_rows.append(rows)
+        (tmp_path / f"forward-rank-{rank}.jsonl").write_text("".join(json.dumps(x) + "\n" for x in forwards))
+    paths = rank_files(tmp_path, all_rows)
+    original = {p: p.read_bytes() for p in tmp_path.iterdir()}
+    selection = select_forward_ranks(paths, 2)
+    assert {r["selected_rank"] for r in selection["forwards"]} == {0}
+    rows = aggregate_rank_records(paths, 2, graph, evidence_sha256="e" * 64, aggregation_policy=WHOLE_FORWARD_RANK)
+    assert [r["latency"] for r in rows] == [7, 3]
+    assert all(r["rank_selection_sha256"] == sha256_json(selection) for r in rows)
+    legacy = aggregate_rank_records(paths, 2, graph, evidence_sha256="e" * 64)
+    assert [r["latency"] for r in legacy] == [7, 7]
+    assert all(p.read_bytes() == raw for p, raw in original.items())
+    # Equal full-forward intervals choose the lowest TP rank deterministically.
+    f = tmp_path / "forward-rank-1.jsonl"
+    values = [json.loads(line) for line in f.read_text().splitlines()]
+    for item in values:
+        item["whole_forward_gpu_ms"] = 11
+    f.write_text("".join(json.dumps(x) + "\n" for x in values))
+    assert {r["selected_rank"] for r in select_forward_ranks(paths, 2)["forwards"]} == {0}
+    good = f.read_bytes()
+    for mutate in (
+        lambda rs: rs.pop(),
+        lambda rs: rs.append(rs[0]),
+        lambda rs: rs[0].update(request_ids=["different-request"]),
+        lambda rs: rs[0].update(whole_forward_gpu_ms=True),
+        lambda rs: rs[0].pop("whole_forward_gpu_ms"),
+    ):
+        values = [json.loads(line) for line in good.splitlines()]
+        mutate(values)
+        f.write_text("".join(json.dumps(x) + "\n" for x in values))
+        with pytest.raises(ValueError, match="rank selection"):
+            aggregate_rank_records(paths, 2, graph, evidence_sha256="e" * 64, aggregation_policy=WHOLE_FORWARD_RANK)
+    f.write_bytes(good)
+    paths[0].write_text(paths[0].read_text().replace("fixture-0", "other-0"))
+    with pytest.raises(ValueError, match="different native forward"):
+        aggregate_rank_records(paths, 2, graph, evidence_sha256="e" * 64, aggregation_policy=WHOLE_FORWARD_RANK)
+
+
+def test_writer_does_not_mix_tp_aggregation_policies(tmp_path):
+    from collector.glm53flash_contract import WHOLE_FORWARD_RANK
+
+    a = sample_row()
+    b = {**a, "x": 256, "aggregation_policy": WHOLE_FORWARD_RANK, "rank_selection_sha256": "a" * 64}
+    with pytest.raises(ValueError, match="mixes native Ops TP aggregation"):
+        write_parquet([a, b], tmp_path / "test-only.parquet")

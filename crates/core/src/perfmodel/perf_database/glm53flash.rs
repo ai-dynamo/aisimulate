@@ -444,10 +444,38 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
     let request_set = reader.col("request_set")?;
     let corpus_sha256 = reader.col("corpus_sha256")?;
     let evidence_sha256 = reader.col("evidence_sha256")?;
+    let aggregation_policy = reader.col_optional("aggregation_policy");
+    let rank_selection_sha256 = reader.col_optional("rank_selection_sha256");
+    let mut table_aggregation = None;
     let mut identities = BTreeMap::new();
     let mut points = Points::new();
     for row in reader.rows()? {
         let row = row?;
+        let policy = aggregation_policy
+            .map(|column| row.str(column))
+            .transpose()?
+            .unwrap_or("per_operation_tp_max_v1");
+        let selection = rank_selection_sha256
+            .map(|column| row.str(column))
+            .transpose()?
+            .unwrap_or("");
+        if !matches!(
+            policy,
+            "per_operation_tp_max_v1" | "whole_forward_slowest_rank_v1"
+        ) || (policy == "whole_forward_slowest_rank_v1" && !sha256(selection))
+            || (policy == "per_operation_tp_max_v1" && !selection.is_empty())
+        {
+            return Err(invalid(
+                "GLM53 aggregation policy lacks exact rank-selection evidence",
+            ));
+        }
+        if table_aggregation
+            .as_ref()
+            .is_some_and(|previous| previous != policy)
+        {
+            return Err(invalid("GLM53 table mixes TP aggregation policies"));
+        }
+        table_aggregation = Some(policy.to_owned());
         let component = row.str(component)?;
         let encoded = row.str(geometry)?;
         let shape = validate_geometry(component, encoded)?;
@@ -680,6 +708,32 @@ mod tests {
             source: "authored-fixture".into(),
             state: "cached_prefill".into(),
             graph: false,
+        }
+    }
+
+    #[test]
+    fn rank_aggregation_policy_cannot_mix_or_omit_selection_evidence() {
+        for (policies, hashes, accepted) in [
+            (vec!["whole_forward_slowest_rank_v1"; 2], vec![SHA; 2], true),
+            (vec!["whole_forward_slowest_rank_v1"; 2], vec![""; 2], false),
+            (
+                vec!["per_operation_tp_max_v1", "whole_forward_slowest_rank_v1"],
+                vec!["", SHA],
+                false,
+            ),
+            (vec!["unknown"; 2], vec![SHA; 2], false),
+        ] {
+            let mut columns = fixture();
+            columns.push(Col::Str("aggregation_policy", policies));
+            columns.push(Col::Str("rank_selection_sha256", hashes));
+            let root = tempfile::tempdir().unwrap();
+            write_parquet(&root.path().join(BASENAME), &columns);
+            assert_eq!(
+                Glm53Table::new(root.path().into())
+                    .has_measurements()
+                    .is_ok(),
+                accepted
+            );
         }
     }
 

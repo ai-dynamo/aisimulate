@@ -43,7 +43,8 @@ SILICON and HYBRID; neither mode silently falls back to SOL. The installed wheel
 constructs all eight required model graphs and rejects missing measurements in
 all eight SILICON and all eight HYBRID checks.
 
-Current graph-node/hook validation passes 40 CPU tests, including CUDA13 ABI
+Current bounded validation passes 273 GLM collector tests and 18 Rust GLM tests.
+Graph-node/hook validation includes 40 CPU tests covering CUDA13 ABI
 pointer writes, complete kernel/memcpy/memset activity matching, native
 enumeration consistency and retention of nondefault dependency metadata. The preceding
 graph/runtime change passed 112 focused tests. Historical validation passed
@@ -57,6 +58,20 @@ The earlier broad collector
 run passed 2,362 tests (8 skipped); that count is historical and predates the
 latest bounded evidence and native launch fixes. These checks establish software
 behavior and evidence integrity, not native GPU performance coverage.
+
+Actual FP8 TP4 eager smoke produced every declared operation on all four ranks
+for two SGLang prefill points and one vLLM point in each phase. Original
+postprocessing failures remain preserved; exact pinned mHC source-ownership
+normalization permits separate complete reaggregation receipts. The SGLang smoke
+exposed overcounting from selecting a different maximum-latency TP rank per
+operation. New collection selects one rank per actual forward using its largest
+recorded whole-forward interval, with lowest-rank ties, and keeps all that rank's
+operation measurements. It records the policy and complete selection evidence;
+old per-operation-max tables keep their historical behavior. No residual or
+scaling factor is introduced. On the same two instrumented calibration points,
+the rebuilt Rust consumer differs from native DeviceTimer by 3.29% and 2.26%;
+these are internal diagnostics, not independent holdout accuracy. Old vLLM smoke
+lacks whole-forward GPU intervals and cannot be relabelled with the new policy.
 **All eight deployment cells retain data/accuracy status `NOT_EVALUATED`.** No
 measured GLM profiles or independent 20% MAPE pass are included. Native framework
 qualification and Ops GPU observation are separate evidence streams.
