@@ -1108,11 +1108,13 @@ the repository Apache-2.0 license text applies to these adaptations.
 
 - Derived files: `python/aisimulate/collector/glm53flash_vllm_runtime.py`,
   `python/aisimulate/tests/unit/collector/test_glm53flash_vllm_runtime.py`,
+  `python/aisimulate/collector/glm53flash_graph_observer.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_graph_observer.py`,
   and the vLLM integration section of `collector/README.glm53flash.md`.
 - Source: https://github.com/vllm-project/vllm at immutable revision
   `ced6857afa0ea7b2e3f0846a62e1394e90f15607` (v0.30.0), paths
   `vllm/v1/worker/gpu_model_runner.py`, `vllm/v1/worker/gpu_worker.py`,
-  `vllm/v1/worker/gpu/{model_runner,input_batch,states}.py`, `vllm/forward_context.py`,
+  `vllm/v1/worker/gpu/{model_runner,input_batch,states,cudagraph_utils}.py`, `vllm/forward_context.py`,
   `vllm/models/glm5next/nvidia/{model,attention,kda}.py`,
   and `vllm/model_executor/layers/{mla,logits_processor}.py`.
 - Copyright: vLLM contributors. License: Apache-2.0 (full text above).

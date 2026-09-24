@@ -246,3 +246,22 @@ Ops evidence requires GB300/sm103, binds all allocated cache tensor devices to
 that selected device and rejects repeated physical UUIDs across ranks. A dataset
 directory or launch flag cannot substitute for this receipt. Earlier immutable
 smoke bundles remain historical and are not upgraded to formal hardware evidence.
+
+## Native graph whole-forward diagnostic
+
+`glm53flash_graph_observer.NativeFullGraphWindow` supplies a separate, bounded
+vLLM FULL decode diagnostic. The caller supplies the actual native prepared
+request receipt and captured graph object/descriptor; start is immediately
+before `ModelCudaGraphManager.run_fullgraph`, and end is immediately after
+`compute_logits`, before sampling. Completed native request/sample receipts
+and exact padding are mandatory. Repeated dispatch, recapture, changed stream,
+eager/piecewise relabels and a missing logits endpoint are rejected.
+
+This window measures the complete native graph model interval, including any
+in-graph metadata, plus logits. It does not observe constituent operations or
+certify a Python module execution count during replay. It emits diagnostic
+receipts only; the existing eager reader still rejects graph data. Graph Ops
+accuracy and eager-calibration reuse remain NOT_EVALUATED/NOT_ADMITTED. Before
+any reuse, actual kernels, physical inputs, runtime/fusion/communication policy
+and complete operation coverage need an explicit equivalence certificate,
+followed by the unchanged independent <=20% graph whole-forward gate.
