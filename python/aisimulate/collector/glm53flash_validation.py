@@ -72,6 +72,7 @@ def _sglang_execution(
     *,
     graph: bool = False,
     requested_fraction=None,
+    requested_allocator=None,
     native_eager_prefill: bool = False,
 ) -> dict:
     """Reuse the shared runtime receipt contract without the FPM timing reader."""
@@ -85,6 +86,7 @@ def _sglang_execution(
         execution_identity=execution_identity(raw_config, backend="sglang", input_modality="text"),
         topology=SimpleNamespace(tp=tp),
         sglang_mem_fraction_static=requested_fraction,
+        sglang_allocator_max_split_size_mb=requested_allocator,
     )
     payload = {
         **provenance,
@@ -128,6 +130,91 @@ def requested_sglang_memory(run: dict):
     if cell is not None and getattr(cell, "sglang_mem_fraction_static", None) != requested:
         raise ValueError("Ops runtime cell differs from frozen requested SGLang memory fraction")
     return requested
+
+
+def requested_sglang_allocator(run: dict):
+    """Cross-bind the optional explicit native allocator request, without planning."""
+    from collector.fpm_forward.sglang_allocator import validate_max_split_size
+
+    name = "sglang_allocator_max_split_size_mb"
+    requested = run.get("plan", {}).get("options", {}).get(name)
+    declared = run.get("cell", {}).get(name)
+    validate_max_split_size(requested)
+    validate_max_split_size(declared)
+    if requested != declared or (requested is not None and run["key"][0] != "sglang"):
+        raise ValueError("Ops allocator request differs between frozen plan and cell")
+    cell = run.get("runtime_cell")
+    if cell is not None and getattr(cell, name, None) != requested:
+        raise ValueError("Ops runtime cell differs from frozen allocator request")
+    return requested
+
+
+def sglang_allocator_evidence(root: Path, run: dict, files: set | None = None):
+    """Read original worker files; never turn legacy unknown into default proof.
+
+    The temporary receipt view below references original files and their actual
+    digests. Every native forward must also bind those original digests; no
+    replacement native receipt is written or inferred from ServerArgs.
+    """
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+    from collector.fpm_forward.sglang_artifact import file_receipt, validate_allocator_receipts
+    from collector.glm53flash_graph_export import _local
+
+    requested = requested_sglang_allocator(run)
+    if run["key"][0] != "sglang":
+        raise ValueError("native allocator evidence is SGLang-only")
+    root = Path(root)
+    provenance = json.loads(_local(root, "sglang-provenance.json").read_bytes())
+    present = {path.name for path in root.glob("allocator-identity-rank-*.json")}
+    if "allocator_policy" not in provenance and requested is None and not present:
+        return {"normalized": None, "hashes": {}}
+    tp = run["key"][2]
+    expected = {f"allocator-identity-rank-{rank}.json" for rank in range(tp)}
+    if present != expected:
+        raise ValueError("Ops allocator original rank files are missing or unexpected")
+    config = get_model_config_from_model_path(CHECKPOINTS[run["key"][1]][0])["raw_config"]
+    identity = dict(
+        zip(EXECUTION_COLUMNS, execution_identity(config, backend="sglang", input_modality="text"), strict=True)
+    )
+    if provenance.get("execution_identity") != identity:
+        raise ValueError("Ops allocator checkpoint identity differs from frozen runtime")
+    layouts = {rank: json.loads(_local(root, f"state-layout-rank-{rank}.json").read_bytes()) for rank in range(tp)}
+    refs = [
+        {"tp_rank": rank, **file_receipt(_local(root, f"allocator-identity-rank-{rank}.json"))} for rank in range(tp)
+    ]
+    view = {
+        **provenance,
+        "input_provenance": {"native_forward_manifest": {"allocator_identities": refs}},
+    }
+    cell = SimpleNamespace(topology=SimpleNamespace(tp=tp), sglang_allocator_max_split_size_mb=requested)
+    normalized, hashes = validate_allocator_receipts(cell, view, root, layouts=layouts)
+    if normalized is None:
+        raise ValueError("declared allocator evidence cannot become unknown")
+    if files is not None:
+        files.update(expected)
+        files.add("sglang-provenance.json")
+        files.update(f"state-layout-rank-{rank}.json" for rank in range(tp))
+    return {
+        "normalized": normalized,
+        "hashes": hashes,
+        "run_id": provenance["run_id"],
+        "execution_identity": identity,
+    }
+
+
+def check_sglang_forward_allocator(row: dict, rank: int, evidence: dict):
+    actual = evidence["normalized"]
+    if actual is None:
+        if "allocator_policy" in row or "allocator_identity_sha256" in row:
+            raise ValueError("Ops forward allocator declaration lacks original worker evidence")
+    elif (
+        row.get("allocator_identity_sha256") != evidence["hashes"][rank]
+        or row.get("allocator_policy") != actual["requested_policy"]
+        or row.get("run_id") != evidence["run_id"]
+        or row.get("execution_identity") != evidence["execution_identity"]
+    ):
+        raise ValueError("Ops forward is not bound to its actual rank allocator receipt")
 
 
 def expected_runtime_version(run: dict) -> str:
@@ -326,6 +413,8 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         raise ValueError("repaired Ops runtime is qualified only at TP2/TP4")
     pins = _runtime_audit(root, backend, version)
     requested_fraction = requested_sglang_memory(run)
+    requested_allocator = requested_sglang_allocator(run)
+    allocator = sglang_allocator_evidence(root, run) if backend == "sglang" else None
     execution = (
         _sglang_execution(
             root,
@@ -334,6 +423,7 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
             run["points"],
             graph=graph,
             requested_fraction=requested_fraction,
+            requested_allocator=requested_allocator,
             native_eager_prefill=native_eager_prefill,
         )
         if backend == "sglang"
@@ -441,6 +531,8 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         hardware_by_rank[str(rank)] = hardware
         previous, observed, seen_forward_ids, completed_requests = {}, set(), set(), set()
         for row in iter_records(root / f"forward-rank-{rank}.jsonl"):
+            if allocator is not None:
+                check_sglang_forward_allocator(row, rank, allocator)
             if (row.get("backend"), row.get("backend_version"), row.get("backend_revision")) != (
                 backend,
                 version,
@@ -625,7 +717,9 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
     if backend == "sglang":
         from collector.fpm_forward.glm53flash_validation import _sglang_execution_policy
 
-        execution_policy = _sglang_execution_policy(json.loads((root / "sglang-resolved-config.json").read_bytes()))
+        execution_policy = _sglang_execution_policy(
+            json.loads((root / "sglang-resolved-config.json").read_bytes()), allocator["normalized"]
+        )
     elif graph:
         from collector.glm53flash_vllm_graph_export import execution_policy as vllm_execution_policy
 

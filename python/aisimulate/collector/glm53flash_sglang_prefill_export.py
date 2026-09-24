@@ -85,7 +85,7 @@ def _json(root, name, files):
     return json.loads(path.read_bytes())
 
 
-def build_policy(manifest, provenance, execution):
+def build_policy(manifest, provenance, execution, allocator=None):
     from collector.fpm_forward.glm53flash_validation import _sglang_execution_policy
 
     formats = {json.loads(row["geometry"])["checkpoint_format"] for row in manifest["phases"]["context"]}
@@ -114,7 +114,7 @@ def build_policy(manifest, provenance, execution):
         or execution.get("cuda_graph_config", {}).get("decode", {}).get("backend") != "full"
     ):
         raise ValueError("native prefill requires actual disabled context and FULL decode policy")
-    policy = _sglang_execution_policy(execution)
+    policy = _sglang_execution_policy(execution, allocator)
     return {
         "schema_version": 4,
         **expected,
@@ -172,11 +172,14 @@ def read_prefill_run(root, run):
         or run["role"] not in ("calibration", "control", "holdout")
     ):
         raise ValueError("native prefill reader requires explicit SG context purpose")
+    from collector.glm53flash_validation import check_sglang_forward_allocator, sglang_allocator_evidence
+
     files = set()
+    allocator = sglang_allocator_evidence(root, run, files)
     manifest = _json(root, "manifest.json", files)
     provenance = _json(root, "provenance.json", files)
     execution = _json(root, "sglang-resolved-config.json", files)
-    policy = build_policy(manifest, provenance, execution)
+    policy = build_policy(manifest, provenance, execution, allocator["normalized"])
     if (policy["checkpoint_format"], policy["tp_size"]) != tuple(run["key"][1:3]):
         raise ValueError("native prefill policy belongs to another frozen cell")
     entries = manifest["phases"]["context"]
@@ -222,6 +225,7 @@ def read_prefill_run(root, run):
         files.add(name)
         observed, warmups = {}, {}
         for original in iter_records(_local(root, name)):
+            check_sglang_forward_allocator(original, rank, allocator)
             if original.get("stage") != "measure":
                 continue
             row = dict(original)
@@ -429,7 +433,7 @@ def read_prefill_run(root, run):
         "corpus_sha256": run["corpus"],
     }
     return {
-        **_sglang_execution_policy(execution),
+        **_sglang_execution_policy(execution, allocator["normalized"]),
         "policy": policy,
         "manifest": manifest,
         "forwards": dict(forwards),

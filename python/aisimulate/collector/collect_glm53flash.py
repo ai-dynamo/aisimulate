@@ -90,8 +90,10 @@ def native_command(
     *,
     ops_execution_mode="eager",
     sglang_mem_fraction_static=None,
+    sglang_allocator_max_split_size_mb=None,
 ):
     from collector.fpm_forward.config import validate_sglang_mem_fraction_static
+    from collector.fpm_forward.sglang_allocator import OPTION, validate_max_split_size
 
     native_prefill = ops_execution_mode == "native_eager_prefill"
     if ops_execution_mode not in ("eager", "native_eager_prefill") or (
@@ -101,6 +103,9 @@ def native_command(
     validate_sglang_mem_fraction_static(sglang_mem_fraction_static)
     if backend != "sglang" and sglang_mem_fraction_static is not None:
         raise ValueError("SGLang memory policy requires the SGLang backend")
+    validate_max_split_size(sglang_allocator_max_split_size_mb)
+    if backend != "sglang" and sglang_allocator_max_split_size_mb is not None:
+        raise ValueError("SGLang allocator policy requires the SGLang backend")
     common = ["--benchmark-mode", phase, "--benchmark-points-file", str(output / "points.json")]
     if backend == "sglang":
         return [
@@ -140,6 +145,11 @@ def native_command(
             *(
                 ["--mem-fraction-static", str(sglang_mem_fraction_static)]
                 if sglang_mem_fraction_static is not None
+                else []
+            ),
+            *(
+                [OPTION, str(sglang_allocator_max_split_size_mb)]
+                if sglang_allocator_max_split_size_mb is not None
                 else []
             ),
             *common,

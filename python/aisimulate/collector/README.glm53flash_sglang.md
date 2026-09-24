@@ -234,3 +234,15 @@ adapters are ported from FPM commit636206a73f391a1340b57acd8c396c557061c9db.
 Ops keeps its existing orchestration; externally frozen public FPM plans/cells
 must retain any explicit allocator option. This records execution identity,
 not capacity qualification, an OOM repair or performance acceptance.
+
+
+Ops additionally cross-checks the requested allocator option in the original
+plan, selected cell and runtime cell, reads every original rank receipt against
+its GPU and checkpoint, and checks every seed and measured forward's allocator
+SHA. Both graph and prefill readers derive the same actual allocator-inclusive
+execution-policy digest; independent controls, holdouts and existing shard
+unions reject known/unknown or differing actual policies. Schema4 uses its
+existing `execution_policy_sha256`. Schema1 retains the original meaning of
+`resolved_config_sha256` and binds allocator evidence through its Python
+execution-policy and raw/control evidence closure. No public allocator query
+axis or competing deployment policy is introduced.

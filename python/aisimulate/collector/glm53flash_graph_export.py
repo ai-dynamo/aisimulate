@@ -196,9 +196,14 @@ def read_graph_run(root: Path, run: dict) -> dict:
     if (backend, phase) != ("sglang", "decode") or run["role"] not in ("calibration", "holdout", "control"):
         raise ValueError("graph evidence supports ordinary SGLang FULL decode only")
     calibrated = run["role"] == "calibration"
-    from collector.glm53flash_validation import _required_files
+    from collector.glm53flash_validation import (
+        _required_files,
+        check_sglang_forward_allocator,
+        sglang_allocator_evidence,
+    )
 
     files = _required_files(tp, backend) - {f"rank-{rank}.jsonl" for rank in range(tp)}
+    allocator = sglang_allocator_evidence(root, run, files)
     manifest = json.loads(_local(root, "manifest.json").read_bytes())
     production = build_model_manifest(backend, fmt, tp)
     if manifest != production or len(manifest["runtime_operations"]["generation"]) != 1:
@@ -226,6 +231,7 @@ def read_graph_run(root: Path, run: dict) -> dict:
         graph_path = _local(root, f"graph-forward-rank-{rank}.jsonl")
         files.update((forward_path.name, graph_path.name))
         for row in iter_records(forward_path):
+            check_sglang_forward_allocator(row, rank, allocator)
             if row["stage"] == "measure":
                 if row["invocation"] in targets:
                     raise ValueError("native target invocation was reused")
@@ -343,7 +349,9 @@ def read_graph_run(root: Path, run: dict) -> dict:
     from collector.fpm_forward.glm53flash_validation import _sglang_execution_policy
 
     result = {
-        **_sglang_execution_policy(json.loads(_local(root, "sglang-resolved-config.json").read_bytes())),
+        **_sglang_execution_policy(
+            json.loads(_local(root, "sglang-resolved-config.json").read_bytes()), allocator["normalized"]
+        ),
         "policy": policy,
         "native_snapshot": comparable[0],
         "provenance": provenance,

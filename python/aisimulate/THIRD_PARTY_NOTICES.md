@@ -1360,7 +1360,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 - Integration files: `python/aisimulate/collector/fpm_forward/sglang_allocator.py`,
   the allocator-only additions to its driver/artifact/validation peers,
   `collector/glm53flash_sglang_runtime.py`, and
-  `tests/unit/collector/test_glm53flash_sglang_allocator.py` under the same
+  `collector/glm53flash_validation.py`, the graph/native-prefill reader
+  integrations, `tests/unit/collector/test_glm53flash_sglang_allocator.py`
+  and `tests/unit/collector/test_glm53flash_ops_allocator.py` under the same
   Python application.
 - Ops adaptation retains the shared helper and native receipt adapters from
   internal FPM commit `636206a73f391a1340b57acd8c396c557061c9db`; the existing
