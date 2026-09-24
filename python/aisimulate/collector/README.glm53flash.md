@@ -30,8 +30,11 @@ production graph data. Missing native invocations fail complete-graph coverage.
 Attention includes local projections, KDA or pooled-index NoPE sparse MLA, cache
 writes, and the local output projection. Separately observed synchronous
 same-stream collective intervals are excluded; overlap or fused communication
-must receive a separate qualified contract. SGLang's hoisted latent projection
-is a disjoint part of its attention measurement. KDA conv/recurrent state and
+must receive a separate qualified contract. SGLang's saved latent projection
+may execute lazily inside attention. That explicitly declared same-operation
+callback shares the enclosing attention interval and preserves its native
+source attribution; a hoisted execution contributes a disjoint interval. It is
+never counted twice. Different-operation nested compute remains an error. KDA conv/recurrent state and
 the sparse indexer's incomplete pool tail must come from the real request's
 native prefix execution.
 

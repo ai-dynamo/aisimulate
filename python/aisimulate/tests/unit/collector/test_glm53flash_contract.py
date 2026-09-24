@@ -372,6 +372,73 @@ def test_native_graph_replay_without_python_events_is_not_coverage():
         recorder.end()
 
 
+@pytest.mark.parametrize("lazy", [True, False])
+def test_saved_projection_is_counted_once_inside_or_before_its_native_attention(lazy):
+    cuda = FakeCuda()
+    row = sample_row()
+    recorder = NativeOperationObserver(manifest(row), row, 0, torch_module=SimpleNamespace(cuda=cuda))
+
+    class Native:
+        def collective(self, value):
+            cuda.clock += 2
+            return value
+
+        def latent(self, value):
+            cuda.clock += 3
+            return self.collective(value)
+
+        def forward(self, value):
+            cuda.clock += 2
+            result = self.latent(value) if lazy else value
+            cuda.clock += 4
+            return result
+
+    native = Native()
+    recorder.wrap(native, "forward", "attention_0")
+    recorder.wrap(native, "latent", "attention_0", included_by_same_operation=True)
+    recorder.wrap_collective(native, "collective")
+    recorder.begin(NativeWorkload("context", 1, 128, 0, "full_prefill", ("r1",), (), 0, 1))
+    sentinel = object()
+    if not lazy:
+        assert native.latent(sentinel) is sentinel
+    assert native.forward(sentinel) is sentinel
+    result = recorder.end()[0]
+    assert result["latency"] == 9  # 3 projection + 2/4 attention, excluding 2 collective.
+    assert len(result["excluded_collectives"]) == 1
+    assert result["excluded_collectives"][0]["latency"] == 2
+    assert "Native.latent" in result["kernel_source"]
+
+
+@pytest.mark.parametrize("same_name,declared", [(True, False), (False, True)])
+def test_nested_callback_exception_requires_explicit_same_physical_operation(same_name, declared):
+    cuda = FakeCuda()
+    row = sample_row()
+    graph = manifest(row)
+    for entries in graph["phases"].values():
+        entries.append({**entries[0], "name": "attention_1"})
+    recorder = NativeOperationObserver(graph, row, 0, torch_module=SimpleNamespace(cuda=cuda))
+
+    class Native:
+        def latent(self, value):
+            cuda.clock += 3
+            return value
+
+        def forward(self, value):
+            return self.latent(value)
+
+    native = Native()
+    recorder.wrap(native, "forward", "attention_0")
+    recorder.wrap(
+        native,
+        "latent",
+        "attention_0" if same_name else "attention_1",
+        included_by_same_operation=declared,
+    )
+    recorder.begin(NativeWorkload("context", 1, 128, 0, "full_prefill", ("r1",), (), 0, 1))
+    with pytest.raises(RuntimeError, match="nested compute"):
+        native.forward(object())
+
+
 def test_collective_is_counted_once_in_complete_local_plus_communication_partition():
     cuda = FakeCuda()
     row = sample_row()

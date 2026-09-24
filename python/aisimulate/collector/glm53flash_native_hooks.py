@@ -9,12 +9,22 @@ in README.glm53flash.md and the canonical third-party notices.
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import json
 from importlib.metadata import version
+from pathlib import Path
 
 from collector.glm53flash_contract import BACKENDS
 from collector.glm53flash_observer import NativeOperationObserver, require_fused_sglang_norm
+
+SGLANG_PROJECTION_SOURCE_PINS = {
+    "srt/layers/communicator.py": "385c6ab93420618dc222be44d65d129a20162cb8ee8b05d86c0e7d4e5a57eaec",
+    "srt/layers/communicator_mhc.py": "d1b8b711df8e486fa9fd6a0028ddcb0d2a863bb23300337b5d3cc2407d168fcf",
+    "srt/models/deepseek_common/attention_forward_methods/forward_mha.py": (
+        "004f83d9e1b70ec3f4cfee4ec1c3474d5ea212c2092de14c9fac72542e7d72bb"
+    ),
+}
 
 
 def _check_geometry(layer, index: int, observer: NativeOperationObserver, backend: str) -> None:
@@ -55,6 +65,12 @@ def install_native_hooks(model, observer: NativeOperationObserver, backend: str)
     """
     if backend not in BACKENDS or version(backend) != BACKENDS[backend][0]:
         raise RuntimeError("native GLM hooks require the exact qualified framework release")
+    if backend == "sglang":
+        package = Path(importlib.import_module("sglang").__file__).resolve().parent
+        for relative, wanted in SGLANG_PROJECTION_SOURCE_PINS.items():
+            if hashlib.sha256((package / relative).read_bytes()).hexdigest() != wanted:
+                raise RuntimeError(f"native SGLang lazy projection source differs: {relative}")
+        observer.provenance["native_projection_source_sha256"] = dict(SGLANG_PROJECTION_SOURCE_PINS)
     layers = [module for module in model.modules() if type(module).__name__ == "Glm5NextDecoderLayer"]
     if len(layers) != 45:
         raise RuntimeError(f"expected exactly 45 loaded text decoder layers with MTP off, found {len(layers)}")
@@ -104,9 +120,16 @@ def install_native_hooks(model, observer: NativeOperationObserver, backend: str)
                 )
                 observer.wrap(communicator.mhc, "hc_post", (f"mhc_post_attn_{index}", f"mhc_post_ffn_{index}"))
                 if communicator.qkv_latent_func is not None:
-                    # Native pre-gather projection executes before self_attn;
-                    # time the saved callback as a disjoint attention part.
-                    observer.wrap(communicator, "qkv_latent_func", f"attention_{index}")
+                    # Pinned communicator.py:275 evaluates this saved callback
+                    # lazily from attention's fetch_qkv_latent. If a native path
+                    # hoists it, it is a disjoint part; when invoked inside the
+                    # same attention, the outer interval already includes it.
+                    observer.wrap(
+                        communicator,
+                        "qkv_latent_func",
+                        f"attention_{index}",
+                        included_by_same_operation=True,
+                    )
                 if bool(getattr(layer.self_attn.o_proj, "reduce_results", False)):
                     raise RuntimeError("SGLang native attention collective ownership changed")
             # One native FFN includes routing, clamp10, shared and routed experts.

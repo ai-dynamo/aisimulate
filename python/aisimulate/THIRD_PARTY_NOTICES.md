@@ -1009,7 +1009,8 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   https://github.com/sgl-project/sglang at
   `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20), original paths
   `python/sglang/srt/models/{glm5_next,deepseek_v2}.py` and
-  `python/sglang/srt/layers/communicator_mhc.py`,
+  `python/sglang/srt/layers/{communicator,communicator_mhc}.py`,
+  `python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mha.py`,
   `python/sglang/srt/layers/logits_processor.py`,
   `python/sglang/srt/arg_groups/exec_.py`, and
   `python/sglang/srt/model_executor/cuda_graph_config.py`,

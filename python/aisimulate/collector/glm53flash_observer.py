@@ -154,7 +154,15 @@ class NativeOperationObserver:
             names = sorted(kernels.get(name, []))
             self.dispatches[self._dispatch_key(name)] = names
 
-    def wrap(self, owner, method: str, name: str | tuple[str, ...], *, validate_result=None) -> None:
+    def wrap(
+        self,
+        owner,
+        method: str,
+        name: str | tuple[str, ...],
+        *,
+        validate_result=None,
+        included_by_same_operation: bool = False,
+    ) -> None:
         """Wrap an existing callable without altering its arguments or result."""
         names = (name,) if isinstance(name, str) else name
         if not names or any(item not in entries for item in names for entries in self._entries.values()):
@@ -177,7 +185,21 @@ class NativeOperationObserver:
             if self.torch.cuda.is_current_stream_capturing():
                 raise RuntimeError("eager operation observer encountered native graph capture")
             if self.active_interval is not None:
-                raise RuntimeError("nested compute intervals cannot be summed as disjoint operations")
+                if not included_by_same_operation or self.active_interval["name"] != selected_name:
+                    raise RuntimeError("nested compute intervals cannot be summed as disjoint operations")
+                # SGLang can evaluate the saved latent projection lazily inside
+                # its own attention forward. The enclosing physical operation
+                # already times this call; a second interval would double-count
+                # it. Only this explicitly declared same-operation callback may
+                # share the interval. Different operations still fail above.
+                interval = self.active_interval
+                result = original(*args, **kwargs)
+                if self.torch.cuda.current_stream() != interval["stream"]:
+                    raise RuntimeError("included native callback changed its current stream")
+                if validate_result is not None:
+                    validate_result(result)
+                interval.setdefault("included_native_calls", []).append(witness)
+                return result
             stream = self.torch.cuda.current_stream()
             start, end = self.torch.cuda.Event(enable_timing=True), self.torch.cuda.Event(enable_timing=True)
             interval = {
@@ -311,7 +333,15 @@ class NativeOperationObserver:
                 else "compute_and_communication"
                 if role == "logits"
                 else "local_compute",
-                "kernel_source": "+".join(sorted({interval["source"] for interval in intervals})),
+                "kernel_source": "+".join(
+                    sorted(
+                        {
+                            source
+                            for interval in intervals
+                            for source in (interval["source"], *interval.get("included_native_calls", []))
+                        }
+                    )
+                ),
                 "used_cuda_graph": False,
                 "kv_seed_regime": "real_kv"
                 if attention and (workload.prefix or workload.phase == "generation")
