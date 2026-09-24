@@ -510,7 +510,7 @@ class FPMCollectionPlan:
         explicit_points = (
             json.loads(self.options.benchmark_points_json) if self.options.benchmark_points_json is not None else None
         )
-        return {
+        payload = {
             "schema_name": "aic_fpm_collection_plan",
             "schema_version": 11,
             "backend": self.backend,
@@ -574,6 +574,11 @@ class FPMCollectionPlan:
             },
             "sha256": self.sha256,
         }
+        if self.options.shard_token_budget is not None:
+            from .shards import shard_manifest
+
+            payload["sharding"] = shard_manifest(self)
+        return payload
 
 
 def _cell_id(

@@ -1247,9 +1247,11 @@ def test_runtime_summaries_use_native_rank_artifacts_and_skip_merged(tmp_path):
     }
 
 
-def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatch, tmp_path):
+@pytest.mark.parametrize("execution_timeout", [None, 18000])
+def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatch, tmp_path, execution_timeout):
     cell = _cell()
     plan = _plan(cell)
+    plan.options.execution_timeout_seconds = execution_timeout
     events = []
     staged_names = []
 
@@ -1277,7 +1279,8 @@ def test_run_collection_stages_no_explicit_scheduler_or_case_manifest(monkeypatc
         def prepare_attempt(self, _pods, **_kwargs):
             events.append("prepare_attempt")
 
-        def execute(self, _pods):
+        def execute(self, _pods, **kwargs):
+            assert kwargs == ({"timeout_seconds": execution_timeout} if execution_timeout else {})
             events.append("execute")
 
         def collect(self, _pods, *, require_benchmark=True):

@@ -112,3 +112,15 @@ Optional `http_metrics` contains independently hashed JSON receipts. They are
 preserved in a separate, unevaluated HTTP end-to-end section and never enter
 native-forward metrics or the FPM/Ops gate. An empty manifest yields 16 explicit
 `NOT_EVALUATED` cells and cannot report a pass.
+
+## Bounded child runs
+
+A logical calibration or holdout entry may use the immutable parent `plan` and
+`cell_id`, a hashed `shard_manifest` receipt, and `shards: [...]` containing normal
+child run specifications. Do not synthesize a single native run identity from
+several children. The validator checks the exact parent partition and each
+child's actual raw evidence, then maps local native point IDs back to original
+parent IDs. Consumer FPM rows must retain each child's real source/attempt/run
+identity. Ops uses `bind_sharded_calibration(paths, children, frozen_shard_manifest)`
+for its separately owned physical-operation aggregation. See
+[bounded campaigns](README.glm53flash-shards.md) for execution and resume details.
