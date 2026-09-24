@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 
 from collector.glm53flash_protocol import native_gpu_identity, validate_gb300_identity
+from collector.glm53flash_runtime_identity import observe_vllm_runtime_closure
 
 
 def install(module) -> None:
@@ -43,6 +44,11 @@ def install(module) -> None:
             "worker_source_sha256": hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest(),
         }
         try:
+            closure = observe_vllm_runtime_closure(
+                receipt["backend_version"], Path(__file__).with_name("runtime-source-sha256.json")
+            )
+            if closure is not None:
+                receipt["runtime_closure"] = closure
             if (
                 type(worker.rank) is not int
                 or not 0 <= worker.rank < parallel.tensor_parallel_size

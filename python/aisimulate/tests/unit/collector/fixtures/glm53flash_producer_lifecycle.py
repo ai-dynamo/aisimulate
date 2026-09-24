@@ -7,12 +7,15 @@ import importlib.util
 import json
 import math
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
 import dsv41_producer_lifecycle as precedent
+
+sys.modules["vllm"].__version__ = "0.30.0"  # CPU fixture, never native evidence.
 
 path = Path(os.environ["AIC_FPM_GLM53FLASH_PRODUCER"])
 spec = importlib.util.spec_from_file_location("glm53flash_tested", path)

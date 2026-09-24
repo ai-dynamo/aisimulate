@@ -153,3 +153,47 @@ def test_hardware_gate_rejects_rehashed_wrong_runtime_or_worker(tmp_path, corrup
         entry["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
     with pytest.raises(ValueError, match="hardware|GPU"):
         validate_vllm_hardware_receipts(cell, payload, path)
+
+
+def test_failed_worker_binary_check_preserves_original_initializer_and_receipt(monkeypatch, tmp_path):
+    worker, calls = native_worker(monkeypatch, tmp_path)
+
+    def fail(*_):
+        raise ValueError("TEST ONLY substituted native binary")
+
+    monkeypatch.setattr(hardware, "observe_vllm_runtime_closure", fail)
+    with pytest.raises(ValueError, match="substituted native binary"):
+        worker.init_device("native-input")
+    receipt = json.loads((tmp_path / "native-device-rank-0.json").read_text())
+    assert calls == ["native-input"]
+    assert receipt["status"] == "failed"
+    assert "substituted native binary" in receipt["error"]
+
+
+def test_rehashed_repair_receipt_needs_actual_every_rank_binary_closure(monkeypatch, tmp_path):
+    from collector import glm53flash_runtime_identity as identity
+
+    # TEST ONLY registry entry exercises dormant repaired-runtime validation.
+    monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, identity.VLLM_KPOOL_CANDIDATE, "a" * 64)
+    cell, payload, path = artifact(tmp_path)
+    manifest = Path(hardware.__file__).with_name("runtime-source-sha256.json")
+    version = identity.VLLM_KPOOL_CANDIDATE
+    payload["producer"]["vllm_package_version"] = version
+    payload["producer"]["runtime_source_manifest_sha256"] = identity.vllm_source_manifest_sha256(version, manifest)
+    closure = identity.vllm_runtime_closure(version, manifest)
+    observations = {"contract_sha256": identity._canonical_sha256(closure), "observed_files": closure["files"]}
+    entries = payload["input_provenance"]["native_hardware_manifest"]
+    for entry in entries:
+        receipt_path = path.with_name(entry["file"])
+        receipt = json.loads(receipt_path.read_text())
+        receipt.update(backend_version=version, runtime_closure=observations)
+        receipt_path.write_text(json.dumps(receipt))
+        entry["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+    validate_vllm_hardware_receipts(cell, payload, path)
+    last = path.with_name(entries[-1]["file"])
+    receipt = json.loads(last.read_text())
+    receipt["runtime_closure"]["observed_files"]["vllm/_flashkda_C.abi3.so"] = "0" * 64
+    last.write_text(json.dumps(receipt))
+    entries[-1]["sha256"] = hashlib.sha256(last.read_bytes()).hexdigest()
+    with pytest.raises(ValueError, match="binary closure"):
+        validate_vllm_hardware_receipts(cell, payload, path)
