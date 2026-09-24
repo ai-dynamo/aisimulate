@@ -1078,6 +1078,7 @@ the repository Apache-2.0 license text applies to these adaptations.
 - Source: https://github.com/sgl-project/sglang at immutable revision
   `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
   `python/sglang/srt/entrypoints/engine.py`, `python/sglang/srt/server_args.py`,
+  `python/sglang/srt/managers/{utils,tokenizer_manager}.py`,
   and the native scheduler/runner paths identified by the adjacent telemetry
   notice and pinned source-hash inventory.
 - Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
@@ -1086,6 +1087,9 @@ the repository Apache-2.0 license text applies to these adaptations.
   ServerArgs APIs with real token-ID requests. It preserves native scheduling
   and DeviceTimer boundaries and normalizes only observations whose actual
   coordinates match a frozen request manifest. No native source is copied.
+  The shared `collector/glm53flash_protocol.py` context-headroom calculation
+  follows the native worker and tokenizer admission limits; it does not change
+  native admission or assert allocator capacity.
 
 
 ## GLM-5.3-Flash vLLM native worker telemetry
