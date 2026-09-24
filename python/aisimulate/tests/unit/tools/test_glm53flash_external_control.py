@@ -89,7 +89,35 @@ def launch(tmp_path):
         child_count=len(children),
     )
     admission_sha = write(source, anchors["admission"], admission)
-    manifest_sha = write(source, anchors["launcher_manifest"], (admission_sha + "  admission.json\n").encode())
+    producer_sha = write(
+        source,
+        "launch/cpu-public-host-producer.json",
+        {
+            "state": "passed",
+            "source_commit": identity["source_commit"],
+            "wheel_sha256": identity["wheel_sha256"],
+        },
+    )
+    wheel_sha = write(
+        source,
+        "launch/installed-wheel-source-record.json",
+        {
+            "head_sha": identity["source_commit"],
+            "wheel_sha256": identity["wheel_sha256"],
+        },
+    )
+    manifest_sha = write(
+        source,
+        anchors["launcher_manifest"],
+        (
+            admission_sha
+            + "  admission.json\n"
+            + producer_sha
+            + "  cpu-public-host-producer.json\n"
+            + wheel_sha
+            + "  installed-wheel-source-record.json\n"
+        ).encode(),
+    )
     for child, run in zip(children, runs, strict=True):
         write(
             source,
@@ -119,6 +147,79 @@ def prepare(fixture):
     return control.prepare(
         fixture["source"], str(fixture["original"]), fixture["anchors"], fixture["runs"], fixture["output"]
     )
+
+
+def refreeze_test_launch(fixture, *, update_started=True):
+    """Rebuild only explicitly TEST_ONLY fixture identities, never real receipts."""
+    source, anchors = fixture["source"], fixture["anchors"]
+    admission = json.loads((source / anchors["admission"]).read_bytes())
+    for item in admission["bindings"]:
+        item["sha256"] = raw_archive.sha_file(source / item["path"])
+    admission_sha = write(source, anchors["admission"], admission)
+    manifest_path = source / anchors["launcher_manifest"]
+    members = control.sums(manifest_path.read_bytes(), Path(anchors["launcher_manifest"]).parent)
+    manifest_sha = write(
+        source,
+        anchors["launcher_manifest"],
+        "".join(raw_archive.sha_file(source / name) + "  " + Path(name).name + "\n" for name in members).encode(),
+    )
+    if update_started:
+        for run in fixture["runs"]:
+            started = json.loads((source / run["started"]).read_bytes())
+            started.update(admission_sha256=admission_sha, launcher_manifest_sha256=manifest_sha)
+            write(source, run["started"], started)
+
+
+@pytest.mark.parametrize("has_wheel", [True, False])
+def test_original_source_receipt_shapes_keep_actual_wheel_binding(launch, has_wheel):
+    path = launch["source"] / launch["anchors"]["source_identity"]
+    source = json.loads(path.read_bytes())
+    if has_wheel:
+        source["host_and_producer"] = "same exact installed wheel; no source overlay"
+    else:
+        source.pop("wheel_sha256")
+        source.update(
+            cell="sglang-nvfp4-tp2",
+            status="PREPARATION_ONLY_NOT_ADMITTED",
+            cache_cpu_qualification="609540",
+            original618point_bytes_unchanged=True,
+            gpu_submission="NOT_SUBMITTED",
+        )
+    write(launch["source"], launch["anchors"]["source_identity"], source)
+    refreeze_test_launch(launch)
+    document = prepare(launch)
+    _, _, admission = control.validate(launch["output"], document)
+    assert admission["wheel_sha256"] == "b" * 64
+
+
+@pytest.mark.parametrize("value", ["f" * 64, None, ""])
+def test_present_optional_source_wheel_must_match(launch, value):
+    path = launch["source"] / launch["anchors"]["source_identity"]
+    source = json.loads(path.read_bytes())
+    source["wheel_sha256"] = value
+    write(launch["source"], launch["anchors"]["source_identity"], source)
+    refreeze_test_launch(launch)
+    with pytest.raises(ValueError, match="source/wheel identity differs"):
+        prepare(launch)
+
+
+@pytest.mark.parametrize("target", ["producer", "wheel", "started"])
+def test_absent_optional_wheel_cannot_weaken_original_actual_chain(launch, target):
+    source, anchors = launch["source"], launch["anchors"]
+    identity = json.loads((source / anchors["source_identity"]).read_bytes())
+    identity.pop("wheel_sha256")
+    write(source, anchors["source_identity"], identity)
+    filename = {
+        "producer": "launch/cpu-public-host-producer.json",
+        "wheel": "launch/installed-wheel-source-record.json",
+        "started": launch["runs"][0]["started"],
+    }[target]
+    modified = json.loads((source / filename).read_bytes())
+    modified["host_and_producer_wheel_sha256" if target == "started" else "wheel_sha256"] = "f" * 64
+    write(source, filename, modified)
+    refreeze_test_launch(launch)
+    with pytest.raises(ValueError, match="producer/wheel identity differs|started source/wheel differs"):
+        prepare(launch)
 
 
 def inventory(fixture):
@@ -319,8 +420,8 @@ def test_rehashed_later_launch_cannot_replace_original_started_identity(launch):
             binding["sha256"] = source_sha
         if binding["path"] == anchors["cache_cpu_result"]:
             binding["sha256"] = cpu_sha
-    admission_sha = write(source, anchors["admission"], admission)
-    write(source, anchors["launcher_manifest"], (admission_sha + "  admission.json\n").encode())
+    write(source, anchors["admission"], admission)
+    refreeze_test_launch(launch, update_started=False)
     with pytest.raises(ValueError, match="started receipt is not bound"):
         prepare(launch)
 

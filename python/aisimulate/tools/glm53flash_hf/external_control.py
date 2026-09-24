@@ -115,8 +115,25 @@ def closure(document, get):
     identity = json.loads(get(anchors["source_identity"]))
     require(
         identity["source_commit"] == admission["source_commit"]
-        and identity["wheel_sha256"] == admission["wheel_sha256"],
+        and ("wheel_sha256" not in identity or identity["wheel_sha256"] == admission["wheel_sha256"]),
         "source/wheel identity differs from frozen admission",
+    )
+    # Some original preparation receipts predate the optional wheel field.
+    # The actual installed producer and original started receipts always bind it.
+    launch = Path(anchors["launcher_manifest"]).parent
+    producer_path = (launch / "cpu-public-host-producer.json").as_posix()
+    wheel_path = (launch / "installed-wheel-source-record.json").as_posix()
+    require(
+        producer_path in members and wheel_path in members,
+        "frozen actual producer/wheel receipts missing from launcher manifest",
+    )
+    producer = json.loads(get(producer_path))
+    wheel = json.loads(get(wheel_path))
+    require(
+        producer.get("state") == "passed"
+        and producer.get("source_commit") == wheel.get("head_sha") == admission["source_commit"]
+        and producer.get("wheel_sha256") == wheel.get("wheel_sha256") == admission["wheel_sha256"],
+        "actual producer/wheel identity differs from frozen admission",
     )
     require(
         identity["cache_hook_sha256"] == bindings[anchors["cache_hook"]], "source identity names a different cache hook"
