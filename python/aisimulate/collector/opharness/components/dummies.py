@@ -124,6 +124,29 @@ def _slice_layer_lists(cfg: dict, n_layers: int, sel: list[int], edits: list[str
             _slice_layer_lists(val, n_layers, sel, edits, prefix=f"{prefix}{key}.")
 
 
+def _remap_layer_index_lists(cfg: dict, n_layers: int, sel: list[int], edits: list[str], prefix: str = "") -> None:
+    """Renumber every list of LAYER INDICES to the selected layers.
+
+    Some configs name layer kinds by index lists instead of a per-layer type
+    list — Kimi-K3 ``linear_attn_config.kda_layers`` / ``full_attn_layers``.
+    A depth cut that keeps them verbatim silently reassigns kinds (index 0
+    of the cut model falls out of every list). A list qualifies when its key
+    mentions ``layers`` and every element is an int in [0, n_layers).
+    """
+    new_index = {orig: new for new, orig in enumerate(sel)}
+    for key, val in cfg.items():
+        # all ints, at least one inside the decoder range (Kimi-K3 lists the
+        # MTP layer 93 next to the 93 decoder layers — still a layer list)
+        if (isinstance(val, list) and val and "layers" in key.lower()
+                and all(isinstance(x, int) and not isinstance(x, bool) for x in val)
+                and any(0 <= x < n_layers for x in val)):
+            kept = [new_index[x] for x in val if x in new_index]
+            cfg[key] = kept
+            edits.append(f"remapped {prefix}{key}: {len(val)} layer indices -> {kept}")
+        elif isinstance(val, dict):
+            _remap_layer_index_lists(val, n_layers, sel, edits, prefix=f"{prefix}{key}.")
+
+
 def _remap_quant_layer_entries(cfg: dict, sel: list[int], edits: list[str]) -> None:
     """Filter/renumber per-layer quantization entries to the selected layers.
 
@@ -185,6 +208,12 @@ def _check_no_stale_layer_refs(cfg: dict, max_layer: int) -> list[str]:
                         stale.append(f"{path}.{k}")
                 walk(v, f"{path}.{k}")
         elif isinstance(obj, list):
+            # index lists under a *layers* key are layer references too
+            # (Kimi-K3 kda_layers / full_attn_layers)
+            if ("layers" in path.rsplit(".", 1)[-1].lower()
+                    and obj and all(isinstance(x, int) and not isinstance(x, bool) for x in obj)
+                    and max(obj) >= max_layer):
+                stale.append(f"{path} = {obj[:6]}...")
             for i, v in enumerate(obj):
                 walk(v, f"{path}[{i}]")
         elif isinstance(obj, str):
@@ -366,6 +395,18 @@ def _layer_axis(cfg: dict) -> tuple[str | None, list]:
     """Find the per-layer type list (name, values) if the model interleaves."""
     tc = cfg.get("text_config", cfg)
     n = tc.get("num_hidden_layers")
+    # Kimi-K3 / Kimi-Linear declare the interleave as INDEX LISTS
+    # (linear_attn_config.kda_layers / full_attn_layers) rather than a
+    # per-layer type list; synthesize the axis so the representative cut
+    # holds one layer of every kind and the lists get remapped (found
+    # 2026-09-24: the 2-layer K3 dummy kept the original lists, so index 0
+    # silently became a full-attention layer and index 1 a KDA layer).
+    la = tc.get("linear_attn_config")
+    if isinstance(la, dict) and n and (la.get("kda_layers") or la.get("full_attn_layers")):
+        kda, full = set(la.get("kda_layers") or []), set(la.get("full_attn_layers") or [])
+        values = ["kda" if i in kda else "full" if i in full else "dense" for i in range(n)]
+        if len(set(values)) > 1:
+            return "linear_attn_config", values
     for key in ("layer_types", "attn_type_list", "hybrid_layer_pattern",
                 "layers_block_type", "indexer_types", "mlp_layer_types", "moe_layer_freq"):
         v = tc.get(key)
@@ -436,6 +477,7 @@ def apply_generic(cfg: dict, var: dict, edits: list[str]) -> None:
         tc["hybrid_override_pattern"] = "".join(pat[i] for i in sel)
         edits.append(f"hybrid_override_pattern -> {tc['hybrid_override_pattern']}")
     _slice_layer_lists(tc, n, sel, edits)
+    _remap_layer_index_lists(tc, n, sel, edits)
     tc["num_hidden_layers"] = len(sel)
     if tc.get("first_k_dense_replace"):
         tc["first_k_dense_replace"] = 0
