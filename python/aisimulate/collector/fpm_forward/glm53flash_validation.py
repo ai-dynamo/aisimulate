@@ -1,0 +1,572 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Independent GLM holdout acceptance from frozen native receipts and public SDK.
+
+No supplied latency scores are accepted. Native readers reconstruct measured
+latencies; the installed Rust consumer predicts each frozen point without tuning.
+See README.glm53flash-validation.md for the campaign manifest contract.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.metadata
+import json
+import math
+import statistics
+from pathlib import Path
+from types import SimpleNamespace
+
+from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+
+from .hybrid_artifact import PROTOCOL, TIMING_BOUNDARIES
+from .native_artifact import _expected_scheduled, validate_native_collection
+
+SCHEMA = "glm53flash_independent_holdout_v1"
+PHASES = ("prefill", "decode")
+GROUPS = ("1K-32K", "64K", "128K")
+REQUIRED = tuple(
+    (backend, quant, tp, phase)
+    for backend in ("vllm", "sglang")
+    for quant in ("fp8", "nvfp4")
+    for tp in (2, 4)
+    for phase in PHASES
+)
+
+
+def canonical(value) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+
+
+def digest(value) -> str:
+    return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def _sha(value) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        raise ValueError("expected lowercase SHA256 identity")
+    return value
+
+
+def _read_json_receipt(receipt: dict, base: Path):
+    path = (base / receipt["path"]).resolve()
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != _sha(receipt["sha256"]):
+        raise ValueError(f"receipt digest mismatch: {path.name}")
+    return json.loads(raw)
+
+
+def _geometry(point: dict) -> tuple:
+    _expected_scheduled(point)
+    batch = point["batch_size"]
+    query, prefix = point["total_prefill_tokens"], point["total_kv_read_tokens"]
+    if query % batch or prefix % batch or batch > 32 or max(query + prefix, prefix) // batch > 131072:
+        raise ValueError("holdout point must be homogeneous and within batch32/context128K")
+    return point["point_type"], batch, query, prefix
+
+
+def _group(point: dict) -> str:
+    context = (point["total_prefill_tokens"] + point["total_kv_read_tokens"]) // point["batch_size"]
+    if context < 1024:
+        return "below1K"
+    if context <= 32768:
+        return "1K-32K"
+    return "64K" if context <= 65536 else "128K"
+
+
+def _plan_run(spec: dict, base: Path, role: str) -> dict:
+    plan = _read_json_receipt(spec["plan"], base)
+    if plan.get("schema_name") != "aic_fpm_collection_plan" or plan.get("system") != "gb300":
+        raise ValueError("acceptance requires a frozen GB300 FPM collection plan")
+    _sha(plan["sha256"])
+    options = plan["options"]
+    if options.get("dataset_role", "calibration") != role:
+        raise ValueError(f"expected frozen {role} plan")
+    cells = [cell for cell in plan["cells"] if cell["cell_id"] == spec["cell_id"]]
+    if len(cells) != 1:
+        raise ValueError("plan must contain exactly one referenced cell")
+    cell = cells[0]
+    topology = cell["topology"]
+    key = (plan["backend"], cell["weight_quantization"], topology["tp"], cell["workload_kind"])
+    if key not in REQUIRED or cell.get("backend") != key[0] or cell.get("state_protocol") != PROTOCOL:
+        raise ValueError("cell is outside the required GLM native matrix")
+    if any(topology[k] != 1 for k in ("pp", "dp", "cp", "moe_ep")) or topology["moe_tp"] != topology["tp"]:
+        raise ValueError("holdout requires pure TP2/TP4")
+    model = "zai-org/GLM-5.3-Flash" if key[1] == "fp8" else "nvidia/GLM-5.3-Flash-NVFP4"
+    if plan["model_path"] != model:
+        raise ValueError("checkpoint name and precision disagree")
+    corpus = _sha(cell["input_text_sha256"])
+    if options.get("input_text_sha256") != corpus:
+        raise ValueError("frozen corpus differs between plan and cell")
+    frozen = options["benchmark_points"]
+    if digest(frozen["payload"]) != _sha(frozen["sha256"]):
+        raise ValueError("frozen point manifest digest mismatch")
+    points = [
+        dict(point, point_type=key[3], benchmark_id=index, total_prefill_tokens=point.get("total_prefill_tokens", 0))
+        for index, point in enumerate(frozen["payload"][key[3]], 1)
+    ]
+    geometries = [_geometry(point) for point in points]
+    if not points or len(set(geometries)) != len(points):
+        raise ValueError("frozen holdout geometry must be nonempty and unique")
+    identity = cell["execution_identity"]
+    if not identity.get("model_config_sha256") or tuple(identity[k] for k in EXECUTION_COLUMNS[1:]) != (
+        "full",
+        "none",
+        "text",
+    ):
+        raise ValueError("holdout requires full text execution identity")
+    runtime_cell = SimpleNamespace(
+        **{
+            k: cell[k]
+            for k in ("cell_id", "workload_kind", "parallel_strategy", "input_text_sha256", "backend", "state_protocol")
+        },
+        topology=SimpleNamespace(**topology),
+        execution_identity=tuple(identity[k] for k in EXECUTION_COLUMNS),
+    )
+    return {
+        "key": key,
+        "plan": plan,
+        "cell": cell,
+        "runtime_cell": runtime_cell,
+        "points": points,
+        "corpus": corpus,
+        "geometries": set(geometries),
+        "spec": spec,
+        "role": role,
+    }
+
+
+def _native_run(run: dict, base: Path) -> dict:
+    spec = run["spec"]
+    if not spec.get("raw_root"):
+        raise FileNotFoundError("native raw collection is not supplied")
+    root = (base / spec["raw_root"]).resolve()
+    attempt = spec.get("attempt_id")
+    if not isinstance(attempt, str) or not attempt:
+        raise ValueError("a frozen collector attempt_id is required")
+    native = validate_native_collection(
+        run["runtime_cell"], root, expected_plan_sha256=run["plan"]["sha256"], expected_attempt_id=attempt
+    )
+    expected_version = "0.30.0" if run["key"][0] == "vllm" else "0.5.20"
+    if native.backend_version != expected_version:
+        raise ValueError("native backend version differs from pinned deployment")
+    observed = {point.point["benchmark_id"]: point for point in native.points}
+    expected = {point["benchmark_id"]: _geometry(point) for point in run["points"]}
+    if {bid: _geometry(point.point) for bid, point in observed.items()} != expected:
+        raise ValueError("native collection differs from frozen requested points")
+    if native.input_provenance["text_sha256"] != run["corpus"]:
+        raise ValueError("native collection differs from frozen corpus")
+    if native.input_provenance["tokenizer_revision"] != MODEL_REVISIONS[run["plan"]["model_path"]]:
+        raise ValueError("native tokenizer revision differs from checkpoint pin")
+    request_ids = set()
+    receipts = []
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            receipts.append(
+                {"path": str(path.relative_to(root)), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+            )
+    for path in sorted(root.rglob("*.token-streams.jsonl")):
+        for line in path.read_bytes().splitlines():
+            request_ids.update(row["request_id"] for row in json.loads(line)["requests"])
+    for path in sorted(root.rglob("benchmark*.json")):
+        payload = json.loads(path.read_bytes())
+        if payload.get("artifact_type") != "rank":
+            continue
+        provenance = payload.get("input_provenance", {})
+        manifest = provenance.get("native_forward_manifest")
+        if manifest:
+            from .sglang_artifact import read_receipt
+
+            requests = json.loads(read_receipt(path.parent, manifest["requests"]))
+            if requests.get("dataset_role") != run["role"]:
+                raise ValueError("native SGLang request role differs from plan")
+            request_ids.update(requests["requests"])
+    if not request_ids:
+        raise ValueError("native request identities are missing")
+    return {
+        "values": {bid: max(value for _, value in point.rank_wall_times) * 1000 for bid, point in observed.items()},
+        "request_ids": request_ids,
+        "receipts": receipts,
+        "runtime_run_id": native.runtime_run_id,
+        "runtime_grid_digest": native.runtime_grid_digest,
+        "input_provenance": native.input_provenance,
+        "backend_version": native.backend_version,
+    }
+
+
+def installed_consumer_identity() -> dict:
+    """Verify loaded public Python/native files belong to a noneditable wheel."""
+    import aisimulate_core
+    from aisimulate_core import _native
+    from aisimulate_core.sdk import rust_engine_step
+
+    distribution = importlib.metadata.distribution("aisimulate")
+    files = distribution.files or []
+    owned = {str(path): path for path in files if str(path).startswith("aisimulate_core/") and path.hash}
+    native = [name for name in owned if name.endswith((".so", ".pyd"))]
+    sdk = "aisimulate_core/sdk/rust_engine_step.py"
+    if (
+        not native
+        or sdk not in owned
+        or Path(distribution.locate_file(sdk)).resolve() != Path(rust_engine_step.__file__).resolve()
+    ):
+        raise ValueError("acceptance requires the installed wheel public SDK and Rust extension")
+    if (
+        Path(distribution.locate_file("aisimulate_core/__init__.py")).resolve()
+        != Path(aisimulate_core.__file__).resolve()
+    ):
+        raise ValueError("loaded consumer is not owned by the installed wheel")
+    if Path(_native.__file__).resolve() not in {
+        Path(distribution.locate_file(owned[name])).resolve() for name in native
+    }:
+        raise ValueError("loaded Rust extension is not owned by the installed wheel")
+    import base64
+
+    actual = []
+    for name, item in sorted(owned.items()):
+        if item.hash.mode != "sha256":
+            raise ValueError("consumer RECORD must use SHA256")
+        raw = Path(distribution.locate_file(item)).read_bytes()
+        sha = hashlib.sha256(raw).digest()
+        if base64.urlsafe_b64encode(sha).decode().rstrip("=") != item.hash.value or len(raw) != item.size:
+            raise ValueError(f"installed consumer differs from wheel RECORD: {name}")
+        actual.append((name, sha.hex()))
+    return {
+        "distribution": "aisimulate",
+        "version": distribution.version,
+        "payload_sha256": digest(actual),
+        "api": "RustForwardPassPerfModel.best_available",
+    }
+
+
+def _bind_fpm_rows(paths: list[Path], run: dict, native: dict) -> dict:
+    """Verify the consumer table is exactly this observed calibration cell."""
+    import pyarrow.parquet as pq
+
+    backend, quant, tp, phase = run["key"]
+    selected = []
+    for path in paths:
+        if path.name != "fpm_forward_perf.parquet":
+            continue
+        for row in pq.read_table(path).to_pylist():
+            if (
+                row.get("model_path"),
+                row.get("backend"),
+                row.get("weight_quantization"),
+                row.get("tp"),
+                row.get("workload_kind"),
+            ) == (run["plan"]["model_path"], backend, quant, tp, phase):
+                selected.append(row)
+    if not selected:
+        raise FileNotFoundError("consumer has no receipted FPM calibration rows for this cell")
+    expected_identity = {
+        "cell_id": run["cell"]["cell_id"],
+        "source_plan_sha256": run["plan"]["sha256"],
+        "collector_attempt_id": run["spec"]["attempt_id"],
+        "runtime_run_id": native["runtime_run_id"],
+        "runtime_grid_digest": native["runtime_grid_digest"],
+        "input_text_sha256": run["corpus"],
+        "input_token_ids_sha256": native["input_provenance"]["token_ids_sha256"],
+        "input_tokenizer_revision": MODEL_REVISIONS[run["plan"]["model_path"]],
+        "state_protocol": PROTOCOL,
+        "timing_boundary": TIMING_BOUNDARIES[backend],
+        "backend_version": native["backend_version"],
+        "pp": 1,
+        "dp": 1,
+        "cp": 1,
+        "moe_tp": tp,
+        "moe_ep": 1,
+        **run["cell"]["execution_identity"],
+    }
+    expected = {_geometry(point): native["values"][point["benchmark_id"]] for point in run["points"]}
+    observed = {}
+    for row in selected:
+        if any(row.get(key) != value for key, value in expected_identity.items()):
+            raise ValueError("consumer FPM row is not bound to the native calibration receipt")
+        geometry = _geometry(dict(row, point_type=row["workload_kind"]))
+        if geometry in observed or geometry not in expected:
+            raise ValueError("consumer FPM rows contain duplicate or unfrozen calibration geometry")
+        value = row.get("latency_ms")
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isclose(value, expected[geometry], rel_tol=1e-10, abs_tol=1e-10)
+        ):
+            raise ValueError("consumer FPM latency differs from native calibration measurement")
+        observed[geometry] = value
+    if observed.keys() != expected.keys():
+        raise ValueError("consumer FPM rows omit frozen calibration points")
+    return {
+        "source_plan_sha256": run["plan"]["sha256"],
+        "rows": len(observed),
+        "native_runtime_run_id": native["runtime_run_id"],
+    }
+
+
+def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict, calibration_native: dict) -> dict:
+    from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
+
+    config = dict(entry["consumer_config"])
+    backend, _quant, tp, _phase = run["key"]
+    required = {
+        "model": run["plan"]["model_path"],
+        "system": "gb300",
+        "backend": backend,
+        "worker_type": "aggregated",
+        "tp": tp,
+        "pp": 1,
+        "attention_dp": 1,
+        "moe_tp_size": tp,
+        "moe_ep_size": 1,
+        "nextn": 0,
+        "decoder_replay": False,
+        "enable_eplb": False,
+        "fallback_policy": "deny",
+        "database_mode": "SILICON",
+        "strict_provenance": True,
+        "enable_shared_layer": False,
+        "estimation_mode": "fpm_interpolation" if mode == "fpm" else "op_level",
+        "kvcache_quant_mode": "fp8",
+    }
+    if mode == "fpm":
+        required["fpm_fmha_quant_mode"] = "fp8"
+    for key, expected in required.items():
+        if key in config and config[key] != expected:
+            raise ValueError(f"consumer {key} differs from holdout contract")
+        config[key] = expected
+    version = "0.30.0" if backend == "vllm" else "0.5.20"
+    if config.get("backend_version") != version:
+        raise ValueError("consumer backend revision differs from pinned runtime")
+    if config.get("speculation") or config.get("estimator_config"):
+        raise ValueError("holdout prediction forbids speculation or online correction/tuning")
+    roots = tuple(str((base / path).resolve()) for path in config.get("systems_paths", ()))
+    if not roots or not entry.get("consumer_data"):
+        raise ValueError("consumer needs explicit calibration data roots and SHA256 receipts")
+    receipts = entry["consumer_data"]
+    for receipt in receipts:
+        path = (base / receipt["path"]).resolve()
+        if not any(path.is_relative_to(Path(root)) for root in roots):
+            raise ValueError("consumer data receipt is outside the selected roots")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != _sha(receipt["sha256"]):
+            raise ValueError("consumer calibration data digest mismatch")
+    # Bind all selected data/config bytes, preventing an unreceipted holdout
+    # table or donor inside the roots from becoming a calibration source.
+    actual = {
+        str(path.resolve())
+        for root in roots
+        for path in Path(root).rglob("*")
+        if path.is_file() and path.suffix in {".parquet", ".yaml", ".yml", ".json", ".txt"}
+    }
+    if actual != {str((base / receipt["path"]).resolve()) for receipt in receipts}:
+        raise ValueError("consumer data receipts do not cover every selected data/config file")
+    paths = [(base / receipt["path"]).resolve() for receipt in receipts]
+    if mode == "fpm":
+        binding = _bind_fpm_rows(paths, calibration, calibration_native)
+    else:
+        try:
+            from collector.glm53flash_validation import bind_calibration
+        except ImportError as error:
+            raise FileNotFoundError("Ops calibration-evidence receipt adapter is required before acceptance") from error
+        binding = bind_calibration(paths, calibration, calibration_native)
+    config["systems_paths"] = roots
+    model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
+    rows = {}
+    try:
+        for point in run["points"]:
+            payload = {
+                "version": 1,
+                "wall_time": 0.0,
+                "scheduled_requests": dict(
+                    _expected_scheduled(point), var_prefill_length=0.0, var_decode_kv_tokens=0.0
+                ),
+            }
+            try:
+                value = model.estimate_forward_pass_time_ms(payload)
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                    or value <= 0
+                ):
+                    raise ValueError("public consumer returned no finite positive prediction")
+                rows[point["benchmark_id"]] = {"prediction_ms": value}
+            except Exception as error:
+                rows[point["benchmark_id"]] = {"error": f"{type(error).__name__}: {error}"}
+        return {
+            "rows": rows,
+            "config": config,
+            "diagnostics": dict(model.diagnostics()),
+            "data_receipts": receipts,
+            "calibration_binding": binding,
+        }
+    finally:
+        model.close()
+
+
+def metrics(rows: list[dict]) -> dict:
+    paired = [row for row in rows if row.get("status") == "MEASURED_AND_PREDICTED"]
+    errors = [abs(row["prediction_ms"] - row["measured_ms"]) for row in paired]
+    ape = sorted(100 * error / row["measured_ms"] for error, row in zip(errors, paired, strict=True))
+    return {
+        "requested": len(rows),
+        "compared": len(paired),
+        "coverage": len(paired) / len(rows) if rows else 0.0,
+        "mape_pct": statistics.mean(ape) if ape else None,
+        "wape_pct": 100 * sum(errors) / sum(row["measured_ms"] for row in paired) if paired else None,
+        "p95_ape_pct": ape[math.ceil(0.95 * len(ape)) - 1] if ape else None,
+        "max_ape_pct": max(ape) if ape else None,
+    }
+
+
+def evaluate(manifest: dict, base: Path) -> dict:
+    if manifest.get("schema") != SCHEMA or manifest.get("mode") not in ("fpm", "ops"):
+        raise ValueError("expected explicit glm53flash_independent_holdout_v1 mode fpm or ops")
+    mode = manifest["mode"]
+    threshold = 10.0 if mode == "fpm" else 20.0
+    report = {
+        "schema": SCHEMA,
+        "mode": mode,
+        "threshold_mape_pct": threshold,
+        "acceptance": "NOT_EVALUATED",
+        "input_manifest_sha256": digest(manifest),
+        "consumer": None,
+        "errors": [],
+        "cells": [],
+        "http_metrics": {
+            "acceptance": "NOT_EVALUATED",
+            "receipts": manifest.get("http_metrics", []),
+            "boundary": "HTTP end-to-end; never included in native-forward error metrics",
+        },
+    }
+    for receipt in manifest.get("http_metrics", []):
+        _read_json_receipt(receipt, base)
+    prepared = {}
+    calibration_corpora, holdout_corpora = set(), set()
+    calibration_geometries, holdout_geometries = set(), set()
+    calibration_requests, holdout_requests = set(), set()
+    for entry in manifest.get("entries", []):
+        calibration = _plan_run(entry["calibration"], base, "calibration")
+        holdout = _plan_run(entry["holdout"], base, "holdout")
+        if calibration["key"] != holdout["key"] or holdout["key"] in prepared:
+            raise ValueError("calibration/holdout cell mismatch or duplicate acceptance cell")
+        key = holdout["key"]
+        record = {"entry": entry, "holdout": holdout, "calibration": calibration, "errors": []}
+        prepared[key] = record
+        calibration_corpora.add(calibration["corpus"])
+        holdout_corpora.add(holdout["corpus"])
+        calibration_geometries.update(calibration["geometries"])
+        holdout_geometries.update(holdout["geometries"])
+        for name, run, identities in (
+            ("calibration", calibration, calibration_requests),
+            ("holdout", holdout, holdout_requests),
+        ):
+            try:
+                record[name + "_native"] = _native_run(run, base)
+                identities.update(record[name + "_native"]["request_ids"])
+            except FileNotFoundError as error:
+                record["errors"].append({"role": name, "status": "NOT_EVALUATED", "error": str(error)})
+            except Exception as error:
+                record["errors"].append({"role": name, "status": "FAILED", "error": f"{type(error).__name__}: {error}"})
+    for label, left, right in (
+        ("corpus", calibration_corpora, holdout_corpora),
+        ("geometry", calibration_geometries, holdout_geometries),
+        ("request_id", calibration_requests, holdout_requests),
+    ):
+        if left & right:
+            report["errors"].append(
+                {"status": "FAILED", "error": f"calibration/holdout {label} overlap", "count": len(left & right)}
+            )
+    if prepared and not report["errors"]:
+        try:
+            report["consumer"] = installed_consumer_identity()
+        except Exception as error:
+            report["errors"].append({"status": "NOT_EVALUATED", "error": f"installed consumer: {error}"})
+    for key in REQUIRED:
+        result = {
+            "backend": key[0],
+            "weight_quantization": key[1],
+            "tp": key[2],
+            "phase": key[3],
+            "timing_boundary": TIMING_BOUNDARIES[key[0]],
+            "acceptance": "NOT_EVALUATED",
+            "errors": [],
+            "points": [],
+        }
+        record = prepared.get(key)
+        if record:
+            result["errors"] = record["errors"]
+            for point in record["holdout"]["points"]:
+                row = {"point": point, "context_group": _group(point), "status": "NOT_EVALUATED"}
+                if record.get("holdout_native"):
+                    row.update(
+                        measured_ms=record["holdout_native"]["values"][point["benchmark_id"]],
+                        status="MEASURED_NO_PREDICTION",
+                    )
+                elif any(error.get("role") == "holdout" and error["status"] == "FAILED" for error in result["errors"]):
+                    row["status"] = "FAILED_NATIVE_EVIDENCE"
+                result["points"].append(row)
+            for role in ("calibration", "holdout"):
+                native = record.get(role + "_native")
+                if native:
+                    result[role + "_evidence"] = {k: v for k, v in native.items() if k not in {"values", "request_ids"}}
+            if not result["errors"] and not report["errors"]:
+                try:
+                    prediction = _predict(
+                        record["holdout"],
+                        record["entry"],
+                        mode,
+                        base,
+                        calibration=record["calibration"],
+                        calibration_native=record["calibration_native"],
+                    )
+                    result["prediction_provenance"] = {k: v for k, v in prediction.items() if k != "rows"}
+                    for row in result["points"]:
+                        bid = row["point"]["benchmark_id"]
+                        row["measured_ms"] = record["holdout_native"]["values"][bid]
+                        output = prediction["rows"][bid]
+                        row.update(output)
+                        row["status"] = "FAILED_PREDICTION" if "error" in output else "MEASURED_AND_PREDICTED"
+                except FileNotFoundError as error:
+                    result["errors"].append({"status": "NOT_EVALUATED", "error": f"public consumer: {error}"})
+                except Exception as error:
+                    result["errors"].append(
+                        {"status": "FAILED", "error": f"public consumer: {type(error).__name__}: {error}"}
+                    )
+        result["metrics"] = metrics(result["points"])
+        result["groups"] = {
+            group: metrics([row for row in result["points"] if row["context_group"] == group])
+            for group in (*GROUPS, "below1K")
+        }
+        failed = any(error["status"] == "FAILED" for error in result["errors"] + report["errors"])
+        if failed or any(row["status"] == "FAILED_PREDICTION" for row in result["points"]):
+            result["acceptance"] = "FAILED"
+        elif result["metrics"]["compared"]:
+            complete = result["metrics"]["coverage"] == 1 and all(result["groups"][g]["requested"] for g in GROUPS)
+            result["acceptance"] = "PASSED" if complete and result["metrics"]["mape_pct"] <= threshold else "FAILED"
+        report["cells"].append(result)
+    statuses = {cell["acceptance"] for cell in report["cells"]}
+    report["acceptance"] = "FAILED" if "FAILED" in statuses else "PASSED" if statuses == {"PASSED"} else "NOT_EVALUATED"
+    report["coverage"] = {
+        "required_configurations": 8,
+        "required_phase_cells": 16,
+        "passed_phase_cells": sum(cell["acceptance"] == "PASSED" for cell in report["cells"]),
+        "requested_points": sum(cell["metrics"]["requested"] for cell in report["cells"]),
+        "compared_points": sum(cell["metrics"]["compared"] for cell in report["cells"]),
+    }
+    return report
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    args = parser.parse_args(argv)
+    report = evaluate(json.loads(args.manifest.read_text()), args.manifest.resolve().parent)
+    args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
+    return 0 if report["acceptance"] == "PASSED" else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
