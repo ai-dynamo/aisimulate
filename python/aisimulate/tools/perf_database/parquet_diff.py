@@ -198,7 +198,9 @@ def _merge_columns(*column_lists: list[str]) -> list[str]:
 
 def _select_key_columns(base_columns: list[str], head_columns: list[str]) -> list[str]:
     common_columns = [column for column in base_columns if column in head_columns]
-    key_columns = [column for column in common_columns if column not in MEASUREMENT_COLUMNS]
+    key_columns = [
+        column for column in common_columns if column not in MEASUREMENT_COLUMNS and column != "default_eligible"
+    ]
     return key_columns
 
 
