@@ -282,13 +282,14 @@ class NativeVllmGraphExecution:
         self.active = None
 
 
-def install(manifest, provenance, output):
+def install(manifest, provenance, output, *, include_piecewise=False):
     """Install before native ModelCudaGraphManager.capture is first invoked.
 
     This capture-only adapter never claims logits, replay timings, real request
     completion, or accepted performance rows. The serving observer must join its
     returned registry to actual CUPTI replay IDs and independently retain those
-    other boundaries. Native PIECEWISE capture remains unchanged and unobserved.
+    other boundaries. Optional PIECEWISE capture ownership uses separate raw
+    artifacts; it does not enable PIECEWISE replay timing or table admission.
     """
     import torch
     import vllm
@@ -309,6 +310,40 @@ def install(manifest, provenance, output):
     original_model_capture, original_capture = ModelCudaGraphManager.capture, CudaGraphManager.capture
     models = {}
     sequence = 0
+    if include_piecewise:
+        from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphCapture, BreakableCUDAGraphWrapper
+
+        from collector.glm53flash_vllm_piecewise import NativePiecewiseGraphObserver, install_piecewise_capture
+
+        def piecewise_state(wrapper):
+            model = wrapper.unwrap()
+            state = models.get(id(model))
+            return state if state is not None and state["model"] is model else None
+
+        def save_piecewise(wrapper, entry, registry, receipt):
+            state = piecewise_state(wrapper)
+            manager = state["manager"]
+            pending = manager._aisim_glm53_piecewise_pending
+            serial = state.get("callback_serial", 1) - 1
+            path = output / f"vllm-piecewise-source-rank-{state['rank']}-capture-{serial}-{len(pending)}.json"
+            with path.open("x") as stream:
+                json.dump(receipt, stream, indent=2)
+            pending.append(
+                {
+                    "entry": entry,
+                    "registry": registry,
+                    "source": receipt,
+                    "source_receipt": {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()},
+                }
+            )
+
+        install_piecewise_capture(
+            BreakableCUDAGraphWrapper,
+            BreakableCUDAGraphCapture,
+            lambda wrapper: state["observer"] if (state := piecewise_state(wrapper)) is not None else None,
+            save_piecewise,
+            torch_module=torch,
+        )
 
     @functools.wraps(original_model_capture)
     def model_capture(manager, model, *args, **kwargs):
@@ -324,7 +359,8 @@ def install(manifest, provenance, output):
         state = models.get(id(model))
         if state is None:
             rank = get_tensor_model_parallel_rank()
-            observer = NativeGraphOperationObserver(manifest, provenance, rank, NativeGraphAPI())
+            observer_class = NativePiecewiseGraphObserver if include_piecewise else NativeGraphOperationObserver
+            observer = observer_class(manifest, provenance, rank, NativeGraphAPI())
             inventory = install_native_hooks(model, observer, "vllm")
             state = {"observer": observer, "rank": rank, "model": model, "inventory": inventory}
             models[id(model)] = state
@@ -333,8 +369,22 @@ def install(manifest, provenance, output):
         if state["model"] is not model or state["observer"].registry is not None:
             raise RuntimeError("native vLLM capture has a conflicting live model observer")
         manager._aisim_glm53_capture_state = state
+        state["manager"] = manager
         manager._aisim_glm53_capture_pending = {}
+        manager._aisim_glm53_piecewise_pending = []
         result = original_model_capture(manager, model, *args, **kwargs)
+        if include_piecewise:
+            from collector.glm53flash_vllm_piecewise import captured_piecewise_registry
+
+            wrapper = manager.breakable_cg_runner
+            if not manager.use_breakable_cg or wrapper is None or not wrapper.entries:
+                raise RuntimeError("requested piecewise capture has no native breakable entry inventory")
+            if wrapper.entries.keys() != getattr(wrapper, "_aisim_piecewise_ownership", {}).keys():
+                raise RuntimeError("piecewise ownership does not cover every initialized native entry")
+            for descriptor in wrapper.entries:
+                registry = captured_piecewise_registry(wrapper, descriptor)
+                if not hasattr(registry, "capture_artifact"):
+                    raise RuntimeError("piecewise capture lacks its completed native instantiation evidence")
         # This is the initialized native descriptor/candidate inventory, before
         # any real request or holdout is observed. Recording a PIECEWISE entry
         # does not supply its still-missing measured operation ownership.
@@ -353,6 +403,7 @@ def install(manifest, provenance, output):
             }
             sequence += 1
         del manager._aisim_glm53_capture_pending
+        del manager._aisim_glm53_piecewise_pending
         return result
 
     @functools.wraps(original_capture)
@@ -415,6 +466,12 @@ def install(manifest, provenance, output):
                     "sha256": hashlib.sha256(type_path.read_bytes()).hexdigest(),
                 }
             manager._aisim_glm53_capture_pending[descriptor] = [registry]
+        if include_piecewise:
+            from collector.glm53flash_vllm_piecewise import bind_piecewise_instantiations
+
+            bind_piecewise_instantiations(
+                manager._aisim_glm53_piecewise_pending, callbacks, state["observer"].api, output, stem
+            )
         return result
 
     ModelCudaGraphManager.capture = model_capture

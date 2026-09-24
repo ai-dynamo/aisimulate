@@ -529,6 +529,25 @@ contract tests only: actual calibration-class/GPU qualification, vLLM
 raw-to-table export and independent accuracy are pending. Measured PIECEWISE
 coverage remains a separate required implementation.
 
+`glm53flash_vllm_piecewise.py` adds an optional capture observer, enabled only
+with `install(..., include_piecewise=True)` during adapter qualification. The
+current FULL producer keeps this option off. It observes the original
+[`BreakableCUDAGraphWrapper` and segment APIs](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/compilation/breakable_cudagraph.py),
+SHA256 `3cc427612a08e2b9b3fee47548026400c1d0776e2d4747535e59ef5512bdf1e8`.
+The native capture and replay methods still own every graph and eager call.
+Physical operation identity spans segment transitions; captured nodes and
+native eager callables retain their individual source and position evidence.
+A measured replay can activate CPU scopes around the original eager callable,
+without adding graph nodes or counting initialization work as measurements.
+
+PIECEWISE source and bound files use distinct names from FULL registries. One
+shared complete callback receipt plus actual per-segment executable identities
+avoids repeating the full initialization callback stream for every segment.
+Missing or changed callable identities, operation coverage, graph nodes, source
+pins or clone evidence reject capture admission. This is capture infrastructure
+with CPU contract tests: actual model/GPU qualification, replay activity binding,
+table export and independent PIECEWISE accuracy remain required.
+
 
 ## Native graph measured consumer and dispatch policy
 

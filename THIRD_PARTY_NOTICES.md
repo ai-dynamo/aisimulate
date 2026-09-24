@@ -995,6 +995,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `glm53flash_graph_nodes.py`, `glm53flash_graph_hooks.py`,
   `glm53flash_graph_callbacks.py`, `glm53flash_graph_policy.py`,
   `glm53flash_sglang_graph_ops.py`, `glm53flash_vllm_graph_ops.py`,
+  `glm53flash_vllm_piecewise.py` and its piecewise capture tests,
   and their graph-node/hook/execution CPU tests,
   `collect_glm53flash.py`, `{vllm,sglang}/collect_glm53flash.py`,
   `cases/base_ops/glm53flash_module.yaml`,
@@ -1011,6 +1012,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `vllm/model_executor/layers/sparse_attn_indexer_kpool.py`,
   `vllm/models/glm5next/nvidia/ops/kpool_compress.py`,
   `vllm/v1/worker/gpu/cudagraph_utils.py`,
+  `vllm/compilation/breakable_cudagraph.py`, `vllm/forward_context.py`,
   `vllm/model_executor/offloader/base.py`;
   https://github.com/sgl-project/sglang at
   `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20), original paths
