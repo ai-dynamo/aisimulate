@@ -1350,6 +1350,10 @@ def _cell_generator_overrides(
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
     if architecture == "Glm5NextForConditionalGeneration":
+        from collector.glm53flash_protocol import vllm_context_policy
+
+        context_policy = vllm_context_policy(plan.options.vllm_max_model_len)
+        scheduler_args[scheduler_args.index("--max-model-len") + 1] = str(context_policy["runtime_context_length"])
         # The adapter owns five real warmups for every exact point.
         scheduler_args[scheduler_args.index("--benchmark-warmup-iterations") + 1] = "0"
         model_args.extend(["--language-model-only", "--cudagraph-metrics"])
@@ -1395,6 +1399,7 @@ def _cell_generator_overrides(
         env.extend(
             [
                 {"name": "DYN_FPM_GLM53FLASH_REAL_KV", "value": "1"},
+                {"name": "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT", "value": str(context_policy["measured_context_limit"])},
                 {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
                 {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISIONS[plan.model_path]},
                 {"name": "DYN_FPM_DATASET_ROLE", "value": plan.options.dataset_role},

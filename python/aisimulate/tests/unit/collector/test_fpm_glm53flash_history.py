@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward.hybrid_artifact import PROTOCOL, validate_real_hybrid_repetitions
 from collector.fpm_forward.native_artifact import _expected_scheduled
 
@@ -73,7 +72,13 @@ def fixture(tmp_path, phase):
     payload = {
         "kvwarm": {"state_protocol": PROTOCOL},
         "timing_boundary": "vllm_native_scheduler_output_interval",
-        "producer": {"warmup_repeats": 5, "measurement_repeats": 10},
+        "producer": {"warmup_repeats": 5, "measurement_repeats": 10, "context_policy_version": 1},
+        "limits": {"max_model_len": 131079},
+        "context_policy": {
+            "measured_context_limit": 131072,
+            "runtime_context_length": 131079,
+            "native_admission_headroom": 7,
+        },
         "input_provenance": {
             "token_stream_manifest": {
                 "schema_version": 3,
@@ -84,6 +89,8 @@ def fixture(tmp_path, phase):
         },
         "results": [{"point": point, "fpms": [fpm], "real_hybrid_repetitions": repetitions}],
     }
+    payload["input_provenance"]["context_policy"] = dict(payload["context_policy"])
+    payload["kvwarm"]["max_context"] = 131072
     return SimpleNamespace(state_protocol=PROTOCOL, backend="vllm"), payload, path
 
 
@@ -136,4 +143,49 @@ def test_reader_rejects_stock_vllm_unqualified_pool_start(tmp_path, rows):
     point["total_kv_read_tokens"] = 18
     point["rows"] = rows
     with pytest.raises(ValueError, match="cached-prefill start is unqualified"):
+        validate_real_hybrid_repetitions(cell, payload, path)
+
+
+@pytest.mark.parametrize("field", ["missing", "version", "native", "policy", "provenance", "state"])
+def test_context_headroom_cannot_be_stripped_or_substituted(tmp_path, field):
+    cell, payload, path = fixture(tmp_path, "decode")
+    if field == "missing":
+        payload.pop("context_policy")
+        payload["producer"].pop("context_policy_version")
+    elif field == "version":
+        payload["producer"]["context_policy_version"] = True
+    elif field == "native":
+        payload["limits"]["max_model_len"] = 131072
+    elif field == "policy":
+        payload["context_policy"]["native_admission_headroom"] = 8
+    elif field == "provenance":
+        payload["input_provenance"].pop("context_policy")
+    else:
+        payload["kvwarm"]["max_context"] = 131079
+    with pytest.raises(ValueError, match="context|policy"):
+        validate_real_hybrid_repetitions(cell, payload, path)
+
+
+def test_only_receipted_legacy_overlay_preserves_historical_short_canary(tmp_path):
+    cell, payload, path = fixture(tmp_path, "prefill")
+    payload.pop("context_policy")
+    payload["producer"].pop("context_policy_version")
+    payload["input_provenance"].pop("context_policy")
+    payload["limits"]["max_model_len"] = 131072
+    payload["producer"]["overlay_sha256"] = "e391db177f53430c4280807fcc0eafdace5310cda6f6549ef7f2fb54e6cad984"
+    validate_real_hybrid_repetitions(cell, payload, path)
+    payload["producer"]["overlay_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="versioned context policy"):
+        validate_real_hybrid_repetitions(cell, payload, path)
+
+
+def test_internal_headroom_cannot_enlarge_measured_workload(tmp_path):
+    from collector.glm53flash_protocol import vllm_context_policy
+
+    cell, payload, path = fixture(tmp_path, "prefill")
+    payload["context_policy"] = vllm_context_policy(10)
+    payload["input_provenance"]["context_policy"] = payload["context_policy"]
+    payload["limits"]["max_model_len"] = 17
+    payload["kvwarm"]["max_context"] = 10
+    with pytest.raises(ValueError, match="measured context"):
         validate_real_hybrid_repetitions(cell, payload, path)

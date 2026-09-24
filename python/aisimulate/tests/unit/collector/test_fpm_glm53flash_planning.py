@@ -82,6 +82,8 @@ def test_all_required_glm_deployments_render_native_precision_and_scope(tmp_path
         assert argv[argv.index(tp_flag) + 1] == str(cell.topology.tp)
         assert "--enable-expert-parallel" not in argv
         if backend == "vllm":
+            assert argv[argv.index("--max-model-len") + 1] == "131079"
+            assert frozen["options"]["measured_context_limit"] == 131072
             assert "--cudagraph-metrics" in argv and "--language-model-only" in argv
             assert "--no-enable-prefix-caching" in argv
             assert "--compilation-config" not in argv
@@ -103,3 +105,29 @@ def test_all_required_glm_deployments_render_native_precision_and_scope(tmp_path
             assert graph_sizes == list(range(1, 33))
             if "NVFP4" in model:
                 assert argv[argv.index("--quantization") + 1] == "modelopt_fp4"
+
+
+@pytest.mark.parametrize("limit", [-1, 1024, 131072])
+def test_vllm_context_headroom_preserves_requested_scope(tmp_path, limit):
+    from dataclasses import replace
+
+    from collector.fpm_forward.runner import _cell_generator_overrides
+    from collector.glm53flash_protocol import vllm_context_policy
+
+    campaign = plan(tmp_path, "vllm", "zai-org/GLM-5.3-Flash")
+    campaign = replace(campaign, options=replace(campaign.options, vllm_max_model_len=limit))
+    config = _cell_generator_overrides(campaign, campaign.cells[0], {})
+    args = config["params"]["agg"]["extra_cli_args"]
+    policy = vllm_context_policy(limit)
+    assert args[args.index("--max-model-len") + 1] == str(policy["runtime_context_length"])
+    environment = {item["name"]: item["value"] for item in config["K8sConfig"]["extra_env"]}
+    assert environment["DYN_FPM_GLM53FLASH_MEASURED_CONTEXT"] == str(policy["measured_context_limit"])
+    assert campaign.to_dict()["options"]["measured_context_limit"] == policy["measured_context_limit"]
+
+
+@pytest.mark.parametrize("limit", [0, -2, 131073, True])
+def test_headroom_helper_rejects_invalid_measured_limit(limit):
+    from collector.glm53flash_protocol import vllm_context_policy
+
+    with pytest.raises(ValueError, match="measured context"):
+        vllm_context_policy(limit)

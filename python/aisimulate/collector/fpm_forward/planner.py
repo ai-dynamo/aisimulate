@@ -480,7 +480,10 @@ class FPMCell:
 def _plan_options(options: FPMCollectionOptions, *, is_glm: bool) -> dict[str, object]:
     payload = options.to_dict()
     if is_glm:
+        from collector.glm53flash_protocol import vllm_context_policy
+
         payload.update(
+            measured_context_limit=vllm_context_policy(options.vllm_max_model_len)["measured_context_limit"],
             global_warmup_iterations=0,
             warmup_repeats=5,
             measurement_repeats=10,
