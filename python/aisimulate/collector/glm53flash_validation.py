@@ -27,12 +27,13 @@ from collector.glm53flash_contract import (
     sha256_json,
     validate_calibration_row,
 )
+from collector.glm53flash_jsonl import file_sha256, iter_records
 
 BOUNDARY = "embedding_to_logits_gpu_v1"
 
 
 def file_sha(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return file_sha256(path)
 
 
 def _required_files(tp_size: int, backend: str) -> set[str]:
@@ -209,8 +210,8 @@ def load_native(run: dict, base: Path) -> dict:
 
         validate_retained_states(
             requests,
-            {rank: (root / f"forward-rank-{rank}.jsonl").read_bytes() for rank in range(tp)},
-            {rank: (root / f"retained-rank-{rank}.jsonl").read_bytes() for rank in range(tp)},
+            {rank: root / f"forward-rank-{rank}.jsonl" for rank in range(tp)},
+            {rank: root / f"retained-rank-{rank}.jsonl" for rank in range(tp)},
         )
     expected = {
         p["benchmark_id"]: (
@@ -250,9 +251,8 @@ def load_native(run: dict, base: Path) -> dict:
             json.dumps(layout, sort_keys=True, **({"separators": (",", ":")} if backend == "vllm" else {})).encode()
         ).hexdigest()
         _state_layout(layout, backend)
-        previous, observed, seen_forward_ids = {}, set(), set()
-        for line in (root / f"forward-rank-{rank}.jsonl").read_bytes().splitlines():
-            row = json.loads(line)
+        previous, observed, seen_forward_ids, completed_requests = {}, set(), set(), set()
+        for row in iter_records(root / f"forward-rank-{rank}.jsonl"):
             if execution is not None and any(row.get(key) != value for key, value in execution.items()):
                 raise ValueError("Ops raw forward execution differs from the retained native runtime receipts")
             if row.get("forward_id") in seen_forward_ids:
@@ -287,6 +287,8 @@ def load_native(run: dict, base: Path) -> dict:
                 rid = request["request_id"]
                 if rid not in requests["requests"]:
                     raise ValueError("Ops observed an unfrozen request")
+                if rid in completed_requests:
+                    raise ValueError("Ops completed request was reused after its target")
                 tokens = request.get("native_query_token_ids")
                 if (
                     not isinstance(tokens, list)
@@ -320,9 +322,12 @@ def load_native(run: dict, base: Path) -> dict:
                     raise ValueError("Ops lacks completed native sampled token")
                 previous[rid] = row["forward_id"], history, prompt, sample
                 token_key = (rid, prefix, query)
-                signature = (history, prompt, sample)
+                signature = (sha256_json(history), sha256_json(prompt), sample)
                 if rank_inputs.setdefault(token_key, signature) != signature:
                     raise ValueError("Ops TP ranks disagree on actual input/sample history")
+                if row["stage"] == "measure":
+                    previous.pop(rid)
+                    completed_requests.add(rid)
             if row["stage"] != "measure":
                 continue
             if any(row.get(field) != requests[field] for field in ("dataset_role", "request_set", "corpus_sha256")):
@@ -407,14 +412,19 @@ def load_native(run: dict, base: Path) -> dict:
 def _bind_raw_to_forwards(root: Path, tp: int) -> None:
     for rank in range(tp):
         forwards = {}
-        for line in (root / f"forward-rank-{rank}.jsonl").read_bytes().splitlines():
-            forward = json.loads(line)
+        for forward in iter_records(root / f"forward-rank-{rank}.jsonl"):
             if forward["stage"] == "measure":
                 if forward["invocation"] in forwards:
                     raise ValueError("Ops native invocation identity reused")
-                forwards[forward["invocation"]] = forward
-        for line in (root / f"rank-{rank}.jsonl").read_bytes().splitlines():
-            row = json.loads(line)
+                # Token histories have already been validated. Retain only the
+                # per-forward scalar/identity join fields needed for op rows.
+                forwards[forward["invocation"]] = {key: value for key, value in forward.items() if key != "requests"}
+                forwards[forward["invocation"]]["history_ids"] = (
+                    [request["previous_forward_id"] for request in forward["requests"]]
+                    if forward["prefix_lengths"][0]
+                    else []
+                )
+        for row in iter_records(root / f"rank-{rank}.jsonl"):
             forward = forwards.get(row["invocation"])
             if forward is None or row["tp_rank"] != rank:
                 raise ValueError("Ops module observation has no admitted native forward")
@@ -440,8 +450,7 @@ def _bind_raw_to_forwards(root: Path, tp: int) -> None:
             if any(row.get(field) != forward.get(field) for field in fields):
                 raise ValueError("Ops module observation belongs to a different native request/forward")
             batch, query, prefix = forward["batch_size"], forward["query_lengths"][0], forward["prefix_lengths"][0]
-            history = [request["previous_forward_id"] for request in forward["requests"]] if prefix else []
-            if row.get("history_ids") != history:
+            if row.get("history_ids") != forward["history_ids"]:
                 raise ValueError("Ops module history differs from admitted native state")
             shape = json.loads(row["geometry"])
             if row["component"] == "attention":

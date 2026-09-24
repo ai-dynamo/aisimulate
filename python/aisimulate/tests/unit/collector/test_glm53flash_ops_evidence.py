@@ -392,6 +392,32 @@ def test_consumer_rows_are_reaggregated_from_original_module_measurements(tmp_pa
         evidence.bind_calibration([parquet], run, native)
 
 
+def test_native_calibration_streams_raw_evidence_and_keeps_identical_result(tmp_path, monkeypatch):
+    run, root, _, _, manifest = native_fixture(tmp_path, "calibration")
+    read_bytes, read_text = Path.read_bytes, Path.read_text
+
+    def bounded_bytes(path, *args, **kwargs):
+        assert path.suffix != ".jsonl", "raw token/module evidence must not be read as one whole buffer"
+        return read_bytes(path, *args, **kwargs)
+
+    def bounded_text(path, *args, **kwargs):
+        assert path.suffix != ".jsonl", "raw token/module evidence must not be read as one whole buffer"
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_bytes", bounded_bytes)
+    monkeypatch.setattr(Path, "read_text", bounded_text)
+    native = evidence.load_native(run, tmp_path)
+    rows = aggregate_rank_records(
+        [root / "rank-0.jsonl", root / "rank-1.jsonl"],
+        2,
+        manifest,
+        evidence_sha256=evidence.file_sha(root / "calibration-evidence.json"),
+    )
+    table = tmp_path / "glm53flash_module_perf.parquet"
+    write_parquet(rows, table)
+    assert evidence.bind_calibration([table], run, native)["rows"] == 1
+
+
 def test_module_rows_cannot_borrow_another_request_set_inside_hashed_bundle(tmp_path):
     run, root, _, modules, manifest = native_fixture(tmp_path, "calibration")
     for rank in modules:

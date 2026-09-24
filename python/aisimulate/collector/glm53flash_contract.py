@@ -17,6 +17,8 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
+from collector.glm53flash_jsonl import iter_records
+
 COMPONENTS = {
     "Glm53Attention": "attention",
     "Glm53Mhc": "mhc",
@@ -229,16 +231,15 @@ def aggregate_rank_records(
             _uint32(original, "original point ID", positive=True)
         if len(set(point_ids.values())) != len(point_ids):
             raise ValueError("shard point mapping aliases original benchmark IDs")
-    groups = defaultdict(list)
-    coverage = defaultdict(set)
+    groups = {}
+    coverage = defaultdict(int)
     expected = {
-        phase: {(entry["name"], entry["component"], entry["geometry"]) for entry in entries}
+        phase: {(entry["name"], entry["component"], entry["geometry"]): index for index, entry in enumerate(entries)}
         for phase, entries in manifest["phases"].items()
     }
     for path in paths:
         expected_rank = int(path.stem.split("-")[1])
-        for line in path.read_text().splitlines():
-            row = json.loads(line)
+        for row in iter_records(path):
             validate_row(row)
             if row.get("dataset_role") != "calibration" or not row.get("request_set"):
                 raise ValueError("raw native observations must identify their frozen calibration corpus")
@@ -259,36 +260,52 @@ def aggregate_rank_records(
                 _uint32(row[key], key)
             phase = row["phase"]
             identity = (row["name"], row["component"], row["geometry"])
-            if identity not in expected.get(phase, set()):
+            if identity not in expected.get(phase, {}):
                 raise ValueError("observed native operation is absent from the production graph")
+            occurrence = expected[phase][identity]
+            bit = 1 << occurrence
             invocation_key = (expected_rank, phase, row["sample"], row["invocation"])
-            if identity in coverage[invocation_key]:
+            if coverage[invocation_key] & bit:
                 raise ValueError("native graph occurrence was observed more than once")
-            coverage[invocation_key].add(identity)
-            groups[tuple(row[key] for key in KEY_COLUMNS)].append(row)
+            coverage[invocation_key] |= bit
+            physical = tuple(row[key] for key in KEY_COLUMNS)
+            if physical not in groups:
+                groups[physical] = {
+                    "row": {key: row.get(key, "") for key in ROW_COLUMNS},
+                    "provenance": tuple(row[key] for key in (*PROVENANCE_COLUMNS, *EVIDENCE_COLUMNS)),
+                    "samples": {},
+                    "repetitions": defaultdict(lambda: defaultdict(set)),
+                    "dispatches": defaultdict(set),
+                }
+            group = groups[physical]
+            if tuple(row[key] for key in (*PROVENANCE_COLUMNS, *EVIDENCE_COLUMNS)) != group["provenance"]:
+                raise ValueError("incompatible native invocations collide on one physical key")
+            group["repetitions"][row["benchmark_id"]][row["sampling_role"]].add(row["repetition"])
+            if row["sampling_role"] == "measurement":
+                group["dispatches"][row["benchmark_id"]].add(row.get("dispatch_fingerprint", ""))
+            sample_key = (
+                phase,
+                row["sample"],
+                row["invocation"],
+                occurrence,
+                row["sampling_role"],
+                row["benchmark_id"],
+            )
+            sample = group["samples"].setdefault(sample_key, [0, 0.0])
+            rank_bit = 1 << expected_rank
+            if sample[0] & rank_bit:
+                raise ValueError("duplicate rank within one native invocation")
+            sample[0] |= rank_bit
+            sample[1] = max(sample[1], row["latency"])
     if not groups:
         raise ValueError("no native measurements")
     for (_, phase, _, _), observed in coverage.items():
-        if observed != expected[phase]:
+        if observed != (1 << len(expected[phase])) - 1:
             raise ValueError(f"incomplete native {phase} graph coverage")
     output = []
-    for rows in groups.values():
-        if len({tuple(row[key] for key in (*PROVENANCE_COLUMNS, *EVIDENCE_COLUMNS)) for row in rows}) != 1:
-            raise ValueError("incompatible native invocations collide on one physical key")
-        samples = defaultdict(dict)
-        repetitions = defaultdict(lambda: defaultdict(set))
-        dispatches = defaultdict(set)
-        for row in rows:
-            repetitions[row["benchmark_id"]][row["sampling_role"]].add(row["repetition"])
-            if row["sampling_role"] == "measurement":
-                dispatches[row["benchmark_id"]].add(row.get("dispatch_fingerprint", ""))
-            sample = samples[
-                (row["phase"], row["sample"], row["invocation"], row["name"], row["sampling_role"], row["benchmark_id"])
-            ]
-            if row["tp_rank"] in sample:
-                raise ValueError("duplicate rank within one native invocation")
-            sample[row["tp_rank"]] = row["latency"]
-        if any(set(sample) != set(range(tp_size)) for sample in samples.values()):
+    for group in groups.values():
+        samples, repetitions, dispatches = group["samples"], group["repetitions"], group["dispatches"]
+        if any(sample[0] != (1 << tp_size) - 1 for sample in samples.values()):
             raise ValueError("incomplete TP rank set within a native invocation")
         if any(len(roles["warmup"]) < 5 or len(roles["measurement"]) < 10 for roles in repetitions.values()):
             raise ValueError("each frozen native point requires at least five warmups and ten measured repetitions")
@@ -296,13 +313,12 @@ def aggregate_rank_records(
             raise ValueError("shared physical key has incompatible measured dispatch across benchmark points")
         owner = min(repetitions, key=lambda native: native if point_ids is None else point_ids[native])
         measured = [sample for key, sample in samples.items() if key[-2:] == ("measurement", owner)]
-        owned_rows = [row for row in rows if row["benchmark_id"] == owner]
-        result = {key: owned_rows[0].get(key, "") for key in ROW_COLUMNS}
+        result = group["row"]
         result["owner_benchmark_id"] = owner
         result["original_point_id"] = owner if point_ids is None else point_ids[owner]
         signatures = dispatches[owner]
         result["dispatch_fingerprint"] = sha256_json(sorted(signatures)) if signatures and "" not in signatures else ""
-        result["latency"] = statistics.median(max(sample.values()) for sample in measured)
+        result["latency"] = statistics.median(sample[1] for sample in measured)
         result["sample_count"] = len(measured)
         validate_calibration_row(result)
         output.append(result)
