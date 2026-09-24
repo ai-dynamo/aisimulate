@@ -896,6 +896,7 @@ mod tests {
             require_exact_workload_distribution: false,
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: None,
             enable_eplb: false,
             is_context: true,
         };

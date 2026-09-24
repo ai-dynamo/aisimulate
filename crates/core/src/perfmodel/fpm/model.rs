@@ -747,6 +747,7 @@ fn build_native_candidate(
 ) -> Result<(Engine, PathBuf), AicError> {
     if config.estimation_mode == EstimationMode::FpmInterpolation
         && (config.enable_eplb
+            || config.moe_kernel_source.is_some()
             || config.wideep_num_slots.is_some()
             || config
                 .moe_backend
@@ -754,7 +755,7 @@ fn build_native_candidate(
                 .is_some_and(|value| value != "default"))
     {
         return Err(AicError::UnsupportedModel(
-            "FPM interpolation does not support EPLB, slots or moe_backend overrides".into(),
+            "FPM interpolation does not support EPLB, slots, moe_backend or moe_kernel_source overrides".into(),
         ));
     }
     if config.estimation_mode == EstimationMode::FpmInterpolation && config.nextn != 0 {
@@ -1156,6 +1157,21 @@ fn can_fallback_to_regression(err: &AicError) -> bool {
 #[cfg(test)]
 mod fallback_errors {
     use super::*;
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn interpolation_candidate_does_not_discard_exact_moe_source() {
+        let mut config = ForwardPassPerfModelConfig::new(
+            "model",
+            "system",
+            crate::BackendKind::Sglang,
+            crate::ForwardPassWorkerType::Decode,
+        );
+        config.moe_kernel_source = Some("source_that_does_not_exist".into());
+        config.estimation_mode = EstimationMode::FpmInterpolation;
+        let error = build_native_candidate(&config).err().unwrap();
+        assert!(error.to_string().contains("moe_kernel_source overrides"));
+    }
 
     #[test]
     fn corruption_is_not_a_coverage_gap() {

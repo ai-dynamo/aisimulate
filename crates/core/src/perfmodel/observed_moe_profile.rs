@@ -135,6 +135,9 @@ pub(crate) fn validate_engine(
         config.backend_version.as_deref().unwrap_or(""),
         config.database_mode,
     )?;
+    if config.moe_kernel_source.is_some() {
+        return Err(selected.error("moe_kernel_source cannot override an observed decode profile"));
+    }
     let parallel = &config.parallel;
     if config.model_name != "nvidia/GLM-5.2-NVFP4"
         || config.backend != BackendKind::Sglang

@@ -282,3 +282,32 @@ def test_prior_decode_profile_uses_canonical_controls_and_saved_configuration(di
     assert any(op["name"] == "generation_moe_overlap" and op["latency_ms"] > 0 for op in operations)
     with pytest.raises(DecodeMoeProfileError):
         reloaded.static_phase_diagnostics(batch_size=outside_profile, context_length=32768, prefill=False)
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [PROFILE, "observed_glm52_nvfp4_decode_1ab2c747975e_v1", "observed_glm52_nvfp4_decode_composite_v2"],
+)
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe", "unavailable_kernel_source"])
+def test_qualified_profiles_preserve_inactive_source_and_reject_overrides(profile, source):
+    config = graph_config()
+    config["moe_kernel_source"] = source
+    error = PrefillGraphProfileError
+    if profile != PROFILE:
+        config["worker_type"] = "decode"
+        config["estimator_config"]["op_level"] = {"decode_workload_distribution": profile}
+        error = DecodeMoeProfileError
+    if source is not None:
+        with pytest.raises(error, match="moe_kernel_source cannot override"):
+            RustForwardPassPerfModel.best_available(config)
+        return
+    model = RustForwardPassPerfModel.best_available(config)
+    saved = model.diagnostics()["provenance"]["config"]
+    assert saved["moe_kernel_source"] is None
+    reloaded = RustForwardPassPerfModel.best_available(saved)
+    if profile == PROFILE:
+        assert reloaded.predict_prefill_latency(*CASES[0][0]) == pytest.approx(CASES[0][1], rel=1e-12)
+    else:
+        assert reloaded.static_phase_diagnostics(batch_size=1, context_length=1024, prefill=False) == (
+            model.static_phase_diagnostics(batch_size=1, context_length=1024, prefill=False)
+        )

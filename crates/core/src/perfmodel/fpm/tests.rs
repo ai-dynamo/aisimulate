@@ -111,6 +111,7 @@ fn fixture_engine_config() -> EngineConfig {
         decoder_replay: false,
         prefill_graph_profile: None,
         prefill_graph_profile_id: None,
+        moe_kernel_source: None,
         kv_block_size: None,
         parallel: ParallelMapping {
             tp_size: 8,

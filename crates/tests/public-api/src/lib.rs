@@ -140,10 +140,11 @@ mod tests {
         // v17: ContextAttentionOp gained apply_rope (Muse Glimmer review
         //     follow-up) — a positional bincode op-layout change.
         // v18: speculative attention width fields and FpmForward verify_width.
-        // v19: DeepSeek V4.1 backend layout and appended operation variants.
-        // v20: DeepSeek V4.1 FPM selector diagnostics.
-        // v21: observed MoE selection and exact prefill graph composites.
-        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 21);
+        // v19: Dsv41AttentionOp gained kv_cache_layout.
+        // v20: FpmForwardOp gained original_fmha_quant_mode for selector diagnostics.
+        // v21: EngineConfig and MoeOp gained exact moe_kernel_source identity.
+        // v22: observed MoE selection and exact prefill graph composites.
+        assert_eq!(ENGINE_SPEC_SCHEMA_VERSION, 22);
         assert_eq!(FPM_VERSION, 1);
         assert_eq!(ForwardPassMetrics::default().version, FPM_VERSION);
     }

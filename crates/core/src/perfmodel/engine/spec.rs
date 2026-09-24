@@ -320,6 +320,7 @@ mod tests {
             require_exact_workload_distribution: false,
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: Some("sglang_flashinfer_trtllm_moe".into()),
             enable_eplb: false,
             is_context: false,
         }
@@ -846,6 +847,7 @@ mod tests {
             decoder_replay: false,
             prefill_graph_profile: None,
             prefill_graph_profile_id: None,
+            moe_kernel_source: None,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
                 tp_size: 8,
@@ -1032,6 +1034,32 @@ mod tests {
         let bytes = spec.to_bincode().expect("to_bincode");
         let decoded = EngineSpec::from_bincode(&bytes).expect("from_bincode");
         assert_eq!(spec, decoded);
+    }
+
+    #[test]
+    fn moe_and_fpm_fields_round_trip_and_reject_concurrent_schema20() {
+        // These independent positional fields were both introduced as schema20
+        // on separate branches. The merged wire layout needs its own version.
+        let spec = EngineSpec::new(
+            sample_engine_config(),
+            vec![OpSpec::FpmForward(fpm_forward())],
+            vec![OpSpec::Moe(moe())],
+        );
+        assert_eq!(spec.schema_version, 22);
+        let mut bytes = spec.to_bincode().unwrap();
+        assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
+
+        bytes[..4].copy_from_slice(&20u32.to_le_bytes());
+        // Reject the stale version before even trying to decode its payload.
+        bytes.truncate(4);
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                kind: "EngineSpec",
+                got: 20,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+            })
+        ));
     }
 
     /// A version skew combined with an op-layout change must surface as a clear
@@ -1347,19 +1375,21 @@ mod tests {
         for spec in [fpm_spec, pilot_spec] {
             let bytes = spec.to_bincode().unwrap();
             assert_eq!(EngineSpec::from_bincode(&bytes).unwrap(), spec);
-            let mut stale = bytes;
-            stale[..4].copy_from_slice(&20u32.to_le_bytes());
-            // Both branches used v20 for incompatible layouts. Reject their
-            // version before attempting to decode even a missing op payload.
-            for input in [stale.as_slice(), &stale[..4]] {
-                assert!(matches!(
-                    EngineSpec::from_bincode(input),
-                    Err(AicError::UnsupportedSchemaVersion {
-                        kind: "EngineSpec",
-                        got: 20,
-                        expected: 21,
-                    })
-                ));
+            for previous_version in [20u32, 21] {
+                let mut stale = bytes.clone();
+                stale[..4].copy_from_slice(&previous_version.to_le_bytes());
+                // Both branches claimed 21 after distinct schema-20 layouts.
+                // Reject either version before decoding even a missing payload.
+                for input in [stale.as_slice(), &stale[..4]] {
+                    assert!(matches!(
+                        EngineSpec::from_bincode(input),
+                        Err(AicError::UnsupportedSchemaVersion {
+                            kind: "EngineSpec",
+                            got,
+                            expected: 22,
+                        }) if got == previous_version
+                    ));
+                }
             }
         }
     }

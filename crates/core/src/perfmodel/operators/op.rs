@@ -184,7 +184,7 @@ pub enum Op {
     Dsv41Engram(Dsv41EngramOp),
     Dsv41Stage(Dsv41StageOp),
     Dsv41Linear(Dsv41LinearOp),
-    // Append-only: the fixed prefill composite scopes (EngineSpec schema 21).
+    // Append-only: the fixed prefill composite scopes (EngineSpec schema 22).
     SglangPrefillAttentionSequence(SglangPrefillAttentionSequenceOp),
     SglangPrefillCommNormBoundary(SglangPrefillCommNormBoundaryOp),
 }

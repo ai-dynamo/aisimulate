@@ -92,6 +92,28 @@ def handle(selected=True, root=None):
     return EngineHandle(core.engine_spec_bincode_from_json(spec_json(selected, root)))
 
 
+@pytest.mark.parametrize("source", ["sglang_flashinfer_trtllm_moe", "unavailable_kernel_source"])
+def test_direct_model_rejects_moe_source_override(source):
+    with pytest.raises(PrefillGraphProfileError, match="moe_kernel_source cannot override"):
+        model(moe_kernel_source=source)
+
+
+@pytest.mark.parametrize("location", ["engine", "operation"])
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe", "unavailable_kernel_source"])
+def test_serialized_profile_only_normalizes_inactive_moe_source(location, source):
+    spec = json.loads(spec_json())
+    target = spec["engine"] if location == "engine" else spec["context_ops"][3]["Overlap"]["group_a"][1]["Moe"]
+    target["moe_kernel_source"] = source
+    encoded = core.engine_spec_bincode_from_json(json.dumps(spec))
+    if source is not None:
+        with pytest.raises(PrefillGraphProfileError, match="moe_kernel_source|modified context composition"):
+            EngineHandle(encoded)
+    else:
+        assert EngineHandle(encoded).predict_prefill_latency(*PUBLIC_CALLS[0]) == pytest.approx(
+            PREDICTED_MS[0], rel=1e-12
+        )
+
+
 def copy_bundle(tmp_path):
     import shutil
 
@@ -450,7 +472,7 @@ def test_profile_and_retained_identities_cannot_change(tmp_path, mutation):
         handle(root=root)
 
 
-@pytest.mark.parametrize("schema_version", [19, 20])
+@pytest.mark.parametrize("schema_version", [19, 20, 21])
 def test_previous_binary_schema_requires_recompilation(schema_version):
     encoded = bytearray(core.engine_spec_bincode_from_json(spec_json()))
     encoded[:4] = schema_version.to_bytes(4, "little")

@@ -723,6 +723,7 @@ class KimiK3Model(BaseModel):
                         moe_q,
                         workload_dist,
                         attn_dp,
+                        moe_kernel_source=self.config.moe_kernel_source,
                     ),
                     ops.MoEDispatch(
                         f"{prefix}_moe_post_dispatch",

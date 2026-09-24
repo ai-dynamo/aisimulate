@@ -130,6 +130,7 @@ class ForwardPassPerfModelConfig:
     fallback_policy: str = "deny"
     estimator_config: dict[str, Any] = dataclass_field(default_factory=dict)
     attention_backend: str | None = None
+    moe_kernel_source: str | None = dataclass_field(default=None, kw_only=True)
     enable_shared_layer: bool | None = None
     strict_provenance: bool = False
     moe_backend: str | None = None
@@ -1206,6 +1207,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
         # per phase); without this key they would share a cached handle and
         # silently answer with the other mode's engine.
         "forward_model": getattr(model, "forward_model", "op_level"),
+        "moe_kernel_source": getattr(model_config, "moe_kernel_source", None),
         # Same identity built against different systems roots reads different
         # perf trees; the root is part of the engine identity.
         "systems_root": str(getattr(database, "systems_root", "") or ""),
@@ -1246,6 +1248,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
                         "sms": getattr(model_config, "sms", None),
                         "moe_backend": getattr(model_config, "moe_backend", None),
                         "attention_backend": getattr(model_config, "attention_backend", None),
+                        "moe_kernel_source": getattr(model_config, "moe_kernel_source", None),
                         # enable_wideep is gone from the identity: the deprecated
                         # flag is constant False on every Task-built ModelConfig;
                         # moe_comm_backend + num_gpus_per_node below carry the

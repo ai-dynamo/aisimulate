@@ -1112,6 +1112,7 @@ struct EngineBuildRequest {
     moe_backend: Option<String>,
     enable_eplb: bool,
     wideep_num_slots: Option<u32>,
+    moe_kernel_source: Option<String>,
     nextn: u32,
     speculation: Option<crate::ForwardPassSpeculationConfig>,
     kv_block_size: Option<u32>,
@@ -1165,6 +1166,7 @@ impl AicEngineBuilder {
                 moe_backend: None,
                 enable_eplb: false,
                 wideep_num_slots: None,
+                moe_kernel_source: None,
                 nextn: 0,
                 speculation: None,
                 kv_block_size: None,
@@ -1298,6 +1300,12 @@ impl AicEngineBuilder {
         self
     }
 
+    /// Select an exact collected MoE compute kernel-source lane.
+    pub fn moe_kernel_source(mut self, value: impl Into<String>) -> Self {
+        self.request.moe_kernel_source = Some(value.into());
+        self
+    }
+
     /// Configure speculative decoding.
     pub fn speculative_decoding(mut self, nextn: u32) -> Self {
         self.request.nextn = nextn;
@@ -1337,6 +1345,7 @@ mod builder_tests {
         assert!(builder.request.moe_tp_size.is_none());
         assert!(builder.request.moe_ep_size.is_none());
         assert!(builder.request.attention_backend.is_none());
+        assert!(builder.request.moe_kernel_source.is_none());
         assert!(builder.request.kv_block_size.is_none());
         assert!(builder.request.fpm_parquet_path.is_none());
         assert!(builder.request.database_mode.is_none());
@@ -1354,6 +1363,7 @@ mod builder_tests {
             .attention_dp_size(4)
             .moe_parallelism(Some(1), Some(8))
             .attention_backend("fa3")
+            .moe_kernel_source("sglang_flashinfer_trtllm_moe")
             .database_mode(DatabaseMode::Empirical)
             .shared_layer(true)
             .transfer_policy(vec!["xshape".to_owned(), "xquant".to_owned()])
@@ -1371,6 +1381,10 @@ mod builder_tests {
             (Some(1), Some(8))
         );
         assert_eq!(builder.request.attention_backend.as_deref(), Some("fa3"));
+        assert_eq!(
+            builder.request.moe_kernel_source.as_deref(),
+            Some("sglang_flashinfer_trtllm_moe")
+        );
         assert_eq!(builder.request.database_mode.as_deref(), Some("EMPIRICAL"));
         assert_eq!(builder.request.shared_layer, Some(true));
         assert_eq!(
@@ -1531,6 +1545,7 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("moe_backend", request.moe_backend.as_deref())?;
         kwargs.set_item("enable_eplb", request.enable_eplb)?;
         kwargs.set_item("wideep_num_slots", request.wideep_num_slots)?;
+        kwargs.set_item("moe_kernel_source", request.moe_kernel_source.as_deref())?;
         kwargs.set_item("forward_model", request.forward_model.as_deref())?;
         kwargs.set_item(
             "decode_workload_distribution",
@@ -1635,6 +1650,7 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         moe_backend: config.moe_backend.clone(),
         enable_eplb: config.enable_eplb,
         wideep_num_slots: config.wideep_num_slots,
+        moe_kernel_source: config.moe_kernel_source.clone(),
         nextn: config.nextn,
         speculation: config.speculation.clone(),
         kv_block_size: config.kv_block_size,
@@ -1736,6 +1752,7 @@ fn engine_build_request(
         moe_backend: None,
         enable_eplb: false,
         wideep_num_slots: None,
+        moe_kernel_source: config.moe_kernel_source.clone(),
         nextn,
         speculation: None,
         kv_block_size: config.kv_block_size,
@@ -1973,6 +1990,7 @@ impl PyForwardPassPerfModel {
             moe_backend: request.moe_backend,
             enable_eplb: request.enable_eplb,
             wideep_num_slots: request.wideep_num_slots,
+            moe_kernel_source: request.moe_kernel_source,
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
         };
@@ -2242,6 +2260,7 @@ mod tests {
             decoder_replay: false,
             prefill_graph_profile: None,
             prefill_graph_profile_id: None,
+            moe_kernel_source: None,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 8,

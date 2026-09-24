@@ -44,7 +44,7 @@ import os
 from typing import Any
 
 import aisimulate_core
-from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
+from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
@@ -137,10 +137,10 @@ from aisimulate_core.sdk.rust_engine_step import (
 #   Its appended enum changes positional bincode layout; old JSON defaults only.
 # - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
 #   for selector diagnostics; legacy JSON defaults do not cover bincode.
-# - 21 (GLM-5.2 VR200 pilot; renumbered from concurrent v20): exact observed-MoE selector, prefill graph identity
-#   and two appended composite operators change positional bincode layouts.
-#   Default JSON includes false for the MoE selector; default model/latency
-#   behavior is unchanged.
+# - 21 (AIC-1781): exact moe_kernel_source identity in EngineConfig and MoeOp.
+# - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
+#   identity and two appended composite operators extend the schema-21 layout.
+#   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
@@ -332,6 +332,7 @@ def _engine_config_dict(
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
         "fpm_parquet_path": fpm_parquet_path,
+        "moe_kernel_source": getattr(cfg, "moe_kernel_source", None),
         "kv_block_size": kv_block_size,
         "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
@@ -448,6 +449,7 @@ def compile_engine(
     fpm_fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -480,7 +482,7 @@ def compile_engine(
     logical batches are exploratory and queries outside 1..32 fail. Missing or
     mismatched approved profile data raises ``DecodeMoeProfileError``.
 
-    Engine schema 21 persists the exact-profile policy on MoE operators. Default
+    Engine schema 22 persists the exact-profile policy on MoE operators. Default
     OpSpec JSON includes that new false field, and older binary specs require
     recompilation; default representations are therefore not byte-identical.
     """
@@ -509,6 +511,13 @@ def compile_engine(
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
     try:
+        validate_moe_controls(
+            model_path=model_path,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
+            moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
+        )
         resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
         model_config = build_model_config(
             tp_size=tp_size,
@@ -526,6 +535,7 @@ def compile_engine(
             attention_backend=attention_backend,
             decode_workload_distribution=decode_workload_distribution,
             prefill_graph_profile=prefill_graph_profile,
+            moe_kernel_source=moe_kernel_source,
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
@@ -536,11 +546,6 @@ def compile_engine(
         apply_nextn(model_config, nextn)
     except (ValueError, TypeError, KeyError) as exc:
         raise InvalidEngineConfigurationError(str(exc)) from exc
-    if enable_eplb or wideep_num_slots is not None or moe_backend not in (None, "default"):
-        from aisimulate_core.sdk.models import check_is_moe
-
-        if not check_is_moe(model_path):
-            raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
     model_config.decoder_replay = decoder_replay
     try:
         resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)

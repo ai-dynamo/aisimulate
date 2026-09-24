@@ -284,6 +284,28 @@ def test_serialized_communication_precision_is_checked_through_composites(
             v1.load(wire)
 
 
+@pytest.mark.parametrize("profile", [v1.PROFILE, PROFILE])
+@pytest.mark.parametrize("location", ["engine", "operation"])
+@pytest.mark.parametrize("source", [None, "sglang_flashinfer_trtllm_moe", "unavailable_kernel_source"])
+def test_serialized_decode_profiles_reject_active_moe_source(tmp_path, profile, location, source):
+    wire = v1.spec(dataset(tmp_path / "valid"), selected=profile)
+    target = wire["engine"] if location == "engine" else wire["generation_ops"][0]["Overlap"]["group_a"][0]["Moe"]
+    target["moe_kernel_source"] = source
+    if source is not None:
+        with pytest.raises(DecodeMoeProfileError, match="moe_kernel_source cannot override"):
+            v1.load(wire)
+    else:
+        assert v1.load(wire).predict_decode_latency(1, 1024, 2) > 0
+
+
+@pytest.mark.parametrize("profile", [v1.PROFILE, PROFILE])
+@pytest.mark.parametrize("source", ["sglang_flashinfer_trtllm_moe", "unavailable_kernel_source"])
+def test_direct_model_rejects_moe_source_override(profile, source):
+    config = v1.build_model_config(**v1.KWARGS, decode_workload_distribution=profile, moe_kernel_source=source)
+    with pytest.raises(DecodeMoeProfileError, match="moe_kernel_source cannot override"):
+        get_model(v1.MODEL, config, "sglang")
+
+
 def test_selector_preserves_context_and_unrelated_generation_ops():
     base = v1.build_model_config(**v1.KWARGS)
     normal = get_model(v1.MODEL, base, "sglang")

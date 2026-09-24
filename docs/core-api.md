@@ -242,18 +242,17 @@ The parquet identity must match the requested model, hardware, backend version, 
 
 ### Engine identity controls
 
-The canonical configuration also carries quantization overrides and
-`attention_backend`, `moe_backend`, `enable_eplb` (default `false`), and
-`wideep_num_slots` (default absent). These controls reach model construction,
-KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend
-selection require an MoE model. Collected FPM interpolation cannot represent
-EPLB, slots, or MoE backend overrides; it rejects an explicit incompatible
-request and is skipped during automatic selection for those identities.
+The canonical configuration also carries quantization overrides and `attention_backend`, `moe_backend`, `moe_kernel_source` (default absent), `enable_eplb` (default `false`), and `wideep_num_slots` (default absent). These controls reach model construction, KV memory sizing, and replay provenance. EPLB/slots and nondefault MoE backend or kernel-source selection require an MoE model. Collected FPM interpolation cannot represent EPLB, slots, MoE backend, or kernel-source overrides; it rejects an explicit incompatible request and is skipped during automatic selection for those identities.
 
-Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add
-`moe_backend: None`, `enable_eplb: false`, and `wideep_num_slots: None`.
-`ForwardPassPerfModelConfig::new(...)` supplies these defaults. This extends
-the canonical configuration introduced by #242.
+`moe_kernel_source` selects an exact, nonblank collected `kernel_source` label for fused MoE compute. It is distinct from the existing `moe_backend` graph/backend control; source labels are not backend aliases and are preserved without trimming. `None` keeps the existing default source-selection policy, including eligible low-latency NVFP4 selection. `SILICON` reads only the requested source's table; `EMPIRICAL` derives its estimate from that same source; `HYBRID` may fall back to empirical estimation within that source, but does not substitute a different source. Missing source data remains an error. An explicit `moe_torch_flow_min_latency` requires gated NVFP4 and at most 128 tokens after attention-DP gathering. Pure-roofline `SOL` remains table-independent and does not claim measured support for the requested source.
+
+Selected `prefill_graph_profile` and observed `decode_workload_distribution` profiles require `moe_kernel_source=None`. Their qualified composition and source identity are fixed; an explicit source override is rejected even when its label matches the measured kernel. An absent or null source preserves the approved profile identity and predictions.
+
+An explicit source is rejected for dense graphs, MegaMoE modules, large-EP expert-compute graphs, and any constructed timing phase with no compatible fused MoE operator. It is also incompatible with whole-forward FPM, including the legacy Task `forward_model='fpm'` rewrite. Invalid graph/source combinations fail as invalid configuration rather than triggering estimator fallback. An untrained `fpm_regression` model remains not-ready; retaining a source in its configuration is not evidence of source-specific prediction support.
+
+AFD regular companions currently reject exact-source requests through their legacy estimator and fixed timing paths. The external-FPM companion forwards the source to canonical validation, which rejects the incompatible FPM request. These controls describe standalone AISimulate behavior, not downstream Dynamo planner integration.
+
+Rust callers using exhaustive `ForwardPassPerfModelConfig` literals must add `moe_backend: None`, `moe_kernel_source: None`, `enable_eplb: false`, and `wideep_num_slots: None`. Direct `EngineConfig` and `MoeOp` literals likewise require the new `moe_kernel_source` field. `ForwardPassPerfModelConfig::new(...)` supplies its default. This extends the canonical configuration introduced by #242.
 
 Rust callers constructing `SyntheticTraceSpec` must also add
 `cached_prefix_tokens: 0` to preserve existing prefix-sharing behavior. A positive

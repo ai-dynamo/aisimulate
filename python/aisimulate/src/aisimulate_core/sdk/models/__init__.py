@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import copy
 import importlib
+import json
 import pkgutil
 
 from aisimulate_core.sdk import config
@@ -62,6 +63,18 @@ del _SKIP
 
 
 _FORWARD_MODELS = ("op_level", "fpm")
+
+
+def _uses_moe_kernel_source(spec, source: str) -> bool:
+    """Inspect native composite children as well as top-level MoE operators."""
+    if isinstance(spec, dict):
+        moe = spec.get("Moe")
+        if isinstance(moe, dict) and moe.get("moe_kernel_source") == source:
+            return True
+        return any(_uses_moe_kernel_source(child, source) for child in spec.values())
+    if isinstance(spec, list):
+        return any(_uses_moe_kernel_source(child, source) for child in spec)
+    return False
 
 
 def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> BaseModel:
@@ -158,6 +171,16 @@ def get_model(
         raise InvalidEngineConfigurationError(
             f"Unknown forward_model: {forward_model!r}. Valid values: {', '.join(_FORWARD_MODELS)}"
         )
+    if model_config.moe_kernel_source is not None:
+        from aisimulate_core.sdk.config_builders import validate_moe_controls
+
+        if forward_model == "fpm":
+            raise InvalidEngineConfigurationError("moe_kernel_source is not supported with forward_model='fpm'")
+        validate_moe_controls(
+            model_path=model_path,
+            moe_backend=model_config.moe_backend,
+            moe_kernel_source=model_config.moe_kernel_source,
+        )
     if getattr(model_config, "fpm_fmha_quant_mode", None) is not None and forward_model != "fpm":
         raise InvalidEngineConfigurationError("fpm_fmha_quant_mode requires forward_model='fpm'")
 
@@ -238,6 +261,14 @@ def get_model(
     materialize_spec_scheme(model)
     if model_config.prefill_graph_profile is not None:
         model.apply_prefill_graph_profile()
+    if model_config.moe_kernel_source is not None:
+        for phase, phase_ops in (("context", model.context_ops), ("generation", model.generation_ops)):
+            if not any(
+                _uses_moe_kernel_source(json.loads(op._spec_json()), model_config.moe_kernel_source) for op in phase_ops
+            ):
+                raise InvalidEngineConfigurationError(
+                    f"moe_kernel_source is not supported: {phase} graph has no compatible MoE operator"
+                )
     if forward_model == "fpm":
         model = _apply_forward_model_fpm(model, backend_name)
     return model
@@ -256,6 +287,8 @@ def _validate_prefill_graph_profile(model_path, model_config, backend_name):
     )
     from aisimulate_core.sdk.errors import PrefillGraphProfileError
 
+    if model_config.moe_kernel_source is not None:
+        raise PrefillGraphProfileError("moe_kernel_source cannot override a prefill graph profile")
     name, _ = core.prefill_graph_profile_identity()
     if (
         model_config.prefill_graph_profile != name
@@ -299,6 +332,8 @@ def _validate_decode_moe_profile(model_path, model_config, backend_name):
     )
     from aisimulate_core.sdk.errors import DecodeMoeProfileError
 
+    if model_config.moe_kernel_source is not None:
+        raise DecodeMoeProfileError("moe_kernel_source cannot override an observed decode profile")
     if not isinstance(selected, str) or not selected.strip() or selected != selected.strip():
         raise DecodeMoeProfileError("decode_workload_distribution must be a nonempty literal string")
     if (

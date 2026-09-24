@@ -28,6 +28,15 @@ def normalize_kernel_backend(
         raise ValueError(f"{field_name} must be one of {choices}, got {value!r}.") from exc
 
 
+def normalize_kernel_source(value: str | None, field_name: str) -> str | None:
+    """Validate an optional exact collected kernel-source label."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string or None, got {value!r}.")
+    return value
+
+
 def has_video_input(
     *,
     num_videos: int = 0,
@@ -112,6 +121,11 @@ class ModelConfig:
     # (backend, version, sm_version) wins. Do NOT default this to a lane name —
     # that would silently pin every model to that lane.
     attention_backend: common.AttentionBackend | None = None
+    # Exact collected MoE kernel-source lane. This is intentionally separate
+    # from ``moe_backend``, which describes topology/runtime behavior rather
+    # than a single measured compute-kernel lane. ``None`` preserves the
+    # existing framework/default lookup.
+    moe_kernel_source: str | None = field(default=None, kw_only=True)
     # DEPRECATED and ignored (large-EP is selected per tuple via
     # moe_comm_backend); kept for a compatibility window because ModelConfig
     # is exported through the supported core SDK facade and removal breaks
@@ -148,6 +162,7 @@ class ModelConfig:
             common.AttentionBackend,
             "attention_backend",
         )
+        self.moe_kernel_source = normalize_kernel_source(self.moe_kernel_source, "moe_kernel_source")
 
     def resolve_moe_parallelism(self) -> tuple[int, int]:
         """Resolve and validate MoE parallelism dimensions in-place.

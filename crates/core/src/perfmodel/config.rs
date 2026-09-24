@@ -108,10 +108,13 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
 //   for selector diagnostics. This appends a positional field after the schema-19
 //   release; serde defaults support legacy JSON, not legacy bincode.
-// - 21 (GLM-5.2 VR200 pilot): exact observed-MoE selector, prefill graph identity
-//   and two appended composite operators change positional bincode layouts.
-//   Claimed 20 concurrently with DeepSeek-V4.1 FPM; renumbered at merge.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 21;
+// - 21 (AIC-1781): EngineConfig and MoeOp gained exact `moe_kernel_source`
+//   identity. Renumbered from the branch's concurrent v20 claim after the
+//   DeepSeek-V4.1 FPM layout landed first.
+// - 22 (GLM-5.2 VR200 pilot): exact observed-MoE selection, prefill graph
+//   identity and two appended composite operators extend the schema-21 layout.
+//   The pilot and AIC-1781 concurrently claimed 21; reject both older layouts.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 22;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -160,6 +163,10 @@ pub struct EngineConfig {
     pub prefill_graph_profile: Option<String>,
     #[serde(default)]
     pub prefill_graph_profile_id: Option<String>,
+    /// Exact collected MoE compute kernel-source lane.  Unlike
+    /// `moe_backend`, this selects one measured MoE table lane.
+    #[serde(default)]
+    pub moe_kernel_source: Option<String>,
 
     // KV
     pub kv_block_size: Option<u32>,

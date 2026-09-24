@@ -1141,8 +1141,10 @@ def test_canonical_config_preserves_positional_quantization_fields():
         "bfloat16",
         0,
         fpm_fmha_quant_mode="fp8",
+        moe_kernel_source="sglang_flashinfer_trtllm_moe",
     )
     assert config.kvcache_quant_mode == "fp8"
     assert config.comm_quant_mode == "bfloat16"
     assert config.nextn == 0
     assert config.fpm_fmha_quant_mode == "fp8"
+    assert config.moe_kernel_source == "sglang_flashinfer_trtllm_moe"

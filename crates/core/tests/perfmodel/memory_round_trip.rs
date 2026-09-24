@@ -90,6 +90,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
             prefill_graph_profile_id: None,
             fpm_parquet_path: None,
             decoder_replay: false,
+            moe_kernel_source: None,
             kv_block_size: None,
             parallel: ParallelMapping {
                 tp_size: 1,

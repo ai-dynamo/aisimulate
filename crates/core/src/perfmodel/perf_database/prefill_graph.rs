@@ -87,6 +87,11 @@ pub(crate) fn validate_config(config: &EngineConfig) -> Result<bool, AicError> {
             ));
         }
     }
+    if config.moe_kernel_source.is_some() {
+        return Err(error(
+            "moe_kernel_source cannot override a prefill graph profile",
+        ));
+    }
     let p = &config.parallel;
     let q = &config.quantization;
     if config.model_name != "nvidia/GLM-5.2-NVFP4"
@@ -606,6 +611,16 @@ mod tests {
         let mut roundtrip: Vec<crate::operators::Op> = bincode::deserialize(&bytes).unwrap();
         assert_eq!(ops, roundtrip);
         assert_eq!(composition_sha256(&roundtrip).unwrap(), CONTEXT_OPS_SHA256);
+        let crate::operators::Op::Overlap(ref mut overlap) = roundtrip[3] else {
+            panic!("MoE overlap position")
+        };
+        let crate::operators::Op::Moe(ref mut moe) = overlap.group_a[1] else {
+            panic!("MoE position")
+        };
+        assert_eq!(moe.moe_kernel_source, None);
+        moe.moe_kernel_source = Some("sglang_flashinfer_trtllm_moe".into());
+        assert_ne!(composition_sha256(&roundtrip).unwrap(), CONTEXT_OPS_SHA256);
+        roundtrip = ops.clone();
         // The independent baseline full-model structural inventory is 115953106944 bytes/rank.
         assert_eq!(
             ops.iter()
@@ -718,8 +733,9 @@ mod tests {
 }
 
 // SHA256 of serde_json::to_value(context_ops), after removing only the two
-// profile_id fields, encoded by serde_json::to_vec. This is a structural
-// identity, generated from the reviewed model rewrite; no latency is embedded.
+// profile_id fields and inactive MoE kernel-source fields, encoded by
+// serde_json::to_vec. This structural identity comes from the reviewed model
+// rewrite; no latency is embedded.
 pub(crate) const CONTEXT_OPS_SHA256: &str =
     "8fb54aacfaeea16b94b2e671744fc87ddeab19846ce25b7ad0b2467602633199";
 
@@ -740,7 +756,36 @@ pub(crate) fn contains_profile_ops(ops: &[crate::operators::Op]) -> bool {
 }
 
 pub(crate) fn composition_sha256(ops: &[crate::operators::Op]) -> Result<String, AicError> {
+    fn normalize_inactive_moe_source(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                if let Some(moe) = fields
+                    .get_mut("Moe")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    // The approved composition predates this optional field.
+                    // An active override must remain part of the identity.
+                    if moe
+                        .get("moe_kernel_source")
+                        .is_some_and(serde_json::Value::is_null)
+                    {
+                        moe.remove("moe_kernel_source");
+                    }
+                }
+                for child in fields.values_mut() {
+                    normalize_inactive_moe_source(child);
+                }
+            }
+            serde_json::Value::Array(children) => {
+                for child in children {
+                    normalize_inactive_moe_source(child);
+                }
+            }
+            _ => {}
+        }
+    }
     let mut value = serde_json::to_value(ops).map_err(error)?;
+    normalize_inactive_moe_source(&mut value);
     for op in value
         .as_array_mut()
         .ok_or_else(|| error("invalid context operation list"))?
