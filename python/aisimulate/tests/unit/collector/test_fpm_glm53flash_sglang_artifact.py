@@ -15,6 +15,7 @@ from collector.fpm_forward.sglang_artifact import (
 )
 from collector.fpm_forward.sglang_driver import freeze_requests, result_payload
 from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
+from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL
 
 pytestmark = pytest.mark.unit
 
@@ -30,6 +31,7 @@ def provenance():
             zip(EXECUTION_COLUMNS, execution_identity(config, backend="sglang", input_modality="text"), strict=True)
         ),
         "telemetry_policy": TELEMETRY_POLICY,
+        "producer_protocol": PRODUCER_PROTOCOL,
         "context_policy": {
             "measured_context_limit": 131072,
             "runtime_context_length": 131079,
@@ -166,6 +168,55 @@ def artifact(tmp_path):
                 state_layout_admitted=True,
                 state_layout_sha256=hashlib.sha256(json.dumps(layout, sort_keys=True).encode()).hexdigest(),
             )
+        events, parked = [], {}
+
+        def digest(values):
+            return hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
+
+        for row in rows:
+            rid = row["request_ids"][0]
+            prefix, query = row["prefix_lengths"][0], row["query_lengths"][0]
+            indices = list(range(10, 10 + prefix + query))
+            completed = {
+                "req_pool_idx": 1,
+                "mamba_pool_idx": 3,
+                "committed_tokens": len(indices),
+                "allocated_tokens": len(indices),
+                "cached_prefix_tokens": prefix,
+                "retained_tokens": prefix,
+                "committed_indices_sha256": digest(indices),
+                "cached_prefix_indices_sha256": digest(indices[:prefix]),
+                "retained_indices_sha256": digest(indices[:prefix]),
+            }
+            after = (
+                None
+                if row["stage"] == "measure"
+                else {
+                    **completed,
+                    "cached_prefix_tokens": len(indices),
+                    "retained_tokens": len(indices),
+                    "cached_prefix_indices_sha256": digest(indices),
+                    "retained_indices_sha256": digest(indices),
+                }
+            )
+            events.append(
+                {
+                    "producer_protocol": PRODUCER_PROTOCOL,
+                    "tp_rank": rank,
+                    "forward_id": row["forward_id"],
+                    "requests": [
+                        {
+                            "request_id": rid,
+                            "before": parked.get(rid),
+                            "completed": completed,
+                            "parked": after,
+                            "released": after is None,
+                        }
+                    ],
+                }
+            )
+            parked[rid] = after
+        (tmp_path / f"retained-rank-{rank}.jsonl").write_text("\n".join(json.dumps(event) for event in events) + "\n")
     traces = raw(records)
     observations = read_observations(manifest, traces, [point])
     manifest_path = tmp_path / "sglang-requests.json"
@@ -250,7 +301,8 @@ def test_native_sglang_requires_runtime_receipts(tmp_path, kind):
         ("resolved_config", "model_path", "/models/other-checkpoint"),
         ("resolved_config", "cuda_graph_config", None),
         ("resolved_config", "allow_auto_truncate", True),
-        ("resolved_config", "attn_dcp_size", 2),
+        ("resolved_config", "dcp_size", 2),
+        ("resolved_config", "enable_attn_tp_input_scattered", True),
     ],
 )
 def test_native_sglang_rejects_rehashed_runtime_config_corruption(tmp_path, kind, field, value):

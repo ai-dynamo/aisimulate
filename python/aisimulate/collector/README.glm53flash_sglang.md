@@ -1,5 +1,52 @@
 # GLM-5.3-Flash SGLang serving telemetry
 
+Formal collection uses `sglang_retained_request_benchmark_v1`. Engine still
+receives real tokenizer-generated prompts and constructs native `Req` objects.
+The benchmark replaces only the scheduler event loop with a serialized cohort
+controller. It retains the configured native forward streams, TP worker,
+ModelRunner, graph dispatch and DeviceTimer. These measurements describe the
+native forward interval, including native graph load/replay work where the
+DeviceTimer includes it; they do not measure production scheduler throughput.
+Ordinary Engine smoke traces without this protocol cannot be formal data.
+
+For each repeat, the controller executes every prefix in real native chunks
+of at most 8192 new tokens, keeping the same request, KV row and KDA state slot.
+It then combines the parked requests into one native `ScheduleBatch` for the
+requested B×Q extension (total new tokens <=8192). For decode it seeds P−1
+tokens, runs the final prompt token for the complete cohort, and feeds the
+actual samples into native decode preparation. No fake KV blocks, random state
+or manually advanced KV counters are used. B=1/2/4/8/16/32, arbitrary nonnegative
+cached-prefix lengths and positive query lengths are representable, subject to
+the frozen inclusive context limit and actual native allocation/kernel success.
+
+The population and lifetime calls follow SGLang revision
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`:
+
+- `managers/schedule_batch.py:1484,1510,2632` owns requested extend ranges,
+  input preparation and native allocation; continuing requests call
+  `init_next_round_input()` without another radix match.
+- `managers/scheduler.py:3456,3588,3991` and
+  `managers/scheduler_components/batch_result_processor.py:415` own the
+  middle-chunk result flag and stashing. The controller sets only the native
+  scheduling range and middle-chunk flag; allocation counters are written by
+  `mem_cache/allocation.py:344-450`.
+- `mem_cache/chunk_cache.py:86` reads committed prefix indices from the real
+  GPU request row. `mem_cache/memory_pool.py:1422` preserves existing request
+  and Mamba allocations across further native preparations.
+- `managers/scheduler.py:4101,4245,4594` retains native decode preparation,
+  TP execution, sample relay and result processing; `mem_cache/common.py:276`
+  releases KV and Mamba state on normal request completion.
+
+`retained-rank-N.jsonl` links every seed/target forward to the observed GPU
+completion and records actual GPU KV-index digests, request-to-Mamba mapping,
+stable logical slots, parked state and release. Raw traces and envelopes carry
+the same producer protocol, model execution identity, run, context and timing
+policy. Readers require every rank and reject missing seed, changed slot/index
+history, incomplete release or an ordinary-scheduler trace. Physical layout
+receipts separately describe KDA conv/recurrent state, sparse latent/index and
+IndexPool tails. CPU lifecycle tests validate the contract; actual GPU capacity,
+dispatch and full-matrix accuracy remain to be measured.
+
 In each native worker, call `collector.glm53flash_sglang_runtime.install()`
 from the campaign's `sitecustomize.py`. Set `AISIM_GLM53_TRACE_DIR` to an
 attempt-private output directory and `AISIM_GLM53_PROVENANCE` to a JSON file

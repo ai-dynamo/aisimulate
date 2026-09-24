@@ -364,7 +364,7 @@ class _TraceState:
                 "tokens": record["_completed_tokens"][request["request_id"]],
             }
 
-    def finish_worker(self, invocation: int, result) -> None:
+    def finish_worker(self, invocation: int, result) -> dict:
         # Sampling is outside DeviceTimer's native forward interval. Reading
         # the actual sampled IDs also makes its GPU completion observable.
         sampled = getattr(result, "next_token_ids", None)
@@ -394,6 +394,7 @@ class _TraceState:
         self.current_invocation = None
         self.append("forward", record)
         del self.records[invocation]
+        return record
 
 
 def match_frozen_requests(record: dict, manifest: dict | None) -> dict:
@@ -492,7 +493,7 @@ def install() -> None:
             if len(context["calls"]) != 1:
                 raise RuntimeError("normal native serving request did not execute exactly one target forward")
             state, invocation = context["calls"][0]
-            state.finish_worker(invocation, result)
+            worker_self._aisim_glm53_last_forward = state.finish_worker(invocation, result)
             return result
         finally:
             current.context = None
