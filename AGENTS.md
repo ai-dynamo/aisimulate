@@ -193,6 +193,31 @@ supported seeding behavior during bring-up. Benchmark prefix seeding is separate
 from replay's cross-request prefix reuse; preserve the collector's phase-specific
 protocol and inspect skipped/fallback evidence instead of copying replay cache
 flags into benchmark launches.
+Before a full grid, follow
+[check timing readiness before full collection](docs/fpm-self-service.md#check-timing-readiness-before-full-collection).
+First run `onboard collect-fpm --check-readiness` for each saved configuration to
+inspect existing artifacts without GPU work. Where evidence is missing, use the
+same deployment options with `--execute --smoke`; guided smoke defaults to every
+selected cell, covering prefill and decode. An explicit `--limit` may leave the
+configuration incomplete. Inspect the saved `fpm-readiness.json`, selected
+attempts, actual KV warm-up eligibility/skip reason, raw and formal regime counts,
+direct-eligible points and available runtime/cache/graph evidence. A completed
+memory probe or worker exit is not timing readiness. Preserve approved legacy
+skip semantics; `fake_fallback` alone does not diagnose unsupported state. Zero
+usable decode points block full collection and prediction. Mixed usable/fallback
+data establishes only partial sampled coverage. Keep memory and accuracy
+qualification separate; missing optional observations remain unresolved and do
+not themselves prohibit timing collection.
+Save report references, blockers and next actions under each configuration in the
+existing session checkpoint through the single coordinator. The readiness command
+does not update that checkpoint. Preserve raw results and completed prefill, keep
+independent configurations independently schedulable, and stop unchanged retries
+when evidence establishes a deterministic capability failure. Unsupported
+convolution or other recurrent-state seeding requires a separate Dynamo/runtime
+change and a new bounded qualification; do not disable required warm-up, relabel
+synthetic state or switch timing methods to bypass it. Compatible CPU-only resume
+can recover saved artifacts without qualifying their timing or allowing new GPU
+collection.
 
 When runtime-dependent geometry or capacity remains unresolved, follow
 [runtime probing](docs/fpm-self-service.md#resolve-cache-geometry-with-a-runtime-probe).
