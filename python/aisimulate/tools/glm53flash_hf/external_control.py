@@ -18,8 +18,10 @@ import stat
 from pathlib import Path
 
 if __package__:
+    from . import external_control_vllm as vllm
     from . import raw_archive as archive
 else:
+    import external_control_vllm as vllm
     import raw_archive as archive
 
 SCHEMA = "glm53flash_external_control_v1"
@@ -77,11 +79,17 @@ def sums(data, parent):
 def closure(document, get):
     """Validate original launch semantics using a caller's bytes-only resolver."""
     require(document.get("schema") == SCHEMA, "invalid external control schema")
-    require(document.get("adapter") == ADAPTER, "unsupported external startup adapter")
+    require(document.get("adapter") in (ADAPTER, vllm.ADAPTER), "unsupported external startup adapter")
+    is_vllm = document["adapter"] == vllm.ADAPTER
     task = absolute(document["original_task_root"])
     anchors = document["anchors"]
     require(
-        set(anchors) == {"launcher_manifest", "admission", "cache_hook", "source_identity", "cache_cpu_result"},
+        set(anchors)
+        == (
+            vllm.ANCHORS
+            if is_vllm
+            else {"launcher_manifest", "admission", "cache_hook", "source_identity", "cache_cpu_result"}
+        ),
         "external control anchors differ",
     )
     for path in anchors.values():
@@ -91,7 +99,8 @@ def closure(document, get):
     require(anchors["admission"] in members, "admission is not in frozen launcher manifest")
     admission_bytes = get(anchors["admission"])
     admission = json.loads(admission_bytes)
-    require(admission.get("framework") == "sglang0.5.20", "startup adapter requires frozen SGLang 0.5.20")
+    if not is_vllm:
+        require(admission.get("framework") == "sglang0.5.20", "startup adapter requires frozen SGLang 0.5.20")
     require(
         admission.get("status") == "CONFIGURATION_QUALIFIED_FOR_FROZEN_FORMAL_COLLECTION", "launch was not qualified"
     )
@@ -103,9 +112,10 @@ def closure(document, get):
             "invalid or duplicate admission binding",
         )
         bindings[path] = item["sha256"]
-    for key in ("cache_hook", "source_identity", "cache_cpu_result"):
+    for key in set(anchors) - {"launcher_manifest", "admission"}:
         require(anchors[key] in bindings, f"{key} was not frozen by admission")
-    require(Path(anchors["cache_hook"]).name == "sitecustomize.py", "unsupported cache hook entrypoint")
+    if not is_vllm:
+        require(Path(anchors["cache_hook"]).name == "sitecustomize.py", "unsupported cache hook entrypoint")
     expected = {anchors["launcher_manifest"]: sha(manifest)}
     for paths in (members, bindings):
         for path, digest in paths.items():
@@ -138,15 +148,18 @@ def closure(document, get):
     require(
         identity["cache_hook_sha256"] == bindings[anchors["cache_hook"]], "source identity names a different cache hook"
     )
-    cpu = json.loads(get(anchors["cache_cpu_result"]))
-    require(
-        cpu.get("status") == "passed"
-        and cpu.get("cache_hook_sha256") == bindings[anchors["cache_hook"]]
-        and cpu.get("host_and_producer_source") == admission["source_commit"]
-        and cpu.get("runs")
-        and all(run.get("returncode") == 0 for run in cpu["runs"]),
-        "cache CPU evidence is not passed for the admitted hook/source",
-    )
+    if is_vllm:
+        runtime_closure = vllm.frozen_startup(anchors, get, bindings, identity, admission)
+    else:
+        cpu = json.loads(get(anchors["cache_cpu_result"]))
+        require(
+            cpu.get("status") == "passed"
+            and cpu.get("cache_hook_sha256") == bindings[anchors["cache_hook"]]
+            and cpu.get("host_and_producer_source") == admission["source_commit"]
+            and cpu.get("runs")
+            and all(run.get("returncode") == 0 for run in cpu["runs"]),
+            "cache CPU evidence is not passed for the admitted hook/source",
+        )
     children = {child["child_cell_id"]: child for child in admission["children"]}
     require(len(children) == len(admission["children"]) == admission["child_count"], "duplicate/missing admitted child")
     runs = {run["cell_id"]: run for run in document["runs"]}
@@ -185,10 +198,33 @@ def closure(document, get):
             and provenance.get("attempt_id"),
             "native attempt differs from launched child plan",
         )
-        for path in (start_path, provenance_path):
+        if is_vllm:
+            require(
+                provenance.get("runtime") == {"backend": "vllm", "backend_version": admission["framework_version"]},
+                "native collector runtime differs from frozen vLLM admission",
+            )
+            vllm.worker_evidence(
+                run,
+                get,
+                task=task,
+                provenance_sha=sha(get(provenance_path)),
+                version=admission["framework_version"],
+                closure=runtime_closure,
+                hook_sha=bindings[anchors["cache_hook"]],
+                user_sha=bindings[anchors["usercustomize"]],
+            )
+        for path in execution_paths(document, run):
             require(path not in expected, "execution receipt aliases a frozen launch file")
             expected[path] = sha(get(path))
     return expected, admission
+
+
+def execution_paths(document, run):
+    paths = [run["started"], run["collector_provenance"]]
+    if document["adapter"] == vllm.ADAPTER:
+        paths.extend(vllm.execution_paths(run))
+    require(len(paths) == len(set(paths)), "duplicate external execution path")
+    return paths
 
 
 def validate(root, document):
@@ -213,7 +249,7 @@ def validate(root, document):
 
     expected, admission = closure(document, get)
     require(expected == {p: i["sha256"] for p, i in index.items()}, "external control file closure differs")
-    execution = {run[k] for run in document["runs"] for k in ("started", "collector_provenance")}
+    execution = {p for run in document["runs"] for p in execution_paths(document, run)}
     require(
         all(i["scope"] == ("original_execution" if p in execution else "frozen_launch") for p, i in index.items()),
         "external control scope differs from original role",
@@ -221,7 +257,7 @@ def validate(root, document):
     return index, get, admission
 
 
-def prepare(source_root, original_task_root, anchors, runs, output):
+def prepare(source_root, original_task_root, anchors, runs, output, *, adapter=ADAPTER):
     """Map an explicit source root to original absolute provenance; no discovery."""
     source_root = archive.absolute_safe(source_root)
     output = archive.absolute_safe(output, must_exist=False)
@@ -229,7 +265,7 @@ def prepare(source_root, original_task_root, anchors, runs, output):
         not output.exists() and not output.is_relative_to(source_root), "attachment output exists or is inside source"
     )
     document = dict(
-        schema=SCHEMA, adapter=ADAPTER, original_task_root=str(absolute(original_task_root)), anchors=anchors, runs=runs
+        schema=SCHEMA, adapter=adapter, original_task_root=str(absolute(original_task_root)), anchors=anchors, runs=runs
     )
     observed = {}
 
@@ -242,7 +278,7 @@ def prepare(source_root, original_task_root, anchors, runs, output):
     expected, _ = closure(document, get)
     output.mkdir(mode=0o700)
     (output / "files").mkdir()
-    execution = {run[k] for run in runs for k in ("started", "collector_provenance")}
+    execution = {p for run in runs for p in execution_paths(document, run)}
     files = []
     for path, digest in sorted(expected.items()):
         data = get(path)
@@ -281,7 +317,8 @@ def bind_role(document, get, admission, pairs, plans, manifest_base, inventory, 
         raw = Path(spec["raw_root"])
         raw = raw if raw.is_absolute() else Path(manifest_base) / raw
         plan = plans[spec["plan"]["path"]]
-        require(plan["backend"] == "sglang", "startup adapter does not cover this backend")
+        is_vllm = document["adapter"] == vllm.ADAPTER
+        require(plan["backend"] == ("vllm" if is_vllm else "sglang"), "startup adapter does not cover this backend")
         require(
             str(raw) == run["raw_root"] and plan["sha256"] == child["child_plan_sha256"],
             "external control selects a different raw root or plan",
@@ -292,24 +329,28 @@ def bind_role(document, get, admission, pairs, plans, manifest_base, inventory, 
             and child["phase"] == cell["workload_kind"],
             "external control child phase/role differs",
         )
-        hook_mount = str(task / Path(document["anchors"]["cache_hook"]).parent) + ":/opt/glm53flash-cache:ro"
-        require(
-            hook_mount in plan["options"].get("slurm_container_mounts", []),
-            "frozen plan does not mount the admitted hook read-only",
-        )
-        env_paths = [
-            item["path"]
-            for item in admission["bindings"]
-            if item["path"].endswith(f"/native/{cid}/collector-runtime-env.sh")
-        ]
-        require(len(env_paths) == 1, "admitted child runtime environment missing or ambiguous")
-        require(
-            any(
-                line.startswith("export PYTHONPATH=/opt/glm53flash-cache:")
-                for line in get(env_paths[0]).decode().splitlines()
-            ),
-            "admitted hook is not first on native PYTHONPATH",
-        )
+        if is_vllm:
+            vllm.native_environment(plan, cid, admission, document["anchors"], get, task=task)
+            require(len(run["workers"]) == cell["topology"]["tp"], "native worker set differs from frozen TP")
+        else:
+            hook_mount = str(task / Path(document["anchors"]["cache_hook"]).parent) + ":/opt/glm53flash-cache:ro"
+            require(
+                hook_mount in plan["options"].get("slurm_container_mounts", []),
+                "frozen plan does not mount the admitted hook read-only",
+            )
+            env_paths = [
+                item["path"]
+                for item in admission["bindings"]
+                if item["path"].endswith(f"/native/{cid}/collector-runtime-env.sh")
+            ]
+            require(len(env_paths) == 1, "admitted child runtime environment missing or ambiguous")
+            require(
+                any(
+                    line.startswith("export PYTHONPATH=/opt/glm53flash-cache:")
+                    for line in get(env_paths[0]).decode().splitlines()
+                ),
+                "admitted hook is not first on native PYTHONPATH",
+            )
         provenance = json.loads(get(run["collector_provenance"]))
         require(provenance["attempt_id"] == spec["attempt_id"], "external control native attempt differs")
         native_receipts = {item["path"]: item["sha256"] for item in evidence["receipts"]}
@@ -317,10 +358,17 @@ def bind_role(document, get, admission, pairs, plans, manifest_base, inventory, 
             native_receipts.get("collector-provenance.json") == files[run["collector_provenance"]]["sha256"],
             "external provenance differs from accepted native bytes",
         )
-        for field in ("started", "collector_provenance"):
-            original = task / run[field]
+        worker_paths = [path for item in run["workers"] for path in item.values()] if is_vllm else []
+        for path in worker_paths:
+            name = str((task / path).relative_to(raw))
+            require(
+                native_receipts.get(name) == files[path]["sha256"],
+                "external worker evidence differs from accepted native bytes",
+            )
+        for path in [run["started"], run["collector_provenance"], *worker_paths]:
+            original = task / path
             require(original.is_relative_to(archive_source), "archive must retain original execution controls")
-            required[original.relative_to(archive_source).as_posix()] = files[run[field]]["sha256"]
+            required[original.relative_to(archive_source).as_posix()] = files[path]["sha256"]
     observed = {
         item["path"]: item["sha256"] for item in inventory if item["kind"] == "file" and item["path"] in required
     }
@@ -336,7 +384,14 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     request = json.loads(args.request.read_bytes())
-    prepare(args.source_root, request["original_task_root"], request["anchors"], request["runs"], args.output)
+    prepare(
+        args.source_root,
+        request["original_task_root"],
+        request["anchors"],
+        request["runs"],
+        args.output,
+        adapter=request.get("adapter", ADAPTER),
+    )
 
 
 if __name__ == "__main__":
