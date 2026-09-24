@@ -98,7 +98,31 @@ def validate_cohort_admission(root, preflight, outputs, mapping, tp):
     return protocol
 
 
-def validate_native(root, tp, mode, policy, runtime_kind=None):
+def validate_checkpoint_identity(preflight, expected_runtime, checkpoint=None):
+    """Bind the observed config and both loader revisions to the model label.
+
+    The native probe hashes the actual mounted config before constructing the
+    Engine. Recheck those original bytes' identity when reading evidence: three
+    matching receipt labels alone cannot establish a checkpoint's precision.
+    """
+    matches = [
+        name
+        for name, pin in expected_runtime["checkpoints"].items()
+        if pin["config_sha256"] == preflight.get("checkpoint_config_sha256")
+    ]
+    if len(matches) != 1 or (checkpoint is not None and matches[0] != checkpoint):
+        raise ValueError("native checkpoint config does not match the qualification label")
+    name = matches[0]
+    pin = expected_runtime["checkpoints"][name]
+    args = preflight.get("public_engine_args")
+    if not isinstance(args, dict) or any(
+        args.get(field) != pin["revision"] for field in ("revision", "tokenizer_revision")
+    ):
+        raise ValueError("native checkpoint/tokenizer revision differs from its immutable pin")
+    return {"checkpoint": name, **pin}
+
+
+def validate_native(root, tp, mode, policy, runtime_kind=None, *, checkpoint=None):
     if __package__:
         from .probe import CASES
     else:
@@ -112,6 +136,7 @@ def validate_native(root, tp, mode, policy, runtime_kind=None):
         raise ValueError("native final requests do not exactly cover frozen cases and repetitions")
     expected_runtime = json.loads(Path(__file__).with_name("expected-runtime.json").read_text())
     preflight = json.loads((root / "preflight.json").read_text())
+    checkpoint_identity = validate_checkpoint_identity(preflight, expected_runtime, checkpoint)
     if runtime_kind is None:
         runtime_kind = next(
             (
@@ -329,6 +354,7 @@ def validate_native(root, tp, mode, policy, runtime_kind=None):
     cohort_protocol = validate_cohort_admission(root, preflight, outputs, request_id_mapping, tp)
     return {
         "requests": len(outputs),
+        "checkpoint_identity": checkpoint_identity,
         "native_modes": sorted(modes),
         "all_tp_trace_digest": reference,
         "external_to_native_request_ids": request_id_mapping,
@@ -352,7 +378,7 @@ def compare(stock, candidate, split, out):
     checkpoint, tp, policy = scope.pop()
     evidence = []
     for root, r in zip(roots, receipts, strict=True):
-        evidence.append(validate_native(root, tp, r["mode"], policy, r["runtime_kind"]))
+        evidence.append(validate_native(root, tp, r["mode"], policy, r["runtime_kind"], checkpoint=checkpoint))
     if len({item["cohort_admission_protocol"] for item in evidence}) != 1:
         raise ValueError("comparison changes the native cohort admission policy")
     maps = [{(x["case"], x["repetition"], x["item"]): x for x in records(p / "outputs.jsonl")} for p in roots]
