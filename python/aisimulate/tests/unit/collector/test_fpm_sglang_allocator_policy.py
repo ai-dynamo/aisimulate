@@ -172,7 +172,9 @@ def test_observer_uses_existing_native_apis_and_exact_loaded_libraries(tmp_path,
     for name in allocator.ENV_KEYS:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("PYTORCH_CUDA_ALLOC_CONF", "backend:native,max_split_size_mb:16384")
-    policy = allocator.prepare_environment([allocator.OPTION, "16384"])
+    # Worker observation runs after serving imports, unlike the startup gate.
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    policy = allocator.request_policy(16384)
     calls = []
 
     def backend():
@@ -217,6 +219,8 @@ def test_direct_driver_allocator_request_matches_early_parser_before_server_cons
 
     from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
 
+    # This parser fixture models startup before either mocked framework imports.
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
     for name in allocator.ENV_KEYS:
         monkeypatch.delenv(name, raising=False)
     if not abbreviated:
