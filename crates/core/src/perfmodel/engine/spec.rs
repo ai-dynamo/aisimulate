@@ -771,6 +771,7 @@ mod tests {
                 backend: "vllm".into(),
                 checkpoint_format: "nvfp4".into(),
                 tp_size: 2,
+                is_context: true,
                 hidden_size: 4096,
                 hc_mult: 4,
                 sinkhorn_iters: 20,
@@ -805,6 +806,20 @@ mod tests {
                 shared_quant_mode: GemmQuantMode::Bfloat16,
                 moe_quant_mode: MoeQuantMode::Nvfp4,
                 children: vec![OpSpec::Gemm(gemm())],
+            }),
+            OpSpec::Glm53Primitive(crate::operators::Glm53PrimitiveOp {
+                name: "embedding".into(),
+                role: "embedding".into(),
+                backend: "vllm".into(),
+                checkpoint_format: "fp8".into(),
+                tp_size: 2,
+                is_context: true,
+                hidden_size: 4096,
+                vocab_size: 154880,
+                token_selection: "all_scheduled".into(),
+                output_dtype: "bfloat16".into(),
+                collective: "none".into(),
+                children: vec![],
             }),
         ];
 
@@ -855,6 +870,7 @@ mod tests {
                 | OpSpec::Glm53Mhc(_)
                 | OpSpec::Glm53Router(_)
                 | OpSpec::Glm53Ffn(_)
+                | OpSpec::Glm53Primitive(_)
                 | OpSpec::Dsv41Linear(_)
                 | OpSpec::TokenScale(_) => {}
             }
@@ -953,11 +969,11 @@ mod tests {
         let appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
         assert_eq!(
             appended,
-            vec![36, 37, 38, 39, 40, 41, 42, 43, 44],
+            vec![36, 37, 38, 39, 40, 41, 42, 43, 44, 45],
             "V41/GLM appended indices moved"
         );
         assert_eq!(
-            TOKEN_SCALE_INDEX as usize + 10,
+            TOKEN_SCALE_INDEX as usize + 11,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );
