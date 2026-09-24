@@ -1035,7 +1035,9 @@ pub(crate) mod tests {
                 0,
                 128
             ),
-            Err(AicError::PerfDatabase(_))
+            // This fixture intentionally points GLM at historical SGLang0.5.14.
+            // Native identity rejection precedes any possible foreign-table hit.
+            Err(AicError::InvalidPerfData(_))
         ));
     }
 

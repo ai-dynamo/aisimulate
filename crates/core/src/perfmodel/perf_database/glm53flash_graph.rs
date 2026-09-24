@@ -5,7 +5,7 @@
 //! disjoint-node activity unions, composed as an explicit additive approximation.
 //! They are never inferred from whole-forward residuals or eager module timings.
 
-use super::glm53flash::{geometry, primary_path, sha256, validate_geometry};
+use super::glm53flash::{geometry, primary_path, sha256, validate_geometry, validate_runtime};
 use super::{SourceResolver, parquet_loader::PerfReader};
 use crate::common::error::AicError;
 use crate::operators::op::RuntimeContext;
@@ -26,6 +26,7 @@ const SG_FULL: &str = "0dc52a9a581636a20f5070cbb81d921bc56e4fb3394a9a1cf60174727
 const SG_SHAPE: &str = "26e3f15209b654345a35966bd817ff8d0eb6c4c118527e78ca1e89942d5ea2c5";
 const VLLM_REVISION: &str = "ced6857afa0ea7b2e3f0846a62e1394e90f15607";
 const VLLM_STOCK_SOURCE: &str = "46cb601e49c399143db029d3cce33c2ee5216b8cdb6bf62385820b25fc67cba8";
+#[cfg(test)]
 const VLLM_REPAIR_SOURCE: &str = "06a8cb8ab3fa89d4e82428fd32112074f50249c427a467787004ecb0a870f128";
 fn vllm_pins() -> BTreeMap<String, String> {
     BTreeMap::from([
@@ -98,6 +99,7 @@ pub struct GraphPolicy {
 }
 impl GraphPolicy {
     pub fn validate(&self) -> Result<(), AicError> {
+        validate_runtime(&self.backend, &self.backend_version)?;
         let expected = if self.checkpoint_format == "fp8" {
             "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"
         } else if self.checkpoint_format == "nvfp4" {
@@ -150,11 +152,8 @@ impl GraphPolicy {
         let vllm_identity = self.schema_version == 2
             && self.backend == "vllm"
             && self.backend_revision == VLLM_REVISION
-            && matches!(
-                (self.backend_version.as_str(), self.source_sha256.as_str()),
-                ("0.30.0", VLLM_STOCK_SOURCE)
-                    | ("0.30.0+glm53kpool.bf5f6b0e689d", VLLM_REPAIR_SOURCE)
-            )
+            && self.backend_version == "0.30.0"
+            && self.source_sha256 == VLLM_STOCK_SOURCE
             && self.source_pins == vllm_pins()
             && self.native_flags == vllm_flags()
             && !self.disable_padding;
@@ -420,6 +419,7 @@ impl Glm53GraphTable {
             }
             _ => return Ok(None),
         };
+        validate_runtime(&self.request.0, &self.request.1)?;
         let shape = shape.map_err(|e| invalid(e.to_string()))?;
         if shape["is_context"] == true {
             return Ok(None);
@@ -862,8 +862,11 @@ pub(crate) mod tests {
             p.source_sha256 = source.into();
             p.native_flags = vllm_flags();
             p.source_pins = vllm_pins();
-            p.validate().unwrap();
-            assert_eq!(p.padded_batch(3).unwrap(), 4);
+            let quarantined = version != "0.30.0";
+            assert_eq!(p.validate().is_err(), quarantined);
+            if !quarantined {
+                assert_eq!(p.padded_batch(3).unwrap(), 4);
+            }
             assert!(p.padded_batch(5).is_err());
             for defect in 0..4 {
                 let mut bad = p.clone();
@@ -911,6 +914,12 @@ pub(crate) mod tests {
                 s: 134,
                 ..RuntimeContext::default()
             };
+            if quarantined {
+                // TEST_ONLY exact valid historical rows must not bypass quarantine.
+                assert!(marker.query(&db, &ctx).is_err());
+                assert!(mhc.query(&db, &ctx).is_err());
+                continue;
+            }
             assert_eq!(marker.query(&db, &ctx).unwrap().latency_ms, 2.0);
             assert_eq!(mhc.query(&db, &ctx).unwrap().latency_ms, 4.0);
             assert!(

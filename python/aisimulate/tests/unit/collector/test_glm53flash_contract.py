@@ -8,7 +8,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.glm53flash_contract import (
     BACKENDS,
     CHECKPOINTS,
@@ -23,6 +22,22 @@ from collector.glm53flash_observer import NativeOperationObserver, NativeWorkloa
 pytestmark = pytest.mark.unit
 
 
+def _test_only_historical_candidate_admission(monkeypatch):
+    # Explicit per-test fixture for downstream identity/schema proofs. Production
+    # remains quarantined; the immutable historical summary is still validated.
+    from collector import glm53flash_contract as contract
+    from collector import glm53flash_runtime_identity as identity
+
+    # Do not let this explicit historical TEST_ONLY registry enter the production
+    # process-lifetime source snapshot cache or contaminate later quarantine tests.
+    monkeypatch.setattr(contract, "_runtime_contract", contract._runtime_contract.__wrapped__)
+    monkeypatch.setitem(
+        identity.ADMITTED_VLLM_REPAIRS,
+        identity.VLLM_KPOOL_CANDIDATE,
+        "d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67",
+    )
+
+
 @pytest.mark.parametrize("candidate", [False, True])
 @pytest.mark.parametrize(
     "defect", [None, "manifest_version", "provenance_version", "revision", "source", "unknown_version"]
@@ -34,6 +49,8 @@ def test_native_hook_entry_binds_actual_qualified_package_before_touching_model(
 
     if defect == "source" and not candidate:
         pytest.skip("stock source verification belongs to worker preflight, preserving its historical row contract")
+    if candidate:
+        _test_only_historical_candidate_admission(monkeypatch)
     installed = VLLM_KPOOL_CANDIDATE if candidate else BACKENDS["vllm"][0]
     provenance = {
         "backend": "vllm",
@@ -796,7 +813,8 @@ def test_writer_does_not_mix_tp_aggregation_policies(tmp_path):
         write_parquet([a, b], tmp_path / "test-only.parquet")
 
 
-def test_qualified_repair_does_not_admit_stock_unaligned_rows_or_version_aliases():
+def test_historical_repair_does_not_admit_stock_unaligned_rows_or_version_aliases(monkeypatch):
+    _test_only_historical_candidate_admission(monkeypatch)
     from collector.glm53flash_contract import runtime_source_pins, sha256_json
     from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE
 
@@ -816,7 +834,8 @@ def test_qualified_repair_does_not_admit_stock_unaligned_rows_or_version_aliases
         validate_row(row)
 
 
-def test_manifest_repaired_runtime_is_explicit_and_keeps_physical_graph():
+def test_historical_manifest_repaired_runtime_is_explicit_and_keeps_physical_graph(monkeypatch):
+    _test_only_historical_candidate_admission(monkeypatch)
     from collector.glm53flash_contract import build_model_manifest
     from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE
 
@@ -826,3 +845,32 @@ def test_manifest_repaired_runtime_is_explicit_and_keeps_physical_graph():
     assert repaired == {**stock, "backend_version": VLLM_KPOOL_CANDIDATE}
     with pytest.raises(ValueError, match="TP2/TP4"):
         build_model_manifest("vllm", "nvfp4", 1, VLLM_KPOOL_CANDIDATE)
+
+
+@pytest.mark.parametrize("phase,prefix,query", [("context", 0, 128), ("context", 4096, 3), ("generation", 4096, 1)])
+def test_production_quarantine_rejects_matching_historical_rows_and_manifest(phase, prefix, query):
+    from collector.glm53flash_contract import build_model_manifest, validate_native_workload
+    from collector.glm53flash_runtime_identity import ADMITTED_VLLM_REPAIRS, VLLM_KPOOL_CANDIDATE
+
+    assert ADMITTED_VLLM_REPAIRS == {}
+    row = sample_row()
+    shape = json.loads(row["geometry"])
+    shape["is_context"] = phase == "context"
+    row.update(
+        geometry=canonical_json(shape),
+        phase=phase,
+        prefix=prefix,
+        x=query,
+        backend_version=VLLM_KPOOL_CANDIDATE,
+        source_sha256="06a8cb8ab3fa89d4e82428fd32112074f50249c427a467787004ecb0a870f128",
+    )
+    if phase == "generation":
+        row.update(prefix=0, x=prefix, state_mode="decode", kv_seed_regime="real_kv")
+    elif prefix:
+        row.update(state_mode="cached_prefill", kv_seed_regime="real_kv")
+    with pytest.raises(ValueError, match="unqualified"):
+        validate_row(row)
+    with pytest.raises(ValueError, match="unqualified"):
+        validate_native_workload("vllm", phase, prefix, query, VLLM_KPOOL_CANDIDATE)
+    with pytest.raises(ValueError, match="unqualified"):
+        build_model_manifest("vllm", "fp8", 4, VLLM_KPOOL_CANDIDATE)

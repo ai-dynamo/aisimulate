@@ -211,11 +211,16 @@ def test_registry_hash_does_not_admit_a_missing_packaged_summary(monkeypatch, tm
         identity.validate_backend_version("vllm", identity.VLLM_KPOOL_CANDIDATE)
 
 
-def test_packaged_reviewed_native_evidence_admits_only_the_exact_runtime():
+def test_packaged_historical_evidence_remains_readable_without_runtime_admission():
     version = identity.VLLM_KPOOL_CANDIDATE
-    summary = identity._validate_qualification_summary(identity.ADMITTED_VLLM_REPAIRS[version])
-    assert identity.validate_backend_version("vllm", version) == version
-    assert identity.vllm_unaligned_prefill_admitted(version)
+    summary = identity._validate_qualification_summary(
+        "d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67"
+    )
+    assert version not in identity.ADMITTED_VLLM_REPAIRS
+    with pytest.raises(ValueError, match="unqualified"):
+        identity.validate_backend_version("vllm", version)
+    with pytest.raises(ValueError, match="unqualified"):
+        identity.vllm_unaligned_prefill_admitted(version)
     assert not identity.vllm_unaligned_prefill_admitted("0.30.0")
     assert {(c["checkpoint"], c["tp"]) for c in summary["cells"]} == {
         (precision, tp) for precision in ("fp8", "nvfp4") for tp in (2, 4)

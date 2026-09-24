@@ -581,7 +581,10 @@ def test_frozen_plan_runtime_cannot_be_replaced_by_raw_or_explicit_version(tmp_p
         evidence.load_native(run, root)
 
 
-def test_repaired_audit_requires_actual_full_binary_and_source_closure(tmp_path):
+def test_repaired_audit_requires_actual_full_binary_and_source_closure(tmp_path, monkeypatch):
+    from .test_glm53flash_contract import _test_only_historical_candidate_admission
+
+    _test_only_historical_candidate_admission(monkeypatch)
     from collector.glm53flash_contract import runtime_source_pins, sha256_json
     from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE, vllm_runtime_closure
 

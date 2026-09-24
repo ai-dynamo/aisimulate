@@ -21,13 +21,27 @@ use crate::operators::glm53flash::{
 };
 
 const BASENAME: &str = "glm53flash_module_perf.parquet";
-// Same exact reviewed four-cell runtime as collector/glm53flash_runtime_identity.py.
-// Qualification summary d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67.
-// Source hash is canonical effective source closure; producer/reader separately
-// require actual per-worker source + all 19 native binary observations.
+// Historical repaired bytes are retained only in TEST_ONLY rejection fixtures.
+#[cfg(test)]
 const REPAIRED_VLLM_VERSION: &str = "0.30.0+glm53kpool.bf5f6b0e689d";
+#[cfg(test)]
 const REPAIRED_VLLM_SOURCE: &str =
     "06a8cb8ab3fa89d4e82428fd32112074f50249c427a467787004ecb0a870f128";
+
+/// Production admission, before every phase and every exact/interpolated hit.
+/// The old repair's bounded Engine receipts remain historical: actual long-prefix
+/// slot-map bounds failed. No repaired runtime is currently admitted.
+pub(crate) fn validate_runtime(backend: &str, version: &str) -> Result<(), AicError> {
+    if !matches!(
+        (backend, version),
+        ("vllm", "0.30.0") | ("sglang", "0.5.20")
+    ) {
+        return Err(invalid(
+            "GLM53 native runtime is unqualified or quarantined",
+        ));
+    }
+    Ok(())
+}
 
 pub struct Glm53Table {
     path: Option<PathBuf>,
@@ -258,12 +272,14 @@ fn validate_native_workload(
     query: u32,
     version: Option<&str>,
 ) -> Result<(), AicError> {
+    if let Some(version) = version {
+        validate_runtime(shape["backend"].as_str().unwrap_or_default(), version)?;
+    }
     if component == "attention"
         && shape["backend"] == "vllm"
         && shape["is_context"] == true
         && prefix % 4 != 0
         && query >= 2
-        && version != Some(REPAIRED_VLLM_VERSION)
     {
         return Err(invalid(
             "stock vLLM GLM cached prefill with unaligned IndexPool start is unqualified (prefix % 4 != 0, query >= 2); native cache oracle failed crossing pools",
@@ -562,10 +578,6 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
             ));
         }
         let expected_runtime = match runtime_backend {
-            "vllm" if row.str(backend_version)? == REPAIRED_VLLM_VERSION => (
-                REPAIRED_VLLM_VERSION,
-                "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
-            ),
             "vllm" => ("0.30.0", "ced6857afa0ea7b2e3f0846a62e1394e90f15607"),
             "sglang" => ("0.5.20", "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"),
             _ => return Err(invalid("GLM53 backend is unqualified")),
@@ -574,14 +586,6 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
             || shape["backend"].as_str() != Some(runtime_backend)
         {
             return Err(invalid("GLM53 geometry/runtime backend revision mismatch"));
-        }
-        if expected_runtime.0 == REPAIRED_VLLM_VERSION
-            && (row.str(source_sha256)? != REPAIRED_VLLM_SOURCE
-                || !matches!(shape["tp_size"].as_u64(), Some(2 | 4)))
-        {
-            return Err(invalid(
-                "GLM53 repaired runtime requires its exact qualified source and TP2/TP4 scope",
-            ));
         }
         let regime = row.str(kv_seed_regime)?;
         let mode = row.str(state_mode)?;
@@ -860,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_repaired_runtime_requires_its_effective_source_closure() {
+    fn quarantined_repair_rejects_even_exact_effective_source_closure() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join(BASENAME);
         let mut cols = fixture();
@@ -873,7 +877,18 @@ mod tests {
         }
         write_parquet(&path, &cols);
         let request = ("vllm".into(), REPAIRED_VLLM_VERSION.into());
-        assert!(load(&path, Some(&request)).is_ok());
+        assert!(load(&path, Some(&request)).is_err());
+        let table = Glm53Table::new(root.path().into());
+        assert!(table.query("mhc", &op(), 1, 0, 128).is_err());
+        for component in ["attention", "mhc", "ffn", "primitive"] {
+            for is_context in [true, false] {
+                let shape = serde_json::json!({"backend":"vllm", "is_context":is_context});
+                assert!(
+                    validate_native_workload(component, &shape, 0, 1, Some(REPAIRED_VLLM_VERSION))
+                        .is_err()
+                );
+            }
+        }
         assert!(load(&path, Some(&("vllm".into(), "0.30.0".into()))).is_err());
         for col in &mut cols {
             if let Col::Str("source_sha256", values) = col {
@@ -885,7 +900,7 @@ mod tests {
         let shape = serde_json::json!({"backend":"vllm", "is_context":true});
         assert!(
             validate_native_workload("attention", &shape, 4097, 3, Some(REPAIRED_VLLM_VERSION))
-                .is_ok()
+                .is_err()
         );
         assert!(
             validate_native_workload(
