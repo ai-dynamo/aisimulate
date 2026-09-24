@@ -223,6 +223,7 @@ def test_acceptance_maps_child_values_back_to_original_ids(monkeypatch, mixed_ru
             "request_ids": {run["cell"]["cell_id"]},
             "backend_version": "0.5.20+other" if mixed_runtime and run is children[1] else "0.5.20",
             "receipts": [],
+            **validation._sglang_execution_policy({"mem_fraction_static": 0.9063}),
         },
     )
     if mixed_runtime:
