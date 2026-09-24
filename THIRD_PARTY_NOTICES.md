@@ -1142,6 +1142,7 @@ the repository Apache-2.0 license text applies to these adaptations.
   `vllm/v1/worker/gpu_model_runner.py`, `vllm/v1/worker/gpu_worker.py`,
   `vllm/v1/worker/gpu/warmup.py` (initialization lifecycle),
   `vllm/v1/worker/gpu/{model_runner,input_batch,states,cudagraph_utils}.py`, `vllm/forward_context.py`,
+  `vllm/compilation/breakable_cudagraph.py` (original PIECEWISE entry replay),
   `vllm/models/glm5next/nvidia/{model,attention,kda}.py`,
   and `vllm/model_executor/layers/{mla,logits_processor}.py`.
 - Copyright: vLLM contributors. License: Apache-2.0 (full text above).

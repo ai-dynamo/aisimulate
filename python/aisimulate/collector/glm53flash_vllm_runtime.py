@@ -1,9 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Observe real vLLM V1 eager forwards after native hybrid metadata preparation.
+"""Observe native vLLM eager and V2 graph forwards with their real hybrid state.
 
 Original wrappers over vllm-project/vllm@ced6857afa0ea7b2e3f0846a62e1394e90f15607,
-vllm/v1/worker/gpu_model_runner.py and vllm/forward_context.py (Apache-2.0).
+vllm/v1/worker/gpu_model_runner.py, vllm/v1/worker/gpu/model_runner.py,
+vllm/compilation/breakable_cudagraph.py and vllm/forward_context.py (Apache-2.0).
 No native request, scheduling, cache or compute implementation is copied.
 See THIRD_PARTY_NOTICES.md and README.glm53flash.md.
 """
@@ -183,7 +184,7 @@ def native_v2_coordinates(runner, scheduler_output, batch, *, graph_policy=None,
 
 
 class _TraceState:
-    def __init__(self, runner, output, provenance, manifest, *, graph_calibration=False):
+    def __init__(self, runner, output, provenance, manifest, *, graph_calibration=False, piecewise_replay=False):
         import torch
         from vllm.distributed import get_tensor_model_parallel_rank
 
@@ -198,12 +199,15 @@ class _TraceState:
         self.observer = NativeOperationObserver(manifest, provenance, self.rank) if manifest is not None else None
         self.whole_events = None
         self.graph_execution = None
+        self.piecewise_replay = piecewise_replay
         if graph_calibration:
             from collector.glm53flash_vllm_graph_ops import NativeVllmGraphExecution
 
             if manifest is not None:
                 raise RuntimeError("native graph calibration cannot install eager operation intervals")
-            self.graph_execution = NativeVllmGraphExecution(runner, output, self.rank)
+            self.graph_execution = NativeVllmGraphExecution(
+                runner, output, self.rank, include_piecewise=piecewise_replay
+            )
         output.mkdir(parents=True, exist_ok=True)
         if self.observer is not None:
             inventory = install_native_hooks(runner.model, self.observer, "vllm")
@@ -339,8 +343,11 @@ class _TraceState:
             raise RuntimeError("native serving request is absent from the frozen request manifest")
         record.update(match_frozen_requests(record, mapping))
         if record["stage"] == "measure":
-            if graph and (runtime_mode != "FULL" or coords["phase"] != "generation" or self.observer is not None):
-                raise RuntimeError("native V2 graph holdout requires actual FULL decode without eager operation hooks")
+            allowed_graph_target = (runtime_mode == "FULL" and coords["phase"] == "generation") or (
+                runtime_mode == "PIECEWISE" and getattr(self, "piecewise_replay", False)
+            )
+            if graph and (not allowed_graph_target or self.observer is not None):
+                raise RuntimeError("native V2 graph target requires actual FULL decode or explicit PIECEWISE replay")
             if not self.layout["admitted"]:
                 raise RuntimeError("actual vLLM hybrid cache layout is outside admitted GLM identity")
             identity = (record["benchmark_id"], record["repetition"])
@@ -538,6 +545,19 @@ def _piecewise_capture_enabled(purpose):
     return value == "1"
 
 
+def _piecewise_replay_enabled(purpose):
+    value = os.environ.get("AISIM_GLM53_PIECEWISE_REPLAY", "0")
+    if value not in ("0", "1") or (
+        value == "1"
+        and (
+            purpose not in ("ops_graph", "ops_graph_holdout")
+            or os.environ.get("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", "0") != "0"
+        )
+    ):
+        raise RuntimeError("PIECEWISE replay requires explicit graph purpose and cannot be capture-only")
+    return value == "1"
+
+
 def install_v2():
     """Bind the pinned native V2 model forward and its later logits/sample step."""
     from importlib.metadata import version
@@ -563,6 +583,7 @@ def install_v2():
     graph_mode = purpose in ("ops_graph", "ops_graph_holdout")
     graph_calibration = purpose == "ops_graph"
     include_piecewise = _piecewise_capture_enabled(purpose)
+    piecewise_replay = _piecewise_replay_enabled(purpose)
     manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
     if graph_mode:
         from vllm.v1.worker.gpu.cudagraph_utils import ModelCudaGraphManager
@@ -577,11 +598,25 @@ def install_v2():
         )
 
         if graph_calibration:
-            install_graph_capture(manifest, provenance, output, include_piecewise=include_piecewise)
+            install_graph_capture(manifest, provenance, output, include_piecewise=include_piecewise or piecewise_replay)
         else:
-            install_holdout_capture(output)
+            install_holdout_capture(output, **({"include_piecewise": True} if piecewise_replay else {}))
         graph_policy_for = calibration_policy if graph_calibration else holdout_policy
         original_replay = ModelCudaGraphManager.run_fullgraph
+        if piecewise_replay:
+            import inspect
+
+            from vllm.compilation.breakable_cudagraph import BreakableCUDAGraphWrapper
+
+            from collector.glm53flash_vllm_graph_policy import SOURCE_PINS as POLICY_SOURCE_PINS
+
+            original_piecewise_replay = BreakableCUDAGraphWrapper._replay
+            path = Path(inspect.getfile(original_piecewise_replay)).resolve()
+            if (
+                hashlib.sha256(path.read_bytes()).hexdigest()
+                != POLICY_SOURCE_PINS["compilation/breakable_cudagraph.py"]
+            ):
+                raise RuntimeError("native PIECEWISE replay method differs from the frozen source")
     original_execute = GPUModelRunner.execute_model
     original_prepare = GPUModelRunner.prepare_inputs
     original_sample = GPUModelRunner.sample
@@ -619,7 +654,12 @@ def install_v2():
         binding = bindings.get(id(runner))
         if binding is None:
             state = _TraceState(
-                runner, output, provenance, None if graph_mode else manifest, graph_calibration=graph_calibration
+                runner,
+                output,
+                provenance,
+                None if graph_mode else manifest,
+                graph_calibration=graph_calibration,
+                **({"piecewise_replay": True} if piecewise_replay else {}),
             )
             binding = bindings[id(runner)] = {"state": state, "pending": None, "sampled": None}
             original_forward = runner.model.forward
@@ -661,6 +701,8 @@ def install_v2():
                 native_descriptor=descriptor,
             )
             record.update(native_runner="v2", native_graph_replay_completed=False)
+            if piecewise_replay and record["runtime_mode"] == "PIECEWISE":
+                record["native_piecewise_replay_completed"] = False
             binding["pending"] = record, completed
             binding["descriptor"] = descriptor
         return batch
@@ -686,6 +728,12 @@ def install_v2():
                 record = binding["pending"][0]
                 if graph_mode and record["runtime_mode"] == "FULL" and not record["native_graph_replay_completed"]:
                     raise RuntimeError("native V2 FULL forward omitted its actual registered graph replay")
+                if (
+                    piecewise_replay
+                    and record["runtime_mode"] == "PIECEWISE"
+                    and not record["native_piecewise_replay_completed"]
+                ):
+                    raise RuntimeError("native V2 PIECEWISE forward omitted its actual initialized entry replay")
             return result
         except BaseException as error:
             fail_observation(bindings.get(id(runner)), error)
@@ -713,6 +761,57 @@ def install_v2():
             return result
 
         ModelCudaGraphManager.run_fullgraph = replay
+
+    if piecewise_replay:
+
+        @functools.wraps(original_piecewise_replay)
+        def replay_piecewise(wrapper, entry, args, kwargs):
+            runner = getattr(current, "runner", None)
+            if runner is None or getattr(runner, "_aisim_glm53_ops_warming_up", False):
+                return original_piecewise_replay(wrapper, entry, args, kwargs)
+            binding = bindings.get(id(runner))
+            manager = runner.cudagraph_manager
+            if wrapper is not manager.breakable_cg_runner or binding is None or binding["pending"] is None:
+                raise RuntimeError("native PIECEWISE replay lacks its same-runner prepared request")
+            record = binding["pending"][0]
+            if record["runtime_mode"] != "PIECEWISE" or record["native_graph_replay_completed"]:
+                raise RuntimeError("native PIECEWISE replay changed mode or executed twice")
+
+            def check_entry():
+                graph_policy_for(manager, runner.model)
+                if graph_calibration:
+                    from collector.glm53flash_vllm_piecewise import (
+                        captured_piecewise_registry,
+                        piecewise_capture_for_descriptor,
+                    )
+
+                    expected = piecewise_capture_for_descriptor(manager, binding["descriptor"])
+                    if (
+                        wrapper.entries.get(entry.batch_descriptor) is not entry
+                        or captured_piecewise_registry(wrapper, entry.batch_descriptor) is not expected
+                    ):
+                        raise RuntimeError("native PIECEWISE replay changed its observed initialized entry")
+                else:
+                    from collector.glm53flash_vllm_graph_ops import holdout_piecewise_entry
+
+                    if holdout_piecewise_entry(manager, binding["descriptor"]) is not entry:
+                        raise RuntimeError("native PIECEWISE replay changed its independent initialized entry")
+
+            check_entry()
+            result = original_piecewise_replay(wrapper, entry, args, kwargs)
+            check_entry()
+            import dataclasses
+
+            record["native_piecewise_replay"] = {
+                "source_sha256": POLICY_SOURCE_PINS["compilation/breakable_cudagraph.py"],
+                "entry_descriptor": dataclasses.asdict(entry.batch_descriptor),
+                "segment_count": len(entry.capture.segments),
+            }
+            record["native_graph_replay_completed"] = True
+            record["native_piecewise_replay_completed"] = True
+            return result
+
+        BreakableCUDAGraphWrapper._replay = replay_piecewise
 
     @functools.wraps(original_sample)
     def sample(runner, *args, **kwargs):
@@ -761,6 +860,7 @@ def install_v2():
                 "native_runner": "v2",
                 "class": GPUModelRunner.__module__ + "." + GPUModelRunner.__name__,
                 "purpose": purpose,
+                "piecewise_replay_enabled": piecewise_replay,
                 "pid": os.getpid(),
                 "status": "wrappers_installed_no_gpu_execution_claim",
             }

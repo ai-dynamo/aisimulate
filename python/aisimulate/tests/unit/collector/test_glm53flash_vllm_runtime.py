@@ -503,9 +503,19 @@ def test_graph_holdout_cannot_adopt_late_or_replaced_capture():
         holdout_policy(manager, model)
 
 
-@pytest.mark.parametrize("mode,physical,stage", [("FULL", 4, "measure"), ("PIECEWISE", 4, "seed"), ("NONE", 3, "seed")])
+@pytest.mark.parametrize(
+    "mode,physical,stage,piecewise",
+    [
+        ("FULL", 4, "measure", False),
+        ("PIECEWISE", 4, "seed", False),
+        ("NONE", 3, "seed", False),
+        ("PIECEWISE", 4, "measure", True),
+        ("PIECEWISE", 4, "measure", False),
+        ("NONE", 3, "measure", True),
+    ],
+)
 def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_tokens(
-    monkeypatch, tmp_path, mode, physical, stage
+    monkeypatch, tmp_path, mode, physical, stage, piecewise
 ):
     from collector import glm53flash_vllm_runtime as runtime
 
@@ -533,6 +543,7 @@ def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_toke
     state.matched = set()
     state.layout, state.layout_sha256 = {"admitted": True}, "b" * 64
     state.observer = None
+    state.piecewise_replay = piecewise
     state.torch = SimpleNamespace(cuda=SimpleNamespace(current_stream=lambda: 1, Event=lambda **kwargs: Event()))
     coords = {
         "phase": "generation" if mode == "FULL" else "context",
@@ -557,9 +568,9 @@ def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_toke
                         "benchmark_id": 1,
                         "repetition": 5,
                         "sampling_role": "measurement",
-                        "target_phase": "generation",
+                        "target_phase": coords["phase"] if stage == "measure" else "generation",
                         "target_query": 1,
-                        "target_prefix": 2,
+                        "target_prefix": prefix if stage == "measure" else 2,
                         "target_batch_size": 3,
                     }
                     for rid in ids
@@ -568,6 +579,17 @@ def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_toke
         )
     )
     monkeypatch.setenv("AISIM_GLM53_REQUEST_MANIFEST", str(path))
+    if stage == "measure" and (mode == "NONE" or (mode == "PIECEWISE" and not piecewise)):
+        with pytest.raises(RuntimeError, match="actual FULL decode or explicit PIECEWISE"):
+            state.before(
+                object(),
+                Tensor(queries + ([999] if physical == 4 else [])),
+                None,
+                native_batch=object(),
+                graph_policy={"TEST_ONLY": True},
+                native_descriptor=object(),
+            )
+        return
     record, completed = state.before(
         object(),
         Tensor(queries + ([999] if physical == 4 else [])),
@@ -620,3 +642,268 @@ def test_quarantined_native_v2_fails_before_importing_or_wrapping_model(monkeypa
     monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu.model_runner", None)
     with pytest.raises(ValueError, match="unqualified"):
         runtime.install_v2()
+
+
+def piecewise_native_objects():
+    import dataclasses
+
+    @dataclasses.dataclass(frozen=True)
+    class EntryShape:
+        num_tokens: int = 4
+        num_reqs: object = None
+        uniform: bool = False
+        has_lora: bool = False
+        num_active_loras: int = 0
+
+    @dataclasses.dataclass
+    class Selection:
+        cg_mode: object
+        num_tokens: int = 4
+        num_reqs: object = None
+        uniform_token_count: object = None
+        max_query_len: object = None
+        num_active_loras: int = 0
+        num_ubatches: int = 1
+
+    key = EntryShape()
+    descriptor = Selection(SimpleNamespace(name="PIECEWISE"))
+    capture = SimpleNamespace(
+        segments=[lambda: None, lambda: None, lambda: None],
+        num_graphs=2,
+        num_eager_breaks=1,
+        _capturing=False,
+        _current_graph=None,
+    )
+    entry = SimpleNamespace(batch_descriptor=key, capture=capture, output=object())
+    wrapper = SimpleNamespace(entries={key: entry})
+    manager = SimpleNamespace(breakable_cg_runner=wrapper, use_breakable_cg=True, graphs={})
+    return manager, entry, descriptor
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        "wrapper",
+        "entry",
+        "capture",
+        "segment",
+        "count",
+        "keys",
+        "mode",
+        "unknown_shape",
+        "late",
+    ],
+)
+def test_independent_piecewise_replay_cannot_adopt_changed_initialization(mutation):
+    from collector.glm53flash_vllm_graph_ops import _retain_holdout_piecewise, holdout_piecewise_entry
+
+    manager, entry, descriptor = piecewise_native_objects()
+    _retain_holdout_piecewise(manager)
+    if mutation == "wrapper":
+        manager.breakable_cg_runner = SimpleNamespace(entries=manager.breakable_cg_runner.entries)
+    elif mutation == "entry":
+        manager.breakable_cg_runner.entries[entry.batch_descriptor] = SimpleNamespace(**vars(entry))
+    elif mutation == "capture":
+        entry.capture = SimpleNamespace(**vars(entry.capture))
+    elif mutation == "segment":
+        entry.capture.segments[1] = lambda: None
+    elif mutation == "count":
+        entry.capture.num_graphs += 1
+    elif mutation == "keys":
+        manager.breakable_cg_runner.entries.clear()
+    elif mutation == "mode":
+        descriptor.cg_mode.name = "FULL"
+    elif mutation == "unknown_shape":
+        descriptor.num_tokens = 8
+    elif mutation == "late":
+        del manager._aisim_glm53_holdout_piecewise
+    if mutation:
+        with pytest.raises(RuntimeError):
+            holdout_piecewise_entry(manager, descriptor)
+    else:
+        assert holdout_piecewise_entry(manager, descriptor) is entry
+        with pytest.raises(RuntimeError, match="repeated"):
+            _retain_holdout_piecewise(manager)
+
+
+@pytest.mark.parametrize(
+    "purpose,value,capture",
+    [
+        ("ops", "1", "0"),
+        ("ops_holdout", "1", "0"),
+        ("ops_graph", "true", "0"),
+        ("ops_graph", "1", "1"),
+        ("ops_graph_holdout", "1", "1"),
+    ],
+)
+def test_piecewise_runtime_opt_in_never_borrows_capture_only_or_eager_mode(monkeypatch, purpose, value, capture):
+    from collector.glm53flash_vllm_runtime import _piecewise_replay_enabled
+
+    monkeypatch.setenv("AISIM_GLM53_PIECEWISE_REPLAY", value)
+    monkeypatch.setenv("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", capture)
+    with pytest.raises(RuntimeError, match="explicit graph purpose"):
+        _piecewise_replay_enabled(purpose)
+
+
+@pytest.mark.parametrize("calibration", [False, True])
+@pytest.mark.parametrize("defect", [None, "omitted", "duplicate", "foreign_entry", "native_failure"])
+def test_piecewise_runtime_observes_original_entry_once_then_later_external_logits(
+    monkeypatch, tmp_path, calibration, defect
+):
+    import dataclasses
+    import hashlib
+    import importlib.metadata
+    import sys
+    from pathlib import Path
+
+    from collector import glm53flash_vllm_graph_ops as graph
+    from collector import glm53flash_vllm_graph_policy as policy
+    from collector import glm53flash_vllm_runtime as runtime
+
+    manager, entry, descriptor = piecewise_native_objects()
+    calls, failed = [], []
+    native_error = RuntimeError("TEST_ONLY native replay failure")
+
+    class Wrapper:
+        def _replay(self, actual, args, kwargs):
+            assert actual is entry and args == () and kwargs == {"input_ids": "actual_inputs"}
+            calls.append("native_piecewise_loop")
+            if defect == "native_failure":
+                raise native_error
+            return actual.output
+
+    wrapper = Wrapper()
+    wrapper.entries = manager.breakable_cg_runner.entries
+    manager.breakable_cg_runner = wrapper
+    if calibration:
+        original_segments = tuple(entry.capture.segments)
+
+        def validate_capture(actual):
+            assert actual is entry.capture and tuple(actual.segments) == original_segments
+
+        registry = SimpleNamespace(
+            validate_replay=validate_capture,
+            bound_capture={"native_shape_key": dataclasses.asdict(entry.batch_descriptor)},
+        )
+        wrapper._aisim_piecewise_ownership = {
+            entry.batch_descriptor: {"entry": entry, "capture": entry.capture, "registry": registry}
+        }
+    else:
+        graph._retain_holdout_piecewise(manager)
+
+    class Manager:
+        def run_fullgraph(self, *args):
+            pytest.fail("PIECEWISE cannot borrow FULL replay")
+
+    class NativeRunner:
+        def prepare_inputs(self, schedule, state, desc):
+            calls.append("native_inputs")
+            return SimpleNamespace(input_ids="actual_inputs")
+
+        def execute_model(self, schedule):
+            self.prepare_inputs(schedule, None, descriptor)
+            calls.append("native_metadata")
+            if defect == "omitted":
+                return
+            actual = SimpleNamespace(**vars(entry)) if defect == "foreign_entry" else entry
+            result = wrapper._replay(actual, (), {"input_ids": "actual_inputs"})
+            assert result is entry.output
+            if defect == "duplicate":
+                wrapper._replay(entry, (), {"input_ids": "actual_inputs"})
+
+        def sample(self):
+            calls.extend(["native_external_logits", "native_sample"])
+            return SimpleNamespace(sampled_token_ids=Tensor([[7]])), None, None
+
+        def sample_tokens(self):
+            return self.sample()
+
+    class Trace:
+        rank = 0
+
+        def __init__(self, runner, output, provenance, manifest, *, graph_calibration=False, piecewise_replay=False):
+            assert manifest is None and graph_calibration is calibration and piecewise_replay
+            self.graph_execution = SimpleNamespace(abort=lambda error: calls.append("abort")) if calibration else None
+
+        def before(self, *args, **kwargs):
+            calls.append("start_window_before_metadata")
+            return {"runtime_mode": "PIECEWISE", "requests": [{}]}, {}
+
+        def append(self, name, record):
+            assert name == "failed"
+            failed.append(record)
+
+        def after(self, record, completed):
+            assert record["native_graph_replay_completed"] and record["native_piecewise_replay_completed"]
+            assert record["native_piecewise_replay"]["entry_descriptor"] == dataclasses.asdict(entry.batch_descriptor)
+            assert record["native_piecewise_replay"]["segment_count"] == 3
+            assert record["requests"][0]["sampled_token_id"] == 7
+            calls.append("completed")
+
+    monkeypatch.setenv("AISIM_GLM53_TRACE_DIR", str(tmp_path))
+    provenance = tmp_path / "provenance.json"
+    provenance.write_text('{"backend_version":"0.30.0"}')
+    monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(provenance))
+    monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_graph" if calibration else "ops_graph_holdout")
+    monkeypatch.setenv("AISIM_GLM53_PIECEWISE_REPLAY", "1")
+    monkeypatch.setenv("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", "0")
+    if calibration:
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text('{"TEST_ONLY":true}')
+        monkeypatch.setenv("AISIM_GLM53_OPS_MANIFEST", str(manifest))
+    else:
+        monkeypatch.delenv("AISIM_GLM53_OPS_MANIFEST", raising=False)
+    monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.30.0")
+    monkeypatch.setitem(sys.modules, "vllm.forward_context", SimpleNamespace(get_forward_context=lambda: None))
+    monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu.model_runner", SimpleNamespace(GPUModelRunner=NativeRunner))
+    monkeypatch.setitem(
+        sys.modules, "vllm.v1.worker.gpu.cudagraph_utils", SimpleNamespace(ModelCudaGraphManager=Manager)
+    )
+    monkeypatch.setitem(
+        sys.modules, "vllm.compilation.breakable_cudagraph", SimpleNamespace(BreakableCUDAGraphWrapper=Wrapper)
+    )
+    monkeypatch.setitem(
+        policy.SOURCE_PINS,
+        "compilation/breakable_cudagraph.py",
+        hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        graph, "install", lambda *args, include_piecewise=False: calls.append(("capture", include_piecewise))
+    )
+    monkeypatch.setattr(
+        graph,
+        "install_holdout_capture",
+        lambda *args, include_piecewise=False: calls.append(("holdout", include_piecewise)),
+    )
+    for name in ("calibration_policy", "holdout_policy"):
+        monkeypatch.setattr(graph, name, lambda *args: {"backend_version": "0.30.0", "tp_rank": 0})
+    monkeypatch.setattr(runtime, "_TraceState", Trace)
+    runtime.install_v2()
+    runner = NativeRunner()
+    runner.model = SimpleNamespace(forward=lambda: pytest.fail("no Python model replacement"))
+    runner.cudagraph_manager, runner._aisim_glm53_ops_serving_ready = manager, True
+    schedule = SimpleNamespace(total_num_scheduled_tokens=3)
+    if defect:
+        with pytest.raises(RuntimeError) as caught:
+            runner.execute_model(schedule)
+        if defect == "native_failure":
+            assert caught.value is native_error
+        assert len(failed) == 1
+        if defect != "duplicate":
+            assert not failed[0]["native_piecewise_replay_completed"]
+        assert "completed" not in calls and "native_external_logits" not in calls
+    else:
+        runner.execute_model(schedule)
+        assert "native_external_logits" not in calls
+        runner.sample_tokens()
+        assert calls == [
+            ("capture" if calibration else "holdout", True),
+            "native_inputs",
+            "start_window_before_metadata",
+            "native_metadata",
+            "native_piecewise_loop",
+            "native_external_logits",
+            "native_sample",
+            "completed",
+        ]

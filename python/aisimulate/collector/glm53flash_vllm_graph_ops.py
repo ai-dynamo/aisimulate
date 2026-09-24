@@ -11,6 +11,7 @@ See README.glm53flash.md and THIRD_PARTY_NOTICES.md for source and scope.
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import hashlib
 import inspect
@@ -30,7 +31,7 @@ SOURCE_PINS = {
 LOGITS_SOURCE_PIN = "6b0603d67b0c756253c2fdc882a3896d2e873a16e9aa2ef877aabca8d36bdb5f"
 
 
-def install_holdout_capture(output):
+def install_holdout_capture(output, *, include_piecewise=False):
     """Retain initialized native graph objects without node/profiler hooks.
 
     The independent whole-forward observer uses this path. It observes the
@@ -63,6 +64,8 @@ def install_holdout_capture(output):
         result = original(manager, model, *args, **kwargs)
         value = persist_snapshot(manager, model, get_tensor_model_parallel_rank(), output)
         manager._aisim_glm53_holdout_capture = (model, value, dict(manager.graphs))
+        if include_piecewise:
+            _retain_holdout_piecewise(manager)
         return result
 
     ModelCudaGraphManager.capture = capture
@@ -78,6 +81,84 @@ def holdout_policy(manager, model):
     if graphs.keys() != manager.graphs.keys() or any(manager.graphs[key] is not graph for key, graph in graphs.items()):
         raise RuntimeError("native graph holdout changed its initialized graph objects")
     return captured[1]
+
+
+def _retain_holdout_piecewise(manager):
+    """Keep native initialization objects without installing any timing hooks."""
+    wrapper = manager.breakable_cg_runner
+    if manager.use_breakable_cg is not True or wrapper is None or hasattr(wrapper, "_aisim_piecewise_ownership"):
+        raise RuntimeError("independent PIECEWISE initialization cannot adopt calibration ownership")
+    entries = {}
+    for key, entry in wrapper.entries.items():
+        capture = entry.capture
+        if (
+            not dataclasses.is_dataclass(key)
+            or entry.batch_descriptor != key
+            or capture is None
+            or capture._capturing
+            or capture._current_graph is not None
+            or capture.num_graphs < 1
+            or len(capture.segments) != capture.num_graphs + capture.num_eager_breaks
+            or any(not callable(segment) for segment in capture.segments)
+        ):
+            raise RuntimeError("independent PIECEWISE initialization lacks complete original segments")
+        entries[key] = (
+            entry,
+            capture,
+            tuple(capture.segments),
+            dataclasses.asdict(key),
+            (capture.num_graphs, capture.num_eager_breaks),
+        )
+    if not entries or hasattr(manager, "_aisim_glm53_holdout_piecewise"):
+        raise RuntimeError("independent PIECEWISE initialization is empty or repeated")
+    manager._aisim_glm53_holdout_piecewise = wrapper, entries
+
+
+def holdout_piecewise_entry(manager, native_descriptor):
+    """Resolve a V2 dispatch only to objects saved at independent initialization."""
+    from collector.glm53flash_vllm_graph_policy import descriptor
+
+    observed = getattr(manager, "_aisim_glm53_holdout_piecewise", None)
+    if observed is None or manager.use_breakable_cg is not True or manager.breakable_cg_runner is not observed[0]:
+        raise RuntimeError("independent PIECEWISE replay lacks its original initialized wrapper")
+    wrapper, entries = observed
+    if wrapper.entries.keys() != entries.keys():
+        raise RuntimeError("independent PIECEWISE initialized entry set changed")
+    for key, (entry, capture, segments, shape, counts) in entries.items():
+        if (
+            wrapper.entries[key] is not entry
+            or entry.capture is not capture
+            or entry.batch_descriptor != key
+            or dataclasses.asdict(key) != shape
+            or capture._capturing
+            or capture._current_graph is not None
+            or (capture.num_graphs, capture.num_eager_breaks) != counts
+            or len(capture.segments) != len(segments)
+            or any(actual is not original for actual, original in zip(capture.segments, segments, strict=True))
+        ):
+            raise RuntimeError("independent PIECEWISE entry/capture/segment identity changed")
+    actual = descriptor(native_descriptor)
+    tokens = actual.get("num_tokens")
+    if (
+        type(tokens) is not int
+        or tokens < 1
+        or actual
+        != {
+            "cg_mode": "PIECEWISE",
+            "num_tokens": tokens,
+            "num_reqs": None,
+            "uniform_token_count": None,
+            "max_query_len": None,
+            "num_active_loras": 0,
+            "num_ubatches": 1,
+        }
+    ):
+        raise RuntimeError("independent PIECEWISE replay requires an ordinary native V2 descriptor")
+    expected = {"num_tokens": tokens, "num_reqs": None, "uniform": False, "has_lora": False, "num_active_loras": 0}
+    selected = [item[0] for item in entries.values() if item[3] == expected]
+    if len(selected) != 1:
+        raise RuntimeError("independent PIECEWISE replay lacks one original matching entry")
+    return selected[0]
 
 
 def bind_captured_graphs(manager, pending):

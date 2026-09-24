@@ -693,7 +693,7 @@ for diagnosis. Setup and external logits remain separate source-owned units.
 Zero-duration CUDA API records exactly at ownership boundaries are rejected
 as ambiguous; they cannot silently become setup. Structural-only graph segments
 remain unsupported until their launch identity has independent native evidence.
-These trace-contract tests do not enable PIECEWISE serving collection or table
+These trace-contract tests do not qualify PIECEWISE serving collection or table
 consumption. Native capture/replay, export, and independent accuracy gates remain.
 
 The graph execution helper has a separate, default-disabled PIECEWISE trace
@@ -701,8 +701,18 @@ lifecycle. It resolves the selected V2 descriptor to the original initialized
 breakable entry, checks unchanged callables, enables eager scopes only for that
 target and clears them on completion or failure. A result requires original
 GPU completion, sampled tokens and explicit completed native entry replay.
-This helper option is not wired to the public serving adapter; capture-only
-qualification remains distinct from measured PIECEWISE requests.
+The serving adapter exposes this lifecycle only with
+`AISIM_GLM53_PIECEWISE_REPLAY=1` and an explicit `ops_graph` or
+`ops_graph_holdout` purpose. It is mutually exclusive with capture-only
+qualification. It wraps the source-pinned native `BreakableCUDAGraphWrapper._replay`
+once, checks the actual entry and segment identities before and after that call,
+and preserves the original return and subsequent external logits computation.
+The independent control retains its own initialized entry and callable objects;
+it installs no operation hooks or profiler. Missing, repeated or substituted
+replay is rejected. Default FULL behavior is unchanged. This opt-in has no
+PIECEWISE table admission or native GPU qualification yet. Measured NONE targets
+remain unsupported; their serving-policy operation route requires separate
+native call evidence and cannot borrow enforced-eager calibration.
 
 ### CUDA graph runtime provider
 
