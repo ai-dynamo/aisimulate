@@ -536,6 +536,21 @@ impl Glm53GraphTable {
     pub(crate) fn has_prefill_measurements(&self) -> Result<bool, AicError> {
         self.sglang_prefill.has_measurements()
     }
+    /// Read-only evidence from the same selector that prices SG context units.
+    pub(crate) fn glm53flash_lookup_audit(
+        &self,
+        context: &[Op],
+        generation: &[Op],
+        is_context: bool,
+        point: (u32, u32, u32),
+    ) -> Result<Value, AicError> {
+        if is_context && self.sglang_prefill.has_measurements()? {
+            self.sglang_prefill.audit(context, generation, point)
+        } else {
+            self.serving.audit(context, generation, is_context, point)
+        }
+    }
+
     pub fn query(
         &self,
         op: &Op,

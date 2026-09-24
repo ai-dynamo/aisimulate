@@ -149,6 +149,28 @@ def test_complete_original_union_preserves_every_named_row_and_evidence(campaign
         shards.bind_calibration([path], parent, children)
 
 
+def test_sharded_lookup_rederives_child_ownership_without_rewriting_native_policy(campaign, tmp_path):
+    parent, children, proofs = campaign
+    original = copy.deepcopy([proof["policy"] for proof in proofs.values()])
+    for proof in proofs.values():
+        for ranks in proof["forwards"].values():
+            for forward in ranks.values():
+                for name, unit in forward["binding"].items():
+                    unit["source_ownership_sha256"] = sha256_json({"TEST_ONLY_source_owner": name})
+    path = tmp_path / serving.BASENAME
+    result = shards.publish_calibration(parent, children, path, lookup_contract=serving.LOOKUP_CONTRACT)
+    bound = shards.bind_calibration([path], parent, children)
+    assert bound["lookup_contract"] == result["ownership"]["lookup_contract"] == serving.LOOKUP_CONTRACT
+    assert bound["rows"] == 556
+    assert [proof["policy"] for proof in proofs.values()] == original
+    rows = pq.read_table(path).to_pylist()
+    assert len({row["evidence_sha256"] for row in rows}) == 2
+    rows[0]["source_ownership_sha256"] = "b" * 64
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    with pytest.raises(ValueError, match="differs from complete"):
+        shards.bind_calibration([path], parent, children)
+
+
 @pytest.mark.parametrize("defect", ["missing", "duplicate", "map", "parent_point", "child_point", "role", "corpus"])
 def test_frozen_union_rejects_omissions_and_replaced_point_identity(defect):
     parent = frozen_parent()
@@ -221,6 +243,56 @@ def test_prediction_keeps_real_child_identities_and_original_error_rows(campaign
     evidence.write_text(json.dumps({"source_plan_sha256": "f" * 64}))
     with pytest.raises(ValueError, match="provenance changed"):
         shards.validate_prediction_binding(native, bound)
+
+
+@pytest.mark.parametrize("defect", [None, "unmapped", "failed", "missing", "duplicate"])
+def test_sharded_prediction_preserves_original_leaf_audit_and_parent_point(campaign, tmp_path, monkeypatch, defect):
+    parent, children, proofs = campaign
+    for proof in proofs.values():
+        for ranks in proof["forwards"].values():
+            for row in ranks.values():
+                for name, unit in row["binding"].items():
+                    unit["source_ownership_sha256"] = sha256_json({"TEST_ONLY physical source owner": name})
+    path = tmp_path / serving.BASENAME
+    shards.publish_calibration(parent, children, path, lookup_contract=serving.LOOKUP_CONTRACT)
+    bound = shards.bind_calibration([path], parent, children)
+    native = {**children[0][1], "_children": {run["cell"]["cell_id"]: value for run, value in children}}
+    del native["runtime_run_id"]
+    holdout = frozen_parent("holdout")
+    # The leaf consumer validates the audit's measured endpoint contents. This
+    # fixture isolates preserving that exact object across two native id=1 rows.
+    audit = {"schema": "TEST_ONLY original leaf audit", "endpoints": [{"evidence_sha256": "e" * 64}]}
+
+    def predict(run, *args):
+        success = run["original_point_ids"][1] == 2
+        row = {"prediction_ms": 7.0} if success else {"error": "TEST_ONLY missing bracket"}
+        evidence = {1: audit} if success else {}
+        if defect == "unmapped" and success:
+            evidence = {99: audit}
+        elif defect == "failed" and not success:
+            evidence = {1: audit}
+        elif defect == "missing" and success:
+            evidence = {}
+        return {"rows": {1: row}, "prediction_evidence": evidence, "diagnostics": {"TEST_ONLY": True}}
+
+    monkeypatch.setattr(serving, "predict_homogeneous", predict)
+    if defect == "duplicate":
+        holdout["children"].append(copy.deepcopy(holdout["children"][0]))
+    if defect:
+        with pytest.raises(ValueError, match="endpoint evidence|duplicate serving shard"):
+            shards.predict_homogeneous(holdout, tmp_path, {}, native, bound)
+        return
+    result = shards.predict_homogeneous(holdout, tmp_path, {}, native, bound)
+    assert result["rows"] == {1: {"error": "TEST_ONLY missing bracket"}, 2: {"prediction_ms": 7.0}}
+    assert result["prediction_evidence"] == {2: audit}
+    assert result["prediction_evidence"][2] is audit
+    assert result["prediction_evidence_origins"] == {
+        2: {
+            "child_cell_id": holdout["children"][1]["cell"]["cell_id"],
+            "native_benchmark_id": 1,
+            "original_point_id": 2,
+        }
+    }
 
 
 def test_parent_native_loader_keeps_actual_shared_policy_and_rejects_changed_child(campaign, tmp_path, monkeypatch):

@@ -36,6 +36,7 @@ from collector.glm53flash_vllm_graph_policy import SOURCE_PINS, select_descripto
 
 SCOPE = "native_vllm_serving_units_v1"
 GRAPH_METHOD = "native_cupti_unit_union_v1"
+LOOKUP_CONTRACT = "vllm_serving_bounded_p_q_v1"
 KEYS = (
     "component",
     "operation_name",
@@ -93,6 +94,88 @@ def _hash(value):
 
 def _elapsed(value, *, positive=False):
     return type(value) in (int, float) and math.isfinite(value) and value >= 0 and (not positive or value > 0)
+
+
+def table_lookup_contract(rows):
+    contracts = set()
+    for row in rows:
+        present = "lookup_contract" in row
+        if present != ("source_ownership_sha256" in row):
+            raise ValueError("incomplete serving lookup metadata")
+        contract = row.get("lookup_contract")
+        if present and (contract != LOOKUP_CONTRACT or not _hash(row["source_ownership_sha256"])):
+            raise ValueError("unknown serving lookup contract or source ownership")
+        contracts.add(contract)
+    if len(contracts) != 1:
+        raise ValueError("serving table mixes analysis lookup contracts")
+    return contracts.pop()
+
+
+def analysis_rows(proof, rows, lookup_contract):
+    """Opt in using rederived source ownership, without changing native policy."""
+    if lookup_contract is None:
+        return rows
+    if lookup_contract != LOOKUP_CONTRACT:
+        raise ValueError("unknown serving bounded lookup contract")
+    ownership = defaultdict(set)
+    for (_, repetition), ranks in proof["forwards"].items():
+        if repetition < 5:
+            continue
+        selected = min(ranks, key=lambda rank: (-ranks[rank]["whole_forward_gpu_ms"], rank))
+        forward = ranks[selected]
+        key = (forward["phase"], forward["batch_size"], forward["query_lengths"][0], forward["prefix_lengths"][0])
+        for name, unit in forward["binding"].items():
+            value = unit.get("source_ownership_sha256")
+            if not _hash(value):
+                raise ValueError("serving lookup lacks rederived native call ownership")
+            ownership[(*key, name)].add(value)
+    result = []
+    for row in rows:
+        key = tuple(row[name] for name in ("phase", "batch_size", "query_length", "prefix", "operation_name"))
+        values = ownership.get(key, set())
+        if len(values) != 1:
+            raise ValueError("serving point changes source ownership across retained samples")
+        result.append({**row, "lookup_contract": lookup_contract, "source_ownership_sha256": next(iter(values))})
+    return result
+
+
+def _capture_ownership(registry, entries, mode):
+    """Keep physical call/fusion ownership, not graph handles or kernel grids."""
+    from collector.glm53flash_vllm_graph_export import LOGITS_SOURCE_PIN
+
+    result = {}
+    for entry in entries:
+        name = entry["name"]
+        calls = [
+            {
+                key: call.get(key)
+                for key in ("source", "included_sources", "excluded_collective_sources", "parent_operation")
+            }
+            for call in registry["calls"]
+            if call["name"] == name
+        ]
+        if name == "logits":
+            calls = [{"source_boundary": "GPUModelRunner.compute_logits", "source_sha256": LOGITS_SOURCE_PIN}]
+        elif name == "native_graph_setup":
+            calls = [
+                {"source_boundary": "native_metadata_to_logits_outside_physical_operations", "source_pins": SOURCE_PINS}
+            ]
+        if not calls:
+            raise ValueError("serving bounded lookup omits original captured call ownership")
+        segments = []
+        if mode == "PIECEWISE":
+            for segment in registry["segments"]:
+                owns = (
+                    any(node["name"] == name for node in segment["nodes"])
+                    if segment["kind"] == "graph"
+                    else segment.get("name") == name
+                )
+                if owns:
+                    segments.append(
+                        {key: segment.get(key) for key in ("kind", "position", "qualname", "source_sha256")}
+                    )
+        result[name] = sha256_json({"operation": entry, "mode": mode, "calls": calls, "segments": segments})
+    return result
 
 
 def build_serving_policy(snapshots, manifest, provenance, execution):
@@ -717,6 +800,18 @@ def _none_observations(root, rank, targets, entries, provenance, files, *, calib
             "dispatch": "",
             "activity_count": 1,
             "method": "native_module_cuda_events_v1",
+            "source_ownership_sha256": sha256_json(
+                {
+                    "operation": entry,
+                    "model_identity_sha256": sha256_json(model),
+                    "calls": [
+                        {
+                            key: call.get(key)
+                            for key in ("source", "included_sources", "excluded_collective_sources", "parent_operation")
+                        }
+                    ],
+                }
+            ),
         }
     for invocation, values in units.items():
         if set(values) != set(physical):
@@ -726,6 +821,15 @@ def _none_observations(root, rank, targets, entries, provenance, files, *, calib
             "dispatch": "",
             "activity_count": 2,
             "method": "native_runtime_cuda_events_v1",
+            "source_ownership_sha256": sha256_json(
+                {
+                    "operation_name": "native_graph_setup",
+                    "model_identity_sha256": sha256_json(model),
+                    "source_boundary": "GPUModelRunner.prepare_inputs_return_to_compute_logits",
+                    "regions": sorted(targets[invocation]["native_runtime_boundary_gpu_ms"]),
+                    "source_pins": SOURCE_PINS,
+                }
+            ),
         }
     return units
 
@@ -842,6 +946,9 @@ def read_serving_run(root, run):
                 ):
                     raise ValueError("serving replay lacks its exact original capture/trace method")
                 binding = _compact_units(_replay_binding(root, row, registry, files), entries)
+                ownership = _capture_ownership(registry, entries, shape["cg_mode"])
+                for name, unit in binding.items():
+                    unit["source_ownership_sha256"] = ownership[name]
             elif (
                 any(
                     row.get(key) is not None
@@ -994,8 +1101,12 @@ def profile_control(root, proof, control_root, control_run):
     }
 
 
-def export_serving(root: Path, run: dict, output: Path, *, control_root: Path, control_run: dict) -> dict:
+def export_serving(
+    root: Path, run: dict, output: Path, *, control_root: Path, control_run: dict, lookup_contract=None
+) -> dict:
     """Export only complete real calibration; this does not certify accuracy."""
+    if lookup_contract not in (None, LOOKUP_CONTRACT):
+        raise ValueError("unknown serving bounded lookup contract")
     import pyarrow as pa
     import pyarrow.parquet as pq
 
@@ -1031,6 +1142,7 @@ def export_serving(root: Path, run: dict, output: Path, *, control_root: Path, c
     with evidence.open("x") as stream:
         stream.write(canonical_json(receipt))
     rows, _ = aggregate_serving(proof, evidence_sha256=file_sha256(evidence))
+    rows = analysis_rows(proof, rows, lookup_contract)
     pq.write_table(pa.Table.from_pylist(rows), output)
     return {"rows": len(rows), "table_sha256": file_sha256(output), "accuracy_acceptance": "NOT_EVALUATED"}
 
@@ -1057,6 +1169,8 @@ def bind_calibration(paths, run, native):
                         raise ValueError("serving calibration cannot mix legacy graph profiles")
                     if row["phase"] == ("context" if run["key"][3] == "prefill" else "generation"):
                         selected.append(row)
+    lookup_contract = table_lookup_contract(selected)
+    expected = analysis_rows(proof, expected, lookup_contract)
     if sorted(selected, key=canonical_json) != sorted(expected, key=canonical_json):
         raise ValueError("consumer graph table differs from original native activity measurements")
     return {
@@ -1066,6 +1180,7 @@ def bind_calibration(paths, run, native):
         "evidence_sha256": file_sha256(root / "serving-calibration-evidence.json"),
         "source_plan_sha256": run["plan"]["sha256"],
         "native_runtime_run_id": native["runtime_run_id"],
+        **({"lookup_contract": lookup_contract} if lookup_contract else {}),
     }
 
 
@@ -1173,7 +1288,10 @@ def predict_homogeneous(run, base, config, calibration_native, calibration_bindi
         strict_provenance=True,
         transfer_policy=cfg.transfer_policy,
     )
-    rows = {}
+    lookup_contract = calibration_binding.get("lookup_contract")
+    if lookup_contract not in (None, LOOKUP_CONTRACT):
+        raise ValueError("unknown serving prediction lookup contract")
+    rows, prediction_evidence = {}, {}
     for point in run["points"]:
         try:
             batch, total = point["batch_size"], point["total_kv_read_tokens"]
@@ -1202,15 +1320,28 @@ def predict_homogeneous(run, base, config, calibration_native, calibration_bindi
                 raise ValueError("public graph consumer returned no positive finite latency")
             if engine.last_provenance() is not None:
                 raise ValueError("graph consumer fired a non-silicon fallback")
+            if lookup_contract:
+                audit = engine.glm53flash_lookup_audit("context" if context else "generation", batch, query, prefix)
+                if (
+                    audit.get("lookup_contract") != lookup_contract
+                    or audit.get("graph_policy_sha256") != sha256_json(policy)
+                    or audit.get("native_policy_sha256") != policy["native_policy_sha256"]
+                    or len(audit.get("operations", [])) != 278
+                    or not math.isclose(sum(op["latency_ms"] for op in audit["operations"]), value, rel_tol=1e-12)
+                ):
+                    raise ValueError("serving endpoint audit differs from the actual public prediction")
+                prediction_evidence[point["benchmark_id"]] = audit
             rows[point["benchmark_id"]] = {"prediction_ms": value}
         except Exception as error:
             rows[point["benchmark_id"]] = {"error": f"{type(error).__name__}: {error}"}
     return {
         "rows": rows,
         "calibration_binding": calibration_binding,
+        **({"prediction_evidence": prediction_evidence} if lookup_contract else {}),
         "diagnostics": {
             "consumer": "public_EngineHandle_homogeneous_prefill_or_decode",
             "graph_policy_sha256": sha256_json(policy),
             "composition": "disjoint_native_unit_unions_additive_approximation",
+            "interpolation": lookup_contract or "LEGACY_SAME_DISPATCH_PREFIX_ONLY",
         },
     }

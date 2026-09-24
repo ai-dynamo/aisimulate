@@ -104,9 +104,15 @@ def _coordinates(point, phase):
     return ("context" if phase == "prefill" else "generation", batch, new // batch, past // batch)
 
 
-def calibration_rows(parent, children):
+def calibration_rows(parent, children, *, lookup_contract=None):
     """Reproduce every child from its native source, control and trace evidence."""
-    from collector.glm53flash_vllm_serving_export import KEYS, aggregate_serving, read_serving_run, verify_evidence
+    from collector.glm53flash_vllm_serving_export import (
+        KEYS,
+        aggregate_serving,
+        analysis_rows,
+        read_serving_run,
+        verify_evidence,
+    )
 
     if parent["role"] != "calibration":
         raise ValueError("serving shard publication requires calibration, never holdout")
@@ -134,6 +140,7 @@ def calibration_rows(parent, children):
             raise ValueError("serving shard evidence differs from its admitted native run")
         evidence_sha = file_sha256(root / "serving-calibration-evidence.json")
         actual, _ = aggregate_serving(proof, evidence_sha256=evidence_sha)
+        actual = analysis_rows(proof, actual, lookup_contract)
         coordinate_owners = {_coordinates(item["point"], shard["phase"]): item for item in shard["point_map"]}
         if len(coordinate_owners) != len(shard["point_map"]):
             raise ValueError("serving frozen shard repeats physical point geometry")
@@ -177,11 +184,12 @@ def calibration_rows(parent, children):
         "corpus_sha256": parent["corpus"],
         "rows": sorted(owners, key=canonical_json),
         "children": sorted(receipts, key=canonical_json),
+        **({"lookup_contract": lookup_contract} if lookup_contract else {}),
     }
     return sorted(rows, key=canonical_json), ownership
 
 
-def publish_calibration(parent, children, destination):
+def publish_calibration(parent, children, destination, *, lookup_contract=None):
     """Write a new complete table; preserve per-attempt provenance verbatim."""
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -192,7 +200,7 @@ def publish_calibration(parent, children, destination):
     sidecar = destination.with_suffix(".evidence.json")
     if destination.name != BASENAME or destination.exists() or sidecar.exists():
         raise ValueError("serving shard publication requires new canonical table and evidence paths")
-    rows, ownership = calibration_rows(parent, children)
+    rows, ownership = calibration_rows(parent, children, lookup_contract=lookup_contract)
     pq.write_table(pa.Table.from_pylist(rows), destination)
     receipt = {"ownership": ownership, "table_sha256": file_sha256(destination), "accuracy_acceptance": "NOT_EVALUATED"}
     with sidecar.open("x") as stream:
@@ -204,9 +212,8 @@ def bind_calibration(paths, parent, children):
     """Compare the complete final table to all original child observations."""
     import pyarrow.parquet as pq
 
-    from collector.glm53flash_vllm_serving_export import BASENAME
+    from collector.glm53flash_vllm_serving_export import BASENAME, table_lookup_contract
 
-    expected, ownership = calibration_rows(parent, children)
     backend, fmt, tp, phase = parent["key"]
     selected, tables = [], []
     for path in paths:
@@ -220,6 +227,8 @@ def bind_calibration(paths, parent, children):
                     raise ValueError("serving shard table mixes a legacy policy for the same deployment")
                 if row["phase"] == ("context" if phase == "prefill" else "generation"):
                     selected.append(row)
+    lookup_contract = table_lookup_contract(selected)
+    expected, ownership = calibration_rows(parent, children, lookup_contract=lookup_contract)
     if sorted(selected, key=canonical_json) != expected:
         raise ValueError("serving shard table differs from complete original calibration observations")
     return {
@@ -230,6 +239,7 @@ def bind_calibration(paths, parent, children):
         "ownership": ownership,
         "children": ownership["children"],
         "source_plan_sha256": parent["plan"]["sha256"],
+        **({"lookup_contract": lookup_contract} if lookup_contract else {}),
     }
 
 
@@ -279,17 +289,46 @@ def predict_homogeneous(run, base, config, calibration_native, calibration_bindi
     validate_children(run, run["children"])
     if run["role"] != "holdout":
         raise ValueError("serving shard prediction requires independent holdout")
-    rows, diagnostics = {}, []
+    rows, diagnostics, prediction_evidence, evidence_origins = {}, [], {}, {}
     for child in run["children"]:
         result = predict_leaf(child, base, config, calibration_native, calibration_binding)
         mapping = child["original_point_ids"]
         if result["rows"].keys() != mapping.keys():
             raise ValueError("serving prediction omitted a frozen child point or failure")
         mapped = {mapping[key]: value for key, value in result["rows"].items()}
-        if rows.keys() & mapped.keys():
+        if len(mapped) != len(mapping) or rows.keys() & mapped.keys():
             raise ValueError("serving predictions overlap original holdout point identities")
         rows.update(mapped)
+        audits = result.get("prediction_evidence", {})
+        successful = {key for key, row in result["rows"].items() if "prediction_ms" in row and "error" not in row}
+        if (
+            not isinstance(audits, dict)
+            or (calibration_binding.get("lookup_contract") and audits.keys() != successful)
+            or (not calibration_binding.get("lookup_contract") and audits)
+        ):
+            raise ValueError("serving endpoint evidence must cover exactly the successful opt-in predictions")
+        for native_id, evidence in audits.items():
+            if type(native_id) is not int or native_id not in mapping or native_id not in successful:
+                raise ValueError("serving endpoint evidence lacks an original successful holdout point")
+            original_id = mapping[native_id]
+            if original_id in prediction_evidence:
+                raise ValueError("serving endpoint evidence overlaps original holdout point identities")
+            prediction_evidence[original_id] = evidence
+            evidence_origins[original_id] = {
+                "child_cell_id": child["cell"]["cell_id"],
+                "native_benchmark_id": native_id,
+                "original_point_id": original_id,
+            }
         diagnostics.append({"child_cell_id": child["cell"]["cell_id"], **result["diagnostics"]})
     if rows.keys() != {point["benchmark_id"] for point in run["points"]}:
         raise ValueError("serving predictions omit original frozen holdout coverage")
-    return {"rows": rows, "calibration_binding": calibration_binding, "diagnostics": {"shards": diagnostics}}
+    return {
+        "rows": rows,
+        "calibration_binding": calibration_binding,
+        "diagnostics": {"shards": diagnostics},
+        **(
+            {"prediction_evidence": prediction_evidence, "prediction_evidence_origins": evidence_origins}
+            if calibration_binding.get("lookup_contract")
+            else {}
+        ),
+    }

@@ -8,7 +8,6 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-
 from collector import glm53flash_sglang_prefill_export as export
 from collector import glm53flash_sglang_prefill_shards as shards
 from collector.fpm_forward.glm53flash_validation import _sglang_execution_policy
@@ -126,6 +125,22 @@ def proof_fixture(run, index):
             "whole_forward_gpu_ms": 0.5,
             "forward_id": f"TEST_ONLY-{index}-{repetition}",
             "invocation": repetition,
+            "native_prefill_setup": {
+                "source": "sglang.srt.utils.common.BumpAllocator.__init__",
+                "buffer_size": 90,
+                "dtype": "torch.float32",
+            },
+            "native_prefill_calls": [
+                {
+                    "operation": entry["name"],
+                    "source": "TEST_ONLY.native." + entry["name"],
+                    "included_sources": [],
+                    "excluded_collective_sources": [],
+                    "parent_operation": None,
+                }
+                for entry in entries
+                if entry["component"] != "runtime"
+            ],
             "binding": {
                 entry["name"]: {
                     "dispatch": sha256_json({"TEST_ONLY": entry["name"]}),
@@ -447,7 +462,8 @@ def test_publication_entry_requires_original_parent_and_uses_schema4(campaign, t
     assert reader.bind_sharded_calibration([path], children, parent["shard_manifest"], parent_run=parent)["rows"] == 734
 
 
-def test_actual_public_rust_queries_complete_merged_points_and_rejects_missing_exact(campaign, tmp_path):
+@pytest.mark.parametrize("bounded", [False, True])
+def test_actual_public_rust_queries_complete_merged_points_and_rejects_missing_exact(campaign, tmp_path, bounded):
     import shutil
     from importlib.resources import files
 
@@ -458,7 +474,11 @@ def test_actual_public_rust_queries_complete_merged_points_and_rejects_missing_e
     data = systems / "data/gb300/sglang/0.5.20"
     data.mkdir(parents=True)
     shutil.copyfile(str(files("aisimulate_core.systems") / "gb300.yaml"), systems / "gb300.yaml")
-    shards.publish_calibration(parent, children, data / export.BASENAME)
+    shards.publish_calibration(
+        parent, children, data / export.BASENAME, lookup_contract=export.LOOKUP_CONTRACT if bounded else None
+    )
+    binding = shards.bind_calibration([data / export.BASENAME], parent, children)
+    assert binding.get("lookup_contract") == (export.LOOKUP_CONTRACT if bounded else None)
     engine = EngineHandle.compile(
         "zai-org/GLM-5.3-Flash",
         "gb300",
@@ -474,5 +494,75 @@ def test_actual_public_rust_queries_complete_merged_points_and_rejects_missing_e
     for prefix in (118, 126):
         assert engine.predict_prefill_latency(1, prefix + 32, prefix) == pytest.approx(0.368)
         assert engine.last_provenance() is None
-    with pytest.raises(ValueError):
-        engine.predict_prefill_latency(1, 154, 122)
+    if bounded:
+        assert engine.predict_prefill_latency(1, 154, 122) == pytest.approx(0.368)
+        audit = engine.glm53flash_lookup_audit("context", 1, 32, 122)
+        assert len(audit["operations"]) == 367
+        assert all([p["point"]["prefix"] for p in row["endpoints"]] == [118, 126] for row in audit["operations"])
+        evidence = {child["evidence_sha256"] for child in binding["children"]}
+        assert all(
+            {p["measurement"]["evidence_sha256"] for p in row["endpoints"]} == evidence for row in audit["operations"]
+        )
+    else:
+        with pytest.raises(ValueError):
+            engine.predict_prefill_latency(1, 154, 122)
+
+
+@pytest.mark.parametrize("defect", [None, "missing", "orphan", "failed", "both_fields"])
+def test_optin_holdout_audit_is_complete_and_preserves_original_child_origin(campaign, tmp_path, monkeypatch, defect):
+    from collector import glm53flash_validation as reader
+
+    parent, children, _, _ = campaign
+    path = tmp_path / export.BASENAME
+    shards.publish_calibration(parent, children, path, lookup_contract=export.LOOKUP_CONTRACT)
+    binding = shards.bind_calibration([path], parent, children)
+    native = {
+        **children[0][1],
+        "_children": {run["cell"]["cell_id"]: value for run, value in children},
+        "request_ids": set.union(*(value["request_ids"] for _, value in children)),
+    }
+    del native["runtime_run_id"]
+    del native["evidence_root"]
+    holdout = frozen_parent("holdout")
+    admitted = {
+        run["cell"]["cell_id"]: {
+            **children[index][1],
+            "runtime_run_id": f"TEST_ONLY-independent-holdout-{index}",
+            "request_ids": {f"TEST_ONLY-independent-holdout-{index}"},
+            "evidence_root": str(tmp_path / f"holdout-{index}"),
+        }
+        for index, run in enumerate(holdout["children"])
+    }
+    monkeypatch.setattr(reader, "load_native", lambda run, base: admitted[run["cell"]["cell_id"]])
+    original_audit = {"TEST_ONLY": "native audit preserved without rewriting"}
+
+    def predict(run, *args):
+        index = run["original_point_ids"][1]
+        row = {"prediction_ms": 0.368} if index == 1 else {"error": "TEST_ONLY unsupported geometry"}
+        audits = {1: original_audit} if index == 1 else {}
+        if index == 1 and defect == "missing":
+            audits = {}
+        elif index == 1 and defect == "orphan":
+            audits[99] = original_audit
+        elif index == 2 and defect == "failed":
+            audits[1] = original_audit
+        elif index == 1 and defect == "both_fields":
+            row["error"] = "TEST_ONLY conflicting row"
+        return {"rows": {1: row}, "prediction_evidence": audits, "diagnostics": {}}
+
+    monkeypatch.setattr(export, "predict_homogeneous", predict)
+    if defect:
+        with pytest.raises(ValueError, match="exactly one audit"):
+            shards.predict_homogeneous(holdout, tmp_path, {}, native, binding)
+    else:
+        result = shards.predict_homogeneous(holdout, tmp_path, {}, native, binding)
+        assert result["prediction_evidence"] == {1: original_audit}
+        assert result["prediction_evidence"][1] is original_audit
+        assert result["prediction_evidence_origins"] == {
+            1: {
+                "child_cell_id": holdout["children"][0]["cell"]["cell_id"],
+                "native_benchmark_id": 1,
+                "original_point_id": 1,
+            }
+        }
+        assert set(result["rows"]) == {1, 2} and "error" in result["rows"][2]

@@ -936,7 +936,12 @@ def _sharded_calibration_rows(children: list[tuple[dict, dict]], frozen_shard_ma
 
 
 def publish_sharded_calibration(
-    children: list[tuple[dict, dict]], frozen_shard_manifest: dict, destination: Path, *, parent_run: dict | None = None
+    children: list[tuple[dict, dict]],
+    frozen_shard_manifest: dict,
+    destination: Path,
+    *,
+    parent_run: dict | None = None,
+    lookup_contract: str | None = None,
 ) -> dict:
     """Publish only after callers admitted every child with load_native()."""
     from collector.glm53flash_contract import write_parquet
@@ -946,13 +951,20 @@ def publish_sharded_calibration(
 
         if parent_run is None or parent_run.get("shard_manifest") != frozen_shard_manifest:
             raise ValueError("prefill shard publication requires its original complete parent plan")
-        return publish_prefill(parent_run, children, destination)
+        return publish_prefill(parent_run, children, destination, lookup_contract=lookup_contract)
     if any(run["spec"].get("ops_execution_mode") == "native_serving" for run, _ in children):
         from collector.glm53flash_serving_shards import publish_calibration as publish_serving
 
         if parent_run is None or parent_run.get("shard_manifest") != frozen_shard_manifest:
             raise ValueError("serving shard publication requires its original complete parent plan")
-        return publish_serving(parent_run, children, destination)
+        return publish_serving(
+            parent_run,
+            children,
+            destination,
+            **({"lookup_contract": lookup_contract} if lookup_contract is not None else {}),
+        )
+    if lookup_contract is not None:
+        raise ValueError("lookup analysis contract requires native prefill or serving publication")
     rows, ownership, receipts = _sharded_calibration_rows(children, frozen_shard_manifest)
     if destination.exists():
         raise FileExistsError("never replace an existing native calibration publication")

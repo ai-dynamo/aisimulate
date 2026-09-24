@@ -1145,7 +1145,12 @@ the repository Apache-2.0 license text applies to these adaptations.
   `python/sglang/srt/models/glm5_next.py`,
   `python/sglang/srt/managers/mm_utils.py`,
   `python/sglang/srt/utils/common.py`, and the existing communicator and
-  native model-runner paths cited above.
+  native model-runner paths cited above. Bounded prefill lookup source analysis
+  additionally references `python/sglang/srt/layers/attention/linear/kda_backend.py`,
+  `python/sglang/srt/layers/attention/linear/kernels/kda_triton.py`,
+  `python/sglang/kernels/ops/attention/fla/kda.py`, and
+  `python/sglang/srt/layers/attention/dsa/{kpool_plan.py,dsa_indexer_kpool.py}`
+  at that same immutable revision.
 - Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
 - License: Apache-2.0 (full text above).
 - Modified/adapted: independently expressed wrappers, source predicates,
@@ -1155,7 +1160,14 @@ the repository Apache-2.0 license text applies to these adaptations.
   establish exclusive ownership. TEST_ONLY fixtures are original synthetic
   proofs, never measured GPU data. The independently expressed shard reader
   preserves original point ownership, per-child native/control evidence and
-  actual execution policy without copying native implementation code.
+  actual execution policy without copying native implementation code. The
+  optional bounded lookup and shared native SDK endpoint audit are independently
+  expressed analysis/consumer code. They preserve native policy and measured
+  operation ownership; no per-kernel compute implementation is copied.
+  Referenced SGLang FLA KDA source retains vLLM contributor copyright and its
+  attribution to vLLM `0384aa7150c4c9778efca041ffd1beb3ad2bd694`, original path
+  `vllm/model_executor/layers/fla/ops/kda.py` (Apache-2.0), plus inherited
+  Copyright (c) 2023-2025 Songlin Yang, Yu Zhang (MIT license; full text above).
 - CPU user-annotation category semantics use Kineto
   https://github.com/pytorch/kineto at
   `094d3c1d072362d0a919a77299459eee94f97931`,
@@ -1215,6 +1227,15 @@ the repository Apache-2.0 license text applies to these adaptations.
 - Modified/adapted: independently authored wrappers preserve original native
   calls and inspect real worker requests, allocated cache metadata and dispatch.
   No upstream compute, request construction or scheduling code is copied.
+  The optional `vllm_serving_bounded_p_q_v1` lookup in
+  `crates/core/src/perfmodel/perf_database/glm53flash_serving.rs`,
+  `glm53flash_vllm_serving_export.py` and `glm53flash_serving_shards.py`
+  is independently authored analysis metadata. It preserves the original
+  native policy and source attribution, binds the measured 277 named physical
+  units plus setup, and interpolates only enclosing P or P0/Q measurements
+  under the same runtime, precision, layout, ownership and native graph
+  descriptor. Original activity inventories remain diagnostic evidence;
+  no upstream computation or interpolation code is copied.
 
 
 ## Dynamo GLM-5.3-Flash FPM collection adapter

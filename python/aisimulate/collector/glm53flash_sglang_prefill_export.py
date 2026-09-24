@@ -444,6 +444,71 @@ def read_prefill_run(root, run):
     }
 
 
+# Analysis metadata only: never added to the actual native execution policy.
+LOOKUP_CONTRACT = "sglang_prefill_bounded_p_q_v1"
+
+
+def table_lookup_contract(rows):
+    contracts = set()
+    for row in rows:
+        present = "lookup_contract" in row
+        if present != ("source_ownership_sha256" in row):
+            raise ValueError("incomplete prefill lookup metadata")
+        contract = row.get("lookup_contract")
+        if present and (contract != LOOKUP_CONTRACT or not _hash(row["source_ownership_sha256"])):
+            raise ValueError("unknown prefill lookup contract or source ownership")
+        contracts.add(contract)
+    if len(contracts) != 1:
+        raise ValueError("prefill publication mixes analysis lookup contracts")
+    return contracts.pop()
+
+
+def analysis_rows(proof, rows, lookup_contract):
+    """Bind optional lookup to original call ownership; never rewrite raw policy."""
+    if lookup_contract is None:
+        return rows
+    if lookup_contract != LOOKUP_CONTRACT:
+        raise ValueError("unknown native prefill lookup contract")
+    ownership = defaultdict(set)
+    for (_, repetition), ranks in sorted(proof["forwards"].items()):
+        if repetition < 5:
+            continue
+        selected = min(ranks, key=lambda rank: (-ranks[rank]["whole_forward_gpu_ms"], rank))
+        forward = ranks[selected]
+        coordinates = _geometry(forward)
+        for name, unit in forward["binding"].items():
+            if name == "native_graph_setup":
+                calls = [{key: forward["native_prefill_setup"][key] for key in ("source", "buffer_size", "dtype")}]
+            else:
+                calls = [
+                    {
+                        key: call[key]
+                        for key in ("source", "included_sources", "excluded_collective_sources", "parent_operation")
+                    }
+                    for call in forward["native_prefill_calls"]
+                    if call["operation"] == name
+                ]
+            if not calls:
+                raise ValueError("prefill lookup lacks original source call ownership")
+            ownership[(*coordinates, name)].add(
+                sha256_json(
+                    {
+                        "operation_name": name,
+                        "calls": calls,
+                        "contribution_count": unit["contribution_count"],
+                    }
+                )
+            )
+    result = []
+    for row in rows:
+        key = tuple(row[name] for name in ("batch_size", "query_length", "prefix", "operation_name"))
+        values = ownership.get(key, set())
+        if len(values) != 1:
+            raise ValueError("prefill point changes native source ownership across retained samples")
+        result.append({**row, "lookup_contract": lookup_contract, "source_ownership_sha256": next(iter(values))})
+    return result
+
+
 def aggregate_prefill(proof, *, evidence_sha256):
     if not _hash(evidence_sha256) or not _hash(proof["policy_evidence_sha256"]):
         raise ValueError("native prefill aggregate lacks bound original evidence")
@@ -629,13 +694,15 @@ def profile_control(root, proof, control_root, control_run):
     }
 
 
-def export_prefill(root, run, output, *, control_root, control_run):
+def export_prefill(root, run, output, *, control_root, control_run, lookup_contract=None):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     from collector.glm53flash_validation import _load_native
 
     root, output = Path(root), Path(output)
+    if lookup_contract not in (None, LOOKUP_CONTRACT):
+        raise ValueError("unknown native prefill lookup contract")
     if run["role"] != "calibration" or output.name != BASENAME or output.exists():
         raise ValueError("native prefill export needs fresh canonical calibration output")
     native = _load_native(run, root, calibration_evidence=False)
@@ -665,6 +732,7 @@ def export_prefill(root, run, output, *, control_root, control_run):
     with path.open("x") as stream:
         stream.write(canonical_json(receipt))
     rows, _ = aggregate_prefill(proof, evidence_sha256=file_sha256(path))
+    rows = analysis_rows(proof, rows, lookup_contract)
     pq.write_table(pa.Table.from_pylist(rows), output)
     return {"rows": len(rows), "table_sha256": file_sha256(output), "accuracy_acceptance": "NOT_EVALUATED"}
 
@@ -696,6 +764,32 @@ def verify_evidence(root, proof):
     return receipt
 
 
+def publish_prefill(root, run, output, *, lookup_contract=None):
+    """Publish analysis from existing original evidence without changing raw files."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from collector.glm53flash_validation import load_native
+
+    root, output = Path(root), Path(output)
+    if run["role"] != "calibration" or output.name != BASENAME or output.exists():
+        raise ValueError("native prefill publication requires fresh canonical calibration output")
+    if lookup_contract not in (None, LOOKUP_CONTRACT):
+        raise ValueError("unknown native prefill lookup contract")
+    load_native(run, root)
+    proof = read_prefill_run(root, run)
+    verify_evidence(root, proof)
+    rows, _ = aggregate_prefill(proof, evidence_sha256=file_sha256(root / "prefill-calibration-evidence.json"))
+    rows = analysis_rows(proof, rows, lookup_contract)
+    pq.write_table(pa.Table.from_pylist(rows), output)
+    return {
+        "rows": len(rows),
+        "table_sha256": file_sha256(output),
+        "accuracy_acceptance": "NOT_EVALUATED",
+        **({"lookup_contract": lookup_contract} if lookup_contract else {}),
+    }
+
+
 def bind_calibration(paths, run, native):
     import pyarrow.parquet as pq
 
@@ -714,6 +808,8 @@ def bind_calibration(paths, run, native):
             policy = json.loads(row["prefill_policy"])
             if (policy["backend"], policy["checkpoint_format"], policy["tp_size"]) == tuple(run["key"][:3]):
                 selected.append(row)
+    lookup_contract = table_lookup_contract(selected)
+    expected = analysis_rows(proof, expected, lookup_contract)
     if sorted(selected, key=canonical_json) != sorted(expected, key=canonical_json):
         raise ValueError("consumer prefill table differs from original native events/ownership")
     return {
@@ -723,6 +819,7 @@ def bind_calibration(paths, run, native):
         "evidence_sha256": file_sha256(root / "prefill-calibration-evidence.json"),
         "source_plan_sha256": run["plan"]["sha256"],
         "native_runtime_run_id": native["runtime_run_id"],
+        **({"lookup_contract": lookup_contract} if lookup_contract else {}),
     }
 
 
@@ -802,7 +899,10 @@ def predict_homogeneous(run, base, config, calibration_native, binding):
         shared_layer=False,
         strict_provenance=True,
     )
-    rows = {}
+    rows, prediction_evidence = {}, {}
+    lookup_contract = binding.get("lookup_contract")
+    if lookup_contract not in (None, LOOKUP_CONTRACT):
+        raise ValueError("unknown native prefill prediction lookup contract")
     for point in run["points"]:
         try:
             batch, total_query, total_prefix = (
@@ -828,16 +928,27 @@ def predict_homogeneous(run, base, config, calibration_native, binding):
             value = engine.predict_prefill_latency(batch, prefix + query, prefix)
             if not _elapsed(value, positive=True) or engine.last_provenance() is not None:
                 raise ValueError("native prefill public query did not use complete measured silicon evidence")
+            if lookup_contract:
+                audit = engine.glm53flash_lookup_audit("context", batch, query, prefix)
+                if (
+                    audit.get("lookup_contract") != lookup_contract
+                    or audit.get("native_policy_sha256") != binding["prefill_policy_sha256"]
+                    or len(audit.get("operations", [])) != 367
+                    or not math.isclose(sum(item["latency_ms"] for item in audit["operations"]), value, rel_tol=1e-12)
+                ):
+                    raise ValueError("native prefill selected endpoint audit differs from actual public prediction")
+                prediction_evidence[point["benchmark_id"]] = audit
             rows[point["benchmark_id"]] = {"prediction_ms": value}
         except Exception as error:
             rows[point["benchmark_id"]] = {"error": f"{type(error).__name__}: {error}"}
     return {
         "rows": rows,
         "calibration_binding": binding,
+        **({"prediction_evidence": prediction_evidence} if lookup_contract else {}),
         "diagnostics": {
             "consumer": "public_EngineHandle_homogeneous_prefill",
             "prefill_policy_sha256": sha256_json(policy),
-            "interpolation": "EXACT_ONLY",
+            "interpolation": lookup_contract or "EXACT_ONLY",
             "accuracy_acceptance": "NOT_EVALUATED",
         },
     }

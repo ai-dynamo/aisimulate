@@ -230,6 +230,28 @@ def test_none_reader_preserves_277_event_units_plus_two_direct_setup_intervals(t
     )
     # Warmup activity lasts 0.5us per unit; measured event intervals remain 1us.
     assert all(row["latency"] == 0.001 for row in rows if row["component"] != "runtime")
+    policy = copy.deepcopy(proof["policy"])
+    enabled = serving.analysis_rows(proof, rows, serving.LOOKUP_CONTRACT)
+    assert serving.table_lookup_contract(enabled) == serving.LOOKUP_CONTRACT
+    assert proof["policy"] == policy
+    assert [
+        {k: v for k, v in row.items() if k not in ("lookup_contract", "source_ownership_sha256")} for row in enabled
+    ] == rows
+    assert all(len(row["source_ownership_sha256"]) == 64 for row in enabled)
+
+
+def test_none_lookup_rederives_original_owner_and_rejects_missing_or_changed_source(tmp_path, monkeypatch):
+    run, root = none_files(tmp_path, monkeypatch)
+    proof = serving.read_serving_run(root, run)
+    rows, _ = serving.aggregate_serving(proof, evidence_sha256="c" * 64)
+    for defect in (None, "b" * 64):
+        bad = copy.deepcopy(proof)
+        ranks = bad["forwards"][(1, 5)]
+        selected = min(ranks, key=lambda rank: (-ranks[rank]["whole_forward_gpu_ms"], rank))
+        unit = next(iter(ranks[selected]["binding"].values()))
+        unit["source_ownership_sha256"] = defect
+        with pytest.raises(ValueError, match="ownership"):
+            serving.analysis_rows(bad, rows, serving.LOOKUP_CONTRACT)
 
 
 @pytest.mark.parametrize(

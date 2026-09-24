@@ -279,6 +279,67 @@ def test_canonical_best_available_composes_original_names_and_setup_once(serving
             predictor.estimate_forward_pass_time_ms(observed)
 
 
+def bounded_case(serving):
+    """TEST_ONLY complete endpoint tables; no measured GPU data."""
+    extra = []
+    for row in serving["rows"]:
+        if row["phase"] == "context" and row["batch_size"] == 1 and row["query_length"] == 8 and row["prefix"] == 0:
+            extra.append({**row, "query_length": 16, "physical_num_tokens": 16, "latency": row["latency"] * 3})
+    serving["rows"].extend(extra)
+    for row in serving["rows"]:
+        row["lookup_contract"] = "vllm_serving_bounded_p_q_v1"
+        row["source_ownership_sha256"] = digest(
+            {"TEST_ONLY_ownership": row["operation_name"], "geometry": row["geometry"]}
+        )
+        if row["runtime_mode"] == "NONE":
+            row["dispatch_fingerprint"] = ""
+    return serving
+
+
+def test_bounded_public_full_model_p_q_and_original_endpoint_audit(serving):
+    case = bounded_case(serving)
+    predictor = build(case)
+    # All 277 physical units plus setup10: P midpoint(2,6)->4; Q midpoint(1,3)->2.
+    assert predictor.estimate_forward_pass_time_ms(metrics(True, 1, 8, 8)) == 287 * 4
+    assert predictor.estimate_forward_pass_time_ms(metrics(True, 1, 12, 0)) == 287 * 2
+    engine, _ = handle(case)
+    audit = engine.glm53flash_lookup_audit("context", 1, 12, 0)
+    assert audit["schema"] == "glm53flash_lookup_audit_v1"
+    assert audit["lookup_contract"] == "vllm_serving_bounded_p_q_v1"
+    assert len(audit["operations"]) == 278
+    assert sum(x["latency_ms"] for x in audit["operations"]) == 574
+    assert sum(x["operation_name"] == "native_graph_setup" for x in audit["operations"]) == 1
+    for op in audit["operations"]:
+        assert op["axis"] == "Q"
+        assert [x["point"]["query"] for x in op["endpoints"]] == [8, 16]
+        assert [x["point"]["tokens"] for x in op["endpoints"]] == [8, 16]
+        assert [x["weight"] for x in op["endpoints"]] == [0.5, 0.5]
+        assert all(x["measurement"]["dispatch_fingerprint"] == "" for x in op["endpoints"])
+        assert all(x["measurement"]["evidence_sha256"] == SHA for x in op["endpoints"])
+    assert engine.glm53flash_lookup_audit("generation", 1, 1, 8)["operations"][0]["axis"] == "exact"
+    for q, p in [(7, 0), (17, 0), (12, 4)]:
+        with pytest.raises(ValueError, match="no enclosing measured"):
+            predictor.estimate_forward_pass_time_ms(metrics(True, 1, q, p))
+
+
+@pytest.mark.parametrize("defect", ["ownership", "contract", "missing_metadata", "mixed_contract"])
+def test_bounded_public_rejects_wrong_source_or_incomplete_opt_in(serving, defect):
+    case = bounded_case(serving)
+    row = next(x for x in case["rows"] if x["phase"] == "context" and x["query_length"] == 16)
+    if defect == "ownership":
+        row["source_ownership_sha256"] = "b" * 64
+    elif defect == "contract":
+        for x in case["rows"]:
+            x["lookup_contract"] = "unreviewed"
+    elif defect == "missing_metadata":
+        for x in case["rows"]:
+            x.pop("source_ownership_sha256")
+    else:
+        row.pop("lookup_contract")
+    with pytest.raises(ValueError):
+        build(case).estimate_forward_pass_time_ms(metrics(True, 1, 12, 0))
+
+
 def test_missing_region_empty_fingerprint_and_bounds_never_fallback(serving):
     predictor = build(serving)
     for observed in [

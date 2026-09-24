@@ -6,7 +6,6 @@ import copy
 import hashlib
 
 import pytest
-
 from collector import glm53flash_vllm_serving_export as serving
 from collector.glm53flash_contract import BACKENDS, _runtime_contract, build_model_manifest, sha256_json
 from collector.glm53flash_vllm_graph_policy import SOURCE_PINS, select_descriptor
@@ -631,6 +630,17 @@ def test_export_bind_preserves_control_and_original_table_provenance(tmp_path, m
         serving.bind_calibration([output], cal_run, truth(cal_run, cal))
 
 
+def test_unknown_lookup_contract_does_not_write_evidence(tmp_path):
+    cal, control = tmp_path / "cal", tmp_path / "control"
+    cal.mkdir()
+    control.mkdir()
+    with pytest.raises(ValueError, match="unknown serving bounded lookup contract"):
+        serving.export_serving(
+            cal, {}, tmp_path / serving.BASENAME, control_root=control, control_run={}, lookup_contract="unknown"
+        )
+    assert set(tmp_path.rglob("*")) == {cal, control}
+
+
 def test_piecewise_trace_rebinds_exact_native_segment_activity_and_each_forward(tmp_path):
     from collector.glm53flash_graph_nodes import trace_forward_identity
     from collector.glm53flash_jsonl import file_sha256
@@ -684,8 +694,34 @@ def test_piecewise_trace_rebinds_exact_native_segment_activity_and_each_forward(
         serving._replay_binding(tmp_path, copied, registry, set())
 
 
+def test_bounded_piecewise_owner_keeps_source_and_segments_not_executable_ids(tmp_path):
+    policy, manifest, provenance = piecewise_files(tmp_path)
+    registry, _ = serving._piecewise_captures(tmp_path, 0, policy, manifest, provenance, set(), {})[4]
+    entries = serving._entries(manifest, "context")
+    original = serving._capture_ownership(registry, entries, "PIECEWISE")
+    assert len(original) == 278
+    changed = copy.deepcopy(registry)
+    for segment in changed["segments"]:
+        if segment["kind"] == "graph":
+            segment["graph_id"] += 100000
+            for node in segment["nodes"]:
+                node["node_id"] += 100000
+    assert serving._capture_ownership(changed, entries, "PIECEWISE") == original
+    changed["segments"][1]["source_sha256"] = "f" * 64
+    assert serving._capture_ownership(changed, entries, "PIECEWISE")["attention_3"] != original["attention_3"]
+    changed = copy.deepcopy(registry)
+    next(call for call in changed["calls"] if call["name"] == "attention_3")["source"] = "TEST_ONLY.changed_call"
+    assert serving._capture_ownership(changed, entries, "PIECEWISE")["attention_3"] != original["attention_3"]
+    changed["calls"] = [call for call in changed["calls"] if call["name"] != "attention_3"]
+    with pytest.raises(ValueError, match="call ownership"):
+        serving._capture_ownership(changed, entries, "PIECEWISE")
+
+
 @pytest.mark.parametrize("execution_mode", ["FULL", "NONE"])
-def test_exported_schema3_table_uses_actual_public_rust_and_returns_binding(tmp_path, monkeypatch, execution_mode):
+@pytest.mark.parametrize("lookup_contract", [None, serving.LOOKUP_CONTRACT])
+def test_exported_schema3_table_uses_actual_public_rust_and_returns_binding(
+    tmp_path, monkeypatch, execution_mode, lookup_contract
+):
     import shutil
     from importlib.resources import files
 
@@ -717,7 +753,9 @@ def test_exported_schema3_table_uses_actual_public_rust_and_returns_binding(tmp_
     data.mkdir(parents=True)
     shutil.copyfile(str(files("aisimulate_core.systems") / "gb300.yaml"), systems / "gb300.yaml")
     output = data / serving.BASENAME
-    serving.export_serving(cal, cal_run, output, control_root=control, control_run=control_run)
+    serving.export_serving(
+        cal, cal_run, output, control_root=control, control_run=control_run, lookup_contract=lookup_contract
+    )
     native_cal = truth(cal_run, cal)
     bound = serving.bind_calibration([output], cal_run, native_cal)
     config = {
@@ -742,7 +780,13 @@ def test_exported_schema3_table_uses_actual_public_rust_and_returns_binding(tmp_
     result = serving.predict_homogeneous(holdout_run, holdout, config, native_cal, bound)
     assert result["rows"] == {1: {"prediction_ms": pytest.approx(0.282 if execution_mode == "NONE" else 0.025)}}
     assert result["calibration_binding"] == bound and bound["tables"][0]["sha256"] == file_sha256(output)
-    if execution_mode == "NONE":
+    assert bound.get("lookup_contract") == lookup_contract
+    if lookup_contract:
+        audit = result["prediction_evidence"][1]
+        assert len(audit["operations"]) == 278
+        assert {row["axis"] for row in audit["operations"]} == {"exact"}
+        assert all(len(row["endpoints"]) == 1 for row in audit["operations"])
+    if execution_mode == "NONE" and lookup_contract is None:
         # TEST_ONLY isolate the public static API's inclusive-ISL boundary.
         # The raw fixture above remains P0; this mocked geometry is not a
         # new native observation or interpolation qualification.

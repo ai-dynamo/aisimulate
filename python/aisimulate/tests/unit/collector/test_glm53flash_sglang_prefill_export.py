@@ -406,3 +406,73 @@ def test_control_compares_actual_model_inputs_and_preserves_independent_terminal
     else:
         result = export.profile_control(root, proof, control, control_run)
         assert result["results"][0]["ratio"] == 1
+
+
+def test_lookup_analysis_metadata_preserves_original_native_policy_and_evidence(tmp_path):
+    run, root, _ = fixture(tmp_path / "cal")
+    control_run, control = control_fixture(tmp_path / "control")
+    output = tmp_path / export.BASENAME
+    export.export_prefill(
+        root, run, output, control_root=control, control_run=control_run, lookup_contract=export.LOOKUP_CONTRACT
+    )
+    import pyarrow.parquet as pq
+
+    rows = pq.read_table(output).to_pylist()
+    assert {row["lookup_contract"] for row in rows} == {export.LOOKUP_CONTRACT}
+    assert all(len(row["source_ownership_sha256"]) == 64 for row in rows)
+    proof = export.read_prefill_run(root, run)
+    assert all(json.loads(row["prefill_policy"]) == proof["policy"] for row in rows)
+    assert "lookup_contract" not in proof["policy"]
+    original = export.verify_evidence(root, proof)
+    assert "lookup_contract" not in original
+    native = load_native(run, root)
+    binding = export.bind_calibration([output], run, native)
+    assert binding["lookup_contract"] == export.LOOKUP_CONTRACT
+    rows[0]["source_ownership_sha256"] = "f" * 64
+    import pyarrow as pa
+
+    pq.write_table(pa.Table.from_pylist(rows), output)
+    with pytest.raises(ValueError, match="original native events"):
+        export.bind_calibration([output], run, native)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"lookup_contract": "unknown", "source_ownership_sha256": "a" * 64},
+        {"lookup_contract": export.LOOKUP_CONTRACT},
+        {"source_ownership_sha256": "a" * 64},
+        {"lookup_contract": None, "source_ownership_sha256": "a" * 64},
+    ],
+)
+def test_lookup_metadata_cannot_silently_change_legacy_semantics(changes):
+    with pytest.raises(ValueError):
+        export.table_lookup_contract([changes])
+
+
+def test_changed_native_calls_reject_even_when_table_geometry_is_equal(tmp_path):
+    run, root, _ = fixture(tmp_path / "cal")
+    proof = export.read_prefill_run(root, run)
+    rows, _ = export.aggregate_prefill(proof, evidence_sha256="a" * 64)
+    # Later selected sample calls differ from original fifth-warmup ownership.
+    row = proof["forwards"][(1, 5)][0]
+    row["whole_forward_gpu_ms"] = 1000
+    row["native_prefill_calls"] = copy.deepcopy(row["native_prefill_calls"])
+    row["native_prefill_calls"][0]["source"] = "TEST_ONLY.changed_source"
+    with pytest.raises(ValueError, match="source ownership"):
+        export.analysis_rows(proof, rows, export.LOOKUP_CONTRACT)
+
+
+def test_existing_legacy_evidence_can_publish_optin_without_rewriting_any_raw(tmp_path):
+    run, root, _ = fixture(tmp_path / "cal")
+    control_run, control = control_fixture(tmp_path / "control")
+    old = tmp_path / export.BASENAME
+    export.export_prefill(root, run, old, control_root=control, control_run=control_run)
+    before = {str(p): file_sha256(p) for base in (root, control) for p in base.iterdir() if p.is_file()}
+    destination = tmp_path / "analysis" / export.BASENAME
+    destination.parent.mkdir()
+    result = export.publish_prefill(root, run, destination, lookup_contract=export.LOOKUP_CONTRACT)
+    assert result["rows"] == 367
+    assert {path: file_sha256(__import__("pathlib").Path(path)) for path in before} == before
+    bound = export.bind_calibration([destination], run, load_native(run, root))
+    assert bound["lookup_contract"] == export.LOOKUP_CONTRACT

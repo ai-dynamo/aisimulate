@@ -155,8 +155,9 @@ No ratio rescales measured latency.
 
 The dedicated `glm53flash_sglang_prefill_perf.parquet` schema4 keeps operation
 name and full B/Q/P coordinates for all 366 units plus the existing runtime
-marker. Its public consumer initially supports exact homogeneous prefill
-queries, including SG's unaligned prefixes. Missing points, incomplete phases,
+marker. Without an explicit analysis lookup contract its public consumer supports
+exact homogeneous prefill queries, including SG's unaligned prefixes. Missing
+measured support, incomplete phases,
 wrong source/config/checkpoint/runtime, direct token-only queries and legacy
 eager fallback are rejected. Schema1 SG decode and vLLM schemas2/3 retain their
 meanings. Complete independent holdout coverage and accuracy acceptance still
@@ -264,6 +265,53 @@ Prediction retains real child identities and remaps each independent holdout
 result, including missing-exact errors, to its original parent point ID.
 There is no synthetic aggregate native run or evidence root.
 
-This adds publication and evidence handling only. Schema4 remains exact-only;
-independent disjoint holdout coverage and accuracy acceptance still require
-further measured evidence and a separately reviewed interpolation contract.
+Legacy schema4 publications remain exact-only. Explicit bounded lookup is an
+analysis option described below; independent holdout coverage and accuracy
+acceptance still require actual measured endpoints and validation.
+
+### Explicit bounded native prefill lookup
+
+Pass `lookup_contract="sglang_prefill_bounded_p_q_v1"` to `export_prefill`,
+`publish_prefill` (read-only reuse of already verified original evidence),
+`glm53flash_sglang_prefill_shards.publish_calibration`, or the shared
+`publish_sharded_calibration(..., parent_run=parent)` entry. This adds separate
+analysis columns `lookup_contract` and `source_ownership_sha256`; it does not
+change the native policy, capture/allocator/source configuration, original
+calibration/control receipts, or timing producer. Both columns must be present
+and valid; unknown contracts and mixed contracts for a deployment reject.
+
+The consumer first uses an exact point. Otherwise it chooses the nearest
+strictly enclosing P points at fixed B/Q, keeping P0 initialization separate
+from a real cached prefix. At P0 it can instead choose enclosing Q points at
+fixed B. All367 units use the same two complete points. Each measured unit's
+latency is interpolated linearly on that one axis, then units and direct setup
+are summed. There is no B interpolation, positive-P Q rule, extrapolation,
+SOL, residual, donor table or skipping a nearer endpoint with incompatible
+ownership. Missing one unit rejects the whole prediction. Original ten-sample
+rank reduction, independent five-percent controls and full point union remain.
+
+Each endpoint retains its complete native identity, source-call ownership and
+fusion boundary. Different internal kernel names, activity counts or grids
+remain diagnostic evidence and need not be identical across shapes. Native
+KDA's internal chunk schedule, DSA scoring threshold and IndexPool pool/tail
+extent changes do not alone define another physical operation. Different
+cache/state layouts, precision, native ownership/fusion decomposition or
+execution/allocator policies do. In particular, no vLLM alignment restriction
+is introduced for SGLang. These predicates are source analysis of SGLang
+94602c9, `srt/layers/attention/linear/kda_backend.py`, `kernels/kda_triton.py`,
+`kernels/ops/attention/fla/kda.py` and `srt/layers/attention/dsa/{kpool_plan.py,
+dsa_indexer_kpool.py}`; no native computation is copied or replaced.
+
+`EngineHandle.glm53flash_lookup_audit("context", B, Q, P)` uses the same Rust
+selector as prediction. It reports each named unit's exact or P/Q selection,
+endpoint coordinates/weights, native policy SHA, original calibration/rank
+selection/policy-evidence SHA, ownership SHA and observed dispatch fingerprint.
+The native prefill validation report preserves those endpoint records per
+original holdout point, including across shards. Every successful opted-in
+prediction requires exactly one audit; missing, duplicate, orphaned or failed
+prediction audits reject. A separate `prediction_evidence_origins` map records
+the child cell ID, native benchmark ID and original parent point ID without
+rewriting the original audit. Old exact rows retain their old behavior;
+adding this lookup contract alone is not measurement admission.
+The frozen holdout denominator and20% MAPE criterion remain unchanged. Actual
+GPU coverage and accuracy cannot be established by TEST_ONLY fixtures.

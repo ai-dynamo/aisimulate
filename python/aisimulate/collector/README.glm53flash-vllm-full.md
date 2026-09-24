@@ -44,3 +44,48 @@ PIECEWISE initialization alongside FULL targets. This records distinct segment
 and eager-callable ownership artifacts; it does not enable PIECEWISE timing or
 FULL table reuse. The default remains disabled, and controls/holdouts reject
 this profiling opt-in. The native inventory records the chosen capture setting.
+
+## Explicit bounded schema 3 serving lookup
+
+Schema 3 has a separate native-serving reader for measured NONE, PIECEWISE and
+FULL operations. To enable bounded analysis lookup, pass
+`lookup_contract="vllm_serving_bounded_p_q_v1"` to
+`glm53flash_vllm_serving_export.export_serving(..., control_root=..., control_run=...)`,
+`glm53flash_serving_shards.publish_calibration(parent, children, destination, ...)`,
+or the shared `publish_sharded_calibration(..., parent_run=parent, ...)` entry.
+Use the original frozen run objects, complete calibration children and
+independent controls; output must be a new canonical table path. The exporter
+revalidates original evidence and adds only the analysis columns
+`lookup_contract` and `source_ownership_sha256`. It does not change native policy,
+runtime admission, producer loops or original timing receipts. Unknown contracts
+reject before evidence writes. Schema 1/2 keep their original meaning; schema 3
+without this opt-in retains its existing exact/same-dispatch P-only rule.
+
+The Rust consumer first selects an exact point. Otherwise each of the 277 named
+physical units and the one setup unit requires two enclosing measured endpoints:
+nearest P brackets at fixed B/Q, or Q brackets at fixed B/P0. P0 initialization
+cannot bracket a cached prefix. Runtime/checkpoint/precision/TP, actual policy,
+source-call ownership, measurement method and existing per-unit state/layout
+partitions must match. FULL and PIECEWISE keep the actual native descriptor and
+padding; NONE physical tokens may vary with B*Q. Different observed kernel
+fingerprints or contribution counts remain in the evidence without becoming an
+equality requirement. There is no B interpolation, cached-P Q interpolation,
+extrapolation, SOL fallback, whole-forward residual or substitution for a
+missing unit. Independent controls and original ten-sample reduction still apply.
+
+After compiling the public `EngineHandle` with that table,
+`engine.glm53flash_lookup_audit("context", B, Q, P)` or
+`engine.glm53flash_lookup_audit("generation", B, 1, P)` reports the same Rust
+selection used by prediction. The output contains the native and graph policy
+hashes and every unit's exact/P/Q choice, endpoint coordinates and weights,
+original latency, measurement method, contribution count, dispatch fingerprint,
+rank-selection hash, raw-evidence hash, policy-evidence hash and ownership hash.
+`predict_homogeneous` retains these records in `prediction_evidence` for every
+successful original holdout point. Sharded predictions additionally retain
+`prediction_evidence_origins` with the child cell, native benchmark ID and
+original parent point ID. Failed points remain error rows with no fabricated audit.
+
+These analysis APIs do not establish GPU coverage or accuracy acceptance. Actual
+PIECEWISE coverage depends on the initialized capture policy and measured
+endpoints. Independent full holdout prediction and the existing accuracy gate
+remain required; TEST_ONLY fixtures do not supply those measurements.

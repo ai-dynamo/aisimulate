@@ -728,6 +728,37 @@ impl Engine {
             .total_ms)
     }
 
+    /// Original measured endpoint provenance from the same native selectors
+    /// used by GLM predictions; this is not a separate timing model.
+    pub fn glm53flash_lookup_audit(
+        &self,
+        phase: &str,
+        batch: u32,
+        query: u32,
+        prefix: u32,
+    ) -> Result<serde_json::Value, AicError> {
+        if self.db.database_mode != DatabaseMode::Silicon || self.nextn != 0 {
+            return Err(AicError::InvalidPerfData(
+                "GLM audit requires unmodified SILICON execution".into(),
+            ));
+        }
+        let is_context = match phase {
+            "context" => true,
+            "generation" => false,
+            _ => {
+                return Err(AicError::InvalidPerfData(
+                    "GLM audit phase must be context or generation".into(),
+                ));
+            }
+        };
+        self.db.glm53flash_graph.glm53flash_lookup_audit(
+            &self.context_ops,
+            &self.generation_ops,
+            is_context,
+            (batch, query, prefix),
+        )
+    }
+
     /// Mocker H2: decode-step latency in ms. Pure-Rust inherent method (no
     /// PyO3 `py` token). Thin shim over [`Self::run_static`] with
     /// `mode=Generation`. Mocker passes `osl=2` (one decode step at

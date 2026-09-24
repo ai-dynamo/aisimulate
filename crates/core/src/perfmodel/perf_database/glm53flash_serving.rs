@@ -15,13 +15,14 @@ use crate::common::error::AicError;
 use crate::operators::op::RuntimeContext;
 use crate::operators::{Op, PerformanceResult, Source};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 const VLLM_TAIL_SOURCE: &str = "603066c63ced49b8e059ff020a372acb75539d45c9d1bff591fade9d4f51f63b";
+const LOOKUP_CONTRACT: &str = "vllm_serving_bounded_p_q_v1";
 
 fn invalid(message: impl Into<String>) -> AicError {
     AicError::InvalidPerfData(message.into())
@@ -305,7 +306,7 @@ struct Unit {
     name: String,
     geometry: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 struct Point {
     phase: String,
     mode: String,
@@ -320,16 +321,141 @@ struct Key {
     unit: Unit,
     point: Point,
 }
+#[derive(Debug, Clone, Serialize)]
 struct Measurement {
     latency: f64,
+    #[serde(rename = "contribution_count")]
     count: u32,
+    #[serde(rename = "measurement_method")]
     method: String,
+    #[serde(rename = "dispatch_fingerprint")]
     dispatch: String,
+    sample_count: u32,
+    rank_selection_sha256: String,
+    evidence_sha256: String,
+    policy_evidence_sha256: String,
+    source_ownership_sha256: Option<String>,
 }
 struct Profile {
     policy: ServingPolicy,
+    lookup_contract: Option<String>,
     rows: BTreeMap<Key, Measurement>,
     units: BTreeMap<String, BTreeSet<Unit>>,
+}
+impl Profile {
+    fn lookup(&self, target: &Key) -> Result<(f64, Value), AicError> {
+        let (axis, endpoints) = if self.rows.contains_key(target) {
+            ("exact", vec![(target.clone(), 1.0)])
+        } else if self.lookup_contract.as_deref() == Some(LOOKUP_CONTRACT) {
+            self.bounded_endpoints(target)?
+        } else {
+            return interpolate(&self.rows, target)?
+                .map(|latency| (latency, Value::Null))
+                .ok_or_else(|| {
+                    invalid("serving unit lacks exact data or same-dispatch prefix brackets")
+                });
+        };
+        let mut total = 0.0;
+        let mut evidence = Vec::new();
+        let mut ownership = None;
+        for (key, weight) in endpoints {
+            let row = self
+                .rows
+                .get(&key)
+                .ok_or_else(|| invalid("missing serving endpoint unit"))?;
+            if axis != "exact" {
+                let source = row
+                    .source_ownership_sha256
+                    .as_ref()
+                    .ok_or_else(|| invalid("serving endpoint lacks original source ownership"))?;
+                let identity = (source, &row.method);
+                if ownership.is_some_and(|old| old != identity) {
+                    return Err(invalid(
+                        "serving endpoints change native source ownership or measurement method",
+                    ));
+                }
+                ownership = Some(identity);
+            }
+            total += weight * row.latency;
+            evidence.push(json!({"point":key.point,"weight":weight,"measurement":row}));
+        }
+        if !total.is_finite() || total < 0.0 {
+            return Err(invalid("invalid bounded serving latency"));
+        }
+        Ok((
+            total,
+            json!({"operation_name":target.unit.name,"geometry":target.unit.geometry,
+            "target":target.point,"axis":axis,"latency_ms":total,"endpoints":evidence}),
+        ))
+    }
+    fn bounded_endpoints(&self, target: &Key) -> Result<(&'static str, Vec<(Key, f64)>), AicError> {
+        let wanted = partition(target)?;
+        let mut lower = target.clone();
+        lower.point.query = 0;
+        lower.point.prefix = 0;
+        lower.point.tokens = 0;
+        lower.point.requests = 0;
+        let mut upper = lower.clone();
+        upper.point.query = u32::MAX;
+        upper.point.prefix = u32::MAX;
+        upper.point.tokens = u32::MAX;
+        upper.point.requests = u32::MAX;
+        let mut lane = Vec::new();
+        for (key, _) in self.rows.range(lower..=upper) {
+            let p = &key.point;
+            let t = &target.point;
+            if key.unit == target.unit
+                && p.phase == t.phase
+                && p.mode == t.mode
+                && p.batch == t.batch
+                && p.requests == t.requests
+                && (p.prefix == 0) == (t.prefix == 0)
+                && (p.mode == "NONE" || p.tokens == t.tokens)
+                && partition(key)? == wanted
+            {
+                lane.push(key);
+            }
+        }
+        for axis in ["P", "Q"] {
+            if axis == "Q" && (target.point.phase != "context" || target.point.prefix != 0) {
+                continue;
+            }
+            let coordinate = |key: &Key| {
+                if axis == "P" {
+                    key.point.prefix
+                } else {
+                    key.point.query
+                }
+            };
+            let same_axis = |key: &&Key| {
+                if axis == "P" {
+                    key.point.query == target.point.query
+                } else {
+                    key.point.prefix == target.point.prefix
+                }
+            };
+            let lo = lane
+                .iter()
+                .copied()
+                .filter(same_axis)
+                .filter(|key| coordinate(key) < coordinate(target))
+                .max_by_key(|key| coordinate(key));
+            let hi = lane
+                .iter()
+                .copied()
+                .filter(same_axis)
+                .filter(|key| coordinate(key) > coordinate(target))
+                .min_by_key(|key| coordinate(key));
+            if let (Some(lo), Some(hi)) = (lo, hi) {
+                let weight = f64::from(coordinate(target) - coordinate(lo))
+                    / f64::from(coordinate(hi) - coordinate(lo));
+                return Ok((axis, vec![(lo.clone(), 1.0 - weight), (hi.clone(), weight)]));
+            }
+        }
+        Err(invalid(
+            "serving unit has no enclosing measured P or P0/Q endpoints with the same native mode/padding/state; no extrapolation or fallback",
+        ))
+    }
 }
 type Profiles = BTreeMap<(String, u32), Profile>;
 pub(super) struct ServingTable {
@@ -505,18 +631,83 @@ impl ServingTable {
                 "serving phase or exact native operation is unmeasured",
             ));
         }
-        let latency = if let Some(row) = profile.rows.get(&key) {
-            row.latency
-        } else {
-            interpolate(&profile.rows, &key)?.ok_or_else(|| {
-                invalid("serving unit lacks exact data or same-dispatch prefix brackets")
-            })?
-        };
+        let (latency, _) = profile.lookup(&key)?;
         Ok(Some(PerformanceResult::with_energy(
             latency,
             0.0,
             Source::Silicon,
         )))
+    }
+    pub(super) fn audit(
+        &self,
+        context_ops: &[Op],
+        generation_ops: &[Op],
+        context: bool,
+        point: (u32, u32, u32),
+    ) -> Result<Value, AicError> {
+        if !self.validate_ops(context_ops, true)? || !self.validate_ops(generation_ops, false)? {
+            return Err(invalid(
+                "serving audit requires both complete named model phases",
+            ));
+        }
+        let (batch, query, prefix) = point;
+        validate_bounds(context, prefix, query)?;
+        let profiles = self
+            .profiles()?
+            .ok_or_else(|| invalid("missing serving audit table"))?;
+        let mut operations = Vec::new();
+        let mut policy_hash = None;
+        let mut native_policy_hash = None;
+        let phase = if context { "context" } else { "generation" };
+        for op in if context { context_ops } else { generation_ops } {
+            let (unit, shape) =
+                operation(op)?.ok_or_else(|| invalid("invalid serving audit operation"))?;
+            let identity = (
+                shape["checkpoint_format"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                shape["tp_size"].as_u64().unwrap_or_default() as u32,
+            );
+            let profile = profiles
+                .get(&identity)
+                .ok_or_else(|| invalid("missing serving audit identity"))?;
+            if profile.lookup_contract.as_deref() != Some(LOOKUP_CONTRACT) {
+                return Err(invalid(
+                    "serving endpoint audit requires explicit bounded lookup metadata",
+                ));
+            }
+            validate_native_workload(
+                &unit.component,
+                &shape,
+                prefix,
+                query,
+                Some(&profile.policy.backend_version),
+            )?;
+            let (mode, tokens, requests) =
+                profile.policy.native_policy.select(context, batch, query)?;
+            let target = Key {
+                unit,
+                point: Point {
+                    phase: phase.into(),
+                    mode,
+                    batch,
+                    query,
+                    prefix,
+                    tokens,
+                    requests,
+                },
+            };
+            let (_, row) = profile.lookup(&target)?;
+            policy_hash = Some(digest(&canonical(&profile.policy)?));
+            native_policy_hash = Some(profile.policy.native_policy_sha256.clone());
+            operations.push(row);
+        }
+        Ok(
+            json!({"schema":"glm53flash_lookup_audit_v1","graph_policy_sha256":policy_hash,
+            "native_policy_sha256":native_policy_hash,"lookup_contract":LOOKUP_CONTRACT,
+            "phase":phase,"target":{"batch":batch,"query":query,"prefix":prefix},"operations":operations}),
+        )
     }
 }
 fn validate_bounds(context: bool, prefix: u32, query: u32) -> Result<(), AicError> {
@@ -683,6 +874,11 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
     }
     let reader = PerfReader::open(path)?;
     let policy_col = reader.col("graph_policy")?;
+    let lookup_col = reader.col_optional("lookup_contract");
+    let ownership_col = reader.col_optional("source_ownership_sha256");
+    if lookup_col.is_some() != ownership_col.is_some() {
+        return Err(invalid("incomplete serving lookup metadata columns"));
+    }
     let mut policies = BTreeMap::new();
     for row in reader.rows()? {
         let row = row?;
@@ -747,12 +943,28 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
             return Err(invalid("serving policy SHA differs"));
         }
         let id = (policy.checkpoint_format.clone(), policy.tp_size);
+        let lookup_contract = lookup_col
+            .map(|c| row.str(c).map(str::to_owned))
+            .transpose()?;
+        let source_ownership = ownership_col
+            .map(|c| row.str(c).map(str::to_owned))
+            .transpose()?;
+        if lookup_contract
+            .as_deref()
+            .is_some_and(|s| s != LOOKUP_CONTRACT)
+            || source_ownership.as_deref().is_some_and(|s| !sha256(s))
+        {
+            return Err(invalid(
+                "unknown serving lookup contract or invalid source ownership",
+            ));
+        }
         let profile = profiles.entry(id.clone()).or_insert_with(|| Profile {
             policy: policy.clone(),
+            lookup_contract: lookup_contract.clone(),
             rows: BTreeMap::new(),
             units: BTreeMap::new(),
         });
-        if profile.policy != *policy {
+        if profile.policy != *policy || profile.lookup_contract != lookup_contract {
             return Err(invalid(
                 "serving checkpoint/TP has competing runtime policies",
             ));
@@ -865,6 +1077,11 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
                     count,
                     method: method.into(),
                     dispatch: dispatch.into(),
+                    sample_count,
+                    rank_selection_sha256: row.str(c[19])?.into(),
+                    evidence_sha256: row.str(c[20])?.into(),
+                    policy_evidence_sha256: row.str(c[21])?.into(),
+                    source_ownership_sha256: source_ownership,
                 },
             )
             .is_some()
@@ -1126,7 +1343,110 @@ mod tests {
             count: 1,
             method: "native_cupti_unit_union_v1".into(),
             dispatch: dispatch.into(),
+            sample_count: 10,
+            rank_selection_sha256: SHA.into(),
+            evidence_sha256: SHA.into(),
+            policy_evidence_sha256: SHA.into(),
+            source_ownership_sha256: None,
         }
+    }
+    fn bounded_profile(rows: BTreeMap<Key, Measurement>) -> Profile {
+        let native = policy(true);
+        Profile {
+            policy: ServingPolicy {
+                schema_version: 3,
+                backend: "vllm".into(),
+                backend_version: "0.30.0".into(),
+                backend_revision: VLLM_REVISION.into(),
+                checkpoint_format: "fp8".into(),
+                checkpoint_revision: "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a".into(),
+                config_sha256: SHA.into(),
+                execution_policy_sha256: SHA.into(),
+                native_policy_sha256: digest(&canonical(&native).unwrap()),
+                native_policy: native,
+                runtime_digest: format!("sha256:{SHA}"),
+                source_pins: vllm_pins(),
+                source_sha256: VLLM_STOCK_SOURCE.into(),
+                timing_boundary: "native_metadata_to_logits_gpu_v1".into(),
+                tp_size: 2,
+            },
+            lookup_contract: Some(LOOKUP_CONTRACT.into()),
+            rows,
+            units: BTreeMap::new(),
+        }
+    }
+    fn owned(value: f64, dispatch: &str) -> Measurement {
+        let mut m = measured(value, dispatch);
+        m.source_ownership_sha256 = Some(SHA.into());
+        m
+    }
+    #[test]
+    fn bounded_prefix_uses_measured_ownership_not_equal_kernel_inventory() {
+        let mut hi = owned(
+            6.0,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        );
+        hi.count = 4; // Different original GPU activity count, same physical unit.
+        let mut p = bounded_profile(BTreeMap::from([(key(4), owned(2.0, SHA)), (key(12), hi)]));
+        let (value, audit) = p.lookup(&key(8)).unwrap();
+        assert_eq!(value, 4.0); // Equal distances from measured 2 and 6.
+        assert_eq!(audit["axis"], "P");
+        assert_eq!(audit["endpoints"][0]["weight"], 0.5);
+        assert_ne!(
+            audit["endpoints"][0]["measurement"]["dispatch_fingerprint"],
+            audit["endpoints"][1]["measurement"]["dispatch_fingerprint"]
+        );
+        p.lookup_contract = None;
+        assert!(p.lookup(&key(8)).is_err()); // Original contract remains strict.
+    }
+    #[test]
+    fn bounded_none_q_changes_physical_tokens_but_not_batch_or_cached_state() {
+        let k = |q, prefix| {
+            let mut k = key(prefix);
+            k.point.query = q;
+            k.point.mode = "NONE".into();
+            k.point.tokens = q;
+            k
+        };
+        let p = bounded_profile(BTreeMap::from([
+            (k(8, 0), owned(2.0, "")),
+            (k(16, 0), owned(6.0, "")),
+        ]));
+        let (value, audit) = p.lookup(&k(12, 0)).unwrap();
+        assert_eq!(value, 4.0);
+        assert_eq!(audit["axis"], "Q");
+        assert_eq!(audit["endpoints"][0]["point"]["tokens"], 8);
+        assert_eq!(audit["endpoints"][1]["point"]["tokens"], 16);
+        for target in [k(4, 0), k(32, 0), k(12, 4)] {
+            assert!(p.lookup(&target).is_err());
+        }
+        let mut wrong = k(12, 0);
+        wrong.point.batch = 2;
+        wrong.point.tokens = 24;
+        wrong.point.requests = 2;
+        assert!(p.lookup(&wrong).is_err());
+        assert_eq!(p.lookup(&k(8, 0)).unwrap().1["axis"], "exact");
+    }
+    #[test]
+    fn bounded_lookup_rejects_changed_source_method_mode_and_native_padding() {
+        for defect in 0..5 {
+            let mut hi = key(12);
+            let mut value = owned(6.0, SHA);
+            match defect {
+                0 => value.source_ownership_sha256 = Some("b".repeat(64)),
+                1 => value.source_ownership_sha256 = None,
+                2 => value.method = "native_module_cuda_events_v1".into(),
+                3 => hi.point.tokens = 8,
+                _ => hi.point.mode = "NONE".into(),
+            }
+            let p = bounded_profile(BTreeMap::from([(key(4), owned(2.0, SHA)), (hi, value)]));
+            assert!(p.lookup(&key(8)).is_err(), "defect {defect}");
+        }
+        let p = bounded_profile(BTreeMap::from([
+            (key(0), owned(2.0, SHA)),
+            (key(12), owned(6.0, SHA)),
+        ]));
+        assert!(p.lookup(&key(8)).is_err()); // Initialization cannot bracket cached state.
     }
     #[test]
     fn prefix_only_interpolation_requires_same_unit_bucket_query_method_count_and_fingerprint() {

@@ -1,9 +1,10 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Schema 4: exact, named SGLang native prefill intervals and allocator setup.
+//! Schema 4: named SGLang native prefill intervals and allocator setup.
 //! Independently expressed receipt contract; no native implementation is copied.
-//! This reader grants neither interpolation nor runtime/measurement admission.
+//! Bounded lookup requires explicit analysis metadata; native policy is unchanged.
+//! This reader grants no runtime/measurement admission.
 
 use super::glm53flash::{geometry, sha256, validate_geometry, validate_runtime};
 use super::parquet_loader::PerfReader;
@@ -16,6 +17,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+const LOOKUP_CONTRACT: &str = "sglang_prefill_bounded_p_q_v1";
 
 pub(super) const BASENAME: &str = "glm53flash_sglang_prefill_perf.parquet";
 fn invalid(message: impl Into<String>) -> AicError {
@@ -120,7 +123,7 @@ struct Unit {
     name: String,
     geometry: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 struct Point {
     batch: u32,
     query: u32,
@@ -149,10 +152,116 @@ struct Key {
     unit: Unit,
     point: Point,
 }
+#[derive(Clone, Debug, Serialize)]
+struct Measured {
+    latency: f64,
+    dispatch_fingerprint: String,
+    activity_count: u32,
+    contribution_count: u32,
+    rank_selection_sha256: String,
+    evidence_sha256: String,
+    policy_evidence_sha256: String,
+    source_ownership_sha256: Option<String>,
+}
 struct Profile {
     policy: Policy,
-    rows: BTreeMap<Key, f64>,
+    lookup_contract: Option<String>,
+    rows: BTreeMap<Key, Measured>,
     units: BTreeSet<Unit>,
+    points: BTreeSet<Point>,
+}
+// Shape-dependent schedules remain evidence. Identity is the measured native
+// unit/layout/source ownership and deployment policy, not equal kernel grids.
+impl Profile {
+    fn select(&self, point: &Point) -> Result<(String, Vec<(Point, f64)>), AicError> {
+        point.validate()?;
+        if self.points.contains(point) {
+            return Ok(("exact".into(), vec![(point.clone(), 1.0)]));
+        }
+        if self.lookup_contract.as_deref() != Some(LOOKUP_CONTRACT) {
+            return Err(invalid(
+                "SG prefill lacks exact measured operation/B/Q/P; bounded lookup is not enabled",
+            ));
+        }
+        for axis in ["P", "Q"] {
+            if axis == "Q" && point.prefix != 0 {
+                continue;
+            }
+            let value = |p: &Point| if axis == "P" { p.prefix } else { p.query };
+            let lane: Vec<_> = self
+                .points
+                .iter()
+                .filter(|p| {
+                    p.batch == point.batch
+                        && (p.prefix == 0) == (point.prefix == 0)
+                        && if axis == "P" {
+                            p.query == point.query
+                        } else {
+                            p.prefix == point.prefix
+                        }
+                })
+                .collect();
+            let lo = lane
+                .iter()
+                .copied()
+                .filter(|p| value(p) < value(point))
+                .max_by_key(|p| value(p));
+            let hi = lane
+                .iter()
+                .copied()
+                .filter(|p| value(p) > value(point))
+                .min_by_key(|p| value(p));
+            if let (Some(lo), Some(hi)) = (lo, hi) {
+                let weight = f64::from(value(point) - value(lo)) / f64::from(value(hi) - value(lo));
+                return Ok((
+                    axis.into(),
+                    vec![(lo.clone(), 1.0 - weight), (hi.clone(), weight)],
+                ));
+            }
+        }
+        Err(invalid(
+            "SG prefill has no enclosing measured P or P0/Q bracket; extrapolation and fallback are disabled",
+        ))
+    }
+    fn lookup(&self, unit: &Unit, point: &Point) -> Result<(f64, Value), AicError> {
+        let (axis, points) = self.select(point)?;
+        let mut total = 0.0;
+        let mut endpoints = Vec::new();
+        let mut ownership = None;
+        for (endpoint, weight) in points {
+            let row = self
+                .rows
+                .get(&Key {
+                    unit: unit.clone(),
+                    point: endpoint.clone(),
+                })
+                .ok_or_else(|| {
+                    invalid("SG prefill selected endpoint lacks a complete measured unit")
+                })?;
+            if axis != "exact" {
+                let current = row.source_ownership_sha256.as_ref().ok_or_else(|| {
+                    invalid("SG prefill endpoint lacks source ownership evidence")
+                })?;
+                let identity = (current.clone(), row.contribution_count);
+                if ownership.as_ref().is_some_and(|old| old != &identity) {
+                    return Err(invalid(
+                        "SG prefill endpoints change native unit ownership/fusion decomposition",
+                    ));
+                }
+                ownership = Some(identity);
+            }
+            total += weight * row.latency;
+            endpoints.push(json!({"point": endpoint, "weight": weight, "measurement": row}));
+        }
+        if !total.is_finite() || total < 0.0 {
+            return Err(invalid("invalid bounded prefill latency"));
+        }
+        Ok((
+            total,
+            json!({"operation_name": unit.name, "geometry": unit.geometry,
+            "target":point, "axis":axis, "latency_ms":total, "endpoints":endpoints}),
+        ))
+    }
 }
 type Profiles = BTreeMap<(String, u32), Profile>;
 pub(super) struct PrefillTable {
@@ -254,6 +363,46 @@ impl PrefillTable {
         }
         Ok(true)
     }
+    pub(super) fn audit(
+        &self,
+        context: &[Op],
+        generation: &[Op],
+        point: (u32, u32, u32),
+    ) -> Result<Value, AicError> {
+        if !self.validate_ops(context)? {
+            return Err(invalid("SG prefill audit requires measured context"));
+        }
+        self.validate_generation_contract(generation, context)?;
+        let (batch, query, prefix) = point;
+        let point = Point {
+            batch,
+            query,
+            prefix,
+        };
+        point.validate()?;
+        let profiles = self
+            .profiles()?
+            .ok_or_else(|| invalid("missing SG prefill table"))?;
+        let mut rows = Vec::new();
+        let mut policy = None;
+        let mut lookup_contract = None;
+        for op in context {
+            let (unit, shape) =
+                operation(op)?.ok_or_else(|| invalid("invalid SG audit operation"))?;
+            let profile = profiles
+                .get(&identity_of(&shape))
+                .ok_or_else(|| invalid("missing SG audit identity"))?;
+            let (_, row) = profile.lookup(&unit, &point)?;
+            policy = Some(digest(&canonical(&profile.policy)?));
+            lookup_contract = profile.lookup_contract.clone();
+            rows.push(row);
+        }
+        Ok(
+            json!({"schema":"glm53flash_lookup_audit_v1","native_policy_sha256":policy,
+            "phase":"context",
+            "lookup_contract":lookup_contract,"target":point,"operations":rows}),
+        )
+    }
     pub(super) fn query(
         &self,
         op: &Op,
@@ -290,10 +439,9 @@ impl PrefillTable {
                 "SG prefill requires complete homogeneous RuntimeContext with num_tokens=B*Q",
             ));
         }
-        let latency = profile.rows.get(&Key {unit, point})
-            .ok_or_else(|| invalid("SG prefill lacks exact measured operation/B/Q/P; fallback and interpolation are disabled"))?;
+        let (latency, _) = profile.lookup(&unit, &point)?;
         Ok(Some(PerformanceResult::with_energy(
-            *latency,
+            latency,
             0.0,
             Source::Silicon,
         )))
@@ -424,6 +572,11 @@ fn load(
         .iter()
         .map(|n| reader.col(n))
         .collect::<Result<_, _>>()?;
+    let lookup_col = reader.col_optional("lookup_contract");
+    let ownership_col = reader.col_optional("source_ownership_sha256");
+    if lookup_col.is_some() != ownership_col.is_some() {
+        return Err(invalid("incomplete SG prefill lookup metadata"));
+    }
     let mut policies = BTreeMap::new();
     let mut profiles: Profiles = BTreeMap::new();
     type Evidence = (String, String, String);
@@ -447,13 +600,30 @@ fn load(
         if row.str(c[17])? != digest(text) {
             return Err(invalid("SG prefill policy SHA mismatch"));
         }
+        let lookup_contract = lookup_col
+            .map(|c| row.str(c).map(str::to_owned))
+            .transpose()?;
+        if lookup_contract
+            .as_deref()
+            .is_some_and(|s| s != LOOKUP_CONTRACT)
+        {
+            return Err(invalid("unknown SG prefill lookup contract"));
+        }
+        let source_ownership = ownership_col
+            .map(|c| row.str(c).map(str::to_owned))
+            .transpose()?;
+        if source_ownership.as_deref().is_some_and(|s| !sha256(s)) {
+            return Err(invalid("invalid SG prefill source ownership SHA"));
+        }
         let id = (policy.checkpoint_format.clone(), policy.tp_size);
         let profile = profiles.entry(id.clone()).or_insert_with(|| Profile {
             policy: policy.clone(),
+            lookup_contract: lookup_contract.clone(),
             rows: BTreeMap::new(),
             units: BTreeSet::new(),
+            points: BTreeSet::new(),
         });
-        if profile.policy != *policy {
+        if profile.policy != *policy || profile.lookup_contract != lookup_contract {
             return Err(invalid(
                 "SG prefill has competing policies for checkpoint/TP",
             ));
@@ -530,12 +700,28 @@ fn load(
             row.str(c[21])?.into(),
             row.str(c[22])?.into(),
         );
+        profile.points.insert(point.clone());
         let (old, units) = points
             .entry((id, point.clone()))
             .or_insert_with(|| (evidence.clone(), BTreeSet::new()));
         if old != &evidence
             || !units.insert(unit.clone())
-            || profile.rows.insert(Key { unit, point }, latency).is_some()
+            || profile
+                .rows
+                .insert(
+                    Key { unit, point },
+                    Measured {
+                        latency,
+                        dispatch_fingerprint: fingerprint.into(),
+                        activity_count: activity,
+                        contribution_count: count,
+                        rank_selection_sha256: row.str(c[20])?.into(),
+                        evidence_sha256: row.str(c[21])?.into(),
+                        policy_evidence_sha256: row.str(c[22])?.into(),
+                        source_ownership_sha256: source_ownership,
+                    },
+                )
+                .is_some()
         {
             return Err(invalid(
                 "SG prefill point mixes evidence or duplicates measured units",
@@ -586,5 +772,163 @@ mod tests {
                 .is_err()
             );
         }
+    }
+    fn authored_profile(points: &[(u32, u32, f64)], enabled: bool) -> (Profile, Unit) {
+        // TEST_ONLY row values; public SDK fixtures separately validate all367.
+        let policy:Policy=serde_json::from_value(json!({
+            "schema_version":4,"backend":"sglang","backend_version":"0.5.20",
+            "backend_revision":"94602c9c2b7cbdb8efd5c52802dac6a1c180089e","checkpoint_format":"fp8",
+            "checkpoint_revision":"eb9eb208eb0d988989d07a6a12d0fdeb5f52574a","config_sha256":"a".repeat(64),
+            "tp_size":2,"runtime_digest":format!("sha256:{}","a".repeat(64)),
+            "source_sha256":"401b762a863931720b2b5cdc7b64246fac11cb215dbf6ea0fd19f3db24ce7e49",
+            "source_pins":source_pins(),"timing_boundary":"embedding_to_logits_gpu_v1",
+            "execution_policy_sha256":"a".repeat(64),"prefill_backend":"disabled","decode_backend":"full",
+            "native_model_contract":model_contract()
+        })).unwrap();
+        let unit = Unit {
+            component: "attention".into(),
+            name: "TEST_ONLY".into(),
+            geometry: "{}".into(),
+        };
+        let rows = points
+            .iter()
+            .map(|&(query, prefix, latency)| {
+                (
+                    Key {
+                        unit: unit.clone(),
+                        point: Point {
+                            batch: 1,
+                            query,
+                            prefix,
+                        },
+                    },
+                    Measured {
+                        latency,
+                        dispatch_fingerprint: format!("{:064x}", prefix + query),
+                        activity_count: query,
+                        contribution_count: 1,
+                        rank_selection_sha256: "a".repeat(64),
+                        evidence_sha256: format!("{:064x}", prefix + query),
+                        policy_evidence_sha256: "b".repeat(64),
+                        source_ownership_sha256: enabled.then(|| "c".repeat(64)),
+                    },
+                )
+            })
+            .collect();
+        (
+            Profile {
+                policy,
+                lookup_contract: enabled.then(|| LOOKUP_CONTRACT.into()),
+                rows,
+                units: BTreeSet::from([unit.clone()]),
+                points: points
+                    .iter()
+                    .map(|&(query, prefix, _)| Point {
+                        batch: 1,
+                        query,
+                        prefix,
+                    })
+                    .collect(),
+            },
+            unit,
+        )
+    }
+    #[test]
+    fn native_selector_preserves_exact_then_nearest_p_provenance() {
+        let (profile, unit) = authored_profile(
+            &[
+                (32, 100, 100.0),
+                (32, 120, 1.0),
+                (32, 128, 3.0),
+                (32, 200, 200.0),
+            ],
+            true,
+        );
+        let point = Point {
+            batch: 1,
+            query: 32,
+            prefix: 124,
+        };
+        let (value, audit) = profile.lookup(&unit, &point).unwrap();
+        assert_eq!(value, 2.0);
+        assert_eq!(audit["axis"], "P");
+        assert_eq!(audit["endpoints"][0]["point"]["prefix"], 120);
+        assert_eq!(audit["endpoints"][1]["point"]["prefix"], 128);
+        assert_ne!(
+            audit["endpoints"][0]["measurement"]["dispatch_fingerprint"],
+            audit["endpoints"][1]["measurement"]["dispatch_fingerprint"]
+        );
+        let (exact, proof) = profile
+            .lookup(
+                &unit,
+                &Point {
+                    prefix: 120,
+                    ..point
+                },
+            )
+            .unwrap();
+        assert_eq!(exact, 1.0);
+        assert_eq!(proof["axis"], "exact");
+    }
+    #[test]
+    fn native_q_selector_is_bounded_to_initial_state() {
+        let (profile, unit) = authored_profile(
+            &[(32, 0, 1.0), (64, 0, 5.0), (32, 128, 1.0), (64, 128, 5.0)],
+            true,
+        );
+        assert_eq!(
+            profile
+                .lookup(
+                    &unit,
+                    &Point {
+                        batch: 1,
+                        query: 40,
+                        prefix: 0
+                    }
+                )
+                .unwrap()
+                .0,
+            2.0
+        );
+        for point in [
+            Point {
+                batch: 1,
+                query: 40,
+                prefix: 128,
+            },
+            Point {
+                batch: 1,
+                query: 16,
+                prefix: 0,
+            },
+            Point {
+                batch: 2,
+                query: 40,
+                prefix: 0,
+            },
+            Point {
+                batch: 1,
+                query: 32,
+                prefix: 64,
+            },
+        ] {
+            assert!(profile.lookup(&unit, &point).is_err());
+        }
+    }
+    #[test]
+    fn legacy_and_changed_ownership_cannot_enable_bounded_lookup() {
+        let (mut profile, unit) = authored_profile(&[(32, 120, 1.0), (32, 128, 3.0)], false);
+        let target = Point {
+            batch: 1,
+            query: 32,
+            prefix: 124,
+        };
+        assert!(profile.lookup(&unit, &target).is_err());
+        profile.lookup_contract = Some(LOOKUP_CONTRACT.into());
+        assert!(profile.lookup(&unit, &target).is_err());
+        for (key, row) in profile.rows.iter_mut() {
+            row.source_ownership_sha256 = Some(format!("{:064x}", key.point.prefix));
+        }
+        assert!(profile.lookup(&unit, &target).is_err());
     }
 }

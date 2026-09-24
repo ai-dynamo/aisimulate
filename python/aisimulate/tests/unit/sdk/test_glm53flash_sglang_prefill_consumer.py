@@ -419,3 +419,132 @@ def test_schema4_context_coexists_with_unchanged_schema1_decode(prefill):
     spec["generation_ops"] = []
     with pytest.raises(ValueError, match="complete 366"):
         handle(prefill, spec)
+
+
+LOOKUP = "sglang_prefill_bounded_p_q_v1"
+
+
+def bounded_fixture(case):
+    """TEST_ONLY complete named model at independently authored measured points."""
+    template = [
+        copy.deepcopy(row)
+        for row in case["rows"]
+        if (row["batch_size"], row["query_length"], row["prefix"]) == (1, 32, 118)
+    ]
+    rows = []
+    for q, p, scale in [(32, 100, 100), (32, 118, 1), (32, 126, 3), (32, 200, 200), (16, 0, 2), (64, 0, 6)]:
+        for original in template:
+            row = {
+                **copy.deepcopy(original),
+                "query_length": q,
+                "prefix": p,
+                "physical_num_tokens": q,
+                "latency": original["latency"] * scale,
+                "lookup_contract": LOOKUP,
+                "source_ownership_sha256": digest({"TEST_ONLY_NATIVE_UNIT": original["operation_name"]}),
+                "activity_count": 1 + q // 16 + p // 4,
+                "dispatch_fingerprint": digest([q, p, original["operation_name"]]),
+                "evidence_sha256": digest(["TEST_ONLY_ENDPOINT", q, p]),
+            }
+            rows.append(row)
+    case["rows"] = rows
+    return case
+
+
+@pytest.mark.parametrize("prefill", [("fp8", 2), ("fp8", 4), ("nvfp4", 2), ("nvfp4", 4)], indirect=True)
+def test_bounded_full_model_public_prediction_and_native_endpoint_audit(prefill):
+    bounded_fixture(prefill)
+    predictor = build(prefill)
+    engine, _ = handle(prefill)
+    # Same named367 units at both points; no whole-forward interpolation row.
+    assert predictor.estimate_forward_pass_time_ms(metrics(1, 32, 122)) == pytest.approx(0.736)
+    assert engine.predict_prefill_latency(1, 154, 122) == pytest.approx(0.736)
+    audit = engine.glm53flash_lookup_audit("context", 1, 32, 122)
+    assert audit["schema"] == "glm53flash_lookup_audit_v1"
+    assert audit["lookup_contract"] == LOOKUP and audit["phase"] == "context"
+    assert audit["native_policy_sha256"] == prefill["rows"][0]["prefill_policy_sha256"]
+    assert len(audit["operations"]) == 367
+    assert sum(row["latency_ms"] for row in audit["operations"]) == pytest.approx(0.736)
+    for row in audit["operations"]:
+        assert row["axis"] == "P"
+        assert [endpoint["point"]["prefix"] for endpoint in row["endpoints"]] == [118, 126]
+        assert [endpoint["weight"] for endpoint in row["endpoints"]] == [0.5, 0.5]
+        assert (
+            row["endpoints"][0]["measurement"]["dispatch_fingerprint"]
+            != row["endpoints"][1]["measurement"]["dispatch_fingerprint"]
+        )
+        assert [e["measurement"]["evidence_sha256"] for e in row["endpoints"]] == [
+            digest(["TEST_ONLY_ENDPOINT", 32, p]) for p in (118, 126)
+        ]
+    assert engine.predict_prefill_latency(1, 40, 0) == pytest.approx(1.472)
+    q_audit = engine.glm53flash_lookup_audit("context", 1, 40, 0)
+    assert all(row["axis"] == "Q" for row in q_audit["operations"])
+    assert all([e["point"]["query"] for e in row["endpoints"]] == [16, 64] for row in q_audit["operations"])
+    assert engine.predict_prefill_latency(1, 150, 118) == pytest.approx(0.368)
+    exact = engine.glm53flash_lookup_audit("context", 1, 32, 118)
+    assert all(row["axis"] == "exact" and len(row["endpoints"]) == 1 for row in exact["operations"])
+
+
+@pytest.mark.parametrize(
+    "query,prefix,batch", [(32, 50, 1), (32, 201, 1), (8, 0, 1), (65, 0, 1), (32, 122, 2), (40, 122, 1)]
+)
+def test_bounded_lookup_never_extrapolates_changes_batch_or_mixes_cache(prefill, query, prefix, batch):
+    bounded_fixture(prefill)
+    build(prefill)
+    engine, _ = handle(prefill)
+    with pytest.raises(ValueError):
+        engine.predict_prefill_latency(batch, prefix + query, prefix)
+    with pytest.raises(ValueError):
+        engine.glm53flash_lookup_audit("context", batch, query, prefix)
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "unknown",
+        "missing_ownership",
+        "changed_ownership",
+        "missing_nearest_unit",
+        "wrong_policy",
+        "changed_layout",
+        "missing_phase",
+    ],
+)
+def test_bounded_native_contract_rejects_invalid_endpoints(prefill, defect):
+    bounded_fixture(prefill)
+    rows = prefill["rows"]
+    first = next(row for row in rows if row["prefix"] == 118)
+    if defect == "unknown":
+        first["lookup_contract"] = "unknown"
+    elif defect == "missing_ownership":
+        first["source_ownership_sha256"] = ""
+    elif defect == "changed_ownership":
+        first["source_ownership_sha256"] = "f" * 64
+    elif defect == "missing_nearest_unit":
+        rows.remove(first)
+    elif defect == "wrong_policy":
+        policy = json.loads(first["prefill_policy"])
+        policy["execution_policy_sha256"] = "f" * 64
+        first["prefill_policy"] = canonical(policy)
+        first["prefill_policy_sha256"] = digest(policy)
+    elif defect == "changed_layout":
+        geometry = json.loads(first["geometry"])
+        geometry["TEST_ONLY_changed_layout"] = True
+        first["geometry"] = canonical(geometry)
+    with pytest.raises((ValueError, RuntimeError)):
+        build(prefill)
+        engine, spec = handle(prefill)
+        if defect == "missing_phase":
+            spec["generation_ops"] = []
+            engine, _ = handle(prefill, spec)
+        engine.predict_prefill_latency(1, 154, 122)
+
+
+def test_lookup_optin_does_not_enable_sol_or_forged_phase_audit(prefill):
+    bounded_fixture(prefill)
+    build(prefill)
+    engine, _ = handle(prefill)
+    with pytest.raises(ValueError):
+        engine.glm53flash_lookup_audit("other", 1, 32, 122)
+    with pytest.raises(ValueError):
+        engine.glm53flash_lookup_audit("generation", 1, 32, 122)

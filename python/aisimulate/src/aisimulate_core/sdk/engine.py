@@ -961,6 +961,10 @@ class EngineHandle:
     def predict_prefill_latency(self, bs: int, isl: int, prefix: int = 0) -> float:
         return self._engine.predict_prefill_latency(int(bs), int(isl), int(prefix))
 
+    def glm53flash_lookup_audit(self, phase: str, batch_size: int, query_length: int, prefix: int) -> dict[str, Any]:
+        """Return measured endpoints selected by the native GLM per-unit lookup."""
+        return json.loads(self._engine.glm53flash_lookup_audit(phase, int(batch_size), int(query_length), int(prefix)))
+
     def predict_decode_latency(self, bs: int, isl: int, osl: int = 2) -> float:
         return self._engine.predict_decode_latency(int(bs), int(isl), int(osl))
 
