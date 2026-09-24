@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from collector.glm53flash_contract import (
     BACKENDS,
     CHECKPOINTS,
