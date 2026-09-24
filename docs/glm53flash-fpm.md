@@ -24,7 +24,7 @@ These are qualification candidates, not evidence of measured GB300 coverage. Pre
 
 Implemented: GLM-specific planning and configuration identity; source-pinned vLLM real-hybrid scheduling; native SGLang Engine collection; Generator, Slurm and Kubernetes backend routing; exact request/dispatch/state evidence validation; and five warmup plus ten measurement medians. The native runtime adapters are shared with the companion Ops implementation. CPU contract tests and all eight deployment renders pass.
 
-GPU qualification and producer qualification are separate. Native vLLM FP8 TP2/TP4 and NVFP4 TP4 have completed real requests on GB300, including 131008 input tokens plus 32 decode tokens with max model length 131072. This does not qualify an exact past-KV=131072 timing point. The formal producer canary, remaining native cells, full data matrix, independent MAPE acceptance and immutable Hugging Face publication are pending. No new profile is claimed as accepted.
+GPU qualification and producer qualification are separate. Native vLLM FP8 and NVFP4, each at TP2/TP4, have completed real requests on GB300, including 131008 input tokens plus 32 decode tokens with max model length 131072. This does not qualify an exact past-KV=131072 timing point. The formal producer canary, SGLang native qualification, full data matrix, independent MAPE acceptance and immutable Hugging Face publication are pending. No new profile is claimed as accepted.
 
 Formal collection retains at least five warmups and ten observations per point, and separate calibration/holdout token streams and geometry. Exact table self-queries verify integrity, not independent accuracy. Record complete coverage, phase MAPE, WAPE and tail errors. Existing data remains unchanged.
 
@@ -36,7 +36,9 @@ Track [AIC-1999](https://linear.app/nvidia/issue/AIC-1999). SOL is the common pr
 for this model, a frozen `--fpm-benchmark-points-file`, and pure TP2/TP4.
 Use `--fpm-input-text` to freeze a corpus by content hash and
 `--fpm-dataset-role holdout` for independent validation runs; holdout runs never
-publish calibration rows. The normal plan/run/resume/checkpoint workflow and
+publish calibration rows. Native SGLang 0.5.20 uses phase-specific graph flags;
+FPM translates the shared Generator's legacy decode graph-size options to
+`--cuda-graph-bs-decode` and `--cuda-graph-max-bs-decode`. The normal plan/run/resume/checkpoint workflow and
 `--fpm-executor slurm` transport are retained. A Slurm run requires an existing
 owned allocation, an explicit container image, and checkpoint/runtime mounts.
 

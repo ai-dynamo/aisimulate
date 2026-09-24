@@ -61,7 +61,8 @@ _SGLANG_FPM_VALUE_FLAGS = frozenset(
         "--max-prefill-tokens",
         "--moe-runner-backend",
         "--attention-backend",
-        "--cuda-graph-max-bs",
+        "--cuda-graph-max-bs-decode",
+        "--cuda-graph-max-bs-prefill",
         "--benchmark-mode",
         "--benchmark-points-file",
         "--benchmark-output",
@@ -213,6 +214,18 @@ def _sglang_fpm_args(context: dict[str, Any], extra_cli_args: list[str]) -> list
     if any(key.startswith("kvbm") and value for key, value in (context.get("DynConfig") or {}).items()):
         raise ValueError("SGLang FPM does not support KVBM offload")
     args = ["--model-path", model_path, *base_args, *extra_cli_args]
+    # This driver is pinned to native SGLang 0.5.20, whose graph options are
+    # phase-specific. The normal serving templates retain their older names
+    # for supported older runtimes; translate those names only at this native
+    # FPM boundary, before detecting duplicate semantic options.
+    graph_aliases = {
+        "--cuda-graph-bs": "--cuda-graph-bs-decode",
+        "--cuda-graph-max-bs": "--cuda-graph-max-bs-decode",
+    }
+    for index, token in enumerate(args):
+        flag, separator, value = token.partition("=")
+        if flag in graph_aliases:
+            args[index] = graph_aliases[flag] + separator + value
     seen: set[str] = set()
     index = 0
     while index < len(args):
@@ -232,15 +245,15 @@ def _sglang_fpm_args(context: dict[str, Any], extra_cli_args: list[str]) -> list
             if not value or value.startswith("--"):
                 raise ValueError(f"SGLang FPM {flag} requires a value")
             index += 1
-        elif flag == "--cuda-graph-bs" and not joined:
+        elif flag in {"--cuda-graph-bs-decode", "--cuda-graph-bs-prefill"} and not joined:
             index += 1
             start = index
             while index < len(args) and not args[index].startswith("--"):
                 if not args[index].isdigit() or int(args[index]) <= 0:
-                    raise ValueError("SGLang FPM --cuda-graph-bs requires positive integer tokens")
+                    raise ValueError(f"SGLang FPM {flag} requires positive integer tokens")
                 index += 1
             if index == start:
-                raise ValueError("SGLang FPM --cuda-graph-bs requires positive integer tokens")
+                raise ValueError(f"SGLang FPM {flag} requires positive integer tokens")
         else:
             raise ValueError(f"Unsupported SGLang FPM option: {flag}")
     for flag in ("--context-length", "--benchmark-points-file", "--tokenizer-revision"):
