@@ -56,6 +56,14 @@ The context limit includes the current query. Decode therefore allows at most
 131071 past KV tokens per request, plus its one current token. Its FPM table
 feature `total_prefill_tokens` remains zero.
 
+SGLang configures an internal context of 131079 for a measured limit of 131072.
+The pinned worker subtracts six slots and native input admission rejects equality,
+so seven internal slots are necessary for the inclusive input boundary. Both
+checkpoints allow up to 1048576 positions. This internal reserve does not expand
+the measured scope or establish capacity: the effective native allocator must
+also admit the request. Declared/resolved configuration and producer context
+policy retain both limits. No native admission check is bypassed.
+
 Additional probes cover all four IndexPool prefix residues and nearby prefix
 block anchors 128/4352; aggregate new-token chunk anchors 2048/8192; and decode
 batch sizes immediately below/at/above graph anchors 4/8/16/32. The default edge

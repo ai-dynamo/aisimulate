@@ -88,6 +88,8 @@ def test_all_required_glm_deployments_render_native_precision_and_scope(tmp_path
         else:
             assert "collector.fpm_forward.sglang_driver" in argv
             assert "--disable-radix-cache" in argv
+            assert argv[argv.index("--context-length") + 1] == "131079"
+            assert argv[argv.index("--benchmark-max-context-length") + 1] == "131072"
             assert "--max-model-len" not in argv
             assert "--enable-mixed-chunk" not in argv
             assert argv[argv.index("--moe-runner-backend") + 1] == "auto"
