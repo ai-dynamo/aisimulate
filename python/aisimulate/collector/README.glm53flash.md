@@ -694,6 +694,14 @@ remain unsupported until their launch identity has independent native evidence.
 These trace-contract tests do not enable PIECEWISE serving collection or table
 consumption. Native capture/replay, export, and independent accuracy gates remain.
 
+The graph execution helper has a separate, default-disabled PIECEWISE trace
+lifecycle. It resolves the selected V2 descriptor to the original initialized
+breakable entry, checks unchanged callables, enables eager scopes only for that
+target and clears them on completion or failure. A result requires original
+GPU completion, sampled tokens and explicit completed native entry replay.
+This helper option is not wired to the public serving adapter; capture-only
+qualification remains distinct from measured PIECEWISE requests.
+
 ### CUDA graph runtime provider
 
 The qualified SGLang GPU import path can load two separate instances of the

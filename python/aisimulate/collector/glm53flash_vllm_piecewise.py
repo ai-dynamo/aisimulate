@@ -377,6 +377,40 @@ def captured_piecewise_registry(wrapper, descriptor):
     return registry
 
 
+def piecewise_capture_for_descriptor(manager, native_descriptor):
+    """Resolve an actual V2 selection to its original native breakable entry."""
+    from collector.glm53flash_vllm_graph_policy import descriptor
+
+    actual = descriptor(native_descriptor)
+    tokens = actual.get("num_tokens")
+    if (
+        type(tokens) is not int
+        or tokens < 1
+        or actual
+        != {
+            "cg_mode": "PIECEWISE",
+            "num_tokens": tokens,
+            "num_reqs": None,
+            "uniform_token_count": None,
+            "max_query_len": None,
+            "num_active_loras": 0,
+            "num_ubatches": 1,
+        }
+    ):
+        raise RuntimeError("piecewise observation requires the exact ordinary V2 descriptor")
+    wrapper = manager.breakable_cg_runner
+    if manager.use_breakable_cg is not True or wrapper is None:
+        raise RuntimeError("piecewise observation lacks its initialized native breakable runner")
+    expected = {"num_tokens": tokens, "num_reqs": None, "uniform": False, "has_lora": False, "num_active_loras": 0}
+    keys = [key for key in wrapper.entries if dataclasses.is_dataclass(key) and dataclasses.asdict(key) == expected]
+    if len(keys) != 1:
+        raise RuntimeError("piecewise selection lacks one original native initialized entry")
+    registry = captured_piecewise_registry(wrapper, keys[0])
+    if getattr(registry, "bound_capture", {}).get("native_shape_key") != expected:
+        raise RuntimeError("piecewise selection differs from its source-bound captured shape")
+    return registry
+
+
 def bind_piecewise_instantiations(pending, callbacks, api, output, stem):
     """Retain one complete callback stream, then bind each actual executable.
 

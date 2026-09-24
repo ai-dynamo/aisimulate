@@ -113,18 +113,21 @@ def calibration_policy(manager, model):
 
 
 class NativeVllmGraphExecution:
-    """Profile one completed FULL forward, with source-bound external logits.
+    """Profile one completed graph forward, with source-bound external logits.
 
     Calibration only. Independent control and holdout never instantiate this
     helper. No event or profiler scope is inserted into a captured model graph.
+    FULL is the default; optional PIECEWISE tracing requires its original entry
+    and separate completed-replay evidence. The serving adapter must opt in.
     """
 
-    def __init__(self, runner, output, rank):
+    def __init__(self, runner, output, rank, *, include_piecewise=False):
         import torch
         from vllm.model_executor.layers.logits_processor import LogitsProcessor
 
         self.torch, self.runner, self.output, self.rank = torch, runner, Path(output), rank
         self.active = None
+        self.include_piecewise = include_piecewise
         heads = [
             module
             for module in runner.model.modules()
@@ -165,12 +168,27 @@ class NativeVllmGraphExecution:
         logits.forward = forward
 
     def begin(self, record, descriptor):
-        if self.active is not None or record["stage"] != "measure" or record["runtime_mode"] != "FULL":
-            raise RuntimeError("native graph profiling needs a fresh target FULL forward")
-        registry = capture_receipt(self.runner.cudagraph_manager, descriptor)
-        if registry.get("capture_scope") != "vllm_hidden_states" or registry.get("uncaptured_operations") != ["logits"]:
+        piecewise = record["runtime_mode"] == "PIECEWISE" and self.include_piecewise
+        if (
+            self.active is not None
+            or record["stage"] != "measure"
+            or not (record["runtime_mode"] == "FULL" or piecewise)
+        ):
+            raise RuntimeError("native graph profiling needs a fresh target with an enabled runtime mode")
+        piecewise_registry = None
+        if piecewise:
+            from collector.glm53flash_vllm_piecewise import piecewise_capture_for_descriptor
+
+            piecewise_registry = piecewise_capture_for_descriptor(self.runner.cudagraph_manager, descriptor)
+            if piecewise_registry.profiling:
+                raise RuntimeError("piecewise capture is already part of another profiled forward")
+            registry, artifact = piecewise_registry.bound_capture, piecewise_registry.capture_artifact
+        else:
+            registry = capture_receipt(self.runner.cudagraph_manager, descriptor)
+            artifact = self.runner.cudagraph_manager._aisim_glm53_node_captures[descriptor].get("artifact")
+        expected_scope = "vllm_piecewise_hidden_states" if piecewise else "vllm_hidden_states"
+        if registry.get("capture_scope") != expected_scope or registry.get("uncaptured_operations") != ["logits"]:
             raise RuntimeError("native V2 capture scope differs from hidden states plus external logits")
-        artifact = self.runner.cudagraph_manager._aisim_glm53_node_captures[descriptor].get("artifact")
         if (
             artifact is None
             or hashlib.sha256((self.output / artifact["file"]).read_bytes()).hexdigest() != artifact["sha256"]
@@ -187,8 +205,11 @@ class NativeVllmGraphExecution:
             "range_open": False,
             "logits_calls": 0,
             "finished": False,
+            "piecewise_registry": piecewise_registry,
         }
         profiler.start()
+        if piecewise_registry is not None:
+            piecewise_registry.profiling = True
 
     def start_range(self):
         from collector.glm53flash_graph_nodes import VLLM_EXECUTION_RANGE
@@ -206,6 +227,8 @@ class NativeVllmGraphExecution:
             raise RuntimeError("native graph target omitted or repeated its logits completion")
         active["range"].__exit__(None, None, None)
         active["range_open"] = False
+        if active["piecewise_registry"] is not None:
+            active["piecewise_registry"].profiling = False
         active["profiler"].stop()
         active["finished"] = True
         self._save_trace(active, failed=False)
@@ -229,6 +252,8 @@ class NativeVllmGraphExecution:
             "logits_source_sha256": LOGITS_SOURCE_PIN,
             "failed": failed,
         }
+        if active["piecewise_registry"] is not None:
+            trace["aisim_native_execution"]["runtime_mode"] = "PIECEWISE"
         path.write_text(json.dumps(trace))
         active["trace"], active["path"] = trace, path
 
@@ -246,11 +271,24 @@ class NativeVllmGraphExecution:
         ):
             raise RuntimeError("native graph profile lacks its exact completed same-request forward")
         events = active["trace"]["traceEvents"]
-        launches = [row for row in events if row.get("cat") == "cuda_runtime" and row.get("name") == "cudaGraphLaunch"]
-        if len(launches) != 1:
-            raise RuntimeError("native V2 profile lacks one actual FULL graph launch")
-        nodes = bind_replay_kernels(active["registry"], events, correlation=launches[0]["args"]["correlation"])
-        binding = bind_vllm_execution_activity(nodes, events)
+        if active["piecewise_registry"] is not None:
+            from collector.glm53flash_vllm_piecewise_activity import bind_piecewise_execution
+
+            registry = active["piecewise_registry"]
+            registry.validate_replay(registry.capture)
+            if registry.profiling or record.get("native_piecewise_replay_completed") is not True:
+                raise RuntimeError("piecewise profile lacks the actual completed native entry replay")
+            binding = bind_piecewise_execution(active["registry"], events)
+            method = "native_cupti_piecewise_graphs_eager_and_external_logits"
+        else:
+            launches = [
+                row for row in events if row.get("cat") == "cuda_runtime" and row.get("name") == "cudaGraphLaunch"
+            ]
+            if len(launches) != 1:
+                raise RuntimeError("native V2 profile lacks one actual FULL graph launch")
+            nodes = bind_replay_kernels(active["registry"], events, correlation=launches[0]["args"]["correlation"])
+            binding = bind_vllm_execution_activity(nodes, events)
+            method = "native_cupti_graph_nodes_and_external_logits"
         binding.update(
             trace_file=active["path"].name, trace_sha256=hashlib.sha256(active["path"].read_bytes()).hexdigest()
         )
@@ -262,7 +300,7 @@ class NativeVllmGraphExecution:
             "logits_source_sha256": LOGITS_SOURCE_PIN,
             "profiled": True,
             "ops_instrumented": True,
-            "measurement_method": "native_cupti_graph_nodes_and_external_logits",
+            "measurement_method": method,
             "formal_admission": False,
             "accuracy_acceptance": "NOT_EVALUATED",
         }
@@ -273,6 +311,8 @@ class NativeVllmGraphExecution:
         active = self.active
         if active is None:
             return
+        if active["piecewise_registry"] is not None:
+            active["piecewise_registry"].profiling = False
         if active["range_open"]:
             active["range"].__exit__(type(error), error, error.__traceback__)
             active["range_open"] = False

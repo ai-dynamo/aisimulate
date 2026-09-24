@@ -148,6 +148,58 @@ def test_replay_cannot_replace_even_equivalent_bound_native_method(native):
         registry.validate_replay(capture)
 
 
+@pytest.mark.parametrize(
+    "defect", [None, "wrong_tokens", "wrong_mode", "changed_entry", "changed_callable", "changed_shape", "disabled"]
+)
+def test_v2_selection_resolves_original_initialized_entry_only(native, defect):
+    @dataclasses.dataclass(frozen=True)
+    class Shape:
+        num_tokens: int = 8
+        num_reqs: object = None
+        uniform: bool = False
+        has_lora: bool = False
+        num_active_loras: int = 0
+
+    @dataclasses.dataclass
+    class Selection:
+        cg_mode: object
+        num_tokens: int = 8
+        num_reqs: object = None
+        uniform_token_count: object = None
+        max_query_len: object = None
+        num_active_loras: int = 0
+        num_ubatches: int = 1
+
+    capture, registry = capture_split_operation(native)
+    registry.finish(capture)
+    key = Shape()
+    entry = SimpleNamespace(capture=capture)
+    wrapper = SimpleNamespace(
+        entries={key: entry},
+        _aisim_piecewise_ownership={key: {"entry": entry, "capture": capture, "registry": registry}},
+    )
+    manager = SimpleNamespace(use_breakable_cg=True, breakable_cg_runner=wrapper)
+    registry.bound_capture = {"native_shape_key": dataclasses.asdict(key)}
+    selection = Selection(SimpleNamespace(name="PIECEWISE"))
+    if defect == "wrong_tokens":
+        selection.num_tokens = 9
+    elif defect == "wrong_mode":
+        selection.cg_mode.name = "FULL"
+    elif defect == "changed_entry":
+        wrapper.entries[key] = SimpleNamespace(capture=capture)
+    elif defect == "changed_callable":
+        capture.segments.reverse()
+    elif defect == "changed_shape":
+        registry.bound_capture["native_shape_key"]["num_tokens"] = 9
+    elif defect == "disabled":
+        manager.use_breakable_cg = False
+    if defect:
+        with pytest.raises(RuntimeError):
+            pw.piecewise_capture_for_descriptor(manager, selection)
+    else:
+        assert pw.piecewise_capture_for_descriptor(manager, selection) is registry
+
+
 def test_unfinished_operation_or_graph_rejected(native):
     capture, registry, *_ = native
     capture._begin_segment()

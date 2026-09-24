@@ -142,7 +142,8 @@ def test_incomplete_or_ambiguous_external_operation_evidence_is_rejected(defect)
         bind_vllm_execution_activity(binding, events)
 
 
-def test_actual_execution_observer_requires_later_completed_native_samples(monkeypatch, tmp_path):
+@pytest.mark.parametrize("runtime_mode", ["FULL", "PIECEWISE"])
+def test_actual_execution_observer_requires_later_completed_native_samples(monkeypatch, tmp_path, runtime_mode):
     from collector import glm53flash_vllm_graph_ops as graph
 
     timeline = []
@@ -201,8 +202,26 @@ def test_actual_execution_observer_requires_later_completed_native_samples(monke
         "capture_scope": "vllm_hidden_states",
         "uncaptured_operations": ["logits"],
     }
+    live_piecewise = None
+    if runtime_mode == "PIECEWISE":
+        from collector import glm53flash_vllm_piecewise as pw
+
+        from .test_glm53flash_vllm_piecewise_activity import fixture
+
+        registry, events = fixture()
+        native_capture = object()
+
+        def validate_replay(actual):
+            assert actual is native_capture
+
+        live_piecewise = SimpleNamespace(
+            profiling=False, bound_capture=registry, capture=native_capture, validate_replay=validate_replay
+        )
+        monkeypatch.setattr(pw, "piecewise_capture_for_descriptor", lambda *args: live_piecewise)
     path = tmp_path / "TEST_ONLY-capture.json"
     path.write_text(json.dumps(registry))
+    if live_piecewise is not None:
+        live_piecewise.capture_artifact = {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
     manager = SimpleNamespace(
         graphs={descriptor: native_graph},
         _aisim_glm53_node_captures={
@@ -213,10 +232,15 @@ def test_actual_execution_observer_requires_later_completed_native_samples(monke
             }
         },
     )
-    observer = graph.NativeVllmGraphExecution(SimpleNamespace(model=model, cudagraph_manager=manager), tmp_path, 0)
+    observer = graph.NativeVllmGraphExecution(
+        SimpleNamespace(model=model, cudagraph_manager=manager),
+        tmp_path,
+        0,
+        include_piecewise=runtime_mode == "PIECEWISE",
+    )
     record = {
         "stage": "measure",
-        "runtime_mode": "FULL",
+        "runtime_mode": runtime_mode,
         "run_id": "TEST_ONLY_run",
         "request_set": "TEST_ONLY_set",
         "tp_rank": 0,
@@ -232,9 +256,13 @@ def test_actual_execution_observer_requires_later_completed_native_samples(monke
         "requests": [{}],
     }
     observer.begin(record, descriptor)
+    if live_piecewise is not None:
+        assert live_piecewise.profiling is True
     observer.start_range()
     assert logits.forward(object(), object()) == "original_result"
     observer.end_logits()
+    if live_piecewise is not None:
+        assert live_piecewise.profiling is False
     assert timeline == [
         "profile_start",
         ("enter", VLLM_EXECUTION_RANGE),
@@ -248,10 +276,18 @@ def test_actual_execution_observer_requires_later_completed_native_samples(monke
         observer.finish(record)
     record.update(gpu_completed=True, native_graph_replay_completed=True)
     record["requests"][0]["sampled_token_id"] = 9
+    if live_piecewise is not None:
+        with pytest.raises(RuntimeError, match="completed native entry replay"):
+            observer.finish(record)
+        record["native_piecewise_replay_completed"] = True
     result = observer.finish(record)
     assert result["capture_registry_file"] == path.name and "capture_registry" not in result
-    assert result["measurement_method"] == "native_cupti_graph_nodes_and_external_logits"
-    assert result["replay_nodes"]["outside_graph_operations"][0]["operation"] == "logits"
+    assert result["measurement_method"] == (
+        "native_cupti_piecewise_graphs_eager_and_external_logits"
+        if live_piecewise is not None
+        else "native_cupti_graph_nodes_and_external_logits"
+    )
+    assert any(row["operation"] == "logits" for row in result["replay_nodes"]["outside_graph_operations"])
     assert observer.active is None
     original = json.loads((tmp_path / result["replay_nodes"]["trace_file"]).read_text())
     assert original["aisim_native_forward"]["invocation"] == 1
@@ -268,8 +304,19 @@ def test_actual_execution_observer_requires_later_completed_native_samples(monke
     observer.start_range()
     observer.abort(RuntimeError("TEST_ONLY native execution failed before logits"))
     assert observer.active is None
+    if live_piecewise is not None:
+        assert live_piecewise.profiling is False
     failed_trace = json.loads((tmp_path / "failed-graph-profile-rank-0-forward-2.json").read_text())
     assert failed_trace["aisim_native_forward"]["invocation"] == 2
     assert failed_trace["aisim_native_execution"]["failed"] is True
     assert not (tmp_path / "graph-profile-rank-0-forward-2.json").exists()
     assert json.loads((tmp_path / result["replay_nodes"]["trace_file"]).read_text()) == original
+
+
+def test_default_full_execution_observer_rejects_piecewise_before_capture_or_profiling():
+    from collector.glm53flash_vllm_graph_ops import NativeVllmGraphExecution
+
+    observer = NativeVllmGraphExecution.__new__(NativeVllmGraphExecution)
+    observer.active, observer.include_piecewise = None, False
+    with pytest.raises(RuntimeError, match="fresh target"):
+        observer.begin({"stage": "measure", "runtime_mode": "PIECEWISE"}, object())
