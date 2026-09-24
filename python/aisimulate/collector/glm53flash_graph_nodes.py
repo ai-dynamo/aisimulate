@@ -235,24 +235,40 @@ class CaptureNodeRegistry:
 def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int) -> dict:
     """Join one real graph launch by CUPTI IDs, retaining overlap explicitly.
 
-    This returns measured node intervals and per-operation active-time unions.
+    Kernels and graph memcpy/memset nodes require complete activity evidence.
+    Structural nodes remain explicit, without assigning them invented costs.
     It does not turn sums into a whole-forward prediction or certify accuracy.
     """
-    expected = {row["node_id"]: row for row in registry["nodes"] if row["node_type"] == 0}
+    node_types = {"kernel": 0, "gpu_memcpy": 1, "gpu_memset": 2}
+    expected = {row["node_id"]: row for row in registry["nodes"] if row["node_type"] in node_types.values()}
+    structural = [row for row in registry["nodes"] if row["node_type"] not in node_types.values()]
     actual, streams = {}, set()
     for event in events:
         args = event.get("args", {})
-        if event.get("cat") != "kernel" or args.get("correlation") != correlation:
+        category = event.get("cat")
+        if category not in node_types or args.get("correlation") != correlation:
             continue
         node = args.get("graph node id")
-        if args.get("graph id") != registry["graph_id"] or node not in expected or node in actual:
-            raise ValueError("CUPTI replay kernel does not match a unique captured native node")
         if (
-            type(args.get("stream")) is not int
-            or any(not isinstance(args.get(key), list) or len(args[key]) != 3 for key in ("grid", "block"))
-            or type(args.get("shared memory")) is not int
+            args.get("graph id") != registry["graph_id"]
+            or node not in expected
+            or node in actual
+            or expected[node]["node_type"] != node_types[category]
         ):
+            raise ValueError("CUPTI replay kernel does not match a unique captured native node")
+        if type(args.get("stream")) is not int:
             raise ValueError("CUPTI replay kernel lacks actual stream/launch geometry")
+        if category == "kernel":
+            if (
+                any(not isinstance(args.get(key), list) or len(args[key]) != 3 for key in ("grid", "block"))
+                or type(args.get("shared memory")) is not int
+            ):
+                raise ValueError("CUPTI replay kernel lacks actual stream/launch geometry")
+            fingerprint = {key: args[key] for key in ("grid", "block", "shared memory")}
+        else:
+            if type(args.get("bytes")) is not int or args["bytes"] <= 0:
+                raise ValueError("CUPTI replay memory node lacks positive actual byte count")
+            fingerprint = {"bytes": args["bytes"]}
         start, duration = event.get("ts"), event.get("dur")
         if (
             any(type(value) not in (int, float) or not math.isfinite(value) for value in (start, duration))
@@ -262,18 +278,19 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
         streams.add(args.get("stream"))
         actual[node] = {
             "node_id": node,
+            "activity": category,
             "operation": expected[node]["name"],
             "start_us": start,
             "end_us": start + duration,
             "stream": args.get("stream"),
-            "fingerprint": {
-                "name": event["name"],
-                **{key: args.get(key) for key in ("grid", "block", "shared memory")},
-            },
+            "fingerprint": {"name": event["name"], **fingerprint},
         }
     if not expected or actual.keys() != expected.keys():
-        raise ValueError("CUPTI launch omits captured native kernel nodes")
+        raise ValueError("CUPTI launch omits captured native kernel or memory nodes")
     rows = sorted(actual.values(), key=lambda row: (row["start_us"], row["node_id"]))
+    kernels = [row for row in rows if row["activity"] == "kernel"]
+    if not kernels:
+        raise ValueError("native model graph replay has no measured kernel nodes")
     overlaps = [
         [left["node_id"], right["node_id"]]
         for index, left in enumerate(rows)
@@ -283,11 +300,15 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
     return {
         "graph_id": registry["graph_id"],
         "correlation": correlation,
-        "kernels": rows,
+        "kernels": kernels,
+        "activities": rows,
+        "unmeasured_structural_nodes": structural,
         "overlapping_node_pairs": overlaps,
         "streams": sorted(streams),
-        "kernel_interval_sum_us": sum(row["end_us"] - row["start_us"] for row in rows),
-        "kernel_envelope_us": max(row["end_us"] for row in rows) - min(row["start_us"] for row in rows),
+        "kernel_interval_sum_us": sum(row["end_us"] - row["start_us"] for row in kernels),
+        "kernel_envelope_us": max(row["end_us"] for row in kernels) - min(row["start_us"] for row in kernels),
+        "activity_interval_sum_us": sum(row["end_us"] - row["start_us"] for row in rows),
+        "activity_envelope_us": max(row["end_us"] for row in rows) - min(row["start_us"] for row in rows),
         "whole_forward_accuracy": "NOT_EVALUATED",
         "formal_admission": False,
     }

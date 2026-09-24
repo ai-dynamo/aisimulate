@@ -249,3 +249,35 @@ def test_replay_requires_complete_exact_native_node_and_launch_identity(defect):
         events[0]["dur"] = float("nan")
     with pytest.raises(ValueError):
         bind_replay_kernels(registry, events, correlation=7)
+
+
+@pytest.mark.parametrize("category,node_type", [("gpu_memcpy", 1), ("gpu_memset", 2)])
+def test_actual_graph_memory_activity_is_required_and_retained(category, node_type):
+    registry, events = replay_fixture()
+    registry["nodes"] += [
+        {"node_id": 13, "node_type": node_type, "name": "attention"},
+        {"node_id": 14, "node_type": 6, "name": "attention"},
+    ]
+    with pytest.raises(ValueError, match="omits"):
+        bind_replay_kernels(registry, events, correlation=7)
+    events.append(
+        {
+            "cat": category,
+            "name": "native graph memory operation",
+            "ts": 1,
+            "dur": 2,
+            "args": {"graph id": 4, "graph node id": 13, "correlation": 7, "stream": 3, "bytes": 3088},
+        }
+    )
+    result = bind_replay_kernels(registry, events, correlation=7)
+    assert len(result["kernels"]) == 2 and len(result["activities"]) == 3
+    assert result["kernel_interval_sum_us"] == 8 and result["activity_interval_sum_us"] == 10
+    assert result["unmeasured_structural_nodes"] == [{"node_id": 14, "node_type": 6, "name": "attention"}]
+    assert result["formal_admission"] is False
+    events[-1]["args"]["bytes"] = True
+    with pytest.raises(ValueError, match="byte count"):
+        bind_replay_kernels(registry, events, correlation=7)
+    events[-1]["args"]["bytes"] = 3088
+    events[-1]["cat"] = "gpu_memset" if category == "gpu_memcpy" else "gpu_memcpy"
+    with pytest.raises(ValueError, match="unique captured"):
+        bind_replay_kernels(registry, events, correlation=7)

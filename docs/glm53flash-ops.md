@@ -29,7 +29,7 @@ Local compute and synchronous collective intervals are separately accounted;
 unobserved or overlapping boundaries fail admission. The measured-table contract
 currently admits explicit eager execution only. An experimental SGLang FULL
 decode observer now assigns native capture nodes to operation boundaries and
-joins those IDs to actual CUPTI replay activity. It inserts no CUDA graph nodes;
+requires an exact API-backed join to CUPTI replay activity. It inserts no CUDA graph nodes;
 its separate holdout observes only the complete native replay. This path emits
 raw evidence, not admitted profiles. Actual native qualification, profiling
 controls, complete metadata-node accounting and graph prediction remain pending.
@@ -43,8 +43,9 @@ SILICON and HYBRID; neither mode silently falls back to SOL. The installed wheel
 constructs all eight required model graphs and rejects missing measurements in
 all eight SILICON and all eight HYBRID checks.
 
-Current graph-node/hook validation passes 23 CPU tests, including CUDA13 ABI
-pointer writes and retention of nondefault dependency metadata. The preceding
+Current graph-node/hook validation passes 39 CPU tests, including CUDA13 ABI
+pointer writes, complete kernel/memcpy/memset activity matching, native
+enumeration consistency and retention of nondefault dependency metadata. The preceding
 graph/runtime change passed 112 focused tests. Historical validation passed
 17 Rust GLM tests and 79 Ops contract, evidence, native V2 runtime and shared
 retained-lifecycle tests. The installed wheel from commit `179818b6` verified
@@ -95,8 +96,12 @@ events update on replay, but increased the measured outer window by about 47%.
 That result is preserved as a failed timing-equivalence control. The separate
 read-only node observer first failed CPU binding against CUDA13; installed
 headers and symbols now establish the corrected seven-argument capture-info
-and five-argument edge-query ABI. These diagnostics do not establish native
-model graph coverage or prediction accuracy.
+and five-argument edge-query ABI. The next GPU probe captured and replayed
+successfully, but strict matching rejected different capture and executable
+graph/node identities. No positional or bit-field inference admits these nodes.
+These diagnostics do not establish native model graph coverage or prediction
+accuracy. All physical memory operations remain required evidence; their
+intervals cannot be omitted from operation accounting.
 
 See [the collector contract](../python/aisimulate/collector/README.glm53flash.md),
 [the Ops evidence adapter](../python/aisimulate/collector/glm53flash_validation.py)
