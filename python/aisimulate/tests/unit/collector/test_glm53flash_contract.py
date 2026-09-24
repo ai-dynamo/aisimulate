@@ -21,6 +21,16 @@ from collector.glm53flash_observer import NativeOperationObserver, NativeWorkloa
 pytestmark = pytest.mark.unit
 
 
+def test_native_launch_keeps_measured_128k_and_sglang_admission_headroom(tmp_path):
+    from collector.collect_glm53flash import native_command
+
+    command = native_command("sglang", "/models/fixture", "pinned", 4, "prefill", tmp_path, tmp_path / "text")
+    assert command[command.index("--context-length") + 1] == "131079"
+    assert command[command.index("--benchmark-max-context-length") + 1] == "131072"
+    command = native_command("vllm", "/models/fixture", "pinned", 4, "prefill", tmp_path, tmp_path / "text")
+    assert command[command.index("--max-model-len") + 1] == "131072"
+
+
 def sample_row():
     return {
         "component": "attention",

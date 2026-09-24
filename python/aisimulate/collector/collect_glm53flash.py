@@ -25,6 +25,7 @@ from collector.glm53flash_contract import (
     build_model_manifest,
     sha256_json,
 )
+from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, sglang_runtime_context_length
 
 
 def get_test_cases(backend: str) -> list[dict]:
@@ -90,7 +91,9 @@ def native_command(backend, checkpoint, revision, tp, phase, output, corpus):
             "--tp-size",
             str(tp),
             "--context-length",
-            "131072",
+            str(sglang_runtime_context_length(MAX_MEASURED_CONTEXT)),
+            "--benchmark-max-context-length",
+            str(MAX_MEASURED_CONTEXT),
             "--max-running-requests",
             "32",
             "--chunked-prefill-size",
