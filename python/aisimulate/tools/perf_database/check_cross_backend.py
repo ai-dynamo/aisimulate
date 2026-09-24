@@ -85,9 +85,10 @@ joined: extra columns that are constant in their table are dropped (recorded
 in the pair-summary align_notes); otherwise the pair is skipped and reported as `schema_mismatch`.
 
 Shape-key convention follows perf_data_layout.py: every column that is not
-a meta column ({framework, version, device, op_name, kernel_source}) and not
-a latency column is part of the shape key. Sweep columns get log2-bucketed to
-form the local-baseline bucket key.
+a meta column ({framework, version, device, op_name, kernel_source,
+default_eligible}) and not a latency column is part of the shape key. This
+checker retains op_name to distinguish logical operations within one table.
+Sweep columns get log2-bucketed to form the local-baseline bucket key.
 
 Usage:
     python3 tools/perf_database/check_cross_backend.py \\
