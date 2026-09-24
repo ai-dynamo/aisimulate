@@ -29,15 +29,18 @@ VERIFY_INSTALLED_LAYERS = APP_ROOT / "tools" / "verify_installed_package_layers.
 
 
 def _run(command: list[str], *, cwd: Path, env: dict[str, str] | None = None, timeout: int = 300):
-    return subprocess.run(
-        command,
-        cwd=cwd,
-        env=env,
-        check=True,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-    )
+    try:
+        return subprocess.run(
+            command,
+            cwd=cwd,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.CalledProcessError as error:
+        pytest.fail(f"{command!r} exited {error.returncode}\nstdout:\n{error.stdout}\nstderr:\n{error.stderr}")
 
 
 def test_built_application_wheel_runs_installed_fpm_plan_and_resolves_runtime_assets(tmp_path):

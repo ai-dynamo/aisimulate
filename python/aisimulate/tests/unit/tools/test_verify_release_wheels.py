@@ -99,6 +99,22 @@ def test_config_adapter_readme_remains_repository_only(verifier):
     assert "collector/glm53flash_sglang_retained.py" in payload
     assert "collector/collect_glm53flash.py" in payload
 
+    assert "collector/glm53flash_tail_qualification.py" in payload
+    tail = "collector/fpm_forward/runtime/glm53flash_vllm_tail_repair"
+    assert f"{tail}/qualification/expected-runtime.json" in payload
+    assert f"{tail}/packaged-verifier-executed-inputs.json" in payload
+    for role in ("candidate", "reference"):
+        for asset in (
+            "actual-build-receipt.json",
+            "expected-source-sha256.json",
+            "expected-native-binaries.json",
+            "combined-repair.patch.b64",
+            "combined-repair.review.diff",
+            "README.md",
+            "LICENSE",
+        ):
+            assert f"{tail}/{role}/{asset}" in payload
+
 
 def test_release_verifier_checks_packaged_legal_files(verifier, monkeypatch, tmp_path):
     wheel = tmp_path / "aisimulate-1.2.0-py3-none-any.whl"

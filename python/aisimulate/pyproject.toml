@@ -150,6 +150,11 @@ include = [
     { path = "collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/qualification/LICENSE", format = "wheel" },
     { path = "collector/README.glm53flash.md", format = "wheel" },
     { path = "collector/README.glm53flash-vllm-full.md", format = "wheel" },
+    { path = "collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/**/*.json", format = "wheel" },
+    { path = "collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/**/*.patch.b64", format = "wheel" },
+    { path = "collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/**/*.review.diff", format = "wheel" },
+    { path = "collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/**/README.md", format = "wheel" },
+    { path = "collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/**/LICENSE", format = "wheel" },
     # Ship estimator models and profiles with their canonical implementation.
     "src/aisimulate_core/sdk/**/*.md",
     "src/aisimulate_core/systems/*.yaml",
