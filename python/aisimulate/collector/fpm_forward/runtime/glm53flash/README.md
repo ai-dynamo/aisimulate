@@ -9,7 +9,11 @@ steady decode measurement. Every coordinate has five real warmups and ten
 retained observations. Only their median enters the native rank artifact; all
 observations, actual dispatch modes/padding, prompt/output token histories and
 completed seed counts remain available to the strict reader. Synthetic prefix
-and decode injection raise instead of falling back.
+and decode injection raise instead of falling back. Completed repetition histories
+are appended to the attempt's JSONL after its native timing intervals finish.
+Partial raw evidence survives later failures; a fresh attempt refuses to overwrite
+an existing history. The reader indexes offsets and validates one repetition at
+a time, so full-campaign token arrays are not retained in host memory.
 
 The timing boundary is `vllm_native_scheduler_output_interval`: the native
 prefill schedule-to-output interval and second decode output interval. It is

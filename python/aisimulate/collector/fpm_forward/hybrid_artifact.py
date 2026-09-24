@@ -36,16 +36,26 @@ def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
     name = manifest.get("file")
     if not isinstance(name, str) or Path(name).name != name or not name.endswith(".token-streams.jsonl"):
         raise ValueError("GLM token history must be an adjacent JSONL file")
-    raw = path.with_name(name).read_bytes()
-    if hashlib.sha256(raw).hexdigest() != manifest.get("sha256"):
-        raise ValueError("GLM token history digest mismatch")
+    stream_path = path.with_name(name)
+    # Keep only offsets and digests across repetitions. Full long-context token
+    # arrays are checked one record at a time and remain in the original JSONL.
     histories = {}
-    for line in raw.splitlines():
-        record = json.loads(line)
-        key = (record.get("benchmark_id"), record.get("repetition"))
-        if any(type(value) is not int for value in key) or key in histories:
-            raise ValueError("duplicate or malformed GLM history identity")
-        histories[key] = (record, hashlib.sha256(line).hexdigest())
+    stream_digest = hashlib.sha256()
+    offset = 0
+    with stream_path.open("rb") as source:
+        for raw_line in source:
+            stream_digest.update(raw_line)
+            line = raw_line.rstrip(b"\r\n")
+            record = json.loads(line)
+            key = (record.get("benchmark_id"), record.get("repetition"))
+            if any(type(value) is not int for value in key) or key in histories:
+                raise ValueError("duplicate or malformed GLM history identity")
+            histories[key] = (offset, len(raw_line), hashlib.sha256(line).hexdigest())
+            offset += len(raw_line)
+    if stream_digest.hexdigest() != manifest.get("sha256"):
+        raise ValueError("GLM token history digest mismatch")
+    # Do not retain the last indexed record while reading the next full record.
+    record = None
     expected_count = len(payload["results"]) * (warmups + measurements)
     if manifest.get("records") != len(histories) or len(histories) != expected_count:
         raise ValueError("GLM real history coverage mismatch")
@@ -67,7 +77,13 @@ def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
             if key not in histories:
                 raise ValueError("GLM missing exact repetition history")
             consumed.add(key)
-            history, digest = histories[key]
+            offset, length, digest = histories[key]
+            with stream_path.open("rb") as source:
+                source.seek(offset)
+                line = source.read(length).rstrip(b"\r\n")
+            if hashlib.sha256(line).hexdigest() != digest:
+                raise ValueError("GLM token history changed during validation")
+            history = json.loads(line)
             if (
                 repetition.get("repetition") != index
                 or repetition.get("role") != role
