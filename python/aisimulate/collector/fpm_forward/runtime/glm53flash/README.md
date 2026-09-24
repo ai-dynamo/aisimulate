@@ -42,6 +42,22 @@ speculation, EPLB, offload, connectors or ubatching. Maximum context is 131072,
 batch is at most 32, and scheduled prefill new-token total is at most 8192.
 CUDA graph policy is native; eager-only campaigns require a separate identity.
 
+## Native IndexPool qualification restriction
+
+Stock vLLM cached prefill with a prefix not divisible by four and at least two
+new tokens is unqualified. GB300 split/one-shot probes observed wrong pooled
+cache entries at P4097/Q3 (B1/B2) and P4097/Q4 (B1), while aligned controls
+and every one-shot oracle passed. This is a conservative start-contract gate,
+not a claim that every rejected geometry was independently probed. Q1 uses a
+different native dispatch and retains its own qualification requirement.
+
+The producer and reader explicitly reject affected coordinates; frozen requested
+points remain in parent coverage and failure reports. A repair requires a new
+runtime/source identity and independent native qualification before collection.
+Memory feasibility, successful execution, and finite latency do not remove this
+gate. See the Ops companion's `docs/glm53flash-kpool-native-gb300.json` for the
+source-pinned probe receipt and snapshot digests.
+
 ## Attribution
 
 `glm53flash_scheduler.py` is modified code derived from

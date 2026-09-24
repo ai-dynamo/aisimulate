@@ -127,3 +127,13 @@ def test_streaming_preserves_rejection_gates(tmp_path, corruption):
         manifest["sha256"] = hashlib.sha256(raw).hexdigest()
     with pytest.raises(ValueError, match="GLM"):
         validate_real_hybrid_repetitions(cell, payload, path)
+
+
+@pytest.mark.parametrize("rows", [None, [[3, 9], [3, 9]]])
+def test_reader_rejects_stock_vllm_unqualified_pool_start(tmp_path, rows):
+    cell, payload, path = fixture(tmp_path, "prefill")
+    point = payload["results"][0]["point"]
+    point["total_kv_read_tokens"] = 18
+    point["rows"] = rows
+    with pytest.raises(ValueError, match="cached-prefill start is unqualified"):
+        validate_real_hybrid_repetitions(cell, payload, path)

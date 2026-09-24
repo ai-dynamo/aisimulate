@@ -70,6 +70,17 @@ def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
         decode = point["point_type"] == "decode"
         batch = point["batch_size"]
         seed = point["total_kv_read_tokens"] - (batch if decode else 0)
+        if cell.backend == "vllm" and not decode:
+            if point.get("rows") is not None:
+                rows = point["rows"]
+            elif point.get("partition") is not None:
+                raise ValueError("GLM stock vLLM partitioned cached-prefill requires native start qualification")
+            else:
+                prefixes = divmod(point["total_kv_read_tokens"], batch)
+                queries = divmod(point["total_prefill_tokens"], batch)
+                rows = [(queries[0] + (i < queries[1]), prefixes[0] + (i < prefixes[1])) for i in range(batch)]
+            if any(prefix % 4 and query >= 2 for query, prefix in rows):
+                raise ValueError("GLM stock vLLM IndexPool cached-prefill start is unqualified")
         values = []
         for index, repetition in enumerate(repetitions):
             role = "warmup" if index < warmups else "measurement"
