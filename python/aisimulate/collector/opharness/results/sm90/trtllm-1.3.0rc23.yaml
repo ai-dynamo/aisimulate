@@ -4,9 +4,9 @@ _meta:
   version: 1.3.0rc23
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 60
+    pass: 62
     pass+custom: 0
-    fail: 35
+    fail: 36
 results:
   MiniMaxAI/MiniMax-M2:
     verdict: pass
@@ -22,9 +22,9 @@ results:
     topology: tp1
   MiniMaxAI/MiniMax-M2.7:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_q_paged_kv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
-    kv_allocated: null
+    kv_allocated: bf16
     topology: tp1
   MiniMaxAI/MiniMax-M3:
     verdict: fail
@@ -37,7 +37,7 @@ results:
   Qwen/Qwen1.5-MoE-A2.7B:
     verdict: pass
     attention: tensorrt_llm::_v1::kernels::mmha::masked_multihead_attention_kernel
-    moe: UnquantizedFusedMoE->cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
+    moe: UnquantizedFusedMoE->cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3-0.6B:
@@ -53,7 +53,7 @@ results:
   Qwen/Qwen3-235B-A22B:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
+    moe: UnquantizedFusedMoE->cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3-235B-A22B-FP8:
@@ -65,20 +65,20 @@ results:
   Qwen/Qwen3-235B-A22B-Instruct-2507:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
+    moe: UnquantizedFusedMoE->cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3-30B-A3B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_q_paged_kv_128_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
-    kv_allocated: null
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    moe: UnquantizedFusedMoE->cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3-30B-A3B-FP8:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_q_paged_kv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
-    kv_allocated: null
+    kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3-32B:
     verdict: pass
@@ -103,13 +103,13 @@ results:
   Qwen/Qwen3-Coder-480B-A35B-Instruct:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
+    moe: UnquantizedFusedMoE->cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3-VL-235B-A22B-Instruct:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
+    moe: UnquantizedFusedMoE->cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3-VL-2B-Instruct:
@@ -120,7 +120,7 @@ results:
   Qwen/Qwen3-VL-30B-A3B-Instruct:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
+    moe: UnquantizedFusedMoE->cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3-VL-32B-Instruct:
@@ -151,7 +151,7 @@ results:
   Qwen/Qwen3.5-122B-A10B:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->causal_conv1d/cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
+    moe: UnquantizedFusedMoE->causal_conv1d/cutlass/flashinfer/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3.5-27B:
@@ -166,14 +166,14 @@ results:
     topology: tp1
   Qwen/Qwen3.5-35B-A3B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_q_paged_kv_256_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->causal_conv1d/cutlass/fla_triton/triton/triton_fused_moe/trtllm_internal/trtllm_mha
-    kv_allocated: null
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    moe: UnquantizedFusedMoE->causal_conv1d/cutlass/flashinfer/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3.5-397B-A17B:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->causal_conv1d/cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
+    moe: UnquantizedFusedMoE->causal_conv1d/cutlass/flashinfer/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: bf16
     topology: tp1
   Qwen/Qwen3.5-4B:
@@ -183,8 +183,8 @@ results:
     topology: tp1
   Qwen/Qwen3.5-9B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_q_paged_kv_256_causal_tma_ws_sm90_kernel
-    kv_allocated: null
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    kv_allocated: bf16
     topology: tp1
   XiaomiMiMo/MiMo-7B-Base:
     verdict: fail
@@ -196,13 +196,13 @@ results:
     error: 'ValueError: Unknown architecture for AutoModelForCausalLM: MiMoV2FlashForCausalLM'
   deepseek-ai/DeepSeek-R1:
     verdict: pass
-    attention: flash::flash_fwd_splitkv_mla_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_q_k_v_192x128_causal_tma_ws_sm90_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
     kv_allocated: bf16
     topology: tp1
   deepseek-ai/DeepSeek-V3:
     verdict: pass
-    attention: flash::flash_fwd_splitkv_mla_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_q_k_v_192x128_causal_tma_ws_sm90_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
     kv_allocated: bf16
     topology: tp1
@@ -210,7 +210,7 @@ results:
     verdict: pass
     attention: null
     moe: DeepSeekFP8BlockScalesFusedMoE
-    kv_allocated: null
+    kv_allocated: bf16
     topology: tp1
   deepseek-ai/DeepSeek-V4-Flash:
     verdict: fail
@@ -268,12 +268,12 @@ results:
   mistralai/Mixtral-8x7B-v0.1:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
-    moe: UnquantizedFusedMoE->cutlass/triton/triton_fused_moe/trtllm_internal/trtllm_mha
+    moe: UnquantizedFusedMoE->cutlass/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: bf16
     topology: tp1
   moonshotai/Kimi-K2-Instruct:
     verdict: pass
-    attention: flash::flash_fwd_splitkv_mla_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_q_k_v_192x128_causal_tma_ws_sm90_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
     kv_allocated: bf16
     topology: tp1
@@ -313,6 +313,10 @@ results:
     verdict: fail
     cause: ckpt-forced fp8-KV
     error: 'frame #62: python3() [0x54ceb4]'
+  nvidia/GLM-5.3-NVFP4:
+    verdict: fail
+    cause: framework gap
+    error: 'AssertionError: MIXED_PRECISION is ambiguous'
   nvidia/Gemma-4-26B-A4B-NVFP4:
     verdict: fail
     cause: platform floor (needs Blackwell)
@@ -361,9 +365,9 @@ results:
     error: 'ValueError: MiniMaxM3SparseRuntimeBackend.forward requires k, v, k_cache, v_cache, idx_k_cache, and out_cache_loc to be supplied alongside idx_q / idx_k / m3_metadata.'
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_q_paged_kv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
     moe: UnquantizedFusedMoE
-    kv_allocated: null
+    kv_allocated: bf16
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
     verdict: pass
@@ -379,9 +383,9 @@ results:
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
     verdict: pass
-    attention: fmha_v2_flash_attention_e4m3_64_256_S_q_paged_kv_128_causal_output_bf16_tma_ws_s
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
     moe: W4A16NVFP4CutlassFusedMoE
-    kv_allocated: null
+    kv_allocated: fp8
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
     verdict: pass
@@ -431,15 +435,15 @@ results:
     error: 'RuntimeError: No supported MoE GEMM tactic remains after replacing unsupported NO_SMEM epilogues.'
   openai/gpt-oss-120b:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_256_S_q_paged_kv_64_causal_tma_ws_sm90_kernel
-    moe: TritonMXFP4FusedMoE
-    kv_allocated: null
+    attention: fmha_v2_flash_attention_bf16_64_256_S_qkv_64_causal_tma_ws_sm90_kernel
+    moe: WFP4A16FusedMoE
+    kv_allocated: bf16
     topology: tp1
   openai/gpt-oss-20b:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_256_S_q_paged_kv_64_causal_tma_ws_sm90_kernel
-    moe: TritonMXFP4FusedMoE
-    kv_allocated: null
+    attention: fmha_v2_flash_attention_bf16_64_256_S_qkv_64_causal_tma_ws_sm90_kernel
+    moe: WFP4A16FusedMoE
+    kv_allocated: bf16
     topology: tp1
   sgl-project/DeepSeek-V4-Flash-FP8:
     verdict: fail
@@ -452,7 +456,7 @@ results:
   zai-org/GLM-5:
     verdict: pass
     attention: null
-    moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton/triton_fused_moe/trtllm_internal
+    moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton_fused_moe/trtllm_internal
     kv_allocated: bf16
     topology: tp1
   zai-org/GLM-5-FP8:
@@ -464,24 +468,36 @@ results:
   zai-org/GLM-5.1:
     verdict: pass
     attention: null
-    moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton/triton_fused_moe/trtllm_internal
-    kv_allocated: null
+    moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton_fused_moe/trtllm_internal
+    kv_allocated: bf16
     topology: tp1
   zai-org/GLM-5.1-FP8:
     verdict: pass
     attention: null
     moe: DeepSeekFP8BlockScalesFusedMoE
-    kv_allocated: null
+    kv_allocated: bf16
     topology: tp1
   zai-org/GLM-5.2:
     verdict: pass
     attention: null
-    moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton/triton_fused_moe/trtllm_internal
-    kv_allocated: null
+    moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton_fused_moe/trtllm_internal
+    kv_allocated: bf16
     topology: tp1
   zai-org/GLM-5.2-FP8:
     verdict: pass
     attention: null
     moe: DeepSeekFP8BlockScalesFusedMoE
+    kv_allocated: bf16
+    topology: tp1
+  zai-org/GLM-5.3:
+    verdict: pass
+    attention: null
+    moe: DeepSeekFP8BlockScalesFusedMoE
+    kv_allocated: null
+    topology: tp1
+  zai-org/GLM-5.3-BF16:
+    verdict: pass
+    attention: null
+    moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton_fused_moe/trtllm_internal
     kv_allocated: null
     topology: tp1

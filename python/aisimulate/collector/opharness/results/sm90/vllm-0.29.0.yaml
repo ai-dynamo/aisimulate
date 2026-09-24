@@ -4,32 +4,32 @@ _meta:
   version: 0.29.0
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 82
-    pass+custom: 1
-    fail: 12
+    pass: 84
+    pass+custom: 9
+    fail: 5
 results:
   MiniMaxAI/MiniMax-M2:
     verdict: pass
     attention: MiniMaxM2Attention
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M2.5:
     verdict: pass
     attention: MiniMaxM2Attention
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M2.7:
     verdict: pass
     attention: MiniMaxM2Attention
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M3:
     verdict: pass
     attention: MiniMaxM3SparseTritonImpl
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   MiniMaxAI/MiniMax-M3-MXFP8:
@@ -41,7 +41,7 @@ results:
   Qwen/Qwen1.5-MoE-A2.7B:
     verdict: pass
     attention: Qwen2MoeAttention
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-0.6B:
@@ -57,31 +57,31 @@ results:
   Qwen/Qwen3-235B-A22B:
     verdict: pass
     attention: Qwen3MoeAttention
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-235B-A22B-FP8:
     verdict: pass
     attention: Qwen3MoeAttention
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-235B-A22B-Instruct-2507:
     verdict: pass
     attention: Qwen3MoeAttention
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-30B-A3B:
     verdict: pass
     attention: Qwen3MoeAttention
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-30B-A3B-FP8:
     verdict: pass
     attention: Qwen3MoeAttention
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-32B:
@@ -107,13 +107,13 @@ results:
   Qwen/Qwen3-Coder-480B-A35B-Instruct:
     verdict: pass
     attention: Qwen3MoeAttention
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-235B-A22B-Instruct:
     verdict: pass
     attention: RMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-2B-Instruct:
@@ -124,7 +124,7 @@ results:
   Qwen/Qwen3-VL-30B-A3B-Instruct:
     verdict: pass
     attention: RMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3-VL-32B-Instruct:
@@ -155,7 +155,7 @@ results:
   Qwen/Qwen3.5-122B-A10B:
     verdict: pass
     attention: GemmaRMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-27B:
@@ -171,13 +171,13 @@ results:
   Qwen/Qwen3.5-35B-A3B:
     verdict: pass
     attention: GemmaRMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-397B-A17B:
     verdict: pass
     attention: GemmaRMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-4B:
@@ -198,63 +198,71 @@ results:
   XiaomiMiMo/MiMo-V2-Flash:
     verdict: pass
     attention: MiMoV2Attention
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   deepseek-ai/DeepSeek-R1:
     verdict: pass
     attention: DeepseekV2MLAAttention
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   deepseek-ai/DeepSeek-V3:
     verdict: pass
     attention: DeepseekV2MLAAttention
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   deepseek-ai/DeepSeek-V3.2:
     verdict: pass
     attention: FlashAttnMLASparseImpl
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   deepseek-ai/DeepSeek-V4-Flash:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: Misaligned Tensor data on argument #3 when calling: `__call__(state_cache: Tensor([n0, n1, 1024], float32), token_to_req_indices: Tensor([n2], int32), positions: Tensor([n3], int64),
-      slot_'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.kv_cache_dtype=fp8
+    attention: DeepseekV4FlashMLAAttention
+    moe: Mxfp4MoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   deepseek-ai/DeepSeek-V4-Flash-0731:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: Misaligned Tensor data on argument #3 when calling: `__call__(state_cache: Tensor([n0, n1, 1024], float32), token_to_req_indices: Tensor([n2], int32), positions: Tensor([n3], int64),
-      slot_'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.kv_cache_dtype=fp8
+    attention: DeepseekV4FlashMLAAttention
+    moe: Mxfp4MoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   deepseek-ai/DeepSeek-V4-Pro:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: Misaligned Tensor data on argument #3 when calling: `__call__(state_cache: Tensor([n0, n1, 1024], float32), token_to_req_indices: Tensor([n2], int32), positions: Tensor([n3], int64),
-      slot_'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.kv_cache_dtype=fp8
+    attention: DeepseekV4FlashMLAAttention
+    moe: Mxfp4MoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   deepseek-ai/DeepSeek-V4-Pro-0813:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: Misaligned Tensor data on argument #3 when calling: `__call__(state_cache: Tensor([n0, n1, 1024], float32), token_to_req_indices: Tensor([n2], int32), positions: Tensor([n3], int64),
-      slot_'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.kv_cache_dtype=fp8
+    attention: DeepseekV4FlashMLAAttention
+    moe: Mxfp4MoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   google/gemma-4-26B-A4B:
     verdict: pass
     attention: Gemma4Attention
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   meta-llama/Llama-4-Maverick-17B-128E-Instruct:
     verdict: pass
     attention: RMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   meta-llama/Llama-4-Scout-17B-16E-Instruct:
     verdict: pass
     attention: RMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   meta-llama/Meta-Llama-3.1-405B:
@@ -275,19 +283,19 @@ results:
   mistralai/Mixtral-8x22B-v0.1:
     verdict: pass
     attention: MixtralAttention
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   mistralai/Mixtral-8x7B-v0.1:
     verdict: pass
     attention: MixtralAttention
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   moonshotai/Kimi-K2-Instruct:
     verdict: pass
     attention: DeepseekV2MLAAttention
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   moonshotai/Kimi-K2.5:
@@ -305,7 +313,7 @@ results:
   nvidia/DeepSeek-V3.1-NVFP4:
     verdict: pass
     attention: DeepseekV2MLAAttention
-    moe: ModelOptNvFp4FusedMoE->cutlass/flashmla/marlin
+    moe: ModelOptNvFp4FusedMoE->fa3/marlin
     kv_allocated: auto
     topology: tp1
   nvidia/DeepSeek-V3.2-NVFP4:
@@ -314,15 +322,19 @@ results:
     error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8_e4m3, block_size=None, use_mla=True, has_sink=False,
       use_spar'
   nvidia/DeepSeek-V4-Flash-NVFP4:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: Misaligned Tensor data on argument #3 when calling: `__call__(state_cache: Tensor([n0, n1, 1024], float32), token_to_req_indices: Tensor([n2], int32), positions: Tensor([n3], int64),
-      slot_'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.kv_cache_dtype=fp8
+    attention: DeepseekV4FlashMLAAttention
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   nvidia/DeepSeek-V4-Pro-NVFP4:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: Misaligned Tensor data on argument #3 when calling: `__call__(state_cache: Tensor([n0, n1, 1024], float32), token_to_req_indices: Tensor([n2], int32), positions: Tensor([n3], int64),
-      slot_'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.kv_cache_dtype=fp8
+    attention: DeepseekV4FlashMLAAttention
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   nvidia/GLM-5-NVFP4:
     verdict: fail
     cause: ckpt-forced fp8-KV
@@ -334,6 +346,11 @@ results:
     error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8_e4m3, block_size=None, use_mla=True, has_sink=False,
       use_spar'
   nvidia/GLM-5.2-NVFP4:
+    verdict: fail
+    cause: ckpt-forced fp8-KV
+    error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8_e4m3, block_size=None, use_mla=True, has_sink=False,
+      use_spar'
+  nvidia/GLM-5.3-NVFP4:
     verdict: fail
     cause: ckpt-forced fp8-KV
     error: 'ValueError: No valid attention backend found for cuda with AttentionSelectorConfig(head_size=576, dtype=torch.bfloat16, kv_cache_dtype=fp8_e4m3, block_size=None, use_mla=True, has_sink=False,
@@ -404,7 +421,7 @@ results:
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     verdict: pass
     attention: RMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
@@ -428,13 +445,13 @@ results:
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
     verdict: pass
     attention: RMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
     verdict: pass
     attention: RMSNorm
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
@@ -487,58 +504,74 @@ results:
   openai/gpt-oss-120b:
     verdict: pass
     attention: OAIAttention
-    moe: GptOssMxfp4MoE
+    moe: GptOssMxfp4MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   openai/gpt-oss-20b:
     verdict: pass
     attention: OAIAttention
-    moe: GptOssMxfp4MoE
+    moe: GptOssMxfp4MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   sgl-project/DeepSeek-V4-Flash-FP8:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: Misaligned Tensor data on argument #3 when calling: `__call__(state_cache: Tensor([n0, n1, 1024], float32), token_to_req_indices: Tensor([n2], int32), positions: Tensor([n3], int64),
-      slot_'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.kv_cache_dtype=fp8
+    attention: DeepseekV4FlashMLAAttention
+    moe: Mxfp4MoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   sgl-project/DeepSeek-V4-Pro-FP8:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: Misaligned Tensor data on argument #3 when calling: `__call__(state_cache: Tensor([n0, n1, 1024], float32), token_to_req_indices: Tensor([n2], int32), positions: Tensor([n3], int64),
-      slot_'
+    verdict: pass+custom
+    extra_args: --generator-set params.agg.kv_cache_dtype=fp8
+    attention: DeepseekV4FlashMLAAttention
+    moe: Mxfp4MoE->marlin
+    kv_allocated: fp8
+    topology: tp1
   zai-org/GLM-5:
     verdict: pass
     attention: FlashAttnMLASparseImpl
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   zai-org/GLM-5-FP8:
     verdict: pass
     attention: FlashAttnMLASparseImpl
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   zai-org/GLM-5.1:
     verdict: pass
     attention: FlashAttnMLASparseImpl
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   zai-org/GLM-5.1-FP8:
     verdict: pass
     attention: FlashAttnMLASparseImpl
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   zai-org/GLM-5.2:
     verdict: pass
     attention: FlashAttnMLASparseImpl
-    moe: UnquantizedFusedMoE
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   zai-org/GLM-5.2-FP8:
     verdict: pass
     attention: FlashAttnMLASparseImpl
-    moe: Fp8MoE
+    moe: Fp8MoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5.3:
+    verdict: pass
+    attention: FlashAttnMLASparseImpl
+    moe: Fp8MoE->triton_fused_moe
+    kv_allocated: auto
+    topology: tp1
+  zai-org/GLM-5.3-BF16:
+    verdict: pass
+    attention: FlashAttnMLASparseImpl
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1

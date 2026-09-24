@@ -758,7 +758,13 @@ def build_matrix(targets: dict) -> None:
         for be, ver in pins.items():
             if any(isinstance(r, dict) and r.get("backend") == be and r.get("version") == ver
                    and "skip" not in r for r in runs):
-                plans[be] = pf.name
+                # EVERY plan file that carries this (backend, pin) contributes:
+                # the archive accumulates plan files (roster, re-plans, kv
+                # variants, onboarding subsets) and a matrix built from the
+                # newest one alone silently dropped every other model
+                # (found 2026-09-24: an 18-run GLM-5.3 plan produced an
+                # 18-cell matrix stamped with another backend's version)
+                plans.setdefault(be, []).append(pf.name)
     missing = sorted(set(pins) - set(plans))
     if missing:
         raise SystemExit(f"--matrix: no plan file matches the pinned version for {missing} — emit queues first")
@@ -774,12 +780,18 @@ def build_matrix(targets: dict) -> None:
             for be2, v2 in ((o2 or {}).get("cli_extra_args") or {}).items():
                 custom[(repo2, be2)] = " ".join(v2["args"] if isinstance(v2, dict) else v2)
     recs: dict = {}
+    _score: dict = {}
     for line in (ROOT / "archive" / "records.jsonl").open():
         r = json.loads(line)
         k = (r["target"].get("repo"), r["runtime"]["backend"])
         ok = (r.get("outcome") or {}).get("status") == "ok"
-        if ok or k not in recs:
-            recs[k] = r
+        # the cell's identity comes from the RENDERED config's record: kv-dtype
+        # variant records (fp8-KV probes) exist for the same (repo, backend)
+        # and must not lend it their kv_allocated / attention identity
+        rendered = str(r["runtime"].get("kv_cache_dtype")) in ("auto", "bfloat16", "bf16", "None")
+        s = (ok, rendered)
+        if k not in recs or s > _score[k]:
+            recs[k], _score[k] = r, s
     kvcap = {}
     for p in (ROOT / "facts" / "kvcap").glob("*.json"):
         kvcap[p.stem] = (json.loads(p.read_text()) or {}).get("kv_cache_resolved") or {}
@@ -788,11 +800,23 @@ def build_matrix(targets: dict) -> None:
     out: dict = {}
     counts: dict = {}
     versions: dict = {}  # measured: the version the plan actually ran
-    for be, pf in plans.items():
-        for run in json.loads((ROOT / "archive" / pf).read_text()):
+
+    def _matrix_runs(be, pfs):
+        """Runs that define a matrix cell: this backend at its pin (a mixed
+        plan file carries all three backends) and the RENDERED config only —
+        kv-dtype variant runs are path_diff evidence, not the deployed
+        identity of the model x backend cell. Ids dedup across plan files."""
+        seen: set = set()
+        for pf in pfs:
+            for r in json.loads((ROOT / "archive" / pf).read_text()):
+                if (isinstance(r, dict) and r.get("backend") == be and r.get("version") == pins[be]
+                        and not r.get("kv_dtype") and r.get("id") not in seen):
+                    seen.add(r.get("id"))
+                    yield r
+    for be, pfs in plans.items():
+        for run in _matrix_runs(be, pfs):
             repo = run.get("repo")
-            if run.get("version"):
-                versions[be] = run["version"]
+            versions[be] = run["version"]
             cell: dict = {}
             raw = ROOT / "archive" / "raw" / f"{run.get('id','')}.json"
             if "skip" in run:
@@ -838,7 +862,16 @@ def build_matrix(targets: dict) -> None:
                         act = short.get(str(act), str(act).replace("DataType.", "").lower()) if act else None
                         cell["kv_allocated"] = act
                         cell["topology"] = f"tp{run.get('tp',1)}"
+            # several rendered runs can exist for one (repo, backend) across
+            # plan files (re-plans, id-formula changes): a run that passed
+            # is the cell; a later run with no raw or a crash never
+            # overwrites it
+            prev = out.get(repo, {}).get(be)
+            if prev and prev["verdict"] != "fail" and cell["verdict"] == "fail":
+                continue
             out.setdefault(repo, {})[be] = cell
+    for repo, cells in out.items():
+        for be, cell in cells.items():
             c = counts.setdefault(be, {"pass": 0, "pass+custom": 0, "fail": 0})
             c[cell["verdict"]] += 1
     # one file per (SM, framework); version pinned inside and OVERWRITTEN on

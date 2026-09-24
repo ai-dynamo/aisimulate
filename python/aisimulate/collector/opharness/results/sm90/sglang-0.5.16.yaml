@@ -4,7 +4,7 @@ _meta:
   version: 0.5.16
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 83
+    pass: 86
     pass+custom: 6
     fail: 6
 results:
@@ -246,7 +246,7 @@ results:
   google/gemma-4-26B-A4B:
     verdict: pass
     attention: TritonAttnBackend
-    moe: UnquantizedFusedMoE->triton_fused_moe
+    moe: UnquantizedFusedMoE->triton/triton_fused_moe
     kv_allocated: bf16
     topology: tp1
   meta-llama/Llama-4-Maverick-17B-128E-Instruct:
@@ -302,9 +302,8 @@ results:
     topology: tp1
   moonshotai/Kimi-K3:
     verdict: fail
-    cause: arch not registered
-    error: 'ValueError: Cannot find model module. ''KimiK3ForConditionalGeneration'' is not a registered model in the Transformers library and loading the custom model from auto_map failed. The remote model
-      code ma'
+    cause: generator rejects
+    error: 'golden render failed: main.py generate: error: argument --model-path/--model: ''moonshotai/Kimi-K3'' is not a valid HuggingFace model path or local path with conf'
   nvidia/DeepSeek-V3.1-NVFP4:
     verdict: pass
     attention: FlashAttentionBackend
@@ -314,7 +313,7 @@ results:
   nvidia/DeepSeek-V3.2-NVFP4:
     verdict: pass
     attention: DeepseekSparseAttnBackend
-    moe: ModelOptNvFp4FusedMoE->flashmla/marlin
+    moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: bf16
     topology: tp1
   nvidia/DeepSeek-V4-Flash-NVFP4:
@@ -348,6 +347,12 @@ results:
     attention: DeepseekSparseAttnBackend
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: bf16
+    topology: tp1
+  nvidia/GLM-5.3-NVFP4:
+    verdict: pass
+    attention: DeepseekSparseAttnBackend
+    moe: ModelOptNvFp4FusedMoE->marlin
+    kv_allocated: bfloat16
     topology: tp1
   nvidia/Gemma-4-26B-A4B-NVFP4:
     verdict: fail
@@ -550,4 +555,16 @@ results:
     attention: DeepseekSparseAttnBackend
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: bf16
+    topology: tp1
+  zai-org/GLM-5.3:
+    verdict: pass
+    attention: DeepseekSparseAttnBackend
+    moe: Fp8MoE->triton_fused_moe
+    kv_allocated: bfloat16
+    topology: tp1
+  zai-org/GLM-5.3-BF16:
+    verdict: pass
+    attention: DeepseekSparseAttnBackend
+    moe: UnquantizedFusedMoE->triton_fused_moe
+    kv_allocated: bfloat16
     topology: tp1
