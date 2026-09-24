@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from collector.glm53flash_contract import (
     BACKENDS,
     CHECKPOINTS,
@@ -28,7 +29,12 @@ def sample_row():
         "prefix": 0,
         "x": 128,
         "latency": 2.0,
-        "sample_count": 1,
+        "sample_count": 10,
+        "dispatch_fingerprint": "",
+        "dataset_role": "calibration",
+        "request_set": "authored-unit-fixture-not-performance",
+        "corpus_sha256": "d" * 64,
+        "evidence_sha256": "e" * 64,
         "measurement_scope": "local_compute",
         "kv_seed_regime": "empty",
         "backend": "vllm",
@@ -108,27 +114,27 @@ def test_rank_max_then_median_and_complete_layer_evidence(tmp_path):
         ]
 
     paths = rank_files(tmp_path, [repetitions(0), repetitions(1)])
-    rows = aggregate_rank_records(paths, 2, manifest(first))
+    rows = aggregate_rank_records(paths, 2, manifest(first), evidence_sha256="e" * 64)
     assert rows[0]["latency"] == 5
     assert rows[0]["sample_count"] == 10
     with pytest.raises(ValueError, match="incomplete native context graph"):
-        aggregate_rank_records(paths, 2, manifest(first, second_layer=True))
+        aggregate_rank_records(paths, 2, manifest(first, second_layer=True), evidence_sha256="e" * 64)
     paths = rank_files(tmp_path, [repetitions(0)[:14], repetitions(1)[:14]])
     with pytest.raises(ValueError, match="five warmups and ten"):
-        aggregate_rank_records(paths, 2, manifest(first))
+        aggregate_rank_records(paths, 2, manifest(first), evidence_sha256="e" * 64)
 
 
 def test_rank_and_source_mismatch_cannot_be_repaired_by_merge(tmp_path):
     row = sample_row()
     paths = rank_files(tmp_path, [[row], [{**row, "config_sha256": "d" * 64}]])
     with pytest.raises(ValueError, match="incompatible native"):
-        aggregate_rank_records(paths, 2, manifest(row))
+        aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
     paths[1].write_text("")
     with pytest.raises(ValueError, match="incomplete TP rank"):
-        aggregate_rank_records(paths, 2, manifest(row))
+        aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
     paths[1].write_text(json.dumps({**row, "tp_rank": 0}) + "\n")
     with pytest.raises(ValueError, match="evidence file"):
-        aggregate_rank_records(paths, 2, manifest(row))
+        aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
 
 
 def test_checkpoint_formats_remain_separate_physical_keys(tmp_path):
@@ -228,3 +234,88 @@ def test_native_graph_replay_without_python_events_is_not_coverage():
     recorder.begin(NativeWorkload("context", 1, 128, 0, "full_prefill", ("r1",), (), 0, 1))
     with pytest.raises(RuntimeError, match="incomplete native operation coverage"):
         recorder.end()
+
+
+def test_collective_is_counted_once_in_complete_local_plus_communication_partition():
+    cuda = FakeCuda()
+    row = sample_row()
+    graph = manifest(row)
+    primitive = {
+        "name": "attention_allreduce_0",
+        "component": "primitive",
+        "geometry": canonical_json(
+            {"backend": "vllm", "checkpoint_format": "fp8", "role": "allreduce", "token_selection": "all_scheduled"}
+        ),
+    }
+    for entries in graph["phases"].values():
+        if primitive not in entries:
+            entries.append(primitive)
+    recorder = NativeOperationObserver(graph, row, 0, torch_module=SimpleNamespace(cuda=cuda))
+
+    class Native:
+        def collective(self, value):
+            cuda.clock += 2
+            return value
+
+        def forward(self, value):
+            cuda.clock += 3
+            self.collective(value)
+            cuda.clock += 5
+            return value
+
+    native = Native()
+    recorder.wrap(native, "forward", "attention_0")
+    recorder.wrap_collective(native, "collective", ("attention_allreduce_0",))
+    recorder.begin(NativeWorkload("context", 1, 128, 0, "full_prefill", ("r1",), (), 0, 1))
+    native.forward(object())
+    rows = {result["component"]: result for result in recorder.end()}
+    assert rows["attention"]["latency"] == 8
+    assert rows["primitive"]["latency"] == 2
+    assert rows["primitive"]["measurement_scope"] == "communication"
+    assert sum(result["latency"] for result in rows.values()) == 10
+
+
+def test_profile_kernel_attribution_partitions_nested_communication():
+    row = sample_row()
+    graph = manifest(row)
+    graph["phases"]["context"].append(dict(graph["phases"]["context"][0], name="comm"))
+    graph["phases"]["generation"].append(dict(graph["phases"]["generation"][0], name="comm"))
+    recorder = NativeOperationObserver(graph, row, 0, torch_module=SimpleNamespace(cuda=FakeCuda()))
+    recorder.workload = NativeWorkload("context", 1, 128, 0, "full_prefill", ("request",), (), 4, 4)
+    local = SimpleNamespace(name="aisim.glm53/attention_0", cpu_parent=None)
+    comm = SimpleNamespace(name="aisim.glm53/comm", cpu_parent=local)
+    events = [
+        SimpleNamespace(name="launch", cpu_parent=local, kernels=[SimpleNamespace(name="gemm_native")]),
+        SimpleNamespace(name="launch", cpu_parent=comm, kernels=[SimpleNamespace(name="nccl_native")]),
+    ]
+    recorder.profiler = SimpleNamespace(stop=lambda: None, events=lambda: events)
+    recorder._finish_profile()
+    assert recorder.dispatches[recorder._dispatch_key("attention_0")] == ["gemm_native"]
+    assert recorder.dispatches[recorder._dispatch_key("comm")] == ["nccl_native"]
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_public_population_preserves_native_checkpoint_and_targeted_plan(monkeypatch, backend):
+    import importlib
+
+    from collector.model_cases import build_collection_case_plan
+    from collector.version_resolver import build_collections
+
+    module = importlib.import_module(f"collector.{backend}.collect_glm53flash")
+    registry = importlib.import_module(f"collector.{backend}.registry").REGISTRY
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    raw = module.get_glm53flash_test_cases()
+    assert len(raw) == 8
+    assert len({case["id"] for case in raw}) == len(raw)
+    assert sum(len(case["params"][-1]) for case in raw) == 120
+    for fmt, (path, _revision) in CHECKPOINTS.items():
+        monkeypatch.setenv("COLLECTOR_MODEL_PATH", path)
+        plan = build_collection_case_plan(backend=backend, model_path=path, sm_version=103)
+        assert plan.selected_ops == {"glm53flash_module"}
+        cases = module.get_glm53flash_test_cases()
+        assert len(cases) == 4
+        assert {tuple(case["params"][1:4]) for case in cases} == {(path, fmt, 2), (path, fmt, 4)}
+    resolved = build_collections(registry, backend, BACKENDS[backend][0], ops=["glm53flash_module"])
+    assert len(resolved) == 1 and resolved[0]["unverified"] is True
+    # The public scheduler therefore queues zero cases until native qualification;
+    # raw recipes are retained and never described as scheduled GPU coverage.

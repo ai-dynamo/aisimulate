@@ -991,17 +991,25 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 ## GLM-5.3-Flash native operation observation adapters
 
 - Derived files: `python/aisimulate/collector/glm53flash_native_hooks.py`,
-  `glm53flash_observer.py`, `glm53flash_contract.py`, and `README.glm53flash.md`
+  `glm53flash_observer.py`, `glm53flash_contract.py`, `glm53flash_validation.py`,
+  `collect_glm53flash.py`, `{vllm,sglang}/collect_glm53flash.py`,
+  `cases/base_ops/glm53flash_module.yaml`,
+  `cases/models/Glm5NextForConditionalGeneration_cases.yaml`,
+  `framework_manifest.yaml` (GLM family entries), and `README.glm53flash.md`
   in the same directory. These original adapters import and observe native
   implementations; no upstream compute implementation is bundled or replaced.
 - Sources: https://github.com/vllm-project/vllm at
   `ced6857afa0ea7b2e3f0846a62e1394e90f15607` (v0.30.0), original paths
   `vllm/models/glm5next/nvidia/{model,attention,kda}.py` and
-  `vllm/distributed/parallel_state.py`;
+  `vllm/distributed/parallel_state.py` and
+  `vllm/model_executor/layers/logits_processor.py`;
   https://github.com/sgl-project/sglang at
   `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20), original paths
   `python/sglang/srt/models/{glm5_next,deepseek_v2}.py` and
-  `python/sglang/srt/layers/communicator_mhc.py`.
+  `python/sglang/srt/layers/communicator_mhc.py`,
+  `python/sglang/srt/layers/logits_processor.py`,
+  `python/sglang/srt/arg_groups/exec_.py`, and
+  `python/sglang/srt/model_executor/cuda_graph_config.py`.
 - Copyright: contributors to the vLLM project; Copyright 2023-2024 SGLang
   Team and SGLang contributors. License: Apache-2.0 (full text above).
 - Modified/adapted: independently authored timing bindings, complete graph/rank

@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Exact measured GLM-5.3-Flash native operation queries.
-//! No interpolation, extrapolation, cross-backend reuse, or analytical fallback.
+//! Measured GLM-5.3-Flash native operation queries.
+//! Bounded interpolation requires actual CUDA dispatch equivalence and complete
+//! measured corners. No extrapolation, cross-backend reuse or SOL fallback.
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
@@ -15,7 +16,9 @@ use super::SourceResolver;
 use super::parquet_loader::PerfReader;
 use super::perf_interp::LeafValue;
 use crate::common::error::AicError;
-use crate::operators::glm53flash::{Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53RouterOp};
+use crate::operators::glm53flash::{
+    Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53PrimitiveOp, Glm53RouterOp,
+};
 
 const BASENAME: &str = "glm53flash_module_perf.parquet";
 
@@ -25,7 +28,15 @@ pub struct Glm53Table {
     points: OnceLock<Result<Points, String>>,
 }
 
-type Points = BTreeMap<Key, LeafValue>;
+type Points = BTreeMap<Key, Measurement>;
+
+struct Measurement {
+    value: LeafValue,
+    dispatch: String,
+    source: String,
+    state: String,
+    graph: bool,
+}
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
@@ -72,6 +83,7 @@ fn validate_geometry(component: &str, encoded: &str) -> Result<Value, AicError> 
         "attention" => validate_body::<Glm53AttentionOp>(&value)?.validate()?,
         "mhc" => validate_body::<Glm53MhcOp>(&value)?.validate()?,
         "ffn" => validate_body::<Glm53FfnOp>(&value)?.validate_physical()?,
+        "primitive" => validate_body::<Glm53PrimitiveOp>(&value)?.validate_physical()?,
         "router" => validate_body::<Glm53RouterOp>(&value)?.validate()?,
         _ => return Err(invalid("unknown GLM53 component")),
     }
@@ -207,8 +219,131 @@ impl Glm53Table {
             prefix,
             x,
         };
-        Ok(points.get(&key).copied())
+        if let Some(measured) = points.get(&key) {
+            return Ok(Some(measured.value));
+        }
+        interpolate(points, &key)
     }
+}
+
+// Structural partitions supplement (never replace) observed CUDA kernel names.
+// In particular, selected pool/tail state and the short sparse path must not be
+// smoothed across their discontinuities even if kernel symbol names coincide.
+fn partition(key: &Key, shape: &Value) -> Vec<u64> {
+    if key.component != "attention" {
+        return vec![];
+    }
+    let context = shape["is_context"].as_bool().unwrap_or(false);
+    if shape["layer_kind"] == "kda" {
+        return if context {
+            vec![u64::from(key.x).div_ceil(128), u64::from(key.prefix == 0)]
+        } else {
+            vec![]
+        };
+    }
+    let pool = shape["index_pool"].as_u64().unwrap_or(4).max(1);
+    let query = if context { u64::from(key.x) } else { 1 };
+    let past = if context {
+        u64::from(key.prefix)
+    } else {
+        u64::from(key.x)
+    };
+    let total = past + query;
+    let topk = shape["index_topk"].as_u64().unwrap_or(2048);
+    vec![
+        u64::from(total <= topk),
+        past % pool,
+        total % pool,
+        u64::from(past == 0),
+    ]
+}
+
+fn interpolate(points: &Points, target: &Key) -> Result<Option<LeafValue>, AicError> {
+    let shape: Value =
+        serde_json::from_str(&target.geometry).map_err(|e| invalid(e.to_string()))?;
+    let wanted = partition(target, &shape);
+    let mut groups: BTreeMap<(&str, &str, &str, bool), Vec<(&Key, &Measurement)>> = BTreeMap::new();
+    for (key, measurement) in points {
+        if key.component == target.component
+            && key.geometry == target.geometry
+            && !measurement.dispatch.is_empty()
+            && partition(key, &shape) == wanted
+        {
+            groups
+                .entry((
+                    &measurement.dispatch,
+                    &measurement.source,
+                    &measurement.state,
+                    measurement.graph,
+                ))
+                .or_default()
+                .push((key, measurement));
+        }
+    }
+    let coordinates = |key: &Key| [key.batch_size, key.prefix, key.x];
+    let target_coords = coordinates(target);
+    let mut resolved = None;
+    for sites in groups.values() {
+        let mut bounds = [(0_u32, 0_u32); 3];
+        let mut supported = true;
+        for axis in 0..3 {
+            let lower = sites
+                .iter()
+                .map(|(key, _)| coordinates(key)[axis])
+                .filter(|&v| v <= target_coords[axis])
+                .max();
+            let upper = sites
+                .iter()
+                .map(|(key, _)| coordinates(key)[axis])
+                .filter(|&v| v >= target_coords[axis])
+                .min();
+            match (lower, upper) {
+                (Some(lo), Some(hi)) => bounds[axis] = (lo, hi),
+                _ => {
+                    supported = false;
+                    break;
+                }
+            }
+        }
+        if !supported {
+            continue;
+        }
+        let mut corners = vec![([0_u32; 3], 1.0_f64)];
+        for axis in 0..3 {
+            let (lo, hi) = bounds[axis];
+            let mut next = Vec::new();
+            for (mut point, weight) in corners {
+                point[axis] = lo;
+                if lo == hi {
+                    next.push((point, weight));
+                } else {
+                    let t = f64::from(target_coords[axis] - lo) / f64::from(hi - lo);
+                    next.push((point, weight * (1.0 - t)));
+                    point[axis] = hi;
+                    next.push((point, weight * t));
+                }
+            }
+            corners = next;
+        }
+        let mut latency = 0.0;
+        for (point, weight) in corners {
+            match sites.iter().find(|(key, _)| coordinates(key) == point) {
+                Some((_, measured)) => latency += weight * measured.value.latency,
+                None => {
+                    supported = false;
+                    break;
+                }
+            }
+        }
+        if supported {
+            // Competing state/graph/dispatch baselines are not averaged.
+            if resolved.is_some() {
+                return Ok(None);
+            }
+            resolved = Some(LeafValue::latency_only(latency));
+        }
+    }
+    Ok(resolved)
 }
 
 fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicError> {
@@ -223,6 +358,7 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
     let x = reader.col("x")?;
     let latency = reader.col("latency")?;
     let kernel_source = reader.col("kernel_source")?;
+    let dispatch_fingerprint = reader.col("dispatch_fingerprint")?;
     let measurement_scope = reader.col("measurement_scope")?;
     let source_sha256 = reader.col("source_sha256")?;
     let config_sha256 = reader.col("config_sha256")?;
@@ -235,6 +371,10 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
     let backend_version = reader.col("backend_version")?;
     let backend_revision = reader.col("backend_revision")?;
     let checkpoint_revision = reader.col("checkpoint_revision")?;
+    let dataset_role = reader.col("dataset_role")?;
+    let request_set = reader.col("request_set")?;
+    let corpus_sha256 = reader.col("corpus_sha256")?;
+    let evidence_sha256 = reader.col("evidence_sha256")?;
     let mut identities = BTreeMap::new();
     let mut points = Points::new();
     for row in reader.rows()? {
@@ -248,20 +388,29 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
             || x == 0
             || !latency.is_finite()
             || latency <= 0.0
-            || row.u32(sample_count)? == 0
+            || row.u32(sample_count)? < 10
         {
             return Err(invalid(
                 "GLM53 measurement needs positive work, sample count and finite latency",
             ));
         }
+        let expected_scope = match (component, shape["role"].as_str()) {
+            ("primitive", Some("allreduce")) => "communication",
+            ("primitive", Some("logits")) => "compute_and_communication",
+            _ => "local_compute",
+        };
         if row.str(kernel_source)?.trim().is_empty()
-            || row.str(measurement_scope)? != "local_compute"
+            || row.str(measurement_scope)? != expected_scope
         {
             return Err(invalid(
                 "GLM53 measurement needs observed native local-compute dispatch",
             ));
         }
-        row.bool_strict(used_cuda_graph)?;
+        let graph = row.bool_strict(used_cuda_graph)?;
+        let dispatch = row.str(dispatch_fingerprint)?;
+        if !dispatch.is_empty() && !sha256(dispatch) {
+            return Err(invalid("GLM53 native CUDA dispatch fingerprint is invalid"));
+        }
         let format = shape["checkpoint_format"].as_str().unwrap_or_default();
         let expected_checkpoint = match format {
             "fp8" => "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
@@ -306,7 +455,7 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
                 {
                     return Err(invalid("GLM53 prefill state/128K coordinates disagree"));
                 }
-            } else if prefix != 0 || mode != "decode" || x > 131072 {
+            } else if prefix != 0 || mode != "decode" || x > 131071 {
                 return Err(invalid(
                     "GLM53 decode needs absolute past-KV x and prefix=0",
                 ));
@@ -324,6 +473,15 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
         } else if batch != 1 || prefix != 0 || regime != "n/a" || mode != "token_only" {
             return Err(invalid(
                 "GLM53 token-only component has stateful coordinates",
+            ));
+        }
+        if row.str(dataset_role)? != "calibration"
+            || row.str(request_set)?.is_empty()
+            || !sha256(row.str(corpus_sha256)?)
+            || !sha256(row.str(evidence_sha256)?)
+        {
+            return Err(invalid(
+                "GLM53 table needs content-addressed calibration evidence",
             ));
         }
         let source = row.str(source_sha256)?;
@@ -357,7 +515,16 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
             x,
         };
         if points
-            .insert(key, LeafValue::with_power(latency, 0.0))
+            .insert(
+                key,
+                Measurement {
+                    value: LeafValue::with_power(latency, 0.0),
+                    dispatch: dispatch.into(),
+                    source: row.str(kernel_source)?.into(),
+                    state: mode.into(),
+                    graph,
+                },
+            )
             .is_some()
         {
             return Err(invalid("duplicate GLM53 measured physical key"));
@@ -380,13 +547,14 @@ mod tests {
         Col, write_energy_systems_root, write_parquet,
     };
 
-    const SHAPE: &str = r#"{"backend":"vllm","checkpoint_format":"fp8","hc_mult":4,"hidden_size":4096,"role":"pre","sinkhorn_iters":20}"#;
+    const SHAPE: &str = r#"{"backend":"vllm","checkpoint_format":"fp8","hc_mult":4,"hidden_size":4096,"is_context":true,"role":"pre","sinkhorn_iters":20,"tp_size":2}"#;
     const SHA: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn op() -> Glm53MhcOp {
         Glm53MhcOp {
             name: "mhc_pre_attn_0".into(),
+            is_context: true,
             role: "pre".into(),
             tp_size: 2,
             backend: "vllm".into(),
@@ -406,8 +574,16 @@ mod tests {
             Col::I64("x", vec![128, 256]),
             Col::F64("latency", vec![3.0, 7.0]),
             Col::Str("kernel_source", vec!["fixture.native.mhc_pre"; 2]),
+            Col::Str("dispatch_fingerprint", vec![""; 2]),
             Col::Str("measurement_scope", vec!["local_compute"; 2]),
             Col::Str("source_sha256", vec![SHA; 2]),
+            Col::Str("dataset_role", vec!["calibration"; 2]),
+            Col::Str(
+                "request_set",
+                vec!["authored-unit-fixture-not-performance"; 2],
+            ),
+            Col::Str("corpus_sha256", vec![SHA; 2]),
+            Col::Str("evidence_sha256", vec![SHA; 2]),
             Col::Str("config_sha256", vec![SHA; 2]),
             Col::Str("runtime_digest", vec![DIGEST; 2]),
             Col::Bool("used_cuda_graph", vec![false; 2]),
@@ -425,6 +601,75 @@ mod tests {
                 vec!["eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"; 2],
             ),
         ]
+    }
+
+    fn measured(latency: f64, dispatch: &str) -> Measurement {
+        Measurement {
+            value: LeafValue::latency_only(latency),
+            dispatch: dispatch.into(),
+            source: "authored-fixture".into(),
+            state: "cached_prefill".into(),
+            graph: false,
+        }
+    }
+
+    #[test]
+    fn bounded_interpolation_requires_kernel_evidence_and_complete_corners() {
+        let mut attention = crate::operators::glm53flash::tests::attention("kda");
+        attention.is_context = true;
+        let shape = geometry(&attention).unwrap();
+        let key = |batch, prefix, x| Key {
+            component: "attention".into(),
+            geometry: shape.clone(),
+            batch_size: batch,
+            prefix,
+            x,
+        };
+        let mut points = Points::new();
+        for batch in [1, 4] {
+            for prefix in [256, 512] {
+                for x in [64, 128] {
+                    points.insert(
+                        key(batch, prefix, x),
+                        measured(f64::from(batch + prefix + x), SHA),
+                    );
+                }
+            }
+        }
+        let target = key(2, 384, 96);
+        assert!((interpolate(&points, &target).unwrap().unwrap().latency - 482.0).abs() < 1e-10);
+        assert!(interpolate(&points, &key(5, 384, 96)).unwrap().is_none());
+        points.get_mut(&key(4, 512, 128)).unwrap().dispatch.clear();
+        assert!(interpolate(&points, &target).unwrap().is_none());
+        points.get_mut(&key(4, 512, 128)).unwrap().dispatch = SHA.into();
+        points.get_mut(&key(4, 512, 128)).unwrap().graph = true;
+        assert!(interpolate(&points, &target).unwrap().is_none());
+    }
+
+    #[test]
+    fn interpolation_preserves_index_pool_tail_and_short_sparse_path() {
+        let mut attention = crate::operators::glm53flash::tests::attention("sparse_mla");
+        attention.is_context = false;
+        let shape = geometry(&attention).unwrap();
+        let key = |x| Key {
+            component: "attention".into(),
+            geometry: shape.clone(),
+            batch_size: 1,
+            prefix: 0,
+            x,
+        };
+        let mut points = Points::new();
+        points.insert(key(128), measured(3.0, SHA));
+        points.insert(key(256), measured(7.0, SHA));
+        assert_eq!(
+            interpolate(&points, &key(192)).unwrap().unwrap().latency,
+            5.0
+        );
+        assert!(interpolate(&points, &key(193)).unwrap().is_none());
+        points.clear();
+        points.insert(key(2044), measured(3.0, SHA));
+        points.insert(key(2052), measured(7.0, SHA));
+        assert!(interpolate(&points, &key(2048)).unwrap().is_none());
     }
 
     #[test]

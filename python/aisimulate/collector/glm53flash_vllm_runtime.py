@@ -236,7 +236,20 @@ class _TraceState:
     def after(self, record, completed):
         if record["stage"] == "measure" and self.observer is not None:
             for row in self.observer.end():
-                row.update({key: record[key] for key in ("stage", "benchmark_id", "repetition", "sampling_role")})
+                row.update(
+                    {
+                        key: record[key]
+                        for key in (
+                            "stage",
+                            "benchmark_id",
+                            "repetition",
+                            "sampling_role",
+                            "dataset_role",
+                            "request_set",
+                            "corpus_sha256",
+                        )
+                    }
+                )
                 self.append("ops", row)
         else:
             # Establish a completed real-prefix receipt; synchronization stays

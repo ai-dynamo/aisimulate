@@ -118,12 +118,41 @@ def install_native_hooks(model, observer: NativeOperationObserver, backend: str)
                     "attention_class": f"{type(layer.self_attn).__module__}.{type(layer.self_attn).__name__}",
                 }
             )
+        text_models = [module for module in model.modules() if type(module).__name__ == "Glm5NextModel"]
+        heads = [
+            module
+            for module in model.modules()
+            if getattr(module, "lm_head", None) is not None and getattr(module, "logits_processor", None) is not None
+        ]
+        if len(text_models) != 1 or len(heads) != 1:
+            raise RuntimeError("native text embedding/final norm/logits boundaries are ambiguous")
+        text_model, head = text_models[0], heads[0]
+        logits = head.logits_processor
+        if backend == "vllm":
+            if not logits.use_all_gather or logits.head_dtype not in (None, observer.torch.bfloat16):
+                raise RuntimeError("vLLM native logits precision/collective differs from admitted geometry")
+        elif logits.use_fp32_lm_head or logits.use_attn_tp_group or logits.use_tp_lm_head_all_to_all:
+            raise RuntimeError("SGLang native logits precision/collective differs from admitted geometry")
+        observer.wrap(text_model.embed_tokens, "forward", "embedding")
+        observer.wrap(text_model.norm, "forward", "final_norm")
+        observer.wrap(logits, "forward", "logits")
+        collective_names = (
+            "embedding_allreduce",
+            *(name for index in range(45) for name in (f"attention_allreduce_{index}", f"ffn_allreduce_{index}")),
+        )
         if backend == "vllm":
             native_model = importlib.import_module("vllm.models.glm5next.nvidia.model")
             parallel = importlib.import_module("vllm.distributed.parallel_state")
-            observer.wrap_collective(parallel.get_tp_group(), "all_reduce")
+            observer.wrap_collective(parallel.get_tp_group(), "all_reduce", collective_names)
         else:
             native_model = importlib.import_module("sglang.srt.layers.communicator_mhc")
+            parallel = importlib.import_module("sglang.srt.distributed.parallel_state")
+            groups = (parallel.get_tp_group(), parallel.get_attn_tp_group(), parallel.get_moe_tp_group())
+            seen = set()
+            for group in groups:
+                if id(group) not in seen:
+                    observer.wrap_collective(group, "all_reduce", collective_names)
+                    seen.add(id(group))
         observer.wrap(native_model, "hc_expand", "mhc_expand")
         observer.wrap(native_model, "hc_contract", "mhc_contract")
     except BaseException:

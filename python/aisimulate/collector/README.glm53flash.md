@@ -12,8 +12,12 @@ x)`. Geometry is canonical sorted JSON with the display name removed, including
 backend and checkpoint format. Context uses query length `x` and actual cached
 `prefix`; decode uses past-KV length `x` and `prefix=0`. Token-only components use
 total tokens `x`, `batch_size=1`, `prefix=0`. Latency is milliseconds; integer
-columns are physical INT64 constrained to uint32. The Rust reader only admits
-exact measured keys, with no interpolation or analytical fallback.
+columns are physical INT64 constrained to uint32. The Rust reader admits exact measured keys, or bounded linear interpolation
+with every required corner measured under the same actual CUDA dispatch
+fingerprint, runtime, graph policy and state mode. KDA chunk boundaries and
+IndexPool short-path/tail partitions cannot be crossed. Missing kernel evidence,
+an incomplete interpolation cell or extrapolation is an explicit coverage gap;
+there is no analytical fallback.
 
 `glm53flash_native_hooks.py` binds all 45 loaded decoder layers to
 `NativeOperationObserver`. The serving adapter must pass native request IDs,
@@ -38,8 +42,14 @@ its pre call, the current hook rejects that path rather than undercounting it.
 The whole native FFN includes FP32 gate projection, sigmoid/top-k routing,
 shared and routed experts, and clamp10. Its analytical children never query
 generic measured GEMM/MoE rows. All45 FFNs are required on every rank.
-Ordinary embedding, final norm, logits and collective observation is a separate
-complete-graph requirement; decoder observations alone do not certify a model prediction.
+The complete graph additionally observes embedding, final norm, the complete
+native logits processor and 91 TP allreduces. Logits include native BS-row
+selection, BF16 vocabulary all-gather and SGLang's FP32 output conversion;
+communication is included in this boundary. Allreduces use separate primitive
+rows and are excluded from enclosing local compute only with a same-stream,
+synchronous interval witness. The observer rejects nested compute, asynchronous
+collectives and missing occurrences. The graph has 277 vLLM and 366 SGLang
+occurrences per phase/rank; decoder observations alone cannot certify it.
 
 Raw rank JSONL records retain every layer occurrence, request/history identity,
 sample, invocation and excluded collective. Publication first requires complete
@@ -75,7 +85,7 @@ packaged configuration files. See the canonical root `THIRD_PARTY_NOTICES.md`.
 ## SGLang serving integration
 
 In each native worker, call `collector.glm53flash_sglang_runtime.install()`
-from the campaign's `sitecustomize.py`. Set `AISIM_GLM53_TRACE_DIR` to an
+through the shared driver's spawn-safe native scheduler entrypoint. Set `AISIM_GLM53_TRACE_DIR` to an
 attempt-private output directory and `AISIM_GLM53_PROVENANCE` to a JSON file
 with the immutable row provenance. Optional `AISIM_GLM53_OPS_MANIFEST` enables
 the eager operation observer; omission records native whole-forward telemetry
@@ -120,3 +130,44 @@ every real forward. Required files are `AISIM_GLM53_OPS_MANIFEST` and
 allocated dtype/shape/stride is preserved separately. The current adapter rejects
 actual graph dispatch. This integration remains unverified until target-GPU
 instrumented smoke and independent whole-forward accuracy checks pass.
+
+
+## Population, calibration and independent acceptance
+
+The public `glm53flash_module` route uses the dedicated framework family pins
+(vLLM0.30.0 / SGLang0.5.20, GB300 ARM64 platform digests). Repository YAML emits
+eight native campaign tasks per backend: two checkpoint formats, TP2/TP4, and
+two phases. Those tasks contain 120 declared workload points per backend;
+a targeted checkpoint has four tasks/60 points. There is no deduplication.
+The registry remains `unverified=True`, so the ordinary scheduled queue is zero
+until the native collection paths are qualified. These population counts are
+not measured coverage.
+
+The launch route requires `AISIM_GLM53_MODEL_PATHS` (a JSON file mapping the two
+pinned Hub IDs to local snapshots), `AISIM_GLM53_INPUT_TEXT`, and the immutable
+`AISIM_GLM53_RUNTIME_DIGEST`. vLLM also requires the allocation-local Dynamo
+runtime and `ETCD_ENDPOINTS`. Actual checkpoint config, runtime source files and
+GB300 device names are checked. Every frozen point requires five real warmups
+and ten measurements; an exact requested query/prefix which never occurs under
+native scheduling is a missing point and fails the campaign.
+
+When `AISIM_GLM53_DISPATCH_PROFILING=1`, the final excluded warmup uses the native
+PyTorch CUDA profiler to attribute launched kernel names to module/collective
+ranges. Retained measurements run with the profiler stopped. Its raw kernel
+lists and dispatch fingerprint are retained; missing attribution permits only
+exact lookups. This profiler path requires target-GPU qualification separately
+from the initial eager event smoke.
+
+`calibration-evidence.json` hashes request/operation manifests, raw observations,
+forward histories, source preflight and actual allocated state layouts. Table
+rows preserve calibration role, corpus digest, request set and the evidence
+file's digest. The acceptance adapter rechecks those files, joins each module
+observation to its admitted native forward, and reaggregates rank maxima and
+medians before accepting the table. Content hashes alone are insufficient.
+
+Independent `ops_holdout` runs disable module hooks and record one GPU event
+window from embedding through logits. The separate native scheduler/DeviceTimer
+interval is retained but never substituted as the Ops comparator. The common
+holdout validator checks disjoint workload geometry and request/corpus evidence,
+then calls the installed public strict Ops consumer with a 20% per-cell/phase
+MAPE gate. No graph-mode Ops data or accuracy pass is claimed by this code.

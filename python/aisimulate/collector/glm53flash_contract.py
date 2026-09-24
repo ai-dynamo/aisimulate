@@ -17,7 +17,13 @@ import statistics
 from collections import defaultdict
 from pathlib import Path
 
-COMPONENTS = {"Glm53Attention": "attention", "Glm53Mhc": "mhc", "Glm53Router": "router", "Glm53Ffn": "ffn"}
+COMPONENTS = {
+    "Glm53Attention": "attention",
+    "Glm53Mhc": "mhc",
+    "Glm53Router": "router",
+    "Glm53Ffn": "ffn",
+    "Glm53Primitive": "primitive",
+}
 BACKENDS = {
     "vllm": ("0.30.0", "ced6857afa0ea7b2e3f0846a62e1394e90f15607"),
     "sglang": ("0.5.20", "94602c9c2b7cbdb8efd5c52802dac6a1c180089e"),
@@ -40,13 +46,16 @@ PROVENANCE_COLUMNS = (
     "kernel_source",
     "state_mode",
 )
+EVIDENCE_COLUMNS = ("dataset_role", "request_set", "corpus_sha256", "evidence_sha256")
 ROW_COLUMNS = (
     *KEY_COLUMNS,
     "latency",
     "sample_count",
     "measurement_scope",
     "kv_seed_regime",
+    "dispatch_fingerprint",
     *PROVENANCE_COLUMNS,
+    *EVIDENCE_COLUMNS,
 )
 
 
@@ -101,14 +110,16 @@ def build_manifest(model) -> dict:
             elif kind == "Overlap":
                 for child in (*body["group_a"], *body["group_b"]):
                     visit(child)
-            elif "children" in body:
-                for child in body["children"]:
-                    visit(child)
+            else:
+                raise ValueError(f"GLM production graph has an unobserved native boundary: {kind}")
 
         for op in ops:
             visit(json.loads(op._spec_json()))
-        if sum(entry["component"] == "attention" for entry in entries) != 45:
-            raise ValueError("GLM-5.3-Flash manifest must cover all 45 text attention layers")
+        if any(
+            sum(entry["component"] == component for entry in entries) != count
+            for component, count in (("attention", 45), ("ffn", 45), ("primitive", 94))
+        ):
+            raise ValueError("GLM manifest must cover all text attention, FFN and primitive boundaries")
         if len({entry["name"] for entry in entries}) != len(entries):
             raise ValueError("native operation display names must uniquely identify graph occurrences")
         phases[phase] = entries
@@ -150,8 +161,21 @@ def validate_row(row: dict) -> None:
             raise ValueError(f"invalid {key}")
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", row["runtime_digest"]):
         raise ValueError("immutable platform image digest required")
-    if row["measurement_scope"] != "local_compute" or not row["kernel_source"].strip():
+    scope = (
+        (
+            "communication"
+            if shape.get("role") == "allreduce"
+            else "compute_and_communication"
+            if shape.get("role") == "logits"
+            else "local_compute"
+        )
+        if row["component"] == "primitive"
+        else "local_compute"
+    )
+    if row["measurement_scope"] != scope or not row["kernel_source"].strip():
         raise ValueError("observed local compute dispatch is required")
+    if row.get("dispatch_fingerprint", "") and not re.fullmatch(r"[0-9a-f]{64}", row["dispatch_fingerprint"]):
+        raise ValueError("invalid native kernel dispatch fingerprint")
     if not isinstance(row["used_cuda_graph"], bool):
         raise ValueError("used_cuda_graph must be boolean")
     if row["component"] == "attention":
@@ -164,9 +188,9 @@ def validate_row(row: dict) -> None:
             expected_modes = ("cached_prefill", "chunked_prefill") if row["prefix"] else ("full_prefill",)
             if row["state_mode"] not in expected_modes:
                 raise ValueError("prefill state mode disagrees with its measured prefix")
-            if row["prefix"] + row["x"] > 131072:
+            if row["prefix"] + row["x"] + 1 > 131072:
                 raise ValueError("prefill exceeds the qualified 128K context")
-        elif row["prefix"] or row["state_mode"] != "decode" or row["x"] > 131072:
+        elif row["prefix"] or row["state_mode"] != "decode" or row["x"] + 1 > 131072:
             raise ValueError("decode requires absolute past-KV x, prefix=0, and decode state mode")
         if row["kv_seed_regime"] != ("real_kv" if row["prefix"] or not shape["is_context"] else "empty"):
             raise ValueError("cached prefill/decode requires native real-prefix state")
@@ -174,7 +198,17 @@ def validate_row(row: dict) -> None:
         raise ValueError("token-only components require batch=1, prefix=0 and no state label")
 
 
-def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict) -> list[dict]:
+def validate_calibration_row(row: dict) -> None:
+    if row.get("dataset_role") != "calibration" or not row.get("request_set"):
+        raise ValueError("measured rows require a frozen calibration request set")
+    for key in ("corpus_sha256", "evidence_sha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", row.get(key, "")):
+            raise ValueError(f"invalid calibration {key}")
+    if row["sample_count"] < 10:
+        raise ValueError("formal calibration rows require ten measured repetitions")
+
+
+def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict, *, evidence_sha256: str) -> list[dict]:
     """Median of per-invocation rank maxima, after complete graph/rank coverage.
 
     The raw records retain layer occurrence, workload and sample identities.
@@ -195,6 +229,11 @@ def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict) -> l
         for line in path.read_text().splitlines():
             row = json.loads(line)
             validate_row(row)
+            if row.get("dataset_role") != "calibration" or not row.get("request_set"):
+                raise ValueError("raw native observations must identify their frozen calibration corpus")
+            if not re.fullmatch(r"[0-9a-f]{64}", row.get("corpus_sha256", "")):
+                raise ValueError("raw native observations must identify their frozen calibration corpus")
+            row["evidence_sha256"] = evidence_sha256
             if row.get("stage") != "measure" or row.get("sampling_role") not in ("warmup", "measurement"):
                 raise ValueError("formal native measurements require frozen target and sampling roles")
             for label in ("benchmark_id", "repetition"):
@@ -221,7 +260,7 @@ def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict) -> l
             raise ValueError(f"incomplete native {phase} graph coverage")
     output = []
     for rows in groups.values():
-        if len({tuple(row[key] for key in PROVENANCE_COLUMNS) for row in rows}) != 1:
+        if len({tuple(row[key] for key in (*PROVENANCE_COLUMNS, *EVIDENCE_COLUMNS)) for row in rows}) != 1:
             raise ValueError("incompatible native invocations collide on one physical key")
         samples = defaultdict(dict)
         repetitions = defaultdict(lambda: defaultdict(set))
@@ -236,9 +275,12 @@ def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict) -> l
         if any(len(roles["warmup"]) < 5 or len(roles["measurement"]) < 10 for roles in repetitions.values()):
             raise ValueError("each frozen native point requires at least five warmups and ten measured repetitions")
         measured = [sample for key, sample in samples.items() if key[-1] == "measurement"]
-        result = {key: rows[0][key] for key in ROW_COLUMNS}
+        result = {key: rows[0].get(key, "") for key in ROW_COLUMNS}
+        signatures = {row.get("dispatch_fingerprint", "") for row in rows if row["sampling_role"] == "measurement"}
+        result["dispatch_fingerprint"] = sha256_json(sorted(signatures)) if signatures and "" not in signatures else ""
         result["latency"] = statistics.median(max(sample.values()) for sample in measured)
         result["sample_count"] = len(measured)
+        validate_calibration_row(result)
         output.append(result)
     return output
 
@@ -254,6 +296,7 @@ def write_parquet(rows: list[dict], destination: Path) -> None:
     identities = {}
     for row in rows:
         validate_row(row)
+        validate_calibration_row(row)
         key = tuple(row[column] for column in KEY_COLUMNS)
         if key in keys:
             raise ValueError("duplicate GLM-5.3-Flash physical key")

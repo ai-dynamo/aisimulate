@@ -103,6 +103,8 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             raise ValueError("GLM-5.3-Flash canary does not support EP or speculative decoding")
         if self.connector is not None or self.ec_connector is not None:
             raise ValueError("GLM-5.3-Flash canary forbids KV/encoder connectors")
+        if config.cache_config.enable_prefix_caching:
+            raise ValueError("GLM same-request state requires cross-request prefix caching disabled")
         if (
             parallel.enable_eplb
             or config.offload_config.uva.cpu_offload_gb
@@ -198,13 +200,63 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         if not built:
             self._real_validate_grid()
 
+    def _bench_prefill_kv_read_lengths(self, total, batch, partition=None, rows=None):
+        # These are completed tokens on the SAME live request, not synthetic
+        # prefix-cache hits. The hybrid allocation page/hash size (4352 in the
+        # first TP2 run) cannot restrict the logical IndexPool tail coordinate.
+        if batch < 1 or total < 0:
+            raise ValueError("invalid real prefix geometry")
+        if rows is not None:
+            lengths = [int(prefix) for _, prefix in rows]
+        elif total and partition is not None and partition.get("axis") in {"kv", "both"}:
+            lengths = native._imbalanced_partition(
+                total,
+                batch,
+                unit=1,
+                minimum_units=0,
+                high_count=int(partition["high_count"]),
+                fraction=float(partition["fraction"]),
+            )
+        else:
+            quotient, remainder = divmod(total, batch)
+            lengths = [quotient + int(index < remainder) for index in range(batch)]
+        if len(lengths) != batch or sum(lengths) != total or min(lengths) < 0:
+            raise ValueError("real prefix rows differ from requested token totals")
+        return lengths
+
+    def _bench_prefill_point_feasible(
+        self, total_prefill_tokens, batch_size, total_kv_read_tokens, partition=None, rows=None
+    ):
+        if not (
+            1 <= batch_size <= min(MAX_BATCH, self._bench_capacity_limit("max_num_running_reqs"))
+            and batch_size
+            <= total_prefill_tokens
+            <= min(MAX_NEW, self._bench_capacity_limit("max_num_scheduled_tokens"))
+        ):
+            return False
+        try:
+            prefixes = self._bench_prefill_kv_read_lengths(total_kv_read_tokens, batch_size, partition, rows)
+            queries = self._bench_prefill_new_token_lengths(total_prefill_tokens, batch_size, partition, rows)
+        except ValueError:
+            return False
+        context_limit = min(MAX_CONTEXT, self._bench_capacity_limit("max_model_len"))
+        if len(queries) != batch_size or sum(queries) != total_prefill_tokens or min(queries) < 1:
+            return False
+        lengths = [prefix + query for prefix, query in zip(prefixes, queries, strict=True)]
+        if max(lengths) > context_limit:
+            return False
+        # Use native allocation-manager capacity. A later allocation failure is
+        # still a recorded failure; there is no fake-KV or smaller-point retry.
+        required = sum(self._bench_blocks_per_req(length, apply_admission_cap=False) for length in lengths)
+        return required <= self._bench_grid_usable_blocks(batch_size)
+
     def _real_validate_grid(self):
         self._real_expected_warmup_ids = []
         for point in self._bench_grid:
             prefix, suffix = self._real_lengths(point)
             if (
                 not 1 <= point.batch_size <= MAX_BATCH
-                or max(prefix, default=0) + int(point.point_type == "decode") > MAX_CONTEXT
+                or max(prefix, default=0) + 2 * int(point.point_type == "decode") > MAX_CONTEXT
             ):
                 raise ValueError("GLM-5.3-Flash canary point exceeds batch/context bound")
             if point.point_type == "prefill":

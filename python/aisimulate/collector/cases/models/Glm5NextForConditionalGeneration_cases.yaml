@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+schema_version: 1
+architecture: Glm5NextForConditionalGeneration
+model_path: zai-org/GLM-5.3-Flash
+model_paths: [zai-org/GLM-5.3-Flash, nvidia/GLM-5.3-Flash-NVFP4]
+include_base: false
+description: Native text-only GB300 TP2/TP4 EP1 calibration; graph collection remains unverified.
+framework_specific_model_case_values:
+  vllm:
+    glm53flash_module:
+      - {model_path: zai-org/GLM-5.3-Flash, checkpoint_format: fp8, tensor_parallel_sizes: [2, 4]}
+      - {model_path: nvidia/GLM-5.3-Flash-NVFP4, checkpoint_format: nvfp4, tensor_parallel_sizes: [2, 4]}
+  sglang:
+    glm53flash_module:
+      - {model_path: zai-org/GLM-5.3-Flash, checkpoint_format: fp8, tensor_parallel_sizes: [2, 4]}
+      - {model_path: nvidia/GLM-5.3-Flash-NVFP4, checkpoint_format: nvfp4, tensor_parallel_sizes: [2, 4]}
+framework_specific_op_cases:
+  vllm:
+    glm53flash_module: {cases: all}
+  sglang:
+    glm53flash_module: {cases: all}

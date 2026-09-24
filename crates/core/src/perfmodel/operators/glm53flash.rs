@@ -424,7 +424,11 @@ pub struct Glm53MhcOp {
 impl Glm53MhcOp {
     pub fn validate(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
-        if self.hidden_size == 0 || self.hc_mult != 4 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4) {
+        if self.hidden_size == 0
+            || self.hc_mult != 4
+            || self.sinkhorn_iters != 20
+            || !matches!(self.tp_size, 1 | 2 | 4)
+        {
             return Err(AicError::ModelConfig(
                 "GLM mHC requires positive hidden size, multiplier4 and20 Sinkhorn iterations"
                     .into(),
@@ -808,7 +812,18 @@ impl Glm53PrimitiveOp {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         self.validate()?;
-        analytical_only(db, "primitive")?;
+        if !matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            let tokens = if self.token_selection == "last_per_request" || !self.is_context {
+                ctx.batch_size
+            } else {
+                ctx.batch_size.checked_mul(ctx.s).ok_or_else(|| {
+                    AicError::ModelConfig(
+                        "GLM primitive token count exceeds u32 coordinates".into(),
+                    )
+                })?
+            };
+            return measured(db, "primitive", self, 1, 0, tokens);
+        }
         self.sol(db, ctx)
     }
 }
@@ -984,6 +999,8 @@ pub(crate) mod tests {
         ));
         let mhc = Glm53MhcOp {
             name: "bad_mhc".into(),
+            tp_size: 2,
+            is_context: true,
             role: "unknown".into(),
             backend: "vllm".into(),
             checkpoint_format: "fp8".into(),
