@@ -221,3 +221,28 @@ def test_native_sglang_rejects_different_tp_final_samples():
     records[1][11]["requests"][0]["sampled_token_id"] = 88
     with pytest.raises(ValueError, match="TP ranks disagree"):
         read_observations(manifest, raw(records), [point])
+
+
+def test_native_sglang_offload_disabled_sentinel_and_active_group():
+    from types import SimpleNamespace
+
+    from collector.fpm_forward.sglang_driver import validate_server_args
+
+    args = SimpleNamespace(
+        tp_size=2,
+        context_length=131072,
+        kv_cache_dtype="fp8_e4m3",
+        disable_radix_cache=True,
+        chunked_prefill_size=8192,
+        cpu_offload_gb=0,
+        offload_group_size=-1,
+        offload_num_in_group=1,
+    )
+    validate_server_args(args)
+    args.offload_group_size = 4
+    with pytest.raises(ValueError, match="grouped offloading disabled"):
+        validate_server_args(args)
+    args.offload_group_size = -1
+    args.cpu_offload_gb = 1
+    with pytest.raises(ValueError, match="rejects cpu_offload_gb"):
+        validate_server_args(args)
