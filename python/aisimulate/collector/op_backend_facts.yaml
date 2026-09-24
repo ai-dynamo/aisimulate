@@ -1836,7 +1836,7 @@ ops:
       - {framework: "sglang", version: "0.5.17", system: "gb200", op_name: "moe", moe_dtype: "fp8_block", backends: ["triton_fused_moe"], kernel_sources: ["sglang_fused_moe_triton"]}
       - {framework: "sglang", version: "0.5.17", system: "gb200", op_name: "moe", moe_dtype: "nvfp4", backends: ["flashinfer_trtllm_gen"], kernel_sources: ["sglang_flashinfer_trtllm_moe"]}
       - {framework: "sglang", version: "0.5.17", system: "gb300", op_name: "moe", moe_dtype: "bfloat16", backends: ["triton_fused_moe"], kernel_sources: ["sglang_fused_moe_triton"]}
-      - {framework: "sglang", version: "0.5.17", system: "gb300", op_name: "moe", moe_dtype: "fp8_block", backends: ["triton_fused_moe"], kernel_sources: ["sglang_fused_moe_triton"]}
+      - {framework: "sglang", version: "0.5.17", system: "gb300", op_name: "moe", moe_dtype: "fp8_block", backends: ["flashinfer_trtllm_gen", "triton_fused_moe"], kernel_sources: ["sglang_flashinfer_trtllm_moe", "sglang_fused_moe_triton"]}
       - {framework: "sglang", version: "0.5.17", system: "gb300", op_name: "moe", moe_dtype: "nvfp4", backends: ["flashinfer_trtllm_gen"], kernel_sources: ["sglang_flashinfer_trtllm_moe"]}
       - {framework: "trtllm", version: "1.0.0", system: "a100_sxm", op_name: "moe", moe_dtype: "bfloat16", backends: ["trtllm_internal"], kernel_sources: ["moe_torch_flow"]}
       - {framework: "trtllm", version: "1.0.0", system: "l40s", op_name: "moe", moe_dtype: "bfloat16", backends: ["cutlass", "trtllm_internal"], kernel_sources: ["moe_torch_flow", "moe_torch_flow_cutlass"]}
