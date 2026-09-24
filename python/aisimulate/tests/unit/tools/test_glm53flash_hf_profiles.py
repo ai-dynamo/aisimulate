@@ -15,12 +15,12 @@ from urllib.parse import unquote
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-
 from collector.fpm_forward.glm53flash_publication import partition_table
-from tests.unit.tools import test_glm53flash_hf_publication as fixtures
 from tools.glm53flash_hf import glm53flash as policy
 from tools.glm53flash_hf import import_glm53flash as integration
 from tools.glm53flash_hf import profile
+
+from tests.unit.tools import test_glm53flash_hf_publication as fixtures
 
 pytestmark = pytest.mark.unit
 MOCK_REVISION = "e" * 40  # Only the explicitly mocked Hub confirms this fixture revision.
@@ -177,6 +177,8 @@ def fake_hub(dataset, *, actual_revision=MOCK_REVISION, corrupt_path=None, reque
 
 def test_production_entry_rejects_marked_fixture_before_hub_or_output(profile_context, tmp_path, monkeypatch):
     stage, dataset, imported, _, _ = profile_context
+    (dataset / "scripts").mkdir()
+    integration.copy_policy(dataset)
     monkeypatch.setattr(profile, "verify_hub_revision", lambda *_: pytest.fail("fixture reached Hub verification"))
     destination = tmp_path / "uncreated"
     with pytest.raises(ValueError, match="synthetic/test evidence"):
