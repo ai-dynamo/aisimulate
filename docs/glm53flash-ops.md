@@ -39,8 +39,11 @@ SILICON and HYBRID; neither mode silently falls back to SOL. The installed wheel
 constructs all eight required model graphs and rejects missing measurements in
 all eight SILICON and all eight HYBRID checks.
 
-Current focused validation passed 17 Rust GLM tests, 48 Ops contract/evidence
-tests, and 50 shared SGLang artifact/entry tests. The earlier broad collector
+Current focused validation passed 17 Rust GLM tests and 79 Ops contract, evidence,
+native V2 runtime and shared retained-lifecycle tests. A wheel built from commit
+`5e13be56` passed installation checks outside the source checkout, including
+12 collector/evidence helper imports, all eight model graphs and 16 strict
+missing-measurement queries. The earlier broad collector
 run passed 2,362 tests (8 skipped); that count is historical and predates the
 latest bounded evidence and native launch fixes. These checks establish software
 behavior and evidence integrity, not native GPU performance coverage.
@@ -60,7 +63,20 @@ with `prefix % 4 != 0` and `query >= 2`. Original requested points remain
 unqualified; they are not removed from acceptance. The [native probe receipt](glm53flash-kpool-native-gb300.json)
 preserves the concrete failures. A separately versioned repair candidate requires
 its own cache and complete Engine qualification before this restriction can be
-relaxed for that exact runtime. Stock support is not claimed to be repaired.
+relaxed for that exact runtime. A separate source-overlay diagnostic on GB300
+passed all 16 uniform/nonuniform-gate, heterogeneous-batch and retained-tail
+cache comparisons. That result does not qualify a built runtime or model outputs.
+The private versioned-wheel build preserves the actual container binaries and
+records the observed PyPI/container Rust executable difference. Stock support is
+not claimed to be repaired.
+
+The first native vLLM Ops attempt completed request execution but produced no
+rank observations because the runtime selected its V2 runner. The observer now
+wraps that actual class and joins its separate model and logits completion
+phases; its whole-GPU event ends at `compute_logits`, before sampling. An actual
+pinned-class CPU probe verified all four entry wrappers. SGLang uses the actual
+Engine constructor and initializes the same overlap result queue as its native
+loop. New immutable GPU retries are pending; prior failed inputs remain intact.
 
 See [the collector contract](../python/aisimulate/collector/README.glm53flash.md),
 [the Ops evidence adapter](../python/aisimulate/collector/glm53flash_validation.py)
