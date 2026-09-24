@@ -108,7 +108,7 @@ class _SyntheticExecutor:
         pass
 
     def wait_ready(self, expected_nodes):
-        return ["synthetic-node"]
+        return ["synthetic-node", *(f"synthetic-node-{index}" for index in range(1, expected_nodes))]
 
     def stage(self, pods, files):
         self.files = {path.name: path for path in files}
@@ -121,11 +121,12 @@ class _SyntheticExecutor:
     def execute(self, pods):
         context = json.loads(self.files["runtime-probe-context.json"].read_text())
         self.executions.append((context["configuration"], context["phase"]))
-        raw = self.cell_dir / "raw" / "synthetic-node"
-        raw.mkdir(parents=True, exist_ok=True)
-        (raw / "synthetic-observation.json").write_text(
-            json.dumps({**context, "schema_version": "aisimulate-runtime-observation/v1", "synthetic": True})
-        )
+        for pod in pods:
+            raw = self.cell_dir / "raw" / pod
+            raw.mkdir(parents=True, exist_ok=True)
+            (raw / "synthetic-observation.json").write_text(
+                json.dumps({**context, "schema_version": "aisimulate-runtime-observation/v1", "synthetic": True})
+            )
         if context["configuration"] == self.fail_configuration:
             raise RuntimeError("synthetic runtime failure")
 
@@ -168,6 +169,48 @@ def test_preview_requires_no_cache_geometry_and_never_imports_bundle(tmp_path, m
             if graph_policy == "explicit":
                 graph = json.loads(args[args.index("--compilation-config") + 1])
                 assert graph["max_cudagraph_capture_size"] == 512
+
+
+@pytest.mark.parametrize("executor", ["kubernetes", "slurm"])
+def test_multinode_preview_labels_every_resource(tmp_path, monkeypatch, executor):
+    from collector.fpm_forward import runner, runtime_probe
+    from collector.fpm_forward.runtime_instrumentation import load_instrumentation
+
+    launch, manifest, marker = _inputs(tmp_path)
+    launch["identity"]["gpu"] = "gb300"
+    if executor == "kubernetes":
+        launch["deployment"] = {"executor": executor, "image": launch["deployment"]["image"]}
+    launch["topology"].update(tp=8, dp=1, moe_tp=8, moe_ep=1)
+    dep = copy.deepcopy(launch)
+    dep["topology"].update(tp=1, dp=8, moe_tp=1, moe_ep=8)
+    configurations = {"tp8": launch, "dep8": dep}
+    monkeypatch.setattr(runner, "_cell_runner", lambda *_args: pytest.fail("preview launched an executor"))
+    output = tmp_path / "probe"
+
+    result = runtime_probe.probe_runtime(configurations, instrumentation=manifest, output_dir=output)
+
+    assert result["status"] == "preview", result
+    assert not marker.exists()
+    bundle = load_instrumentation(manifest)
+    for name, facts in configurations.items():
+        plan = runtime_probe.build_runtime_probe_plan(name, facts, bundle)
+        preview = result["configurations"][name]
+        assert preview["minimum_gpus"] == 8
+        assert set(preview["phases"]) == {"prefill", "decode"}
+        for cell in plan.cells:
+            phase = preview["phases"][cell.workload_kind]
+            resource = output / phase["resource_manifest"]["path"]
+            documents = runner._manifest_documents(resource)
+            assert [document["kind"] for document in documents] == ["ComputeDomain", "LeaderWorkerSet"]
+            assert runner._expected_nodes(resource) == 2
+            expected = {
+                "aiconfigurator.nvidia.com/owned-by": "fpm-forward-collector",
+                "aiconfigurator.nvidia.com/plan": plan.sha256[:16],
+                runner.FPM_CELL_LABEL: cell.cell_id,
+            }
+            for document in documents:
+                assert expected.items() <= document["metadata"]["labels"].items()
+            assert documents[0]["spec"]["numNodes"] == 0
 
 
 @pytest.mark.parametrize("flag", [["--revision", "another-model-revision"], ["--revision=another-model-revision"]])
@@ -366,9 +409,10 @@ def _formal_cli_inputs(tmp_path):
     return argv, extra, launch
 
 
-def test_formal_collector_cli_requires_all_instrumentation_inputs(tmp_path, capsys):
+def test_formal_collector_cli_requires_all_instrumentation_inputs(tmp_path, capsys, monkeypatch):
     from collector.fpm_forward import cli
 
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
     argv, extra, _launch = _formal_cli_inputs(tmp_path)
     with pytest.raises(SystemExit) as error:
         cli.main([*argv, *extra[:2], "--plan-only"])
@@ -572,7 +616,18 @@ def test_instrumented_saved_plan_hash_round_trip(tmp_path, version, pending):
             runtime_memory.validate_saved_plan(changed)
 
 
-@pytest.mark.parametrize("mutation", ["context", "binding", "manifest", "redirect", "ownership"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "context",
+        "binding",
+        "manifest",
+        "redirect",
+        "ownership",
+        "compute_domain_ownership",
+        "compute_domain_missing_ownership",
+    ],
+)
 def test_probe_resume_rejects_changed_ownership_before_external_commands(tmp_path, monkeypatch, mutation):
     import shutil
 
@@ -581,6 +636,11 @@ def test_probe_resume_rejects_changed_ownership_before_external_commands(tmp_pat
 
     launch, manifest, _marker = _inputs(tmp_path)
     launch["deployment"] = {"executor": "kubernetes", "image": "image@sha256:synthetic"}
+    auxiliary_ownership = mutation in {"compute_domain_ownership", "compute_domain_missing_ownership"}
+    if auxiliary_ownership:
+        launch["identity"]["gpu"] = "gb300"
+        launch["topology"].update(tp=8, dp=1, moe_tp=8, moe_ep=1)
+    configuration = "tp8" if auxiliary_ownership else "tp4"
     real_runner = runner._cell_runner
 
     class Interrupted(_SyntheticExecutor):
@@ -592,10 +652,10 @@ def test_probe_resume_rejects_changed_ownership_before_external_commands(tmp_pat
     monkeypatch.setattr(runner, "_cell_runner", lambda p, c, m, d: Interrupted(p, c, d, []))
     output = tmp_path / "probe"
     with pytest.raises(KeyboardInterrupt):
-        runtime_probe.probe_runtime({"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True)
+        runtime_probe.probe_runtime({configuration: launch}, instrumentation=manifest, output_dir=output, execute=True)
     index_path = output / "observations.json"
     index = json.loads(index_path.read_text())
-    phase = index["configurations"]["tp4"]["attempts"][0]["phases"]["prefill"]
+    phase = index["configurations"][configuration]["attempts"][0]["phases"]["prefill"]
     context = output / phase["launch_manifest"]["path"]
     resource = context.parent / runner.FPM_MANIFEST_FILENAME
     if mutation == "context":
@@ -605,13 +665,24 @@ def test_probe_resume_rejects_changed_ownership_before_external_commands(tmp_pat
         payload["attempt_id"] = "unrelated-attempt"
         context.write_text(json.dumps(payload))
         phase["launch_manifest"]["sha256"] = hashlib.sha256(context.read_bytes()).hexdigest()
-    elif mutation in {"manifest", "ownership"}:
+    elif mutation in {"manifest", "ownership"} or auxiliary_ownership:
         documents = list(yaml.safe_load_all(resource.read_text()))
-        metadata = runner._workload_document(documents)["metadata"]
-        metadata["name"] = "unrelated-production-worker"
-        metadata["labels"][runner.FPM_CELL_LABEL] = "unrelated-cell"
+        if auxiliary_ownership:
+            metadata = next(document for document in documents if document["kind"] == "ComputeDomain")["metadata"]
+        else:
+            metadata = runner._workload_document(documents)["metadata"]
+            metadata["name"] = "unrelated-production-worker"
+        if mutation == "compute_domain_missing_ownership":
+            for label in (
+                "aiconfigurator.nvidia.com/owned-by",
+                "aiconfigurator.nvidia.com/plan",
+                runner.FPM_CELL_LABEL,
+            ):
+                metadata["labels"].pop(label)
+        else:
+            metadata["labels"][runner.FPM_CELL_LABEL] = "unrelated-cell"
         resource.write_text(yaml.safe_dump_all(documents))
-        if mutation == "ownership" and "resource_manifest" in phase:
+        if (mutation == "ownership" or auxiliary_ownership) and "resource_manifest" in phase:
             phase["resource_manifest"]["sha256"] = hashlib.sha256(resource.read_bytes()).hexdigest()
     else:
         redirected = output / "redirected"
@@ -628,20 +699,39 @@ def test_probe_resume_rejects_changed_ownership_before_external_commands(tmp_pat
 
     monkeypatch.setattr(runner, "_run_command", no_external)
     result = runtime_probe.probe_runtime(
-        {"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True, resume=True
+        {configuration: launch}, instrumentation=manifest, output_dir=output, execute=True, resume=True
     )
     assert result["status"] == "failed"
     assert commands == []
+    if auxiliary_ownership:
+        assert any("collector ownership" in item for item in result["configurations"][configuration]["diagnostics"])
 
 
-@pytest.mark.parametrize("executor", ["kubernetes", "slurm"])
-@pytest.mark.parametrize("changed_bundle", [False, True])
-def test_probe_resume_preserves_valid_interrupted_recovery(tmp_path, monkeypatch, executor, changed_bundle):
+@pytest.mark.parametrize(
+    ("executor", "changed_bundle", "configuration"),
+    [
+        ("kubernetes", False, "tp4"),
+        ("kubernetes", True, "tp4"),
+        ("slurm", False, "tp4"),
+        ("slurm", True, "tp4"),
+        ("kubernetes", False, "tp8"),
+        ("slurm", False, "dep8"),
+    ],
+)
+def test_probe_resume_preserves_valid_interrupted_recovery(
+    tmp_path, monkeypatch, executor, changed_bundle, configuration
+):
     from collector.fpm_forward import runner, runtime_probe
 
     launch, manifest, _marker = _inputs(tmp_path)
     if executor == "kubernetes":
         launch["deployment"] = {"executor": executor, "image": launch["deployment"]["image"]}
+    if configuration == "tp8":
+        launch["identity"]["gpu"] = "gb300"
+        launch["topology"].update(tp=8, dp=1, moe_tp=8, moe_ep=1)
+    elif configuration == "dep8":
+        launch["identity"]["gpu"] = "gb300"
+        launch["topology"].update(tp=1, dp=8, moe_tp=1, moe_ep=8)
     executions, cleanups, salvages = [], [], []
 
     class InterruptedOnce(_SyntheticExecutor):
@@ -657,20 +747,24 @@ def test_probe_resume_preserves_valid_interrupted_recovery(tmp_path, monkeypatch
     monkeypatch.setattr(runner, "_cell_runner", lambda p, c, m, d: InterruptedOnce(p, c, d, executions))
     output = tmp_path / "probe"
     with pytest.raises(KeyboardInterrupt):
-        runtime_probe.probe_runtime({"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True)
-    previous = json.loads((output / "observations.json").read_text())["configurations"]["tp4"]["attempts"][0]
+        runtime_probe.probe_runtime({configuration: launch}, instrumentation=manifest, output_dir=output, execute=True)
+    previous = json.loads((output / "observations.json").read_text())["configurations"][configuration]["attempts"][0]
     interrupted_dir = str((output / previous["phases"]["prefill"]["launch_manifest"]["path"]).parent)
     if changed_bundle:
         (tmp_path / "observer.py").write_text("# a revised observer retained alongside the interrupted bundle\n")
     result = runtime_probe.probe_runtime(
-        {"tp4": launch}, instrumentation=manifest, output_dir=output, execute=True, resume=True
+        {configuration: launch}, instrumentation=manifest, output_dir=output, execute=True, resume=True
     )
     assert result["status"] == "completed", result
     assert len(executions) == 3
     assert cleanups.count(interrupted_dir) == 3
     assert salvages.count(interrupted_dir) == 2
-    previous = json.loads((output / "observations.json").read_text())["configurations"]["tp4"]["attempts"][0]
+    attempts = json.loads((output / "observations.json").read_text())["configurations"][configuration]["attempts"]
+    previous = attempts[0]
     assert any(item["kind"] == "observation" for item in previous["phases"]["prefill"]["recovery_artifacts"])
+    for phase in attempts[-1]["phases"].values():
+        observations = [item for item in phase["artifacts"] if item["kind"] == "observation"]
+        assert len(observations) == (1 if configuration == "tp4" else 2)
 
 
 @pytest.mark.parametrize("saved_status", ["running", "passed"])

@@ -443,6 +443,7 @@ def test_public_slurm_collect_to_finalize_preserves_frozen_deployment(tmp_path, 
             _write(raw / "fpm-memory-scheduler-dp0.json", scheduler)
         return subprocess.CompletedProcess(args, 0, stdout="synthetic Slurm runtime", stderr="")
 
+    monkeypatch.setenv("COLLECTOR_MODEL_PATH", "")
     monkeypatch.setenv("SLURM_JOB_ID", "1234")
     monkeypatch.setattr("collector.fpm_forward.slurm.shutil.which", lambda name: f"/fake/{name}")
     monkeypatch.setattr(runner, "_run_command", cluster_command)
