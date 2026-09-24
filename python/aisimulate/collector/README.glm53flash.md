@@ -338,3 +338,21 @@ major versions fail explicitly before calling the capture-query ABI.
 Native SGLang source pin94602c9 additionally binds
 `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`
 and `python/sglang/srt/model_executor/runner/shape_key.py`.
+
+The experimental `glm53flash_vllm_graph_ops.py` capture adapter covers the
+corresponding native V2 FULL initialization boundary. Source:
+https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/worker/gpu/cudagraph_utils.py
+(`CudaGraphManager.capture` and `ModelCudaGraphManager.capture`). It wraps the
+native forward factory and observes it only while the original FULL capture is
+active. Original warmups and PIECEWISE execution remain unchanged. Installation
+must occur before native graph initialization. Actual compiled model submodules
+and cross-thread microbatch runners are rejected: compiled leaf implementations
+inside otherwise uncompiled GLM units are left intact.
+
+This vLLM graph contains hidden states, not `compute_logits`; its raw registry
+explicitly lists logits as an uncaptured operation. Native output copies remain
+visible as setup nodes. A serving adapter must separately prove the actual
+selected graph, complete replay-node join, logits work and completed real-request
+chain. The capture adapter alone certifies none of those and writes no measured
+table. Child graphs, changed graph objects and incomplete capture observations
+still fail. CPU scope/identity tests are not native GPU qualification.

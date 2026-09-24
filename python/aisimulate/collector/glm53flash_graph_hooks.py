@@ -35,7 +35,7 @@ class NativeGraphOperationObserver:
         self.inside_collective = False
         self.entries = {phase: {entry["name"]: entry for entry in rows} for phase, rows in manifest["phases"].items()}
 
-    def start(self, shape_key, *, torch_compile_enabled):
+    def start(self, shape_key, *, torch_compile_enabled, capture_scope="model_with_logits"):
         if torch_compile_enabled is not False:
             raise RuntimeError("Python graph ownership hooks cannot alter native compiled fusion")
         if not self.torch.cuda.is_current_stream_capturing() or self.registry is not None:
@@ -43,8 +43,21 @@ class NativeGraphOperationObserver:
         if not dataclasses.is_dataclass(shape_key):
             raise ValueError("native graph key must be the original ShapeKey dataclass")
         self.shape = dataclasses.asdict(shape_key)
-        if type(self.shape.get("size")) is not int or self.shape["size"] < 1:
+        if capture_scope == "model_with_logits":
+            size = self.shape.get("size")
+        elif capture_scope == "vllm_hidden_states":
+            # Pinned V2 ModelCudaGraphManager captures model(**inputs), then
+            # stores hidden states. compute_logits runs after the FULL replay.
+            mode = self.shape.get("cg_mode")
+            self.shape["cg_mode"] = getattr(mode, "name", mode)
+            if self.shape["cg_mode"] != "FULL":
+                raise ValueError("native vLLM node ownership requires an actual FULL descriptor")
+            size = self.shape.get("num_tokens")
+        else:
+            raise ValueError("unreviewed native graph capture scope")
+        if type(size) is not int or size < 1:
             raise ValueError("native graph key lacks physical padded size")
+        self.padded_tokens, self.capture_scope = size, capture_scope
         self.collective_calls = 0
         self.registry = CaptureNodeRegistry(lambda: self.api.snapshot(self.torch.cuda.current_stream().cuda_stream))
 
@@ -52,7 +65,11 @@ class NativeGraphOperationObserver:
         if self.registry is None or not self.torch.cuda.is_current_stream_capturing():
             raise RuntimeError("capture nodes must be retained before the native capture ends")
         result = self.registry.finish()
-        expected = self.entries["generation"]
+        expected = dict(self.entries["generation"])
+        if self.capture_scope == "vllm_hidden_states":
+            if "logits" not in expected:
+                raise RuntimeError("complete native vLLM graph manifest lacks its separate logits operation")
+            del expected["logits"]
         observed = {row["name"] for row in result["calls"]}
         if observed != expected.keys():
             raise RuntimeError(
@@ -61,7 +78,9 @@ class NativeGraphOperationObserver:
         result.update(
             tp_rank=self.tp_rank,
             native_shape_key=self.shape,
-            physical_padded_tokens=self.shape["size"],
+            physical_padded_tokens=self.padded_tokens,
+            capture_scope=self.capture_scope,
+            uncaptured_operations=["logits"] if self.capture_scope == "vllm_hidden_states" else [],
             provenance=self.provenance,
             native_api_libraries=self.api.libraries,
             operations=list(expected.values()),

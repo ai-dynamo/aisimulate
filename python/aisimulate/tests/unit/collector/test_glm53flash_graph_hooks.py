@@ -9,6 +9,7 @@ import pytest
 
 from collector.glm53flash_graph_hooks import NativeGraphOperationObserver
 from collector.glm53flash_sglang_graph_ops import finish_native_forward
+from collector.glm53flash_vllm_graph_ops import bind_captured_graphs, capture_receipt
 
 pytestmark = pytest.mark.unit
 
@@ -16,6 +17,12 @@ pytestmark = pytest.mark.unit
 @dataclass(frozen=True)
 class ShapeKey:
     size: int
+
+
+@dataclass(frozen=True)
+class NativeDescriptor:
+    cg_mode: str
+    num_tokens: int
 
 
 def fixture():
@@ -84,6 +91,58 @@ def test_native_capture_without_complete_model_cannot_pass():
     observer.start(ShapeKey(1), torch_compile_enabled=False)
     with pytest.raises(RuntimeError, match="incomplete"):
         observer.finish()
+
+
+def test_vllm_native_hidden_state_capture_excludes_only_the_separate_logits():
+    observer, native, capture = fixture()
+    observer.entries["generation"]["logits"] = {"name": "logits"}
+    capture(True)
+    observer.start(NativeDescriptor("FULL", 4), torch_compile_enabled=False, capture_scope="vllm_hidden_states")
+    native.forward(4)
+    result = observer.finish()
+    assert result["physical_padded_tokens"] == 4
+    assert result["native_shape_key"] == {"cg_mode": "FULL", "num_tokens": 4}
+    assert result["uncaptured_operations"] == ["logits"]
+    assert {entry["name"] for entry in result["operations"]} == {"compute", "allreduce"}
+    assert result["formal_admission"] is False
+
+
+@pytest.mark.parametrize("defect", ["piecewise", "unreviewed", "bad_pad"])
+def test_vllm_hidden_state_capture_requires_reviewed_scope_and_full_native_shape(defect):
+    observer, _, capture = fixture()
+    capture(True)
+    descriptor = NativeDescriptor("PIECEWISE" if defect == "piecewise" else "FULL", True if defect == "bad_pad" else 4)
+    with pytest.raises(ValueError):
+        observer.start(
+            descriptor,
+            torch_compile_enabled=False,
+            capture_scope="unreviewed" if defect == "unreviewed" else "vllm_hidden_states",
+        )
+
+
+@pytest.mark.parametrize("defect", [None, "missing", "duplicate", "replaced"])
+def test_vllm_replay_requires_one_complete_capture_and_same_graph_object(defect):
+    key = NativeDescriptor("FULL", 4)
+    manager = SimpleNamespace(graphs={key: object()})
+    registry = {"graph_id": 1, "formal_admission": False}
+    pending = {key: [registry]}
+    if defect == "missing":
+        manager.graphs.clear()
+    elif defect == "duplicate":
+        pending[key].append(registry)
+    if defect in ("missing", "duplicate"):
+        with pytest.raises(RuntimeError, match="one complete"):
+            bind_captured_graphs(manager, pending)
+        return
+    bind_captured_graphs(manager, pending)
+    if defect == "replaced":
+        manager.graphs[key] = object()
+        with pytest.raises(RuntimeError, match="exact initialization"):
+            capture_receipt(manager, key)
+        with pytest.raises(RuntimeError, match="replaced"):
+            bind_captured_graphs(manager, pending)
+    else:
+        assert capture_receipt(manager, key) is registry
 
 
 @pytest.mark.parametrize("defect", [None, "completion", "mode", "sample", "pending"])

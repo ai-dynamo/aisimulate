@@ -993,7 +993,8 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 - Derived files: `python/aisimulate/collector/glm53flash_native_hooks.py`,
   `glm53flash_observer.py`, `glm53flash_contract.py`, `glm53flash_validation.py`,
   `glm53flash_graph_nodes.py`, `glm53flash_graph_hooks.py`,
-  `glm53flash_sglang_graph_ops.py`, and their graph-node/hook CPU tests,
+  `glm53flash_sglang_graph_ops.py`, `glm53flash_vllm_graph_ops.py`,
+  and their graph-node/hook CPU tests,
   `collect_glm53flash.py`, `{vllm,sglang}/collect_glm53flash.py`,
   `cases/base_ops/glm53flash_module.yaml`,
   `cases/models/Glm5NextForConditionalGeneration_cases.yaml`,
@@ -1007,7 +1008,8 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `vllm/distributed/parallel_state.py` and
   `vllm/model_executor/layers/logits_processor.py`,
   `vllm/model_executor/layers/sparse_attn_indexer_kpool.py`,
-  `vllm/models/glm5next/nvidia/ops/kpool_compress.py`;
+  `vllm/models/glm5next/nvidia/ops/kpool_compress.py`,
+  `vllm/v1/worker/gpu/cudagraph_utils.py`;
   https://github.com/sgl-project/sglang at
   `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20), original paths
   `python/sglang/srt/models/{glm5_next,deepseek_v2}.py` and
