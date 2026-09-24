@@ -1,0 +1,7 @@
+A research team maintains a notebook of small engineering experiments. Each entry begins with the question, the measured quantities, and the conditions under which the observation was made. The team keeps the original records when an experiment fails. A later improvement has its own date and its own record so that another engineer can compare the two attempts.
+
+The notebook includes a discussion of a garden irrigation controller. A rain gauge records recent rainfall, a soil sensor reports moisture at several depths, and a timer limits each watering interval. The controller does not confuse a request to water with evidence that water reached the plants. The report distinguishes the planned interval, the valve opening, the flow measurement, and the final soil reading.
+
+Another entry follows a railway delivery. Several containers travel together, but each has its own identity and destination. The station records arrivals before transfers and checks that the final inventory agrees with the original manifest. When a route changes, the old itinerary remains available for comparison. The useful conclusion describes which containers arrived and which observations support that statement.
+
+For the next entry, explain how to compare two executions of the same experiment while preserving the input records and identifying the first difference in the outputs. Use the preceding examples to distinguish a proposed action, an observed action, and a verified result.
