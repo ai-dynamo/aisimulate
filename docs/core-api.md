@@ -316,8 +316,8 @@ nested paths. The supported namespaces are:
 - `correction`: `enabled` (true), independent `sampling`, `min_observations`
   (5), `factor_bounds` (min 0.5, max 2.0), and the existing `max_num_tokens`
   (8192), `max_batch_size` (512), and `max_kv_tokens` (2000000) ranges.
-- `op_level` and `fpm_interpolation`: reserved typed namespaces with no
-  additional knobs yet; unknown fields are rejected.
+- `op_level`: optional `decode_workload_distribution` selects a measured decode-MoE distribution, and `prefill_graph_profile` selects a qualified direct-prefill graph composition. Saved configurations retain the resolved immutable `prefill_graph_profile_id`, which is validated on reload. Unknown fields are rejected.
+- `fpm_interpolation`: optional `fpm_parquet_path` selects an external FPM parquet with its same-stem metadata sidecar. Unknown fields are rejected.
 
 Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
 logical store. Rectangular grids are supported. Regression uses dynamic
