@@ -262,3 +262,22 @@ def test_whole_gpu_holdout_is_independent_of_module_observers(monkeypatch, tmp_p
     assert record["ops_instrumented"] is False
     assert record["whole_forward_boundary"] == "embedding_to_logits_gpu_v1"
     assert not (tmp_path / "rank-0.jsonl").exists()
+
+
+def test_native_eager_prefill_alias_is_not_treated_as_graph_runner(monkeypatch, tmp_path):
+    monkeypatch.setenv("AISIM_GLM53_PURPOSE", "fpm")
+    monkeypatch.setitem(sys.modules, "sglang.srt.utils.device_timer", SimpleNamespace(DeviceTimer=Timer))
+    monkeypatch.setattr("collector.glm53flash_sglang_runtime.allocated_state_inventory", lambda _: {"admitted": True})
+
+    class EagerRunner:
+        def load_batch(self, batch):
+            return batch
+
+    eager = EagerRunner()
+    original = eager.load_batch
+    runner = SimpleNamespace(ps=SimpleNamespace(tp_rank=0), device_timer=None, prefill_cuda_graph_runner=eager)
+    state = _TraceState(runner, tmp_path, {}, None)
+    batch = object()
+    assert eager.load_batch == original
+    assert eager.load_batch(batch) is batch
+    assert state.prefill_receipt is None
