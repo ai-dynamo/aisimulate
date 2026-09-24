@@ -194,8 +194,14 @@ def install(manifest, provenance, output, *, holdout=False):
         registry, shape_key = active["registry"], active["shape_key"]
         if profiler is not None:
             path = output / f"graph-profile-rank-{state['rank']}-forward-{record['invocation']}.json"
+            if path.exists():
+                raise RuntimeError("native graph trace identity cannot overwrite an earlier invocation")
             profiler.export_chrome_trace(str(path))
+            from collector.glm53flash_graph_nodes import trace_forward_identity
+
             trace = json.loads(path.read_text())
+            trace["aisim_native_forward"] = trace_forward_identity(record)
+            path.write_text(json.dumps(trace))
             launches = [
                 row
                 for row in trace["traceEvents"]

@@ -14,7 +14,7 @@ from collector import glm53flash_validation as native
 from collector.glm53flash_contract import canonical_json, operation_geometry, sha256_json
 from collector.glm53flash_graph_callbacks import resolve_registry
 from collector.glm53flash_graph_nodes import EXECUTION_RANGE, bind_execution_activity, bind_replay_kernels
-from collector.glm53flash_jsonl import file_sha256
+from collector.glm53flash_jsonl import file_sha256, iter_records
 
 from .test_glm53flash_graph_policy import snapshot
 from .test_glm53flash_ops_evidence import native_fixture, put, put_lines
@@ -147,7 +147,7 @@ def fixture(tmp_path, monkeypatch, role="calibration"):
                 },
             ]
             trace_path = root / f"graph-profile-rank-{rank}-forward-{forward['invocation']}.json"
-            put(trace_path, {"traceEvents": events})
+            put(trace_path, {"traceEvents": events, "aisim_native_forward": graph.trace_forward_identity(forward)})
             binding = bind_execution_activity(bind_replay_kernels(registry, events, correlation=9), events)
             binding.update(trace_file=trace_path.name, trace_sha256=file_sha256(trace_path))
             graph_rows.append(
@@ -198,7 +198,10 @@ def test_original_node_activity_export_and_public_binding(tmp_path, monkeypatch)
     assert rows["mhc"]["latency"] == 0 and rows["mhc"]["activity_count"] == 0
     assert all(row["sample_count"] == 10 for row in rows.values())
     receipt = native.load_native(run, root)
-    assert native.bind_calibration([table], run, receipt)["rows"] == 3
+    binding = native.bind_calibration([table], run, receipt)
+    assert binding["rows"] == 3
+    assert binding["tables"] == [{"path": str(table), "sha256": file_sha256(table)}]
+    assert binding["graph_policy_sha256"] == sha256_json(receipt["graph_policy"])
     selection = json.loads((root / "graph-rank-selection.json").read_text())
     assert [row["selected_rank"] for row in selection["forwards"]] == [0] * 5 + [1] * 5 + [0] * 5
 
@@ -380,3 +383,47 @@ def test_public_homogeneous_rust_prediction_uses_frozen_past_coordinate(tmp_path
     changed["capture_sizes"] = [1, 2, 4]
     with pytest.raises(ValueError, match="changed its frozen"):
         graph.predict_homogeneous(run, root, config, {"graph_policy": changed})
+
+
+@pytest.mark.parametrize("defect", ["filename", "copied_bytes", "rank", "invocation", "run", "role", "missing"])
+def test_trace_cannot_be_reused_for_another_native_forward(tmp_path, monkeypatch, defect):
+    run, root = fixture(tmp_path, monkeypatch)
+    path = root / "graph-forward-rank-0.jsonl"
+    records = list(iter_records(path))
+    first, second = records[0]["replay_nodes"], records[1]["replay_nodes"]
+    trace_path = root / second["trace_file"]
+    if defect == "filename":
+        records[1]["replay_nodes"] = first
+    elif defect == "copied_bytes":
+        trace_path.write_bytes((root / first["trace_file"]).read_bytes())
+    else:
+        trace = json.loads(trace_path.read_bytes())
+        if defect == "missing":
+            trace.pop("aisim_native_forward")
+        else:
+            key = {"rank": "tp_rank", "invocation": "invocation", "run": "run_id", "role": "sampling_role"}[defect]
+            trace["aisim_native_forward"][key] = {"rank": 1, "invocation": 900, "run": "other", "role": "measurement"}[
+                defect
+            ]
+        put(trace_path, trace)
+    if defect != "filename":
+        second["trace_sha256"] = file_sha256(trace_path)
+    put_lines(path, records)
+    with pytest.raises(ValueError, match="trace"):
+        graph.read_graph_run(root, run)
+
+
+def test_missing_setup_activity_cannot_be_exported_as_zero(tmp_path, monkeypatch):
+    run, root = fixture(tmp_path, monkeypatch)
+    path = root / "graph-forward-rank-0.jsonl"
+    rows = list(iter_records(path))
+    for row in rows:
+        replay = row["replay_nodes"]
+        trace_path = root / replay["trace_file"]
+        trace = json.loads(trace_path.read_bytes())
+        trace["traceEvents"] = [event for event in trace["traceEvents"] if event.get("cat") != "gpu_memset"]
+        put(trace_path, trace)
+        replay["trace_sha256"] = file_sha256(trace_path)
+    put_lines(path, rows)
+    with pytest.raises(ValueError, match="device-work call lacks"):
+        graph.export_graph(root, run, root / graph.BASENAME, **control_fixture(tmp_path, monkeypatch))

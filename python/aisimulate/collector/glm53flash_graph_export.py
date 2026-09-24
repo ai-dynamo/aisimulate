@@ -23,7 +23,7 @@ from collector.glm53flash_contract import (
     sha256_json,
 )
 from collector.glm53flash_graph_callbacks import QUALIFIED_CUPTI_SHA256, resolve_registry
-from collector.glm53flash_graph_nodes import bind_execution_activity, bind_replay_kernels
+from collector.glm53flash_graph_nodes import bind_execution_activity, bind_replay_kernels, trace_forward_identity
 from collector.glm53flash_graph_policy import SOURCE_PINS, build_policy, padded_batch, validate_snapshot
 from collector.glm53flash_jsonl import file_sha256, iter_records
 
@@ -129,7 +129,12 @@ def _captures(root, rank, snapshot, manifest, provenance, files):
 
 def _binding(root, row, registry, files):
     recorded = row["replay_nodes"]
+    name = f"graph-profile-rank-{row['tp_rank']}-forward-{row['invocation']}.json"
+    if recorded["trace_file"] != name or name in files:
+        raise ValueError("native graph trace must uniquely belong to its actual rank/invocation")
     trace = _receipt(root, {"file": recorded["trace_file"], "sha256": recorded["trace_sha256"]}, files)
+    if trace.get("aisim_native_forward") != trace_forward_identity(row):
+        raise ValueError("native graph trace belongs to another run/rank/forward or sampling role")
     launches = [
         event
         for event in trace["traceEvents"]
@@ -545,9 +550,11 @@ def bind_calibration(paths, run, native):
         raise ValueError("graph calibration evidence belongs to another frozen native run")
     expected, _ = aggregate_graph(proof, evidence_sha256=file_sha256(root / "graph-calibration-evidence.json"))
     selected = []
+    tables = []
     identity = run["key"][:3]
     for path in paths:
         if path.name == BASENAME:
+            tables.append({"path": str(path), "sha256": file_sha256(path)})
             for row in pq.read_table(path).to_pylist():
                 policy = json.loads(row["graph_policy"])
                 if (policy["backend"], policy["checkpoint_format"], policy["tp_size"]) == tuple(identity):
@@ -556,6 +563,8 @@ def bind_calibration(paths, run, native):
         raise ValueError("consumer graph table differs from original native activity measurements")
     return {
         "rows": len(selected),
+        "tables": tables,
+        "graph_policy_sha256": sha256_json(proof["policy"]),
         "evidence_sha256": file_sha256(root / "graph-calibration-evidence.json"),
         "source_plan_sha256": run["plan"]["sha256"],
         "native_runtime_run_id": native["runtime_run_id"],
@@ -565,6 +574,10 @@ def bind_calibration(paths, run, native):
 def predict_homogeneous(run, base, config, calibration_native):
     """Use public static geometry only after native per-request proof is checked.
 
+    The common acceptance caller first binds every selected table to original
+    calibration evidence and returns that binding plus exact table receipts.
+    ``last_provenance() is None`` below checks only the absence of fallback; it
+    is not a substitute for that positive measured-data binding.
     Policy selection comes from calibration. Holdout dispatch is only checked
     for policy mismatch; it never supplies prediction padding or unit latency.
     """

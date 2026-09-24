@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
 import pytest
+
 from collector import glm53flash_sglang_graph_ops as sglang_graph
 from collector.glm53flash_graph_nodes import EXECUTION_RANGE, bind_execution_activity, bind_replay_kernels
 
@@ -205,3 +206,31 @@ def test_holdout_gpu_events_enclose_native_preparation_and_model_but_not_samplin
     runner._metadata_glue = SimpleNamespace(disabled=False)
     with pytest.raises(RuntimeError, match="separate capture-node"):
         runner.execute(object())
+
+
+@pytest.mark.parametrize("name", ["cudaMemsetAsync", "cudaMemcpyAsync", "cudaLaunchKernel", "cuLaunchKernelEx"])
+def test_device_work_call_cannot_disappear_from_gpu_activity(name):
+    binding, events = fixture_events()
+    events = [row for row in events if row.get("cat") != "gpu_memset"]
+    for row in events:
+        if row.get("cat") == "cuda_runtime" and row.get("name") == "cudaMemsetAsync":
+            row["name"] = name
+    with pytest.raises(ValueError, match="device-work call lacks"):
+        bind_execution_activity(binding, events)
+
+
+def test_unknown_cuda_dispatch_is_not_a_zero_cost_setup():
+    binding, events = fixture_events()
+    events.append(
+        {
+            "cat": "cuda_runtime",
+            "name": "cudaFutureUnknownDispatch",
+            "ts": 7,
+            "dur": 1,
+            "pid": 1,
+            "tid": 2,
+            "args": {"correlation": 17},
+        }
+    )
+    with pytest.raises(ValueError, match="unknown native CUDA dispatch"):
+        bind_execution_activity(binding, events)

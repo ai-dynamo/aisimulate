@@ -352,6 +352,38 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
 EXECUTION_RANGE = "aisim.glm53/native_decode_execute"
 
 
+def trace_forward_identity(record: dict) -> dict:
+    """Original profiler document's one native forward, before serialization."""
+    fields = (
+        "run_id",
+        "request_set",
+        "tp_rank",
+        "invocation",
+        "forward_id",
+        "phase",
+        "benchmark_id",
+        "repetition",
+        "sampling_role",
+        "dataset_role",
+        "corpus_sha256",
+        "request_ids",
+    )
+    identity = {key: record[key] for key in fields}
+    if (
+        any(
+            type(identity[key]) is not int or identity[key] < 0
+            for key in ("tp_rank", "invocation", "benchmark_id", "repetition")
+        )
+        or any(
+            not isinstance(identity[key], str) or not identity[key]
+            for key in ("run_id", "request_set", "forward_id", "corpus_sha256")
+        )
+        or identity["sampling_role"] not in ("warmup", "measurement")
+    ):
+        raise ValueError("native graph trace lacks an exact forward identity")
+    return {"schema": "glm53flash_graph_trace_forward_v1", **identity}
+
+
 def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
     """Account for native GPU preparation outside the captured model graph.
 
@@ -441,6 +473,64 @@ def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
                 "native_launch": calls[correlation]["name"],
             }
         )
+    # Prove both directions: absence of CUPTI activity is not a zero-cost
+    # memory/kernel launch. A zero-byte call also needs explicit native proof;
+    # profiler API names alone cannot establish zero work.
+    for correlation, call in calls.items():
+        name = call["name"]
+        expected = (
+            "gpu_memcpy"
+            if name.startswith(("cudaMemcpy", "cuMemcpy"))
+            else "gpu_memset"
+            if name.startswith(("cudaMemset", "cuMemset"))
+            else "kernel"
+            if name.startswith(
+                ("cudaLaunchKernel", "cuLaunchKernel", "cudaLaunchCooperativeKernel", "cuLaunchCooperativeKernel")
+            )
+            else None
+        )
+        # Only known host/control APIs may lack a GPU activity. Unknown CUDA
+        # dispatch is an unsupported scope, never an implicit zero-cost setup.
+        control_prefixes = (
+            "cudaEvent",
+            "cuEvent",
+            "cudaStreamSynchronize",
+            "cuStreamSynchronize",
+            "cudaStreamWaitEvent",
+            "cuStreamWaitEvent",
+            "cudaStreamIsCapturing",
+            "cuStreamIsCapturing",
+            "cudaStreamGetCaptureInfo",
+            "cuStreamGetCaptureInfo",
+            "cudaGetDevice",
+            "cuDeviceGet",
+            "cudaSetDevice",
+            "cudaDeviceGet",
+            "cudaGetLastError",
+            "cudaPeekAtLastError",
+            "cudaPointerGetAttributes",
+            "cuPointerGetAttribute",
+            "cudaFuncGetAttributes",
+            "cuFuncGetAttribute",
+            "cudaOccupancy",
+            "cuOccupancy",
+            "cudaMemGetInfo",
+            "cuMemGetInfo",
+            "cuCtxGetCurrent",
+            "cuCtxSetCurrent",
+            "cudaDeviceSynchronize",
+            "cuCtxSynchronize",
+        )
+        if (
+            expected is None
+            and name not in ("cudaGraphLaunch", "cuGraphLaunch")
+            and not name.startswith(control_prefixes)
+        ):
+            raise ValueError("unknown native CUDA dispatch cannot be admitted as zero-cost setup")
+        if expected is not None and not any(
+            row["launch_correlation"] == correlation and row["activity"] == expected for row in setup
+        ):
+            raise ValueError("native device-work call lacks its matching GPU activity; zero work is unproved")
     if len(actual_graph) != len(binding["activities"]):
         raise ValueError("native graph activity differs between node and execution scope proofs")
     combined = binding["activities"] + setup
