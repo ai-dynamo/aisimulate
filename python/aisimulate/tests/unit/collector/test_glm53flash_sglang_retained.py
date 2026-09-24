@@ -94,14 +94,20 @@ class Scheduler:
         self.enable_pdmux = self.enable_overlap = False
         self.spec_algorithm = SimpleNamespace(is_none=lambda: True)
         self.model_config = object()
-        self.model_worker = SimpleNamespace()
+        self.model_worker = SimpleNamespace(_aisim_glm53_release_requests=self.retire_requests)
         self.token_to_kv_pool_allocator = object()
         self.req_to_token_pool = SimpleNamespace(req_to_token=Rows(), req_index_to_mamba_index_mapping={})
         self.tree_cache = SimpleNamespace(is_chunk_cache=lambda: True, supports_mamba=lambda: False)
         self.computed, self.traces, self.calls = {}, [], []
         self.sample_launched = False
+        self.retired = []
+
+    def retire_requests(self, ids):
+        assert all(req.finished() and not req.kv.holds_kv and not req.kv.holds_mamba for req in self.last_reqs)
+        self.retired.extend(ids)
 
     def run_batch(self, batch):
+        self.last_reqs = batch.reqs
         prefixes, queries = [], []
         for req in batch.reqs:
             history = self.computed.setdefault(req.rid, [])
@@ -197,6 +203,8 @@ def test_real_seed_park_native_target_and_release(tmp_path, batch, prefix, query
     loop.run_cohort(reqs)
     assert scheduler.calls[-1] == ("generation" if decode else "context", (prefix,) * batch, (query,) * batch)
     assert all(not req.kv.holds_kv and not req.kv.holds_mamba and req.finished() for req in reqs)
+    assert scheduler.retired == [req.rid for req in reqs]
+    assert scheduler.model_worker._aisim_glm53_last_forward is None
     assert all(sum(call[2]) <= 8192 for call in scheduler.calls)
     trace = ("\n".join(json.dumps(row) for row in scheduler.traces) + "\n").encode()
     validate_retained_states(manifest, {0: trace}, {0: (tmp_path / "retained-rank-0.jsonl").read_bytes()})

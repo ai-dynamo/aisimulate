@@ -341,6 +341,11 @@ class RetainedRequestLoop:
             self._execute(batch, before)
         if any(not req.finished() or req.kv.holds_kv or req.kv.holds_mamba for req in reqs):
             raise RuntimeError("native completion did not release the benchmark cohort's hybrid state")
+        retire = getattr(self.scheduler.model_worker, "_aisim_glm53_release_requests", None)
+        if not callable(retire):
+            raise RuntimeError("native observer cannot retire the released cohort's token history")
+        retire([req.rid for req in reqs])
+        self.scheduler.model_worker._aisim_glm53_last_forward = None
 
     def run(self):
         scheduler = self.scheduler

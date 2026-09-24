@@ -131,7 +131,7 @@ class _TraceState:
         self.pending = deque()
         self.records = {}
         self.previous = {}
-        self.sampled = {}
+        self.retired = set()
         self.counter = 0
         self.observer = None
         self.purpose = os.environ.get("AISIM_GLM53_PURPOSE", "fpm")
@@ -241,6 +241,8 @@ class _TraceState:
         ):
             if str(request.rid) != rid:
                 raise RuntimeError("native ForwardBatch request order differs from scheduler")
+            if rid in self.retired:
+                raise RuntimeError("native request identity was reused after observer retirement")
             previous = self.previous.get(rid)
             real_history = previous is not None and previous["computed_tokens"] == prefix
             native_query = actual_inputs[input_offset : input_offset + query]
@@ -262,7 +264,12 @@ class _TraceState:
                 {
                     "request_id": rid,
                     "prompt_token_ids": prompt,
-                    "output_token_ids_before": list(self.sampled.get(rid, ())),
+                    # Native result processing commits only final-prefill and
+                    # decode samples. Intermediate chunks also sample, but the
+                    # native scheduler deliberately discards those tokens.
+                    # In overlap mode this host field can lag; resolved native
+                    # inputs above remain the authoritative history proof.
+                    "output_token_ids_before": list(request.output_ids),
                     "native_query_token_ids": native_query,
                     "computed_tokens_before": prefix,
                     "computed_tokens_after": prefix + query,
@@ -381,7 +388,6 @@ class _TraceState:
             raise RuntimeError("actual piecewise graph padding is unknown; frozen target cannot be admitted")
         for request, token in zip(record["requests"], ids, strict=True):
             request["sampled_token_id"] = int(token)
-            self.sampled.setdefault(request["request_id"], []).append(int(token))
         if self.purpose == "ops_holdout" and record["stage"] == "measure":
             if invocation not in self.whole_events:
                 raise RuntimeError("whole-forward holdout lacks its native model interval")
@@ -395,6 +401,17 @@ class _TraceState:
         self.append("forward", record)
         del self.records[invocation]
         return record
+
+    def retire_requests(self, request_ids) -> None:
+        """Discard token payload only after the controller proves native release."""
+        ids = set(request_ids)
+        if not ids or ids & self.retired or not ids <= self.previous.keys():
+            raise RuntimeError("observer retirement requires completed, previously active requests")
+        if any(ids.intersection(record["request_ids"]) for record in self.records.values()):
+            raise RuntimeError("cannot retire observer history before its raw forward is complete")
+        for rid in ids:
+            del self.previous[rid]
+        self.retired.update(ids)
 
 
 def match_frozen_requests(record: dict, manifest: dict | None) -> dict:
@@ -494,6 +511,7 @@ def install() -> None:
                 raise RuntimeError("normal native serving request did not execute exactly one target forward")
             state, invocation = context["calls"][0]
             worker_self._aisim_glm53_last_forward = state.finish_worker(invocation, result)
+            worker_self._aisim_glm53_release_requests = state.retire_requests
             return result
         finally:
             current.context = None

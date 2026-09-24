@@ -6,7 +6,6 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-
 from collector.glm53flash_sglang_runtime import _TraceState, actual_coordinates, match_frozen_requests
 
 pytestmark = pytest.mark.unit
@@ -96,7 +95,7 @@ def test_native_futuremap_input_does_not_depend_on_lagging_req_outputs(monkeypat
     assert [record["native_forward_ms"] for record in records] == [3.0, 4.0]
     request = records[1]["requests"][0]
     assert request["native_query_token_ids"] == [20]
-    assert request["output_token_ids_before"] == [20]
+    assert request["output_token_ids_before"] == []  # Native host result is still uncommitted.
     assert request["computed_tokens_before"] == 4
     assert request["computed_tokens_after"] == 5
     assert request["previous_forward_id"] == records[0]["forward_id"]
@@ -113,6 +112,50 @@ def test_unobserved_cached_prefix_retains_failed_admission_evidence(monkeypatch,
     assert state.records[index]["requests"][0]["previous_forward_id"] is None
     with pytest.raises(RuntimeError, match="category"):
         state.on_timing(t=0.001, category="decode")
+
+
+def test_middle_chunk_samples_are_not_committed_generation(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "sglang.srt.utils.device_timer", SimpleNamespace(DeviceTimer=Timer))
+    state = _TraceState(SimpleNamespace(ps=SimpleNamespace(tp_rank=0), device_timer=None), tmp_path, {}, None)
+    request = SimpleNamespace(rid="actual-request", origin_input_ids=[10, 11, 12, 13], output_ids=[])
+    for prefix, query, tokens, sampled in ((0, 2, [10, 11], 999), (2, 2, [12, 13], 20)):
+        index = state.before(batch("EXTEND", query=[query], prefix=[prefix], tokens=tokens), [request])
+        assert state.records[index]["requests"][0]["output_token_ids_before"] == []
+        state.on_timing(t=0.001, category="extend")
+        state.after(index, SimpleNamespace(can_run_graph=False))
+        state.finish_worker(index, SimpleNamespace(next_token_ids=Tensor([sampled]), delay_sample_func=None))
+    # Native final-prefill result commits 20; it never committed middle sample 999.
+    request.output_ids.append(20)
+    index = state.before(batch("DECODE", lengths=[5], tokens=[20]), [request])
+    assert state.records[index]["requests"][0]["output_token_ids_before"] == [20]
+    assert state.records[index]["requests"][0]["native_query_token_ids"] == [20]
+
+
+def test_released_request_histories_do_not_accumulate_token_payload(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "sglang.srt.utils.device_timer", SimpleNamespace(DeviceTimer=Timer))
+    state = _TraceState(SimpleNamespace(ps=SimpleNamespace(tp_rank=0), device_timer=None), tmp_path, {}, None)
+    for sequence in range(24):
+        rid = f"cohort-{sequence}"
+        tokens = list(range(1024))
+        request = SimpleNamespace(rid=rid, origin_input_ids=tokens, output_ids=[])
+        native = batch("EXTEND", query=[len(tokens)], prefix=[0], tokens=tokens)
+        native.rids = [rid]
+        index = state.before(native, [request])
+        with pytest.raises(RuntimeError, match="completed"):
+            state.retire_requests([rid])
+        state.on_timing(t=0.001, category="extend")
+        state.after(index, SimpleNamespace(can_run_graph=False))
+        with pytest.raises(RuntimeError, match="raw forward"):
+            state.retire_requests([rid])
+        state.finish_worker(index, SimpleNamespace(next_token_ids=Tensor([20]), delay_sample_func=None))
+        state.retire_requests([rid])
+        assert state.previous == state.records == {}
+        assert not state.pending
+    raw = (tmp_path / "forward-rank-0.jsonl").read_text().splitlines()
+    assert len(raw) == len(state.retired) == 24
+    assert json.loads(raw[0])["requests"][0]["prompt_token_ids"] == list(range(1024))
+    with pytest.raises(RuntimeError, match="retirement"):
+        state.before(native, [request])
 
 
 def test_frozen_target_needs_exact_batch_coordinates_and_real_chain():
@@ -159,7 +202,7 @@ def test_actual_native_prefill_padding_is_observed_not_predicted(monkeypatch, tm
     )
     runner = SimpleNamespace(ps=SimpleNamespace(tp_rank=0), device_timer=None, prefill_cuda_graph_runner=native)
     state = _TraceState(runner, tmp_path, {}, None)
-    request = SimpleNamespace(rid="actual-request", origin_input_ids=list(range(129)))
+    request = SimpleNamespace(rid="actual-request", origin_input_ids=list(range(129)), output_ids=[])
     index = state.before(batch("EXTEND", query=[129], prefix=[0], tokens=range(129)), [request])
     with pytest.raises(RuntimeError, match="padding receipt"):
         state.after(index, SimpleNamespace(can_run_graph=True))
@@ -250,7 +293,7 @@ def test_whole_gpu_holdout_is_independent_of_module_observers(monkeypatch, tmp_p
         },
     }
     state = _TraceState(runner, tmp_path, {}, None, manifest)
-    request = SimpleNamespace(rid="actual-request", origin_input_ids=[10, 11, 12, 13])
+    request = SimpleNamespace(rid="actual-request", origin_input_ids=[10, 11, 12, 13], output_ids=[])
     index = state.before(batch("EXTEND", query=[4], prefix=[0], tokens=[10, 11, 12, 13]), [request])
     assert runner.model.forward() == "native-output"
     state.on_timing(t=0.009, category="extend")
