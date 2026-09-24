@@ -163,3 +163,77 @@ def msa_sparse_implementation(backend_name: str, model_path: str, system_name: s
     if int(spec.get("gpu", {}).get("sm_version", -1)) in (100, 103):
         return "msa"
     return None
+
+
+def _model_architecture(model_path: str) -> str | None:
+    """Architecture of a bundled checkpoint config, None when unresolvable
+    (a user-local checkpoint the SDK does not bundle). Indirection so tests
+    can stub the SDK lookup."""
+    from aisimulate.sdk.utils import get_model_config_from_model_path
+
+    try:
+        return get_model_config_from_model_path(model_path).get("architecture")
+    except (FileNotFoundError, KeyError, ValueError):
+        return None
+
+
+# DeepSeek sparse attention (DSA) architectures: the sparse-MLA selector is
+# the one that rejects vLLM's auto-resolved kv dtype spelling (see below).
+_DSA_ARCHITECTURES = ("GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM")
+
+
+def _bundled_quantization(model_path: str) -> dict | None:
+    """``quantization_config`` of the bundled checkpoint config, None when the
+    config is unresolvable or carries none. Indirection so tests can stub it."""
+    from aisimulate_core.sdk.utils import _load_model_config_from_model_path
+
+    try:
+        return _load_model_config_from_model_path(model_path).get("quantization_config") or None
+    except (FileNotFoundError, KeyError, ValueError):
+        return None
+
+
+def _artifact_pins_fp8_kv(quantization: dict | None) -> bool:
+    """modelopt artifacts declare their KV cache scheme in config.json
+    (``kv_cache_scheme: {num_bits: 8, type: float}``) or via
+    ``kv_cache_quant_algo: FP8`` when the hf_quant block is inlined."""
+    if not quantization:
+        return False
+    if str(quantization.get("kv_cache_quant_algo") or "").upper() == "FP8":
+        return True
+    scheme = quantization.get("kv_cache_scheme") or {}
+    return scheme.get("num_bits") == 8 and str(scheme.get("type", "")).lower() == "float"
+
+
+def vllm_dsa_kv_cache_dtype(backend_name: str, model_path: str, gemm_quant_mode: Any = None) -> str | None:
+    """NVFP4 DSA checkpoints x vLLM: prescribe ``--kv-cache-dtype fp8``.
+
+    The modelopt NVFP4 artifacts of the DSA models (GLM-5 / 5.1 / 5.2 / 5.3
+    -NVFP4, DeepSeek-V3.2-NVFP4) pin the KV cache to FP8. vLLM 0.29.0
+    resolves ``--kv-cache-dtype auto`` for them to the literal ``fp8_e4m3``
+    and its sparse-MLA backend selector rejects that spelling
+    (FLASHMLA_SPARSE: "kv_cache_dtype not supported"); the same engine with
+    an explicit ``fp8`` loads FlashMLASparseImpl and serves. Serving-side
+    the KV IS fp8 either way (checkpoint scheme), so the explicit value only
+    says what ``auto`` means for these artifacts.
+
+    Keyed on the checkpoint ARCHITECTURE (DSA) plus an artifact fact — never
+    a model-name pattern: the task's ``nvfp4`` GEMM quant mode on the
+    optimized path, or the bundled config's fp8 KV scheme on the naive
+    ``cli generate`` path (which has no perf task). Bundled configs without a
+    ``quantization_config`` (the Hub config of DeepSeek-V3.2-NVFP4 keeps its
+    quantization only in hf_quant_config.json) get no prescription until the
+    SDK bundles that fact — a known gap, recorded in the opharness findings.
+    Evidence: findings ``vllm_fp8kv`` (0.29 addendum),
+    ``glm53_onboarding_2026_09_24``; owner decision 2026-09-24. Returns None
+    everywhere else so the task's own kv mode stands.
+    """
+    if backend_name != "vllm":
+        return None
+    if _model_architecture(model_path) not in _DSA_ARCHITECTURES:
+        return None
+    if str(gemm_quant_mode or "").lower() == "nvfp4":
+        return "fp8"
+    if _artifact_pins_fp8_kv(_bundled_quantization(model_path)):
+        return "fp8"
+    return None
