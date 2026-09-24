@@ -423,12 +423,14 @@ options, no code change:
 | role | features | `--max-iter` | `--learning-rate` | `--max-leaf-nodes` | Rust µs (was) | test MAPE (was) |
 | --- | --- | --- | --- | --- | --- | --- |
 | decode | `req_batch_size,req_sum_past,req_max_past,req_min_past,req_sum_past_squared` | 100 | 0.2 | 7 | 0.8–1.6 (3.4–5.5) | 3.3 % (4.0 %) |
-| prefill | `sglang18` | 100 | 0.2 | 15 | 0.8–1.1 (4.5–6.3) | 5.0 % (5.1 %) |
+| prefill | `req_batch_size,req_sum_extend,req_max_extend,req_min_extend,req_sum_past,req_max_past,req_min_past,req_sum_extend_x_past,req_sum_extend_squared,req_sum_past_squared` | 100 | 0.2 | 15 | 0.8–1.1 (4.5–6.3) | 5.0 % (5.1 %) |
 
 The five decode features are the ones with information on a decode step (every request
-extends by one token); not for speculative decoding. Prefill's atomic set is ten features,
-but a tree ensemble cannot rebuild the product n · Σe from them and loses cross-workload
-accuracy, so prefill keeps the eighteen. The full grid,
+extends by one token); not for speculative decoding. The ten prefill features are the
+atomic set (all 18 can be computed from them); they match the eighteen on every
+same-workload test. Only when the training traffic differs from the simulated one does
+the eighteen extrapolate better (a tree ensemble cannot rebuild n · Σe); use `sglang18`
+there. The full grid,
 the comparison with the native op-level model, multi-core scaling (the GBDT is read-only and
 scales linearly to 96 cores; 22 M decode estimates per second on a Grace node) and the
 pooled ten-run training time are in `design.md` §8. Artifacts are 100–450 KB of JSON.

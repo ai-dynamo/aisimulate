@@ -205,15 +205,16 @@ has no reduced preset; a reduced set is trained by passing the feature names to
 computed back, is 5 features for decode and 10 for prefill. Decode: the reduction is exact
 (the other 13 are identities of the 5 on a decode step) and measured lossless on every
 train/test pair, so decode uses the 5. Prefill: the 10 atomic features are equally good
-in-distribution, but a GBDT cannot form products, and on cross-workload pairs the missing
-derived axis n · Σe costs 2–35 pp (§8.8 b). Since extra features cost nothing at inference
-(§8.7), prefill keeps all 18. The shipped default stays at 18 for both roles; the decode 5
-are selected with `--features`.
+in-distribution (every same-workload cell within 0.05 pp), so prefill uses the 10. The one
+caveat: a GBDT cannot form products, and when the training workload differs from the
+simulated one the missing derived axis n · Σe costs 2–35 pp on cross-workload pairs
+(§8.8 b); for that use the 18. The shipped default stays at 18 for both roles; the atomic
+sets are selected with `--features`.
 
 | role | atomic features | count | vs 18 features |
 | --- | --- | --- | --- |
 | decode | n, Σp, max p, min p, Σp² | 5 | identical to the second decimal on all 13 train/test cells; **used** |
-| prefill | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp² | 10 | same in-distribution; LongBench → ShareGPT 29 % → 69 % under extrapolation; **prefill keeps 18** |
+| prefill | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp² | 10 | same in-distribution (within 0.05 pp); **used**; under cross-workload extrapolation LongBench → ShareGPT 29 % → 69 %, where 18 is safer |
 
 Evidence follows.
 
@@ -267,8 +268,8 @@ Reading the tables:
   tree cannot form a product or a log, so the derived axes (attention work Σe·(p + e/2),
   Σe · max p, the `log1p` transforms) let it split directly on quantities that carry over
   to unseen chunk-size / prefix mixes. Information-preserving is not the same as
-  GBDT-preserving; prefill keeps all 18. §8.8(b) traces the loss to one derived feature,
-  n · Σe, which is what the trees cannot reconstruct from the atomic set.
+  GBDT-preserving. §8.8(b) traces the loss to one derived feature, n · Σe, which is what
+  the trees cannot reconstruct from the atomic set; it only matters across workloads.
 - **Time per estimate is unchanged by the feature count.** Two decode artifacts trained on
   the same vLLM AgentX run (§7.2 data, 400 trees each), timed as in §8.1 on one Grace core:
   18 features 3.7–5.8 µs over the decode grid, 4 features 4.3–6.4 µs; prefill 4.5–6.3 µs
@@ -743,15 +744,15 @@ quantified, not guessed. Raw data: `estimator_threads_grace_node.csv`,
 ### 8.7 Simplifying the model: fewer features, fewer and shallower trees
 
 **Conclusion.** The default model (18 features, 400 trees × 31 leaves) can be replaced by
-one 4–5× faster with no measurable loss where the model is meant to be used, i.e. on the
-workload it was trained on:
+one with the atomic features and 4–5× fewer tree nodes, with no measurable loss where the
+model is meant to be used, i.e. on the workload it was trained on:
 
 | role | features | trees × leaves (learning rate) | time per estimate, one Grace core | accuracy on held-out data |
 | --- | --- | --- | --- | --- |
 | decode, default | 18 | 400 × 31 (0.05) | 3.4–5.5 µs | pooled 2.06 %, vLLM pair 4.02 % |
 | **decode, recommended** | **5** | **100 × 7 (0.2)** | **0.8–1.6 µs** | **pooled 2.02 %, vLLM pair 3.29 %** |
 | prefill, default | 18 | 400 × 31 (0.05) | 4.5–6.3 µs | pooled 2.05 %, vLLM pair 5.09 % |
-| **prefill, recommended** | **18** | **100 × 15 (0.2)** | **0.8–1.1 µs** | **pooled 2.03 %, vLLM pair 5.04 %** |
+| **prefill, recommended** | **10 (atomic)** | **100 × 15 (0.2)** | **0.8–1.1 µs** | **pooled 2.02 %, vLLM pair 5.03 %** |
 
 Four findings support this:
 
@@ -767,16 +768,19 @@ Four findings support this:
    25–70 % for every configuration including the default; the 2–3 pp differences between
    model sizes are real (seed noise ≤ 0.9 pp, §8.8 a) but do not change which cells are
    usable. Extrapolation across workloads is fixed by training data, not by model size.
-4. **Feature reduction is a separate, free choice.** Decode 18 → 5 is exact and lossless;
-   prefill's atomic set is 10 but loses extrapolation, so prefill keeps 18 (§3.1, §8.8 b).
+4. **The atomic feature sets are enough in-distribution.** Decode 18 → 5 is exact and
+   lossless everywhere. Prefill 18 → 10 is identical in-distribution (every same-workload
+   cell within 0.05 pp); it loses only when training and simulated workloads differ
+   (LongBench-trained → ShareGPT 29 % → 69 %), because the trees cannot rebuild n · Σe
+   (§3.1, §8.8 b). For a model trained on the traffic it will simulate, 10 is the set.
 
 Training the recommended models needs no code change:
 
 ```
-# decode
+# decode, 5 atomic features
 --features req_batch_size,req_sum_past,req_max_past,req_min_past,req_sum_past_squared --max-iter 100 --learning-rate 0.2 --max-leaf-nodes 7
-# prefill
---max-iter 100 --learning-rate 0.2 --max-leaf-nodes 15
+# prefill, 10 atomic features
+--features req_batch_size,req_sum_extend,req_max_extend,req_min_extend,req_sum_past,req_max_past,req_min_past,req_sum_extend_x_past,req_sum_extend_squared,req_sum_past_squared --max-iter 100 --learning-rate 0.2 --max-leaf-nodes 15
 ```
 
 The shipped defaults are unchanged. What follows is the evidence.
@@ -993,7 +997,7 @@ by at most ±3 pp when added or removed; the role flags do nothing (constant in 
 n · Σe is a product of two features the trees already have, but as its own axis one split
 separates "one long chunk" from "many short requests with the same token total", which is
 what LongBench-trained models otherwise get wrong on ShareGPT. This explains the gap
-between the atomic 10 and the 18; the practical choice for prefill stays at 18.
+between the atomic 10 and the 18 under extrapolation; in-distribution there is none.
 
 **(c) Does the small model lose anywhere in particular?** Error by batch size, by mean
 context per request and (prefill) by scheduled tokens; default versus small model;
