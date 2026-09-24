@@ -62,6 +62,20 @@ def test_nan_kernel_source_nonpositive_rows_are_counted(tmp_path):
     assert table is not None
 
 
+def test_selection_metadata_does_not_split_raw_measured_shapes(tmp_path):
+    path = _write(
+        tmp_path,
+        "framework,version,kernel_source,op_name,latency,num_tokens,default_eligible",
+        ["sglang,1.0,default,moe,1.0,32,true", "sglang,1.0,exact,moe,0.25,32,false"],
+    )
+    table, _, _ = _load_op_table(path, "sglang", "1.0")
+    assert table.shape_cols == ["op_name", "num_tokens"]
+    # This raw measurement report includes opt-in kernels. Eligibility only
+    # restricts automatic prediction and its default coverage views.
+    assert table.frame["latency"].tolist() == [0.25]
+    assert table.kernel_sources == ["default", "exact"]
+
+
 def test_component_latency_is_summed_like_the_consumer(tmp_path):
     """wideep_deepep_ll stores combine+dispatch; the runtime consumer sums
     them, so the checker must audit the sum (and derived bandwidth columns
