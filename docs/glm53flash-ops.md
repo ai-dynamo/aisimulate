@@ -150,11 +150,26 @@ The corrected CUPTI resource/clone mapping subsequently passed actual GB300
 tiny capture/replay qualification in both runtime images (job 609710), with exact
 node ownership and no inserted graph nodes. All three following SGLang model
 profiles stopped before construction at a strict multiple-loaded-CUDA-runtime
-identity guard. Its library-provider diagnosis remains pending. The frozen graph
+identity guard. A subsequent GPU-visible import probe found two separately loaded
+copies with identical bytes; all 41 observed PyTorch CUDA relocations used the
+packaged copy. The observer now selects only that proven native provider and
+retains both mapped identities. CPU tests and an independent ELF/receipt review
+passed; the new full-model graph retry remains unqualified. The frozen graph
 v4 payload also predates the current native dispatch-policy snapshot and cannot
 be silently promoted into formal evidence. These diagnostics do not establish
 native model graph coverage or prediction accuracy. All physical memory operations remain required evidence; their
 intervals cannot be omitted from operation accounting.
+
+The new SGLang v5 pilot preserves the original calibration/control/holdout points
+and five-plus-ten repetitions. Its traces bind the exact native run, rank,
+invocation and sampling role; setup launch/activity coverage is bidirectional.
+Its complete capture provenance includes the original driver identity and
+verified lazy-projection sources. The frozen bundle passed independent byte and
+plan review; actual execution, export and independent error checks remain pending.
+The pilot shares a text corpus across disjoint geometry sets, so it does not
+establish formal independent-corpus acceptance. The vLLM capture adapter records
+actual initialized FULL/PIECEWISE descriptors and eligibility settings before
+requests; replay operation measurement and production graph coverage remain pending.
 
 See [the collector contract](../python/aisimulate/collector/README.glm53flash.md),
 [the Ops evidence adapter](../python/aisimulate/collector/glm53flash_validation.py)
