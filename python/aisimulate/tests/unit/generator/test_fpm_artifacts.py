@@ -1694,8 +1694,37 @@ def test_sglang_fpm_preserves_native_graph_sizes_and_quantization():
     normal = render_backend_templates(copy.deepcopy(params), "sglang", version="0.5.20")
     # Existing sizing rules choose the list; FPM must retain every native
     # token, including list-valued options, without reinterpreting the shell.
-    assert normal["cli_args_agg"].replace('"', "") in script.replace("--tp-size", "--tensor-parallel-size")
+    assert normal["cli_args_agg"].replace('"', "") in script.replace("--tp-size", "--tensor-parallel-size").replace(
+        "--cuda-graph-bs-decode", "--cuda-graph-bs"
+    )
     assert "--quantization modelopt_fp4" in script
+
+
+def test_sglang_fpm_normalizes_legacy_graph_names_without_losing_sizes():
+    from aisimulate.generator.builders.fpm_builder import _sglang_fpm_args
+
+    context = {
+        "ServiceConfig": {"model_path": "/model"},
+        "agg_cli_args_list": ["--cuda-graph-bs", "1", "2", "4", "--cuda-graph-max-bs=8"],
+    }
+    extra = [
+        "--context-length",
+        "131072",
+        "--benchmark-points-file",
+        "/points.json",
+        "--tokenizer-revision",
+        "pinned",
+        "--kv-cache-dtype",
+        "fp8_e4m3",
+        "--disable-radix-cache",
+    ]
+    argv = _sglang_fpm_args(context, extra)
+    start = argv.index("--cuda-graph-bs-decode")
+    assert argv[start + 1 : start + 4] == ["1", "2", "4"]
+    assert "--cuda-graph-max-bs-decode=8" in argv
+    assert "--cuda-graph-bs" not in argv
+    with pytest.raises(ValueError, match="at most one --cuda-graph-bs-decode"):
+        _sglang_fpm_args(context, extra + ["--cuda-graph-bs-decode", "8"])
 
 
 def test_sglang_normal_serving_still_uses_dynamo():
