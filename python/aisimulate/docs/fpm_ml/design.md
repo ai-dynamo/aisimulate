@@ -278,7 +278,7 @@ Reading the tables:
 
 The shipped default is `sglang18` for both roles. A reduced model is trained by listing the
 names: `--features req_batch_size,req_sum_past,req_max_past,req_min_past,req_sum_past_squared`
-for decode. Raw output (including the other subsets tried, `core4` and `indep12`):
+for decode. Raw output:
 `feature_ablation_*.txt` and `estimator_latency_by_feature_set.csv` in the playground
 `reports/`.
 
@@ -947,13 +947,12 @@ then the bench pinned to one core).
 ### 8.8 Three checks on the simplified models
 
 **Conclusion.** (a) Training is deterministic for prefill and within ±0.9 pp for decode,
-so the differences reported in §8.7 are real. (b) Of the eight derived prefill features,
-only n · Σe matters for extrapolation; the others add nothing measurable. (c) The small
+so the differences reported in §8.7 are real. (b) The prefill gap between the 10 atomic
+features and the 18 under cross-workload extrapolation comes from one derived feature,
+n · Σe; the other seven add nothing measurable. (c) The small
 models lose nowhere in-distribution (every batch-size, context and token bucket within
 0.1 pp of the default); under extrapolation their losses sit on multi-request batches (10
 features) or short chunks (15 leaves), inside the range the default itself spans.
-n · Σe is a diagnosis of *why* the atomic set falls short, not a recommended eleventh
-feature: it is derived, and the reduced sets in this document are atomic sets only.
 
 All on the ten GB300 SGLang runs (dlcluster login-03, AMD EPYC 7313P), same method as §3.1
 and §8.7. Raw output in the playground `reports/`: `simplify_seed_variance.txt`,
@@ -976,28 +975,27 @@ Without early stopping or subsampling the fit is deterministic; the only randomn
 carry at most ±0.9 pp of seed noise. The 2–3 pp differences between model sizes on cross
 cells in §8.7 are real; they are also small next to the 25–70 % level of those cells.
 
-**(b) Which of the eight derived prefill features carry the extrapolation?** Add each one
-to the ten atomic features, and remove each one from the eighteen (400 × 31 and 100 × 15;
-deterministic, so single runs). One feature matters: `req_batch_size_x_sum_extend` (n · Σe).
+**(b) Why do the 10 atomic prefill features extrapolate worse than the 18?** Prefill, 18
+versus the 10 atomic features, pooled and the four cross-workload cells that differ
+(deterministic fits, single runs; MAPE %):
 
-| prefill feature set | n | pooled | LongBench → AgentX | LongBench → ShareGPT | ShareGPT → LongBench | AgentX → ShareGPT |
-| --- | --- | --- | --- | --- | --- | --- |
-| 18 (400 × 31) | 18 | 2.05 | 5.22 | 34.7 | 43.3 | 4.64 |
-| 10 atomic | 10 | 2.03 | 7.17 | 69.1 | 48.1 | 3.28 |
-| 10 + n · Σe | 11 | 2.04 | 5.91 | 37.5 | 48.0 | 5.24 |
-| 10 + any other single derived feature | 11 | 2.03–2.05 | 6.8–7.4 | 65–71 | 46–48 | 3.1–3.6 |
-| 18 − n · Σe | 17 | 2.04 | 6.65 | 64.3 | 44.9 | 3.12 |
-| 18 − any other single derived feature | 17 | 2.04–2.05 | 5.2–6.0 | 30–35 | 43–48 | 4.0–5.2 |
-| 18 (100 × 15) | 18 | 2.03 | 6.82 | 36.1 | 39.6 | 5.48 |
-| 10 + n · Σe (100 × 15) | 11 | 2.02 | 6.20 | 35.1 | 46.9 | 4.90 |
-| 18 − n · Σe (100 × 15) | 17 | 2.02 | 8.40 | 70.0 | 38.9 | 3.25 |
+| prefill | pooled | LongBench → AgentX | LongBench → ShareGPT | ShareGPT → LongBench | AgentX → ShareGPT |
+| --- | --- | --- | --- | --- | --- |
+| 18 features, 400 × 31 | 2.05 | 5.2 | 34.7 | 43.3 | 4.6 |
+| 10 atomic, 400 × 31 | 2.03 | 7.2 | 69.1 | 48.1 | 3.3 |
+| 18 features, 100 × 15 | 2.03 | 6.8 | 36.1 | 39.6 | 5.5 |
+| 10 atomic, 100 × 15 | 2.02 | 5.2 | 71.8 | 40.0 | 3.2 |
 
-The attention proxy, Σe · max p, the `log1p` transforms and max p − min p each move cells
-by at most ±3 pp when added or removed; the role flags do nothing (constant in a store).
-n · Σe is a product of two features the trees already have, but as its own axis one split
-separates "one long chunk" from "many short requests with the same token total", which is
-what LongBench-trained models otherwise get wrong on ShareGPT. This explains the gap
-between the atomic 10 and the 18 under extrapolation; in-distribution there is none.
+To find which of the eight derived features (18 − 10) accounts for the LongBench → ShareGPT
+gap, each was added alone to the 10 and removed alone from the 18. One does: n · Σe
+(`req_batch_size_x_sum_extend`). Adding only it to the 10 brings LongBench → ShareGPT from
+69 % to 37.5 % (18: 34.7 %); removing only it from the 18 sends the same cell from 34.7 %
+to 64.3 %. Each of the other seven moves any cell by at most ±3 pp; the two role flags
+do nothing (constant in a store). n · Σe is a product of two features the trees already
+have, but as its own axis one split separates "one long chunk" from "many short requests
+with the same token total", which is what LongBench-trained models otherwise get wrong on
+ShareGPT. In-distribution there is no gap. (Full add-one / leave-one-out numbers:
+`prefill_feature_addone_leaveoneout.txt`.)
 
 **(c) Does the small model lose anywhere in particular?** Error by batch size, by mean
 context per request and (prefill) by scheduled tokens; default versus small model;
