@@ -17,7 +17,8 @@ PYTHONPATH=/path/to/aisimulate/python/aisimulate python -m collector.fpm_forward
 ```
 
 The command verifies the loaded public SDK and native extension against the
-installed wheel's `RECORD`, including every hashed `aisimulate_core` payload.
+installed wheel's `RECORD`, including both `aisimulate` and `aisimulate_core` payloads and verifying that the
+compatibility shim exports the canonical `aisimulate._runtime` binding.
 It records that payload digest. An editable checkout cannot certify installed
 consumer acceptance. Exit code zero requires all 16 phase cells to pass;
 `FAILED` and `NOT_EVALUATED` return two.
@@ -88,10 +89,11 @@ Raw file digests and native runtime identities are retained in the report.
 
 FPM requires per-configuration, per-phase MAPE at most 10%. Explicit `mode="ops"`
 uses 20% and `op_level` predictions. Ops additionally requires the Ops producer's
-`collector.glm53flash_validation.bind_calibration(paths, frozen_run,
-native_receipt)` adapter to verify its calibration evidence. Without that
-adapter/evidence, the result is `NOT_EVALUATED`; generic operator rows cannot
-certify GLM Ops acceptance.
+`collector.glm53flash_validation.load_native(frozen_run, base)` and
+`bind_calibration(paths, frozen_run, native_receipt)` adapters to verify its calibration evidence. Without that
+adapters/evidence, the result is `NOT_EVALUATED`; generic operator rows cannot
+certify GLM Ops acceptance. Ops holdout uses the independently observed whole
+model GPU boundary returned by its adapter; it never reuses the FPM timer values.
 
 Every frozen holdout point stays in the report and coverage denominator. Each
 phase needs full compared-point coverage and requested points in each context
