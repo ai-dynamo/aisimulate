@@ -285,11 +285,17 @@ class _TraceState:
                 self.whole_events = None
         for request in record["requests"]:
             rid = request["request_id"]
-            self.previous[rid] = {
-                "tokens": completed[rid],
-                "computed_tokens": request["computed_tokens_after"],
-                "forward_id": record["forward_id"],
-            }
+            if record["stage"] == "measure":
+                # The benchmark's target is the final requested forward for this
+                # Req. Keep its complete history on disk; only a pending real
+                # seed needs a host token chain for the next native forward.
+                self.previous.pop(rid, None)
+            else:
+                self.previous[rid] = {
+                    "tokens": completed[rid],
+                    "computed_tokens": request["computed_tokens_after"],
+                    "forward_id": record["forward_id"],
+                }
         record["gpu_completed"] = True
         self.append("forward", record)
 

@@ -110,3 +110,24 @@ def test_native_context_receipt_requires_actual_worker_headroom(monkeypatch):
             _validate_vllm_context({**receipt, "native_max_model_len": bad})
     with pytest.raises(ValueError, match="actual vLLM"):
         _validate_vllm_context({})
+
+
+def test_completed_native_targets_retire_host_history_but_keep_raw_receipts():
+    state = _TraceState.__new__(_TraceState)
+    state.previous = {}
+    state.torch = SimpleNamespace(cuda=SimpleNamespace(synchronize=lambda: None))
+    state.observer = SimpleNamespace(end=lambda: [])
+    saved = []
+    state.append = lambda kind, record: saved.append((kind, record))
+    seed = {"stage": "seed", "forward_id": "seed-1", "requests": [{"request_id": "r", "computed_tokens_after": 2}]}
+    state.after(seed, {"r": [11, 12]})
+    assert state.previous["r"]["tokens"] == [11, 12]
+    target = {
+        "stage": "measure",
+        "forward_id": "target-1",
+        "requests": [{"request_id": "r", "computed_tokens_after": 3}],
+    }
+    state.after(target, {"r": [11, 12, 13]})
+    assert not state.previous
+    assert [row["forward_id"] for _, row in saved] == ["seed-1", "target-1"]
+    assert all(row["gpu_completed"] is True for _, row in saved)
