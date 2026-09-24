@@ -15,6 +15,7 @@ import json
 import os
 import re
 import time
+from collections import deque
 from pathlib import Path
 
 from collector.glm53flash_jsonl import iter_records
@@ -181,6 +182,15 @@ class RetainedRequestLoop:
             batch_type = ScheduleBatch
             self.time_batch = (set_time_batch, set_schedule_time_batch)
         self.scheduler = scheduler
+        # Scheduler.init_overlap owns streams, FutureMap and the keep-alive
+        # ring. The pinned native event_loop_overlap creates result_queue only
+        # on entry (scheduler.py:1944-1948), after construction. Our serialized
+        # loop drains each result immediately, so this native idle/pause queue
+        # remains empty; never discard an already pending native result.
+        if scheduler.enable_overlap:
+            if getattr(scheduler, "result_queue", None):
+                raise RuntimeError("retained benchmark cannot adopt pending native overlap results")
+            scheduler.result_queue = deque()
         self.batch_type = batch_type
         self.manifest = manifest
         self.output = output
@@ -358,6 +368,7 @@ class RetainedRequestLoop:
         while not scheduler.gracefully_exit:
             scheduler.ingest_requests()
             if scheduler._engine_paused:
+                scheduler._record_scheduler_state_for_paused_engine()
                 continue
             for req in scheduler.waiting_queue:
                 if req.rid not in self.manifest["requests"] or req.rid in self.completed:
@@ -367,6 +378,7 @@ class RetainedRequestLoop:
             ready = next((ids for ids in self.cohorts.values() if all(rid in self.pending for rid in ids)), None)
             if ready is None:
                 if not self.pending:
+                    scheduler._sched_idled = True
                     scheduler.on_idle()
                 continue
             reqs = [self.pending.pop(rid) for rid in ready]
