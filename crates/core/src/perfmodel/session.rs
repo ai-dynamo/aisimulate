@@ -74,6 +74,13 @@ pub(crate) fn run_context_ops_with<'a>(
     filter: ContextOpFilter,
     mut on_op: impl FnMut(&'a Op, PerformanceResult),
 ) -> Result<f64, AicError> {
+    if crate::perf_database::glm53flash_graph::validate_context_ops(ops, db)?
+        && !matches!(filter, ContextOpFilter::All)
+    {
+        return Err(AicError::InvalidPerfData(
+            "native serving context cannot omit non-attention/setup units".into(),
+        ));
+    }
     let mut total = 0.0_f64;
     for op in ops {
         match filter {

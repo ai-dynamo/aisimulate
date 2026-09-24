@@ -196,6 +196,7 @@ pub mod fpm_forward;
 pub mod gemm;
 pub mod glm53flash;
 pub mod glm53flash_graph;
+mod glm53flash_serving;
 mod interpolation;
 pub mod mhc;
 pub mod mla;

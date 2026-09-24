@@ -57,8 +57,9 @@ fn measured<T: Serialize>(
         )));
     }
     let shape = serde_json::to_value(op).map_err(|e| AicError::InvalidPerfData(e.to_string()))?;
-    if shape.get("is_context") == Some(&serde_json::Value::Bool(false))
-        && db.glm53flash_graph.has_measurements()?
+    if (shape.get("is_context") == Some(&serde_json::Value::Bool(false))
+        && db.glm53flash_graph.has_measurements()?)
+        || db.glm53flash_graph.requires_serving_context(&shape)?
     {
         return Err(AicError::InvalidPerfData("native graph data requires the Op RuntimeContext query; token-only/direct legacy lookup is unsupported".into()));
     }

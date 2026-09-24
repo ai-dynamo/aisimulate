@@ -24,11 +24,12 @@ const SG_DECODE: &str = "55892739b9c577ae43a60d5d31eac53f81e2b4aeca57ef5368b9c88
 const SG_BASE: &str = "03098df21a963d28f8075e0630a2bc1c356560449f9ca5f9e74dfb5f9892b7ed";
 const SG_FULL: &str = "0dc52a9a581636a20f5070cbb81d921bc56e4fb3394a9a1cf601747271c6905b";
 const SG_SHAPE: &str = "26e3f15209b654345a35966bd817ff8d0eb6c4c118527e78ca1e89942d5ea2c5";
-const VLLM_REVISION: &str = "ced6857afa0ea7b2e3f0846a62e1394e90f15607";
-const VLLM_STOCK_SOURCE: &str = "46cb601e49c399143db029d3cce33c2ee5216b8cdb6bf62385820b25fc67cba8";
+pub(super) const VLLM_REVISION: &str = "ced6857afa0ea7b2e3f0846a62e1394e90f15607";
+pub(super) const VLLM_STOCK_SOURCE: &str =
+    "46cb601e49c399143db029d3cce33c2ee5216b8cdb6bf62385820b25fc67cba8";
 #[cfg(test)]
 const VLLM_REPAIR_SOURCE: &str = "06a8cb8ab3fa89d4e82428fd32112074f50249c427a467787004ecb0a870f128";
-fn vllm_pins() -> BTreeMap<String, String> {
+pub(super) fn vllm_pins() -> BTreeMap<String, String> {
     BTreeMap::from([
         (
             "v1/worker/gpu/cudagraph_utils.py".into(),
@@ -48,7 +49,7 @@ fn vllm_pins() -> BTreeMap<String, String> {
         ),
     ])
 }
-fn vllm_flags() -> BTreeMap<String, bool> {
+pub(super) fn vllm_flags() -> BTreeMap<String, bool> {
     [
         "compiled_model",
         "varlen_decode",
@@ -222,13 +223,76 @@ pub(crate) fn reject_mixed(
     if matches!(
         db.database_mode,
         crate::common::enums::DatabaseMode::Silicon | crate::common::enums::DatabaseMode::Hybrid
-    ) && ops
-        .iter()
-        .any(|op| matches!(op, Op::Glm53Attention(_) | Op::Glm53Runtime(_)))
+    ) && ops.iter().any(contains_glm)
         && db.glm53flash_graph.has_measurements()?
     {
         return Err(invalid(
             "native graph Ops do not support the legacy mixed-step composition without actual homogeneous dispatch coordinates",
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn contains_glm(op: &Op) -> bool {
+    match op {
+        Op::Glm53Attention(_)
+        | Op::Glm53Mhc(_)
+        | Op::Glm53Router(_)
+        | Op::Glm53Ffn(_)
+        | Op::Glm53Primitive(_)
+        | Op::Glm53Runtime(_) => true,
+        Op::Overlap(value) => value.group_a.iter().chain(&value.group_b).any(contains_glm),
+        Op::Fallback(value) => {
+            contains_glm(&value.primary) || value.fallback.iter().any(contains_glm)
+        }
+        Op::TokenScale(value) => contains_glm(&value.op),
+        _ => false,
+    }
+}
+
+pub(crate) fn validate_context_ops(
+    ops: &[Op],
+    db: &crate::perf_database::PerfDatabase,
+) -> Result<bool, AicError> {
+    if !matches!(
+        db.database_mode,
+        crate::common::enums::DatabaseMode::Silicon | crate::common::enums::DatabaseMode::Hybrid
+    ) {
+        return Ok(false);
+    }
+    if !ops.iter().any(contains_glm) {
+        return Ok(false);
+    }
+    db.glm53flash_graph.validate_serving_ops(ops, true)
+}
+
+/// A serving model cannot erase an entire phase and receive a zero prediction.
+/// Exact canonical model identity additionally protects a spec with both lists
+/// erased. Model-less probes, legacy profiles, SOL and whole-forward FPM retain
+/// their existing contracts; unknown names with no GLM ops carry no GLM identity.
+pub(crate) fn validate_model_ops(
+    spec: &crate::perfmodel::engine::spec::EngineSpec,
+    db: &crate::perf_database::PerfDatabase,
+) -> Result<(), AicError> {
+    let context = validate_context_ops(&spec.context_ops, db)?;
+    validate_generation_ops(&spec.generation_ops, db)?;
+    if !matches!(
+        db.database_mode,
+        crate::common::enums::DatabaseMode::Silicon | crate::common::enums::DatabaseMode::Hybrid
+    ) || spec.engine.forward_model.as_deref() == Some("fpm")
+    {
+        return Ok(());
+    }
+    let generation = spec.generation_ops.iter().any(contains_glm)
+        && db
+            .glm53flash_graph
+            .validate_serving_ops(&spec.generation_ops, false)?;
+    let known_model = db
+        .glm53flash_graph
+        .matches_serving_model(&spec.engine.model_name, spec.engine.parallel.tp_size)?;
+    if (context || generation || known_model) && !(context && generation) {
+        return Err(invalid(
+            "schema3 GLM serving requires both complete context and generation operation lists; empty phases cannot predict zero",
         ));
     }
     Ok(())
@@ -241,22 +305,6 @@ pub(crate) fn validate_generation_ops(
     ops: &[Op],
     db: &crate::perf_database::PerfDatabase,
 ) -> Result<bool, AicError> {
-    fn contains_glm(op: &Op) -> bool {
-        match op {
-            Op::Glm53Attention(_)
-            | Op::Glm53Mhc(_)
-            | Op::Glm53Router(_)
-            | Op::Glm53Ffn(_)
-            | Op::Glm53Primitive(_)
-            | Op::Glm53Runtime(_) => true,
-            Op::Overlap(value) => value.group_a.iter().chain(&value.group_b).any(contains_glm),
-            Op::Fallback(value) => {
-                contains_glm(&value.primary) || value.fallback.iter().any(contains_glm)
-            }
-            Op::TokenScale(value) => contains_glm(&value.op),
-            _ => false,
-        }
-    }
     if !matches!(
         db.database_mode,
         crate::common::enums::DatabaseMode::Silicon | crate::common::enums::DatabaseMode::Hybrid
@@ -264,6 +312,9 @@ pub(crate) fn validate_generation_ops(
         || !db.glm53flash_graph.has_measurements()?
     {
         return Ok(false);
+    }
+    if db.glm53flash_graph.validate_serving_ops(ops, false)? {
+        return Ok(true);
     }
     let markers: Vec<_> = ops
         .iter()
@@ -354,14 +405,28 @@ struct Profile {
 }
 type Profiles = BTreeMap<(String, u32), Profile>;
 pub struct Glm53GraphTable {
+    serving: super::glm53flash_serving::ServingTable,
     path: Option<PathBuf>,
     request: (String, String),
     profile: OnceLock<Result<Option<Profiles>, String>>,
 }
 impl Glm53GraphTable {
     pub fn with_sources(root: &Path, resolver: &SourceResolver) -> Result<Self, AicError> {
+        let path = primary_path(root, resolver, BASENAME)?;
+        let request = (
+            root.parent()
+                .and_then(Path::file_name)
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .into(),
+            root.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .into(),
+        );
         Ok(Self {
-            path: primary_path(root, resolver, BASENAME)?,
+            serving: super::glm53flash_serving::ServingTable::new(path.clone(), request),
+            path,
             request: (
                 root.parent()
                     .and_then(Path::file_name)
@@ -388,8 +453,50 @@ impl Glm53GraphTable {
             .map(Option::as_ref)
             .map_err(|e| invalid(e.clone()))
     }
+    fn check_schema_identities(&self) -> Result<(), AicError> {
+        if let Some(legacy) = self.profile()?
+            && self
+                .serving
+                .identities()?
+                .iter()
+                .any(|identity| legacy.contains_key(identity))
+        {
+            return Err(invalid(
+                "schema3 serving and legacy graph policy compete for the same checkpoint/TP",
+            ));
+        }
+        Ok(())
+    }
+    fn matches_serving_model(&self, model: &str, tp: u32) -> Result<bool, AicError> {
+        let format = match model {
+            "zai-org/GLM-5.3-Flash" => "fp8",
+            "nvidia/GLM-5.3-Flash-NVFP4" => "nvfp4",
+            _ => return Ok(false),
+        };
+        if self.request.0 != "vllm" {
+            return Ok(false);
+        }
+        self.check_schema_identities()?;
+        Ok(self.serving.identities()?.contains(&(format.into(), tp)))
+    }
+    pub(crate) fn requires_serving_context(&self, shape: &Value) -> Result<bool, AicError> {
+        self.check_schema_identities()?;
+        let identity = (
+            shape["checkpoint_format"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            shape["tp_size"].as_u64().unwrap_or_default() as u32,
+        );
+        Ok(shape["backend"] == "vllm" && self.serving.identities()?.contains(&identity))
+    }
+    fn validate_serving_ops(&self, ops: &[Op], context: bool) -> Result<bool, AicError> {
+        self.check_schema_identities()?;
+        self.serving.validate_ops(ops, context)
+    }
     pub fn has_measurements(&self) -> Result<bool, AicError> {
-        Ok(self.profile()?.is_some())
+        self.check_schema_identities()?;
+        Ok(self.profile()?.is_some() || self.serving.has_measurements()?)
     }
     pub fn query(
         &self,
@@ -420,7 +527,28 @@ impl Glm53GraphTable {
             _ => return Ok(None),
         };
         validate_runtime(&self.request.0, &self.request.1)?;
+        self.check_schema_identities()?;
+        if let Some(value) = self.serving.query(op, ctx)? {
+            return Ok(Some(value));
+        }
         let shape = shape.map_err(|e| invalid(e.to_string()))?;
+        let serving_selected = self.serving.has_measurements()?;
+        let identity = (
+            shape["checkpoint_format"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            shape["tp_size"].as_u64().unwrap_or_default() as u32,
+        );
+        if serving_selected
+            && !self
+                .profile()?
+                .is_some_and(|profiles| profiles.contains_key(&identity))
+        {
+            return Err(invalid(
+                "selected native serving dataset lacks this checkpoint/TP policy",
+            ));
+        }
         if shape["is_context"] == true {
             return Ok(None);
         }
@@ -541,6 +669,26 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
         return Ok(None);
     }
     let reader = PerfReader::open(path)?;
+    let policy_col = reader.col("graph_policy")?;
+    let mut has_legacy = false;
+    let mut any_row = false;
+    for row in reader.rows()? {
+        let row = row?;
+        any_row = true;
+        let value: Value =
+            serde_json::from_str(row.str(policy_col)?).map_err(|e| invalid(e.to_string()))?;
+        match value["schema_version"].as_u64() {
+            Some(1 | 2) => has_legacy = true,
+            Some(3) => {}
+            _ => return Err(invalid("unknown native graph/serving policy schema")),
+        }
+    }
+    if !any_row {
+        return Err(invalid("empty native graph table is not a serving policy"));
+    }
+    if !has_legacy {
+        return Ok(None);
+    }
     let names = [
         "component",
         "geometry",
@@ -568,6 +716,10 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
     for row in reader.rows()? {
         let row = row?;
         let text = row.str(cols[9])?;
+        let schema: Value = serde_json::from_str(text).map_err(|e| invalid(e.to_string()))?;
+        if schema["schema_version"] == 3 {
+            continue;
+        }
         let parsed: GraphPolicy = serde_json::from_str(text).map_err(|e| invalid(e.to_string()))?;
         parsed.validate()?;
         let canonical = serde_json::to_string(

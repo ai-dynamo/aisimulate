@@ -349,7 +349,7 @@ impl Engine {
             .and_then(|s| s.nextn)
             .unwrap_or(0);
         Self::validate_fpm_spec(&spec)?;
-        crate::perf_database::glm53flash_graph::validate_generation_ops(&spec.generation_ops, &db)?;
+        crate::perf_database::glm53flash_graph::validate_model_ops(&spec, &db)?;
         Ok(Engine {
             context_ops: spec.context_ops,
             generation_ops: spec.generation_ops,
@@ -2040,6 +2040,16 @@ impl Engine {
         // cannot prove homogeneous histories for B>1, so graph profiles must
         // use the explicit homogeneous decode API instead of an integer mean.
         if has_decode && (has_prefill || sched.num_decode_requests > 1) {
+            crate::perf_database::glm53flash_graph::reject_mixed(&self.context_ops, &self.db)?;
+        }
+
+        if has_prefill
+            && sched.num_prefill_requests > 1
+            && crate::perf_database::glm53flash_graph::validate_context_ops(
+                &self.context_ops,
+                &self.db,
+            )?
+        {
             crate::perf_database::glm53flash_graph::reject_mixed(&self.context_ops, &self.db)?;
         }
 

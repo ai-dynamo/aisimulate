@@ -265,7 +265,7 @@ impl Glm53Table {
     }
 }
 
-fn validate_native_workload(
+pub(super) fn validate_native_workload(
     component: &str,
     shape: &Value,
     prefix: u32,
