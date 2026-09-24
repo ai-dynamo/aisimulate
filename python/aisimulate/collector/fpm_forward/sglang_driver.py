@@ -457,6 +457,14 @@ def main(argv=None) -> None:
     write_json(manifest_path, manifest)
     provenance = {
         "run_id": args.run_id,
+        **(
+            {
+                "ops_execution_mode": "native_eager_prefill",
+                "prefill_measurement_contract": "native_sglang_prefill_events_v1",
+            }
+            if args.ops_native_prefill
+            else {}
+        ),
         "execution_identity": identity,
         "telemetry_policy": TELEMETRY_POLICY,
         "producer_protocol": PRODUCER_PROTOCOL,

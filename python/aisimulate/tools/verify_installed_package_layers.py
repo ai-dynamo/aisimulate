@@ -327,6 +327,14 @@ def _verify_fpm_workflow() -> str:
         ),
         (importlib.import_module("collector.glm53flash_sglang_retained"), "collector/glm53flash_sglang_retained.py"),
         (
+            importlib.import_module("collector.glm53flash_sglang_prefill_activity"),
+            "collector/glm53flash_sglang_prefill_activity.py",
+        ),
+        (
+            importlib.import_module("collector.glm53flash_sglang_prefill_export"),
+            "collector/glm53flash_sglang_prefill_export.py",
+        ),
+        (
             importlib.import_module("collector.fpm_forward.glm53flash_validation"),
             "collector/fpm_forward/glm53flash_validation.py",
         ),

@@ -114,6 +114,9 @@ class NativeOperationObserver:
         self.inside_collective = False
         self.profiler = None
         self.profile_callback = profile_callback
+        self.profile_scope_ids = False
+        self.defer_profile_start = False
+        self._scope_counter = 0
         self.dispatches = {}
         self._entries = {
             phase: {entry["name"]: entry for entry in entries} for phase, entries in manifest["phases"].items()
@@ -126,6 +129,7 @@ class NativeOperationObserver:
         if self.torch.cuda.is_current_stream_capturing():
             raise RuntimeError("eager collection cannot begin inside CUDA graph capture")
         self.workload = workload
+        self._scope_counter = 0
         self.collective_calls = 0
         # The diagnostic CUPTI pass is the last excluded warmup. Timed retained
         # samples run without the profiler; missing native kernel attribution
@@ -139,11 +143,21 @@ class NativeOperationObserver:
                     self.torch.profiler.ProfilerActivity.CUDA,
                 ]
             )
-            self.profiler.start()
+            if not self.defer_profile_start:
+                self.profiler.start()
 
-    def _range(self, name):
+    def _scope_name(self, name):
+        if not self.profile_scope_ids:
+            return "aisim.glm53/" + name
+        value = f"aisim.glm53/prefill_unit/{self._scope_counter}/{name}"
+        self._scope_counter += 1
+        return value
+
+    def _range(self, name, *, scope_name=None):
         return (
-            self.torch.profiler.record_function("aisim.glm53/" + name) if self.profiler is not None else nullcontext()
+            self.torch.profiler.record_function(scope_name or "aisim.glm53/" + name)
+            if self.profiler is not None
+            else nullcontext()
         )
 
     def _dispatch_key(self, name):
@@ -156,7 +170,16 @@ class NativeOperationObserver:
         profiler, self.profiler = self.profiler, None
         profiler.stop()
         if self.profile_callback is not None:
-            self.profile_callback(profiler, self.workload, self.native_call_inventory())
+            authoritative = self.profile_callback(profiler, self.workload, self.native_call_inventory())
+            if authoritative is not None:
+                if set(authoritative) != set(self._entries[self.workload.phase]) or any(
+                    not isinstance(names, list) or any(not isinstance(name, str) or not name for name in names)
+                    for names in authoritative.values()
+                ):
+                    raise RuntimeError("native profile callback omitted its complete authoritative dispatch inventory")
+                for name, names in authoritative.items():
+                    self.dispatches[self._dispatch_key(name)] = sorted(names)
+                return
         kernels = defaultdict(list)
         for event in profiler.events():
             launched = getattr(event, "kernels", ())
@@ -181,6 +204,14 @@ class NativeOperationObserver:
                 "included_sources": list(interval.get("included_native_calls", [])),
                 "excluded_collective_sources": [source for _, _, source in interval["collectives"]],
                 "parent_operation": interval.get("parent_operation"),
+                **(
+                    {
+                        "scope_name": interval["scope_name"],
+                        "parent_scope_name": interval.get("parent_scope_name"),
+                    }
+                    if self.profile_scope_ids
+                    else {}
+                ),
             }
             for interval in self.events
         ]
@@ -240,11 +271,12 @@ class NativeOperationObserver:
                 "stream": stream,
                 "collectives": [],
                 "source": witness,
+                "scope_name": self._scope_name(selected_name),
             }
             self.active_interval = interval
             start.record(stream)
             try:
-                with self._range(selected_name):
+                with self._range(selected_name, scope_name=interval["scope_name"]):
                     result = original(*args, **kwargs)
                 end.record(stream)
                 if self.torch.cuda.current_stream() != stream:
@@ -283,10 +315,11 @@ class NativeOperationObserver:
                 selected = names[self.collective_calls]
                 self.collective_calls += 1
             self.inside_collective = True
+            scope_name = self._scope_name(selected or "unbound_collective")
             start, end = self.torch.cuda.Event(enable_timing=True), self.torch.cuda.Event(enable_timing=True)
             start.record(stream)
             try:
-                with self._range(selected or "unbound_collective"):
+                with self._range(selected or "unbound_collective", scope_name=scope_name):
                     result = original(*args, **kwargs)
                 end.record(stream)
                 if interval is not None:
@@ -301,6 +334,8 @@ class NativeOperationObserver:
                             "collectives": [],
                             "source": witness,
                             "parent_operation": None if interval is None else interval["name"],
+                            "scope_name": scope_name,
+                            "parent_scope_name": None if interval is None else interval["scope_name"],
                         }
                     )
                 return result
@@ -341,7 +376,7 @@ class NativeOperationObserver:
                     duration = start.elapsed_time(end)
                     local_ms -= duration
                     excluded.append({"source": source, "latency": duration})
-                if local_ms <= 0:
+                if local_ms < 0 or (local_ms == 0 and not self.profile_scope_ids):
                     raise RuntimeError("native collective subtraction left a nonpositive local interval")
                 latency += local_ms
             row = {
@@ -389,7 +424,7 @@ class NativeOperationObserver:
                 "history_ids": workload.history_ids,
                 "excluded_collectives": excluded,
             }
-            validate_row(row)
+            validate_row(row, allow_zero_latency=self.profile_scope_ids)
             rows.append(row)
         self.events.clear()
         self.workload = None

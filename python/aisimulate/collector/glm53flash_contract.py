@@ -198,7 +198,7 @@ def validate_native_workload(
         )
 
 
-def validate_row(row: dict) -> None:
+def validate_row(row: dict, *, allow_zero_latency: bool = False) -> None:
     """Reject unverifiable identities before they can enter a measured table."""
     if row.get("component") not in COMPONENTS.values():
         raise ValueError("unknown GLM-5.3-Flash component")
@@ -222,7 +222,12 @@ def validate_row(row: dict) -> None:
         raise ValueError("operation geometry and observed backend disagree")
     for key in INTEGER_COLUMNS:
         _uint32(row[key], key, positive=key != "prefix")
-    if isinstance(row["latency"], bool) or not math.isfinite(row["latency"]) or row["latency"] <= 0:
+    if (
+        isinstance(row["latency"], bool)
+        or not math.isfinite(row["latency"])
+        or row["latency"] < 0
+        or (row["latency"] == 0 and not allow_zero_latency)
+    ):
         raise ValueError("latency must be finite positive milliseconds")
     for key in ("source_sha256", "config_sha256"):
         if not re.fullmatch(r"[0-9a-f]{64}", row[key]):

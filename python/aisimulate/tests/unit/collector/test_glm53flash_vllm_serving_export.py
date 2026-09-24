@@ -6,6 +6,7 @@ import copy
 import hashlib
 
 import pytest
+
 from collector import glm53flash_vllm_serving_export as serving
 from collector.glm53flash_contract import BACKENDS, _runtime_contract, build_model_manifest, sha256_json
 from collector.glm53flash_vllm_graph_policy import SOURCE_PINS, select_descriptor
@@ -741,6 +742,30 @@ def test_exported_schema3_table_uses_actual_public_rust_and_returns_binding(tmp_
     result = serving.predict_homogeneous(holdout_run, holdout, config, native_cal, bound)
     assert result["rows"] == {1: {"prediction_ms": pytest.approx(0.282 if execution_mode == "NONE" else 0.025)}}
     assert result["calibration_binding"] == bound and bound["tables"][0]["sha256"] == file_sha256(output)
+    if execution_mode == "NONE":
+        # TEST_ONLY isolate the public static API's inclusive-ISL boundary.
+        # The raw fixture above remains P0; this mocked geometry is not a
+        # new native observation or interpolation qualification.
+        from types import SimpleNamespace
+
+        from aisimulate_core.sdk.engine import EngineHandle
+
+        original_truth = truth(holdout_run, holdout)
+        cached_run = copy.deepcopy(holdout_run)
+        cached_run["points"][0]["total_kv_read_tokens"] = 128
+        calls = []
+        with monkeypatch.context() as isolated:
+            isolated.setattr(native, "load_native", lambda *_: original_truth)
+            isolated.setattr(
+                EngineHandle,
+                "compile",
+                lambda *_, **__: SimpleNamespace(
+                    predict_prefill_latency=lambda b, isl, p: calls.append((b, isl, p)) or 0.282,
+                    last_provenance=lambda: None,
+                ),
+            )
+            serving.predict_homogeneous(cached_run, holdout, config, native_cal, bound)
+        assert calls == [(1, 136, 128)]
     bad = copy.deepcopy(bound)
     bad["tables"][0]["sha256"] = "0" * 64
     with pytest.raises(ValueError, match="bound actual calibration"):

@@ -117,3 +117,55 @@ empty. Idle gaps and paused-engine accounting call the native paths. These are
 scheduler bookkeeping changes; they do not seed or repair GPU hybrid state.
 The first retained GPU attempt exposed this missing queue before any request or
 timing; its failure remains a failed qualification, not a data observation.
+
+### Source-bound native prefill units
+
+`--ops-native-prefill` retains disabled prefill graphs and FULL decode graph
+initialization. Its new observation contract is
+`native_sglang_prefill_events_v1`. Only the fifth excluded warmup uses the
+existing observer profiler, started at the actual native model entry and
+stopped after logits. The original Chrome document is retained with exact
+run/rank/forward identity before deriving CPU-scope → CUDA-API → GPU-activity
+ownership. Names are never used to assign kernels to operations. Every one of
+the 366 physical units must execute; qualified hoisted MLA projections can
+contribute disjoint source parts, and synchronous nested collectives own their
+activities exclusively. Unknown, missing or unowned device activity rejects
+export and leaves the trace and error evidence intact.
+
+The native `BumpAllocator.__init__` in the model's forward calls `torch.zeros`.
+The observer directly times its one actual 90-element FP32 CUDA allocation and
+records the constructor arguments as `native_graph_setup`. This interval is
+not a residual or a host allocator estimate. TBO, auxiliary hidden states,
+multimodal inputs, a second conditional zero allocator and a configured
+`input_embeds` copy buffer require separate observation contracts. The current
+route rejects these states without changing native execution. The remaining
+ten retained samples contain original CUDA-event intervals and no profiler.
+Independent control and holdout use only the original complete model timer.
+
+`glm53flash_sglang_prefill_export.export_prefill` rederives every trace, original
+event row, same-request state chain and all-rank 5+10 identity. It requires a
+separate control with identical native configuration (only random_seed is
+normalized), distinct requests, identical input tokens and the original 5%
+timing-equivalence threshold. Terminal sampled outputs remain in the original
+evidence and state-chain checks; they are produced after the timed boundary
+and need not equal the independent control's terminal outputs. One
+whole-forward slowest rank is selected per
+repetition for all its unit costs; retained medians never mix per-unit maxima.
+No ratio rescales measured latency.
+
+The dedicated `glm53flash_sglang_prefill_perf.parquet` schema4 keeps operation
+name and full B/Q/P coordinates for all 366 units plus the existing runtime
+marker. Its public consumer initially supports exact homogeneous prefill
+queries, including SG's unaligned prefixes. Missing points, incomplete phases,
+wrong source/config/checkpoint/runtime, direct token-only queries and legacy
+eager fallback are rejected. Schema1 SG decode and vLLM schemas2/3 retain their
+meanings. Complete independent holdout coverage and accuracy acceptance still
+require real GPU evidence; CPU and TEST_ONLY tables do not establish them.
+
+The source boundaries additionally inspect immutable SGLang revision
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, paths
+`python/sglang/srt/models/glm5_next.py`,
+`python/sglang/srt/managers/mm_utils.py` and
+`python/sglang/srt/utils/common.py` (Apache-2.0, SGLang Team and contributors).
+No upstream computation is copied or substituted. Original failed native
+prefill evidence without Chrome traces cannot be upgraded to this contract.

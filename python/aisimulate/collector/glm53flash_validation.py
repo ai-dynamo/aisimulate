@@ -589,7 +589,7 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
                 if key[0] == bid and target["role"] == "measurement"
             ]
             values[bid] = statistics.median(samples)
-    elif calibration_evidence and not graph:
+    elif calibration_evidence and not graph and not native_eager_prefill:
         receipt = _read_evidence(root)
         if any(
             receipt.get(key) != value
@@ -603,6 +603,14 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         ):
             raise ValueError("Ops calibration evidence belongs to another native run")
     graph_proof = None
+    prefill_proof = None
+    if native_eager_prefill:
+        from collector.glm53flash_sglang_prefill_export import read_prefill_run
+        from collector.glm53flash_sglang_prefill_export import verify_evidence as verify_prefill
+
+        prefill_proof = read_prefill_run(root, run)
+        if run["role"] == "calibration" and calibration_evidence:
+            verify_prefill(root, prefill_proof)
     if graph:
         if serving:
             from collector.glm53flash_vllm_serving_export import read_serving_run as read_graph_run
@@ -639,6 +647,7 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         "evidence_root": str(root),
         "hardware_by_rank": hardware_by_rank,
         "graph_policy": graph_proof["policy"] if graph_proof else None,
+        **({"prefill_policy": prefill_proof["policy"]} if prefill_proof else {}),
     }
 
 
@@ -703,6 +712,10 @@ def _bind_raw_to_forwards(root: Path, tp: int) -> None:
 
 def bind_calibration(paths: list[Path], frozen_run: dict, native_receipt: dict) -> dict:
     """Reaggregate retained native rows and compare every selected physical row."""
+    if frozen_run["spec"].get("ops_execution_mode") == "native_eager_prefill":
+        from collector.glm53flash_sglang_prefill_export import bind_calibration as bind_prefill
+
+        return bind_prefill(paths, frozen_run, native_receipt)
     if frozen_run["spec"].get("ops_execution_mode") == "native_serving":
         from collector.glm53flash_vllm_serving_export import bind_calibration as bind_serving
 

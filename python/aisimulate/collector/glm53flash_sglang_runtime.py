@@ -137,6 +137,8 @@ class _TraceState:
         self.retired = set()
         self.counter = 0
         self.observer = None
+        self.prefill_execution = None
+        self.native_prefill_identity = None
         self.purpose = os.environ.get("AISIM_GLM53_PURPOSE", "fpm")
         self.whole_events = {}
         self.current_invocation = None
@@ -172,6 +174,15 @@ class _TraceState:
         else:
             runner.device_timer.add_reporter(self.on_timing)
         self.timer = runner.device_timer
+        if provenance.get("ops_execution_mode") == "native_eager_prefill":
+            from collector.glm53flash_sglang_prefill_activity import METHOD, model_identity
+
+            if self.purpose not in ("ops", "ops_holdout") or provenance.get("prefill_measurement_contract") != METHOD:
+                raise RuntimeError("native prefill observation requires its explicit source-bound purpose")
+            self.native_prefill_identity = model_identity(runner.model, runner)
+            (output / f"prefill-model-rank-{self.rank}.json").write_text(
+                json.dumps(self.native_prefill_identity, indent=2)
+            )
         if self.purpose == "ops_holdout":
             import torch
 
@@ -204,6 +215,10 @@ class _TraceState:
             self.observer = NativeOperationObserver(manifest, provenance, self.rank)
             inventory = install_native_hooks(runner.model, self.observer, "sglang")
             (output / f"inventory-rank-{self.rank}.json").write_text(json.dumps(inventory, indent=2))
+            if self.native_prefill_identity is not None:
+                from collector.glm53flash_sglang_prefill_activity import NativeSglangPrefillExecution
+
+                self.prefill_execution = NativeSglangPrefillExecution(runner, self.observer, output)
 
     def append(self, name: str, value: dict) -> None:
         filename = f"rank-{self.rank}.jsonl" if name == "ops" else f"{name}-rank-{self.rank}.jsonl"
@@ -303,6 +318,12 @@ class _TraceState:
         self.pending.append(invocation)
         record.update(match_frozen_requests(record, self.request_manifest))
         if record["stage"] == "measure":
+            if self.native_prefill_identity is not None:
+                from collector.glm53flash_contract import sha256_json
+                from collector.glm53flash_sglang_prefill_activity import validate_forward_batch
+
+                validate_forward_batch(forward_batch)
+                record["native_prefill_model_sha256"] = sha256_json(self.native_prefill_identity)
             if not self.state_layout["admitted"]:
                 raise RuntimeError("actual native hybrid cache dtype/layout is outside the admitted GLM identity")
             key = (record["benchmark_id"], record["repetition"])
@@ -330,6 +351,8 @@ class _TraceState:
                 )
             )
             record["ops_observed"] = True
+            if self.prefill_execution is not None:
+                self.prefill_execution.begin(record)
         return invocation
 
     def after(self, invocation: int, result) -> None:
@@ -353,7 +376,10 @@ class _TraceState:
         if self.observer is not None and record.get("ops_observed"):
             if graph:
                 raise RuntimeError("native eager Ops campaign actually replayed a CUDA graph")
-            for row in self.observer.end():
+            rows = self.observer.end()
+            if self.prefill_execution is not None:
+                self.prefill_execution.complete(record)
+            for row in rows:
                 row.update(
                     {
                         key: record.get(key)
@@ -524,6 +550,11 @@ def install() -> None:
             state.after(invocation, result)
             return result
         except BaseException as error:
+            if state.prefill_execution is not None:
+                try:
+                    state.prefill_execution.abort(error)
+                except BaseException as cleanup_error:
+                    state.records[invocation]["prefill_observation_cleanup_error"] = str(cleanup_error)
             state.append(
                 "failed", {**state.records[invocation], "error_type": type(error).__name__, "error": str(error)}
             )

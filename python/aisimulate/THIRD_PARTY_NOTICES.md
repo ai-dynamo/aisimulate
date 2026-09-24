@@ -1130,6 +1130,36 @@ the repository Apache-2.0 license text applies to these adaptations.
   native admission or assert allocator capacity.
 
 
+## GLM-5.3-Flash source-bound SGLang prefill observation
+
+- Derived files: `python/aisimulate/collector/glm53flash_sglang_prefill_activity.py`,
+  `python/aisimulate/collector/glm53flash_sglang_prefill_export.py`, their
+  TEST_ONLY collector tests, the native-prefill additions to the existing
+  observer/runtime/driver and validation adapters,
+  `crates/core/src/perfmodel/perf_database/glm53flash_sglang_prefill.rs`,
+  `python/aisimulate/tests/unit/sdk/test_glm53flash_sglang_prefill_consumer.py`,
+  and the corresponding section of `collector/README.glm53flash_sglang.md`.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
+  `python/sglang/srt/models/glm5_next.py`,
+  `python/sglang/srt/managers/mm_utils.py`,
+  `python/sglang/srt/utils/common.py`, and the existing communicator and
+  native model-runner paths cited above.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: independently expressed wrappers, source predicates,
+  activity joins and typed consumer geometry. Native model and allocator
+  implementations execute unchanged; no compute implementation is copied.
+  The one allocator event is measured directly, and raw Chrome correlations
+  establish exclusive ownership. TEST_ONLY fixtures are original synthetic
+  proofs, never measured GPU data.
+- CPU user-annotation category semantics use Kineto
+  https://github.com/pytorch/kineto at
+  `094d3c1d072362d0a919a77299459eee94f97931`,
+  `libkineto/include/ActivityType.h`; Copyright (c) Facebook, Inc. and its
+  affiliates, BSD license preserved in the Kineto notice below. No C++ code
+  is copied.
+
 ## GLM-5.3-Flash vLLM native worker telemetry
 
 - Derived files: `python/aisimulate/collector/glm53flash_vllm_runtime.py`,

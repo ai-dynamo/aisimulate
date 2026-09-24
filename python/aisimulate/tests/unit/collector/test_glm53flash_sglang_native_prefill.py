@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from collector.collect_glm53flash import native_command
 from collector.fpm_forward.sglang_driver import validate_eager_args, validate_native_prefill_scope
 from collector.glm53flash_validation import load_native
@@ -68,6 +69,9 @@ def test_explicit_prefill_command_preserves_native_workload_and_legacy_command(t
 
 
 def prefill_fixture(tmp_path, role):
+    from collector.glm53flash_contract import build_model_manifest, sha256_json
+    from collector.glm53flash_sglang_prefill_activity import METHOD, MODEL_CONTRACT, SOURCE_PINS
+
     run, root, all_records, _, _ = native_fixture(tmp_path, "calibration" if role == "control" else "holdout")
     run["role"] = role
     run["key"] = ("sglang", "fp8", 2, "prefill")
@@ -77,10 +81,19 @@ def prefill_fixture(tmp_path, role):
     for request in requests["requests"].values():
         request["target_phase"] = "context"
     put(root / "requests.json", requests)
+    put(root / "manifest.json", build_model_manifest("sglang", "fp8", 2))
+    identity = {"source_pins": SOURCE_PINS, "native_model_contract": MODEL_CONTRACT}
     for rank, records in all_records.items():
+        put(root / f"prefill-model-rank-{rank}.json", identity)
         for row in records:
             row["phase"] = "context"
             row["ops_instrumented"] = False
+            row["num_padded_tokens"] = row["total_new_tokens"]
+            row.update(
+                ops_execution_mode="native_eager_prefill",
+                prefill_measurement_contract=METHOD,
+                native_prefill_model_sha256=sha256_json(identity),
+            )
             row["requests"][0]["prompt_token_ids"] = [4, 5, 7]
         put_lines(root / f"forward-rank-{rank}.jsonl", records)
     for name in ("sglang-declared-config.json", "sglang-resolved-config.json"):

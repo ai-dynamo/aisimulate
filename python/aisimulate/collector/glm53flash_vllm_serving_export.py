@@ -1194,7 +1194,7 @@ def predict_homogeneous(run, base, config, calibration_native, calibration_bindi
             if point.get("partition") is not None or point.get("rows") not in (None, [[query, prefix]] * batch):
                 raise ValueError("serving prediction cannot replace heterogeneous native requests")
             value = (
-                engine.predict_prefill_latency(batch, query, prefix)
+                engine.predict_prefill_latency(batch, prefix + query, prefix)
                 if context
                 else engine.predict_decode_latency(batch, prefix, 2)
             )
