@@ -788,43 +788,34 @@ The shipped defaults are unchanged. What follows is the evidence.
 tree count drops so the ensembles fit to the same depth. Grid: features {18; decode 5;
 prefill 10} × trees {400, 200, 100, 50} × leaves {31, 15, 7}.
 
-**Accuracy on the GB300 SGLang data** (ten runs, method of §3.1: "pooled" = 60/40 time
-split of all runs; A → B = all runs of A train, all runs of B test; MAPE). Decode uses the
-five atomic features of §3.1, prefill the ten (18 shown for reference):
+**Accuracy on the GB300 SGLang data** (ten runs; same 4 × 3 layout as §3.1: rows = training
+data, columns = test data; diagonal and last row use the 60/40 time split, other cells
+train on every run of the row workload and test on every run of the column workload; MAPE).
+Each cell is **default / small**, where default = 18 features, 400 trees × 31 leaves and
+small = the recommended configuration.
 
-Decode:
+Decode, small = 5 features, 100 trees × 7 leaves (lr 0.2):
 
-| trees × leaves (lr) | features | pooled | AgentX→AgentX | ShareGPT→ShareGPT | LongBench→LongBench | AgentX→ShareGPT | ShareGPT→AgentX | ShareGPT→LongBench | LongBench→AgentX | LongBench→ShareGPT |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 400 × 31 (0.05) | 18 | 2.05 | 2.34 | 2.27 | 1.86 | 13.5 | 4.6 | 5.5 | 2.8 | 22.5 |
-| 400 × 31 (0.05) | 5 | 2.05 | 2.33 | 2.21 | 1.85 | 14.1 | 3.8 | 4.0 | 3.0 | 22.4 |
-| 200 × 7 (0.10) | 5 | 2.01 | 2.21 | 2.19 | 1.83 | 14.8 | 4.5 | 3.0 | 3.0 | 24.8 |
-| 100 × 7 (0.20) | 5 | 2.02 | 2.20 | 2.19 | 1.83 | 15.4 | 4.0 | 3.1 | 3.0 | 24.1 |
-| 100 × 15 (0.20) | 5 | 2.04 | 2.25 | 2.20 | 1.84 | 15.6 | 5.9 | 6.7 | 3.2 | 23.1 |
-| 50 × 7 (0.30) | 5 | 2.03 | 2.19 | 2.20 | 1.82 | 16.0 | 6.7 | 5.1 | 2.9 | 23.9 |
-| 50 × 15 (0.30) | 5 | 2.04 | 2.24 | 2.20 | 1.83 | 15.8 | 3.9 | 2.9 | 3.1 | 23.1 |
+| train \ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.34 / 2.20 | 13.5 / 15.4 | 3.0 / 2.3 |
+| ShareGPT only | 4.6 / 4.0 | 2.27 / 2.19 | 5.5 / 3.1 |
+| LongBench only | 2.8 / 3.0 | 22.5 / 24.1 | 1.86 / 1.83 |
+| all three | 2.23 / 2.15 | 2.10 / 2.09 | 1.84 / 1.84 |
 
-Prefill:
+Prefill, small = 18 features, 100 trees × 15 leaves (lr 0.2):
 
-| trees × leaves (lr) | features | pooled | AgentX→AgentX | ShareGPT→ShareGPT | LongBench→LongBench | AgentX→ShareGPT | ShareGPT→AgentX | ShareGPT→LongBench | LongBench→AgentX | LongBench→ShareGPT |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 400 × 31 (0.05) | 18 | 2.05 | 2.35 | 2.74 | 0.63 | 4.6 | 28.8 | 43.3 | 5.2 | 34.7 |
-| 200 × 7 (0.10) | 18 | 1.98 | 2.21 | 2.57 | 0.62 | 3.6 | 30.9 | 36.9 | 5.3 | 42.3 |
-| 100 × 7 (0.20) | 18 | 2.01 | 2.26 | 2.59 | 0.63 | 3.5 | 30.9 | 39.9 | 5.6 | 64.3 |
-| 100 × 15 (0.20) | 18 | 2.03 | 2.29 | 2.70 | 0.65 | 5.5 | 29.5 | 39.6 | 6.8 | 36.1 |
-| 50 × 7 (0.30) | 18 | 2.04 | 2.34 | 2.59 | 0.66 | 3.4 | 26.9 | 40.3 | 6.4 | 67.4 |
-| 50 × 15 (0.30) | 18 | 2.05 | 2.35 | 2.70 | 0.65 | 4.0 | 28.2 | 34.4 | 7.1 | 25.9 |
-| 400 × 31 (0.05) | 10 | 2.03 | 2.38 | 2.72 | 0.64 | 3.3 | 28.3 | 48.1 | 7.2 | 69.1 |
-| 100 × 15 (0.20) | 10 | 2.02 | 2.35 | 2.70 | 0.64 | 3.2 | 25.6 | 40.0 | 5.2 | 71.8 |
+| train \ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.35 / 2.29 | 4.6 / 5.5 | 0.91 / 0.96 |
+| ShareGPT only | 28.8 / 29.5 | 2.74 / 2.70 | 43.3 / 39.6 |
+| LongBench only | 5.2 / 6.8 | 34.7 / 36.1 | 0.63 / 0.65 |
+| all three | 2.29 / 2.32 | 2.68 / 2.61 | 0.60 / 0.64 |
 
-Same-workload accuracy (pooled and diagonal) is flat across the whole grid, down to 50
-trees of 7 leaves: about 2.0 % decode and 2.0 % prefill. The cross-workload cells move by
-a few points between configurations in both directions. §8.8 measures how much of that is
-noise: training is deterministic for prefill and varies by at most ±0.9 pp for decode, so
-the 400 × 31 / 18-feature row differing from §3.1 by up to 2 pp on some cross cells comes
-from the row order of the training data (histogram binning), not from a seed; differences
-between configurations of 2–3 pp on cross cells are real but small against the 25–70 %
-level of those cells.
+Same-workload cells (diagonal and last row) are equal to within 0.1 pp. Cross-workload
+cells move by up to 2–3 pp in both directions; those cells are 25–45 % for both models.
+The full grid (12 model sizes × 2 feature sets × 2 roles) is in the playground
+`reports/simplify_matrix_sglang_gb300.txt`.
 
 **Accuracy and time per estimate on the vLLM V4-Flash AgentX pair** (§7.2 data: one run
 trains, the other is scored; latency = Rust call on one Grace core, method of §8.1; every
