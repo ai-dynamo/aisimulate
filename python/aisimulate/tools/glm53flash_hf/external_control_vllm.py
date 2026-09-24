@@ -370,7 +370,9 @@ def native_environment(plan, cid, admission, anchors, get, *, task):
     require(
         env.get("PYTHONPATH") == ":".join(PYTHONPATH)
         and env.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1"
-        and env.get("AISIM_GLM53_PURPOSE") == "fpm",
+        # The source-bound native observer and scheduler both default an absent
+        # purpose to FPM. Explicit empty/other values must still be rejected.
+        and env.get("AISIM_GLM53_PURPOSE", "fpm") == "fpm",
         "native observer/cache order or FPM activation differs",
     )
     require(

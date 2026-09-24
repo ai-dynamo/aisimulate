@@ -283,6 +283,26 @@ def test_complete_vllm_attachment_replays_offline_and_binds_original_worker_byte
     assert all(not Path(item["path"]).is_absolute() for item in document["files"])
 
 
+@pytest.mark.parametrize("purpose", [None, "fpm", "", "ops", "FPM", "unknown"])
+def test_native_frozen_fpm_default_requires_absence_or_exact_explicit_value(launch, purpose):
+    # a590's actual native producer omits this variable; its original observer
+    # and scheduler use the FPM default. Keep the same source/worker closure and
+    # exercise archive reconstruction rather than only parsing the environment.
+    for run in launch["runs"]:
+        path = launch["source"] / "inputs/native" / run["cell_id"] / "collector-runtime-env.sh"
+        text = path.read_text().replace("export AISIM_GLM53_PURPOSE=fpm\n", "")
+        if purpose is not None:
+            text += f"export AISIM_GLM53_PURPOSE={purpose}\n"
+        path.write_text(text)
+    refreeze_test_launch(launch)
+    document = prepare(launch)
+    if purpose in (None, "fpm"):
+        bind(launch, document)
+    else:
+        with pytest.raises(ValueError, match="FPM activation differs"):
+            bind(launch, document)
+
+
 def test_standalone_bundle_executes_without_repository_pythonpath(launch, tmp_path):
     bundle = tmp_path / "TEST_ONLY_standalone"
     bundle.mkdir()
