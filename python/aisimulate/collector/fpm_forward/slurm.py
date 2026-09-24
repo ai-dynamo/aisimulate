@@ -193,6 +193,7 @@ class SlurmCellRunner:
 
     def prepare_attempt(self, pods: list[str], *, cell_id: str, plan_sha256: str, attempt_id: str) -> None:
         from .native_artifact import COLLECTOR_PROVENANCE_FILENAME
+        from .runner import REMOTE_WORKDIR, RUNTIME_ENV_FILENAME
 
         payload = json.dumps(
             {
@@ -209,8 +210,28 @@ class SlurmCellRunner:
             "pathlib.Path('/results',sys.argv[2]).write_text(json.dumps(p,sort_keys=True)+'\\n')"
         )
         for unit in pods:
+            # Resolve the actual installed distribution through the same frozen
+            # environment used by fpm_exec.sh. Slurm does not inherit the Pod's
+            # extra_env, and inspecting the image before sourcing PYTHONPATH
+            # would misidentify a task-private runtime as the image's baseline.
             self._exec(
-                unit, ["python3", "-c", script, payload, COLLECTOR_PROVENANCE_FILENAME, self.backend], timeout=300
+                unit,
+                [
+                    "bash",
+                    "-euo",
+                    "pipefail",
+                    "-c",
+                    'source "$1"; shift; exec "$@"',
+                    "fpm-slurm-prepare",
+                    f"{REMOTE_WORKDIR}/{RUNTIME_ENV_FILENAME}",
+                    "python3",
+                    "-c",
+                    script,
+                    payload,
+                    COLLECTOR_PROVENANCE_FILENAME,
+                    self.backend,
+                ],
+                timeout=300,
             )
 
     def execute(self, pods: list[str], timeout_seconds: int = 14400) -> None:

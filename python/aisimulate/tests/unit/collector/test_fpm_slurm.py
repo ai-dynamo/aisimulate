@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -13,7 +14,6 @@ import time
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward.slurm import SlurmCellRunner
 
 pytestmark = pytest.mark.unit
@@ -167,6 +167,70 @@ def test_preparation_preserves_slurm_failure_streams_across_retries(runner, monk
     }
     assert {path.joinpath("stdout.log").read_text() for path in records} == {"preparation started", "waiting"}
     assert all(json.loads(path.joinpath("failure.json").read_text())["executable"] == "srun" for path in records)
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_preparation_measures_metadata_after_frozen_environment(runner, monkeypatch, backend):
+    """TEST_ONLY distributions exercise Python's real metadata path selection."""
+    from collector.fpm_forward import native_artifact
+    from collector.fpm_forward import runner as campaign
+
+    startup = runner.cell_dir / "frozen env ' $(not-a-command)"
+    startup.mkdir()
+    versions = {"image": "0.1.0", "private": "0.1.0+testonly"}
+    for kind, version in versions.items():
+        root = runner.cell_dir / kind
+        metadata = root / f"{backend}-{version}.dist-info"
+        metadata.mkdir(parents=True)
+        (metadata / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {backend}\nVersion: {version}\n")
+    monkeypatch.setenv("PYTHONPATH", str(runner.cell_dir / "image"))
+    metadata_probe = f"import importlib.metadata; print(importlib.metadata.version({backend!r}))"
+    assert subprocess.check_output([sys.executable, "-c", metadata_probe], text=True).strip() == versions["image"]
+    (startup / campaign.RUNTIME_ENV_FILENAME).write_text(
+        f"export PYTHONPATH={shlex.quote(str(runner.cell_dir / 'private'))}\n"
+    )
+    destination = runner.cell_dir / "provenance.json"
+    monkeypatch.setattr(campaign, "REMOTE_WORKDIR", str(startup))
+    monkeypatch.setattr(native_artifact, "COLLECTOR_PROVENANCE_FILENAME", str(destination))
+    runner.backend = backend
+    runner.hosts = ["test-node"]
+    commands = []
+
+    def run_actual_container_command(args, **kwargs):
+        commands.append(args)
+        return subprocess.run(args[args.index("env") :], capture_output=True, text=True, check=True, timeout=10)
+
+    monkeypatch.setattr(runner, "_command", run_actual_container_command)
+    literal = 'spaces; $(not-a-command) "quoted"'
+    runner.prepare_attempt(runner.pods(), cell_id=literal, plan_sha256=literal, attempt_id=literal)
+    receipt = json.loads(destination.read_text())
+    assert receipt["runtime"] == {"backend": backend, "backend_version": versions["private"]}
+    assert all(receipt[key] == literal for key in ("cell_id", "plan_sha256", "attempt_id"))
+    assert commands[0][commands[0].index("fpm-slurm-prepare") + 1] == str(startup / campaign.RUNTIME_ENV_FILENAME)
+    assert os.environ["PYTHONPATH"] == str(runner.cell_dir / "image")
+
+
+@pytest.mark.parametrize("startup_text", [None, "return 19\n"])
+def test_preparation_rejects_missing_or_failed_frozen_environment(runner, monkeypatch, startup_text):
+    from collector.fpm_forward import native_artifact
+    from collector.fpm_forward import runner as campaign
+
+    startup = runner.cell_dir / campaign.RUNTIME_ENV_FILENAME
+    if startup_text is not None:
+        startup.write_text(startup_text)
+    destination = runner.cell_dir / "provenance.json"
+    monkeypatch.setattr(campaign, "REMOTE_WORKDIR", str(runner.cell_dir))
+    monkeypatch.setattr(native_artifact, "COLLECTOR_PROVENANCE_FILENAME", str(destination))
+    runner.hosts = ["test-node"]
+
+    def run_actual_container_command(args, **kwargs):
+        return subprocess.run(args[args.index("env") :], capture_output=True, text=True, check=True, timeout=10)
+
+    monkeypatch.setattr(runner, "_command", run_actual_container_command)
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        runner.prepare_attempt(runner.pods(), cell_id="cell", plan_sha256="plan", attempt_id="attempt")
+    assert caught.value.returncode == (1 if startup_text is None else 19)
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True])
