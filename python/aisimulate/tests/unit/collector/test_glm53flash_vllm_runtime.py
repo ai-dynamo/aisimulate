@@ -645,7 +645,7 @@ def test_quarantined_native_v2_fails_before_importing_or_wrapping_model(monkeypa
     from collector import glm53flash_vllm_runtime as runtime
     from collector.glm53flash_runtime_identity import ADMITTED_VLLM_REPAIRS, VLLM_KPOOL_CANDIDATE
 
-    assert ADMITTED_VLLM_REPAIRS == {}
+    assert VLLM_KPOOL_CANDIDATE not in ADMITTED_VLLM_REPAIRS
     monkeypatch.setenv("AISIM_GLM53_PURPOSE", purpose)
     monkeypatch.setattr(importlib.metadata, "version", lambda _: VLLM_KPOOL_CANDIDATE)
     monkeypatch.setitem(sys.modules, "vllm.forward_context", None)

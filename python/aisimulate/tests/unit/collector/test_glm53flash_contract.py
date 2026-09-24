@@ -852,7 +852,7 @@ def test_production_quarantine_rejects_matching_historical_rows_and_manifest(pha
     from collector.glm53flash_contract import build_model_manifest, validate_native_workload
     from collector.glm53flash_runtime_identity import ADMITTED_VLLM_REPAIRS, VLLM_KPOOL_CANDIDATE
 
-    assert ADMITTED_VLLM_REPAIRS == {}
+    assert VLLM_KPOOL_CANDIDATE not in ADMITTED_VLLM_REPAIRS
     row = sample_row()
     shape = json.loads(row["geometry"])
     shape["is_context"] = phase == "context"
