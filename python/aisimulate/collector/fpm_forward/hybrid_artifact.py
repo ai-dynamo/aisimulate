@@ -25,6 +25,7 @@ LEGACY_CONTEXT_OVERLAYS = {"e391db177f53430c4280807fcc0eafdace5310cda6f6549ef7f2
 def validate_vllm_hardware_receipts(cell, payload: dict, path: Path) -> None:
     """Formal GB300 rows require the actual native device on every TP worker."""
     from collector.glm53flash_protocol import validate_gb300_identity
+    from collector.glm53flash_runtime_identity import validate_vllm_source_identity
 
     version = payload.get("producer", {}).get("hardware_contract_version")
     if type(version) is not int or version != 1:
@@ -33,7 +34,9 @@ def validate_vllm_hardware_receipts(cell, payload: dict, path: Path) -> None:
     tp = cell.topology.tp
     if not isinstance(entries, list) or len(entries) != tp:
         raise ValueError("GLM vLLM native hardware rank coverage is incomplete")
-    pins = json.loads((Path(__file__).parent / "runtime/glm53flash/runtime-source-sha256.json").read_text())
+    pins = validate_vllm_source_identity(
+        payload.get("producer", {}), Path(__file__).parent / "runtime/glm53flash/runtime-source-sha256.json"
+    )
     attempt_digest = hashlib.sha256(path.with_name("collector-provenance.json").read_bytes()).hexdigest()
     seen_ranks, seen_uuids = set(), set()
     for entry in entries:

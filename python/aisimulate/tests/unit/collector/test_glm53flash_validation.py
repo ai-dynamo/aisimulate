@@ -7,6 +7,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from collector.fpm_forward import glm53flash_validation as validation
 from collector.glm53flash_protocol import PROTOCOL
 
@@ -87,7 +88,7 @@ def campaign(tmp_path, monkeypatch):
             "request_ids": {run["spec"]["cell_id"]},
             "receipts": [{"path": "raw.json", "sha256": "e" * 64}],
             "runtime_run_id": run["spec"]["cell_id"],
-            "backend_version": "0.30.0",
+            "backend_version": {"vllm": "0.30.0", "sglang": "0.5.20"}[run["key"][0]],
         }
 
     def predict(run, entry, mode, base, **kwargs):
@@ -124,6 +125,23 @@ def test_complete_matrix_scores_all_points_and_reports_every_required_group(camp
         assert cell["metrics"]["max_ape_pct"] == 5
         assert all(cell["groups"][group]["requested"] == 1 for group in validation.GROUPS)
     assert report["http_metrics"]["acceptance"] == "NOT_EVALUATED"
+
+
+def test_repaired_holdout_cannot_validate_stock_calibration(campaign, tmp_path, monkeypatch):
+    original = validation._native_run
+
+    def different_runtime(run, base):
+        result = original(run, base)
+        if run["key"] == validation.REQUIRED[0] and run["role"] == "holdout":
+            result["backend_version"] = "0.30.0+unqualified-repair"
+        return result
+
+    monkeypatch.setattr(validation, "_native_run", different_runtime)
+    report = validation.evaluate(campaign, tmp_path)
+    assert report["acceptance"] == "FAILED"
+    assert report["coverage"]["passed_phase_cells"] == 15
+    assert report["coverage"]["requested_points"] == 48
+    assert "different native runtime" in report["cells"][0]["errors"][0]["error"]
 
 
 @pytest.mark.parametrize("label", ["corpus", "geometry", "request_id"])

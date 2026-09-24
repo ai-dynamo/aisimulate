@@ -179,9 +179,9 @@ def _native_run(run: dict, base: Path) -> dict:
     native = validate_native_collection(
         run["runtime_cell"], root, expected_plan_sha256=run["plan"]["sha256"], expected_attempt_id=attempt
     )
-    expected_version = "0.30.0" if run["key"][0] == "vllm" else "0.5.20"
-    if native.backend_version != expected_version:
-        raise ValueError("native backend version differs from pinned deployment")
+    from collector.glm53flash_runtime_identity import validate_backend_version
+
+    validate_backend_version(run["key"][0], native.backend_version)
     observed = {point.point["benchmark_id"]: point for point in native.points}
     expected = {point["benchmark_id"]: _geometry(point) for point in run["points"]}
     if {bid: _geometry(point.point) for bid, point in observed.items()} != expected:
@@ -285,7 +285,7 @@ def installed_consumer_identity() -> dict:
 def _load_native(run: dict, base: Path, mode: str) -> dict:
     if "children" in run:
         values, request_ids, children, receipts = {}, set(), {}, []
-        boundaries = set()
+        boundaries, versions = set(), set()
         for child in run["children"]:
             native = _load_native(child, base, mode)
             cid = child["cell"]["cell_id"]
@@ -306,8 +306,14 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
                 }
             )
             boundaries.add(native.get("timing_boundary", TIMING_BOUNDARIES[run["key"][0]]))
+            versions.add(native.get("backend_version"))
         if len(boundaries) != 1:
             raise ValueError("native shard timing boundaries differ")
+        from collector.glm53flash_runtime_identity import validate_backend_version
+
+        if len(versions) != 1:
+            raise ValueError("native shard runtime versions differ")
+        version = validate_backend_version(run["key"][0], versions.pop())
         if run["role"] == "holdout" and set(values) != {point["benchmark_id"] for point in run["points"]}:
             raise ValueError("native shards omit original frozen holdout point IDs")
         return {
@@ -315,6 +321,7 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
             "request_ids": request_ids,
             "shards": receipts,
             "timing_boundary": boundaries.pop(),
+            "backend_version": version,
             "_children": children,
         }
     if mode == "fpm":
@@ -450,7 +457,9 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
         if key in config and config[key] != expected:
             raise ValueError(f"consumer {key} differs from holdout contract")
         config[key] = expected
-    version = "0.30.0" if backend == "vllm" else "0.5.20"
+    from collector.glm53flash_runtime_identity import validate_backend_version
+
+    version = validate_backend_version(backend, calibration_native.get("backend_version"))
     if config.get("backend_version") != version:
         raise ValueError("consumer backend revision differs from pinned runtime")
     if config.get("speculation") or config.get("estimator_config"):
@@ -643,6 +652,9 @@ def evaluate(manifest: dict, base: Path) -> dict:
                     }
             if not result["errors"] and not report["errors"]:
                 try:
+                    from collector.glm53flash_runtime_identity import validate_runtime_pair
+
+                    validate_runtime_pair(key[0], record["calibration_native"], record["holdout_native"])
                     prediction = _predict(
                         record["holdout"],
                         record["entry"],

@@ -125,6 +125,7 @@ include = [
     { path = "collector/__init__.py", format = "wheel" },
     { path = "collector/model_cases.py", format = "wheel" },
     { path = "collector/glm53flash_protocol.py", format = "wheel" },
+    { path = "collector/glm53flash_runtime_identity.py", format = "wheel" },
     { path = "collector/glm53flash_shard_contract.py", format = "wheel" },
     { path = "collector/glm53flash_jsonl.py", format = "wheel" },
     { path = "collector/glm53flash_sglang_retained.py", format = "wheel" },

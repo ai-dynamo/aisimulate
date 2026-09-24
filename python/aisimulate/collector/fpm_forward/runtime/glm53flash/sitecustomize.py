@@ -8,16 +8,24 @@ if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
     import hashlib
     import importlib.abc
     import importlib.machinery
+    import importlib.metadata
     import importlib.util
-    import json
     import sys
     from pathlib import Path
 
     _TARGET = "dynamo.vllm.instrumented_scheduler"
     _WORKER_TARGET = "vllm.v1.worker.gpu_worker"
 
+    def _source_pins():
+        from collector.glm53flash_runtime_identity import vllm_source_pins
+
+        version = importlib.metadata.version("vllm")
+        if version != __import__("vllm").__version__:
+            raise RuntimeError("vLLM package metadata and imported runtime versions differ")
+        return vllm_source_pins(version, Path(__file__).with_name("runtime-source-sha256.json"))
+
     def _verify_sources():
-        expected = json.loads(Path(__file__).with_name("runtime-source-sha256.json").read_text())
+        expected = _source_pins()
         for path, digest in expected.items():
             module_path = path.removesuffix("/__init__.py") if path.endswith("/__init__.py") else path[:-3]
             module = module_path.replace("/", ".")
@@ -38,7 +46,7 @@ if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
         def exec_module(self, module):
             try:
                 if module.__name__ == _WORKER_TARGET:
-                    pins = json.loads(Path(__file__).with_name("runtime-source-sha256.json").read_text())
+                    pins = _source_pins()
                     actual = hashlib.sha256(Path(module.__spec__.origin).read_bytes()).hexdigest()
                     if actual != pins["vllm/v1/worker/gpu_worker.py"]:
                         raise RuntimeError("pinned native GPU worker source mismatch")

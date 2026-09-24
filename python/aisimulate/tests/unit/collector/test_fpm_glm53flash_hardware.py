@@ -76,9 +76,9 @@ def test_rejected_native_device_preserves_failure_receipt(monkeypatch, tmp_path)
 def artifact(tmp_path):
     from collector.fpm_forward import hybrid_artifact
 
-    source_pin = json.loads(
-        (Path(hybrid_artifact.__file__).parent / "runtime/glm53flash/runtime-source-sha256.json").read_text()
-    )["vllm/v1/worker/gpu_worker.py"]
+    source_path = Path(hybrid_artifact.__file__).parent / "runtime/glm53flash/runtime-source-sha256.json"
+    source_manifest = source_path.read_bytes()
+    source_pin = json.loads(source_manifest)["vllm/v1/worker/gpu_worker.py"]
     provenance = tmp_path / "collector-provenance.json"
     provenance.write_text('{"attempt_id":"test-attempt"}\n')
     entries = []
@@ -105,7 +105,11 @@ def artifact(tmp_path):
         path.write_text(json.dumps(receipt))
         entries.append({"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(), "tp_rank": rank})
     payload = {
-        "producer": {"hardware_contract_version": 1, "vllm_package_version": "0.30.0"},
+        "producer": {
+            "hardware_contract_version": 1,
+            "vllm_package_version": "0.30.0",
+            "runtime_source_manifest_sha256": hashlib.sha256(source_manifest).hexdigest(),
+        },
         "input_provenance": {"native_hardware_manifest": entries},
     }
     return SimpleNamespace(topology=SimpleNamespace(tp=2)), payload, tmp_path / "benchmark.json"
