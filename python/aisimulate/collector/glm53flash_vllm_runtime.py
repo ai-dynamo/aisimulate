@@ -113,10 +113,27 @@ class _TraceState:
         self.rank = get_tensor_model_parallel_rank()
         self.previous, self.matched = {}, set()
         self.counter = 0
-        self.observer = NativeOperationObserver(manifest, provenance, self.rank)
+        self.observer = NativeOperationObserver(manifest, provenance, self.rank) if manifest is not None else None
+        self.whole_events = None
         output.mkdir(parents=True, exist_ok=True)
-        inventory = install_native_hooks(runner.model, self.observer, "vllm")
-        (output / f"inventory-rank-{self.rank}.json").write_text(json.dumps(inventory, indent=2))
+        if self.observer is not None:
+            inventory = install_native_hooks(runner.model, self.observer, "vllm")
+            (output / f"inventory-rank-{self.rank}.json").write_text(json.dumps(inventory, indent=2))
+        else:
+            original_logits = runner.model.compute_logits
+
+            @functools.wraps(original_logits)
+            def compute_logits(*args, **kwargs):
+                result = original_logits(*args, **kwargs)
+                if self.whole_events is not None:
+                    start, end, stream = self.whole_events
+                    if self.whole_end_recorded or self.torch.cuda.current_stream() != stream:
+                        raise RuntimeError("whole-forward logits receipt changed stream or repeated")
+                    end.record(stream)
+                    self.whole_end_recorded = True
+                return result
+
+            runner.model.compute_logits = compute_logits
         self.layout = allocated_state_inventory(runner.model, runner.cache_config.cache_dtype)
         self.layout_sha256 = _digest(self.layout)
         (output / f"state-layout-rank-{self.rank}.json").write_text(json.dumps(self.layout, indent=2))
@@ -182,7 +199,7 @@ class _TraceState:
             "state_layout_sha256": self.layout_sha256,
             "state_layout_admitted": self.layout["admitted"],
             "state_protocol": "glm53flash_same_request_real_hybrid_v1",
-            "ops_instrumented": True,
+            "ops_instrumented": self.observer is not None,
         }
         mapping = json.loads(Path(os.environ["AISIM_GLM53_REQUEST_MANIFEST"]).read_text())
         record.update(match_frozen_requests(record, mapping))
@@ -194,23 +211,30 @@ class _TraceState:
                 raise RuntimeError("frozen vLLM target matched more than one native forward")
             self.matched.add(identity)
             prefix = coords["prefix_lengths"][0]
-            self.observer.begin(
-                NativeWorkload(
-                    coords["phase"],
-                    coords["batch_size"],
-                    coords["query_lengths"][0],
-                    prefix,
-                    "decode" if coords["phase"] == "generation" else "chunked_prefill" if prefix else "full_prefill",
-                    tuple(coords["request_ids"]),
-                    tuple(history) if prefix else (),
-                    record["repetition"],
-                    invocation,
-                )
+            workload = NativeWorkload(
+                coords["phase"],
+                coords["batch_size"],
+                coords["query_lengths"][0],
+                prefix,
+                "decode" if coords["phase"] == "generation" else "chunked_prefill" if prefix else "full_prefill",
+                tuple(coords["request_ids"]),
+                tuple(history) if prefix else (),
+                record["repetition"],
+                invocation,
             )
+            if self.observer is not None:
+                self.observer.begin(workload)
+            else:
+                stream = self.torch.cuda.current_stream()
+                start = self.torch.cuda.Event(enable_timing=True)
+                end = self.torch.cuda.Event(enable_timing=True)
+                self.whole_events = start, end, stream
+                self.whole_end_recorded = False
+                start.record(stream)
         return record, completed
 
     def after(self, record, completed):
-        if record["stage"] == "measure":
+        if record["stage"] == "measure" and self.observer is not None:
             for row in self.observer.end():
                 row.update({key: record[key] for key in ("stage", "benchmark_id", "repetition", "sampling_role")})
                 self.append("ops", row)
@@ -218,6 +242,15 @@ class _TraceState:
             # Establish a completed real-prefix receipt; synchronization stays
             # outside every measured module interval and never populates state.
             self.torch.cuda.synchronize()
+            if record["stage"] == "measure":
+                if self.whole_events is None or not self.whole_end_recorded:
+                    raise RuntimeError("whole-GPU forward lacks its native logits completion")
+                start, end, _ = self.whole_events
+                record["whole_forward_gpu_ms"] = start.elapsed_time(end)
+                if record["whole_forward_gpu_ms"] <= 0:
+                    raise RuntimeError("whole-GPU forward must have positive elapsed time")
+                record["whole_forward_boundary"] = "embedding_to_logits_gpu_v1"
+                self.whole_events = None
         for request in record["requests"]:
             rid = request["request_id"]
             self.previous[rid] = {
@@ -242,7 +275,11 @@ def install():
         return
     output = Path(os.environ["AISIM_GLM53_TRACE_DIR"])
     provenance = json.loads(Path(os.environ["AISIM_GLM53_PROVENANCE"]).read_text())
-    manifest = json.loads(Path(os.environ["AISIM_GLM53_OPS_MANIFEST"]).read_text())
+    manifest_path = os.environ.get("AISIM_GLM53_OPS_MANIFEST")
+    purpose = os.environ.get("AISIM_GLM53_PURPOSE")
+    if purpose not in ("ops", "ops_holdout") or bool(manifest_path) != (purpose == "ops"):
+        raise RuntimeError("native worker instrumentation must match explicit Ops/heldout purpose")
+    manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
     original_execute, original_forward = GPUModelRunner.execute_model, GPUModelRunner._model_forward
     current, states = threading.local(), {}
 
