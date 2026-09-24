@@ -27,8 +27,11 @@ Implemented: GLM-specific planning and configuration identity; source-pinned vLL
 GPU qualification and producer qualification are separate. All eight native
 model/request smoke configurations passed on GB300: vLLM job 601652 and SGLang
 job 603053. The long request used 131008 input tokens plus 32 decode tokens.
-This does not qualify the exact inclusive 128K timing boundary: decode past KV
-is at most 131071.
+The subsequent FP8 TP2 producer job 604763 completed exact inclusive 128K
+prefill at B1/B32 P131040/Q32 and decode at B1 past131071. All three points
+passed their historical strict reader and aggregation with five warmups and
+ten retained samples. Long ordinary-Engine output comparison and the new
+formal hardware contract remain separately unqualified.
 
 The vLLM FP8 TP2 producer canary in job 603053 completed two prefill and two
 decode points, each with five warmups and ten retained observations. The
@@ -37,15 +40,31 @@ Q1024/P0 used NONE dispatch; Q3/P4096 used PIECEWISE with four total tokens afte
 Decode B1/P1024 and B4/P4099 used FULL for admission and measurement. These
 are producer receipts; independent ordinary-Engine output replay, full-matrix
 collection, MAPE acceptance and immutable Hugging Face publication are pending.
-The retained-request SGLang producer is under separate GPU qualification.
+SGLang job 604896 completed four prefill and three decode points, including
+inclusive 128K, and passed historical strict readers/aggregation. Ordinary
+Engine decode replay matched all twelve requests. Prefill matched fifteen of
+sixteen requests; a B2 P7/Q3 request differed from its ordinary B1 replay.
+Both TP ranks agreed on the retained state/token evidence. Matched-batch and
+chunking controls are required to distinguish numerical differences from a
+state error; the original failure remains unqualified and is not discarded.
+
+Formal hardware admission requires native per-worker GB300/sm103 identity,
+runtime/source/attempt binding, and distinct native UUIDs when available.
+SGLang state tensor devices are bound to those observations. Historical
+canaries missing these fields are deliberately denied formal publication;
+receipts are never backfilled after measurement.
 
 Native GB300 split/one-shot IndexPool probes in job 604200 found wrong pooled
 cache entries for stock vLLM P4097/Q3 (B1/B2) and P4097/Q4 (B1). Aligned
 controls and all one-shot oracle cases passed. Producer, reader and Rust FPM
 queries reject the conservative unaligned-start contract P%4 != 0 with Q >= 2;
 requested coordinates remain in coverage. A source-pinned runtime repair must
-pass independent qualification before those points can be collected. No new
-profile is claimed as accepted.
+pass independent qualification before those points can be collected. The
+[versioned repair candidate](../python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/README.md)
+preserves the exact patch, native binary lineage, actual build receipt and
+qualification commands. It remains explicitly `NOT_QUALIFIED`; building and
+installing a wheel does not remove the stock-runtime gate. No new profile is
+claimed as accepted.
 
 Formal collection retains at least five warmups and ten observations per point, and separate calibration/holdout token streams and geometry. Exact table self-queries verify integrity, not independent accuracy. Record complete coverage, phase MAPE, WAPE and tail errors. Existing data remains unchanged.
 
