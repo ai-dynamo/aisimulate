@@ -391,6 +391,7 @@ pub struct Glm53MhcOp {
     pub checkpoint_format: String,
     /// Native invocation identity, even though the local SOL work is replicated.
     pub tp_size: u32,
+    pub is_context: bool,
     pub hidden_size: u32,
     pub hc_mult: u32,
     pub sinkhorn_iters: u32,
@@ -614,6 +615,130 @@ impl Glm53FfnOp {
     }
 }
 
+/// Strict native boundary for remaining text-graph operations. Analytical
+/// children never supply measured evidence; their names are not physical keys.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Glm53PrimitiveOp {
+    pub name: String,
+    pub role: String,
+    pub backend: String,
+    pub checkpoint_format: String,
+    pub tp_size: u32,
+    pub is_context: bool,
+    pub hidden_size: u32,
+    pub vocab_size: u32,
+    pub token_selection: String,
+    pub output_dtype: String,
+    pub collective: String,
+    #[serde(default)]
+    pub children: Vec<Op>,
+}
+impl Glm53PrimitiveOp {
+    pub fn validate_physical(&self) -> Result<(), AicError> {
+        identity(&self.backend, &self.checkpoint_format)?;
+        if !matches!(self.tp_size, 1 | 2 | 4)
+            || self.hidden_size != 4096
+            || self.vocab_size != 154880
+        {
+            return Err(AicError::ModelConfig(
+                "invalid GLM primitive geometry/topology".into(),
+            ));
+        }
+        let (selection, output, collective) = match self.role.as_str() {
+            "embedding" | "final_norm" => ("all_scheduled", "bfloat16", "none"),
+            "allreduce" => ("all_scheduled", "bfloat16", "all_reduce"),
+            "logits" => (
+                "last_per_request",
+                if self.backend == "sglang" {
+                    "float32"
+                } else {
+                    "bfloat16"
+                },
+                "all_gather",
+            ),
+            _ => return Err(AicError::ModelConfig("unknown GLM primitive role".into())),
+        };
+        if self.token_selection != selection
+            || self.output_dtype != output
+            || self.collective != collective
+        {
+            return Err(AicError::ModelConfig(
+                "GLM primitive native boundary disagrees with geometry".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub fn validate(&self) -> Result<(), AicError> {
+        self.validate_physical()?;
+        let h = self.hidden_size;
+        let v = self.vocab_size;
+        let tp = self.tp_size;
+        let norm = |op: &Op, bytes: f64| {
+            matches!(op, Op::Elementwise(o) if o.bytes_per_token == bytes
+            && o.scale_factor == 1.0 && o.scale_num_tokens == 1 && o.seq_split == 1)
+        };
+        let comm = |op: &Op, size: f64, operation: &str| {
+            matches!(op, Op::Nccl(o)
+            if o.hidden_size == size && o.num_gpus == tp && o.operation == operation
+            && o.dtype == crate::common::enums::CommQuantMode::Half && o.scale_factor == 1.0 && o.seq_split == 1)
+        };
+        let valid = match self.role.as_str() {
+            "embedding" => {
+                self.children.len() == 1
+                    && matches!(&self.children[0], Op::Embedding(o)
+                if o.vocab_size == v / tp && o.hidden_size == h && o.quant_mode == GemmQuantMode::Bfloat16
+                && o.scale_factor == 1.0 && o.seq_split == 1)
+            }
+            "final_norm" => self.children.len() == 1 && norm(&self.children[0], f64::from(h) * 4.0),
+            "allreduce" => {
+                self.children.len() == 1 && comm(&self.children[0], f64::from(h), "all_reduce")
+            }
+            "logits" => {
+                self.children.len() == if self.backend == "sglang" { 3 } else { 2 }
+                    && matches!(&self.children[0], Op::Gemm(o) if o.n == v / tp && o.k == h
+                    && o.quant_mode == GemmQuantMode::Bfloat16 && o.scale_factor == 1.0
+                    && o.scale_num_tokens == 1 && o.seq_split == 1)
+                    && comm(&self.children[1], f64::from(v), "all_gather")
+                    && (self.backend != "sglang" || norm(&self.children[2], f64::from(v) * 6.0))
+            }
+            _ => false,
+        };
+        if !valid {
+            return Err(AicError::ModelConfig(
+                "GLM primitive analytical children disagree with native boundary".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub fn weight_bytes(&self) -> f64 {
+        self.children.iter().map(Op::weight_bytes).sum()
+    }
+    pub fn sol(
+        &self,
+        db: &PerfDatabase,
+        ctx: &RuntimeContext,
+    ) -> Result<PerformanceResult, AicError> {
+        self.validate()?;
+        let mut child_ctx = *ctx;
+        if self.token_selection == "last_per_request" {
+            child_ctx.num_tokens = ctx.batch_size;
+        }
+        let sol_db = db.sol_full_view();
+        self.children.iter().try_fold(zero(), |sum, child| {
+            Ok(sum.plus(child.query(&sol_db, &child_ctx)?))
+        })
+    }
+    pub fn query(
+        &self,
+        db: &PerfDatabase,
+        ctx: &RuntimeContext,
+    ) -> Result<PerformanceResult, AicError> {
+        self.validate()?;
+        analytical_only(db, "primitive")?;
+        self.sol(db, ctx)
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -705,6 +830,51 @@ pub(crate) mod tests {
         assert_eq!(result.sol.unwrap().math_ms, 0.000192);
         assert_eq!(result.sol.unwrap().mem_ms, 0.272);
         assert_eq!(result.latency_ms, 0.272);
+    }
+    #[test]
+    fn logits_use_one_row_per_request_and_include_native_vocab_gather() {
+        use crate::operators::{communication::NcclOp, elementwise::ElementwiseOp, gemm::GemmOp};
+        let db = db(DatabaseMode::Sol);
+        let mut op = Glm53PrimitiveOp {
+            name: "logits".into(),
+            role: "logits".into(),
+            backend: "vllm".into(),
+            checkpoint_format: "fp8".into(),
+            tp_size: 2,
+            is_context: true,
+            hidden_size: 4096,
+            vocab_size: 154880,
+            token_selection: "last_per_request".into(),
+            output_dtype: "bfloat16".into(),
+            collective: "all_gather".into(),
+            children: vec![
+                Op::Gemm(GemmOp::new("head", 77440, 4096, GemmQuantMode::Bfloat16)),
+                Op::Nccl(NcclOp::new("vocab", 1.0, 154880.0, 2, "all_gather")),
+            ],
+        };
+        let short = RuntimeContext {
+            batch_size: 2,
+            num_tokens: 2,
+            ..RuntimeContext::default()
+        };
+        let long = RuntimeContext {
+            batch_size: 2,
+            num_tokens: 8192,
+            s: 4096,
+            prefix: 65536,
+            ..RuntimeContext::default()
+        };
+        let expected = op.sol(&db, &short).unwrap().latency_ms;
+        assert_eq!(expected, op.sol(&db, &long).unwrap().latency_ms);
+        // SGLang's post-gather BF16->FP32 cast reads2 and writes4 bytes/element.
+        op.backend = "sglang".into();
+        op.output_dtype = "float32".into();
+        op.children
+            .push(Op::Elementwise(ElementwiseOp::new("cast", 6.0 * 154880.0)));
+        let cast_ms = 2.0 * 6.0 * 154880.0 / db.system_spec.gpu.mem_bw * 1000.0;
+        assert!((op.sol(&db, &long).unwrap().latency_ms - expected - cast_ms).abs() < 1e-12);
+        op.children.pop();
+        assert!(op.validate().is_err());
     }
     #[test]
     fn attention_is_finite_and_silicon_does_not_borrow_kimi_kda() {
