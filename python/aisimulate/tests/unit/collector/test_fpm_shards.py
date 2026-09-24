@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+
 from collector.fpm_forward.config import FPMCollectionOptions
 from collector.fpm_forward.planner import build_collection_plan
 from collector.fpm_forward.shards import (
@@ -194,7 +195,8 @@ def test_holdout_complete_union_never_publishes_consumer_data(monkeypatch, tmp_p
     assert len(calls) == 4 and writes == []
 
 
-def test_acceptance_maps_child_values_back_to_original_ids(monkeypatch):
+@pytest.mark.parametrize("mixed_runtime", [False, True])
+def test_acceptance_maps_child_values_back_to_original_ids(monkeypatch, mixed_runtime):
     from collector.fpm_forward import glm53flash_validation as validation
 
     children = [
@@ -219,9 +221,14 @@ def test_acceptance_maps_child_values_back_to_original_ids(monkeypatch):
         lambda run, base: {
             "values": {1: run["original_point_ids"][1] * 1.1},
             "request_ids": {run["cell"]["cell_id"]},
+            "backend_version": "0.5.20+other" if mixed_runtime and run is children[1] else "0.5.20",
             "receipts": [],
         },
     )
+    if mixed_runtime:
+        with pytest.raises(ValueError, match="shard runtime versions differ"):
+            validation._load_native(parent, Path("."), "fpm")
+        return
     native = validation._load_native(parent, Path("."), "fpm")
     assert native["values"] == {1: 1.1, 2: 2.2, 3: 3.3000000000000003}
     assert len(native["shards"]) == 3
