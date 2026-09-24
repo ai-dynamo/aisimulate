@@ -184,7 +184,7 @@ pub struct ContextAttentionOp {
     /// lanes, density-ranked donor tiers, `"default"`, and the table's own
     /// leftover lanes — and it is REPLAYED VERBATIM here: no re-deriving, no
     /// extending, no sorting. Appended at the struct TAIL because bincode
-    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 20).
+    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 21).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
     /// Whether the fused prefill kernel applies rotary position embeddings.
@@ -197,7 +197,7 @@ pub struct ContextAttentionOp {
 
 /// Lane precedence for ops built without an explicit order (Rust-side
 /// constructors and hand-written JSON fixtures predating the `lane_order`
-/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 20).
+/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 21).
 /// Mirrors the Python fallback in `_attention_lane_order` for an
 /// unresolvable database: the always-valid `("default",)`.
 pub(crate) fn default_lane_order() -> Vec<String> {
@@ -385,7 +385,7 @@ pub struct GenerationAttentionOp {
     pub kv_cache_dtype: KvCacheQuantMode,
     /// Kernel-source lane precedence; see
     /// [`ContextAttentionOp::lane_order`] (appended at the struct TAIL —
-    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 20).
+    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 21).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
     /// Per-head RMSNorm on Q and K before decode attention. Appended at the

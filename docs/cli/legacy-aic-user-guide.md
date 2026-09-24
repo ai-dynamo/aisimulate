@@ -21,7 +21,7 @@ These flags are shared across modes (a few are sweep-only, as noted):
 - `--save-dir DIR`: Directory to write results and generated deployment artifacts. (`default`, `exp`, `generate`, `estimate`)
 - `--top-n N`: Number of top configurations to output — per experiment in `exp` mode, or per serving mode (agg/disagg) in `default` mode. Default: `5`. (`default`, `exp`, `generate`, `estimate`)
 - `--systems-paths`: System search paths (comma-separated). Use `default` for the built-in systems path; the first match wins for an identical system/backend/version. (`default`, `exp`, `generate`, `estimate`)
-- `--deployment-target`: Generated-artifact platform — `dynamo-j2` (default), `dynamo-python`, `llm-d-helm`, `llm-d-kustomize`, or `fpm`. See [Deployment Target Selection](#deployment-target-selection). (`default`, `exp`, `generate`, `estimate`)
+- `--deployment-target`: Generated-artifact platform — `dynamo-j2` (default), `dynamo-python`, `llm-d-helm`, `llm-d-kustomize`, `fpm`, or `slurm`. See [Deployment Target Selection](#deployment-target-selection). (`default`, `exp`, `generate`, `estimate`)
 - `--engine-step-backend`: Engine-step latency backend. The compiled Rust engine is the only step executor; `rust` is the only accepted value (the deprecated `python` no-op was removed after its one-release window); any other value raises an error. Accepted by the five modes below (not `support`) but inert in `generate`, which performs no latency estimation. (`default`, `recommend`, `exp`, `generate`, `estimate`)
 - `--forward-model`: Forward-pass modeling mode — `op_level` (default; granular per-op modeling) or `fpm` (predicts from collected whole-model forward-pass data; requires `fpm_forward_perf` data for the exact model/system/backend/version and never extrapolates outside the collected domain). Evaluates on the compiled engine's native FPM operation. `fpm` predictions are only as accurate as the match between the deployed engine configuration and the collected data — in particular the CUDA-graph capture surface: regime cliffs are encoded in the data, not modeled, so a deployment whose capture config differs from the collection will mispredict. V1 accepts only vLLM identities the standard deployment path can reproduce: automatic MoE/attention backend selection with EPLB disabled. Pinned backend or EPLB identities are rejected until structured generator support lands. Not supported in the `afd` estimate mode. (`default`, `exp`, `generate`, `estimate`)
 
@@ -689,6 +689,7 @@ By default, we output the top 5 configs we have found. You can get the configs a
 - **Dynamo** (default): `k8s_deploy.yaml` for Kubernetes deployment, plus engine configs (`agg_config.yaml`, `prefill_config.yaml`, `decode_config.yaml`) and run scripts (`node_0_run.sh`)
 - **llm-d**: `llm-d-values.yaml` for Helm deployment with the llm-d-modelservice chart
 - **FPM V1**: exactly `k8s_deploy.yaml` (a reusable keepalive Pod, LeaderWorkerSet, or Grove PodCliqueSet), `fpm_env.sh` (rank discovery plus the per-cell collection facts), and `run.sh` (the launch-only vLLM command)
+- **Slurm**: `deploy.sbatch`, `benchmark.sbatch`, `submit.sh`, `environment.sh`, `deployment.json`, `slurm_runtime.py`, and `bench_run.sh`, plus TRT-LLM engine configs when applicable. See [Generate a Slurm deployment](#generate-a-slurm-deployment).
 
 For benchmarking, see the [Benchmark Artifacts](#benchmark-artifacts) section below. Refer to [deployment guide](../../python/aisimulate/docs/dynamo_deployment_guide.md) for Dynamo deployments or the [generator usage guide](../../python/aisimulate/docs/generator_overview.md#using-the-generator) for llm-d deployments.
 
@@ -702,6 +703,7 @@ Use `--deployment-target` to choose which orchestration platform to deploy to:
 - `llm-d-helm`: Generates Helm values for the llm-d-modelservice chart
 - `llm-d-kustomize`: Generates Kustomize overlays for llm-d modelserver guides
 - `fpm`: Generates a reusable Kubernetes resource workload and a complete FPM launch script, `run.sh`
+- `slurm`: Generates single-node Dynamo service and AIPerf benchmark jobs for Slurm/Pyxis. See [Generate a Slurm deployment](#generate-a-slurm-deployment).
 
 The backend (`--backend trtllm/vllm/sglang`) and deployment target are generally orthogonal choices. Note that TRT-LLM only supports Dynamo platforms. FPM V1 is the exception: it supports only a vLLM single aggregated-worker topology with exactly one worker replica; that worker may span multiple nodes. Router/planner configurations and invalid FPM topologies fail closed.
 
@@ -1043,7 +1045,7 @@ See `src/aisimulate/legacy_cli/exps/database_mode_comparison.yaml` for an exampl
 
 ### Benchmark Artifacts
 
-For non-FPM deployment targets, each `topN` directory includes two benchmark helpers alongside the deployment artifacts when `--save-dir` is used. The FPM target emits only `k8s_deploy.yaml` and `run.sh`, so it does not include these helpers.
+For Dynamo and llm-d deployment targets, each `topN` directory includes two benchmark helpers alongside the deployment artifacts when `--save-dir` is used. Slurm emits `bench_run.sh` and `benchmark.sbatch`, as described in [Generate a Slurm deployment](#generate-a-slurm-deployment). The FPM target does not emit benchmark helpers.
 
 - **`bench_run.sh`** -- A shell script for bare-metal benchmarking. It loops over a concurrency array and calls [`aiperf profile`](https://github.com/ai-dynamo/aiperf) for each level. Before running it, make sure the deployed service is reachable at the endpoint printed in the script, and that `aiperf` is installed (`pip install aiperf`). Usage:
   ```bash
@@ -1056,7 +1058,7 @@ For non-FPM deployment targets, each `topN` directory includes two benchmark hel
   kubectl apply -f results/.../disagg/top1/disagg/k8s_bench.yaml
   ```
 
-**Concurrency sweep.** Both artifacts iterate over a base concurrency list `[1, 2, 8, 16, 32, 64, 128]`. When an estimated concurrency is available from the AIConfigurator run, three additional points are added: the estimate itself and its +/-5% neighbors. This targets the operating point AIConfigurator found optimal.
+**Concurrency sweep.** The Dynamo and llm-d benchmark artifacts iterate over a base concurrency list `[1, 2, 8, 16, 32, 64, 128]`. When an estimated concurrency is available from the AIConfigurator run, three additional points are added: the estimate itself and its +/-5% neighbors. This targets the operating point AIConfigurator found optimal. Slurm uses `SlurmConfig.benchmark_concurrency` and `SlurmConfig.benchmark_rounds`.
 
 **Templated values.** The scripts are pre-filled with the model name, tokenizer, ISL/OSL, endpoint URL, and streaming mode from the run that generated them -- no manual editing is needed for the common case.
 
@@ -1365,3 +1367,31 @@ kubectl apply -f results/.../disagg/top1/disagg/k8s_bench.yaml
 ```
 
 Compare the measured TTFT, TPOT, and tokens/s/gpu against the AIConfigurator estimates printed in Step 2. See [Benchmark Artifacts](#benchmark-artifacts) for details on the generated scripts.
+
+### Generate a Slurm deployment
+
+Use `--deployment-target slurm` with `--generator-config` containing a
+`SlurmConfig` section. Supply `account`, `partition`, `container_image` and any
+`container_mounts`; resource/time limits and benchmark concurrency can also be
+set there. For example, `--generator-set SlurmConfig.partition=batch` overrides
+the partition. Backend and Dynamo version options retain their normal meaning.
+
+For generation without an SLA search, use `aiconfigurator cli generate
+--model-path MODEL --system SYSTEM --backend vllm --total-gpus N
+--deployment-target slurm --generator-config slurm.yaml --save-dir ./results`.
+This compatibility CLI is included in AISimulate. Put `rule: benchmark` in the
+input YAML when using the benchmark sizing rules.
+
+The target produces `deploy.sbatch` for persistent serving and `benchmark.sbatch`
+for a complete deploy/health-check/AIPerf/cleanup run. On the cluster, run
+`bash submit.sh benchmark --test-only`, then `bash submit.sh benchmark` (or
+`bash submit.sh serve`). Submissions save a job receipt and prevent duplicate runs
+from the same bundle directory. V1 generates single-node NVIDIA agg/P-D topologies
+for vLLM, SGLang and TRT-LLM. Automated tests cover emitted artifacts for all three
+backends and CPU supervisor behavior using simulated launches and local HTTP
+services. GPU execution and Slurm/Pyxis integration require validation with the
+chosen container and cluster. The image must contain Dynamo, etcd/NATS and, for
+benchmarks, AIPerf. Readiness retries temporary HTTP 404/503 and transport errors
+within the startup deadline; other HTTP errors fail immediately. See the
+[Slurm target section](../../python/aisimulate/docs/generator_overview.md#slurm-target)
+for the complete input example, outputs and current scope.

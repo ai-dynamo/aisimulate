@@ -46,6 +46,8 @@ def _attention_template(
     is_moe: bool,
 ) -> tuple[str, str]:
     lowered = (architecture or "").lower()
+    if model_family == "DEEPSEEKV41":
+        return "dsv41_module", "moe_dsv41"
     if model_family == "DEEPSEEKV4":
         return "dsv4_module", "moe_dsv4"
     if model_family == "MINIMAXM3":
@@ -254,6 +256,37 @@ def resolve_model_capability(
     version = database_version or get_latest_database_version(system=system, backend=backend)
     if not version:
         raise ValueError(f"no AIC database version is available for system={system!r}, backend={backend!r}")
+    if model_family == "DEEPSEEKV41":
+        # A whole-forward campaign is what establishes V4.1 timing evidence.
+        # Op-level V4/MLA tables cannot authorize or substitute its fused path.
+        requested_kv = tuple(dict.fromkeys(_normalize_kv_dtype(value) for value in requested_kv_cache_dtypes))
+        if set(requested_kv) - {"auto", native_kv}:
+            raise ValueError(f"DeepSeek-V4.1 FPM requires its native KV dtype {native_kv!r}")
+        return ModelCapabilityProfile(
+            architecture=architecture,
+            model_family=model_family,
+            is_moe=is_moe,
+            attention_source="dsv41_module",
+            attention_kind="moe_dsv41",
+            support_level="native_runtime",
+            template_id="deepseek_v41_text_native",
+            template_version=TEMPLATE_VERSION,
+            support_reason="registered V4.1 config; native runtime must qualify every measured cell",
+            allow_pure_tp=backend == "vllm",
+            aic_database_version=str(version),
+            model_config=resolved_config,
+            dtype=ResolvedDTypeProfile(
+                gemm_quant_mode=gemm,
+                moe_quant_mode=moe,
+                fmha_quant_mode=inferred_fmha,
+                comm_quant_mode=common.CommQuantMode.half.name,
+                native_kv_cache_dtype=native_kv,
+                kv_cache_dtypes=(native_kv,),
+                fmha_resolution="checkpoint_native",
+                fmha_by_kv_dtype={native_kv: inferred_fmha},
+                fmha_resolution_by_kv_dtype={native_kv: "checkpoint_native"},
+            ),
+        )
     database = get_database(system, backend, version)
     if database is None:
         raise ValueError(f"failed to load AIC database for system={system!r}, backend={backend!r}, version={version!r}")

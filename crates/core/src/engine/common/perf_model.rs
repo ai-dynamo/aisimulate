@@ -42,10 +42,12 @@ impl std::fmt::Debug for PerfModel {
 }
 
 impl PerfModel {
-    pub(crate) fn prefill_batch_validation_can_fail(&self) -> bool {
+    // External prediction and duration conversion can fail even when geometry
+    // validation accepts every batch. Keep admission transactional for all providers.
+    pub(crate) fn prefill_pass_can_fail(&self) -> bool {
         match self {
             Self::Polynomial => false,
-            Self::External { timing } => timing.prefill_batch_validation_can_fail(),
+            Self::External { .. } => true,
         }
     }
 

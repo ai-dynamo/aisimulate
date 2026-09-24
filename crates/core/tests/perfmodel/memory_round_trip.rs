@@ -102,6 +102,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
                 weight_dtype: None,
                 moe_dtype: None,
                 activation_dtype: None,
+                fpm_fmha_dtype: None,
                 kv_cache_dtype: None,
             },
             speculative: None,

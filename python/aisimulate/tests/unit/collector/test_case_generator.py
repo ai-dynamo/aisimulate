@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import pytest
-
 from collector.case_generator import get_common_moe_test_cases, get_sglang_moe_backend
 
 pytestmark = pytest.mark.unit
