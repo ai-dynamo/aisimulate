@@ -7,7 +7,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward.sglang_artifact import read_observations, validate_sglang_repetitions
 from collector.fpm_forward.sglang_driver import freeze_requests, result_payload
 from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
@@ -161,8 +160,9 @@ def test_native_sglang_rejects_invalid_observations(corruption):
 
 
 def test_ops_provenance_is_bound_to_loaded_config_and_native_source(tmp_path):
-    from aisimulate_core.sdk.glm53flash import BACKEND_REVISIONS
     from collector.fpm_forward.sglang_driver import read_ops_provenance
+
+    from aisimulate_core.sdk.glm53flash import BACKEND_REVISIONS
 
     def sha256_json(value):
         return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -191,6 +191,36 @@ def test_ops_provenance_is_bound_to_loaded_config_and_native_source(tmp_path):
     path.write_text(json.dumps({**provenance, "execution_identity": {}}))
     with pytest.raises(ValueError, match="cannot replace"):
         read_ops_provenance(path, raw_config=config, checkpoint_revision="pinned-checkpoint", runtime_audit=audit)
+
+
+@pytest.mark.parametrize("all_ranks", [False, True])
+def test_native_sglang_rejects_rehashed_wrong_sample_chain(all_ranks):
+    point, manifest, records = fixture()
+    for rank in records if all_ranks else (1,):
+        request = records[rank][11]["requests"][0]
+        request["native_query_token_ids"] = [88]
+        request["input_tokens_sha256"] = hashlib.sha256(b"[4,5,88]").hexdigest()
+    with pytest.raises(ValueError, match="preceding sampled token"):
+        read_observations(manifest, raw(records), [point])
+
+
+def test_native_sglang_rejects_internally_valid_but_different_tp_token_chains():
+    point, manifest, records = fixture()
+    # Rank one is internally continuous, but its preceding sample and decode
+    # input differ from rank zero. Geometry and dispatch are unchanged.
+    records[1][10]["requests"][0]["sampled_token_id"] = 88
+    request = records[1][11]["requests"][0]
+    request["native_query_token_ids"] = [88]
+    request["input_tokens_sha256"] = hashlib.sha256(b"[4,5,88]").hexdigest()
+    with pytest.raises(ValueError, match="TP ranks disagree"):
+        read_observations(manifest, raw(records), [point])
+
+
+def test_native_sglang_rejects_different_tp_final_samples():
+    point, manifest, records = fixture()
+    records[1][11]["requests"][0]["sampled_token_id"] = 88
+    with pytest.raises(ValueError, match="TP ranks disagree"):
+        read_observations(manifest, raw(records), [point])
 
 
 def test_native_sglang_offload_disabled_sentinel_and_active_group():
