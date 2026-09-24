@@ -198,14 +198,18 @@ def _native_run(run: dict, base: Path) -> dict:
 
 def installed_consumer_identity() -> dict:
     """Verify loaded public Python/native files belong to a noneditable wheel."""
+    import aisimulate
     import aisimulate_core
+    from aisimulate import _runtime
     from aisimulate_core import _native
     from aisimulate_core.sdk import rust_engine_step
 
     distribution = importlib.metadata.distribution("aisimulate")
     files = distribution.files or []
-    owned = {str(path): path for path in files if str(path).startswith("aisimulate_core/") and path.hash}
-    native = [name for name in owned if name.endswith((".so", ".pyd"))]
+    owned = {
+        str(path): path for path in files if str(path).startswith(("aisimulate/", "aisimulate_core/")) and path.hash
+    }
+    native = [name for name in owned if name.startswith("aisimulate/_runtime") and name.endswith((".so", ".pyd"))]
     sdk = "aisimulate_core/sdk/rust_engine_step.py"
     if (
         not native
@@ -218,10 +222,19 @@ def installed_consumer_identity() -> dict:
         != Path(aisimulate_core.__file__).resolve()
     ):
         raise ValueError("loaded consumer is not owned by the installed wheel")
-    if Path(_native.__file__).resolve() not in {
+    if Path(_runtime.__file__).resolve() not in {
         Path(distribution.locate_file(owned[name])).resolve() for name in native
     }:
         raise ValueError("loaded Rust extension is not owned by the installed wheel")
+    for package, module in (("aisimulate", aisimulate), ("aisimulate_core/_native", _native)):
+        filename = "aisimulate/__init__.py" if package == "aisimulate" else "aisimulate_core/_native.py"
+        if (
+            filename not in owned
+            or Path(distribution.locate_file(filename)).resolve() != Path(module.__file__).resolve()
+        ):
+            raise ValueError("loaded unified package or compatibility shim is not owned by the installed wheel")
+    if _native.RustForwardPassPerfModel is not _runtime.RustForwardPassPerfModel:
+        raise ValueError("compatibility shim does not expose the canonical native binding")
     import base64
 
     actual = []
@@ -239,6 +252,30 @@ def installed_consumer_identity() -> dict:
         "payload_sha256": digest(actual),
         "api": "RustForwardPassPerfModel.best_available",
     }
+
+
+def _load_native(run: dict, base: Path, mode: str) -> dict:
+    if mode == "fpm":
+        return _native_run(run, base)
+    try:
+        from collector.glm53flash_validation import load_native
+    except ImportError as error:
+        raise FileNotFoundError(
+            "Ops native calibration/holdout receipt adapter is required before acceptance"
+        ) from error
+    native = load_native(run, base)
+    if not isinstance(native.get("timing_boundary"), str) or not native["timing_boundary"]:
+        raise ValueError("Ops evidence must declare its independent GPU timing boundary")
+    if run["role"] == "holdout":
+        expected = {point["benchmark_id"] for point in run["points"]}
+        if set(native.get("values", {})) != expected:
+            raise ValueError("Ops holdout omits frozen requested points")
+        if any(
+            isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0
+            for v in native["values"].values()
+        ):
+            raise ValueError("Ops holdout has invalid native GPU latency")
+    return native
 
 
 def _bind_fpm_rows(paths: list[Path], run: dict, native: dict) -> dict:
@@ -463,7 +500,7 @@ def evaluate(manifest: dict, base: Path) -> dict:
             ("holdout", holdout, holdout_requests),
         ):
             try:
-                record[name + "_native"] = _native_run(run, base)
+                record[name + "_native"] = _load_native(run, base, mode)
                 identities.update(record[name + "_native"]["request_ids"])
             except FileNotFoundError as error:
                 record["errors"].append({"role": name, "status": "NOT_EVALUATED", "error": str(error)})
@@ -489,13 +526,15 @@ def evaluate(manifest: dict, base: Path) -> dict:
             "weight_quantization": key[1],
             "tp": key[2],
             "phase": key[3],
-            "timing_boundary": TIMING_BOUNDARIES[key[0]],
+            "timing_boundary": TIMING_BOUNDARIES[key[0]] if mode == "fpm" else None,
             "acceptance": "NOT_EVALUATED",
             "errors": [],
             "points": [],
         }
         record = prepared.get(key)
         if record:
+            if mode == "ops" and record.get("holdout_native"):
+                result["timing_boundary"] = record["holdout_native"]["timing_boundary"]
             result["errors"] = record["errors"]
             for point in record["holdout"]["points"]:
                 row = {"point": point, "context_group": _group(point), "status": "NOT_EVALUATED"}
