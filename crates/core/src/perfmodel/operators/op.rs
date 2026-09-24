@@ -22,10 +22,10 @@ use crate::common::error::AicError;
 use crate::operators::{
     ContextAttentionOp, ContextMlaOp, CustomAllReduceOp, DsaModuleOp, Dsv4MegaMoeOp, Dsv4ModuleOp,
     Dsv41AttentionOp, Dsv41EngramOp, Dsv41LinearOp, Dsv41MhcOp, Dsv41StageOp, ElementwiseOp,
-    EmbeddingOp, EncoderAttentionOp, FpmForwardOp, GdnOp, GemmOp, GenerationAttentionOp,
-    GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp, MoEDispatchOp,
-    MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp, PerformanceResult,
-    Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
+    EmbeddingOp, EncoderAttentionOp, FastAfdMoeStageOp, FpmForwardOp, GdnOp, GemmOp,
+    GenerationAttentionOp, GenerationMlaOp, KdaOp, Mamba2Op, MhcModuleOp, MlaBmmOp, MlaModuleOp,
+    MoEDispatchOp, MoeAllToAllOp, MoeExpertComputeOp, MoeOp, MsaModuleOp, NcclOp, P2POp,
+    PerformanceResult, Source, VisionEncoderOp, WideEpContextMlaOp, WideEpGenerationMlaOp,
 };
 use crate::perf_database::PerfDatabase;
 
@@ -183,6 +183,9 @@ pub enum Op {
     Dsv41Engram(Dsv41EngramOp),
     Dsv41Stage(Dsv41StageOp),
     Dsv41Linear(Dsv41LinearOp),
+    /// Exact externally measured full-model decode MoE stage.
+    /// Appended to preserve every existing bincode variant index.
+    FastAfdMoeStage(FastAfdMoeStageOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -277,6 +280,7 @@ impl Op {
             Op::Dsv41Engram(o) => o.weight_bytes(),
             Op::Dsv41Stage(o) => o.weight_bytes(),
             Op::Dsv41Linear(o) => o.weight_bytes(),
+            Op::FastAfdMoeStage(o) => o.weight_bytes,
             Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
@@ -337,6 +341,7 @@ impl Op {
             Op::Dsv41Engram(o) => &o.name,
             Op::Dsv41Stage(o) => &o.name,
             Op::Dsv41Linear(o) => &o.name,
+            Op::FastAfdMoeStage(o) => &o.name,
             Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
             Op::Embedding(o) => &o.name,
@@ -386,6 +391,7 @@ impl Op {
             Op::Dsv41Engram(o) => o.name = name,
             Op::Dsv41Stage(o) => o.name = name,
             Op::Dsv41Linear(o) => o.name = name,
+            Op::FastAfdMoeStage(o) => o.name = name,
             Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
             Op::Embedding(o) => o.name = name,
@@ -466,7 +472,8 @@ impl Op {
             | Op::Dsv41Mhc(_)
             | Op::Dsv41Engram(_)
             | Op::Dsv41Stage(_)
-            | Op::Dsv41Linear(_) => {}
+            | Op::Dsv41Linear(_)
+            | Op::FastAfdMoeStage(_) => {}
             Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
             Op::Kda(o) => o.scale_factor = scale_factor,
             Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
@@ -533,6 +540,7 @@ impl Op {
             Op::Dsv41Engram(op) => op.query(db, ctx.num_tokens),
             Op::Dsv41Stage(op) => op.query(db, ctx),
             Op::Dsv41Linear(op) => op.query(db, ctx.num_tokens),
+            Op::FastAfdMoeStage(op) => op.query(ctx.num_tokens),
             Op::TokenScale(op) => {
                 let scaled = RuntimeContext {
                     batch_size: op.scale_tokens(ctx.batch_size)?,

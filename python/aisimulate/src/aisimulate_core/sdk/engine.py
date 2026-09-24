@@ -131,6 +131,7 @@ from aisimulate_core.sdk.rust_engine_step import (
 # - 18 (speculation migration): Generation attention gained verify_query_tokens
 #   and FPM forward gained verify_width, both positional bincode fields.
 #   TokenScale was appended to remap draft query widths before op lookup.
+# - 21: FastAfdMoeStage was appended for exact measured MoE-stage lookup.
 # Single owner: the Rust crate constant. Python re-exports it for
 # diagnostics/tests instead of declaring a twin to keep in sync.
 ENGINE_SPEC_SCHEMA_VERSION = aisimulate_core.engine_spec_schema_version()
@@ -355,7 +356,7 @@ def _engine_config_dict(
         # directory, so the Rust reload skips its missing-directory gate for
         # exactly this identity.
         "tolerate_dirless_version": bool(getattr(database, "dirless_next_load", False)),
-        "extra": {},
+        "extra": {key: str(value) for key, value in (getattr(model, "_fastafd_metadata", None) or {}).items()},
     }
     # SpeculativeConfig (flattened, Option<>): emit nextn at the top level
     # when MTP is active. When inactive, omit it so the
@@ -439,6 +440,8 @@ def compile_engine(
     transfer_policy: str | list[str] | None = None,
     strict_provenance: bool | None = None,
     fpm_parquet_path: str | None = None,
+    fastafd_profile_path: str | None = None,
+    fastafd_moe_backend: str | None = None,
 ) -> bytes:
     """Compile a model into bincoded ``EngineSpec`` bytes.
 
@@ -460,6 +463,12 @@ def compile_engine(
             raise ValueError("fpm_parquet_path cannot be empty")
         if forward_model != "fpm":
             raise ValueError("fpm_parquet_path requires forward_model='fpm'")
+    if (fastafd_profile_path is None) != (fastafd_moe_backend is None):
+        raise InvalidEngineConfigurationError(
+            "fastafd_profile_path and fastafd_moe_backend must be configured together"
+        )
+    if fastafd_profile_path is not None and forward_model not in (None, "op_level"):
+        raise InvalidEngineConfigurationError("FastAFD MoE profiles require forward_model='op_level'")
     # `_build_model_config` resolves MoE parallelism defaults internally and
     # does not take a model_path (quant inference is done inside `get_model`).
     from aisimulate_core.sdk.speculation import SpeculationConfig
@@ -513,6 +522,21 @@ def compile_engine(
             model_config, model_path, backend, literal_version, load_system_spec(system, systems_path)
         )
     model = get_model(model_path, model_config, backend)
+    if fastafd_profile_path is not None:
+        from aisimulate_core.sdk.fastafd_backend import apply_fastafd_moe_profile
+
+        try:
+            model._fastafd_metadata = apply_fastafd_moe_profile(
+                model,
+                model_path=model_path,
+                system=system,
+                backend=backend,
+                nextn=nextn,
+                profile_path=fastafd_profile_path,
+                profile_backend=fastafd_moe_backend,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise InvalidEngineConfigurationError(str(exc)) from exc
     database = _maybe_load_database(
         system,
         backend,

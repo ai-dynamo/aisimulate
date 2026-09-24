@@ -390,6 +390,9 @@ def _worker_performance_model_metadata(
         config["speculation"] = engine.speculation.cost_config()
     if worker.timing.fpm_parquet_path is not None:
         config["fpm_parquet_path"] = worker.timing.fpm_parquet_path
+    if worker.timing.fastafd_profile_path is not None:
+        config["fastafd_profile_path"] = worker.timing.fastafd_profile_path
+        config["fastafd_moe_backend"] = worker.timing.fastafd_moe_backend
     return {
         "provider": "aic",
         "config": config,
@@ -528,6 +531,8 @@ def _worker_engine_args(
             database_mode=timing.database_mode or engine.database_mode,
             transfer_policy=timing.transfer_policy if timing.transfer_policy is not None else engine.transfer_policy,
             systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
+            fastafd_profile_path=timing.fastafd_profile_path,
+            fastafd_moe_backend=timing.fastafd_moe_backend,
         )
         timing_config = omit_inactive_moe_controls(canonical.to_dict())
         if timing.fpm_parquet_path is not None:

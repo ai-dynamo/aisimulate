@@ -1062,6 +1062,8 @@ struct EngineBuildRequest {
     shared_layer: Option<bool>,
     transfer_policy: Option<Vec<String>>,
     strict_provenance: Option<bool>,
+    fastafd_profile_path: Option<String>,
+    fastafd_moe_backend: Option<String>,
 }
 
 /// Ergonomic builder for the Rust -> Python -> Rust compiled-engine entry point.
@@ -1113,6 +1115,8 @@ impl AicEngineBuilder {
                 shared_layer: None,
                 transfer_policy: None,
                 strict_provenance: None,
+                fastafd_profile_path: None,
+                fastafd_moe_backend: None,
             },
         }
     }
@@ -1127,6 +1131,17 @@ impl AicEngineBuilder {
     /// Use an external FPM parquet and its adjacent `.metadata.json` sidecar.
     pub fn fpm_parquet_path(mut self, path: impl Into<String>) -> Self {
         self.request.fpm_parquet_path = Some(path.into());
+        self
+    }
+
+    /// Use an exact FastAFD MoE stage profile and backend selection.
+    pub fn fastafd_profile(
+        mut self,
+        path: impl Into<String>,
+        moe_backend: impl Into<String>,
+    ) -> Self {
+        self.request.fastafd_profile_path = Some(path.into());
+        self.request.fastafd_moe_backend = Some(moe_backend.into());
         self
     }
 
@@ -1473,6 +1488,14 @@ fn compile_engine_from_request(request: EngineBuildRequest) -> Result<Engine, Ai
         kwargs.set_item("shared_layer", request.shared_layer)?;
         kwargs.set_item("transfer_policy", request.transfer_policy.as_deref())?;
         kwargs.set_item("strict_provenance", request.strict_provenance)?;
+        kwargs.set_item(
+            "fastafd_profile_path",
+            request.fastafd_profile_path.as_deref(),
+        )?;
+        kwargs.set_item(
+            "fastafd_moe_backend",
+            request.fastafd_moe_backend.as_deref(),
+        )?;
         kwargs.set_item("nextn", request.nextn)?;
         if let Some(speculation) = &request.speculation {
             let json = serde_json::to_string(speculation)
@@ -1585,6 +1608,11 @@ pub(crate) fn compile_forward_pass_model_to_engine(
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
         strict_provenance: Some(config.strict_provenance),
+        fastafd_profile_path: config
+            .fastafd_profile_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
+        fastafd_moe_backend: config.fastafd_moe_backend.clone(),
     })
 }
 
@@ -1663,6 +1691,8 @@ fn engine_build_request(
         shared_layer: config.enable_shared_layer,
         transfer_policy: config.transfer_policy.clone(),
         strict_provenance: Some(config.strict_provenance),
+        fastafd_profile_path: None,
+        fastafd_moe_backend: None,
     })
 }
 
@@ -1864,6 +1894,8 @@ impl PyForwardPassPerfModel {
             wideep_num_slots: request.wideep_num_slots,
             enable_shared_layer: request.shared_layer,
             strict_provenance: legacy.strict_provenance,
+            fastafd_profile_path: request.fastafd_profile_path.map(PathBuf::from),
+            fastafd_moe_backend: request.fastafd_moe_backend,
         };
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }

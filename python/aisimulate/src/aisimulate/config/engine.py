@@ -219,6 +219,8 @@ class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
     fpm_parquet_path: str | None = None
+    fastafd_profile_path: str | None = None
+    fastafd_moe_backend: Literal["megamoe", "deepep_deepgemm"] | None = None
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
@@ -267,6 +269,16 @@ class TimingConfig(StrictModel):
                 raise ValueError("fpm_parquet_path cannot be empty")
             if self.type != "default" or self.forward_model != "fpm":
                 raise ValueError("fpm_parquet_path requires default timing with forward_model='fpm'")
+        if (self.fastafd_profile_path is None) != (self.fastafd_moe_backend is None):
+            raise ValueError("fastafd_profile_path and fastafd_moe_backend must be configured together")
+        if self.fastafd_profile_path is not None:
+            if not self.fastafd_profile_path:
+                raise ValueError("fastafd_profile_path cannot be empty")
+            if self.type != "default" or self.forward_model != "op_level":
+                raise ValueError("FastAFD MoE profiles require default op_level timing")
+            if self.estimation_mode not in (None, "op_level"):
+                raise ValueError("FastAFD MoE profiles require estimation_mode='op_level'")
+            self.estimation_mode = "op_level"
         return self
 
 
@@ -426,6 +438,8 @@ class EstimatorPolicyConfig(StrictModel):
                         "systems_paths",
                         "database_mode",
                         "transfer_policy",
+                        "fastafd_profile_path",
+                        "fastafd_moe_backend",
                     )
                 )
             ):
@@ -488,6 +502,21 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
         _validate_speculation(self, modes={self.mode}, backends={self.backend})
+        fastafd_roles = [
+            role
+            for role in ("aggregated", "prefill", "decode")
+            if (worker := getattr(self.workers, role)) is not None and worker.timing.fastafd_profile_path is not None
+        ]
+        if fastafd_roles and (self.mode != "aggregated" or fastafd_roles != ["aggregated"]):
+            raise ValueError("FastAFD AGG profiles require the aggregated worker")
+        if fastafd_roles and self.backend != "sglang":
+            raise ValueError("FastAFD MoE profiles require backend='sglang'")
+        if fastafd_roles:
+            parallel = self.workers.aggregated.parallelism
+            if parallel.pipeline != 1:
+                raise ValueError("FastAFD MoE profiles require pipeline=1")
+            if parallel.moe_tensor != 1:
+                raise ValueError("FastAFD MoE profiles require moe_tensor=1")
         return self
 
 
