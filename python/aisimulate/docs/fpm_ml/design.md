@@ -201,20 +201,19 @@ has no reduced preset; a reduced set is trained by passing the feature names to
 
 ### 3.1 How many of the 18 features are needed
 
-**Conclusion.** Decode needs 5 of the 18; prefill needs 11. The decode reduction is exact
+**Conclusion.** The atomic feature set, i.e. the smallest set from which all 18 can be
+computed back, is 5 features for decode and 10 for prefill. Decode: the reduction is exact
 (the other 13 are identities of the 5 on a decode step) and measured lossless on every
-train/test pair. The prefill reduction keeps the 10 atomic features plus one derived one,
-n · Σe, which is the only derived feature that carries cross-workload accuracy (§8.8 b);
-with just the 10 atomic features prefill loses 2–35 pp on cross-workload cells. Fewer
-features do not make inference faster (§8.7); the reason to reduce is simplicity, not speed.
-The shipped default stays at 18 for both roles; the reduced sets are selected with
-`--features`.
+train/test pair, so decode uses the 5. Prefill: the 10 atomic features are equally good
+in-distribution, but a GBDT cannot form products, and on cross-workload pairs the missing
+derived axis n · Σe costs 2–35 pp (§8.8 b). Since extra features cost nothing at inference
+(§8.7), prefill keeps all 18. The shipped default stays at 18 for both roles; the decode 5
+are selected with `--features`.
 
-| role | features | count | vs 18 features |
+| role | atomic features | count | vs 18 features |
 | --- | --- | --- | --- |
-| decode | n, Σp, max p, min p, Σp² | 5 | identical to the second decimal on all 13 train/test cells |
-| prefill | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp², **n · Σe** | 11 | same in-distribution; within 1.4 pp on every cross-workload cell |
-| prefill | the 10 above without n · Σe | 10 | same in-distribution; LongBench → ShareGPT 29 % → 69 % |
+| decode | n, Σp, max p, min p, Σp² | 5 | identical to the second decimal on all 13 train/test cells; **used** |
+| prefill | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp² | 10 | same in-distribution; LongBench → ShareGPT 29 % → 69 % under extrapolation; **prefill keeps 18** |
 
 Evidence follows.
 
@@ -269,8 +268,7 @@ Reading the tables:
   Σe · max p, the `log1p` transforms) let it split directly on quantities that carry over
   to unseen chunk-size / prefix mixes. Information-preserving is not the same as
   GBDT-preserving; prefill keeps all 18. §8.8(b) traces the loss to one derived feature,
-  n · Σe: the ten atomic features plus `req_batch_size_x_sum_extend` (eleven) stay within
-  1.4 pp of the eighteen on every cross cell.
+  n · Σe, which is what the trees cannot reconstruct from the atomic set.
 - **Time per estimate is unchanged by the feature count.** Two decode artifacts trained on
   the same vLLM AgentX run (§7.2 data, 400 trees each), timed as in §8.1 on one Grace core:
   18 features 3.7–5.8 µs over the decode grid, 4 features 4.3–6.4 µs; prefill 4.5–6.3 µs
@@ -753,7 +751,7 @@ workload it was trained on:
 | decode, default | 18 | 400 × 31 (0.05) | 3.4–5.5 µs | pooled 2.06 %, vLLM pair 4.02 % |
 | **decode, recommended** | **5** | **100 × 7 (0.2)** | **0.8–1.6 µs** | **pooled 2.02 %, vLLM pair 3.29 %** |
 | prefill, default | 18 | 400 × 31 (0.05) | 4.5–6.3 µs | pooled 2.05 %, vLLM pair 5.09 % |
-| **prefill, recommended** | **18 (or 11)** | **100 × 15 (0.2)** | **0.8–1.1 µs** | **pooled 2.03 %, vLLM pair 5.04 %** |
+| **prefill, recommended** | **18** | **100 × 15 (0.2)** | **0.8–1.1 µs** | **pooled 2.03 %, vLLM pair 5.04 %** |
 
 Four findings support this:
 
@@ -769,8 +767,8 @@ Four findings support this:
    25–70 % for every configuration including the default; the 2–3 pp differences between
    model sizes are real (seed noise ≤ 0.9 pp, §8.8 a) but do not change which cells are
    usable. Extrapolation across workloads is fixed by training data, not by model size.
-4. **Feature reduction is a separate, free choice.** Decode 18 → 5 is exact; prefill
-   18 → 11 keeps extrapolation, 18 → 10 does not (§3.1, §8.8 b).
+4. **Feature reduction is a separate, free choice.** Decode 18 → 5 is exact and lossless;
+   prefill's atomic set is 10 but loses extrapolation, so prefill keeps 18 (§3.1, §8.8 b).
 
 Training the recommended models needs no code change:
 
@@ -950,6 +948,8 @@ only n · Σe matters for extrapolation; the others add nothing measurable. (c) 
 models lose nowhere in-distribution (every batch-size, context and token bucket within
 0.1 pp of the default); under extrapolation their losses sit on multi-request batches (10
 features) or short chunks (15 leaves), inside the range the default itself spans.
+n · Σe is a diagnosis of *why* the atomic set falls short, not a recommended eleventh
+feature: it is derived, and the reduced sets in this document are atomic sets only.
 
 All on the ten GB300 SGLang runs (dlcluster login-03, AMD EPYC 7313P), same method as §3.1
 and §8.7. Raw output in the playground `reports/`: `simplify_seed_variance.txt`,
@@ -992,9 +992,8 @@ The attention proxy, Σe · max p, the `log1p` transforms and max p − min p ea
 by at most ±3 pp when added or removed; the role flags do nothing (constant in a store).
 n · Σe is a product of two features the trees already have, but as its own axis one split
 separates "one long chunk" from "many short requests with the same token total", which is
-what LongBench-trained models otherwise get wrong on ShareGPT. The smallest prefill set
-that keeps the eighteen's extrapolation is therefore eleven features: the ten atomic ones
-plus `req_batch_size_x_sum_extend`.
+what LongBench-trained models otherwise get wrong on ShareGPT. This explains the gap
+between the atomic 10 and the 18; the practical choice for prefill stays at 18.
 
 **(c) Does the small model lose anywhere in particular?** Error by batch size, by mean
 context per request and (prefill) by scheduled tokens; default versus small model;
