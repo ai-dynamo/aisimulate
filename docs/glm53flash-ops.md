@@ -49,11 +49,12 @@ pointer writes, complete kernel/memcpy/memset activity matching, native
 enumeration consistency and retention of nondefault dependency metadata. The preceding
 graph/runtime change passed 112 focused tests. Historical validation passed
 17 Rust GLM tests and 79 Ops contract, evidence, native V2 runtime and shared
-retained-lifecycle tests. The installed wheel from commit `179818b6` verified
-2,177 RECORD hashes and installed bytes, 17 collector/evidence helper imports,
-all eight model graphs and 16 strict missing-measurement queries outside the
-source checkout. Its SHA256 is
-`270114d562548a5febf9298b2bfc17fde77520529d72a50690754b3fab2a6501`.
+retained-lifecycle tests. The fresh installed wheel from commit `855a81d4` verified
+all 2,178 hashed RECORD members against installed bytes, 18 collector/evidence
+helper imports, all eight model graphs and 16 strict missing-measurement queries
+outside the source checkout. Its SHA256 is
+`c37e481b27082e7e240ffdc09a5704d99b2a64fdbd1720d25795c402a89c5285`.
+Its installed Rust consumer also reproduced both coherent-rank smoke queries below.
 The earlier broad collector
 run passed 2,362 tests (8 skipped); that count is historical and predates the
 latest bounded evidence and native launch fixes. These checks establish software
@@ -69,7 +70,7 @@ recorded whole-forward interval, with lowest-rank ties, and keeps all that rank'
 operation measurements. It records the policy and complete selection evidence;
 old per-operation-max tables keep their historical behavior. No residual or
 scaling factor is introduced. On the same two instrumented calibration points,
-the rebuilt Rust consumer differs from native DeviceTimer by 3.29% and 2.26%;
+the installed wheel's Rust consumer differs from native DeviceTimer by 3.29% and 2.26%;
 these are internal diagnostics, not independent holdout accuracy. Old vLLM smoke
 lacks whole-forward GPU intervals and cannot be relabelled with the new policy.
 **All eight deployment cells retain data/accuracy status `NOT_EVALUATED`.** No
