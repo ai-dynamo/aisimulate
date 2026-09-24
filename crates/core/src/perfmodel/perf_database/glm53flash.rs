@@ -284,6 +284,41 @@ fn interpolate(points: &Points, target: &Key) -> Result<Option<LeafValue>, AicEr
     let target_coords = coordinates(target);
     let mut resolved = None;
     for sites in groups.values() {
+        // Prefer a measured line with both other coordinates fixed exactly.
+        // Taking axis bounds from an unrelated query/batch can otherwise hide
+        // a valid bracket or collapse all axes onto an unmeasured target.
+        // Axis priority is fixed: query/history, cached prefix, then batch.
+        // Every endpoint is already in the same physical/dispatch/state group.
+        let mut sliced = None;
+        for axis in [2, 1, 0] {
+            let on_line = |key: &Key| {
+                let coords = coordinates(key);
+                (0..3).all(|other| other == axis || coords[other] == target_coords[other])
+            };
+            let lower = sites
+                .iter()
+                .filter(|(key, _)| on_line(key) && coordinates(key)[axis] < target_coords[axis])
+                .max_by_key(|(key, _)| coordinates(key)[axis]);
+            let upper = sites
+                .iter()
+                .filter(|(key, _)| on_line(key) && coordinates(key)[axis] > target_coords[axis])
+                .min_by_key(|(key, _)| coordinates(key)[axis]);
+            if let (Some((lo, low_value)), Some((hi, high_value))) = (lower, upper) {
+                let (lo, hi) = (coordinates(lo)[axis], coordinates(hi)[axis]);
+                let weight = f64::from(target_coords[axis] - lo) / f64::from(hi - lo);
+                sliced = Some(
+                    low_value.value.latency * (1.0 - weight) + high_value.value.latency * weight,
+                );
+                break;
+            }
+        }
+        if let Some(latency) = sliced {
+            if resolved.is_some() {
+                return Ok(None);
+            }
+            resolved = Some(LeafValue::latency_only(latency));
+            continue;
+        }
         let mut bounds = [(0_u32, 0_u32); 3];
         let mut supported = true;
         for axis in 0..3 {
@@ -670,6 +705,39 @@ mod tests {
         points.insert(key(2044), measured(3.0, SHA));
         points.insert(key(2052), measured(7.0, SHA));
         assert!(interpolate(&points, &key(2048)).unwrap().is_none());
+    }
+
+    #[test]
+    fn same_coordinate_slice_is_not_hidden_by_unrelated_query_points() {
+        let attention = crate::operators::glm53flash::tests::attention("kda");
+        let shape = geometry(&attention).unwrap();
+        let key = |prefix, x| Key {
+            component: "attention".into(),
+            geometry: shape.clone(),
+            batch_size: 1,
+            prefix,
+            x,
+        };
+        let mut points = Points::new();
+        points.insert(key(992, 32), measured(3.0, SHA));
+        points.insert(key(2016, 32), measured(7.0, SHA));
+        // Same partition, but a different query. Its prefix must not force an
+        // absent (1792,32) corner or an absent exact target (1504,32).
+        points.insert(key(1792, 64), measured(99.0, SHA));
+        points.insert(key(1504, 96), measured(101.0, SHA));
+        assert_eq!(
+            interpolate(&points, &key(1504, 32))
+                .unwrap()
+                .unwrap()
+                .latency,
+            5.0
+        );
+        assert!(interpolate(&points, &key(2050, 32)).unwrap().is_none());
+        points.get_mut(&key(2016, 32)).unwrap().dispatch = "other-kernel".into();
+        assert!(interpolate(&points, &key(1504, 32)).unwrap().is_none());
+        points.get_mut(&key(2016, 32)).unwrap().dispatch = SHA.into();
+        points.get_mut(&key(2016, 32)).unwrap().graph = true;
+        assert!(interpolate(&points, &key(1504, 32)).unwrap().is_none());
     }
 
     #[test]
