@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# SQLAlchemy 2.1.0's sdist declares duplicate normalized optional-dependency
+# names (including mssql-pymssql), so uv rejects its build metadata before
+# wheel tests start. Observed in Full CI run 36051534826 with uv 0.12.18.
+# Exclude only that release; this constrains CI installation, not wheel metadata.
+sqlalchemy!=2.1.0
