@@ -4,9 +4,11 @@
 
 import hashlib
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from collector.fpm_forward.sglang_artifact import (
     TELEMETRY_POLICY,
     file_receipt,
@@ -108,10 +110,9 @@ def raw(records):
 
 
 def artifact(tmp_path):
-    from collector.fpm_forward import sglang_artifact
-
     from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
     from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+    from collector.fpm_forward import sglang_artifact
 
     point, manifest, records = fixture()
     pins = json.loads(
@@ -251,6 +252,53 @@ def test_native_sglang_median_excludes_warmup_and_roundtrips(tmp_path):
         validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
 
 
+def test_large_native_files_stream_and_compact_rows_preserve_timing(tmp_path, monkeypatch):
+    cell, payload = artifact(tmp_path)
+    point, manifest, records = fixture()
+    expected = read_observations(manifest, raw(records), [point])
+    paths = {rank: tmp_path / f"forward-rank-{rank}.jsonl" for rank in records}
+    read_bytes = Path.read_bytes
+
+    def bounded_read(path):
+        assert path.suffix != ".jsonl", "native token evidence must not be loaded as a whole file"
+        return read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", bounded_read)
+    actual = read_observations(manifest, paths, [point], compact=True)
+    assert set(actual) == set(expected)
+    for rank, selected in actual.items():
+        assert set(selected) == set(expected[rank])
+        for key, record in selected.items():
+            assert record["native_forward_ms"] == expected[rank][key]["native_forward_ms"]
+            assert record["request_ids"] == expected[rank][key]["request_ids"]
+            assert all(
+                "prompt_token_ids" not in request and "native_query_token_ids" not in request
+                for request in record["requests"]
+            )
+    validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
+    # A later append must still fail the immutable receipt, even though token
+    # histories and per-rank comparisons now use bounded streaming readers.
+    with paths[0].open("ab") as stream:
+        stream.write(b"{}\n")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
+
+
+def test_streaming_reader_rejects_request_reuse_after_history_retirement(tmp_path):
+    import copy
+
+    point, manifest, records = fixture()
+    extra = copy.deepcopy(records[0][0])
+    extra["forward_id"] = "rank-0/reused-request"
+    records[0].append(extra)
+    paths = {}
+    for rank, data in raw(records).items():
+        paths[rank] = tmp_path / f"rank-{rank}.jsonl"
+        paths[rank].write_bytes(data)
+    with pytest.raises(ValueError, match="reused after"):
+        read_observations(manifest, paths, [point], compact=True)
+
+
 @pytest.mark.parametrize("index", [10, 11])
 @pytest.mark.parametrize("field", ["run_id", "execution_identity", "telemetry_policy", "context_policy"])
 def test_native_sglang_binds_seed_and_target_identity(field, index):
@@ -348,9 +396,8 @@ def test_native_sglang_rejects_invalid_observations(corruption):
 
 
 def test_ops_provenance_is_bound_to_loaded_config_and_native_source(tmp_path):
-    from collector.fpm_forward.sglang_driver import read_ops_provenance
-
     from aisimulate_core.sdk.glm53flash import BACKEND_REVISIONS
+    from collector.fpm_forward.sglang_driver import read_ops_provenance
 
     def sha256_json(value):
         return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

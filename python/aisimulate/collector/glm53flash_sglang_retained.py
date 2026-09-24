@@ -17,6 +17,8 @@ import re
 import time
 from pathlib import Path
 
+from collector.glm53flash_jsonl import iter_records
+
 PRODUCER_PROTOCOL = "sglang_retained_request_benchmark_v1"
 
 
@@ -24,7 +26,9 @@ def _digest(values) -> str:
     return hashlib.sha256(json.dumps(values, separators=(",", ":")).encode()).hexdigest()
 
 
-def validate_retained_states(manifest: dict, traces: dict[int, bytes], receipts: dict[int, bytes]) -> None:
+def validate_retained_states(
+    manifest: dict, traces: dict[int, bytes | Path], receipts: dict[int, bytes | Path]
+) -> None:
     """Verify lifecycle receipts against every actual completed native forward."""
     if set(traces) != set(receipts):
         raise ValueError("retained-state rank coverage differs from native forwards")
@@ -58,12 +62,14 @@ def validate_retained_states(manifest: dict, traces: dict[int, bytes], receipts:
         return value
 
     for rank, raw in traces.items():
-        forwards = [json.loads(line) for line in raw.splitlines()]
-        events = [json.loads(line) for line in receipts[rank].splitlines()]
-        if len(forwards) != len(events):
-            raise ValueError("retained-state receipt omitted or added native forwards")
+        from itertools import zip_longest
+
+        forwards = iter_records(raw)
+        events = iter_records(receipts[rank])
         parked, released = {}, set()
-        for forward, event in zip(forwards, events, strict=True):
+        for forward, event in zip_longest(forwards, events):
+            if forward is None or event is None:
+                raise ValueError("retained-state receipt omitted or added native forwards")
             if (
                 forward.get("producer_protocol") != PRODUCER_PROTOCOL
                 or forward.get("gpu_completed") is not True
