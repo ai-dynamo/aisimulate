@@ -201,6 +201,23 @@ has no reduced preset; a reduced set is trained by passing the feature names to
 
 ### 3.1 How many of the 18 features are needed
 
+**Conclusion.** Decode needs 5 of the 18; prefill needs 11. The decode reduction is exact
+(the other 13 are identities of the 5 on a decode step) and measured lossless on every
+train/test pair. The prefill reduction keeps the 10 atomic features plus one derived one,
+n · Σe, which is the only derived feature that carries cross-workload accuracy (§8.8 b);
+with just the 10 atomic features prefill loses 2–35 pp on cross-workload cells. Fewer
+features do not make inference faster (§8.7); the reason to reduce is simplicity, not speed.
+The shipped default stays at 18 for both roles; the reduced sets are selected with
+`--features`.
+
+| role | features | count | vs 18 features |
+| --- | --- | --- | --- |
+| decode | n, Σp, max p, min p, Σp² | 5 | identical to the second decimal on all 13 train/test cells |
+| prefill | n, Σe, max e, min e, Σp, max p, min p, Σe·p, Σe², Σp², **n · Σe** | 11 | same in-distribution; within 1.4 pp on every cross-workload cell |
+| prefill | the 10 above without n · Σe | 10 | same in-distribution; LongBench → ShareGPT 29 % → 69 % |
+
+Evidence follows.
+
 **By construction.** Eight of the 18 are exact functions of the others, or constants:
 `req_sum_attn_flops` = Σe·p + ½Σe², `req_sum_extend_x_max_past` = Σe · max p,
 `req_batch_size_x_sum_extend` = n · Σe, `req_max_past_minus_min_past` = max p − min p, the
@@ -725,12 +742,51 @@ simulations in parallel (previous table). The measurement is here so the option 
 quantified, not guessed. Raw data: `estimator_threads_grace_node.csv`,
 `estimator_threads_amd_login.csv` in the playground `reports/`.
 
-### 8.7 Smaller models: accuracy against time per estimate
+### 8.7 Simplifying the model: fewer features, fewer and shallower trees
 
-The 400-tree, 31-leaf model was chosen for accuracy without asking what it costs. This
-section trains smaller models with the existing CLI options (`--max-iter`,
-`--learning-rate`, `--max-leaf-nodes`, `--features`; no code change) and measures both.
-The learning rate is raised as the tree count drops so the ensembles fit to the same depth.
+**Conclusion.** The default model (18 features, 400 trees × 31 leaves) can be replaced by
+one 4–5× faster with no measurable loss where the model is meant to be used, i.e. on the
+workload it was trained on:
+
+| role | features | trees × leaves (learning rate) | time per estimate, one Grace core | accuracy on held-out data |
+| --- | --- | --- | --- | --- |
+| decode, default | 18 | 400 × 31 (0.05) | 3.4–5.5 µs | pooled 2.06 %, vLLM pair 4.02 % |
+| **decode, recommended** | **5** | **100 × 7 (0.2)** | **0.8–1.6 µs** | **pooled 2.02 %, vLLM pair 3.29 %** |
+| prefill, default | 18 | 400 × 31 (0.05) | 4.5–6.3 µs | pooled 2.05 %, vLLM pair 5.09 % |
+| **prefill, recommended** | **18 (or 11)** | **100 × 15 (0.2)** | **0.8–1.1 µs** | **pooled 2.03 %, vLLM pair 5.04 %** |
+
+Four findings support this:
+
+1. **Time per estimate depends on trees × leaves, not on the feature count.** 100 × 7 is
+   4–5× faster than 400 × 31 at every batch size; 18 vs 5 features at equal tree size
+   differ by less than 0.2 µs.
+2. **Same-workload accuracy is flat across the whole grid.** From 400 × 31 down to 50 × 7,
+   pooled MAPE stays at 2.0–2.1 % for both roles; per batch-size and per context bucket
+   the small models are within 0.1 pp of the default (§8.8 c). On the vLLM pair the
+   7-leaf models are better (decode p95 3.3 % vs 9.4 %): 31-leaf trees overfit the
+   training run's step-time noise.
+3. **Cross-workload accuracy moves by a few points in both directions.** Those cells are
+   25–70 % for every configuration including the default; the 2–3 pp differences between
+   model sizes are real (seed noise ≤ 0.9 pp, §8.8 a) but do not change which cells are
+   usable. Extrapolation across workloads is fixed by training data, not by model size.
+4. **Feature reduction is a separate, free choice.** Decode 18 → 5 is exact; prefill
+   18 → 11 keeps extrapolation, 18 → 10 does not (§3.1, §8.8 b).
+
+Training the recommended models needs no code change:
+
+```
+# decode
+--features req_batch_size,req_sum_past,req_max_past,req_min_past,req_sum_past_squared --max-iter 100 --learning-rate 0.2 --max-leaf-nodes 7
+# prefill
+--max-iter 100 --learning-rate 0.2 --max-leaf-nodes 15
+```
+
+The shipped defaults are unchanged. What follows is the evidence.
+
+**Method.** Smaller models are trained with the existing CLI options (`--max-iter`,
+`--learning-rate`, `--max-leaf-nodes`, `--features`). The learning rate is raised as the
+tree count drops so the ensembles fit to the same depth. Grid: features {18; decode 5;
+prefill 10} × trees {400, 200, 100, 50} × leaves {31, 15, 7}.
 
 **Accuracy on the GB300 SGLang data** (ten runs, method of §3.1: "pooled" = 60/40 time
 split of all runs; A → B = all runs of A train, all runs of B test; MAPE). Decode uses the
@@ -805,23 +861,19 @@ held-out run does not drop; on this pair the 7-leaf models are better (decode 3.
 4.0 %, p95 3.3 % vs 9.4 %) because the 31-leaf trees overfit the training run's
 step-time noise.
 
-Reading: a decode model of five features, 100 trees and 7 leaves (learning rate 0.2) and a
-prefill model of 18 features, 100 trees and 15 leaves (learning rate 0.2) are 4–5× faster
-than the current default at the same or better accuracy on every same-workload test; on
-cross-workload cells they are within a few points of the default in both directions (§8.8). They are trained with the
-existing CLI:
-
-```
---features req_batch_size,req_sum_past,req_max_past,req_min_past,req_sum_past_squared --max-iter 100 --learning-rate 0.2 --max-leaf-nodes 7   # decode
---max-iter 100 --learning-rate 0.2 --max-leaf-nodes 15                                                                                  # prefill
-```
-
-The shipped defaults are unchanged. Machines: accuracy grid on dlcluster login-03 (AMD
+Machines: accuracy grid on dlcluster login-03 (AMD
 EPYC 7313P, 16 threads); vLLM training and latency on AI Hub aws-cmh `cpu` partition node
 cpu-0007 (NVIDIA Grace, 96 cores, exclusive; 48 trainings in parallel at 8 threads each,
 then the bench pinned to one core).
 
 ### 8.8 Three checks on the simplified models
+
+**Conclusion.** (a) Training is deterministic for prefill and within ±0.9 pp for decode,
+so the differences reported in §8.7 are real. (b) Of the eight derived prefill features,
+only n · Σe matters for extrapolation; the others add nothing measurable. (c) The small
+models lose nowhere in-distribution (every batch-size, context and token bucket within
+0.1 pp of the default); under extrapolation their losses sit on multi-request batches (10
+features) or short chunks (15 leaves), inside the range the default itself spans.
 
 All on the ten GB300 SGLang runs (dlcluster login-03, AMD EPYC 7313P), same method as §3.1
 and §8.7. Raw output in the playground `reports/`: `simplify_seed_variance.txt`,
