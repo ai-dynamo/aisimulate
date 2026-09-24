@@ -13,6 +13,7 @@ import time
 from types import SimpleNamespace
 
 import pytest
+
 from collector.fpm_forward.slurm import SlurmCellRunner
 
 pytestmark = pytest.mark.unit
@@ -65,6 +66,42 @@ def test_slurm_stage_and_argv_keep_shared_result_unit_identity(runner, monkeypat
     assert "--jobid=1234" in argv and "--gpus-per-node=4" in argv
     assert "FPM_NODE_RANK=0" in argv and "FPM_MASTER_ADDR=test-node" in argv
     assert f"{runner.cell_dir}/raw/node0000:/results" in next(a for a in argv if a.startswith("--container-mounts="))
+
+
+@pytest.mark.skipif(os.name != "posix", reason="native session creation is POSIX-specific")
+@pytest.mark.parametrize("exit_code", [0, 17])
+def test_slurm_native_exec_chain_can_create_session_and_preserves_argv(runner, monkeypatch, exit_code):
+    """Reproduce Pyxis's process-group leader without requiring Slurm or GPUs."""
+    literal = 'spaces; $(not-a-command) "quoted"'
+    probe = (
+        "import json,os,sys; before=[os.getpid(),os.getpgrp(),os.getsid(0)]; "
+        "os.setsid(); print(json.dumps({'before':before,'after':[os.getpid(),os.getpgrp(),os.getsid(0)],"
+        "'argv':sys.argv[1:],'rank':os.environ['FPM_NODE_RANK']})); sys.exit(int(sys.argv[1]))"
+    )
+
+    def run_actual_container_command(args, **kwargs):
+        return subprocess.run(
+            args[args.index("env") :],
+            start_new_session=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    runner.hosts = ["test-node"]
+    monkeypatch.setattr(runner, "_command", run_actual_container_command)
+    result = runner._exec(
+        "node0000",
+        ["bash", "-c", 'exec "$@"', "native-launcher", sys.executable, "-c", probe, str(exit_code), literal],
+        timeout=10,
+    )
+    assert result.returncode == exit_code, result.stderr
+    receipt = json.loads(result.stdout)
+    assert receipt["before"][0] != receipt["before"][1]
+    assert len(set(receipt["after"])) == 1
+    assert receipt["argv"] == [str(exit_code), literal]
+    assert receipt["rank"] == "0"
 
 
 def test_slurm_cleanup_cancels_only_receipted_steps_and_verifies_exit(runner, monkeypatch):

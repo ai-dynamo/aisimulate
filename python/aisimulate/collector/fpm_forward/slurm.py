@@ -178,6 +178,14 @@ class SlurmCellRunner:
                 "env",
                 f"FPM_NODE_RANK={rank}",
                 f"FPM_MASTER_ADDR={self.hosts[0]}",
+                # Pyxis can start its command as a process-group leader. Keep
+                # a parent alive so native launchers may create their own
+                # session after their exec chain (os.setsid rejects leaders).
+                # Positional arguments preserve the original argv literally.
+                "bash",
+                "-c",
+                '"$@"; status=$?; exit "$status"',
+                "fpm-slurm-command",
                 *command,
             ],
             timeout=timeout,
