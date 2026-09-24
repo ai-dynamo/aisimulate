@@ -67,20 +67,23 @@ if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
         def exec_module(self, module):
             self.original.exec_module(module)
             expected = json.loads(Path(__file__).with_name("runtime-source-sha256.json").read_text())
-            source = "vllm/v1/worker/gpu_model_runner.py"
+            source = module.__name__.replace(".", "/") + ".py"
             actual = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
             if actual != expected[source]:
                 raise RuntimeError("native vLLM worker differs from the pinned Ops source")
-            from collector.glm53flash_vllm_runtime import install
+            from collector.glm53flash_vllm_runtime import install, install_v2
 
-            install()
+            (install_v2 if module.__name__ == "vllm.v1.worker.gpu.model_runner" else install)()
 
         def __getattr__(self, name):
             return getattr(self.original, name)
 
     class _SchedulerFinder(importlib.abc.MetaPathFinder):
         def find_spec(self, fullname, path=None, target=None):
-            worker = fullname == "vllm.v1.worker.gpu_model_runner" and os.environ.get("AISIM_GLM53_PURPOSE") in (
+            worker = fullname in (
+                "vllm.v1.worker.gpu_model_runner",
+                "vllm.v1.worker.gpu.model_runner",
+            ) and os.environ.get("AISIM_GLM53_PURPOSE") in (
                 "ops",
                 "ops_holdout",
             )

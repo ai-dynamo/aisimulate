@@ -112,6 +112,46 @@ def native_coordinates(runner, scheduler_output) -> dict:
     }
 
 
+def native_v2_coordinates(runner, scheduler_output, batch) -> dict:
+    """Read the actual V2 InputBatch; never reconstruct native hybrid metadata."""
+    ids = list(batch.req_ids)
+    queries = list(map(int, batch.num_scheduled_tokens))
+    prefixes = list(map(int, batch.num_computed_tokens_np))
+    gpu_lengths = list(map(int, batch.seq_lens[: len(ids)].detach().cpu().tolist()))
+    phases = {"context" if flag else "generation" for flag in batch.is_prefilling_np}
+    if (
+        not ids
+        or len(set(ids)) != len(ids)
+        or len(phases) != 1
+        or len(set(queries)) != 1
+        or len(set(prefixes)) != 1
+        or min(queries) < 1
+        or min(prefixes) < 0
+    ):
+        raise RuntimeError("native V2 Ops requires homogeneous actual request coordinates")
+    if (
+        batch.num_tokens != sum(queries)
+        or batch.num_tokens_after_padding != batch.num_tokens
+        or batch.num_draft_tokens
+        or gpu_lengths != [p + q for p, q in zip(prefixes, queries, strict=True)]
+        or queries != [scheduler_output.num_scheduled_tokens[rid] for rid in ids]
+        or list(map(int, batch.idx_mapping_np)) != [runner.req_states.req_id_to_index[rid] for rid in ids]
+    ):
+        raise RuntimeError("native V2 scheduled tokens/slots/padding differ from actual inputs")
+    phase = phases.pop()
+    if phase == "generation" and queries[0] != 1:
+        raise RuntimeError("native V2 Ops excludes speculative decode")
+    return {
+        "phase": phase,
+        "batch_size": len(ids),
+        "request_ids": ids,
+        "query_lengths": queries,
+        "prefix_lengths": prefixes,
+        "total_new_tokens": sum(queries),
+        "total_past_kv_tokens": sum(prefixes),
+    }
+
+
 class _TraceState:
     def __init__(self, runner, output, provenance, manifest):
         import torch
@@ -155,12 +195,16 @@ class _TraceState:
         with path.open("a") as stream:
             stream.write(json.dumps(value, sort_keys=True) + "\n")
 
-    def before(self, scheduler_output, input_ids, forward_context):
+    def before(self, scheduler_output, input_ids, forward_context, *, native_batch=None):
         from collector.glm53flash_contract import validate_native_workload
         from collector.glm53flash_observer import NativeWorkload
 
         context_receipt = native_context_receipt(self.runner)
-        coords = native_coordinates(self.runner, scheduler_output)
+        coords = (
+            native_coordinates(self.runner, scheduler_output)
+            if native_batch is None
+            else native_v2_coordinates(self.runner, scheduler_output, native_batch)
+        )
         for prefix, query in zip(coords["prefix_lengths"], coords["query_lengths"], strict=True):
             validate_native_workload("vllm", coords["phase"], prefix, query)
             if prefix + query > context_receipt["context_policy"]["measured_context_limit"]:
@@ -180,12 +224,16 @@ class _TraceState:
         for rid, query, prefix in zip(
             coords["request_ids"], coords["query_lengths"], coords["prefix_lengths"], strict=True
         ):
-            request = self.runner.requests[rid]
             previous = self.previous.get(rid)
             real = previous is not None and previous["computed_tokens"] == prefix
             native_query = tokens[offset : offset + query]
             offset += query
-            prompt = list(map(int, request.prompt_token_ids))
+            if native_batch is None:
+                prompt = list(map(int, self.runner.requests[rid].prompt_token_ids))
+            else:
+                index = self.runner.req_states.req_id_to_index[rid]
+                count = int(self.runner.req_states.prompt_len.np[index])
+                prompt = list(map(int, self.runner.req_states.all_token_ids.gpu[index, :count].detach().cpu().tolist()))
             full = (previous["tokens"] if real else prompt[:prefix]) + native_query
             if len(full) != prefix + query or full[: min(len(prompt), len(full))] != prompt[: len(full)]:
                 raise RuntimeError("native query tokens disagree with real request prompt/history")
@@ -361,3 +409,128 @@ def install():
 
     GPUModelRunner.execute_model, GPUModelRunner._model_forward = execute, forward
     GPUModelRunner._aisim_glm53_ops_installed = True
+
+
+def install_v2():
+    """Bind the pinned native V2 model forward and its later logits/sample step."""
+    from importlib.metadata import version
+
+    if version("vllm") != "0.30.0":
+        raise RuntimeError("GLM eager Ops requires pinned vLLM0.30.0")
+    from vllm.forward_context import get_forward_context
+    from vllm.v1.worker.gpu.model_runner import GPUModelRunner
+
+    if getattr(GPUModelRunner, "_aisim_glm53_ops_installed", False):
+        return
+    output = Path(os.environ["AISIM_GLM53_TRACE_DIR"])
+    provenance = json.loads(Path(os.environ["AISIM_GLM53_PROVENANCE"]).read_text())
+    manifest_path = os.environ.get("AISIM_GLM53_OPS_MANIFEST")
+    purpose = os.environ.get("AISIM_GLM53_PURPOSE")
+    if purpose not in ("ops", "ops_holdout") or bool(manifest_path) != (purpose == "ops"):
+        raise RuntimeError("native V2 instrumentation must match explicit Ops/holdout purpose")
+    manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
+    original_execute = GPUModelRunner.execute_model
+    original_prepare = GPUModelRunner.prepare_inputs
+    original_sample = GPUModelRunner.sample
+    original_sample_tokens = GPUModelRunner.sample_tokens
+    current, bindings = threading.local(), {}
+
+    @functools.wraps(original_prepare)
+    def prepare(runner, scheduler_output, *args, **kwargs):
+        batch = original_prepare(runner, scheduler_output, *args, **kwargs)
+        if getattr(current, "scheduler_output", None) is not scheduler_output:
+            raise RuntimeError("native V2 InputBatch has no observed scheduling boundary")
+        binding = bindings.get(id(runner))
+        if binding is None:
+            state = _TraceState(runner, output, provenance, manifest)
+            binding = bindings[id(runner)] = {"state": state, "pending": None, "sampled": None}
+            original_forward = runner.model.forward
+
+            @functools.wraps(original_forward)
+            def forward(*forward_args, **forward_kwargs):
+                schedule = getattr(current, "scheduler_output", None)
+                if schedule is None:
+                    return original_forward(*forward_args, **forward_kwargs)
+                if binding["pending"] is not None:
+                    raise RuntimeError("native V2 forward repeated before its logits/sample completion")
+                ids = forward_kwargs.get("input_ids", forward_args[0] if forward_args else None)
+                record, completed = state.before(schedule, ids, get_forward_context(), native_batch=binding["batch"])
+                record["native_runner"] = "v2"
+                try:
+                    result = original_forward(*forward_args, **forward_kwargs)
+                except BaseException as error:
+                    state.append("failed", {**record, "error_type": type(error).__name__, "error": str(error)})
+                    raise
+                binding["pending"] = record, completed
+                return result
+
+            runner.model.forward = forward
+        if binding["pending"] is not None:
+            raise RuntimeError("native V2 previous forward did not complete its sampling step")
+        binding["batch"] = batch
+        return batch
+
+    @functools.wraps(original_execute)
+    def execute(runner, scheduler_output, *args, **kwargs):
+        # Native positional argument order: intermediate_tensors, dummy_run.
+        dummy = kwargs.get("dummy_run", args[1] if len(args) > 1 else False)
+        if dummy:
+            return original_execute(runner, scheduler_output, *args, **kwargs)
+        if getattr(current, "scheduler_output", None) is not None:
+            raise RuntimeError("nested native V2 execution cannot share an Ops receipt")
+        current.scheduler_output = scheduler_output
+        try:
+            result = original_execute(runner, scheduler_output, *args, **kwargs)
+            if scheduler_output.total_num_scheduled_tokens:
+                binding = bindings.get(id(runner))
+                if binding is None or binding["pending"] is None:
+                    raise RuntimeError("native V2 scheduled tokens bypassed the observed eager model call")
+            return result
+        finally:
+            current.scheduler_output = None
+
+    @functools.wraps(original_sample)
+    def sample(runner, *args, **kwargs):
+        result = original_sample(runner, *args, **kwargs)
+        binding = bindings.get(id(runner))
+        if binding is not None and binding["pending"] is not None:
+            if binding["sampled"] is not None:
+                raise RuntimeError("native V2 sample repeated for one observed forward")
+            # This copy follows native logits and sampling; it is outside every
+            # measured module and the embedding-to-logits whole-GPU window.
+            binding["sampled"] = result[0].sampled_token_ids.detach().cpu().tolist()
+        return result
+
+    @functools.wraps(original_sample_tokens)
+    def sample_tokens(runner, *args, **kwargs):
+        result = original_sample_tokens(runner, *args, **kwargs)
+        binding = bindings.get(id(runner))
+        if binding is not None and binding["pending"] is not None:
+            record, completed = binding["pending"]
+            sampled = binding["sampled"]
+            if sampled is None or len(sampled) != len(record["requests"]) or any(len(row) != 1 for row in sampled):
+                raise RuntimeError("native V2 sampling receipt is not one token per actual request")
+            for request, tokens in zip(record["requests"], sampled, strict=True):
+                request["sampled_token_id"] = int(tokens[0])
+            binding["state"].after(record, completed)
+            binding["pending"], binding["sampled"] = None, None
+        return result
+
+    GPUModelRunner.prepare_inputs = prepare
+    GPUModelRunner.execute_model = execute
+    GPUModelRunner.sample = sample
+    GPUModelRunner.sample_tokens = sample_tokens
+    GPUModelRunner._aisim_glm53_ops_installed = True
+    output.mkdir(parents=True, exist_ok=True)
+    (output / f"worker-activation-{os.getpid()}.json").write_text(
+        json.dumps(
+            {
+                "native_runner": "v2",
+                "class": GPUModelRunner.__module__ + "." + GPUModelRunner.__name__,
+                "purpose": purpose,
+                "pid": os.getpid(),
+                "status": "wrappers_installed_no_gpu_execution_claim",
+            }
+        )
+        + "\n"
+    )

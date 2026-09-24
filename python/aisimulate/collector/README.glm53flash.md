@@ -163,10 +163,14 @@ without modification; the wrappers and trace schema are original adapter code.
 
 ## vLLM eager worker integration
 
-Install `collector.glm53flash_vllm_runtime.install()` in each V1 worker before
-request execution. It wraps `GPUModelRunner.execute_model` and `_model_forward`,
-reads actual scheduler/query/prefix data after native metadata preparation, and
-finalizes after native `compute_logits`. The scheduler atomically updates
+The pinned release selects `vllm.v1.worker.gpu.model_runner.GPUModelRunner`
+(V2), as confirmed by actual job 604200. The source-checked import loader installs
+`install_v2()` on that actual class. It observes the returned native `InputBatch`,
+wraps the loaded model forward, and finalizes only after the separate native
+`sample_tokens` call has executed logits. `execute_model` itself returns before
+logits in V2. Dummy profiling runs are excluded. The legacy V1 adapter remains
+explicitly separate. Actual worker activation receipts and native source hashes
+are retained; import success alone does not qualify a GPU observation. The scheduler atomically updates
 `AISIM_GLM53_REQUEST_MANIFEST` before each request cohort; workers reload it for
 every real forward. Required files are `AISIM_GLM53_OPS_MANIFEST` and
 `AISIM_GLM53_PROVENANCE`; output uses `AISIM_GLM53_TRACE_DIR`. Every cache tensor's

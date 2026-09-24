@@ -131,3 +131,98 @@ def test_completed_native_targets_retire_host_history_but_keep_raw_receipts():
     assert not state.previous
     assert [row["forward_id"] for _, row in saved] == ["seed-1", "target-1"]
     assert all(row["gpu_completed"] is True for _, row in saved)
+
+
+def test_v2_reads_real_input_batch_and_rejects_gpu_cpu_state_disagreement():
+    from collector.glm53flash_vllm_runtime import native_v2_coordinates
+
+    class Lengths(Tensor):
+        def __getitem__(self, key):
+            return Lengths(self.values[key])
+
+    actual = SimpleNamespace(req_states=SimpleNamespace(req_id_to_index={"r": 3}))
+    batch = SimpleNamespace(
+        req_ids=["r"],
+        num_scheduled_tokens=[3],
+        num_computed_tokens_np=[4096],
+        seq_lens=Lengths([4099]),
+        is_prefilling_np=[True],
+        num_tokens=3,
+        num_tokens_after_padding=3,
+        num_draft_tokens=0,
+        idx_mapping_np=[3],
+    )
+    schedule = SimpleNamespace(num_scheduled_tokens={"r": 3})
+    assert native_v2_coordinates(actual, schedule, batch)["prefix_lengths"] == [4096]
+    batch.seq_lens = Lengths([4100])
+    with pytest.raises(RuntimeError, match="actual inputs"):
+        native_v2_coordinates(actual, schedule, batch)
+
+
+def test_v2_finalizes_after_native_later_logits_and_sample_not_execute(monkeypatch, tmp_path):
+    import importlib.metadata
+    import sys
+
+    from collector import glm53flash_vllm_runtime as runtime
+
+    calls = []
+    model = SimpleNamespace(
+        forward=lambda **kwargs: calls.append("model"), compute_logits=lambda: calls.append("logits")
+    )
+
+    class NativeRunner:
+        def prepare_inputs(self, schedule):
+            calls.append("native_prepare")
+            return "native_batch"
+
+        def execute_model(self, schedule, intermediate_tensors=None, dummy_run=False):
+            if dummy_run:
+                return "native_dummy"
+            self.prepare_inputs(schedule)
+            self.model.forward(input_ids="native_ids")
+            return None
+
+        def sample(self):
+            self.model.compute_logits()
+            calls.append("native_sample")
+            return SimpleNamespace(sampled_token_ids=Tensor([[7]])), None, None
+
+        def sample_tokens(self):
+            return self.sample()
+
+    class Trace:
+        def __init__(self, *args):
+            calls.append("install_module_hooks")
+
+        def before(self, schedule, input_ids, context, *, native_batch):
+            assert input_ids == "native_ids" and native_batch == "native_batch"
+            calls.append("before")
+            return {"requests": [{}]}, {"r": [5]}
+
+        def after(self, record, completed):
+            assert record["requests"][0]["sampled_token_id"] == 7
+            calls.append("after")
+
+    for name in ("provenance", "manifest"):
+        (tmp_path / f"{name}.json").write_text("{}")
+    monkeypatch.setenv("AISIM_GLM53_TRACE_DIR", str(tmp_path))
+    monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(tmp_path / "provenance.json"))
+    monkeypatch.setenv("AISIM_GLM53_OPS_MANIFEST", str(tmp_path / "manifest.json"))
+    monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.30.0")
+    monkeypatch.setitem(
+        sys.modules, "vllm.forward_context", SimpleNamespace(get_forward_context=lambda: "native_context")
+    )
+    monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu.model_runner", SimpleNamespace(GPUModelRunner=NativeRunner))
+    monkeypatch.setattr(runtime, "_TraceState", Trace)
+    runtime.install_v2()
+    runner = NativeRunner()
+    runner.model = model
+    schedule = SimpleNamespace(total_num_scheduled_tokens=1)
+    assert runner.execute_model(schedule, dummy_run=True) == "native_dummy"
+    assert not calls
+    runner.execute_model(schedule)
+    assert "after" not in calls
+    runner.sample_tokens()
+    assert calls == ["native_prepare", "install_module_hooks", "before", "model", "logits", "native_sample", "after"]
+    assert list(tmp_path.glob("worker-activation-*.json"))

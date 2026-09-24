@@ -270,6 +270,8 @@ def load_native(run: dict, base: Path) -> dict:
         for row in iter_records(root / f"forward-rank-{rank}.jsonl"):
             if backend == "vllm":
                 _validate_vllm_context(row)
+                if row.get("native_runner") != "v2":
+                    raise ValueError("Ops requires the pinned native V2 runner observation boundary")
             if execution is not None and any(row.get(key) != value for key, value in execution.items()):
                 raise ValueError("Ops raw forward execution differs from the retained native runtime receipts")
             if row.get("forward_id") in seen_forward_ids:
@@ -334,9 +336,9 @@ def load_native(run: dict, base: Path) -> dict:
                 if request["input_tokens_sha256"] != sha256_json(history):
                     raise ValueError("Ops native input history digest mismatch")
                 sample = request.get("sampled_token_id")
-                if backend == "sglang" and prefix >= len(prompt) and (not prior or tokens != [prior[3]]):
+                if prefix >= len(prompt) and (not prior or tokens != [prior[3]]):
                     raise ValueError("Ops decode differs from preceding sampled token")
-                if backend == "sglang" and (type(sample) is not int or sample < 0):
+                if type(sample) is not int or sample < 0:
                     raise ValueError("Ops lacks completed native sampled token")
                 previous[rid] = row["forward_id"], history, prompt, sample
                 token_key = (rid, prefix, query)
