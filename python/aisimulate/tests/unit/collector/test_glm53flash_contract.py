@@ -150,6 +150,32 @@ def test_rank_and_source_mismatch_cannot_be_repaired_by_merge(tmp_path):
         aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
 
 
+def test_shared_physical_key_uses_frozen_point_owner_not_lower_latency(tmp_path):
+    row = sample_row()
+    records = [
+        {
+            **row,
+            "benchmark_id": point,
+            "sample": rep,
+            "repetition": rep,
+            "invocation": point * 100 + rep,
+            "sampling_role": "warmup" if rep < 5 else "measurement",
+            "latency": 9.0 if point == 1 else 1.0,
+        }
+        for point in (1, 2)
+        for rep in range(15)
+    ]
+    paths = rank_files(tmp_path, [records, records])
+    result = aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)[0]
+    assert (result["latency"], result["sample_count"], result["original_point_id"]) == (9.0, 10, 1)
+    result = aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64, point_ids={1: 8, 2: 3})[0]
+    assert (result["latency"], result["owner_benchmark_id"], result["original_point_id"]) == (1.0, 2, 3)
+    records[-1]["dispatch_fingerprint"] = "a" * 64
+    paths = rank_files(tmp_path, [records, records])
+    with pytest.raises(ValueError, match="incompatible measured dispatch"):
+        aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
+
+
 def test_checkpoint_formats_remain_separate_physical_keys(tmp_path):
     pq = pytest.importorskip("pyarrow.parquet")
     fp8 = sample_row()

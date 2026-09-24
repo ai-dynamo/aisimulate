@@ -208,16 +208,27 @@ def validate_calibration_row(row: dict) -> None:
         raise ValueError("formal calibration rows require ten measured repetitions")
 
 
-def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict, *, evidence_sha256: str) -> list[dict]:
+def aggregate_rank_records(
+    paths: list[Path], tp_size: int, manifest: dict, *, evidence_sha256: str, point_ids: dict[int, int] | None = None
+) -> list[dict]:
     """Median of per-invocation rank maxima, after complete graph/rank coverage.
 
     The raw records retain layer occurrence, workload and sample identities.
     Identical shapes in different layers may reduce together only after every
     occurrence in each observed phase has been observed. Failed/incomplete attempts
     must remain on disk and cannot be repaired by merging attempts.
+    Shared physical keys use the lowest frozen original point ID; all points
+    still require complete evidence and compatible dispatch. No latency decides
+    ownership. Shards supply their immutable native-to-original point mapping.
     """
     if {path.name for path in paths} != {f"rank-{rank}.jsonl" for rank in range(tp_size)}:
         raise ValueError("missing or unexpected TP rank files")
+    if point_ids is not None:
+        for native, original in point_ids.items():
+            _uint32(native, "native benchmark ID", positive=True)
+            _uint32(original, "original point ID", positive=True)
+        if len(set(point_ids.values())) != len(point_ids):
+            raise ValueError("shard point mapping aliases original benchmark IDs")
     groups = defaultdict(list)
     coverage = defaultdict(set)
     expected = {
@@ -238,6 +249,8 @@ def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict, *, e
                 raise ValueError("formal native measurements require frozen target and sampling roles")
             for label in ("benchmark_id", "repetition"):
                 _uint32(row[label], label)
+            if point_ids is not None and row["benchmark_id"] not in point_ids:
+                raise ValueError("observed benchmark is absent from frozen shard point mapping")
             if row["sample"] != row["repetition"]:
                 raise ValueError("native sample and frozen repetition disagree")
             if row["tp_rank"] != expected_rank or isinstance(row["tp_rank"], bool):
@@ -264,9 +277,14 @@ def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict, *, e
             raise ValueError("incompatible native invocations collide on one physical key")
         samples = defaultdict(dict)
         repetitions = defaultdict(lambda: defaultdict(set))
+        dispatches = defaultdict(set)
         for row in rows:
             repetitions[row["benchmark_id"]][row["sampling_role"]].add(row["repetition"])
-            sample = samples[(row["phase"], row["sample"], row["invocation"], row["name"], row["sampling_role"])]
+            if row["sampling_role"] == "measurement":
+                dispatches[row["benchmark_id"]].add(row.get("dispatch_fingerprint", ""))
+            sample = samples[
+                (row["phase"], row["sample"], row["invocation"], row["name"], row["sampling_role"], row["benchmark_id"])
+            ]
             if row["tp_rank"] in sample:
                 raise ValueError("duplicate rank within one native invocation")
             sample[row["tp_rank"]] = row["latency"]
@@ -274,9 +292,15 @@ def aggregate_rank_records(paths: list[Path], tp_size: int, manifest: dict, *, e
             raise ValueError("incomplete TP rank set within a native invocation")
         if any(len(roles["warmup"]) < 5 or len(roles["measurement"]) < 10 for roles in repetitions.values()):
             raise ValueError("each frozen native point requires at least five warmups and ten measured repetitions")
-        measured = [sample for key, sample in samples.items() if key[-1] == "measurement"]
-        result = {key: rows[0].get(key, "") for key in ROW_COLUMNS}
-        signatures = {row.get("dispatch_fingerprint", "") for row in rows if row["sampling_role"] == "measurement"}
+        if len({tuple(sorted(signatures)) for signatures in dispatches.values()}) != 1:
+            raise ValueError("shared physical key has incompatible measured dispatch across benchmark points")
+        owner = min(repetitions, key=lambda native: native if point_ids is None else point_ids[native])
+        measured = [sample for key, sample in samples.items() if key[-2:] == ("measurement", owner)]
+        owned_rows = [row for row in rows if row["benchmark_id"] == owner]
+        result = {key: owned_rows[0].get(key, "") for key in ROW_COLUMNS}
+        result["owner_benchmark_id"] = owner
+        result["original_point_id"] = owner if point_ids is None else point_ids[owner]
+        signatures = dispatches[owner]
         result["dispatch_fingerprint"] = sha256_json(sorted(signatures)) if signatures and "" not in signatures else ""
         result["latency"] = statistics.median(max(sample.values()) for sample in measured)
         result["sample_count"] = len(measured)
