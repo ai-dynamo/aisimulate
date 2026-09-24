@@ -89,6 +89,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         if not config.observability_config.cudagraph_metrics:
             raise ValueError("GLM-5.3-Flash FPM requires actual CUDA graph dispatch metrics")
         parallel = config.parallel_config
+        self._real_tp_size = parallel.tensor_parallel_size
         if (
             parallel.tensor_parallel_size not in (2, 4)
             or parallel.pipeline_parallel_size != 1
@@ -618,6 +619,15 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             raise RuntimeError("GLM token history changed before publication")
         output["input_provenance"] = dict(self._real_input or {})
         output["input_provenance"]["context_policy"] = self._real_context_policy
+        hardware = []
+        for rank in range(self._real_tp_size if self._real_purpose == "fpm" else 0):
+            path = destination.with_name(f"native-device-rank-{rank}.json")
+            raw = path.read_bytes()
+            receipt = json.loads(raw)
+            if receipt.get("status") != "passed" or receipt.get("tp_rank") != rank:
+                raise RuntimeError("native GLM worker hardware qualification did not pass")
+            hardware.append({"tp_rank": rank, "file": path.name, "sha256": hashlib.sha256(raw).hexdigest()})
+        output["input_provenance"]["native_hardware_manifest"] = hardware
         output["input_provenance"]["token_stream_manifest"] = {
             "schema_version": 3,
             "file": stream_path.name,
@@ -650,6 +660,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             ).hexdigest(),
             "overlay_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "context_policy_version": 1,
+            "hardware_contract_version": 1,
             "warmup_repeats": WARMUP_REPEATS,
             "measurement_repeats": MEASUREMENT_REPEATS,
         }

@@ -47,6 +47,14 @@ receipts separately describe KDA conv/recurrent state, sparse latent/index and
 IndexPool tails. CPU lifecycle tests validate the contract; actual GPU capacity,
 dispatch and full-matrix accuracy remain to be measured.
 
+Each state-layout receipt also contains its native TP rank and selected CUDA
+device properties. The existing layout digest binds that hardware evidence to
+every forward. Formal readers require actual GB300/sm103 on every rank, matching
+tensor devices and distinct native UUIDs when available. Rejected hardware
+receipts are retained before startup fails. Earlier frozen smoke payloads remain
+historical; missing hardware fields cannot be added after measurement to qualify
+them as formal data.
+
 In each native worker, call `collector.glm53flash_sglang_runtime.install()`
 from the campaign's `sitecustomize.py`. Set `AISIM_GLM53_TRACE_DIR` to an
 attempt-private output directory and `AISIM_GLM53_PROVENANCE` to a JSON file

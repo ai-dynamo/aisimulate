@@ -420,8 +420,9 @@ def validate_native_collection(
 
                     validate_sglang_repetitions(cell, payload, path)
                 else:
-                    from .hybrid_artifact import validate_real_hybrid_repetitions
+                    from .hybrid_artifact import validate_real_hybrid_repetitions, validate_vllm_hardware_receipts
 
+                    validate_vllm_hardware_receipts(cell, payload, path)
                     validate_real_hybrid_repetitions(cell, payload, path)
             else:
                 _validate_token_streams(payload, path)

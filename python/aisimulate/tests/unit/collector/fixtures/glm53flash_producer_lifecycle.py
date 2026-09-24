@@ -138,6 +138,11 @@ for phase, context, suffix in [("prefill", 0, 64), ("prefill", 4099, 3), ("decod
     scheduler._real_token_stream_count = 15
     scheduler._real_identity = {}
     scheduler._real_purpose = "fpm"
+    scheduler._real_tp_size = 2
+    for rank in range(2):
+        (Path(manifest_dir.name) / f"native-device-rank-{rank}.json").write_text(
+            json.dumps({"status": "passed", "tp_rank": rank})
+        )
     for _ in range(2):
         scheduler._bench_write_results()
         published = json.loads(Path(scheduler._bench_config.output_path).read_text())
