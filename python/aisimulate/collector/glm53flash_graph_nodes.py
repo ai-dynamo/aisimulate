@@ -5,6 +5,10 @@
 Original bindings to documented NVIDIA CUDA/CUPTI APIs; no CUDA source copied.
 See README.glm53flash.md for API references and qualification limits. No event,
 kernel, dependency, stream wait or other graph node is inserted by this module.
+
+The memcpy trace contract references Kineto 094d3c1d072362d0a919a77299459eee94f97931,
+libkineto/src/{CuptiActivity.h,cupti_strings.cpp}; independently authored strict
+parser, not copied C++ code. BSD attribution is in THIRD_PARTY_NOTICES.md.
 """
 
 from __future__ import annotations
@@ -14,6 +18,68 @@ import ctypes.util
 import hashlib
 import math
 from pathlib import Path
+
+MEMCPY_TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
+MEMCPY_KINETO_REVISION = "094d3c1d072362d0a919a77299459eee94f97931"
+MEMCPY_TRACE_NAME = "Memcpy DtoD (Device -> Device)"
+
+
+class GraphCopyPosition(ctypes.Structure):
+    _fields_ = tuple((name, ctypes.c_size_t) for name in ("x", "y", "z"))
+
+
+class GraphCopyExtent(ctypes.Structure):
+    _fields_ = tuple((name, ctypes.c_size_t) for name in ("width", "height", "depth"))
+
+
+class GraphCopyPointer(ctypes.Structure):
+    _fields_ = (("ptr", ctypes.c_void_p),) + tuple((name, ctypes.c_size_t) for name in ("pitch", "xsize", "ysize"))
+
+
+class GraphCopyParams(ctypes.Structure):
+    """Documented cudaMemcpy3DParms ABI, checked against the native header."""
+
+    _fields_ = (
+        ("srcArray", ctypes.c_void_p),
+        ("srcPos", GraphCopyPosition),
+        ("srcPtr", GraphCopyPointer),
+        ("dstArray", ctypes.c_void_p),
+        ("dstPos", GraphCopyPosition),
+        ("dstPtr", GraphCopyPointer),
+        ("extent", GraphCopyExtent),
+        ("kind", ctypes.c_int),
+    )
+
+
+def memcpy_activity_requirement(node):
+    """A pending source copy identity, never evidence that replay took place."""
+    proof = node.get("memcpy_params", {})
+    params = proof.get("parameters", {})
+    extent = params.get("extent", {})
+    if (
+        node.get("node_type") != 1
+        or proof.get("api") != "cudaGraphMemcpyNodeGetParams"
+        or type(proof.get("rc")) is not int
+        or proof["rc"] != 0
+        or type(proof.get("source_node_handle")) is not int
+        or proof["source_node_handle"] <= 0
+        or proof.get("trace_producer")
+        != {"torch_git_version": MEMCPY_TORCH_REVISION, "kineto_gitlink": MEMCPY_KINETO_REVISION}
+        or type(params.get("kind")) is not int
+        or params["kind"] != 3
+        or any(type(params.get(key)) is not int or params[key] != 0 for key in ("srcArray", "dstArray"))
+        or any(params.get(key) != {"x": 0, "y": 0, "z": 0} for key in ("srcPos", "dstPos"))
+        or any(type(params[key][axis]) is not int for key in ("srcPos", "dstPos") for axis in ("x", "y", "z"))
+        or any(type(extent.get(key)) is not int for key in ("width", "height", "depth"))
+        or extent.get("width", 0) <= 0
+        or extent.get("height") != 1
+        or extent.get("depth") != 1
+        or any(
+            type(params.get(key, {}).get("ptr")) is not int or params[key]["ptr"] <= 0 for key in ("srcPtr", "dstPtr")
+        )
+    ):
+        raise ValueError("native memcpy requires checked source parameters for a one-dimensional D2D copy")
+    return {"category": "gpu_memcpy", "name": MEMCPY_TRACE_NAME, "bytes": extent["width"]}
 
 
 class GraphEdgeData(ctypes.Structure):
@@ -104,6 +170,7 @@ class NativeGraphAPI:
             [pointer, pointer_out, pointer_out, ctypes.POINTER(GraphEdgeData), size_out],
         )
         self._bind(self.runtime, "cudaGraphNodeGetType", [pointer, ctypes.POINTER(ctypes.c_int)])
+        self._bind(self.runtime, "cudaGraphMemcpyNodeGetParams", [pointer, ctypes.POINTER(GraphCopyParams)])
         self._bind(self.cupti, "cuptiGetGraphId", [pointer, ctypes.POINTER(ctypes.c_uint32)])
         self._bind(self.cupti, "cuptiGetGraphNodeId", [pointer, ctypes.POINTER(ctypes.c_uint64)])
 
@@ -157,6 +224,30 @@ class NativeGraphAPI:
             if node_type.value == 4:
                 raise RuntimeError("child graphs require recursive native ownership before admission")
             nodes[node_id.value] = {"node_type": node_type.value}
+            if node_type.value == 1:
+                import torch
+
+                params = GraphCopyParams()
+                rc = self.runtime.cudaGraphMemcpyNodeGetParams(handle, ctypes.byref(params))
+
+                def fields(value):
+                    return {name: int(getattr(value, name) or 0) for name, _ in value._fields_}
+
+                nodes[node_id.value]["memcpy_params"] = {
+                    "api": "cudaGraphMemcpyNodeGetParams",
+                    "source_node_handle": handle,
+                    "rc": rc,
+                    "parameters": {
+                        name: fields(getattr(params, name))
+                        if isinstance(getattr(params, name), ctypes.Structure)
+                        else int(getattr(params, name) or 0)
+                        for name, _ in params._fields_
+                    },
+                    "trace_producer": {
+                        "torch_git_version": torch.version.git_version,
+                        "kineto_gitlink": MEMCPY_KINETO_REVISION,
+                    },
+                }
             by_handle[handle] = node_id.value
         count = ctypes.c_size_t()
         self._call(self.runtime.cudaGraphGetEdges, graph, None, None, None, ctypes.byref(count))
@@ -208,6 +299,11 @@ class CaptureNodeRegistry:
             self.identity = identity
         if identity != self.identity or not self.seen.issubset(value["nodes"]):
             raise RuntimeError("native capture identity changed or removed existing graph nodes")
+        if any(
+            {key: item for key, item in self.owners[node].items() if key != "name"} != value["nodes"][node]
+            for node in self.seen
+        ):
+            raise RuntimeError("native capture node type or copy parameters changed after ownership")
         owner = self.stack[-1]["name"] if self.stack else "native_graph_setup"
         for node in value["nodes"].keys() - self.seen:
             self.owners[node] = {"name": owner, **value["nodes"][node]}
@@ -297,6 +393,16 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
             if type(args.get("bytes")) is not int or args["bytes"] <= 0:
                 raise ValueError("CUPTI replay memory node lacks positive actual byte count")
             fingerprint = {"bytes": args["bytes"]}
+            requirement = expected[node].get("memcpy_activity_requirement")
+            if requirement is not None:
+                if (
+                    requirement != memcpy_activity_requirement(expected[node])
+                    or category != requirement["category"]
+                    or event.get("name") != requirement["name"]
+                    or args["bytes"] != requirement["bytes"]
+                ):
+                    raise ValueError("pending native memcpy lacks its exact replay category, direction, and bytes")
+                fingerprint["copy_direction"] = "D2D"
         start, duration = event.get("ts"), event.get("dur")
         if (
             any(type(value) not in (int, float) or not math.isfinite(value) for value in (start, duration))

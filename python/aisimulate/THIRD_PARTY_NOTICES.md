@@ -1214,3 +1214,53 @@ this adapter. The corpus and new contract tests are original project content.
   source hashes, image-derived binary lineage, preserved binary legal material
   and separate candidate qualification status are retained. No binary wheel is
   vendored and this unqualified candidate does not replace stock admission.
+
+## Kineto memcpy activity trace contract
+
+The independently authored strict memcpy parser in
+`python/aisimulate/collector/glm53flash_graph_nodes.py`, its
+`test_glm53flash_graph_memcpy.py` and graph exporter tests, and
+`collector/README.glm53flash.md` reference the trace format in
+https://github.com/pytorch/kineto at immutable commit
+`094d3c1d072362d0a919a77299459eee94f97931`, original paths
+`libkineto/src/CuptiActivity.h` and `libkineto/src/cupti_strings.cpp`.
+That gitlink is pinned by PyTorch `cf30153c4c131c8164ee7798e5022d810682e2cb`.
+The format checks are adapted for fail-closed source/callback/replay binding;
+no Kineto implementation or profiling binary is redistributed. The original
+Kineto BSD license and copyright notices follow. CUDA GetParams bindings are
+original bindings to the CUDA13 runtime API documented in the existing NVIDIA
+CUDA/CUPTI entry above; no SDK header implementation is copied.
+
+BSD License
+
+For Kineto software
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+All contributions by Microsoft:
+Copyright (c) Microsoft Corporation. (The Azure AI Platform team)
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Meta nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific
+   prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.

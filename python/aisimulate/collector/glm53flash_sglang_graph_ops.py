@@ -118,8 +118,10 @@ def install(manifest, provenance, output, *, holdout=False):
         with (output / f"capture-source-nodes-rank-{state['rank']}.jsonl").open("a") as stream:
             stream.write(json.dumps(captured[0], sort_keys=True) + "\n")
         type_path = output / f"{stem}.event-record-types.json"
-        type_proof = record_event_record_types(observer.api, graph, captured[0], receipt, type_path)
-        registry = resolve_registry(captured[0], receipt, type_proof)
+        type_proof = record_event_record_types(
+            observer.api, graph, captured[0], receipt, type_path, allow_pending_memcpy=True
+        )
+        registry = resolve_registry(captured[0], receipt, type_proof, allow_pending_memcpy=True)
         registry["instantiation_receipt"] = {
             "file": f"{stem}.json",
             "sha256": hashlib.sha256((output / f"{stem}.json").read_bytes()).hexdigest(),

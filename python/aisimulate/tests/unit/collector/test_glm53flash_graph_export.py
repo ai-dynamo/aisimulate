@@ -8,7 +8,6 @@ import shutil
 
 import pyarrow.parquet as pq
 import pytest
-
 from collector import glm53flash_graph_export as graph
 from collector import glm53flash_validation as native
 from collector.glm53flash_contract import canonical_json, operation_geometry, sha256_json
@@ -580,3 +579,67 @@ def test_exporter_rechecks_the_hashed_event_record_query_receipt(tmp_path, monke
     put_lines(target, [registry])
     with pytest.raises(ValueError, match="exact deferred native type proof"):
         graph._captures(*args, set())  # Rehashing cannot hide the actual native rc.
+
+
+@pytest.mark.parametrize("defect", [None, "direction", "bytes", "missing"])
+def test_pending_source_memcpy_requires_actual_forward_activity_before_export(tmp_path, monkeypatch, defect):
+    from collector.glm53flash_graph_nodes import MEMCPY_TRACE_NAME
+
+    from .test_glm53flash_graph_memcpy import pending_copy
+
+    run, root = fixture(tmp_path, monkeypatch)
+    for rank in range(2):
+        source_path = root / f"capture-source-nodes-rank-{rank}.jsonl"
+        source = next(iter_records(source_path))
+        source["native_api_libraries"]["cudart"]["sha256"] = EVENT_RECORD_CUDART_SHA256
+        copy_node = pending_copy()[0]["nodes"][1]
+        copy_node.update(node_id=18, name="attention_0")
+        copy_node["memcpy_params"]["source_node_handle"] = 74
+        source["nodes"].append(copy_node)
+        source["calls"][0]["owned_node_ids"].append(18)
+        callback_path = root / f"graph-clones-rank-{rank}-capture-0.json"
+        callback = json.loads(callback_path.read_text())
+        callback["callback_subscription_closed"] = True
+        copy_callback = copy.deepcopy(callback["callbacks"][-1])
+        copy_callback.update(original_node_id=18, node_id=54)
+        copy_callback["raw_fields"].update(originalNode=74, node=75)
+        callback["callbacks"].append(copy_callback)
+        put(callback_path, callback)
+        registry = resolve_registry(source, callback, allow_pending_memcpy=True)
+        registry["instantiation_receipt"] = {"file": callback_path.name, "sha256": file_sha256(callback_path)}
+        put_lines(source_path, [source])
+        put_lines(root / f"capture-nodes-rank-{rank}.jsonl", [registry])
+        forwards_path = root / f"graph-forward-rank-{rank}.jsonl"
+        forwards = list(iter_records(forwards_path))
+        for row in forwards:
+            path = root / row["replay_nodes"]["trace_file"]
+            trace = json.loads(path.read_text())
+            trace["traceEvents"].append(
+                {
+                    "cat": "gpu_memcpy",
+                    "name": MEMCPY_TRACE_NAME,
+                    "ts": 6,
+                    "dur": 1,
+                    "args": {"bytes": 256, "stream": 1, "correlation": 9, "graph id": 71, "graph node id": 54},
+                }
+            )
+            binding = bind_execution_activity(
+                bind_replay_kernels(registry, trace["traceEvents"], correlation=9), trace["traceEvents"]
+            )
+            if rank == 0 and row is forwards[-1]:
+                if defect == "direction":
+                    trace["traceEvents"][-1]["name"] = "Memcpy HtoD (Pinned -> Device)"
+                elif defect == "bytes":
+                    trace["traceEvents"][-1]["args"]["bytes"] = 128
+                elif defect == "missing":
+                    trace["traceEvents"].pop()
+            put(path, trace)
+            binding.update(trace_file=path.name, trace_sha256=file_sha256(path))
+            row.update(replay_nodes=binding, capture_registry_sha256=graph._semantic_sha(registry))
+        put_lines(forwards_path, forwards)
+    if defect is None:
+        result = graph.read_graph_run(root, run)
+        assert result["forwards"]
+    else:
+        with pytest.raises(ValueError, match="pending native memcpy|omits captured"):
+            graph.read_graph_run(root, run)

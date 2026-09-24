@@ -131,7 +131,7 @@ def _captures(root, rank, snapshot, manifest, provenance, files):
             raise ValueError("native graph clone receipt does not establish read-only observation")
         node_type_receipt = recorded.get("node_type_receipt")
         node_type_proof = _receipt(root, node_type_receipt, files) if node_type_receipt is not None else None
-        derived = resolve_registry(sources[key], callbacks, node_type_proof)
+        derived = resolve_registry(sources[key], callbacks, node_type_proof, allow_pending_memcpy=True)
         derived["instantiation_receipt"] = receipt
         if node_type_receipt is not None:
             derived["node_type_receipt"] = node_type_receipt

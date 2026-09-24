@@ -251,15 +251,34 @@ def _direct_instantiation(registry, receipt):
     return create, clones, originals, ids
 
 
-def _event_record_mismatches(registry, receipt):
+def _event_record_mismatches(registry, receipt, *, allow_pending_memcpy=False):
     create, clones, originals, ids = _direct_instantiation(registry, receipt)
     mismatches = [row for row in clones if row["node_type"] != originals[row["original_node_id"]]["node_type"]]
+    copies = [
+        row for row in mismatches if (originals[row["original_node_id"]]["node_type"], row["node_type"]) == (1, 0)
+    ]
+    if copies and allow_pending_memcpy:
+        from .glm53flash_graph_nodes import memcpy_activity_requirement
+
+        libraries = registry.get("native_api_libraries", {})
+        if (
+            receipt.get("callback_subscription_closed") is not True
+            or libraries.get("cudart", {}).get("sha256") != EVENT_RECORD_CUDART_SHA256
+            or libraries.get("cupti", {}).get("sha256") != QUALIFIED_CUPTI_SHA256
+        ):
+            raise ValueError("pending memcpy mapping differs from its qualified native providers")
+        for clone in copies:
+            original = originals[clone["original_node_id"]]
+            memcpy_activity_requirement(original)
+            if original["memcpy_params"]["source_node_handle"] != clone["raw_fields"]["originalNode"]:
+                raise ValueError("memcpy source query handle differs from its exact clone callback")
+        mismatches = [row for row in mismatches if row not in copies]
     if any((originals[row["original_node_id"]]["node_type"], row["node_type"]) != (7, 0) for row in mismatches):
         raise ValueError("native instantiation has an unqualified changed node type")
     return create, clones, originals, ids, mismatches
 
 
-def record_event_record_types(api, graph, registry, receipt, path):
+def record_event_record_types(api, graph, registry, receipt, path, *, allow_pending_memcpy=False):
     """Query only the qualified EventRecord mismatch after unsubscribe.
 
     The captured source types remain authoritative. Actual GPU probe 612570 on
@@ -268,7 +287,7 @@ def record_event_record_types(api, graph, registry, receipt, path):
     callback, no source handle is dereferenced after Torch may have freed it,
     and the caller retains the real graph executable throughout this function.
     """
-    create, _, _, _, mismatches = _event_record_mismatches(registry, receipt)
+    create, _, _, _, mismatches = _event_record_mismatches(registry, receipt, allow_pending_memcpy=allow_pending_memcpy)
     if not mismatches:
         return None
     if receipt.get("callback_subscription_closed") is not True:
@@ -327,9 +346,11 @@ def record_event_record_types(api, graph, registry, receipt, path):
     return proof
 
 
-def resolve_registry(registry, receipt, node_type_proof=None):
+def resolve_registry(registry, receipt, node_type_proof=None, *, allow_pending_memcpy=False):
     """Derive executable ownership, retaining strict native type evidence."""
-    create, clones, originals, ids, mismatches = _event_record_mismatches(registry, receipt)
+    create, clones, originals, ids, mismatches = _event_record_mismatches(
+        registry, receipt, allow_pending_memcpy=allow_pending_memcpy
+    )
     if mismatches:
         libraries = registry.get("native_api_libraries", {})
         expected = {
@@ -378,8 +399,14 @@ def resolve_registry(registry, receipt, node_type_proof=None):
     elif node_type_proof is not None:
         raise ValueError("unexpected node type evidence cannot alter matching native clone types")
     result = copy.deepcopy(registry)
+    by_original = {row["original_node_id"]: row for row in clones}
     for row in result["nodes"]:
         row["capture_node_id"] = row["node_id"]
+        clone = by_original[row["node_id"]]
+        if row["node_type"] == 1 and clone["node_type"] == 0:
+            from .glm53flash_graph_nodes import memcpy_activity_requirement
+
+            row["memcpy_activity_requirement"] = memcpy_activity_requirement(row)
         row["node_id"] = ids[row["node_id"]]
     for edge in result["edges"]:
         edge["from"], edge["to"] = ids[edge["from"]], ids[edge["to"]]

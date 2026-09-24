@@ -729,3 +729,30 @@ These are original bindings to documented interfaces, not copied implementation:
 [dlinfo](https://man7.org/linux/man-pages/man3/dlinfo.3.html),
 [dladdr](https://man7.org/linux/man-pages/man3/dladdr.3.html), and
 [CPython ctypes loader flags](https://github.com/python/cpython/blob/v3.12.9/Modules/_ctypes/callproc.c).
+
+### Captured memcpy ownership and replay proof
+
+Actual CUDA13/CUPTI13.0.85 diagnostic613725 observed a source memcpy node whose
+clone callback and internal clone query both reported type0, while the exact
+executable graph/node/API correlation produced a real D2D memcpy activity.
+This does not establish type equivalence or qualify a model capture. SGLang
+may retain this source1/callback0 mapping as pending only with the complete
+original-to-executable bijection, the qualified providers, and successful
+`cudaGraphMemcpyNodeGetParams` on the live **source** node. The supported scope
+is a positive-size, one-dimensional D2D copy between linear device pointers;
+arrays, default-direction, offset/3D and unknown cases reject. No internal
+clone pointer query substitutes for source copy parameters.
+
+Every measured replay, including each retained repetition, must contain exactly
+one matching `gpu_memcpy` activity with the source byte count and D2D direction.
+The direction spelling comes directly from CUPTI copyKind/srcKind/dstKind in
+[Kineto CuptiActivity.h](https://github.com/pytorch/kineto/blob/094d3c1d072362d0a919a77299459eee94f97931/libkineto/src/CuptiActivity.h#L548)
+and [cupti_strings.cpp](https://github.com/pytorch/kineto/blob/094d3c1d072362d0a919a77299459eee94f97931/libkineto/src/cupti_strings.cpp#L15),
+the gitlink pinned by actual Torch cf30153c4c131c8164ee7798e5022d810682e2cb.
+The exporter independently rebuilds both mappings from original source/callback
+records and the actual forward trace. A capture-only pending mapping, missing
+activity, kernel substituted for copy, wrong direction, or byte mismatch cannot
+produce a measured row. Native source parameters, callback0, and all failed
+proofs remain evidence; copying is charged once to its actual operation owner.
+The new native GetParams ABI and full SGLang B1 replay remain subject to actual
+CPU and GPU qualification. vLLM mapping keeps the previous strict default.

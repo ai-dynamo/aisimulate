@@ -102,6 +102,9 @@ def native_abi_fixture(monkeypatch, version=13000, node_count=2, changed_count=N
         runtime, "cudaGraphGetEdges", [pointer, pointer_out, pointer_out, ctypes.POINTER(edge_type), size_out], edges
     )
     attach(runtime, "cudaGraphNodeGetType", [pointer, ctypes.POINTER(ctypes.c_int)], node_type)
+    attach(
+        runtime, "cudaGraphMemcpyNodeGetParams", [pointer, ctypes.POINTER(graph_nodes.GraphCopyParams)], lambda *_: 1
+    )
     attach(cupti, "cuptiGetGraphId", [pointer, ctypes.POINTER(ctypes.c_uint32)], graph_id)
     attach(cupti, "cuptiGetGraphNodeId", [pointer, ctypes.POINTER(ctypes.c_uint64)], node_id)
     monkeypatch.setattr(graph_nodes, "_library", lambda name: ({"cudart": runtime, "cupti": cupti}[name], {}))
