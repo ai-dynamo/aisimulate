@@ -118,7 +118,20 @@ def _source_payloads() -> set[str]:
     expected.discard("aisimulate/sdk/config_adapter/README.md")
     collector_root = Path(__file__).resolve().parents[1] / "collector"
     expected.update({"collector/__init__.py", "collector/model_cases.py"})
-    for pattern in ("cases/**/*.yaml", "fpm_forward/**/*.py", "fpm_forward/runtime/fpm_exec.sh"):
+    for pattern in (
+        "cases/**/*.yaml",
+        "glm53flash_protocol.py",
+        "glm53flash_sglang_runtime.py",
+        "fpm_forward/**/*.py",
+        "fpm_forward/glm53flash_corpora/*.txt",
+        "fpm_forward/README.glm53flash*.md",
+        "fpm_forward/runtime/fpm_exec.sh",
+        "fpm_forward/runtime/fpm_text.txt",
+        "fpm_forward/runtime/glm53flash/*.json",
+        "fpm_forward/runtime/glm53flash/README.md",
+        "fpm_forward/runtime/glm53flash/LICENSE",
+        "fpm_forward/runtime/glm53flash_sglang/*.json",
+    ):
         expected.update(
             (Path("collector") / path.relative_to(collector_root)).as_posix()
             for path in collector_root.glob(pattern)
