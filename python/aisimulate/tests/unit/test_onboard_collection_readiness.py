@@ -12,11 +12,11 @@ import shutil
 from dataclasses import replace
 
 import pytest
+from collector.fpm_forward import entry, planner, runner
 
 from aisimulate import main as cli
 from aisimulate.support import fpm
 from aisimulate.support.collection_readiness import assess_readiness, resume_without_workers
-from collector.fpm_forward import entry, planner, runner
 
 from .test_support_serving_validation import materialized_workload  # noqa: F401
 from .test_support_validation import validation_case  # noqa: F401
