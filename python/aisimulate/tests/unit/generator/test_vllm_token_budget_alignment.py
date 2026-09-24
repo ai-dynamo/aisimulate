@@ -46,20 +46,32 @@ def test_absent_budget_stays_omitted():
     assert "max_prefill_tokens" not in _render({}, "sglang")
 
 
-def test_rule_engine_formulas_stay_plain_and_render_aligned():
-    """The vllm rule plugin emits the plain formula (512+4000+1500 = 6012, the
-    DSV4 crash trigger); the mapping is what aligns it."""
+@pytest.mark.parametrize("backend", ["vllm", "sglang", "trtllm"])
+def test_rule_engine_aligns_every_budget_after_the_plain_formulas(backend):
+    """The rule formulas stay plain (vllm agg: 512+4000+1500 = 6012, the DSV4
+    crash trigger); the rule engine's single alignment pass rounds every
+    budget key in every role up to 64 — including trtllm, whose engine-yaml
+    template bypasses the mapping transforms."""
     from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
 
     pv = {
         "SlaConfig": {"isl": 4000, "osl": 500},
         "DynConfig": {},
-        "params": {"agg": {"max_batch_size": 512}},
+        "params": {"agg": {"max_batch_size": 512, "tokens_per_block": 32}},
     }
-    apply_rule_plugins(pv, backend="vllm")
+    apply_rule_plugins(pv, backend=backend)
+    for role, values in pv["params"].items():
+        for key in ("max_num_tokens", "max_prefill_tokens"):
+            if isinstance(values.get(key), int):
+                assert values[key] % 64 == 0, (backend, role, key, values[key])
     agg = pv["params"]["agg"]
-    unrounded = agg["max_batch_size"] + 4000 + 1500
-    assert agg["max_num_tokens"] == unrounded
-    rendered = _render({"max_num_tokens": agg["max_num_tokens"]}, "vllm")
-    assert rendered["max_num_tokens"]["max-num-batched-tokens"] % 64 == 0
-    assert rendered["max_num_tokens"]["max-num-batched-tokens"] >= unrounded
+    budget_key = "max_prefill_tokens" if backend == "sglang" else "max_num_tokens"
+    assert agg[budget_key] >= 4000 + 500  # never rounded down (formulas add isl + 500/1500)
+
+
+def test_alignment_pass_applies_without_a_rule_file():
+    from aisimulate.generator.rendering.rule_engine import apply_rule_plugins
+
+    pv = {"params": {"agg": {"max_num_tokens": 6012, "max_prefill_tokens": 5500}}}
+    apply_rule_plugins(pv, backend="no-such-backend")
+    assert pv["params"]["agg"] == {"max_num_tokens": 6016, "max_prefill_tokens": 5504}
