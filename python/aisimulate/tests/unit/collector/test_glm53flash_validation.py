@@ -7,7 +7,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward import glm53flash_validation as validation
 from collector.glm53flash_protocol import PROTOCOL
 
@@ -88,7 +87,7 @@ def campaign(tmp_path, monkeypatch):
             "request_ids": {run["spec"]["cell_id"]},
             "receipts": [{"path": "raw.json", "sha256": "e" * 64}],
             "runtime_run_id": run["spec"]["cell_id"],
-            "backend_version": "0.30.0",
+            "backend_version": {"vllm": "0.30.0", "sglang": "0.5.20"}[run["key"][0]],
         }
 
     def predict(run, entry, mode, base, **kwargs):
@@ -292,7 +291,7 @@ def calibration_table(tmp_path):
         "values": {1: 10.0, 2: 20.0, 3: 30.0},
         "runtime_run_id": "real-run",
         "runtime_grid_digest": "f" * 64,
-        "backend_version": "0.30.0",
+        "backend_version": {"vllm": "0.30.0", "sglang": "0.5.20"}[run["key"][0]],
         "input_provenance": {"token_ids_sha256": "e" * 64},
     }
     rows = [
@@ -388,7 +387,13 @@ def test_predict_calls_public_sdk_for_every_frozen_point(tmp_path, monkeypatch, 
         for p in tmp_path.iterdir()
         if p.is_file()
     ]
-    entry = {"consumer_config": {"backend_version": "0.30.0", "systems_paths": ["."]}, "consumer_data": receipts}
+    entry = {
+        "consumer_config": {
+            "backend_version": {"vllm": "0.30.0", "sglang": "0.5.20"}[holdout["key"][0]],
+            "systems_paths": ["."],
+        },
+        "consumer_data": receipts,
+    }
     result = validation._predict(holdout, entry, mode, tmp_path, calibration=calibration, calibration_native=native)
     assert len(calls) == 3 and closed == [True]
     assert [row["prediction_ms"] for row in result["rows"].values()] == [12.0] * 3
@@ -514,3 +519,20 @@ def test_sharded_consumer_binding_keeps_each_native_origin_and_rejects_donor(tmp
     pq.write_table(pa.Table.from_pylist([*rows, dict(rows[0], cell_id="unfrozen-donor")]), path)
     with pytest.raises(ValueError, match="donor cell"):
         validation._bind_fpm_rows([path], parent, {"_children": receipts})
+
+
+def test_repaired_holdout_cannot_validate_stock_calibration(campaign, tmp_path, monkeypatch):
+    original = validation._native_run
+
+    def different_runtime(run, base):
+        result = original(run, base)
+        if run["key"] == validation.REQUIRED[0] and run["role"] == "holdout":
+            result["backend_version"] = "0.30.0+unqualified-repair"
+        return result
+
+    monkeypatch.setattr(validation, "_native_run", different_runtime)
+    report = validation.evaluate(campaign, tmp_path)
+    assert report["acceptance"] == "FAILED"
+    assert report["coverage"]["passed_phase_cells"] == 15
+    assert report["coverage"]["requested_points"] == 48
+    assert "different native runtime" in report["cells"][0]["errors"][0]["error"]

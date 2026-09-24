@@ -99,9 +99,11 @@ def _sglang_execution(root: Path, fmt: str, tp: int, points: list[dict]) -> dict
 def _runtime_audit(root: Path, backend: str) -> dict:
     audit = json.loads((root / "runtime-preflight.json").read_bytes())
     runtime = "glm53flash" if backend == "vllm" else "glm53flash_sglang"
-    pins = json.loads(
-        (Path(__file__).parent / "fpm_forward/runtime" / runtime / "runtime-source-sha256.json").read_bytes()
-    )
+    from collector.glm53flash_runtime_identity import validate_backend_version, vllm_source_pins
+
+    version = validate_backend_version(backend, audit.get("backend_version"))
+    manifest = Path(__file__).parent / "fpm_forward/runtime" / runtime / "runtime-source-sha256.json"
+    pins = vllm_source_pins(version, manifest) if backend == "vllm" else json.loads(manifest.read_bytes())
     if (audit.get("status"), audit.get("backend"), audit.get("backend_version"), audit.get("sources")) != (
         "passed",
         backend,

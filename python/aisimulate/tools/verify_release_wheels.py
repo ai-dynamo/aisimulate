@@ -131,6 +131,14 @@ def _source_payloads() -> set[str]:
         "fpm_forward/runtime/glm53flash/README.md",
         "fpm_forward/runtime/glm53flash/LICENSE",
         "fpm_forward/runtime/glm53flash_sglang/*.json",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/*.json",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/*.patch",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/README.md",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/LICENSE",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/qualification/*.json",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/qualification/input.txt",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/qualification/README.md",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/qualification/LICENSE",
     ):
         expected.update(
             (Path("collector") / path.relative_to(collector_root)).as_posix()
