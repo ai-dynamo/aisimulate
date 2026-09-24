@@ -1121,4 +1121,3 @@ Licensed under Apache-2.0; the upstream license is preserved in the adjacent
 `LICENSE`. No upstream root NOTICE exists. vLLM implementation files are not
 vendored; exact API source hashes and their revision are recorded alongside
 this adapter. The corpus and new contract tests are original project content.
-
