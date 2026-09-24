@@ -96,6 +96,9 @@ def test_config_adapter_readme_remains_repository_only(verifier):
     assert "collector/fpm_forward/runtime/fpm_exec.sh" in payload
     assert "collector/fpm_forward/glm53flash_corpora/calibration.txt" in payload
     assert "collector/fpm_forward/glm53flash_corpora/holdout.txt" in payload
+    assert "collector/glm53flash_shard_contract.py" in payload
+    assert "collector/glm53flash_jsonl.py" in payload
+    assert "collector/glm53flash_sglang_retained.py" in payload
 
 
 def test_release_verifier_checks_packaged_legal_files(verifier, monkeypatch, tmp_path):

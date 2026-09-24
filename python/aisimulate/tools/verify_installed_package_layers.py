@@ -263,6 +263,9 @@ def _verify_fpm_workflow() -> str:
             "collector/__init__.py",
             "collector/model_cases.py",
             "collector/glm53flash_protocol.py",
+            "collector/glm53flash_shard_contract.py",
+            "collector/glm53flash_jsonl.py",
+            "collector/glm53flash_sglang_retained.py",
             "collector/glm53flash_sglang_runtime.py",
             "collector/cases/base_ops/mla_module.yaml",
             "collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
@@ -295,6 +298,13 @@ def _verify_fpm_workflow() -> str:
         (planner, "collector/fpm_forward/planner.py"),
         (runner, "collector/fpm_forward/runner.py"),
         (importlib.import_module("collector.glm53flash_protocol"), "collector/glm53flash_protocol.py"),
+        (importlib.import_module("collector.glm53flash_shard_contract"), "collector/glm53flash_shard_contract.py"),
+        (importlib.import_module("collector.glm53flash_jsonl"), "collector/glm53flash_jsonl.py"),
+        (importlib.import_module("collector.glm53flash_sglang_retained"), "collector/glm53flash_sglang_retained.py"),
+        (
+            importlib.import_module("collector.fpm_forward.glm53flash_validation"),
+            "collector/fpm_forward/glm53flash_validation.py",
+        ),
         (importlib.import_module("collector.glm53flash_sglang_runtime"), "collector/glm53flash_sglang_runtime.py"),
         (importlib.import_module("collector.fpm_forward.sglang_driver"), "collector/fpm_forward/sglang_driver.py"),
     ):

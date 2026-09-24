@@ -121,6 +121,9 @@ def _source_payloads() -> set[str]:
     for pattern in (
         "cases/**/*.yaml",
         "glm53flash_protocol.py",
+        "glm53flash_shard_contract.py",
+        "glm53flash_jsonl.py",
+        "glm53flash_sglang_retained.py",
         "glm53flash_sglang_runtime.py",
         "fpm_forward/**/*.py",
         "fpm_forward/glm53flash_corpora/*.txt",
