@@ -55,11 +55,23 @@ ROOT = Path(os.environ.get("AIS_PROBE_WORKSPACE")
 # --------------------------------------------------------------------------
 # capture (in-container; only stdlib + torch)
 
-def capture(argv: list[str], out: str) -> int:
+def capture(argv: list[str], out: str, env: list[str] | None = None) -> int:
     import runpy
     import torch
     from torch.profiler import ProfilerActivity, profile
 
+    # Cell selection. A whole-sweep capture is a UNION of every
+    # length/prefix-conditional path the collector can take and can only be
+    # compared with a serving record that unions them — none does. The
+    # collectors already expose cell filters through environment variables
+    # (AIC_DSA_CONTEXT_{SEQ_LENS,PREFIX_LENS,BATCH_SIZES}, op_smoke
+    # --case-index/--case-prefix on argv); `--env K=V` sets them here so the
+    # capture file records the cell it measured and the verdict can name it.
+    for kv in env or []:
+        k, _, v = kv.partition("=")
+        os.environ[k] = v
+    cell_env = {k: v for k, v in os.environ.items() if k.startswith(("AIC_", "AIS_"))
+                and k not in ("AIS_PROBE_WORKSPACE", "AIS_GENERATOR_SRC", "AIC_GENERATOR_SRC")}
     script, args = argv[0], argv[1:]
     sys.argv = [script] + args
     err = None
@@ -80,7 +92,7 @@ def capture(argv: list[str], out: str) -> int:
         if (getattr(ev, "self_device_time_total", 0) or getattr(ev, "self_cuda_time_total", 0)) > 0
         and not ev.key.startswith(("aten::", "Memcpy", "Memset", "cuda", "Cuda"))
     })
-    json.dump({"cmd": argv, "error": err, "kernels": kernels},
+    json.dump({"cmd": argv, "env": cell_env or None, "error": err, "kernels": kernels},
               open(out, "w"), indent=1)
     print(f"path_diff capture: {len(kernels)} kernels -> {out}"
           + (f" (RUN ERROR: {err})" if err else ""))
@@ -114,6 +126,80 @@ def _kv_equiv(a, b):
     # unquantized aliases as one class, fp8 as its own.
     norm = lambda x: "fp8" if (x or "").startswith("fp8") else "unquant"
     return norm(a) == norm(b)
+
+
+# `triton` is deliberately NOT here: in the taxonomy it names only the Triton
+# attention backend (routing/activation are framework_native), and it is the
+# sole label of vllm's fp8 head_dim>256 path — ignoring it left that path
+# uncompared (2026-09-23).
+INFRA = frozenset({"cublas", "vllm_kernel", "sgl_kernel", "torch"})
+
+
+def grade(col_kernels, col_backends, srv_kernels, srv_backends, cap_error, label_kernels) -> dict:
+    """The verdict rule, pure (unit-tested in tests/unit/collector/opharness).
+
+    Inputs are already normalized/launcher-filtered kernel names and their
+    taxonomy labels for the collector capture and the serving record.
+    Returns verdict / only_col / kernel_drift / infra_name_matches.
+    """
+    infra = INFRA
+    col_sig = set(col_backends) - infra
+    srv_sig = set(srv_backends) - infra
+    only_col = sorted(col_sig - srv_sig)
+
+    # family-level match is NECESSARY, not sufficient: the same canonical
+    # family can hide different kernels (0.29 DSA indexer did exactly this) —
+    # for every signal family on both sides, the collector's kernels must
+    # name-overlap serving's, else it is kernel drift and the gate stays red
+    def fam_kernels(kerns, keep=None):
+        """family -> kernel names; signal families by default, or only `keep`."""
+        out = {}
+        for k in kerns:
+            labels, _ = label_kernels([k])
+            for b in (labels & keep if keep is not None else labels - infra):
+                out.setdefault(b, set()).add(k.split("<")[0])
+        return out
+
+    def name_hits(ck, sk):
+        return {c for c in ck if any(c in s or s in c for s in sk)}
+    col_fam = fam_kernels(col_kernels)
+    srv_fam = fam_kernels(srv_kernels)
+    kernel_drift = {}
+    for fam in (col_sig & srv_sig):
+        ck, sk = col_fam.get(fam, set()), srv_fam.get(fam, set())
+        misses = sorted(ck - name_hits(ck, sk))
+        if misses:
+            kernel_drift[fam] = {"collector_only_kernels": misses,
+                                 "serving_kernels": sorted(sk)}
+    # A capture that crashed, or that executed no signal-family kernel at all,
+    # is not evidence: the empty set is a subset of everything and would read
+    # as "aligned". Found 2026-09-24 when six broken sglang captures (mock
+    # runner drift, subprocess collectors invisible to the parent profiler)
+    # all came back aligned with col=[] — refuse to grade them.
+    # GEMM-class ops (gemm bf16/fp8, compute_scale, mla_bmm) have NO signal
+    # family by construction — cuBLAS / the vllm quant kernels ARE their
+    # backend and sit in the infra set so they never masquerade as a
+    # wrong-path signal elsewhere. For them the evidence is kernel-NAME
+    # overlap inside those infra families (the collector's nvjet /
+    # cutlass_scaled_mm / per_token_group_quant instantiations must be ones
+    # serving also launched); a capture whose infra kernels share no name
+    # with serving is still no-collector-signal. Found when the first
+    # recompute after the rule above flipped four gemm-class verdicts that
+    # had been graded before it existed (2026-09-24).
+    infra_name_matches = None
+    if cap_error:
+        verdict = "invalid-capture"
+    elif not col_sig:
+        col_inf = fam_kernels(col_kernels, infra)
+        srv_inf = fam_kernels(srv_kernels, infra)
+        infra_name_matches = {fam: sorted(name_hits(ck, srv_inf.get(fam, set())))
+                              for fam, ck in col_inf.items()}
+        infra_name_matches = {f: h for f, h in infra_name_matches.items() if h} or None
+        verdict = "aligned" if infra_name_matches else "no-collector-signal"
+    else:
+        verdict = "aligned" if not only_col and not kernel_drift else "diverged"
+    return {"verdict": verdict, "only_col": only_col,
+            "kernel_drift": kernel_drift or None, "infra_name_matches": infra_name_matches}
 
 
 def diff(capture_file: str, repo: str, framework: str, version: str,
@@ -186,71 +272,16 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
         srv_kernels |= {k for k in (op.get("kernels") or []) if not _is_launcher(k)}
     srv_kernels = {k for k in srv_kernels if not _is_launcher(k)}
 
-    # `triton` is deliberately NOT here: in the taxonomy it now names only the
-    # Triton attention backend (routing/activation are framework_native), and
-    # it is the sole label of vllm's fp8 head_dim>256 path — ignoring it left
-    # that path uncompared (2026-09-23).
-    infra = {"cublas", "vllm_kernel", "sgl_kernel", "torch"}
-    col_sig = col_backends - infra
-    srv_sig = srv_backends - infra
-    only_col = sorted(col_sig - srv_sig)
-    # family-level match is NECESSARY, not sufficient: the same canonical
-    # family can hide different kernels (0.29 DSA indexer did exactly this) —
-    # for every signal family on both sides, the collector's kernels must
-    # name-overlap serving's, else it is kernel drift and the gate stays red
-    def fam_kernels(kerns, keep=None):
-        """family -> kernel names; signal families by default, or only `keep`."""
-        out = {}
-        for k in kerns:
-            labels, _ = label_kernels([k])
-            for b in (labels & keep if keep is not None else labels - infra):
-                out.setdefault(b, set()).add(k.split("<")[0])
-        return out
-
-    def name_hits(ck, sk):
-        return {c for c in ck if any(c in s or s in c for s in sk)}
-    col_fam = fam_kernels(col_kernels)
-    srv_fam = fam_kernels(srv_kernels)
-    kernel_drift = {}
-    for fam in (col_sig & srv_sig):
-        ck, sk = col_fam.get(fam, set()), srv_fam.get(fam, set())
-        misses = sorted(ck - name_hits(ck, sk))
-        if misses:
-            kernel_drift[fam] = {"collector_only_kernels": misses,
-                                 "serving_kernels": sorted(sk)}
-    # A capture that crashed, or that executed no signal-family kernel at all,
-    # is not evidence: the empty set is a subset of everything and would read
-    # as "aligned". Found 2026-09-24 when six broken sglang captures (mock
-    # runner drift, subprocess collectors invisible to the parent profiler)
-    # all came back aligned with col=[] — refuse to grade them.
-    # GEMM-class ops (gemm bf16/fp8, compute_scale, mla_bmm) have NO signal
-    # family by construction — cuBLAS / the vllm quant kernels ARE their
-    # backend and sit in the infra set so they never masquerade as a
-    # wrong-path signal elsewhere. For them the evidence is kernel-NAME
-    # overlap inside those infra families (the collector's nvjet /
-    # cutlass_scaled_mm / per_token_group_quant instantiations must be ones
-    # serving also launched); a capture whose infra kernels share no name
-    # with serving is still no-collector-signal. Found when the first
-    # recompute after the rule above flipped four gemm-class verdicts that
-    # had been graded before it existed (2026-09-24).
-    infra_name_matches = None
-    if cap.get("error"):
-        verdict = "invalid-capture"
-    elif not col_sig:
-        col_inf = fam_kernels(col_kernels, infra)
-        srv_inf = fam_kernels(srv_kernels, infra)
-        infra_name_matches = {fam: sorted(name_hits(ck, srv_inf.get(fam, set())))
-                              for fam, ck in col_inf.items()}
-        infra_name_matches = {f: h for f, h in infra_name_matches.items() if h} or None
-        verdict = "aligned" if infra_name_matches else "no-collector-signal"
-    else:
-        verdict = "aligned" if not only_col and not kernel_drift else "diverged"
+    g = grade(col_kernels, col_backends, srv_kernels, srv_backends, cap.get("error"), label_kernels)
+    verdict, only_col = g["verdict"], g["only_col"]
+    kernel_drift, infra_name_matches = g["kernel_drift"], g["infra_name_matches"]
     report = {
         "verdict": verdict,
         "repo": repo, "framework": framework, "version": version,
         # reproducibility: a verdict must name both inputs and the scoping it
         # was computed under, or it cannot be re-derived after a taxonomy change
         "capture_file": str(capture_file), "capture_cmd": cap.get("cmd"),
+        "capture_env": cap.get("env"),  # the collector cell filters the capture ran under
         "capture_run_error": cap.get("error"),
         "kv_dtype": kv_dtype, "op_hint": op_hint,
         "serving_record": {"id": serving["id"], "tp": serving["runtime"].get("tp"),
@@ -301,13 +332,16 @@ def main() -> int:
     ap.add_argument("--serving-raw", default=None,
                     help="diff against this raw probe JSON instead of archive/records.jsonl "
                          "(A/B evidence outside the plan); the report names the file")
+    ap.add_argument("--env", action="append", default=None, metavar="K=V",
+                    help="capture mode: set a collector cell filter (e.g. "
+                         "AIC_DSA_CONTEXT_SEQ_LENS=4096) before running; recorded in the capture")
     ap.add_argument("cmd", nargs="*", help="capture mode: script + args (after --)")
     args = ap.parse_args()
     if args.capture:
         cmd = args.cmd
         if cmd and cmd[0] == "python3":
             cmd = cmd[1:]
-        return capture(cmd, args.out)
+        return capture(cmd, args.out, args.env)
     if args.diff:
         return diff(args.capture_file, args.repo, args.framework, args.version,
                     args.op_hint, args.save_verdict, args.kv_dtype, args.isl, args.serving_raw)

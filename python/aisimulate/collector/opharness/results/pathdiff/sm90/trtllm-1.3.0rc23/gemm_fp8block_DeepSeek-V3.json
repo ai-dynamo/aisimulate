@@ -17,6 +17,7 @@
   "--out-dir",
   "/tmp/smk"
  ],
+ "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": null,
  "op_hint": "gemm|linear|proj|deepgemm|cutlass|cublas|quant",

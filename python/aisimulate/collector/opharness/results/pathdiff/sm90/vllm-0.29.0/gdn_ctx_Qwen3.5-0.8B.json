@@ -7,6 +7,7 @@
  "capture_cmd": [
   "/work/s/caps/gdn_ctx.py"
  ],
+ "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "gdn|delta|conv1d|linear|mamba|gated|recurrent",

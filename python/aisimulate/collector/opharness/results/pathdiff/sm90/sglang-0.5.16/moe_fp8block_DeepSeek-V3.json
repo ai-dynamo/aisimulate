@@ -17,6 +17,7 @@
   "--out-dir",
   "/tmp/smk"
  ],
+ "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing|ep_",

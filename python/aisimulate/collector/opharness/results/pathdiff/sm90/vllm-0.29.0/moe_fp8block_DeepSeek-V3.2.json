@@ -7,6 +7,7 @@
  "capture_cmd": [
   "/work/s/caps/moe_fp8block_dsv3.py"
  ],
+ "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": "fp8",
  "op_hint": "moe|expert|grouped|fused_moe|deepgemm|topk|marlin|routing",

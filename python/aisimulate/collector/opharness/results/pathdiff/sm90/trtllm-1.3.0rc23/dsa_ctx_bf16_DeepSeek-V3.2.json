@@ -17,6 +17,7 @@
   "--out-dir",
   "/tmp/smk"
  ],
+ "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": null,
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk|fmha",
@@ -58,7 +59,6 @@
   "tensorrt_llm::_v1::kernels"
  ],
  "collector_unmatched_kernels": [
-  "deep_gemm::smxx_clean_logits",
   "sm90_xmma_gemm_f32f32_tf32f32_f32_tn_n_tilesize64x64x32_warpgroupsize1x1x1_execu"
  ],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

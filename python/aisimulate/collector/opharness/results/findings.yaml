@@ -454,10 +454,17 @@ findings:
           flashmla_sparse.py:307 — capture facts/pathdiff/cap_dsa_ctx_fp8_s4096_h16.json.
         Capture precision must match serving: gemm_type=bfloat16 shows a false
         fused_a-projection drift (cutlass vs fp8_blockscale); use fp8_block.
-      FOLLOW-UP (unconfirmed, needs an sglang capture): sglang 0.5.16 serves
-      Gemma-4 (head512) on Triton attention (_fwd_grouped_kernel_stage1 in the
-      raws) while collector/sglang/collect_attn.py pins FlashAttentionBackend
-      on SM90 unless head_dim==192 — same class as the vllm Gemma-4 override.
+      FOLLOW-UP RESOLVED 2026-09-24 (measured, not read): the Gemma-4 case
+      file declares sglang_backends {90: triton, ...} on every attention
+      profile (head_dim 256 and 512), which overrides collect_attn's default
+      SM90->fa3 table; op_smoke case 168 (Gemma4ForConditionalGeneration,
+      head_dim 512, triton) captured _fwd_kernel/_fwd_kernel_stage2 = the
+      serving record's TritonAttnBackend kernels -> ALIGNED
+      (attn_ctx_hd512_gemma-4-26B-A4B). Original: (unconfirmed, needs an
+      sglang capture): sglang 0.5.16 serves Gemma-4 (head512) on Triton
+      attention (_fwd_grouped_kernel_stage1 in the raws) while
+      collector/sglang/collect_attn.py pins FlashAttentionBackend on SM90
+      unless head_dim==192 — same class as the vllm Gemma-4 override.
     applies_to:
     - instrument:path_diff
     - instrument:kernel_taxonomy
@@ -867,6 +874,46 @@ findings:
     - framework:vllm-0.29.0
     - framework:sglang-0.5.16
     - framework:trtllm-1.3.0rc23
+    - platform:sm90
+  harness_hygiene_2026_09_24:
+    statement: |
+      Owner asked for the open-issue list after the framework-mode change and
+      told me to fix the harness items ("别搞复杂问题"). Landed:
+      - probe_driver --matrix: the moe column read only API spans; framework-
+        mode records carry MoE kernels as orphans -> orphans are scanned too.
+      - First unit tests for the harness: tests/unit/collector/opharness/
+        (path_diff.grade extracted as a pure function: subset semantics,
+        within-family drift, invalid-capture, no-collector-signal, gemm-class
+        infra-name grading; probe_driver: normalize_kernel, taxonomy contract
+        incl. "only attention rules emit `triton`", orphan keep rule, span/
+        launcher exclusion). 34 tests, pytest.mark.unit.
+      - Taxonomy backlog: 61 -> 2 unmatched kernel names across all 637
+        records (sources verified in the pinned images): identity-bearing
+        additions dsa_nsa (_fused_q_kernel, FilteredTopK, index_buf_accessor,
+        DeepGEMM smxx paged-logits helpers), fla_triton (Kimi-K3 KDA chunk /
+        recurrent / gate kernels, fused post-conv), triton_fused_moe
+        (_reduce_grouped); the rest is allocator / position / DSV4 SWA and
+        compress metadata / norm-rope / routing / sampler / load-time repack
+        glue. Left unmatched on purpose: sglang Kimi-K3 _score_kernel and
+        _combine_kernel (no source hit; 1 record each).
+      - path_diff --capture --env K=V sets collector cell filters
+        (AIC_DSA_CONTEXT_{SEQ_LENS,PREFIX_LENS,BATCH_SIZES}) and records
+        every AIC_*/AIS_* cell variable in the capture; the verdict carries
+        capture_env. Whole-sweep captures union length/prefix-conditional
+        paths and cannot match a single serving record.
+      - components/captures/: the capture scripts and the four verdict
+        helpers (verdicts_{all,dsv4,sgl,trt}.sh) that produce every file
+        under results/pathdiff/, parametrized on AIS_PROBE_WORKSPACE, so a
+        verdict can be re-derived from the repository alone.
+      Checked and already fixed (stale in my own list): vllm DSA context
+      mirrors serving's chunked prefill (context_dsa_chunk_prefill_size
+      new-token budget + context_dsa_prefix_lengths prefix axis, seq cap
+      16384) — no monolithic large-isl construction remains.
+      Gates after all of it: vllm 33 / sglang 16 / trtllm 9 aligned.
+    applies_to:
+    - instrument:probe_driver
+    - instrument:path_diff
+    - instrument:kernel_taxonomy
     - platform:sm90
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of

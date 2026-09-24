@@ -7,6 +7,7 @@
  "capture_cmd": [
   "/work/s/caps/compute_scale.py"
  ],
+ "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": null,
  "op_hint": "quant|scale|per_token|fp8",

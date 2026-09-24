@@ -18,6 +18,7 @@
   "--output-path",
   "/tmp"
  ],
+ "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": null,
  "op_hint": "attn|sparse|msa|topk|index|score|merge|block",
@@ -55,9 +56,7 @@
   "write_req_to_token_pool_triton"
  ],
  "collector_unmatched_kernels": [
-  "Command",
-  "INVALID",
-  "compute_position_kernel"
+  "INVALID"
  ],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
 }

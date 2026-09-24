@@ -815,10 +815,15 @@ def build_matrix(targets: dict) -> None:
                         cell["attention"] = ident.get("attn_backend")
                         moe_q = next((k for k in (ident.get("modules") or {}) if "MoE" in k), None)
                         moe_b = set()
+                        _moe_rx = re.compile(r"moe|Marlin|marlin|grouped|expert")
                         for op in rec.get("ops") or []:
-                            if re.search(r"moe|Marlin|marlin|grouped|expert",
-                                         " ".join(op.get("kernels") or [])):
+                            if _moe_rx.search(" ".join(op.get("kernels") or [])):
                                 moe_b |= set(op.get("backends") or [])
+                        # framework-mode records (CUDA graphs / compile) carry
+                        # the MoE kernels as orphans, not under spans
+                        moe_orph = [k for k in rec.get("orphan_kernels") or [] if _moe_rx.search(k)]
+                        if moe_orph:
+                            moe_b |= label_kernels(moe_orph)[0]
                         moe_b -= {"cublas", "vllm_kernel", "sgl_kernel", "torch"}
                         if moe_q:
                             cell["moe"] = (moe_q.replace("Method", "")

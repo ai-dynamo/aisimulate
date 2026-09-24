@@ -1,0 +1,54 @@
+{
+ "verdict": "aligned",
+ "repo": "google/gemma-4-26B-A4B",
+ "framework": "sglang",
+ "version": "0.5.16",
+ "capture_file": "facts/pathdiff/opcov_sgl_attn_ctx_gemma4_hd512.json",
+ "capture_cmd": [
+  "/work/ais/python/aisimulate/collector/opharness/components/op_smoke.py",
+  "--backend",
+  "sglang",
+  "--op",
+  "attention_context",
+  "--case-index",
+  "168",
+  "--cases",
+  "1",
+  "--out-dir",
+  "/tmp/smk"
+ ],
+ "capture_env": null,
+ "capture_run_error": null,
+ "kv_dtype": null,
+ "op_hint": "attn|attention|flash|fwd|triton",
+ "serving_record": {
+  "id": "ad3b2b2d5423",
+  "tp": 1,
+  "kv_cache_dtype": "auto",
+  "isl": null,
+  "prefix_caching": null,
+  "raw_file": null,
+  "candidates": 1
+ },
+ "collector_backends": [
+  "triton"
+ ],
+ "serving_backends": [
+  "cublas",
+  "sgl_kernel",
+  "triton",
+  "triton_fused_moe"
+ ],
+ "collector_only_signal": [],
+ "kernel_drift": null,
+ "infra_family_name_matches": null,
+ "serving_kernels_matched_in_collector": [
+  "_fwd_kernel",
+  "_fwd_kernel_stage2",
+  "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
+  "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
+  "namespace"
+ ],
+ "collector_unmatched_kernels": [],
+ "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
+}

@@ -7,6 +7,7 @@
  "capture_cmd": [
   "/work/s/caps/mla_ctx_bf16.py"
  ],
+ "capture_env": null,
  "capture_run_error": null,
  "kv_dtype": "auto",
  "op_hint": "mla|attn|flash|bmm|proj|indexer|rope|concat",

@@ -152,7 +152,7 @@ rules:
 
   # ------------------------------------------------------------ norm / rope
   - {backend: framework_native, role: norm_rope,
-     match: "rmsnorm|RMSNorm|rms_norm|LayerNormFn|_layer_norm_fwd|l2norm_fwd|rotary_embedding|BatchQKApplyRotary|fusedQKNormRope|_fused_qk_rmsnorm_rope|_gemma_(dual_rmsnorm|qkv_rmsnorm)"}
+     match: "rmsnorm|RMSNorm|rms_norm|LayerNormFn|_layer_norm_fwd|flashinfernormkernels|l2norm_fwd|rotary_embedding|BatchQKApplyRotary|fusedQKNormRope|_fused_qk_rmsnorm_rope|_gemma_(dual_rmsnorm|qkv_rmsnorm)"}
 
   # -------------------------------------------------- activation / elementwise
   # triton_{poi,red,per}_fused_* are torch.compile (Inductor) fusions. Probes
@@ -162,6 +162,29 @@ rules:
   # attention + GEMM kernels identical, only this glue changed). No identity.
   - {backend: framework_native, role: activation,
      match: "act_and_mul|silu_and_mul|situ_and_mul|_run_activation|_sigmoid_gate_mul|_fused_(gate_)?sigmoid_mul|triton_poi_fused|triton_per_fused|triton_red_fused|_split_qkv_contiguous|_typeConvert|fusedMiniMaxM3QNormRope|^_attn_res_kernel$|^layer_norm_gated_fwd_kernel$"}
+
+  # ------------------------------------------ backlog cleared 2026-09-24
+  # Sources verified in the pinned images (vllm 0.29.0 / sglang 0.5.16):
+  # identity-bearing ones first, glue after. `_score_kernel`/`_combine_kernel`
+  # (sglang Kimi-K3, 1 record each) have no source hit and stay unmatched.
+  - {backend: dsa_nsa, role: dsa_indexer,   # vllm sparse_attn_indexer.py fused q; deepseek_v32 FilteredTopK;
+     match: "^_fused_q_kernel$|FilteredTopKUnifiedKernel|^_get_k_and_s_triton_kernel$|^deep_gemm::sched::smxx_paged_mqa_logits_metadata|^deep_gemm::smxx_clean_logits"}  # sglang dsa/index_buf_accessor; trtllm DeepGEMM smxx helpers
+  - {backend: fla_triton, role: linear_attention,   # sglang Kimi-K3 KDA (fla) + vllm fused_gdn_prefill_post_conv
+     match: "chunk_gla_fwd_kernel|chunk_kda_fwd_kernel|fused_recurrent_kda|kda_gate_chunk_cumsum|^_fused_post_conv_kernel$"}
+  - {backend: triton_fused_moe, role: moe_gemm,     # triton_kernels matmul_ogs epilogue
+     match: "^_reduce_grouped$"}
+  - {backend: sgl_kernel, role: quant,
+     match: "^_act_quant_kernel$"}
+  - {backend: framework_native, role: kvcache,      # allocator / position / DSV4 sparse+SWA metadata / compress plans
+     match: "^alloc_decode_kernel$|^compute_position_kernel$|_fused_slot_clear_kernel|_page_table_positions_kernel|_build_swa_token_ids_kernel|_causal_swa_page_indices_kernel|_combine_topk_swa_indices_kernel|_expand_prefill_causally_kernel|_init_compressed_attn_metadata_kernel|plan_compress_(decode|prefill)_kernel|cp_gather_and_upconvert_fp8_kv_cache_page"}
+  - {backend: framework_native, role: norm_rope,    # fused_embed_norm, dsv32 norm+rope, mrope, FA rotary, FLA layernorm, sglang mHC head (Triton)
+     match: "^_fused_embed_norm_kernel$|^_fused_norm_rope_kernel$|_triton_mrope_forward|^rotary_kernel$|^layer_norm_fwd_kernel$|LayerNormGatedFunction|_bilinear_pos_embed_kernel|^_hc_head_kernel$"}
+  - {backend: framework_native, role: routing,      # gpt-oss triton_kernels routing; sglang radix router
+     match: "_combined_routing_compute|_combined_routing_memset|route_radix_kernel"}
+  - {backend: torch, role: gemm,                    # fp32 cuBLAS/cuDNN of vision towers; torch multi-block topk
+     match: "^sm80_xmma_gemm_f32f32|implicit_convolveNd|cutlass__5x_cudnn|tensorTransformGeneric|mbtopk::"}
+  - {backend: infra, role: infra,                   # sampler / logit-bias / grammar / load-time marlin repack / name artifacts
+     match: "^_min_p_kernel|^_penalties_kernel|^_temperature_kernel|^_topk_log_softmax_kernel|^_ranks_kernel|^_bad_words_kernel|^_bias_kernel$|flashinfer::sampling::|gptq_marlin_repack|^_apply_grammar_bitmask_kernel|^compute_cuda_kernel$|^kernel$|^triton_$|^Command$|^TopK$"}
 
   # ----------------------------------------------------------------- infra
   - {backend: infra, role: infra,
