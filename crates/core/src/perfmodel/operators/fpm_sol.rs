@@ -116,6 +116,24 @@ pub(crate) fn op_sol_latency_ms(
         Op::Elementwise(o) => Ok(elementwise_sol(o, spec, x)),
         Op::ContextAttention(o) => Ok(context_attention_sol(o, spec, batch, s, prefix)),
         Op::GenerationAttention(o) => Ok(generation_attention_sol(o, spec, batch, s)),
+        Op::Dsv41Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
+        Op::Dsv41Linear(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Mhc(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Engram(o) => Ok(o.sol(spec, x)?.latency_ms),
+        Op::Dsv41Stage(o) => {
+            let (stage_s, stage_prefix) = o.scope(s, prefix);
+            let stage_x = if o.is_context { batch * stage_s } else { x };
+            let mut total = 0.0;
+            for inner in &o.children {
+                let child_x = if inner.is_logits_gemm() {
+                    batch
+                } else {
+                    stage_x
+                };
+                total += op_sol_latency_ms(inner, db, child_x, batch, stage_s, stage_prefix)?;
+            }
+            Ok(total)
+        }
         Op::DsaContext(o) => dsa_context_module_sol(o, spec, batch, s, prefix),
         Op::DsaGeneration(o) => dsa_generation_module_sol(o, spec, batch, s),
         Op::Moe(o) => Ok(moe_sol(o, spec, x)),
@@ -692,6 +710,52 @@ mod tests {
         assert!(
             (got - expected).abs() <= 1e-9 * expected.abs().max(1e-12),
             "got {got}, expected {expected}"
+        );
+    }
+
+    #[test]
+    fn v41_stage_roofline_retains_fractional_tokens_and_bounds_only_prefill() {
+        use crate::operators::{Dsv41MhcOp, Dsv41StageOp};
+
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/src/aisimulate_core/systems");
+        let db = PerfDatabase::load(&root, "gb200", "vllm", "0.19.0").expect("GB200 db");
+        let leaf = Dsv41MhcOp {
+            name: "mhc".into(),
+            hidden_size: 32,
+            hc_mult: 4,
+            sinkhorn_iters: 20,
+        };
+        let mut stage = Dsv41StageOp {
+            name: "decoder".into(),
+            is_context: true,
+            decoder_replay: true,
+            bounded: true,
+            window_size: 128,
+            children: vec![Op::Dsv41Mhc(leaf.clone())],
+        };
+        // One balanced iteration has 385 new tokens over three requests;
+        // replay executes 128 each, while a short fractional extend stays short.
+        approx(
+            op_sol_latency_ms(
+                &Op::Dsv41Stage(stage.clone()),
+                &db,
+                385.0,
+                3.0,
+                385.0 / 3.0,
+                17.5,
+            )
+            .unwrap(),
+            leaf.sol(&db.system_spec, 384.0).unwrap().latency_ms,
+        );
+        approx(
+            op_sol_latency_ms(&Op::Dsv41Stage(stage.clone()), &db, 2.5, 1.0, 2.5, 17.5).unwrap(),
+            leaf.sol(&db.system_spec, 2.5).unwrap().latency_ms,
+        );
+        stage.is_context = false;
+        approx(
+            op_sol_latency_ms(&Op::Dsv41Stage(stage), &db, 3.0, 3.0, 2048.0, 0.0).unwrap(),
+            leaf.sol(&db.system_spec, 3.0).unwrap().latency_ms,
         );
     }
 

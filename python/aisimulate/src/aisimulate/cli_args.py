@@ -46,7 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--format", choices=("table", "json"), default="table")
     subparsers.choices["predict"].add_argument("--capture-per-request", action="store_true")
     subparsers.choices["predict"].epilog = (
-        "AgentX M1: use traffic.source.format=weka or agentic_mooncake with "
+        "AgentX replay: use traffic.source.format=weka or agentic_mooncake with "
         "trace_timestamps and agentic_lanes=1. The engine stack supports aggregated "
         "vLLM/SGLang, HBM-only, speculative decoding disabled. Results are "
         "functional_only; benchmark warmup and profiling are not qualified."

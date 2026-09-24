@@ -446,35 +446,39 @@ def _worker_performance_model_metadata(
 ) -> dict[str, JSONValue]:
     parallel = worker.parallelism
     sharded_moe = parallel.moe_tensor * parallel.moe_expert > 1
-    metadata: dict[str, Any] = {
-        "provider": "aic",
-        "config": {
-            "backend": engine.backend,
-            "backend_version": engine.backend_version,
-            "system": worker.hardware or engine.hardware,
-            "model_path": engine.model,
-            "tp_size": parallel.tensor,
-            "attention_dp_size": parallel.attention_data,
-            "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
-            "moe_ep_size": parallel.moe_expert if sharded_moe else None,
-            "nextn": engine.nextn or None,
-            **({"speculation": engine.speculation.cost_config()} if engine.speculation is not None else {}),
-            "forward_model": worker.timing.forward_model,
-            **{
-                name: getattr(engine, name)
-                for name in ENGINE_MODEL_CONTROL_FIELDS
-                if getattr(engine, name) not in (None, False)
-            },
-            **({"decoder_replay": True} if engine.decoder_replay else {}),
-            **{
-                field: getattr(engine, field)
-                for field in ("database_mode", "enable_shared_layer", "strict_provenance")
-                if getattr(engine, field) is not None
-            },
+    config: dict[str, JSONValue] = {
+        "backend": engine.backend,
+        "backend_version": engine.backend_version,
+        "system": worker.hardware or engine.hardware,
+        "model_path": engine.model,
+        "tp_size": parallel.tensor,
+        "attention_dp_size": parallel.attention_data,
+        "moe_tp_size": parallel.moe_tensor if sharded_moe else None,
+        "moe_ep_size": parallel.moe_expert if sharded_moe else None,
+        "nextn": engine.nextn or None,
+        "forward_model": worker.timing.forward_model,
+        **{
+            name: getattr(engine, name)
+            for name in ENGINE_MODEL_CONTROL_FIELDS
+            if getattr(engine, name) not in (None, False)
+        },
+        **({"decoder_replay": True} if engine.decoder_replay else {}),
+        **{
+            field: getattr(engine, field)
+            for field in ("enable_shared_layer", "strict_provenance")
+            if getattr(engine, field) is not None
         },
     }
-    metadata["config"].update(_context_parallel_knobs(parallel, "cp_size", "dcp_size"))
-    return metadata
+    config["database_mode"] = worker.timing.database_mode or engine.database_mode
+    if engine.speculation is not None:
+        config["speculation"] = engine.speculation.cost_config()
+    if worker.timing.fpm_parquet_path is not None:
+        config["fpm_parquet_path"] = worker.timing.fpm_parquet_path
+    config.update(_context_parallel_knobs(parallel, "cp_size", "dcp_size"))
+    return {
+        "provider": "aic",
+        "config": config,
+    }
 
 
 def _worker_engine_args(
@@ -529,15 +533,25 @@ def _worker_engine_args(
     if worker.timing.type == "default" and worker.timing.forward_model != "op_level":
         # Only the non-default forward model is spelled out, so op_level specs stay byte-identical.
         payload["aic_forward_model"] = worker.timing.forward_model
+        if worker.timing.fpm_parquet_path is not None:
+            payload["aic_fpm_parquet_path"] = worker.timing.fpm_parquet_path
     if backend == "vllm" or isinstance(engine.context_length, int):
         payload["max_model_len"] = (
             engine.context_length
             if isinstance(engine.context_length, int)
             else resolve_model_context_length(engine.model)
         )
+    if cache.prefix_match_unit is not None:
+        payload["prefix_match_unit"] = cache.prefix_match_unit
+    if cache.state_cache is not None:
+        payload["state_cache"] = cache.state_cache.model_dump(mode="json", exclude_none=True)
+        payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
-        assert capacity.blocks is not None
-        payload["num_gpu_blocks"] = capacity.blocks
+        if capacity.blocks is not None:
+            payload["num_gpu_blocks"] = capacity.blocks
+        else:
+            assert capacity.bytes is not None and isinstance(cache.bytes_per_token, int)
+            payload["num_gpu_blocks"] = capacity.bytes // (block_size * cache.bytes_per_token)
     else:
         assert memory_fraction is not None
         payload["cuda_graph_reserved_bytes"] = capacity.cuda_graph_reserved_bytes
@@ -557,7 +571,7 @@ def _worker_engine_args(
     elif worker.timing.type == "polynomial":
         payload["timing_model"] = {"type": "polynomial"}
     if worker.timing.type != "default":
-        if capacity.type == "default":
+        if capacity.type == "default" and cache.state_cache is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
             "aic_backend_version",
@@ -605,6 +619,11 @@ def _worker_engine_args(
             systems_paths=resolve_systems_paths(timing.systems_paths or engine.systems_paths),
         )
         timing_config = omit_inactive_moe_controls(canonical.to_dict())
+        if timing.fpm_parquet_path is not None:
+            interpolation = timing_config["estimator_config"].setdefault("fpm_interpolation", {})
+            if interpolation.get("fpm_parquet_path", timing.fpm_parquet_path) != timing.fpm_parquet_path:
+                raise ValueError("conflicting fpm_parquet_path and estimator_config.fpm_interpolation.fpm_parquet_path")
+            interpolation["fpm_parquet_path"] = timing.fpm_parquet_path
         for key in (
             "gpu_memory_utilization",
             "mem_fraction_static",
@@ -690,6 +709,10 @@ def _traffic(
             workload["arrival_speedup_ratio"] = load.speedup or 1.0
             if load.agentic_lanes is not None:
                 workload["agentic_lanes"] = load.agentic_lanes
+            if load.agentic_snapshot is not None:
+                workload["agentic_snapshot"] = load.agentic_snapshot.model_dump(mode="json")
+            if load.agentic_warmup:
+                workload["agentic_warmup"] = True
         if stop is not None and stop.max_virtual_time_seconds is not None:
             workload["max_sim_time_ms"] = 1_000.0 * stop.max_virtual_time_seconds
         return workload, None

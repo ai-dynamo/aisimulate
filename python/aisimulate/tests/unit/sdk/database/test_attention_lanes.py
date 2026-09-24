@@ -243,13 +243,13 @@ def _route_lane_density_through_the_stub(monkeypatch):
     monkeypatch.setattr(_etv, "fetch_attention_lane_density", _fetch)
 
 
-def test_engine_spec_schema_version_is_twenty():
+def test_engine_spec_schema_version_is_twenty_one():
     """Decode-CP ``dcp_size`` fields extend the positional operation payload
-    (v20), on top of the DeepSeek-V4.1 KV layout (v19) and the verification
-    width fields (v18)."""
+    (v21), on top of the DeepSeek-V4.1 FPM selector field (v20), the
+    DeepSeek-V4.1 KV layout (v19) and the verification width fields (v18)."""
     from aisimulate.sdk import engine
 
-    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 20
+    assert engine.ENGINE_SPEC_SCHEMA_VERSION == 21
 
 
 def test_lanes_outside_the_known_vocabulary_stay_reachable():

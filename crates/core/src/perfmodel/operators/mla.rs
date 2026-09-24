@@ -52,7 +52,7 @@ pub struct ContextMlaOp {
     pub cp_size: u32,
     /// Decode context parallelism on the same engine: prefill with cached
     /// context all-gathers the other ranks' latent-KV stripes first. See
-    /// `ContextAttentionOp::dcp_size`. Defaults to 1; tail-appended (schema v20).
+    /// `ContextAttentionOp::dcp_size`. Defaults to 1; tail-appended (schema v21).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"
@@ -140,7 +140,7 @@ pub struct GenerationMlaOp {
     /// `num_heads * dcp` query heads (the DCP group's gathered queries) over
     /// this rank's `ceil(s / dcp)` latent-KV stripe. See
     /// [`GenerationAttentionOp::dcp_size`](crate::operators::GenerationAttentionOp).
-    /// Defaults to 1; appended at the struct tail (schema v20).
+    /// Defaults to 1; appended at the struct tail (schema v21).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"
@@ -194,7 +194,7 @@ pub struct MlaModuleOp {
     /// the fused decode module prices `num_heads * dcp` gathered heads over
     /// this rank's `ceil(s / dcp)` latent-KV stripe (the module's projection
     /// GEMMs stay rank-local: the frameworks shard those by TP and gather
-    /// the query afterwards). Defaults to 1; tail-appended (schema v20).
+    /// the query afterwards). Defaults to 1; tail-appended (schema v21).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"

@@ -649,6 +649,7 @@ mod tests {
             weight_bytes: 1.5e10,
             // Non-default on purpose: the round-trip must preserve the field.
             verify_width: 8,
+            original_fmha_quant_mode: Some("fp8".into()),
             sol_ops: vec![
                 OpSpec::Gemm(gemm()),
                 OpSpec::ContextAttention(context_attention()),
@@ -756,12 +757,6 @@ mod tests {
                 hc_mult: 4,
                 tp_size: 4,
             }),
-            OpSpec::Dsv41Linear(Dsv41LinearOp {
-                name: "v41_linear".into(),
-                n: 1152,
-                k: 5120,
-                quant_mode: GemmQuantMode::Fp8Block,
-            }),
             OpSpec::Dsv41Stage(Dsv41StageOp {
                 name: "v41_stage".into(),
                 is_context: true,
@@ -769,6 +764,12 @@ mod tests {
                 bounded: true,
                 window_size: 128,
                 children: vec![OpSpec::Gemm(gemm())],
+            }),
+            OpSpec::Dsv41Linear(Dsv41LinearOp {
+                name: "v41_linear".into(),
+                n: 1152,
+                k: 5120,
+                quant_mode: GemmQuantMode::Fp8Block,
             }),
         ];
 
@@ -831,6 +832,7 @@ mod tests {
             backend: crate::BackendKind::Trtllm,
             backend_version: Some("1.0.0rc3".into()),
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
             kv_block_size: Some(64),
             parallel: ParallelMapping {
@@ -846,6 +848,7 @@ mod tests {
                 weight_dtype: Some(DataType::Fp8),
                 moe_dtype: Some(DataType::Fp8),
                 activation_dtype: Some(DataType::Fp8),
+                fpm_fmha_dtype: None,
                 kv_cache_dtype: Some(DataType::Fp8),
             },
             speculative: Some(SpeculativeConfig { nextn: Some(1) }),
@@ -909,8 +912,7 @@ mod tests {
         assert_eq!(MOE_EXPERT_COMPUTE_INDEX, MOE_ALL_TO_ALL_INDEX + 1);
         assert_eq!(TOKEN_SCALE_INDEX, MOE_EXPERT_COMPUTE_INDEX + 1);
         // Keep the main-branch TokenScale index; V41 variants append after it.
-        let mut appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
-        appended.sort();
+        let appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
         assert_eq!(
             appended,
             vec![36, 37, 38, 39, 40],
@@ -1260,7 +1262,7 @@ mod tests {
         let attention: GenerationAttentionOp = serde_json::from_value(attention_json).unwrap();
         assert_eq!(attention.scale_num_tokens, 1);
         assert_eq!(attention.verify_query_tokens, 0);
-        // Pre-v20 producers never emitted decode CP: it defaults to "off".
+        // Pre-v21 producers never emitted decode CP: it defaults to "off".
         assert_eq!(attention.dcp_size, 1);
         let mut fpm_json = serde_json::to_value(fpm_forward()).unwrap();
         fpm_json.as_object_mut().unwrap().remove("verify_width");
@@ -1275,6 +1277,29 @@ mod tests {
             Err(AicError::UnsupportedSchemaVersion {
                 got: 18,
                 expected: ENGINE_SPEC_SCHEMA_VERSION,
+                ..
+            })
+        ));
+    }
+    #[test]
+    fn fpm_selector_json_default_and_schema19_rejection() {
+        let selected = fpm_forward();
+        assert_eq!(selected.original_fmha_quant_mode.as_deref(), Some("fp8"));
+        let mut json = serde_json::to_value(selected).unwrap();
+        json.as_object_mut()
+            .unwrap()
+            .remove("original_fmha_quant_mode");
+        let legacy: crate::operators::FpmForwardOp = serde_json::from_value(json).unwrap();
+        assert_eq!(legacy.original_fmha_quant_mode, None);
+        let mut bytes = handshake_spec().to_bincode().unwrap();
+        bytes[..4].copy_from_slice(&19u32.to_le_bytes());
+        bytes.truncate(4);
+        assert!(matches!(
+            EngineSpec::from_bincode(&bytes),
+            Err(AicError::UnsupportedSchemaVersion {
+                got: 19,
+                expected: ENGINE_SPEC_SCHEMA_VERSION,
+
                 ..
             })
         ));

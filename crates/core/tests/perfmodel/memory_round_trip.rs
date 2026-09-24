@@ -86,6 +86,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
             backend: BackendKind::Trtllm,
             backend_version: Some("1.3.0rc10".to_string()),
             forward_model: None,
+            fpm_parquet_path: None,
             decoder_replay: false,
             kv_block_size: None,
             parallel: ParallelMapping {
@@ -101,6 +102,7 @@ fn request(tolerance_fraction: Option<f64>) -> KvCacheEstimateRequest {
                 weight_dtype: None,
                 moe_dtype: None,
                 activation_dtype: None,
+                fpm_fmha_dtype: None,
                 kv_cache_dtype: None,
             },
             speculative: None,

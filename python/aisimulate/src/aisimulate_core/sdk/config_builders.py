@@ -40,11 +40,13 @@ def build_model_config(
     enable_encoder_dp: bool = True,
     attention_backend: str | None = None,
     speculation=None,
-    cp_size: int = 1,
-    dcp_size: int = 1,
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
+    *,
+    cp_size: int = 1,
+    dcp_size: int = 1,
+    fpm_fmha_quant_mode: str | None = None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
     validate_moe_controls(enable_eplb=enable_eplb, wideep_num_slots=wideep_num_slots)
@@ -59,6 +61,7 @@ def build_model_config(
         gemm_quant_mode=GEMMQuantMode[gemm_quant_mode] if gemm_quant_mode else None,
         kvcache_quant_mode=KVCacheQuantMode[kvcache_quant_mode] if kvcache_quant_mode else None,
         fmha_quant_mode=FMHAQuantMode[fmha_quant_mode] if fmha_quant_mode else None,
+        fpm_fmha_quant_mode=FMHAQuantMode[fpm_fmha_quant_mode] if fpm_fmha_quant_mode else None,
         moe_quant_mode=MoEQuantMode[moe_quant_mode] if moe_quant_mode else None,
         comm_quant_mode=CommQuantMode[comm_quant_mode] if comm_quant_mode else None,
         forward_model=forward_model or "op_level",

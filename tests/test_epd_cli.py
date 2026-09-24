@@ -85,8 +85,8 @@ def _recommendation(mode="aggregated"):
     return raw
 
 
-@pytest.mark.parametrize("mode", ["aggregated", "disaggregated"])
-def test_epd_language_policy_normalizes_only_equivalent_default(mode):
+@pytest.mark.parametrize(("mode", "changed_role"), [("aggregated", 0), ("disaggregated", 0), ("disaggregated", 1)])
+def test_epd_language_policy_normalizes_only_equivalent_default(mode, changed_role):
     from aisimulate.config.epd import _language_execution
 
     spec = prediction_to_replay_spec(CorePredictionConfig.model_validate(_prediction(mode)))
@@ -101,9 +101,11 @@ def test_epd_language_policy_normalizes_only_equivalent_default(mode):
     for args in arguments:
         assert args.pop("aic_database_mode") == "SILICON"
     assert _language_execution(legacy) == expected
-    # A genuinely different estimator policy must still reject a callback.
-    arguments[0]["aic_database_mode"] = "SOL"
-    assert _language_execution(legacy) != expected
+    # Changing either role must reject the callback independently.
+    arguments[changed_role]["aic_database_mode"] = "SOL"
+    changed = _language_execution(legacy)
+    for index, role in enumerate(expected):
+        assert (changed[role] != expected[role]) is (index == changed_role)
 
 
 @pytest.mark.parametrize("mode", ["aggregated", "disaggregated", "heterogeneous"])

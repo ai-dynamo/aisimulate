@@ -548,7 +548,7 @@ pub struct WideEpGenerationMlaOp {
     /// Decode context parallelism (SGLang `--dcp-size` composes with DP
     /// attention / large EP): `num_heads * dcp` gathered query heads over
     /// this rank's `ceil(s / dcp)` latent-KV stripe. Defaults to 1; appended
-    /// at the struct tail (schema v20).
+    /// at the struct tail (schema v21).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"

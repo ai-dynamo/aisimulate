@@ -1,0 +1,86 @@
+{
+  "backend_version": "dev-c4ca651192e5-tp267c0e788b4b2",
+  "collection": {
+    "baseline_iterations": 5,
+    "baseline_warmup": 2,
+    "checkpoint_revision": "fb2764a5cf321eaa5070ca8f9e892818f477c16d",
+    "geometry_count": 154,
+    "job_id": "4364038",
+    "max_running_requests": 4,
+    "measured_iterations": 5,
+    "physical_kv_tokens": 5120,
+    "rank_aggregation": "maximum per physical invocation, then median per physical key",
+    "run_id": "9c3c44cd-11df-4caa-a260-527145a9d584",
+    "warmup": 1
+  },
+  "database_files": {
+    "b300_sxm.yaml": "1b46526ebec20b518f73215b01d46e70354ccb316ca173fa67611892ac99ee97",
+    "data/b300_sxm/comm/nccl/2.29.7/collection_meta.yaml": "183d658404b8378744334728ca6899868a34165c4e09622927ec4adcd2d06644",
+    "data/b300_sxm/comm/nccl/2.29.7/nccl_perf.parquet": "9a3c6888b768168fa933114f0c6413b26d05952a06b57cf7e6cd861639ac11c4",
+    "data/b300_sxm/dsv41/sglang/dev-c4ca651192e5-tp267c0e788b4b2/collection_meta.yaml": "a45588047dddd38be75a08d714079e638cd0769483713e47ff57fc305527ddd7",
+    "data/b300_sxm/dsv41/sglang/dev-c4ca651192e5-tp267c0e788b4b2/dsv41_module_perf.parquet": "f388060ea5ca384e6d8c8603c49ac942d35297554267975923e57a26cf30ac55",
+    "data/b300_sxm/gemm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/collection_meta.yaml": "9bf7e34df5141e373db46399e7088093450a1e2b25c2b737cbb5df3b8906afb5",
+    "data/b300_sxm/gemm/sglang/dev-c4ca651192e5-tp267c0e788b4b2/gemm_perf.parquet": "1b3aebbcdcc5d3aea9c9cccf706c9e341d63fa035ae87ba5c4dd0dd1aca699bf",
+    "data/b300_sxm/moe/sglang/dev-c4ca651192e5-tp267c0e788b4b2/collection_meta.yaml": "0b969a8158c870107d64b134e42e0c9a218da26b706b7d22f619e9db019cd6f8",
+    "data/b300_sxm/moe/sglang/dev-c4ca651192e5-tp267c0e788b4b2/moe_perf.parquet": "c8628c4357ed6e20cdf3bb5fcd77eb58b39bc7cfdde34cd5ac38c7db5e976c15"
+  },
+  "evidence": {
+    "native_lookup_receipt_sha256": "2c5b7a52c5503c204a70a0e9e583ce8465357af02d78f60541139a7c20d61e4b",
+    "publication_adapter_manifest_sha256": "68bbd7545991b889347c96672f14c844fd3866450221c2fe110bbef138e294d0",
+    "raw_admission_sha256": "871c80f41485fb3707ca3dab48235cd89300fdaf3de333c49410e5ceb11111d6",
+    "raw_archive_sha256": "a962d7a84a39c3bcdb764177156b9536663aa1e038a25bdff71937ddf8b35083"
+  },
+  "exact_native_lookup_counts": {
+    "dsv41": 1029,
+    "gemm": 46,
+    "moe": 23,
+    "nccl": 46
+  },
+  "execution_profile": "decoder_bounded",
+  "observed_hardware": {
+    "actual_driver_version": "610.57.04",
+    "gpu_names": [
+      "NVIDIA B300 SXM6 AC"
+    ],
+    "raw_receipt_canonical_json_sha256": "67ac78e739828110ceddfb51c2525678c2ecfdfb9d0a0d2552b7bcf872131783",
+    "raw_receipt_location": "External raw archive identified in evidence.raw_archive_sha256",
+    "receipt_sha256": "a467e1ce8068ca4845f053ef0766e2a28e465d60ce8b7930d24790bc82160cc0"
+  },
+  "qualification": "Complete OP calibration and strict exact lookup; independently observed native-forward heldout validation below. This does not establish general HTTP serving accuracy.",
+  "runtime_identity_sha256": "67c0e788b4b2bcdb1d55e684ee2742c1a50e63be881d0006e621c63204a49f28",
+  "schema_version": 1,
+  "source_qualified_runtime": {
+    "bridge_manifest_sha256": "e1f09392aefe01320590e2a25193131f1b6418d8121d236dce72d2fe24414372",
+    "image_manifest_digest": "sha256:c4ca651192e57e91989b5176c3665148131b9a171e53861dee87f5e57cef25b5",
+    "image_squashfs_sha256": "48a67d21c9186ffd15fd3c19c20a033c32a610c559f4837b9d02045585a79b17",
+    "kind": "native_startup_bridge",
+    "loader_source_descriptor_sha256": "762305550393b33cff4511bcfdef61e16cc7160ac030627c22e351b084f22e8e",
+    "loader_variant_identity_sha256": "257c9d5e61a19f4403b7baab566d3ab5b74a912bc1797be8d2bc648f21a162c5",
+    "schema": "dsv41.tp2.source-qualified-runtime.v1",
+    "startup_policy_sha256": "420c5722b2b4c447f8b331dfc95bbf831b568d2d85f99882cb0892b0d3b51981"
+  },
+  "system": "b300_sxm",
+  "tp": 2,
+  "heldout_validation": {
+    "mape_percent": 6.358216768717344,
+    "phase_mape_percent": {
+      "prefill": 2.1821654264608807,
+      "decode": 18.05116052703544
+    },
+    "planned_geometries": 38,
+    "predicted_geometries": 38,
+    "planned_attempts": 380,
+    "qualified_and_predicted_attempts": 326,
+    "native_geometry_failures_retained": 54,
+    "run_id": "cb03f93d-5652-416e-95c6-b6847e106c78",
+    "mape_definition": "Unweighted mean geometry error against median of every qualified fixed heldout attempt; unavailable geometry retained in coverage.",
+    "fitting": false,
+    "observed_latency_passed_to_predictor": false,
+    "geometries_predeclared": true,
+    "blind_benchmark": false,
+    "comparison_sha256": "c674788be3976bf86bed453505348d13b7b06f7d26a8eadbe3bc239ff8bf7d9f",
+    "predictor_head": "6ad6af2d9047234b446eb8ab84971c7938e963eb",
+    "native_sha256": "31fa4a3a066a3cd0509c3f36fac02139ac3625a258e96b371aa8b7c780dc78fd",
+    "wheel_validation_receipt_sha256": "38c0ba091d52be040d375c4c295b7bd9e124546da466a6eae9573386939cb02b"
+  }
+}

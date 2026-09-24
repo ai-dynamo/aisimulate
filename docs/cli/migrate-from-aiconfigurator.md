@@ -464,6 +464,9 @@ AIC_ALLOW_UNLISTED_VERSIONS=1 aiconfigurator cli estimate \
 
 **After — use FPM timing in a serving prediction for the same model, hardware, and parallelism:**
 
+Supply a matching external `/data/reviewed-fpm.parquet` and
+`/data/reviewed-fpm.metadata.json` pair.
+
 ```bash
 AIC_ALLOW_UNLISTED_VERSIONS=1 aisimulate predict \
   --config tests/e2e/configs/unified_cli/predict/fpm/01-minimax-m27-h200-tp4-fpm.yaml \

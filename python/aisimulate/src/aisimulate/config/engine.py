@@ -20,6 +20,7 @@ from .common import (
 
 PositiveInt = Annotated[int, Field(strict=True, gt=0)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
+PositiveU64 = Annotated[int, Field(strict=True, gt=0, le=(1 << 64) - 1)]
 CudaGraphReservedBytes = Annotated[int, Field(strict=True, ge=0, le=1 << 53)]
 PositiveFloat = Annotated[float, Field(strict=True, gt=0, allow_inf_nan=False)]
 NonNegativeFloat = Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
@@ -106,19 +107,22 @@ class KvCapacityPredictionConfig(StrictModel):
     type: Literal["default", "fixed"] = "default"
     memory_fraction: Fraction | None = None
     blocks: PositiveInt | None = None
+    bytes: PositiveU64 | None = None
     cuda_graph_reserved_bytes: CudaGraphReservedBytes = 0
 
     @model_validator(mode="after")
     def _validate_capacity(self) -> KvCapacityPredictionConfig:
         if self.type == "fixed":
-            if self.blocks is None:
-                raise ValueError("fixed KV capacity requires blocks")
+            if self.blocks is None and self.bytes is None:
+                raise ValueError("fixed KV capacity requires blocks or bytes")
+            if self.blocks is not None and self.bytes is not None:
+                raise ValueError("fixed KV capacity accepts only one of blocks or bytes")
             if self.memory_fraction is not None:
                 raise ValueError("fixed KV capacity rejects memory_fraction")
             if self.cuda_graph_reserved_bytes != 0:
                 raise ValueError("fixed KV capacity rejects cuda_graph_reserved_bytes")
-        elif self.blocks is not None:
-            raise ValueError("default KV capacity rejects blocks")
+        elif self.blocks is not None or self.bytes is not None:
+            raise ValueError("default KV capacity rejects blocks or bytes")
         return self
 
 
@@ -138,18 +142,66 @@ class G3OffloadConfig(StrictModel):
     shared_write_bandwidth_gbps: NonNegativeFloat = 80.0
 
 
+def manual_block_bytes(block_size: int | None, bytes_per_token: int | str) -> int:
+    """Validate explicit byte geometry without invoking model inference."""
+    for name, value in (("block_size", block_size), ("bytes_per_token", bytes_per_token)):
+        if not isinstance(value, int) or isinstance(value, bool) or not 0 < value <= (1 << 64) - 1:
+            raise ValueError(f"manual KV capacity requires explicit positive {name} within u64")
+    block_bytes = block_size * bytes_per_token
+    if block_bytes > (1 << 64) - 1:
+        raise ValueError("KV block byte size overflows an unsigned 64-bit integer")
+    return block_bytes
+
+
+class StateCacheConfig(StrictModel):
+    """One complete state copy per rank; token pool geometry lives on kv_cache."""
+
+    bytes_per_request: PositiveU64
+
+    def state_blocks(self, block_size: int, bytes_per_token: int) -> int:
+        block_bytes = manual_block_bytes(block_size, bytes_per_token)
+        if block_size < 2:
+            raise ValueError("state_cache requires block_size at least two for vLLM")
+        return (self.bytes_per_request - 1) // block_bytes + 1
+
+
 class KvCachePredictionConfig(StrictModel):
     block_size: PositiveInt | None = None
+    prefix_match_unit: PositiveU64 | None = None
     prefix_caching: bool = True
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityPredictionConfig = Field(default_factory=KvCapacityPredictionConfig)
     host_offload: HostOffloadConfig | None = None
     g3_offload: G3OffloadConfig | None = None
+    state_cache: StateCacheConfig | None = None
 
     @model_validator(mode="after")
     def _validate_g3(self):
         if self.g3_offload is not None and self.host_offload is None:
             raise ValueError("g3_offload requires host_offload")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_manual_geometry(self) -> KvCachePredictionConfig:
+        if self.prefix_match_unit is not None:
+            if self.state_cache is None:
+                raise ValueError("prefix_match_unit currently requires state_cache")
+            if self.block_size is None or self.block_size % self.prefix_match_unit:
+                raise ValueError("prefix_match_unit must be a positive divisor of block_size")
+        if self.capacity.bytes is not None or self.state_cache is not None:
+            block_bytes = manual_block_bytes(self.block_size, self.bytes_per_token)
+            if self.capacity.type != "fixed":
+                raise ValueError("state_cache requires fixed capacity (blocks or bytes)")
+            blocks = self.capacity.blocks if self.capacity.blocks is not None else self.capacity.bytes // block_bytes
+            if not 0 < blocks <= (1 << 64) - 1:
+                raise ValueError("fixed KV capacity must fit at least one block within u64")
+            if self.state_cache is not None:
+                if blocks < self.state_cache.state_blocks(self.block_size, self.bytes_per_token) + 1:
+                    raise ValueError("state_cache capacity must fit one token block and one request state")
+                if self.host_offload is not None:
+                    raise ValueError("state_cache supports G1 only; host_offload is not supported")
+                if self.g3_offload is not None:
+                    raise ValueError("state_cache supports G1 only; g3_offload is not supported")
         return self
 
 
@@ -174,6 +226,7 @@ class NgramSpeculationConfig(StrictModel):
 class TimingConfig(StrictModel):
     type: Literal["default", "fixed", "polynomial"] = "default"
     forward_model: Literal["op_level", "fpm"] = Field(default="op_level", exclude=True)
+    fpm_parquet_path: str | None = None
     estimation_mode: Literal["auto", "op_level", "fpm_interpolation", "fpm_regression"] | None = None
     fallback_policy: Literal["deny", "allow"] | None = None
     estimator_config: dict[str, Any] | None = None
@@ -217,6 +270,11 @@ class TimingConfig(StrictModel):
                 f"{self.type} timing rejects forward_model={self.forward_model!r}; "
                 "forward_model applies to default timing only"
             )
+        if self.fpm_parquet_path is not None:
+            if not self.fpm_parquet_path:
+                raise ValueError("fpm_parquet_path cannot be empty")
+            if self.type != "default" or self.forward_model != "fpm":
+                raise ValueError("fpm_parquet_path requires default timing with forward_model='fpm'")
         return self
 
 
@@ -338,6 +396,9 @@ class EstimatorPolicyConfig(StrictModel):
             or self.estimation_mode != "auto"
             or self.fallback_policy != "deny"
             or bool(self.estimator_config)
+            or getattr(self, "decoder_replay", False)
+            or getattr(self, "enable_shared_layer", None) is not None
+            or getattr(self, "strict_provenance", None) is not None
         )
         roles = [getattr(workers, role, None) for role in ("aggregated", "prefill", "decode")]
         unsupported_provider = "afd" in modes or getattr(workers, "encoder", None) is not None
@@ -431,6 +492,7 @@ class EnginePredictionConfig(EstimatorPolicyConfig):
                 has_transfer=self.kv_transfer is not None,
             )
         _validate_prediction_host_offload(self)
+        _validate_prediction_state_cache(self)
         _validate_backend_block_sizes(backends={self.backend}, modes={self.mode}, workers=self.workers)
         _validate_prediction_scheduler_backend(self)
         _validate_speculation(self, modes={self.mode}, backends={self.backend})
@@ -538,6 +600,13 @@ class KvCacheRecommendationConfig(StrictModel):
     bytes_per_token: KvBytesPerToken = "auto"
     capacity: KvCapacityRecommendationConfig = Field(default_factory=KvCapacityRecommendationConfig)
     host_offload: HostOffloadConfig | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_state_cache_recommendation(cls, value: Any) -> Any:
+        if isinstance(value, dict) and value.get("state_cache") is not None:
+            raise ValueError("state_cache currently supports prediction only; recommendation is not supported")
+        return value
 
 
 class WorkerRecommendationConfig(StrictModel):
@@ -730,6 +799,17 @@ def _validate_prediction_host_offload(engine: EnginePredictionConfig) -> None:
         raise ValueError("host_offload requires prefix_caching=true")
     if worker.parallelism.attention_data != 1:
         raise ValueError("host_offload requires attention_data=1")
+
+
+def _validate_prediction_state_cache(engine: EnginePredictionConfig) -> None:
+    for role in ("aggregated", "prefill", "decode"):
+        worker = getattr(engine.workers, role)
+        if worker is None or worker.kv_cache.state_cache is None:
+            continue
+        if worker.kv_cache.prefix_match_unit is not None and (engine.speculation is not None or engine.nextn > 0):
+            raise ValueError("prefix_match_unit does not support speculative decoding (speculation or nextn > 0)")
+        if engine.backend != "vllm" or engine.mode != "aggregated" or role != "aggregated":
+            raise ValueError("state_cache requires backend=vllm and mode=aggregated (G1 only)")
 
 
 def _validate_recommendation_host_offload(engine: EngineRecommendationConfig) -> None:

@@ -6,13 +6,17 @@
 import json
 import math
 import pickle
+from dataclasses import replace
 
 import pytest
+from pydantic import ValidationError
 
 import aisimulate
 from aisimulate import capacity as aic
+from aisimulate.cli_args import build_parser
 from aisimulate.compiler import prediction_to_replay_spec
 from aisimulate.config.cli import CorePredictionConfig
+from aisimulate.config.traffic import SyntheticSource
 from aisimulate.replay.config import ReplayCliConfig, ReplayOutputConfig
 from aisimulate.runner import (
     EngineReplayRunner,
@@ -27,6 +31,7 @@ from aisimulate.sweeper import (
     ReplaySpec,
     RuntimeHookSpec,
 )
+from aisimulate.sweeper.config import Workload
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 
 pytestmark = [
@@ -142,7 +147,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     assert capabilities.supports_trace_format("weka")
     assert capabilities.supports_trace_format("agentic_mooncake")
     assert capabilities.supports_agentic_lanes
-    assert capabilities.supported_agentic_topologies == ("agg",)
+    assert capabilities.supported_agentic_topologies == ("agg", "disagg")
     assert capabilities.supported_agentic_backends == ("vllm", "sglang")
     assert not capabilities.supports_agentic_host_offload
     assert not capabilities.supports_agentic_speculative_decoding
@@ -151,6 +156,7 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
 
 @pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
 @pytest.mark.parametrize("nested_rank", [False, True])
+@pytest.mark.parametrize("role", ["aggregated", "prefill", "decode"])
 @pytest.mark.parametrize(
     ("unsupported", "message"),
     [
@@ -160,18 +166,20 @@ def test_factory_is_pickleable_and_advertises_engine_only_capabilities():
     ],
 )
 def test_agentic_capabilities_reject_unqualified_memory_and_decode_modes(
-    trace_format, nested_rank, unsupported, message
+    trace_format, nested_rank, role, unsupported, message
 ):
     runtime = RecordingRuntime()
-    args = _engine_args() | unsupported
+    args = _engine_args(role=role) | unsupported
     if nested_rank:
         args = {"rank": args}
     spec = _spec(
         deployment=BackendDeploymentSpec(
-            deployment_mode="agg",
+            deployment_mode="agg" if role == "aggregated" else "disagg",
             backend="vllm",
             backend_version="test",
-            agg_engine_args=args,
+            agg_engine_args=args if role == "aggregated" else None,
+            prefill_engine_args=args if role == "prefill" else _engine_args(role="prefill"),
+            decode_engine_args=args if role == "decode" else _engine_args(role="decode"),
             num_workers=1,
         ),
         workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
@@ -183,10 +191,11 @@ def test_agentic_capabilities_reject_unqualified_memory_and_decode_modes(
 
 
 @pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
-def test_agentic_capabilities_reject_trtllm(trace_format):
+@pytest.mark.parametrize("topology", ["agg", "disagg"])
+def test_agentic_capabilities_reject_trtllm(trace_format, topology):
     spec = _spec(
         deployment=BackendDeploymentSpec(
-            deployment_mode="agg",
+            deployment_mode=topology,
             backend="trtllm",
             backend_version="test",
             agg_engine_args=_engine_args(backend="trtllm"),
@@ -368,21 +377,112 @@ def test_prediction_compiler_carries_weka_agentic_lanes() -> None:
     assert workload["weka_nested_timestamp_basis"] == "relative"
 
 
-def test_engine_capability_rejects_disaggregated_weka_before_runtime() -> None:
-    capabilities = EngineReplayRunnerFactory().capabilities()
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_engine_capability_rejects_online_disaggregated_weka_before_runtime(backend: str) -> None:
+    runtime = RecordingRuntime()
+    spec = ReplaySpec(
+        backend_deployment=BackendDeploymentSpec(
+            deployment_mode="disagg",
+            backend=backend,
+            backend_version="test",
+            num_prefill_workers=1,
+            num_decode_workers=1,
+        ),
+        execution_mode="online",
+        workload={"source_type": "trace", "trace_format": "weka"},
+        goal={},
+    )
+
+    with pytest.raises(ValueError, match="does not support execution mode 'online'"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
+@pytest.mark.parametrize("model_source", ["engine_args", "metadata"])
+@pytest.mark.parametrize("decode_model", [None, "different-model", "test-model"])
+def test_disaggregated_agentic_requires_same_target_model(trace_format, model_source, decode_model):
+    runtime = RecordingRuntime()
+    prefill = _engine_args(role="prefill")
+    decode = _engine_args(role="decode")
+    metadata = {}
+    if model_source == "metadata":
+        prefill.pop("aic_model_path")
+        decode.pop("aic_model_path")
+        metadata = {
+            role: {"provider": "aic", "config": {"model_path": model}}
+            for role, model in [("prefill", "test-model"), ("decode", decode_model)]
+        }
+    else:
+        decode["aic_model_path"] = decode_model
     spec = _spec(
         deployment=BackendDeploymentSpec(
             deployment_mode="disagg",
             backend="vllm",
             backend_version="test",
+            prefill_engine_args=prefill,
+            decode_engine_args=decode,
+            performance_model_metadata=metadata,
             num_prefill_workers=1,
             num_decode_workers=1,
         ),
-        workload={"source_type": "trace", "trace_format": "weka"},
+        workload={"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1},
     )
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(0)
+    if decode_model != "test-model":
+        with pytest.raises(ValueError, match="prefill and decode must use the same configured target model"):
+            runner.run(spec)
+        assert runtime.execution_spec is None
+    else:
+        runner.run(spec)
+        assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
 
-    with pytest.raises(ValueError, match="agentic trace format 'weka'.*topology 'disagg'"):
-        capabilities.require_compatible(spec)
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo", "standard_dynamo"])
+@pytest.mark.parametrize("role", ["prefill", "decode"])
+@pytest.mark.parametrize("timing_model", ["test-model", "other-model"])
+@pytest.mark.parametrize("declared_target", [False, True])
+def test_disaggregated_agentic_checks_actual_aic_timing_model(trace_format, role, timing_model, declared_target):
+    runtime = RecordingRuntime()
+    roles = {name: _engine_args(role=name) for name in ("prefill", "decode")}
+    roles[role]["timing_model"] = {"type": "external", "provider": "aic", "config": {"model": timing_model}}
+    workload = {"source_type": "trace", "trace_format": trace_format, "agentic_lanes": 1}
+    if trace_format == "standard_dynamo":
+        workload = {"source_type": "trace", "trace_format": "dynamo"}
+    spec = _spec(
+        deployment=BackendDeploymentSpec(
+            deployment_mode="disagg",
+            backend="vllm",
+            backend_version="test",
+            prefill_engine_args=roles["prefill"],
+            decode_engine_args=roles["decode"],
+            performance_model_metadata=(
+                {name: {"provider": "aic", "config": {"model": "test-model"}} for name in roles}
+                if declared_target
+                else {}
+            ),
+            num_prefill_workers=1,
+            num_decode_workers=1,
+        ),
+        workload=workload,
+    )
+    runner = EngineReplayRunnerFactory(runtime=runtime).create(0)
+    if timing_model != "test-model" and trace_format != "standard_dynamo":
+        message = (
+            f"agentic {role} AIC timing model must match"
+            if declared_target
+            else "agentic prefill and decode must use the same configured target model"
+        )
+        with pytest.raises(ValueError, match=message):
+            runner.run(spec)
+        assert runtime.execution_spec is None
+    else:
+        runner.run(spec)
+        if declared_target or timing_model == "test-model":
+            assert runtime.execution_spec["traffic"]["execution_model"] == "test-model"
+        else:
+            assert "execution_model" not in runtime.execution_spec["traffic"]
+        assert runtime.execution_spec["spec"]["engine"][role]["rank"]["timing_model"]["config"]["model"] == timing_model
 
 
 @pytest.mark.parametrize(
@@ -1285,6 +1385,7 @@ def test_runner_threads_forward_model_alias_into_aic_timing():
     engine_args = _engine_args()
     engine_args.pop("timing_model")
     engine_args["aic_forward_model"] = "fpm"
+    engine_args["aic_fpm_parquet_path"] = "/artifacts/reviewed-fpm.parquet"
     deployment = BackendDeploymentSpec(
         deployment_mode="agg",
         backend="vllm",
@@ -1297,7 +1398,9 @@ def test_runner_threads_forward_model_alias_into_aic_timing():
 
     rank = runtime.execution_spec["engine"]["rank"]
     assert rank["timing_model"]["config"]["forward_model"] == "fpm"
+    assert rank["timing_model"]["config"]["fpm_parquet_path"] == "/artifacts/reviewed-fpm.parquet"
     assert "aic_forward_model" not in rank
+    assert "aic_fpm_parquet_path" not in rank
 
 
 def test_runner_rejects_forward_model_on_rank_and_in_explicit_aic_timing():
@@ -1348,7 +1451,8 @@ def test_runner_rejects_unknown_forward_model(value):
 
 
 @pytest.mark.parametrize("replay", [False, True])
-def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeypatch):
+@pytest.mark.parametrize("worker_policy", [None, "SILICON", "SOL"])
+def test_public_replay_keeps_decoder_profile_and_database_policy(replay, worker_policy, monkeypatch):
     from aisimulate_core.sdk.rust_engine_step import RustForwardPassPerfModel
 
     class ReadyEstimator:
@@ -1374,7 +1478,12 @@ def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeyp
                 "database_mode": "SILICON",
                 "enable_shared_layer": False,
                 "strict_provenance": True,
-                "workers": {"aggregated": {"kv_cache": {"capacity": {"type": "fixed", "blocks": 128}}}},
+                "workers": {
+                    "aggregated": {
+                        "kv_cache": {"capacity": {"type": "fixed", "blocks": 128}},
+                        "timing": {"database_mode": worker_policy},
+                    }
+                },
             }
         }
     )
@@ -1383,12 +1492,12 @@ def test_public_replay_keeps_decoder_profile_and_database_policy(replay, monkeyp
     EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
     config = runtime.execution_spec["spec"]["engine"]["rank"]["timing_model"]["config"]
     assert config.get("decoder_replay", False) is replay
-    assert config["database_mode"] == "SILICON"
+    assert config["database_mode"] == (worker_policy or "SILICON")
     assert config["enable_shared_layer"] is False
     assert config["strict_provenance"] is True
     metadata = spec.backend_deployment.performance_model_metadata["aggregated"]["config"]
     assert metadata.get("decoder_replay", False) is replay
-    assert metadata["database_mode"] == "SILICON"
+    assert metadata["database_mode"] == config["database_mode"]
 
 
 @pytest.mark.parametrize(
@@ -1641,6 +1750,218 @@ def test_runner_rejects_overflowing_ordinary_metric():
 
     with pytest.raises(InvalidRunnerError, match="output_throughput_tok_s.*not finite"):
         _normalize_engine_replay_report({"output_throughput_tok_s": 10**400}, include_native_report=False)
+
+
+@pytest.mark.parametrize("trace_format", ["weka", "agentic_mooncake", "dynamo"])
+@pytest.mark.parametrize("warmup", [False, True])
+def test_agentic_snapshot_reaches_native_payload_and_default_python_evidence(trace_format: str, warmup: bool) -> None:
+    evidence = [{"seed": 2**64 - 1, "lane_id": "lane:0", "t_star_ms": 50.0}]
+    phases = {"schema": "aisimulate.agentic.phases.v1", "phase": "profile"}
+
+    class SnapshotRuntime(RecordingRuntime):
+        def run_replay_json(self, execution_spec_json):
+            report = json.loads(super().run_replay_json(execution_spec_json))
+            return json.dumps(report | {"agentic_snapshots": evidence} | ({"agentic_phases": phases} if warmup else {}))
+
+    runtime = SnapshotRuntime()
+    report = (
+        EngineReplayRunnerFactory(runtime=runtime)
+        .create(0)
+        .run(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": trace_format,
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": {"seed": 2**64 - 1},
+                    "agentic_warmup": warmup,
+                }
+            )
+        )
+    )
+    assert runtime.execution_spec["traffic"]["agentic_snapshot"] == {"seed": 2**64 - 1}
+    assert report.metadata["agentic_snapshots"] == evidence
+    assert runtime.execution_spec["traffic"]["agentic_warmup"] is warmup
+    assert report.metadata.get("agentic_phases") == (phases if warmup else None)
+    assert "native_report" not in report.metadata
+
+
+@pytest.mark.parametrize("snapshot", [{}, {"seed": True}, {"seed": -1}, {"seed": 2**64}, {"seed": 1, "extra": 0}])
+def test_agentic_snapshot_runner_rejects_untyped_invalid_options(snapshot: dict) -> None:
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match="agentic_snapshot"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": "weka",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": snapshot,
+                }
+            )
+        )
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize(
+    "capability,label", [("supports_agentic_snapshots", "snapshots"), ("supports_agentic_warmup", "warmup")]
+)
+def test_agentic_snapshot_capability_is_explicit(capability: str, label: str) -> None:
+    from dataclasses import replace
+
+    factory = EngineReplayRunnerFactory()
+    assert getattr(factory.capabilities(), capability)
+    capabilities = replace(factory.capabilities(), **{capability: False})
+    with pytest.raises(ValueError, match=f"does not support agentic {label}"):
+        capabilities.require_compatible(
+            _spec(
+                workload={
+                    "source_type": "trace",
+                    "load_type": "trace_timestamps",
+                    "trace_path": "corpus",
+                    "trace_format": "weka",
+                    "agentic_lanes": 1,
+                    "agentic_snapshot": {"seed": 42},
+                    "agentic_warmup": True,
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize("warmup", [None, 0, 1, "true", {}])
+def test_agentic_warmup_runner_rejects_untyped_invalid_options(warmup) -> None:
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match="agentic_warmup must be a boolean"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload={"agentic_warmup": warmup}))
+    assert runtime.execution_spec is None
+
+
+def test_agentic_warmup_runner_requires_snapshot() -> None:
+    runtime = RecordingRuntime()
+    with pytest.raises(ValueError, match="agentic_warmup requires agentic_snapshot"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(workload={"agentic_warmup": True}))
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random"])
+def test_runner_honors_length_sampler(sampler):
+    # Fixed vectors from the benchmark's NumPy RandomState contract and the
+    # legacy Python sampler. The entire input vector is drawn first.
+    expected = {
+        "numpy_random_state": [(8, 4), (9, 4), (8, 5), (9, 4), (9, 4)],
+        "python_random": [(9, 5), (9, 5), (8, 5), (9, 5), (10, 5)],
+    }
+    for _ in range(2):
+        runtime = RecordingRuntime()
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+            _spec(
+                workload={
+                    "isl": 10,
+                    "osl": 5,
+                    "request_count": 5,
+                    "arrival_interval_ms": 0.0,
+                    "random_range_ratio": 0.8,
+                    "random_seed": 0,
+                    "length_sampler": sampler,
+                }
+            )
+        )
+        assert [(r["input_tokens"], r["output_tokens"]) for r in runtime.execution_spec["requests"]] == expected[
+            sampler
+        ]
+
+
+def test_runner_rejects_unknown_length_sampler():
+    with pytest.raises(ValueError, match="length_sampler"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                workload={
+                    "isl": 10,
+                    "osl": 5,
+                    "request_count": 2,
+                    "arrival_interval_ms": 0.0,
+                    "length_sampler": "typo",
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize(
+    "sampler,seed",
+    [("numpy_random_state", 0xFFFF_FFFF), ("python_random", 0x1_0000_0000), ("python_random", 0xFFFF_FFFF_FFFF_FFFF)],
+)
+def test_runner_sampler_seed_upper_bounds(sampler, seed):
+    runtime = RecordingRuntime()
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(
+        _spec(
+            workload={
+                "isl": 10,
+                "osl": 5,
+                "request_count": 2,
+                "arrival_interval_ms": 0.0,
+                "random_range_ratio": 0.8,
+                "random_seed": seed,
+                "length_sampler": sampler,
+            }
+        )
+    )
+    assert len(runtime.execution_spec["requests"]) == 2
+
+
+def test_runner_rejects_numpy_seed_above_uint32():
+    with pytest.raises(ValueError, match="numpy_random_state random_seed.*32-bit"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(
+                workload={
+                    "isl": 10,
+                    "osl": 5,
+                    "request_count": 2,
+                    "arrival_interval_ms": 0.0,
+                    "random_seed": 0x1_0000_0000,
+                    "length_sampler": "numpy_random_state",
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize("sampler", ["numpy_random_state", "typo"])
+def test_runner_rejects_nondefault_sampler_for_trace(sampler):
+    with pytest.raises(ValueError, match="length_sampler only applies to synthetic replay"):
+        EngineReplayRunnerFactory(runtime=RecordingRuntime()).create(0).run(
+            _spec(workload={"trace_path": "unused.jsonl", "length_sampler": sampler})
+        )
+
+
+@pytest.mark.parametrize("schema", [Workload, SyntheticSource])
+def test_length_sampler_is_not_exposed_by_public_workload_schemas(schema):
+    with pytest.raises(ValidationError) as error:
+        schema.model_validate({"length_sampler": "numpy_random_state"})
+    assert any(e["loc"] == ("length_sampler",) and e["type"] == "extra_forbidden" for e in error.value.errors())
+
+
+def test_length_sampler_is_not_exposed_by_public_cli(capsys):
+    with pytest.raises(SystemExit) as error:
+        build_parser().parse_args(["predict", "-c", "unused.yaml", "--length-sampler", "numpy_random_state"])
+    assert error.value.code == 2
+    assert "unrecognized arguments: --length-sampler numpy_random_state" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("source_type", ["synthetic", "trace"])
+@pytest.mark.parametrize("sampler", ["numpy_random_state", "python_random", "typo"])
+@pytest.mark.parametrize("deployment_mode", ["agg", "disagg", "afd", "afd+pd"])
+def test_workload_driver_rejects_length_sampler_before_native_execution(source_type, sampler, deployment_mode):
+    runtime = RecordingRuntime()
+    spec = _spec(workload={"source_type": source_type, "length_sampler": sampler})
+    spec = replace(spec, backend_deployment=replace(spec.backend_deployment, deployment_mode=deployment_mode))
+    with pytest.raises(
+        ValueError, match="length_sampler requires materialized direct synthetic replay without source_type"
+    ):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(spec)
+    assert runtime.execution_spec is None
 
 
 @pytest.mark.parametrize("layout", ["flat", "null_flat", "canonical", "canonical_fallback", "nested"])
