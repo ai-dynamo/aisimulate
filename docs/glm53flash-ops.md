@@ -32,19 +32,35 @@ replay-bound timing remain unfinished.
 
 Measured lookup keeps exact physical identity, backend, checkpoint, TP and phase.
 Bounded workload interpolation requires complete measured corners with matching
-observed kernel signatures and state/graph policy; KDA chunk and IndexPool
-short-context/tail partitions remain separate. Missing coverage fails in both
+observed kernel signatures and state/graph policy; KDA initial-state and IndexPool
+short-context/tail partitions remain separate. Native tile counts are workload
+coordinates, not fabricated kernel boundaries. Missing coverage fails in both
 SILICON and HYBRID; neither mode silently falls back to SOL. The installed wheel
 constructs all eight required model graphs and rejects missing measurements in
 all eight SILICON and all eight HYBRID checks.
 
-CPU validation passed 2,362 collector tests (8 skipped), 13 Rust GLM tests and
-43 focused observer/contract/evidence/runtime tests. Subsequent shared SGLang
-context/receipt integration passed 87 focused checks. These checks establish
-software behavior and evidence integrity, not native GPU performance coverage.
+Current focused validation passed 17 Rust GLM tests, 48 Ops contract/evidence
+tests, and 50 shared SGLang artifact/entry tests. The earlier broad collector
+run passed 2,362 tests (8 skipped); that count is historical and predates the
+latest bounded evidence and native launch fixes. These checks establish software
+behavior and evidence integrity, not native GPU performance coverage.
 **All eight deployment cells retain data/accuracy status `NOT_EVALUATED`.** No
 measured GLM profiles or independent 20% MAPE pass are included. Native framework
-qualification and the first Ops GPU smoke are separate pending evidence.
+qualification and Ops GPU observation are separate evidence streams.
+
+Bounded shards retain every original point and independently identified native
+run. Publication requires a complete, disjoint union with immutable point maps.
+Repeated physical operator keys use the lowest frozen original point ID, never a
+latency-selected owner; all observations remain in the evidence.
+
+The stock vLLM IndexPool helper failed actual GB300 cached-prefill controls at
+unaligned prefix 4097 while aligned controls and one-shot references matched.
+The measured producer and consumer therefore reject stock vLLM cached prefill
+with `prefix % 4 != 0` and `query >= 2`. Original requested points remain
+unqualified; they are not removed from acceptance. The [native probe receipt](glm53flash-kpool-native-gb300.json)
+preserves the concrete failures. A separately versioned repair candidate requires
+its own cache and complete Engine qualification before this restriction can be
+relaxed for that exact runtime. Stock support is not claimed to be repaired.
 
 See [the collector contract](../python/aisimulate/collector/README.glm53flash.md),
 [the Ops evidence adapter](../python/aisimulate/collector/glm53flash_validation.py)
