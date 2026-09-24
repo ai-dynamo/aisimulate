@@ -16,7 +16,7 @@ import json
 import math
 from pathlib import Path
 
-from collector.glm53flash_graph_callbacks import CloneCallbacks, resolve_registry
+from collector.glm53flash_graph_callbacks import CloneCallbacks, record_event_record_types, resolve_registry
 from collector.glm53flash_graph_hooks import NativeGraphOperationObserver
 from collector.glm53flash_graph_nodes import (
     EXECUTION_RANGE,
@@ -108,7 +108,7 @@ def install(manifest, provenance, output, *, holdout=False):
         with CloneCallbacks(observer.api, output / f"{stem}.progress.jsonl") as callbacks:
             result = original_capture(backend, shape_key, forward, *args, **kwargs)
             graph = backend._graphs[shape_key]
-            receipt = callbacks.receipt(graph)
+        receipt = callbacks.receipt(graph)
         # Persist original capture ownership and callbacks before any strict
         # derived mapping. Kineto starts only later, after this unsubscribe.
         with (output / f"{stem}.json").open("x") as stream:
@@ -117,11 +117,18 @@ def install(manifest, provenance, output, *, holdout=False):
             raise RuntimeError("actual native graph did not capture exactly one complete model")
         with (output / f"capture-source-nodes-rank-{state['rank']}.jsonl").open("a") as stream:
             stream.write(json.dumps(captured[0], sort_keys=True) + "\n")
-        registry = resolve_registry(captured[0], receipt)
+        type_path = output / f"{stem}.event-record-types.json"
+        type_proof = record_event_record_types(observer.api, graph, captured[0], receipt, type_path)
+        registry = resolve_registry(captured[0], receipt, type_proof)
         registry["instantiation_receipt"] = {
             "file": f"{stem}.json",
             "sha256": hashlib.sha256((output / f"{stem}.json").read_bytes()).hexdigest(),
         }
+        if type_proof is not None:
+            registry["node_type_receipt"] = {
+                "file": type_path.name,
+                "sha256": hashlib.sha256(type_path.read_bytes()).hexdigest(),
+            }
         state["captures"][shape_key] = (graph, registry)
         with (output / f"capture-nodes-rank-{state['rank']}.jsonl").open("a") as stream:
             stream.write(json.dumps(registry, sort_keys=True) + "\n")

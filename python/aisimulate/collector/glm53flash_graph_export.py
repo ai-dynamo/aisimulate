@@ -129,8 +129,12 @@ def _captures(root, rank, snapshot, manifest, provenance, files):
         callbacks = _receipt(root, receipt, files)
         if callbacks.get("graph_mutations") is not False:
             raise ValueError("native graph clone receipt does not establish read-only observation")
-        derived = resolve_registry(sources[key], callbacks)
+        node_type_receipt = recorded.get("node_type_receipt")
+        node_type_proof = _receipt(root, node_type_receipt, files) if node_type_receipt is not None else None
+        derived = resolve_registry(sources[key], callbacks, node_type_proof)
         derived["instantiation_receipt"] = receipt
+        if node_type_receipt is not None:
+            derived["node_type_receipt"] = node_type_receipt
         if derived != recorded:
             raise ValueError("executable graph differs from original native clone callbacks")
         captures[key] = derived

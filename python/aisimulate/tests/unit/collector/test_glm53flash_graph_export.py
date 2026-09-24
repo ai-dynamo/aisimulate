@@ -8,10 +8,11 @@ import shutil
 
 import pyarrow.parquet as pq
 import pytest
+
 from collector import glm53flash_graph_export as graph
 from collector import glm53flash_validation as native
 from collector.glm53flash_contract import canonical_json, operation_geometry, sha256_json
-from collector.glm53flash_graph_callbacks import resolve_registry
+from collector.glm53flash_graph_callbacks import EVENT_RECORD_CUDART_SHA256, resolve_registry
 from collector.glm53flash_graph_nodes import EXECUTION_RANGE, bind_execution_activity, bind_replay_kernels
 from collector.glm53flash_jsonl import file_sha256, iter_records
 
@@ -102,7 +103,7 @@ def fixture(tmp_path, monkeypatch, role="calibration"):
                     "original_node_id": 17,
                     "node_id": 53,
                     "node_type": 0,
-                    "raw_fields": {"graph": 39, "originalGraph": 12},
+                    "raw_fields": {"graph": 39, "originalGraph": 12, "node": 72, "originalNode": 73, "nodeType": 0},
                 },
             ],
         }
@@ -510,3 +511,72 @@ def test_missing_setup_activity_cannot_be_exported_as_zero(tmp_path, monkeypatch
     put_lines(path, rows)
     with pytest.raises(ValueError, match="device-work call lacks"):
         graph.export_graph(root, run, root / graph.BASENAME, **control_fixture(tmp_path, monkeypatch))
+
+
+def test_exporter_rechecks_the_hashed_event_record_query_receipt(tmp_path, monkeypatch):
+    _, root = fixture(tmp_path, monkeypatch)
+    source_path = root / "capture-source-nodes-rank-0.jsonl"
+    source = next(iter_records(source_path))
+    source["native_api_libraries"]["cudart"]["sha256"] = EVENT_RECORD_CUDART_SHA256
+    source["nodes"].append({"node_id": 18, "node_type": 7, "name": "native_graph_setup"})
+    callback_path = root / "graph-clones-rank-0-capture-0.json"
+    callback = json.loads(callback_path.read_text())
+    callback["callback_subscription_closed"] = True
+    callback["callbacks"].append(
+        {
+            "kind": "node_cloned",
+            "original_node_id": 18,
+            "node_id": 54,
+            "node_type": 0,
+            "raw_fields": {"graph": 39, "originalGraph": 12, "node": 74, "originalNode": 75, "nodeType": 0},
+        }
+    )
+    proof = {
+        "method": "CUDA13_EVENT_RECORD_CLONE_QUERY_V1",
+        "native_api_libraries": source["native_api_libraries"],
+        "graph_exec_handle": 39,
+        "graph_exec_id": 71,
+        "callback_subscription_closed": True,
+        "completed": True,
+        "queries": [
+            {
+                "original_node_id": 18,
+                "node_id": 54,
+                "source_node_handle": 75,
+                "clone_node_handle": 74,
+                "source_node_type": 7,
+                "callback_node_type": 0,
+                "api": "cudaGraphNodeGetType",
+                "rc": 0,
+                "native_node_type": 7,
+            }
+        ],
+    }
+    proof_path = root / "TEST_ONLY-event-record-query.json"
+    put(callback_path, callback)
+    put(proof_path, proof)
+    put_lines(source_path, [source])
+    registry = resolve_registry(source, callback, proof)
+    registry["instantiation_receipt"] = {"file": callback_path.name, "sha256": file_sha256(callback_path)}
+    registry["node_type_receipt"] = {"file": proof_path.name, "sha256": file_sha256(proof_path)}
+    target = root / "capture-nodes-rank-0.jsonl"
+    put_lines(target, [registry])
+    files = set()
+    args = [
+        root,
+        0,
+        json.loads((root / "graph-policy-rank-0.json").read_text()),
+        json.loads((root / "manifest.json").read_text()),
+        json.loads((root / "provenance.json").read_text()),
+    ]
+    captures = graph._captures(*args, files)
+    assert proof_path.name in files
+    assert list(captures.values())[0]["nodes"][-1]["node_type"] == 7
+    proof["queries"][0]["rc"] = 1
+    put(proof_path, proof)
+    with pytest.raises(ValueError):
+        graph._captures(*args, set())  # Original file hash rejects replacement.
+    registry["node_type_receipt"]["sha256"] = file_sha256(proof_path)
+    put_lines(target, [registry])
+    with pytest.raises(ValueError, match="exact deferred native type proof"):
+        graph._captures(*args, set())  # Rehashing cannot hide the actual native rc.

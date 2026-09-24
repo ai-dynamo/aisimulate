@@ -411,6 +411,23 @@ from integer bit patterns or kernel order. Foreign-source nodes, clone chains,
 and unknown structural node kinds fail. Native dependencies, including PDL
 metadata, remain attached to the mapped nodes.
 
+SG GPU611706 calibration rejected a source EventRecord node (native type7)
+whose clone callback reported type0. The separate native CUDA13 GPU612570
+experiment retained all original handles/IDs and queried after unsubscribe,
+while source and executable graphs were alive: source types5/6/2/7 all matched;
+clone API types were0/6/2/7, while every callback type was0. Thus neither the
+callback field nor the internal clone API is a universal source-type authority.
+The observer accepts only the demonstrated source EventRecord7/callback0 case,
+and only after a successful deferred `cudaGraphNodeGetType` query returns7 for
+that exact clone handle. Source type and callback bytes remain unchanged.
+The full unique source/clone ID and handle mapping, exact qualified provider
+hashes, closed subscription, live executable handle and query rc/type are
+retained. The hashed query receipt is independently rechecked by the exporter.
+All other mismatches, including Empty5/clone0, still reject. No potentially
+freed source handle is queried after Torch capture returns, and no CUDA API
+is invoked inside a callback. The original failed model attempt is preserved;
+this narrow repair still needs a new full-model capture/profile qualification.
+
 The wrapper ABI was checked against NVIDIA's original
 `extras/CUPTI/samples/cuda_graphs_trace/cuda_graphs_trace.cu` in the immutable
 CUPTI13.0.85 Linux SBSA archive (archive SHA256

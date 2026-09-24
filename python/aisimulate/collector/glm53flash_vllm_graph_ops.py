@@ -17,7 +17,7 @@ import inspect
 import json
 from pathlib import Path
 
-from collector.glm53flash_graph_callbacks import CloneCallbacks, resolve_registry
+from collector.glm53flash_graph_callbacks import CloneCallbacks, record_event_record_types, resolve_registry
 from collector.glm53flash_graph_hooks import NativeGraphOperationObserver
 from collector.glm53flash_graph_nodes import NativeGraphAPI
 from collector.glm53flash_native_hooks import install_native_hooks
@@ -383,14 +383,14 @@ def install(manifest, provenance, output):
         serial = state.get("callback_serial", 0)
         state["callback_serial"] = serial + 1
         stem = f"vllm-graph-clones-rank-{state['rank']}-capture-{serial}"
-        receipts = {}
         with CloneCallbacks(state["observer"].api, output / f"{stem}.progress.jsonl") as callbacks:
             result = original_capture(manager, factory, *args, **kwargs)
-            for descriptor in manager._aisim_glm53_capture_pending:
-                graph = manager.graphs.get(descriptor)
-                if graph is None:
-                    raise RuntimeError("native FULL descriptor has no instantiated graph")
-                receipts[descriptor] = callbacks.receipt(graph)
+        receipts = {}
+        for descriptor in manager._aisim_glm53_capture_pending:
+            graph = manager.graphs.get(descriptor)
+            if graph is None:
+                raise RuntimeError("native FULL descriptor has no instantiated graph")
+            receipts[descriptor] = callbacks.receipt(graph)
         for index, (descriptor, receipt) in enumerate(receipts.items()):
             path = output / f"{stem}-{index}.json"
             with path.open("x") as stream:
@@ -400,11 +400,20 @@ def install(manifest, provenance, output):
                 raise RuntimeError("native FULL descriptor lacks one complete source capture")
             with (output / f"{stem}-{index}-source.json").open("x") as stream:
                 json.dump(observations[0], stream, indent=2)
-            registry = resolve_registry(observations[0], receipt)
+            type_path = output / f"{stem}-{index}.event-record-types.json"
+            type_proof = record_event_record_types(
+                state["observer"].api, manager.graphs[descriptor], observations[0], receipt, type_path
+            )
+            registry = resolve_registry(observations[0], receipt, type_proof)
             registry["instantiation_receipt"] = {
                 "file": path.name,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             }
+            if type_proof is not None:
+                registry["node_type_receipt"] = {
+                    "file": type_path.name,
+                    "sha256": hashlib.sha256(type_path.read_bytes()).hexdigest(),
+                }
             manager._aisim_glm53_capture_pending[descriptor] = [registry]
         return result
 
