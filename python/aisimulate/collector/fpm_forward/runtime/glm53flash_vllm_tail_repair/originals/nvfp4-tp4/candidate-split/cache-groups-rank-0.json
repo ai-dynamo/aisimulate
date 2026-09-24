@@ -1,0 +1,904 @@
+{
+  "schema": "native_tail_cache_groups_v1",
+  "tp_rank": 0,
+  "groups": [
+    {
+      "group_index": 0,
+      "layer_names": [
+        "language_model.model.layers.3.self_attn.indexer.k_cache",
+        "language_model.model.layers.3.self_attn.attn",
+        "language_model.model.layers.7.self_attn.indexer.k_cache",
+        "language_model.model.layers.7.self_attn.attn",
+        "language_model.model.layers.11.self_attn.indexer.k_cache",
+        "language_model.model.layers.11.self_attn.attn",
+        "language_model.model.layers.15.self_attn.indexer.k_cache",
+        "language_model.model.layers.15.self_attn.attn",
+        "language_model.model.layers.19.self_attn.indexer.k_cache",
+        "language_model.model.layers.19.self_attn.attn",
+        "language_model.model.layers.23.self_attn.indexer.k_cache",
+        "language_model.model.layers.23.self_attn.attn",
+        "language_model.model.layers.27.self_attn.indexer.k_cache",
+        "language_model.model.layers.27.self_attn.attn",
+        "language_model.model.layers.31.self_attn.indexer.k_cache",
+        "language_model.model.layers.31.self_attn.attn",
+        "language_model.model.layers.35.self_attn.indexer.k_cache",
+        "language_model.model.layers.35.self_attn.attn",
+        "language_model.model.layers.39.self_attn.indexer.k_cache",
+        "language_model.model.layers.39.self_attn.attn",
+        "language_model.model.layers.43.self_attn.indexer.k_cache",
+        "language_model.model.layers.43.self_attn.attn"
+      ],
+      "group_spec": {
+        "class": "vllm.v1.kv_cache_interface.UniformTypeKVCacheSpecs",
+        "uses_slot_mapping": true,
+        "dtype": "None",
+        "fields": {
+          "block_size": 2176
+        }
+      },
+      "per_layer_specs": {
+        "language_model.model.layers.3.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.3.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.7.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.7.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.11.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.11.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.15.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.15.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.19.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.19.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.23.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.23.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.27.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.27.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.31.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.31.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.35.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.35.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.39.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.39.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.43.self_attn.indexer.k_cache": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 132,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.43.self_attn.attn": {
+          "class": "vllm.v1.kv_cache_interface.MLAAttentionSpec",
+          "uses_slot_mapping": true,
+          "dtype": "torch.uint8",
+          "fields": {
+            "block_size": 2176,
+            "sliding_window": null,
+            "num_kv_heads": 1,
+            "head_size": 512,
+            "head_size_v": 0
+          }
+        }
+      },
+      "tail_builders": []
+    },
+    {
+      "group_index": 1,
+      "layer_names": [
+        "language_model.model.layers.3.self_attn.indexer.tail_cache",
+        "language_model.model.layers.7.self_attn.indexer.tail_cache",
+        "language_model.model.layers.11.self_attn.indexer.tail_cache",
+        "language_model.model.layers.15.self_attn.indexer.tail_cache",
+        "language_model.model.layers.19.self_attn.indexer.tail_cache",
+        "language_model.model.layers.23.self_attn.indexer.tail_cache",
+        "language_model.model.layers.27.self_attn.indexer.tail_cache",
+        "language_model.model.layers.31.self_attn.indexer.tail_cache",
+        "language_model.model.layers.35.self_attn.indexer.tail_cache",
+        "language_model.model.layers.39.self_attn.indexer.tail_cache",
+        "language_model.model.layers.43.self_attn.indexer.tail_cache"
+      ],
+      "group_spec": {
+        "class": "vllm.v1.kv_cache_interface.UniformTypeKVCacheSpecs",
+        "uses_slot_mapping": false,
+        "dtype": "None",
+        "fields": {
+          "block_size": 4
+        }
+      },
+      "per_layer_specs": {
+        "language_model.model.layers.3.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.7.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.11.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.15.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.19.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.23.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.27.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.31.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.35.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.39.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        },
+        "language_model.model.layers.43.self_attn.indexer.tail_cache": {
+          "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+          "uses_slot_mapping": false,
+          "dtype": "torch.bfloat16",
+          "fields": {
+            "block_size": 4,
+            "sliding_window": 4,
+            "num_kv_heads": 2,
+            "head_size": 128,
+            "head_size_v": 0
+          }
+        }
+      },
+      "tail_builders": [
+        {
+          "group_index": 1,
+          "builder_index": 0,
+          "layer_names": [
+            "language_model.model.layers.3.self_attn.indexer.tail_cache",
+            "language_model.model.layers.7.self_attn.indexer.tail_cache",
+            "language_model.model.layers.11.self_attn.indexer.tail_cache",
+            "language_model.model.layers.15.self_attn.indexer.tail_cache",
+            "language_model.model.layers.19.self_attn.indexer.tail_cache",
+            "language_model.model.layers.23.self_attn.indexer.tail_cache",
+            "language_model.model.layers.27.self_attn.indexer.tail_cache",
+            "language_model.model.layers.31.self_attn.indexer.tail_cache",
+            "language_model.model.layers.35.self_attn.indexer.tail_cache",
+            "language_model.model.layers.39.self_attn.indexer.tail_cache",
+            "language_model.model.layers.43.self_attn.indexer.tail_cache"
+          ],
+          "builder_class": "vllm.v1.attention.backends.mla.indexer.KpoolTailMetadataBuilder",
+          "builder_spec": {
+            "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+            "uses_slot_mapping": false,
+            "dtype": "torch.bfloat16",
+            "fields": {
+              "block_size": 4,
+              "sliding_window": 4,
+              "num_kv_heads": 2,
+              "head_size": 128,
+              "head_size_v": 0
+            }
+          },
+          "build_source": {
+            "path": "/candidate/vllm/v1/attention/backends/mla/indexer.py",
+            "relative_path": "vllm/v1/attention/backends/mla/indexer.py",
+            "sha256": "2acbc1c4fa57c3424ad95e6ecbe76eb7141747773c3e867ce704f4adccba892a"
+          }
+        }
+      ]
+    },
+    {
+      "group_index": 2,
+      "layer_names": [
+        "language_model.model.layers.0.self_attn",
+        "language_model.model.layers.5.self_attn",
+        "language_model.model.layers.10.self_attn",
+        "language_model.model.layers.16.self_attn",
+        "language_model.model.layers.21.self_attn",
+        "language_model.model.layers.26.self_attn",
+        "language_model.model.layers.32.self_attn",
+        "language_model.model.layers.37.self_attn",
+        "language_model.model.layers.42.self_attn"
+      ],
+      "group_spec": {
+        "class": "vllm.v1.kv_cache_interface.MambaSpec",
+        "uses_slot_mapping": true,
+        "dtype": "None",
+        "fields": {
+          "block_size": 131079
+        }
+      },
+      "per_layer_specs": {
+        "language_model.model.layers.0.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.5.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.10.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.16.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.21.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.26.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.32.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.37.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.42.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        }
+      },
+      "tail_builders": []
+    },
+    {
+      "group_index": 3,
+      "layer_names": [
+        "language_model.model.layers.1.self_attn",
+        "language_model.model.layers.6.self_attn",
+        "language_model.model.layers.12.self_attn",
+        "language_model.model.layers.17.self_attn",
+        "language_model.model.layers.22.self_attn",
+        "language_model.model.layers.28.self_attn",
+        "language_model.model.layers.33.self_attn",
+        "language_model.model.layers.38.self_attn",
+        "language_model.model.layers.44.self_attn"
+      ],
+      "group_spec": {
+        "class": "vllm.v1.kv_cache_interface.MambaSpec",
+        "uses_slot_mapping": true,
+        "dtype": "None",
+        "fields": {
+          "block_size": 131079
+        }
+      },
+      "per_layer_specs": {
+        "language_model.model.layers.1.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.6.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.12.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.17.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.22.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.28.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.33.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.38.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.44.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        }
+      },
+      "tail_builders": []
+    },
+    {
+      "group_index": 4,
+      "layer_names": [
+        "language_model.model.layers.2.self_attn",
+        "language_model.model.layers.8.self_attn",
+        "language_model.model.layers.13.self_attn",
+        "language_model.model.layers.18.self_attn",
+        "language_model.model.layers.24.self_attn",
+        "language_model.model.layers.29.self_attn",
+        "language_model.model.layers.34.self_attn",
+        "language_model.model.layers.40.self_attn"
+      ],
+      "group_spec": {
+        "class": "vllm.v1.kv_cache_interface.MambaSpec",
+        "uses_slot_mapping": true,
+        "dtype": "None",
+        "fields": {
+          "block_size": 131079
+        }
+      },
+      "per_layer_specs": {
+        "language_model.model.layers.2.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.8.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.13.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.18.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.24.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.29.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.34.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.40.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        }
+      },
+      "tail_builders": []
+    },
+    {
+      "group_index": 5,
+      "layer_names": [
+        "language_model.model.layers.4.self_attn",
+        "language_model.model.layers.9.self_attn",
+        "language_model.model.layers.14.self_attn",
+        "language_model.model.layers.20.self_attn",
+        "language_model.model.layers.25.self_attn",
+        "language_model.model.layers.30.self_attn",
+        "language_model.model.layers.36.self_attn",
+        "language_model.model.layers.41.self_attn"
+      ],
+      "group_spec": {
+        "class": "vllm.v1.kv_cache_interface.MambaSpec",
+        "uses_slot_mapping": true,
+        "dtype": "None",
+        "fields": {
+          "block_size": 131079
+        }
+      },
+      "per_layer_specs": {
+        "language_model.model.layers.4.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.9.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.14.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.20.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.25.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.30.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.36.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        },
+        "language_model.model.layers.41.self_attn": {
+          "class": "vllm.v1.kv_cache_interface.MambaSpec",
+          "uses_slot_mapping": true,
+          "dtype": "None",
+          "fields": {
+            "block_size": 131079
+          }
+        }
+      },
+      "tail_builders": []
+    }
+  ],
+  "slot_mapping_enabled_host": [
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+  ],
+  "slot_mapping_enabled_device": [
+    true,
+    false,
+    true,
+    true,
+    true,
+    true
+  ],
+  "model_state_class": "vllm.v1.worker.gpu.model_states.mamba_hybrid.MambaHybridModelState",
+  "model_state_prepare_source": {
+    "path": "/candidate/vllm/v1/worker/gpu/model_states/mamba_hybrid.py",
+    "relative_path": "vllm/v1/worker/gpu/model_states/mamba_hybrid.py",
+    "sha256": "573e130ac5587d4822fabf97adad1ad0fda02ff83c5e70df879a5bb175ae845c"
+  },
+  "source_pins": {
+    "vllm/v1/kv_cache_interface.py": "76fdecf31c8cd93479ebe7c788d699498e83957d18037eb5b39ccfe46f57c138",
+    "vllm/v1/attention/backends/mla/indexer.py": "2acbc1c4fa57c3424ad95e6ecbe76eb7141747773c3e867ce704f4adccba892a",
+    "vllm/v1/worker/gpu/model_states/default.py": "bb614f814780f052e869f9acf31dfbfa68718ee7dc6252eefa901b5730ee8a2a",
+    "vllm/v1/worker/gpu/model_states/mamba_hybrid.py": "573e130ac5587d4822fabf97adad1ad0fda02ff83c5e70df879a5bb175ae845c",
+    "vllm/v1/worker/gpu/attn_utils.py": "b9b81e59dda2720b1f9c434471381f879228832443e52756e469b4ad4905888f"
+  },
+  "formal_admission": false,
+  "latency_admission": false
+}

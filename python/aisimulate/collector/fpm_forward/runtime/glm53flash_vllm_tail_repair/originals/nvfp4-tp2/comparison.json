@@ -1,0 +1,1414 @@
+{
+  "status": "passed",
+  "scope": "native_Engine_functional_correctness_for_frozen_geometry_suite_only",
+  "checkpoint": "nvfp4",
+  "tp": 2,
+  "policy": "production",
+  "requests_per_mode": 20,
+  "greedy_output_tokens_per_request": 32,
+  "comparisons": 40,
+  "differences": [],
+  "native_receipts": [
+    {
+      "requests": 20,
+      "checkpoint_identity": {
+        "checkpoint": "nvfp4",
+        "model": "nvidia/GLM-5.3-Flash-NVFP4",
+        "revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+        "config_sha256": "6f0ec374c7f3273461e1cadbee8d682bb21ad822427ab5a3a986611f5247fdee"
+      },
+      "native_modes": [
+        "FULL",
+        "NONE"
+      ],
+      "all_tp_trace_digest": "00a6fffea9510a84dc3ed7eb8a6c274e64864b9922091a85e2b23867fc95d485",
+      "external_to_native_request_ids": {
+        "0": "0-9469566d",
+        "1": "1-9f12b410",
+        "2": "2-9f39188f",
+        "3": "3-a5b291ae",
+        "4": "4-8a3c971c",
+        "5": "5-bd1b10ce",
+        "6": "6-b5c1fff1",
+        "7": "7-a87b8930",
+        "8": "8-9088256d",
+        "9": "9-9bae1ff9",
+        "10": "10-a2af4ef1",
+        "11": "11-b37b39ad",
+        "12": "12-bfa9ddd5",
+        "13": "13-93eebbae",
+        "14": "14-8c2b7187",
+        "15": "15-a282a7bf",
+        "16": "16-bd5fe7ef",
+        "17": "17-a7f12386",
+        "18": "18-bf289a8f",
+        "19": "19-bbcbb613"
+      },
+      "request_identity_protocol": "native_assign_request_id_v1",
+      "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+      "actual_prefill_splits": {
+        "0": {
+          "0-9469566d": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "1-9f12b410": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "2-9f39188f": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "3-a5b291ae": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "4-8a3c971c": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "5-bd1b10ce": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "6-b5c1fff1": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "7-a87b8930": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "8-9088256d": [
+            [
+              0,
+              4098
+            ]
+          ],
+          "9-9bae1ff9": [
+            [
+              0,
+              4099
+            ]
+          ],
+          "10-a2af4ef1": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "11-b37b39ad": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "12-bfa9ddd5": [
+            [
+              0,
+              4098
+            ]
+          ],
+          "13-93eebbae": [
+            [
+              0,
+              4099
+            ]
+          ],
+          "14-8c2b7187": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "15-a282a7bf": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "16-bd5fe7ef": [
+            [
+              0,
+              8196
+            ]
+          ],
+          "17-a7f12386": [
+            [
+              0,
+              8197
+            ]
+          ],
+          "18-bf289a8f": [
+            [
+              0,
+              8196
+            ]
+          ],
+          "19-bbcbb613": [
+            [
+              0,
+              8197
+            ]
+          ]
+        },
+        "1": {
+          "0-9469566d": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "1-9f12b410": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "2-9f39188f": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "3-a5b291ae": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "4-8a3c971c": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "5-bd1b10ce": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "6-b5c1fff1": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "7-a87b8930": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "8-9088256d": [
+            [
+              0,
+              4098
+            ]
+          ],
+          "9-9bae1ff9": [
+            [
+              0,
+              4099
+            ]
+          ],
+          "10-a2af4ef1": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "11-b37b39ad": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "12-bfa9ddd5": [
+            [
+              0,
+              4098
+            ]
+          ],
+          "13-93eebbae": [
+            [
+              0,
+              4099
+            ]
+          ],
+          "14-8c2b7187": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "15-a282a7bf": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "16-bd5fe7ef": [
+            [
+              0,
+              8196
+            ]
+          ],
+          "17-a7f12386": [
+            [
+              0,
+              8197
+            ]
+          ],
+          "18-bf289a8f": [
+            [
+              0,
+              8196
+            ]
+          ],
+          "19-bbcbb613": [
+            [
+              0,
+              8197
+            ]
+          ]
+        }
+      },
+      "native_tail_evidence": [
+        {
+          "tp_rank": 0,
+          "forwards": 320,
+          "tail_layers": [
+            3,
+            7,
+            11,
+            15,
+            19,
+            23,
+            27,
+            31,
+            35,
+            39,
+            43
+          ],
+          "checked_actual_token_addresses": 99006,
+          "cache_groups_sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e",
+          "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+          "latency_admission": false
+        },
+        {
+          "tp_rank": 1,
+          "forwards": 320,
+          "tail_layers": [
+            3,
+            7,
+            11,
+            15,
+            19,
+            23,
+            27,
+            31,
+            35,
+            39,
+            43
+          ],
+          "checked_actual_token_addresses": 99006,
+          "cache_groups_sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef",
+          "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+          "latency_admission": false
+        }
+      ],
+      "files": [
+        {
+          "path": "cache-groups-rank-0.json",
+          "sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e"
+        },
+        {
+          "path": "cache-groups-rank-1.json",
+          "sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef"
+        },
+        {
+          "path": "cohort-admission.jsonl",
+          "sha256": "1bd6e6113cbe1f9cf999995e5f736509e205c219882f80dad4e4ca06ba57b532"
+        },
+        {
+          "path": "effective-native-config.json",
+          "sha256": "ef125cf6463e91023b599fa5d630dcd2303c02941d5afcc978a6f3153e27a9a2"
+        },
+        {
+          "path": "forward-rank-0.jsonl",
+          "sha256": "0f69bdb2c018d4e1432c0b191e8e26b6648d5be252050226b6002f104aa3ccc4"
+        },
+        {
+          "path": "forward-rank-1.jsonl",
+          "sha256": "eaecc90f1062e216437d1db8d49092c243f3cb0a36ac50e7fba68275d889743c"
+        },
+        {
+          "path": "native-receipt.json",
+          "sha256": "004d42ed9148ecf0755a679915c05b3201b29d173e81ca758734fde1e9d0cb5e"
+        },
+        {
+          "path": "outputs.jsonl",
+          "sha256": "882486ba5f17d5aa7453278a48d3503743b0dba75f1ab2b4e571c64b667109f2"
+        },
+        {
+          "path": "preflight.json",
+          "sha256": "3ace3174423da4cd6c5bdd15d563ba28ec41c43b4c703e3ee3df5f1b54ae6767"
+        },
+        {
+          "path": "prompts-rank-0.jsonl",
+          "sha256": "a40dbee000f62f8e43aa98570392b7a7299b5ed1eb2e0b259234b345c1ef5c66"
+        },
+        {
+          "path": "prompts-rank-1.jsonl",
+          "sha256": "a40dbee000f62f8e43aa98570392b7a7299b5ed1eb2e0b259234b345c1ef5c66"
+        },
+        {
+          "path": "request-id-map.jsonl",
+          "sha256": "a6590b1c3e93ca9c29119f85e8829b7644d663b88a6a66643837b8ea9f13dc64"
+        },
+        {
+          "path": "tail-metadata-rank-0.jsonl",
+          "sha256": "d6b4c05a5bb402a45942cef7e36cbe75a1648e903325bd7470f6b36d4cbda65d"
+        },
+        {
+          "path": "tail-metadata-rank-1.jsonl",
+          "sha256": "1eefe53fa27544e22e32a9fb6d482809a742790765ae465a5a482dbb89cea534"
+        },
+        {
+          "path": "worker-completion.json",
+          "sha256": "c50c3e7e1bcf5d4db96d2f0092e654eccf2cb46ffb0a83544085440e627ce6fa"
+        },
+        {
+          "path": "worker-installation.json",
+          "sha256": "fae51075d5111a8f0ea9351008597a11aaddb270665e54b171e2b574830206bf"
+        },
+        {
+          "path": "worker-rank-0.json",
+          "sha256": "0dc5c07468ee0521606243b97ff32c182bd7d1955147852fd6d947d6a4394d78"
+        },
+        {
+          "path": "worker-rank-1.json",
+          "sha256": "7e7de11c45145cd5c11e9c127f78cf1bd94db16de1fd8b0c30be587af00728d9"
+        }
+      ]
+    },
+    {
+      "requests": 20,
+      "checkpoint_identity": {
+        "checkpoint": "nvfp4",
+        "model": "nvidia/GLM-5.3-Flash-NVFP4",
+        "revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+        "config_sha256": "6f0ec374c7f3273461e1cadbee8d682bb21ad822427ab5a3a986611f5247fdee"
+      },
+      "native_modes": [
+        "FULL",
+        "NONE"
+      ],
+      "all_tp_trace_digest": "6bc30bd2a25902cd4ae064e6218acbb96c1e08021e32812db0187c7ae29149e8",
+      "external_to_native_request_ids": {
+        "0": "0-9246ed77",
+        "1": "1-8ec752ab",
+        "2": "2-9fc1b005",
+        "3": "3-879ba25c",
+        "4": "4-beb185fd",
+        "5": "5-a5b31b98",
+        "6": "6-bdbd3033",
+        "7": "7-b0c09a96",
+        "8": "8-827fed60",
+        "9": "9-8e2a074c",
+        "10": "10-95057811",
+        "11": "11-92146403",
+        "12": "12-95167b16",
+        "13": "13-b79b7644",
+        "14": "14-ac98fbec",
+        "15": "15-bdea5010",
+        "16": "16-9bc9ab4c",
+        "17": "17-ae58cf65",
+        "18": "18-bc0faa9b",
+        "19": "19-9294c281"
+      },
+      "request_identity_protocol": "native_assign_request_id_v1",
+      "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+      "actual_prefill_splits": {
+        "0": {
+          "0-9246ed77": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "1-8ec752ab": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "2-9fc1b005": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "3-879ba25c": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "4-beb185fd": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "5-a5b31b98": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "6-bdbd3033": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "7-b0c09a96": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "8-827fed60": [
+            [
+              0,
+              4098
+            ]
+          ],
+          "9-8e2a074c": [
+            [
+              0,
+              4099
+            ]
+          ],
+          "10-95057811": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "11-92146403": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "12-95167b16": [
+            [
+              0,
+              4098
+            ]
+          ],
+          "13-b79b7644": [
+            [
+              0,
+              4099
+            ]
+          ],
+          "14-ac98fbec": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "15-bdea5010": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "16-9bc9ab4c": [
+            [
+              0,
+              8196
+            ]
+          ],
+          "17-ae58cf65": [
+            [
+              0,
+              8197
+            ]
+          ],
+          "18-bc0faa9b": [
+            [
+              0,
+              8196
+            ]
+          ],
+          "19-9294c281": [
+            [
+              0,
+              8197
+            ]
+          ]
+        },
+        "1": {
+          "0-9246ed77": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "1-8ec752ab": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "2-9fc1b005": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "3-879ba25c": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "4-beb185fd": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "5-a5b31b98": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "6-bdbd3033": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "7-b0c09a96": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "8-827fed60": [
+            [
+              0,
+              4098
+            ]
+          ],
+          "9-8e2a074c": [
+            [
+              0,
+              4099
+            ]
+          ],
+          "10-95057811": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "11-92146403": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "12-95167b16": [
+            [
+              0,
+              4098
+            ]
+          ],
+          "13-b79b7644": [
+            [
+              0,
+              4099
+            ]
+          ],
+          "14-ac98fbec": [
+            [
+              0,
+              4100
+            ]
+          ],
+          "15-bdea5010": [
+            [
+              0,
+              4101
+            ]
+          ],
+          "16-9bc9ab4c": [
+            [
+              0,
+              8196
+            ]
+          ],
+          "17-ae58cf65": [
+            [
+              0,
+              8197
+            ]
+          ],
+          "18-bc0faa9b": [
+            [
+              0,
+              8196
+            ]
+          ],
+          "19-9294c281": [
+            [
+              0,
+              8197
+            ]
+          ]
+        }
+      },
+      "native_tail_evidence": [
+        {
+          "tp_rank": 0,
+          "forwards": 320,
+          "tail_layers": [
+            3,
+            7,
+            11,
+            15,
+            19,
+            23,
+            27,
+            31,
+            35,
+            39,
+            43
+          ],
+          "checked_actual_token_addresses": 99006,
+          "cache_groups_sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e",
+          "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+          "latency_admission": false
+        },
+        {
+          "tp_rank": 1,
+          "forwards": 320,
+          "tail_layers": [
+            3,
+            7,
+            11,
+            15,
+            19,
+            23,
+            27,
+            31,
+            35,
+            39,
+            43
+          ],
+          "checked_actual_token_addresses": 99006,
+          "cache_groups_sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef",
+          "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+          "latency_admission": false
+        }
+      ],
+      "files": [
+        {
+          "path": "cache-groups-rank-0.json",
+          "sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e"
+        },
+        {
+          "path": "cache-groups-rank-1.json",
+          "sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef"
+        },
+        {
+          "path": "cohort-admission.jsonl",
+          "sha256": "df172257de7b2363afeadc3844c75d98efe2278fd3af2725a507a1ad5a4cc52e"
+        },
+        {
+          "path": "effective-native-config.json",
+          "sha256": "ef125cf6463e91023b599fa5d630dcd2303c02941d5afcc978a6f3153e27a9a2"
+        },
+        {
+          "path": "forward-rank-0.jsonl",
+          "sha256": "9143b824cceb0a33ffce7a051f27b7489bcd946a2e270e0a0839baf3117926c9"
+        },
+        {
+          "path": "forward-rank-1.jsonl",
+          "sha256": "b9a11697d7eef2c9cdefc8237f9e7e7a02636b3b806168430d0b7ef0052bae88"
+        },
+        {
+          "path": "native-receipt.json",
+          "sha256": "02f6578380592b1a8142d264528617213808af8c5eeb315a391a3e570f0fbe48"
+        },
+        {
+          "path": "outputs.jsonl",
+          "sha256": "c3b50264bcbede7ea0e709a7f2d0c15078b3e13b08a817153bbd68e819660049"
+        },
+        {
+          "path": "preflight.json",
+          "sha256": "4d79c0ca753d6a5a4311e0db75f158e4146aecfc8a97f08f6a10784dee3fd0a4"
+        },
+        {
+          "path": "prompts-rank-0.jsonl",
+          "sha256": "724e7d761f6e3e9c9fd796e081e7a0723e05bfb1563528e9da55ea598fb0a42c"
+        },
+        {
+          "path": "prompts-rank-1.jsonl",
+          "sha256": "724e7d761f6e3e9c9fd796e081e7a0723e05bfb1563528e9da55ea598fb0a42c"
+        },
+        {
+          "path": "request-id-map.jsonl",
+          "sha256": "8dd430a88ff6db25c60c442acfef35fc65e2ea93163b1a739aee6e5311d52f19"
+        },
+        {
+          "path": "tail-metadata-rank-0.jsonl",
+          "sha256": "1d70e13e24ac3044b73f4705fa0b6f7b16860839a0aa1f9b86bc55a347d10a76"
+        },
+        {
+          "path": "tail-metadata-rank-1.jsonl",
+          "sha256": "1eefe53fa27544e22e32a9fb6d482809a742790765ae465a5a482dbb89cea534"
+        },
+        {
+          "path": "worker-completion.json",
+          "sha256": "c50c3e7e1bcf5d4db96d2f0092e654eccf2cb46ffb0a83544085440e627ce6fa"
+        },
+        {
+          "path": "worker-installation.json",
+          "sha256": "fae51075d5111a8f0ea9351008597a11aaddb270665e54b171e2b574830206bf"
+        },
+        {
+          "path": "worker-rank-0.json",
+          "sha256": "1036d26bd299b62c5a46e6b87f60089510fbeb4f8fb355535345d8f2733ea7e3"
+        },
+        {
+          "path": "worker-rank-1.json",
+          "sha256": "7926941e3300d4ace5c5ff1bda89b8d7e269eb13e6f9063fbd882b493cd3ecc7"
+        }
+      ]
+    },
+    {
+      "requests": 20,
+      "checkpoint_identity": {
+        "checkpoint": "nvfp4",
+        "model": "nvidia/GLM-5.3-Flash-NVFP4",
+        "revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+        "config_sha256": "6f0ec374c7f3273461e1cadbee8d682bb21ad822427ab5a3a986611f5247fdee"
+      },
+      "native_modes": [
+        "FULL",
+        "NONE",
+        "PIECEWISE"
+      ],
+      "all_tp_trace_digest": "2013b0c82fd0eb73b6c4e7ec10cdfbf07d507781e5e2308528a2085631248d1e",
+      "external_to_native_request_ids": {
+        "0": "0-a4db9885",
+        "1": "1-87cab035",
+        "2": "2-a6804c52",
+        "3": "3-a26ec592",
+        "4": "4-82fb1bdc",
+        "5": "5-b6b61729",
+        "6": "6-abb7627e",
+        "7": "7-9ba193b4",
+        "8": "8-84641c97",
+        "9": "9-9f7eb50d",
+        "10": "10-ae859c7b",
+        "11": "11-a08b4e0e",
+        "12": "12-8f80aa9c",
+        "13": "13-8fce4f39",
+        "14": "14-8df765a9",
+        "15": "15-b45e3717",
+        "16": "16-9410ba17",
+        "17": "17-8d77a7ae",
+        "18": "18-a0c35405",
+        "19": "19-825cc5b9"
+      },
+      "request_identity_protocol": "native_assign_request_id_v1",
+      "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+      "actual_prefill_splits": {
+        "0": {
+          "0-a4db9885": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "1-87cab035": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "2-a6804c52": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "3-a26ec592": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "4-82fb1bdc": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "5-b6b61729": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "6-abb7627e": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "7-9ba193b4": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "8-84641c97": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              1
+            ]
+          ],
+          "9-9f7eb50d": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              2
+            ]
+          ],
+          "10-ae859c7b": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "11-a08b4e0e": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "12-8f80aa9c": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              1
+            ]
+          ],
+          "13-8fce4f39": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              2
+            ]
+          ],
+          "14-8df765a9": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "15-b45e3717": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "16-9410ba17": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4097
+            ],
+            [
+              8194,
+              2
+            ]
+          ],
+          "17-8d77a7ae": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4097
+            ],
+            [
+              8194,
+              3
+            ]
+          ],
+          "18-a0c35405": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4097
+            ],
+            [
+              8194,
+              2
+            ]
+          ],
+          "19-825cc5b9": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4097
+            ],
+            [
+              8194,
+              3
+            ]
+          ]
+        },
+        "1": {
+          "0-a4db9885": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "1-87cab035": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "2-a6804c52": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "3-a26ec592": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "4-82fb1bdc": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "5-b6b61729": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "6-abb7627e": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "7-9ba193b4": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "8-84641c97": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              1
+            ]
+          ],
+          "9-9f7eb50d": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              2
+            ]
+          ],
+          "10-ae859c7b": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "11-a08b4e0e": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "12-8f80aa9c": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              1
+            ]
+          ],
+          "13-8fce4f39": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              2
+            ]
+          ],
+          "14-8df765a9": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              3
+            ]
+          ],
+          "15-b45e3717": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4
+            ]
+          ],
+          "16-9410ba17": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4097
+            ],
+            [
+              8194,
+              2
+            ]
+          ],
+          "17-8d77a7ae": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4097
+            ],
+            [
+              8194,
+              3
+            ]
+          ],
+          "18-a0c35405": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4097
+            ],
+            [
+              8194,
+              2
+            ]
+          ],
+          "19-825cc5b9": [
+            [
+              0,
+              4097
+            ],
+            [
+              4097,
+              4097
+            ],
+            [
+              8194,
+              3
+            ]
+          ]
+        }
+      },
+      "native_tail_evidence": [
+        {
+          "tp_rank": 0,
+          "forwards": 332,
+          "tail_layers": [
+            3,
+            7,
+            11,
+            15,
+            19,
+            23,
+            27,
+            31,
+            35,
+            39,
+            43
+          ],
+          "checked_actual_token_addresses": 99006,
+          "cache_groups_sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e",
+          "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+          "latency_admission": false
+        },
+        {
+          "tp_rank": 1,
+          "forwards": 332,
+          "tail_layers": [
+            3,
+            7,
+            11,
+            15,
+            19,
+            23,
+            27,
+            31,
+            35,
+            39,
+            43
+          ],
+          "checked_actual_token_addresses": 99006,
+          "cache_groups_sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef",
+          "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+          "latency_admission": false
+        }
+      ],
+      "files": [
+        {
+          "path": "cache-groups-rank-0.json",
+          "sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e"
+        },
+        {
+          "path": "cache-groups-rank-1.json",
+          "sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef"
+        },
+        {
+          "path": "cohort-admission.jsonl",
+          "sha256": "d9a5e610b71c8b4d432cb38bbf34bbb9e4b5b4df58960312152c06917b49675d"
+        },
+        {
+          "path": "effective-native-config.json",
+          "sha256": "37badaa509edf3ff6c31071d0bb84b4e6b6c9201d84df5cee1b9ddbca3392ad6"
+        },
+        {
+          "path": "forward-rank-0.jsonl",
+          "sha256": "5ba33f8e6ad18217e11c674608cc6769c049b8f10c5237d275e022da93b66959"
+        },
+        {
+          "path": "forward-rank-1.jsonl",
+          "sha256": "d2379fae7f6e5a52ac1701a1d8cce528cbcb652cda3f6c6bff937bae01823f92"
+        },
+        {
+          "path": "native-receipt.json",
+          "sha256": "43d2055bdab7372fe25ec341f45902083e4ce21bea1a5386de716cc7ba5adc4d"
+        },
+        {
+          "path": "outputs.jsonl",
+          "sha256": "cf04b1e5a627dd2f7155445eb818c7625ecf8ab8b7144927a17856749a422d4b"
+        },
+        {
+          "path": "preflight.json",
+          "sha256": "ea20da1a8e1548da604c20905b0005ccc74ae8a9a1e86117ef3a0dcb8d2c0023"
+        },
+        {
+          "path": "prompts-rank-0.jsonl",
+          "sha256": "f2258077951b37f1d65984075d24f2a4f68ad9edbf81ada58a01dbb3cba49547"
+        },
+        {
+          "path": "prompts-rank-1.jsonl",
+          "sha256": "f2258077951b37f1d65984075d24f2a4f68ad9edbf81ada58a01dbb3cba49547"
+        },
+        {
+          "path": "request-id-map.jsonl",
+          "sha256": "02d2674ea82932de408edc18781290182518f2253c88df35019e035d161a81b2"
+        },
+        {
+          "path": "tail-metadata-rank-0.jsonl",
+          "sha256": "5b5960963b28c820ac1d957e10031da88a1e65b1b5cb3ebd002d3cab7bf1d136"
+        },
+        {
+          "path": "tail-metadata-rank-1.jsonl",
+          "sha256": "d7d1a113c4d4e66b7866d804fb590ffb13d73ac02ff48526d06d72318063ae47"
+        },
+        {
+          "path": "worker-completion.json",
+          "sha256": "d343496fa160c89a8103240ada91cd3d79f9eddb9045dedeb1fdfe547d69bc0a"
+        },
+        {
+          "path": "worker-installation.json",
+          "sha256": "fae51075d5111a8f0ea9351008597a11aaddb270665e54b171e2b574830206bf"
+        },
+        {
+          "path": "worker-rank-0.json",
+          "sha256": "0ce308af544fc737c448a3a178653707d8a139bab8ad4c2a781dc00b002de8da"
+        },
+        {
+          "path": "worker-rank-1.json",
+          "sha256": "d6c501f77191e0889cffb15e30daf0dc334224bc34c2ac79fc264e8bb5391499"
+        }
+      ]
+    }
+  ],
+  "accuracy_acceptance": "NOT_EVALUATED",
+  "formal_8_cell_coverage": "NOT_EVALUATED"
+}

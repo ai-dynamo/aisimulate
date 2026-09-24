@@ -1,0 +1,408 @@
+{
+  "status": "native_requests_and_histories_verified",
+  "runtime_kind": "tail_reference",
+  "mode": "reference",
+  "policy": "production",
+  "checkpoint": "fp8",
+  "tp": 2,
+  "evidence": {
+    "requests": 20,
+    "checkpoint_identity": {
+      "checkpoint": "fp8",
+      "model": "zai-org/GLM-5.3-Flash",
+      "revision": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+      "config_sha256": "971457b1bd1079cdeecd67a27194357f87e598045282e4dffee5a981de95688f"
+    },
+    "native_modes": [
+      "FULL",
+      "NONE"
+    ],
+    "all_tp_trace_digest": "91a590fe3e2830783730af86adfa8e8a50c1a093a3dbaf475bb9bd33faacfb5a",
+    "external_to_native_request_ids": {
+      "0": "0-a40eeb65",
+      "1": "1-9ae9d410",
+      "2": "2-9157098f",
+      "3": "3-b320a3e1",
+      "4": "4-bb935ea5",
+      "5": "5-ba9a445c",
+      "6": "6-853ec1af",
+      "7": "7-aa244fc3",
+      "8": "8-b7e1cc58",
+      "9": "9-a4d9524d",
+      "10": "10-a8d28a0c",
+      "11": "11-9d82abcb",
+      "12": "12-9a5952e1",
+      "13": "13-9ee865b3",
+      "14": "14-a3f30cb6",
+      "15": "15-8b804354",
+      "16": "16-994ebebe",
+      "17": "17-977388cf",
+      "18": "18-8bfc892f",
+      "19": "19-a3e23383"
+    },
+    "request_identity_protocol": "native_assign_request_id_v1",
+    "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+    "actual_prefill_splits": {
+      "0": {
+        "0-a40eeb65": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "1-9ae9d410": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "2-9157098f": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "3-b320a3e1": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "4-bb935ea5": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "5-ba9a445c": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "6-853ec1af": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "7-aa244fc3": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "8-b7e1cc58": [
+          [
+            0,
+            4098
+          ]
+        ],
+        "9-a4d9524d": [
+          [
+            0,
+            4099
+          ]
+        ],
+        "10-a8d28a0c": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "11-9d82abcb": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "12-9a5952e1": [
+          [
+            0,
+            4098
+          ]
+        ],
+        "13-9ee865b3": [
+          [
+            0,
+            4099
+          ]
+        ],
+        "14-a3f30cb6": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "15-8b804354": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "16-994ebebe": [
+          [
+            0,
+            8196
+          ]
+        ],
+        "17-977388cf": [
+          [
+            0,
+            8197
+          ]
+        ],
+        "18-8bfc892f": [
+          [
+            0,
+            8196
+          ]
+        ],
+        "19-a3e23383": [
+          [
+            0,
+            8197
+          ]
+        ]
+      },
+      "1": {
+        "0-a40eeb65": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "1-9ae9d410": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "2-9157098f": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "3-b320a3e1": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "4-bb935ea5": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "5-ba9a445c": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "6-853ec1af": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "7-aa244fc3": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "8-b7e1cc58": [
+          [
+            0,
+            4098
+          ]
+        ],
+        "9-a4d9524d": [
+          [
+            0,
+            4099
+          ]
+        ],
+        "10-a8d28a0c": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "11-9d82abcb": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "12-9a5952e1": [
+          [
+            0,
+            4098
+          ]
+        ],
+        "13-9ee865b3": [
+          [
+            0,
+            4099
+          ]
+        ],
+        "14-a3f30cb6": [
+          [
+            0,
+            4100
+          ]
+        ],
+        "15-8b804354": [
+          [
+            0,
+            4101
+          ]
+        ],
+        "16-994ebebe": [
+          [
+            0,
+            8196
+          ]
+        ],
+        "17-977388cf": [
+          [
+            0,
+            8197
+          ]
+        ],
+        "18-8bfc892f": [
+          [
+            0,
+            8196
+          ]
+        ],
+        "19-a3e23383": [
+          [
+            0,
+            8197
+          ]
+        ]
+      }
+    },
+    "native_tail_evidence": [
+      {
+        "tp_rank": 0,
+        "forwards": 320,
+        "tail_layers": [
+          3,
+          7,
+          11,
+          15,
+          19,
+          23,
+          27,
+          31,
+          35,
+          39,
+          43
+        ],
+        "checked_actual_token_addresses": 99006,
+        "cache_groups_sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e",
+        "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+        "latency_admission": false
+      },
+      {
+        "tp_rank": 1,
+        "forwards": 320,
+        "tail_layers": [
+          3,
+          7,
+          11,
+          15,
+          19,
+          23,
+          27,
+          31,
+          35,
+          39,
+          43
+        ],
+        "checked_actual_token_addresses": 99006,
+        "cache_groups_sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef",
+        "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+        "latency_admission": false
+      }
+    ],
+    "files": [
+      {
+        "path": "cache-groups-rank-0.json",
+        "sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e"
+      },
+      {
+        "path": "cache-groups-rank-1.json",
+        "sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef"
+      },
+      {
+        "path": "cohort-admission.jsonl",
+        "sha256": "a0413f7c2e6ee5696e9f85ee1c97fa65717780d76e519989a8a24616ed7750dd"
+      },
+      {
+        "path": "effective-native-config.json",
+        "sha256": "ba45dbd96eb4370c1a21e5bd6d8961918b739fc2f1435d9ec0e0b82998abfd5e"
+      },
+      {
+        "path": "forward-rank-0.jsonl",
+        "sha256": "d50f7f4992f5aa041a5c7b69565d59f2eec24b4594dee8d66eb3ce78526e61ed"
+      },
+      {
+        "path": "forward-rank-1.jsonl",
+        "sha256": "eafabcd547db9ab938bddafb2f1549df6a9ea50f8cdd53b752f672ab61b4e316"
+      },
+      {
+        "path": "outputs.jsonl",
+        "sha256": "01f14872cf6bc950b60579769c231f485421d7c64e2a0c5e288433903e80c0cb"
+      },
+      {
+        "path": "preflight.json",
+        "sha256": "01ba7c0d224d6befdc9897a46e8034285d922c2dffd38fcac202e58edb851d10"
+      },
+      {
+        "path": "prompts-rank-0.jsonl",
+        "sha256": "ef88e0df4fd289e4df8b59f12c152a4f51e84c83e98f8868ffd82a912d87babb"
+      },
+      {
+        "path": "prompts-rank-1.jsonl",
+        "sha256": "ef88e0df4fd289e4df8b59f12c152a4f51e84c83e98f8868ffd82a912d87babb"
+      },
+      {
+        "path": "request-id-map.jsonl",
+        "sha256": "86ae0709a9613394dcfd501a1e8be274f15bb19d9279eec59c9200468a79e000"
+      },
+      {
+        "path": "tail-metadata-rank-0.jsonl",
+        "sha256": "2b269be65be092f89b30e74bc64eafad94c0164a67711d78a1f772d44ebdacfd"
+      },
+      {
+        "path": "tail-metadata-rank-1.jsonl",
+        "sha256": "bb3327c8563708d8ba37485eb98bb0a039f1285762c867382be61e2d78f14ae1"
+      },
+      {
+        "path": "worker-completion.json",
+        "sha256": "c50c3e7e1bcf5d4db96d2f0092e654eccf2cb46ffb0a83544085440e627ce6fa"
+      },
+      {
+        "path": "worker-installation.json",
+        "sha256": "27d88c4f1e89d40167df62e5ac67f596e07a42efc242607e6c9780664355fd48"
+      },
+      {
+        "path": "worker-rank-0.json",
+        "sha256": "3b8aa5b1c0a12f8f18a3c5cf53aa317c6ebd4b09c660c6a372bd8f3e01f0b387"
+      },
+      {
+        "path": "worker-rank-1.json",
+        "sha256": "27f31dc54c4b8d05761a9bd7b7c152d857158d412e4fd3befdaaa620ba30b002"
+      }
+    ]
+  },
+  "correctness_comparison": "NOT_EVALUATED",
+  "accuracy_acceptance": "NOT_EVALUATED"
+}

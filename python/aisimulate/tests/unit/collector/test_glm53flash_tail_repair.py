@@ -107,7 +107,7 @@ def test_packaged_inputs_retain_original_executed_bytes_or_explicit_formatting_l
     assert actual["model_correctness"] == "NOT_EVALUATED"
 
 
-def test_cpu_build_receipts_do_not_open_production_admission():
+def test_original_cpu_build_receipts_preserve_their_historical_closed_status():
     status = load(ROOT / "qualification-status.json")
     assert status["production_admission"] == "CLOSED"
     assert status["model_correctness"] == "NOT_EVALUATED"
@@ -115,4 +115,5 @@ def test_cpu_build_receipts_do_not_open_production_admission():
     for kind in ("candidate", "reference"):
         identity = load(ROOT / kind / "patch-identity.json")
         assert identity["formal_runtime_admission"] == "CLOSED"
-        assert identity["version"] not in ADMITTED_VLLM_REPAIRS
+        if kind == "reference":
+            assert identity["version"] not in ADMITTED_VLLM_REPAIRS

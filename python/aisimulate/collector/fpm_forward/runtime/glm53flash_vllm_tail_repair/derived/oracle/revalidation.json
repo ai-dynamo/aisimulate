@@ -1,0 +1,113 @@
+{
+  "schema": "glm53flash_tail_revalidation_v1",
+  "status": "passed",
+  "scope": "original_16_case_cache_oracle",
+  "original_result_sha256": "189e9b3874ae25ccc365d4114b42dd9937190d279c4c4c630235a903ef25a9e5",
+  "derived_result_sha256": "189e9b3874ae25ccc365d4114b42dd9937190d279c4c4c630235a903ef25a9e5",
+  "input_files": [
+    {
+      "raw_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-oracle-gpu-results/614361/native",
+      "files": [
+        {
+          "path": "actual-runtime.json",
+          "sha256": "9fee91d62e8be2cc0dd8d4c1df89f10ea69bbaad7f31ccff8ccfe79b8d7abce2"
+        },
+        {
+          "path": "case-0-gate-0.pt",
+          "sha256": "8e4f9429df92823af6352b992f3f0a9b2b6917d9dea357577b642de664bc66fd"
+        },
+        {
+          "path": "case-0-gate-1.pt",
+          "sha256": "628e02cf4330dac55b6a151fd0182b5e6975fde4f4ecacf57d1a79879a3a6e3e"
+        },
+        {
+          "path": "case-1-gate-0.pt",
+          "sha256": "8bd14c040d9c490a1c4830ec26c76a72111a66a29617251121cb9e56f5ad7a48"
+        },
+        {
+          "path": "case-1-gate-1.pt",
+          "sha256": "d802a88e6584c1fb93cfa36d1bbe722b6c2f8b34f2eb0ab8294c61914ee67f5d"
+        },
+        {
+          "path": "case-2-gate-0.pt",
+          "sha256": "dd6345c65908483db5a5bef453d6336acf60cb808b1467d7cda5bf8f07718ff5"
+        },
+        {
+          "path": "case-2-gate-1.pt",
+          "sha256": "237beff22e2af0cf4d994e184c870f93d6c22713921737f92228954942a947be"
+        },
+        {
+          "path": "case-3-gate-0.pt",
+          "sha256": "c2a874c616c9afc3ddd7ce72fa329e770a2bcfdd72468b272b4836461eed73dc"
+        },
+        {
+          "path": "case-3-gate-1.pt",
+          "sha256": "de4048d3b4f876befecd82ec5be2e42e526a7c62d8fb9b4bc9e73a2ea8e66ca4"
+        },
+        {
+          "path": "case-4-gate-0.pt",
+          "sha256": "561dc032b4154659cf88b263451307fc2502d20a8b07d6a9afac5c7d3501a8b7"
+        },
+        {
+          "path": "case-4-gate-1.pt",
+          "sha256": "0f647f52e27a645af56fbf24bb7502a2751d6efa0ea16537cb8e3a69926a7e74"
+        },
+        {
+          "path": "case-5-gate-0.pt",
+          "sha256": "ffb39ef70f14cc6c28553debe5be10b32749a3af9b60fd7c02bd557edb195245"
+        },
+        {
+          "path": "case-5-gate-1.pt",
+          "sha256": "d6a3b2b5f0679a8f703819fd73c2bb27318e3919c046484f478735f53d8743ce"
+        },
+        {
+          "path": "case-6-gate-0.pt",
+          "sha256": "788ad0ff50779534c91f9a0be4b4bde860a0198d3e58a416d77d06715edf74d5"
+        },
+        {
+          "path": "case-6-gate-1.pt",
+          "sha256": "89ab49109c926f4b9b50bad241234bd7d9682a62ff17a39aaf5bfe4462cbe621"
+        },
+        {
+          "path": "case-7-gate-0.pt",
+          "sha256": "8fa36409ca0d15dbcce5fa3d80bf2f9e250aa4a63e3413ee7e4e460aa37ff6a8"
+        },
+        {
+          "path": "case-7-gate-1.pt",
+          "sha256": "0c573199bbea9cf866e606c5a5c72941bb5261640f843a22d91e00aff6fbf1c7"
+        },
+        {
+          "path": "probe-result.json",
+          "sha256": "189e9b3874ae25ccc365d4114b42dd9937190d279c4c4c630235a903ef25a9e5"
+        },
+        {
+          "path": "source-receipt.json",
+          "sha256": "393c52407d97acf9ac43831b7fe87fe73fc0fbf78d2958240509161dada35a56"
+        }
+      ]
+    }
+  ],
+  "consumer_reread_external_raw": false,
+  "validator_sources": {
+    "expected-runtime.json": {
+      "sha256": "cf7ab8b815ef16e41e178a17cb24effe1f31f54785f0c61b1931d6e3a134e910",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-cache-oracle-v1/expected-runtime.json"
+    },
+    "probe.py": {
+      "sha256": "f5c5de90bd22233f825ae3a4b90921975363c4576009c0886f694e110a801c28",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-cache-oracle-v1/probe.py"
+    },
+    "runtime_identity.py": {
+      "sha256": "b1d9196a2bc3acb7b8f12f56b926db893b93ca8c4321f2a2b44d65b9a5e99854",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-cache-oracle-v1/runtime_identity.py"
+    },
+    "sources.json": {
+      "sha256": "e36af47a4be7c80aaf028fdfe8478584c58561932692ee535920e314ae00925f",
+      "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-tail-cache-oracle-v1/sources.json"
+    }
+  },
+  "assembler_source": {
+    "sha256": "b140f5dee3fc85f0631ad81ae9506feeb7c9ef360779850aa7dbcfd3e57bb408",
+    "source_uri": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/tail-qualification-four-cell-results/617976/finalized/assembler/bundle-manifest.json"
+  }
+}
