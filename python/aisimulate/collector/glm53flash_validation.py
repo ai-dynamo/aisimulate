@@ -64,7 +64,9 @@ def _required_files(tp_size: int, backend: str) -> set[str]:
     return files
 
 
-def _sglang_execution(root: Path, fmt: str, tp: int, points: list[dict], *, graph: bool = False) -> dict:
+def _sglang_execution(
+    root: Path, fmt: str, tp: int, points: list[dict], *, graph: bool = False, requested_fraction=None
+) -> dict:
     """Reuse the shared runtime receipt contract without the FPM timing reader."""
     from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
     from aisimulate_core.sdk.utils import get_model_config_from_model_path
@@ -75,6 +77,7 @@ def _sglang_execution(root: Path, fmt: str, tp: int, points: list[dict], *, grap
     cell = SimpleNamespace(
         execution_identity=execution_identity(raw_config, backend="sglang", input_modality="text"),
         topology=SimpleNamespace(tp=tp),
+        sglang_mem_fraction_static=requested_fraction,
     )
     payload = {
         **provenance,
@@ -102,6 +105,22 @@ def _sglang_execution(root: Path, fmt: str, tp: int, points: list[dict], *, grap
     if set(identity["execution_identity"]) != set(EXECUTION_COLUMNS):
         raise ValueError("Ops native execution identity is incomplete")
     return identity
+
+
+def requested_sglang_memory(run: dict):
+    """Bind optional native memory policy to the frozen plan and selected cell."""
+    from collector.fpm_forward.config import validate_sglang_mem_fraction_static
+
+    requested = run.get("plan", {}).get("options", {}).get("sglang_mem_fraction_static")
+    declared = run.get("cell", {}).get("sglang_mem_fraction_static")
+    validate_sglang_mem_fraction_static(requested)
+    validate_sglang_mem_fraction_static(declared)
+    if requested != declared or (requested is not None and run["key"][0] != "sglang"):
+        raise ValueError("Ops SGLang memory fraction differs between frozen plan and cell")
+    cell = run.get("runtime_cell")
+    if cell is not None and getattr(cell, "sglang_mem_fraction_static", None) != requested:
+        raise ValueError("Ops runtime cell differs from frozen requested SGLang memory fraction")
+    return requested
 
 
 def expected_runtime_version(run: dict) -> str:
@@ -288,7 +307,12 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
     if version != BACKENDS[backend][0] and tp not in (2, 4):
         raise ValueError("repaired Ops runtime is qualified only at TP2/TP4")
     pins = _runtime_audit(root, backend, version)
-    execution = _sglang_execution(root, fmt, tp, run["points"], graph=graph) if backend == "sglang" else None
+    requested_fraction = requested_sglang_memory(run)
+    execution = (
+        _sglang_execution(root, fmt, tp, run["points"], graph=graph, requested_fraction=requested_fraction)
+        if backend == "sglang"
+        else None
+    )
     from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 
     expected_config = sha256_json(_load_pre_downloaded_hf_config(CHECKPOINTS[fmt][0]))

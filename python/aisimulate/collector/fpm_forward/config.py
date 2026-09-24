@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,6 +31,12 @@ def _positive_int(value: str) -> int:
     if parsed < 1:
         raise argparse.ArgumentTypeError("value must be a positive integer")
     return parsed
+
+
+def validate_sglang_mem_fraction_static(value: float | None) -> None:
+    """Validate an explicit native setting; None leaves SGLang's default intact."""
+    if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or not 0 < value < 1):
+        raise ValueError("--sglang-mem-fraction-static must be finite and strictly between 0 and 1")
 
 
 def _at_least_two_int(value: str) -> int:

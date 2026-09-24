@@ -571,6 +571,11 @@ shards. Only the native per-process `random_seed` is excluded. Different memory,
 kernel or scheduler settings are rejected before export/prediction, with every
 original requested holdout point retained. Reports contain the normalized digest
 and original file receipts; private configuration values remain outside reports.
+If an FPM-authored plan explicitly requests `sglang_mem_fraction_static`, Ops
+also requires the same value in its selected frozen cell and both actual native
+declared/resolved receipts. An omitted value retains native-default semantics;
+the cross-run actual-policy comparison still applies. This reader support does
+not import the separate FPM campaign orchestration into the Ops producer.
 
 The exporter reconstructs each executable node registry from the original
 capture plus native clone callbacks, then reconstructs all unit activity unions
