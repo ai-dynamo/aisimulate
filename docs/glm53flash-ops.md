@@ -47,10 +47,12 @@ Current graph-node/hook validation passes 23 CPU tests, including CUDA13 ABI
 pointer writes and retention of nondefault dependency metadata. The preceding
 graph/runtime change passed 112 focused tests. Historical validation passed
 17 Rust GLM tests and 79 Ops contract, evidence, native V2 runtime and shared
-retained-lifecycle tests. The installed wheel from commit `a1142ea3` verified
-2,165 RECORD entries, 14 collector/evidence helper imports, all eight model
-graphs and 16 strict missing-measurement queries. Later graph additions still
-require an updated installed-wheel check. The earlier broad collector
+retained-lifecycle tests. The installed wheel from commit `179818b6` verified
+2,177 RECORD hashes and installed bytes, 17 collector/evidence helper imports,
+all eight model graphs and 16 strict missing-measurement queries outside the
+source checkout. Its SHA256 is
+`270114d562548a5febf9298b2bfc17fde77520529d72a50690754b3fab2a6501`.
+The earlier broad collector
 run passed 2,362 tests (8 skipped); that count is historical and predates the
 latest bounded evidence and native launch fixes. These checks establish software
 behavior and evidence integrity, not native GPU performance coverage.
