@@ -73,6 +73,15 @@ IDs may lag under overlap scheduling, so histories use the resolved native
 input tensor and observed sampled IDs. Unknown piecewise graph padding rejects
 a formal target rather than being inferred from its unpadded size.
 
+Token histories are retired from worker memory only after the native request
+releases both KV and Mamba state and its retained-state receipt is written.
+The original token arrays remain in the raw JSONL files. FPM publication and
+validation stream those files one record at a time and retain compact timing
+witnesses after validating each complete request chain. File SHA256 checks,
+all-rank token/dispatch equality, lifecycle coverage and request-reuse rejection
+remain mandatory. Streaming changes host memory consumption, not the native
+timing interval, raw evidence format or admission thresholds.
+
 Additional integration sources at SGLang revision `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20, Apache-2.0, Copyright SGLang Team and contributors) are
 `python/sglang/srt/managers/tp_worker.py`,
 `python/sglang/srt/model_executor/{model_runner,forward_batch_info}.py`,
