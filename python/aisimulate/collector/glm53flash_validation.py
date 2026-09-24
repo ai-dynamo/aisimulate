@@ -113,7 +113,14 @@ def _runtime_audit(root: Path, backend: str) -> dict:
 
 
 def _state_layout(layout: dict, backend: str) -> None:
+    from collector.glm53flash_protocol import validate_gb300_identity
+
+    hardware = layout.get("hardware")
+    validate_gb300_identity(hardware)
     groups = layout.get("groups", {})
+    expected_device = f"cuda:{hardware['cuda_device_index']}"
+    if any(tensor.get("device") != expected_device for tensors in groups.values() for tensor in tensors):
+        raise ValueError("Ops allocated state tensors differ from the observed worker GPU")
     expected = {"kda_conv": "torch.bfloat16", "kda_temporal": "torch.float32", "pooled_index_packed": "torch.uint8"}
     expected.update(
         {"index_tail": "torch.bfloat16"}
@@ -259,6 +266,7 @@ def load_native(run: dict, base: Path) -> dict:
             raise ValueError("Ops frozen request batch is incomplete")
     timings = {}
     rank_inputs = {}
+    hardware_by_rank, hardware_uuids = {}, set()
     for rank in range(tp):
         layout = json.loads((root / f"state-layout-rank-{rank}.json").read_bytes())
         # The two adapters preserve their established semantic hash conventions.
@@ -266,6 +274,14 @@ def load_native(run: dict, base: Path) -> dict:
             json.dumps(layout, sort_keys=True, **({"separators": (",", ":")} if backend == "vllm" else {})).encode()
         ).hexdigest()
         _state_layout(layout, backend)
+        if type(layout.get("tp_rank")) is not int or layout["tp_rank"] != rank:
+            raise ValueError("Ops actual hardware/state inventory belongs to another TP rank")
+        hardware = layout["hardware"]
+        if "uuid" in hardware:
+            if hardware["uuid"] in hardware_uuids:
+                raise ValueError("Ops TP workers reused the same physical GPU UUID")
+            hardware_uuids.add(hardware["uuid"])
+        hardware_by_rank[str(rank)] = hardware
         previous, observed, seen_forward_ids, completed_requests = {}, set(), set(), set()
         for row in iter_records(root / f"forward-rank-{rank}.jsonl"):
             if backend == "vllm":
@@ -426,6 +442,7 @@ def load_native(run: dict, base: Path) -> dict:
         "backend_version": BACKENDS[backend][0],
         "timing_boundary": BOUNDARY,
         "evidence_root": str(root),
+        "hardware_by_rank": hardware_by_rank,
     }
 
 

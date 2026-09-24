@@ -237,3 +237,12 @@ and its ownership/evidence sidecar, refusing an existing destination. The common
 acceptance utility calls `bind_sharded_calibration` with the same inputs to
 reaggregate original observations and reproduce ownership independently. Missing
 shards or unsupported requested points prevent full publication and acceptance.
+
+
+Worker hardware is part of the hashed state-layout receipt. Each worker records
+its selected CUDA device's native name, compute capability, memory size, device
+index and UUID when the runtime exposes one, together with its TP rank. Formal
+Ops evidence requires GB300/sm103, binds all allocated cache tensor devices to
+that selected device and rejects repeated physical UUIDs across ranks. A dataset
+directory or launch flag cannot substitute for this receipt. Earlier immutable
+smoke bundles remain historical and are not upgraded to formal hardware evidence.

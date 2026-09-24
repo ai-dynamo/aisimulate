@@ -17,7 +17,13 @@ import os
 import threading
 from pathlib import Path
 
-from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, VLLM_CONTEXT_POLICY_VERSION, vllm_context_policy
+from collector.glm53flash_protocol import (
+    MAX_MEASURED_CONTEXT,
+    VLLM_CONTEXT_POLICY_VERSION,
+    native_gpu_identity,
+    validate_gb300_identity,
+    vllm_context_policy,
+)
 from collector.glm53flash_sglang_runtime import match_frozen_requests
 
 
@@ -187,8 +193,10 @@ class _TraceState:
 
             runner.model.compute_logits = compute_logits
         self.layout = allocated_state_inventory(runner.model, runner.cache_config.cache_dtype)
+        self.layout.update(tp_rank=self.rank, hardware=native_gpu_identity(torch))
         self.layout_sha256 = _digest(self.layout)
         (output / f"state-layout-rank-{self.rank}.json").write_text(json.dumps(self.layout, indent=2))
+        validate_gb300_identity(self.layout["hardware"])
 
     def append(self, name, value):
         path = self.output / (f"rank-{self.rank}.jsonl" if name == "ops" else f"{name}-rank-{self.rank}.jsonl")

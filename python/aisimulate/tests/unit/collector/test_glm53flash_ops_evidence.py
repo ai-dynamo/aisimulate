@@ -7,8 +7,6 @@ import json
 from pathlib import Path
 
 import pytest
-
-from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 from collector import glm53flash_validation as evidence
 from collector.fpm_forward.sglang_artifact import TELEMETRY_POLICY
 from collector.glm53flash_contract import (
@@ -20,6 +18,8 @@ from collector.glm53flash_contract import (
     write_parquet,
 )
 from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL
+
+from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 
 pytestmark = pytest.mark.unit
 
@@ -141,6 +141,18 @@ def native_fixture(tmp_path, role="holdout"):
     all_records, all_modules = {}, {}
     geometry = canonical_json({"backend": "sglang", "checkpoint_format": "fp8", "tp_size": 2, "is_context": False})
     for rank in range(2):
+        layout["tp_rank"] = rank
+        layout["hardware"] = {
+            "schema": "glm53flash_gpu_identity_v1",
+            "name": "NVIDIA GB300",
+            "compute_capability": [10, 3],
+            "total_memory_bytes": 1 << 38,
+            "cuda_device_index": rank,
+            "uuid": f"authored-device-{rank}",
+        }
+        for tensors in layout["groups"].values():
+            for tensor in tensors:
+                tensor["device"] = f"cuda:{rank}"
         put(root / f"state-layout-rank-{rank}.json", layout)
         records, modules = [], []
         for rep in range(15):
@@ -478,3 +490,34 @@ def test_sharded_publication_revalidates_native_evidence_and_frozen_owner(tmp_pa
     run["original_point_ids"] = {1: 8}
     with pytest.raises(ValueError, match="ownership differs"):
         evidence.bind_sharded_calibration([path], [(run, native)], shards)
+
+
+@pytest.mark.parametrize("change", ["missing", "wrong_model", "wrong_capability", "rank", "device", "duplicate_uuid"])
+def test_native_hardware_guard_rejects_rehashed_non_gb300_or_unbound_inventory(tmp_path, change):
+    run, root, _, _, _ = native_fixture(tmp_path)
+    rank = 1
+    path = root / f"state-layout-rank-{rank}.json"
+    layout = json.loads(path.read_text())
+    if change == "missing":
+        del layout["hardware"]
+    elif change == "wrong_model":
+        layout["hardware"]["name"] = "NVIDIA H100"
+    elif change == "wrong_capability":
+        layout["hardware"]["compute_capability"] = [10, 0]
+    elif change == "rank":
+        layout["tp_rank"] = False
+    elif change == "device":
+        layout["groups"]["kda_conv"][0]["device"] = "cuda:0"
+    else:
+        layout["hardware"]["uuid"] = "authored-device-0"
+    put(path, layout)
+    # Updating all hashes cannot turn an unrelated physical device into GB300
+    # evidence or bind another rank's cache allocation to this worker.
+    digest = hashlib.sha256(json.dumps(layout, sort_keys=True).encode()).hexdigest()
+    trace = root / f"forward-rank-{rank}.jsonl"
+    rows = list(evidence.iter_records(trace))
+    for row in rows:
+        row["state_layout_sha256"] = digest
+    put_lines(trace, rows)
+    with pytest.raises(ValueError, match="native GPU|worker GPU|TP rank|physical GPU UUID"):
+        evidence.load_native(run, tmp_path)
