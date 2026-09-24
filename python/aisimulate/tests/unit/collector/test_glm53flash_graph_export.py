@@ -8,7 +8,6 @@ import shutil
 
 import pyarrow.parquet as pq
 import pytest
-
 from collector import glm53flash_graph_export as graph
 from collector import glm53flash_validation as native
 from collector.glm53flash_contract import canonical_json, operation_geometry, sha256_json
@@ -35,13 +34,30 @@ def fixture(tmp_path, monkeypatch, role="calibration"):
     config["cuda_graph_config"]["decode"]["backend"] = "full"
     put(root / "sglang-resolved-config.json", config)
     provenance = json.loads((root / "provenance.json").read_text())
+    # Match actual producer layering: the input identity is stable across
+    # independent processes, while capture receives the complete driver run.
+    put(
+        root / "provenance.json",
+        {
+            key: provenance[key]
+            for key in (
+                "backend",
+                "backend_version",
+                "backend_revision",
+                "checkpoint_revision",
+                "config_sha256",
+                "source_sha256",
+                "runtime_digest",
+            )
+        },
+    )
     for rank in range(2):
         policy = snapshot(rank, [1])
         put(root / f"graph-policy-rank-{rank}.json", policy)
         shape = policy["captured_keys"][0]
         source = {
             "tp_rank": rank,
-            "provenance": provenance,
+            "provenance": {**provenance, "native_projection_source_sha256": graph.SGLANG_PROJECTION_SOURCE_PINS},
             "capture_scope": "model_with_logits",
             "uncaptured_operations": [],
             "graph_mutations": False,
@@ -179,6 +195,7 @@ def control_fixture(tmp_path, monkeypatch):
     for path in root.iterdir():
         if path.suffix in (".json", ".jsonl"):
             text = path.read_text().replace("authored-cpu-fixture", "authored-cpu-control")
+            text = text.replace("authored-unit-run", "authored-independent-control-run")
             text = text.replace("request-", "control-request-")
             text = text.replace('"dataset_role": "holdout"', '"dataset_role": "calibration"')
             text = text.replace('"dataset_role":"holdout"', '"dataset_role":"calibration"')
@@ -213,6 +230,26 @@ def test_independent_graph_truth_preserves_actual_whole_boundary(tmp_path, monke
     assert result["timing_boundary"] == graph.BOUNDARY
     with pytest.raises(ValueError, match="calibration"):
         graph.export_graph(root, run, root / graph.BASENAME, **control_fixture(tmp_path, monkeypatch))
+
+
+@pytest.mark.parametrize("defect", ["run_id", "projection_source", "missing_projection", "stable_identity"])
+def test_capture_requires_actual_driver_run_and_verified_projection_sources(tmp_path, monkeypatch, defect):
+    run, root = fixture(tmp_path, monkeypatch)
+    path = root / "capture-source-nodes-rank-0.jsonl"
+    rows = list(iter_records(path))
+    if defect == "run_id":
+        rows[0]["provenance"]["run_id"] = "another-native-run"
+    elif defect == "projection_source":
+        rows[0]["provenance"]["native_projection_source_sha256"] = {"unverified.py": "a" * 64}
+    elif defect == "missing_projection":
+        del rows[0]["provenance"]["native_projection_source_sha256"]
+    else:
+        provenance = json.loads((root / "provenance.json").read_bytes())
+        provenance["runtime_digest"] = "sha256:" + "f" * 64
+        put(root / "provenance.json", provenance)
+    put_lines(path, rows)
+    with pytest.raises(ValueError, match="provenance|ownership"):
+        graph.read_graph_run(root, run)
 
 
 @pytest.mark.parametrize(

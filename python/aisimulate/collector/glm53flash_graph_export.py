@@ -26,6 +26,7 @@ from collector.glm53flash_graph_callbacks import QUALIFIED_CUPTI_SHA256, resolve
 from collector.glm53flash_graph_nodes import bind_execution_activity, bind_replay_kernels, trace_forward_identity
 from collector.glm53flash_graph_policy import SOURCE_PINS, build_policy, padded_batch, validate_snapshot
 from collector.glm53flash_jsonl import file_sha256, iter_records
+from collector.glm53flash_native_hooks import SGLANG_PROJECTION_SOURCE_PINS
 
 BASENAME = "glm53flash_graph_perf.parquet"
 BOUNDARY = "native_full_graph_metadata_to_logits_gpu_v1"
@@ -80,6 +81,17 @@ def _captures(root, rank, snapshot, manifest, provenance, files):
     source_path = _local(root, f"capture-source-nodes-rank-{rank}.jsonl")
     target_path = _local(root, f"capture-nodes-rank-{rank}.jsonl")
     files.update((source_path.name, target_path.name))
+    # Worker installation receives the complete native driver's run identity,
+    # then the hook records its independently verified lazy-projection sources.
+    # Keep that exact execution binding separate from the stable input identity
+    # used to compare independently launched calibration/control processes.
+    native_provenance = json.loads(_local(root, "sglang-provenance.json").read_bytes())
+    if any(native_provenance.get(key) != value for key, value in provenance.items()):
+        raise ValueError("native graph capture runtime differs from its frozen input provenance")
+    capture_provenance = {
+        **native_provenance,
+        "native_projection_source_sha256": SGLANG_PROJECTION_SOURCE_PINS,
+    }
     sources = {}
     for source in iter_records(source_path):
         key = canonical_json(source["native_shape_key"])
@@ -87,7 +99,7 @@ def _captures(root, rank, snapshot, manifest, provenance, files):
             raise ValueError("native capture replaced a previously recorded descriptor")
         if (
             source.get("tp_rank") != rank
-            or source.get("provenance") != provenance
+            or source.get("provenance") != capture_provenance
             or source.get("capture_scope") != "model_with_logits"
             or source.get("uncaptured_operations") != []
             or source.get("graph_mutations") is not False
