@@ -50,7 +50,7 @@ pub use fpm::{
     ForwardPassPerfOptions, ForwardPassPerfProvenance, ForwardPassPerfReadiness,
     ForwardPassPerfSource, ForwardPassRegressionStoreDiagnostics,
     ForwardPassRegressionWorkloadKind, ForwardPassSpeculationConfig, ForwardPassWorkerType,
-    FpmRegressionConfig, RegressionFeatureWeights, SamplingConfig,
+    FpmRegressionConfig, LEARNED_SCHEMA_VERSION, RegressionFeatureWeights, SamplingConfig,
 };
 pub use fpm::{
     CorrectionFactorBounds, CorrectionFeatureSpace, FpmInterpolationConfig, OpLevelConfig,

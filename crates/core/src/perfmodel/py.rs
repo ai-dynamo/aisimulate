@@ -1868,9 +1868,47 @@ impl PyForwardPassPerfModel {
         serde_json::to_string(&config).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
+    /// `RustForwardPassPerfModel.from_learned(source, options_json=None)`:
+    /// offline-trained learned model. `source` is an artifact path or the
+    /// artifact JSON text (`aic_fpm_learned_forward_perf`); the artifact binds
+    /// the worker type and feature ABI. No native engine, no Python compile.
+    #[staticmethod]
+    #[pyo3(signature = (source, options_json=None))]
+    fn from_learned(source: &str, options_json: Option<&str>) -> PyResult<Self> {
+        let options = options_json
+            .map(serde_json::from_str::<crate::ForwardPassPerfOptions>)
+            .transpose()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?
+            .unwrap_or_default();
+        let inner =
+            crate::ForwardPassPerfModel::from_learned(source, options).map_err(aic_to_py)?;
+        Ok(Self { inner })
+    }
+
+    /// Ordered feature names of a learned model; `None` for other modes.
+    fn learned_feature_names(&self) -> Option<Vec<String>> {
+        self.inner
+            .learned_feature_names()
+            .map(|names| names.to_vec())
+    }
+
+    /// Trainer metadata embedded in a learned artifact as JSON; `None` for
+    /// other modes.
+    fn learned_metadata(&self) -> PyResult<Option<String>> {
+        self.inner
+            .learned_metadata()
+            .map(|value| {
+                serde_json::to_string(value)
+                    .map_err(|e| PyValueError::new_err(format!("learned metadata serialize: {e}")))
+            })
+            .transpose()
+    }
+
     /// Estimate one forward-pass iteration in ms. `fpm_json` is one iteration as
     /// a single FPM object or a per-attention-DP-rank array. Returns `None` for
-    /// regression models without enough data yet. Pure-Rust compute (GIL freed).
+    /// regression models without enough data yet and for learned models whose
+    /// artifact has no store for the iteration's workload kind. Pure-Rust
+    /// compute (GIL freed).
     fn estimate_forward_pass_time_ms(
         &self,
         py: Python<'_>,

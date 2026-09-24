@@ -19,12 +19,14 @@
 //! - [`model`]: the public [`ForwardPassPerfModel`] and its diagnostics.
 //! - [`correction`]: the native online-correction grid.
 //! - [`regression`]: the regression fallback.
+//! - [`learned`]: offline-trained tree-ensemble model over FPM features.
 //! - [`samples`]: shared bucketed-sample infrastructure.
 //! - [`options`]: tuning controls.
 
 mod config;
 mod correction;
 mod estimator;
+mod learned;
 mod metrics;
 mod model;
 mod options;
@@ -39,6 +41,7 @@ pub use config::{
     ForwardPassSpeculationConfig,
 };
 pub use estimator::*;
+pub use learned::LEARNED_SCHEMA_VERSION;
 pub(crate) use metrics::validate_forward_pass_metrics;
 pub use metrics::{FPM_VERSION, ForwardPassMetrics, QueuedRequestMetrics, ScheduledRequestMetrics};
 pub use model::{
