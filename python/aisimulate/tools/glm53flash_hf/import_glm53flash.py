@@ -208,7 +208,9 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
     )
     stage = policy.validate_stage(stage_root)
     external = policy.read(external_receipts)
-    policy.validate_external_receipts(external)
+    external_files = policy.validate_external_receipts(
+        external, stage_root=stage_root, evidence_root=Path(external_receipts).resolve().parent
+    )
     stage_sha = policy.sha(stage_root / "stage.json")
     policy.require(
         policy.sha(base / "scripts/manage_dataset.py") == MANAGER_SHA256,
@@ -223,7 +225,8 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
         destination,
         ignore=shutil.ignore_patterns(".cache", "__pycache__", ".git"),
     )
-    shutil.copyfile(Path(__file__).with_name("glm53flash.py"), destination / "scripts/glm53flash.py")
+    for module in ("glm53flash.py", "raw_campaign.py", "raw_archive.py"):
+        shutil.copyfile(Path(__file__).with_name(module), destination / "scripts" / module)
     route_policy(destination / "scripts/manage_dataset.py")
     manager = load_manager(destination)
     campaign = Path("campaigns") / policy.CAMPAIGN / stage_sha
@@ -231,6 +234,12 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
     external_path = campaign / "external-raw-evidence.json"
     # Keep exact external-receipt source bytes, including order and whitespace.
     shutil.copyfile(external_receipts, destination / external_path)
+    for rel, sha256 in external_files.items():
+        source = policy.checked(Path(external_receipts).resolve().parent, {"path": rel, "sha256": sha256})
+        target = destination / campaign / rel
+        policy.require(not target.exists(), "external receipt collides with existing campaign evidence")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
     fpm_records = policy.read(base / "catalog/fpm.json")["records"]
     measurement_records = policy.read(base / "catalog/measurements.json")["records"]
     manifests = list(index["configuration_manifests"])

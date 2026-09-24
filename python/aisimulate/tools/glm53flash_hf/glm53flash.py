@@ -13,7 +13,6 @@ import json
 import math
 import re
 from pathlib import Path, PurePosixPath
-from urllib.parse import urlsplit
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -140,35 +139,15 @@ def validate_acceptance(report):
     )
 
 
-def validate_external_receipts(records):
-    seen = set()
-    for record in records:
-        key = tuple(record[k] for k in ("backend", "weight_quantization", "tp", "phase"))
-        role = record["role"]
-        require(
-            key in KEYS and role in ("calibration", "holdout"),
-            "invalid raw evidence role",
-        )
-        seen.add((*key, role))
-        url = urlsplit(record["uri"])
-        require(
-            url.scheme in ("https", "s3", "ssh")
-            and url.netloc
-            and url.path
-            and not url.username
-            and not url.password
-            and not url.query
-            and not url.fragment,
-            "raw evidence URI must be credential-free and stable",
-        )
-        require(
-            re.fullmatch(r"[0-9a-f]{64}", record["sha256"]) and type(record["bytes"]) is int and record["bytes"] > 0,
-            "raw evidence needs immutable digest and byte count",
-        )
+def validate_external_receipts(records, *, stage_root=None, evidence_root=None):
     require(
-        seen == {(*key, role) for key in KEYS for role in ("calibration", "holdout")},
-        "external raw evidence must cover all calibration/holdout phase cells",
+        stage_root is not None and evidence_root is not None, "bound raw evidence requires stage and evidence roots"
     )
+    if __package__:
+        from . import raw_campaign
+    else:
+        import raw_campaign
+    return raw_campaign.validate(records, Path(stage_root), Path(evidence_root))
 
 
 def validate_stage(root):
@@ -299,7 +278,8 @@ def validate_snapshot(root, manifest):
     )
     stage_path = checked(root, policy["stage"])
     stage = validate_stage(stage_path.parent)
-    validate_external_receipts(read(checked(root, policy["external_raw_evidence"])))
+    external_path = checked(root, policy["external_raw_evidence"])
+    validate_external_receipts(read(external_path), stage_root=stage_path.parent, evidence_root=external_path.parent)
     parts = [
         p
         for p in stage["configurations"]

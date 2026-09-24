@@ -116,6 +116,11 @@ def _load_import(stage_root, dataset_root, import_result_path):
         for field in ("stage", "external_raw_evidence"):
             policy.checked(dataset_root, receipt[field])
             controls[receipt[field]["path"]] = receipt[field]["sha256"]
+        external_path = policy.checked(dataset_root, receipt["external_raw_evidence"])
+        for rel, sha256 in policy.validate_external_receipts(
+            policy.read(external_path), stage_root=archive_stage, evidence_root=external_path.parent
+        ).items():
+            controls[(external_path.parent / rel).relative_to(dataset_root).as_posix()] = sha256
         provenance_path = manifest["provenance"]["import_receipt"]
         controls[provenance_path] = policy.sha(dataset_root / provenance_path)
     policy.require(set(manifests) == {key[:3] for key in policy.KEYS}, "canonical matrix differs from required matrix")
@@ -124,10 +129,13 @@ def _load_import(stage_root, dataset_root, import_result_path):
     for receipt in [stage["acceptance"], stage["input_manifest"], *stage["sources"], *partition_receipts]:
         path = policy.checked(archive, receipt)
         controls[path.relative_to(dataset_root).as_posix()] = receipt["sha256"]
-    policy.require(
-        policy.sha(dataset_root / "scripts/glm53flash.py") == policy.sha(Path(policy.__file__)),
-        "canonical dataset does not contain the reviewed GLM policy",
-    )
+    for module in ("glm53flash.py", "raw_campaign.py", "raw_archive.py"):
+        policy.require(
+            policy.sha(dataset_root / "scripts" / module) == policy.sha(Path(policy.__file__).with_name(module)),
+            "canonical dataset does not contain the reviewed GLM policy",
+        )
+        controls["scripts/" + module] = policy.sha(dataset_root / "scripts" / module)
+
     for path in ("scripts/glm53flash.py", "scripts/manage_dataset.py"):
         controls[path] = policy.sha(dataset_root / path)
     integration.load_manager(dataset_root).validate_dataset(dataset_root, write_report=False)
