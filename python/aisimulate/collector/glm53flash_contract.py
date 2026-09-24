@@ -220,6 +220,35 @@ def validate_calibration_row(row: dict) -> None:
         raise ValueError("formal calibration rows require ten measured repetitions")
 
 
+def canonical_native_source(row: dict) -> str:
+    """Normalize only the two pinned SGLang mHC pre forwarding entrypoints.
+
+    glm5_next.py@94602c9:727-746 contains two unconditional calls to the same
+    _hc_pre method, which calls the imported hc_pre implementation at 710-725.
+    Constructors at 664-679 give both parameter sets identical FP32 shapes;
+    the fused output RMSNorm shape/epsilon is identical at 657-660. Raw entry
+    labels and measured windows stay intact. No kernel fingerprint is invented.
+    """
+    source = row["kernel_source"]
+    module = "sglang.srt.models.glm5_next.Glm5NextDecoderLayer"
+    if source not in (f"{module}.hc_attn_pre", f"{module}.hc_ffn_pre"):
+        return source
+    pins_path = Path(__file__).parent / "fpm_forward/runtime/glm53flash_sglang/runtime-source-sha256.json"
+    pins = json.loads(pins_path.read_bytes())
+    geometry = json.loads(row["geometry"])
+    if (
+        row["backend"] != "sglang"
+        or (row["backend_version"], row["backend_revision"]) != BACKENDS["sglang"]
+        or row["component"] != "mhc"
+        or geometry.get("backend") != "sglang"
+        or geometry.get("role") != "pre"
+        or pins.get("srt/models/glm5_next.py") != "12c5157b07fb7c6d93f34e84c43a37866d2e382e703729e2205aed9f8961f9c2"
+        or row["source_sha256"] != sha256_json(pins)
+    ):
+        raise ValueError("SGLang mHC forwarding-source equivalence lacks its exact native source/geometry identity")
+    return f"{module}._hc_pre/sglang.kernels.ops.layernorm.mhc.hc_pre"
+
+
 def aggregate_rank_records(
     paths: list[Path], tp_size: int, manifest: dict, *, evidence_sha256: str, point_ids: dict[int, int] | None = None
 ) -> list[dict]:
@@ -253,6 +282,9 @@ def aggregate_rank_records(
         expected_rank = int(path.stem.split("-")[1])
         for row in iter_records(path):
             validate_row(row)
+            # Work on the parsed record only; original raw entrypoint evidence
+            # remains unchanged on disk and bound by calibration-evidence.json.
+            row["kernel_source"] = canonical_native_source(row)
             if row.get("dataset_role") != "calibration" or not row.get("request_set"):
                 raise ValueError("raw native observations must identify their frozen calibration corpus")
             if not re.fullmatch(r"[0-9a-f]{64}", row.get("corpus_sha256", "")):

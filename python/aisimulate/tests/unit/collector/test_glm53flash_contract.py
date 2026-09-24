@@ -4,10 +4,10 @@
 
 import copy
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.glm53flash_contract import (
     BACKENDS,
     CHECKPOINTS,
@@ -167,6 +167,59 @@ def test_rank_and_source_mismatch_cannot_be_repaired_by_merge(tmp_path):
     paths[1].write_text(json.dumps({**row, "tp_rank": 0}) + "\n")
     with pytest.raises(ValueError, match="evidence file"):
         aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
+
+
+def test_exact_sglang_mhc_forwarders_share_callee_without_rewriting_raw(tmp_path):
+    from collector import glm53flash_contract as contract
+
+    pins = json.loads(
+        (
+            Path(contract.__file__).parent / "fpm_forward/runtime/glm53flash_sglang/runtime-source-sha256.json"
+        ).read_bytes()
+    )
+    row = {
+        **sample_row(),
+        "backend": "sglang",
+        "backend_version": BACKENDS["sglang"][0],
+        "backend_revision": BACKENDS["sglang"][1],
+        "component": "mhc",
+        "name": "mhc_pre_attn_0",
+        "geometry": canonical_json({"backend": "sglang", "checkpoint_format": "fp8", "role": "pre", "tp_size": 2}),
+        "state_mode": "token_only",
+        "kv_seed_regime": "n/a",
+        "source_sha256": contract.sha256_json(pins),
+    }
+    records = [
+        {
+            **row,
+            "name": f"mhc_pre_{site}_0",
+            "sample": rep,
+            "repetition": rep,
+            "invocation": rep + 1,
+            "sampling_role": "warmup" if rep < 5 else "measurement",
+            "kernel_source": f"sglang.srt.models.glm5_next.Glm5NextDecoderLayer.hc_{site}_pre",
+        }
+        for rep in range(15)
+        for site in ("attn", "ffn")
+    ]
+    phases = [{k: r[k] for k in ("name", "component", "geometry")} for r in records[:2]]
+    model = {"phases": {"context": phases, "generation": phases}}
+    paths = rank_files(tmp_path, [records, records])
+    before = [p.read_bytes() for p in paths]
+    result = aggregate_rank_records(paths, 2, model, evidence_sha256="e" * 64)
+    assert len(result) == 1 and result[0]["sample_count"] == 20
+    assert result[0]["kernel_source"].endswith("._hc_pre/sglang.kernels.ops.layernorm.mhc.hc_pre")
+    assert result[0]["dispatch_fingerprint"] == ""
+    assert [p.read_bytes() for p in paths] == before
+    for update in (
+        {"source_sha256": "a" * 64},
+        {"backend_revision": "different"},
+        {"geometry": canonical_json({"backend": "sglang", "role": "post"})},
+    ):
+        with pytest.raises(ValueError, match="equivalence"):
+            contract.canonical_native_source({**records[0], **update})
+    unrelated = {**records[0], "kernel_source": "sglang.other_forwarder"}
+    assert contract.canonical_native_source(unrelated) == unrelated["kernel_source"]
 
 
 def test_shared_physical_key_uses_frozen_point_owner_not_lower_latency(tmp_path):

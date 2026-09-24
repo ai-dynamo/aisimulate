@@ -42,6 +42,13 @@ mHC is measured at native boundaries, including the output RMSNorm: vLLM has one
 pre, 89 fused post/pre and one post interval, plus expand/contract; SGLang has 90
 pre and 90 post intervals plus expand/contract. If SGLang leaves RMSNorm outside
 its pre call, the current hook rejects that path rather than undercounting it.
+At the pinned SGLang revision, `hc_attn_pre` and `hc_ffn_pre` unconditionally
+forward to the same `_hc_pre` implementation and `mhc.hc_pre` native operation
+([source, lines 710–746](https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/models/glm5_next.py#L710)).
+The reader normalizes only these two entrypoints, with the exact source-manifest
+digest and mHC-pre geometry required. Original entrypoint names remain in the
+hashed raw records. This source equivalence does not supply a CUDA kernel
+fingerprint: observations without one remain eligible for exact lookup only.
 The whole native FFN includes FP32 gate projection, sigmoid/top-k routing,
 shared and routed experts, and clamp10. Its analytical children never query
 generic measured GEMM/MoE rows. All45 FFNs are required on every rank.
