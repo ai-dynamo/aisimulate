@@ -262,6 +262,8 @@ def _verify_fpm_workflow() -> str:
         (
             "collector/__init__.py",
             "collector/model_cases.py",
+            "collector/glm53flash_protocol.py",
+            "collector/glm53flash_sglang_runtime.py",
             "collector/cases/base_ops/mla_module.yaml",
             "collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
             "collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",
@@ -292,12 +294,28 @@ def _verify_fpm_workflow() -> str:
     for module, relative_path in (
         (planner, "collector/fpm_forward/planner.py"),
         (runner, "collector/fpm_forward/runner.py"),
+        (importlib.import_module("collector.glm53flash_protocol"), "collector/glm53flash_protocol.py"),
+        (importlib.import_module("collector.glm53flash_sglang_runtime"), "collector/glm53flash_sglang_runtime.py"),
+        (importlib.import_module("collector.fpm_forward.sglang_driver"), "collector/fpm_forward/sglang_driver.py"),
     ):
         if Path(module.__file__).resolve() != exact_distribution_path(relative_path):
             raise RuntimeError(f"installed FPM module did not resolve from its exact RECORD path: {module.__file__}")
     for name, relative_path in (
         ("fpm_exec.sh", "collector/fpm_forward/runtime/fpm_exec.sh"),
         ("preflight.py", "collector/fpm_forward/runtime/preflight.py"),
+        ("glm53flash/sitecustomize.py", "collector/fpm_forward/runtime/glm53flash/sitecustomize.py"),
+        ("glm53flash/glm53flash_scheduler.py", "collector/fpm_forward/runtime/glm53flash/glm53flash_scheduler.py"),
+        ("glm53flash/runtime-paths.json", "collector/fpm_forward/runtime/glm53flash/runtime-paths.json"),
+        (
+            "glm53flash/runtime-source-sha256.json",
+            "collector/fpm_forward/runtime/glm53flash/runtime-source-sha256.json",
+        ),
+        ("glm53flash/README.md", "collector/fpm_forward/runtime/glm53flash/README.md"),
+        ("glm53flash/LICENSE", "collector/fpm_forward/runtime/glm53flash/LICENSE"),
+        (
+            "glm53flash_sglang/runtime-source-sha256.json",
+            "collector/fpm_forward/runtime/glm53flash_sglang/runtime-source-sha256.json",
+        ),
     ):
         asset = Path(os.fspath(runtime / name)).resolve()
         if not asset.is_file():
