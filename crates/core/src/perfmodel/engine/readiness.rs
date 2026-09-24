@@ -278,7 +278,7 @@ impl Availability<'_> {
             }
             Embedding(_) | Elementwise(_) | P2P(_) | CustomAllReduce(_) | Nccl(_)
             | MoeDispatch(_) => Ok(()),
-            Glm53Attention(_) | Glm53Mhc(_) | Glm53Router(_) | Glm53Ffn(_) => {
+            Glm53Attention(_) | Glm53Mhc(_) | Glm53Router(_) | Glm53Ffn(_) | Glm53Primitive(_) => {
                 match self.db.database_mode {
                     DatabaseMode::Silicon | DatabaseMode::Hybrid => {
                         if self.db.glm53flash.has_measurements()? {

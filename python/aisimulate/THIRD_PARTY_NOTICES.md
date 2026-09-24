@@ -1028,12 +1028,15 @@ The geometry in `src/aisimulate_core/sdk/glm53flash.py`,
 modified analytical adaptation of those configurations. Execution boundaries
 and precision partitions are independently expressed adaptations of
 `vllm/models/glm5next/nvidia/{model,attention,kda}.py` and
-`vllm/model_executor/layers/sparse_attn_indexer_kpool.py` from vLLM at
+`vllm/model_executor/layers/sparse_attn_indexer_kpool.py`,
+`vllm/model_executor/layers/logits_processor.py`, and
+`vllm/platforms/interface.py` from vLLM at
 https://github.com/vllm-project/vllm/tree/ced6857afa0ea7b2e3f0846a62e1394e90f15607
 (Copyright vLLM contributors, Apache-2.0), and
 `python/sglang/srt/models/glm5_next.py`, `python/sglang/srt/models/deepseek_v2.py`,
 `python/sglang/srt/layers/attention/dsa/dsa_indexer_kpool.py`, and
-`python/sglang/srt/layers/communicator_mhc.py` from SGLang at
+`python/sglang/srt/layers/communicator_mhc.py` and
+`python/sglang/srt/layers/logits_processor.py` from SGLang at
 https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c180089e
 (Copyright SGLang contributors, Apache-2.0). No serving implementation is
 vendored. Upstream licenses are at `LICENSE` under those immutable revisions;
