@@ -206,7 +206,7 @@ class CaptureNodeRegistry:
 
     def enter(self, name: str, source: str):
         self._flush()
-        token = {"name": name, "source": source, "index": len(self.calls)}
+        token = {"name": name, "source": source, "index": len(self.calls), "completed": False}
         self.calls.append(token)
         self.stack.append(token)
         return token
@@ -215,6 +215,8 @@ class CaptureNodeRegistry:
         if not self.stack or self.stack[-1] is not token:
             raise RuntimeError("native operation capture boundaries are not properly nested")
         self._flush()
+        token["owned_node_ids"] = sorted(node for node, owner in self.owners.items() if owner["name"] == token["name"])
+        token["completed"] = True
         self.stack.pop()
 
     def finish(self):

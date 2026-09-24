@@ -522,3 +522,43 @@ backend/checkpoint/TP/phase identity. Missing, duplicate, nested, context-phase
 or rebound markers are rejected at Engine construction and generation-session
 execution. Recompile an old GLM spec before selecting graph data. SOL/eager
 specs remain compatible without the marker.
+
+### Reproducible graph export and independent controls
+
+`glm53flash_graph_export.export_graph(root, frozen_run, output,
+control_root=..., control_run=...)` exports a new
+`glm53flash_graph_perf.parquet` only after the shared native loader verifies
+real request/token/state continuity on every rank. The frozen run explicitly
+sets `spec.ops_execution_mode="native_full_graph"`. Its calibration role retains
+the profiled run; `control_run.role="control"` identifies a separate unprofiled
+run over the same calibration corpus, token histories and geometries. Control
+requests and run IDs must be distinct. Independent accuracy uses a third run
+with role `holdout` and separate frozen corpus/geometries.
+
+The exporter reconstructs each executable node registry from the original
+capture plus native clone callbacks, then reconstructs all unit activity unions
+from saved CUPTI traces. The source-bound native policy snapshot includes every
+initialized capture bucket, even when unused by calibration. Empty boundaries
+require an explicitly completed native call with an empty owned-node set; missing
+observations never become zero-cost rows. Setup includes the actual captured and
+uncaptured metadata/memory activity, without allocating CPU gaps or a residual.
+Per-forward selection uses the slowest actual whole-forward rank and deterministic
+ties, followed by physical-row medians. Different actual dispatch signatures
+or activity counts cannot collide on one physical key.
+
+`graph-calibration-evidence.json`, `graph-rank-selection.json` and
+`graph-profile-control.json` bind original inputs, all-rank intervals and selected
+rows. The control report retains profiled/unprofiled whole-forward ratios and
+does not assume timing equivalence or rescale unit costs. The existing independent
+20% phase gate remains required. The reader recomputes this proof and the control
+from original files whenever binding a graph table. Full trace/token arrays remain
+on disk; aggregation retains only compact timing, identity and dispatch summaries.
+
+The common holdout evaluator uses the public homogeneous static decode API for
+this explicit graph mode, after native per-request geometry validation. Padding
+comes from the calibration table's policy; holdout dispatch only diagnoses policy
+mismatch. Calibration and holdout must use the same actual native policy. FPM and
+eager prediction paths retain their prior APIs. Initial graph export is SGLang
+uncompiled FULL decode with one fully receipted data root; vLLM FULL/PIECEWISE
+mapping and graph shard publication remain pending. No graph performance data
+or accuracy acceptance is bundled with this implementation.

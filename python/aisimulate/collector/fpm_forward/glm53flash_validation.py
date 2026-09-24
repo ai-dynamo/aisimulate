@@ -430,6 +430,10 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
     from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
     config = dict(entry["consumer_config"])
+    if mode == "ops" and calibration["spec"].get("ops_execution_mode", "eager") != run["spec"].get(
+        "ops_execution_mode", "eager"
+    ):
+        raise ValueError("Ops calibration and holdout use different native execution modes")
     backend, _quant, tp, _phase = run["key"]
     required = {
         "model": run["plan"]["model_path"],
@@ -506,6 +510,11 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
         else:
             binding = bind_calibration(paths, calibration, calibration_native)
     config["systems_paths"] = roots
+    if mode == "ops" and calibration["spec"].get("ops_execution_mode") == "native_full_graph":
+        from collector.glm53flash_graph_export import predict_homogeneous
+
+        prediction = predict_homogeneous(run, base, config, calibration_native)
+        return {**prediction, "config": config, "data_receipts": receipts, "calibration_binding": binding}
     model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
     rows = {}
     try:

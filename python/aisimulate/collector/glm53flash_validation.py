@@ -64,7 +64,7 @@ def _required_files(tp_size: int, backend: str) -> set[str]:
     return files
 
 
-def _sglang_execution(root: Path, fmt: str, tp: int, points: list[dict]) -> dict:
+def _sglang_execution(root: Path, fmt: str, tp: int, points: list[dict], *, graph: bool = False) -> dict:
     """Reuse the shared runtime receipt contract without the FPM timing reader."""
     from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
     from aisimulate_core.sdk.utils import get_model_config_from_model_path
@@ -92,8 +92,13 @@ def _sglang_execution(root: Path, fmt: str, tp: int, points: list[dict]) -> dict
     }
     identity = _validate_runtime_receipts(cell, payload, root, receipts)
     resolved = json.loads((root / "sglang-resolved-config.json").read_bytes())
-    if any(resolved["cuda_graph_config"][phase]["backend"] != "disabled" for phase in ("prefill", "decode")):
-        raise ValueError("Ops runtime receipts require both native SGLang graph phases disabled")
+    expected = {"prefill": "disabled", "decode": "full" if graph else "disabled"}
+    if any(resolved["cuda_graph_config"][phase]["backend"] != mode for phase, mode in expected.items()):
+        raise ValueError(
+            "Ops runtime receipts require disabled prefill and FULL decode"
+            if graph
+            else "Ops runtime receipts require both native SGLang graph phases disabled"
+        )
     if set(identity["execution_identity"]) != set(EXECUTION_COLUMNS):
         raise ValueError("Ops native execution identity is incomplete")
     return identity
@@ -239,18 +244,34 @@ def _validate_vllm_context(row: dict) -> None:
 
 def load_native(run: dict, base: Path) -> dict:
     """Read independent GPU truth for Ops; never substitute FPM's host interval."""
+    return _load_native(run, base)
+
+
+def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) -> dict:
+    """The exporter alone may validate original execution before freezing its sidecar."""
     raw_root = run["spec"].get("raw_root")
     if not raw_root:
         raise FileNotFoundError("native Ops raw collection is not supplied")
     root = (base / raw_root).resolve()
     backend, fmt, tp, phase = run["key"]
+    mode = run["spec"].get("ops_execution_mode", "eager")
+    if mode not in ("eager", "native_full_graph") or (
+        mode == "native_full_graph" and (backend != "sglang" or phase != "decode")
+    ):
+        raise ValueError("unsupported native Ops execution mode/backend/phase")
+    graph = mode == "native_full_graph"
+    if run["role"] not in ("calibration", "holdout") and not (graph and run["role"] == "control"):
+        raise ValueError("unsupported native Ops dataset role")
+    unprofiled = run["role"] in ("holdout", "control")
+    boundary = "native_full_graph_metadata_to_logits_gpu_v1" if graph else BOUNDARY
     pins = _runtime_audit(root, backend)
-    execution = _sglang_execution(root, fmt, tp, run["points"]) if backend == "sglang" else None
+    execution = _sglang_execution(root, fmt, tp, run["points"], graph=graph) if backend == "sglang" else None
     from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 
     expected_config = sha256_json(_load_pre_downloaded_hf_config(CHECKPOINTS[fmt][0]))
     requests = json.loads((root / "requests.json").read_bytes())
-    if requests["dataset_role"] != run["role"] or requests["corpus_sha256"] != run["corpus"]:
+    dataset_role = "calibration" if run["role"] == "control" else run["role"]
+    if requests["dataset_role"] != dataset_role or requests["corpus_sha256"] != run["corpus"]:
         raise ValueError("Ops request role/corpus differs from frozen plan")
     if backend == "sglang":
         from collector.glm53flash_sglang_retained import validate_retained_states
@@ -329,8 +350,11 @@ def load_native(run: dict, base: Path) -> dict:
                 raise ValueError("Ops forward lacks native rank/completion evidence")
             if row.get("state_layout_sha256") != layout_hash or row.get("state_layout_admitted") is not True:
                 raise ValueError("Ops forward state inventory differs from its retained allocation")
-            if row.get("used_cuda_graph") is not False or row.get("runtime_mode") != "NONE":
-                raise ValueError("current Ops evidence adapter admits explicit eager execution only")
+            target_graph = graph and row.get("stage") == "measure"
+            if row.get("used_cuda_graph") is not target_graph or row.get("runtime_mode") != (
+                "FULL" if target_graph else "NONE"
+            ):
+                raise ValueError("Ops actual forward differs from declared eager/FULL execution")
             if (
                 row.get("request_ids") != [request["request_id"] for request in row["requests"]]
                 or len(row["requests"]) != row["batch_size"]
@@ -415,11 +439,11 @@ def load_native(run: dict, base: Path) -> dict:
             ) != (backend, *BACKENDS[backend], CHECKPOINTS[fmt][1]):
                 raise ValueError("Ops native runtime/checkpoint differs from pinned identity")
             observed.add(key)
-            if run["role"] == "holdout":
+            if unprofiled:
                 value = row.get("whole_forward_gpu_ms")
                 if (
                     row.get("ops_instrumented") is not False
-                    or row.get("whole_forward_boundary") != BOUNDARY
+                    or row.get("whole_forward_boundary") != boundary
                     or isinstance(value, bool)
                     or not isinstance(value, (float, int))
                     or not math.isfinite(value)
@@ -432,7 +456,7 @@ def load_native(run: dict, base: Path) -> dict:
         if observed != declared.keys():
             raise ValueError("Ops native rank did not complete all frozen point repetitions")
     values = {}
-    if run["role"] == "holdout":
+    if unprofiled:
         for bid in expected:
             samples = [
                 max(timings[key].values())
@@ -440,7 +464,7 @@ def load_native(run: dict, base: Path) -> dict:
                 if key[0] == bid and target["role"] == "measurement"
             ]
             values[bid] = statistics.median(samples)
-    else:
+    elif calibration_evidence and not graph:
         receipt = _read_evidence(root)
         if any(
             receipt.get(key) != value
@@ -453,6 +477,13 @@ def load_native(run: dict, base: Path) -> dict:
             }.items()
         ):
             raise ValueError("Ops calibration evidence belongs to another native run")
+    graph_proof = None
+    if graph:
+        from collector.glm53flash_graph_export import read_graph_run, verify_evidence
+
+        graph_proof = read_graph_run(root, run)
+        if run["role"] == "calibration" and calibration_evidence:
+            verify_evidence(root, graph_proof)
     return {
         "values": values,
         "request_ids": set(requests["requests"]),
@@ -465,9 +496,10 @@ def load_native(run: dict, base: Path) -> dict:
         "runtime_grid_digest": hashlib.sha256(canonical_json(expected).encode()).hexdigest(),
         "input_provenance": {"text_sha256": requests["corpus_sha256"], "tokenizer_revision": CHECKPOINTS[fmt][1]},
         "backend_version": BACKENDS[backend][0],
-        "timing_boundary": BOUNDARY,
+        "timing_boundary": boundary,
         "evidence_root": str(root),
         "hardware_by_rank": hardware_by_rank,
+        "graph_policy": graph_proof["policy"] if graph_proof else None,
     }
 
 
@@ -532,6 +564,10 @@ def _bind_raw_to_forwards(root: Path, tp: int) -> None:
 
 def bind_calibration(paths: list[Path], frozen_run: dict, native_receipt: dict) -> dict:
     """Reaggregate retained native rows and compare every selected physical row."""
+    if frozen_run["spec"].get("ops_execution_mode") == "native_full_graph":
+        from collector.glm53flash_graph_export import bind_calibration as bind_graph
+
+        return bind_graph(paths, frozen_run, native_receipt)
     import pyarrow.parquet as pq
 
     root = Path(native_receipt["evidence_root"])

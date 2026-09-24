@@ -302,6 +302,7 @@ def _verify_fpm_workflow() -> str:
         (importlib.import_module("collector.glm53flash_runtime_identity"), "collector/glm53flash_runtime_identity.py"),
         (importlib.import_module("collector.glm53flash_shard_contract"), "collector/glm53flash_shard_contract.py"),
         (importlib.import_module("collector.glm53flash_jsonl"), "collector/glm53flash_jsonl.py"),
+        (importlib.import_module("collector.glm53flash_graph_export"), "collector/glm53flash_graph_export.py"),
         (importlib.import_module("collector.glm53flash_sglang_retained"), "collector/glm53flash_sglang_retained.py"),
         (
             importlib.import_module("collector.fpm_forward.glm53flash_validation"),
