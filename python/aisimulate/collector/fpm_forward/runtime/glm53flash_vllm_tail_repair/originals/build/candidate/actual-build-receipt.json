@@ -1,0 +1,101 @@
+{
+  "status": "built_unqualified_candidate",
+  "version": "0.30.0+glm53tail.eb4704514fdf",
+  "wheel": "vllm-0.30.0+glm53tail.eb4704514fdf-cp312-cp312-linux_aarch64.whl",
+  "wheel_sha256": "538d440757a3bbf21b1b6a9f4348fee631789654e10ec8b8f4b13b8aa99b53e2",
+  "source_archive": {
+    "url": "https://codeload.github.com/vllm-project/vllm/tar.gz/ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+    "commit": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+    "sha256": "5309f930285a26629e3e49a8d022f81c0f99b2490e24fa86dddbd2cd4986dfee",
+    "bytes": 42280608
+  },
+  "patch": {
+    "purpose": "unqualified_native_correctness_candidate_only",
+    "base_revision": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+    "source_url": "https://github.com/vllm-project/vllm/tree/ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+    "license": "Apache-2.0",
+    "copyright": "contributors to the vLLM project; modified by NVIDIA CORPORATION & AFFILIATES, 2026",
+    "sources": [
+      {
+        "source_path": "vllm/model_executor/layers/sparse_attn_indexer_kpool.py",
+        "base_sha256": "625d30d17ad3c66164f83fea59fc86e0e5edc53b4642e8a3a724aa90276f98ab",
+        "patched_sha256": "2aa61ce832e530f07a33ee2884a92bc30fca4f693b83174546020b70dca211e8"
+      },
+      {
+        "source_path": "vllm/v1/kv_cache_interface.py",
+        "base_sha256": "1cf202f1a44d5bc5c3832b70b41507687ecceea3784e67a4f003bc0210d6eecb",
+        "patched_sha256": "76fdecf31c8cd93479ebe7c788d699498e83957d18037eb5b39ccfe46f57c138"
+      }
+    ],
+    "patch_sha256": "eb4704514fdfbd8dd97114da36105c8fc3c783fd7a43534b3d5bedb6606b5fc9",
+    "version": "0.30.0+glm53tail.eb4704514fdf",
+    "formal_runtime_admission": "CLOSED",
+    "qualification": "NOT_EVALUATED",
+    "previous_patch_sha256": "bf5f6b0e689dd8575aa23cc4b83fd48ccaec7e967262d16c630e4cee35783457"
+  },
+  "patch_sha256": "eb4704514fdfbd8dd97114da36105c8fc3c783fd7a43534b3d5bedb6606b5fc9",
+  "binary_base_origin": {
+    "schema_version": 1,
+    "status": "private_image_derived_binary_base_not_original_pypi_wheel",
+    "purpose": "Binary input to an actual upstream source build; never installed as an original release",
+    "archive": "vllm-0.30.0-cp38-abi3-manylinux_2_28_aarch64.whl",
+    "archive_sha256": "fb53683eddeaddf1b069cad685bacd8d68e1c6b4a1eb30dddbe57ae2a69f5493",
+    "original_pypi_wheel": {
+      "sha256": "eb3e11bab695d085098579a6eda2d602419adec3826ebfbcce9a3ffa543eb62e",
+      "url": "https://files.pythonhosted.org/packages/18/d9/8249dfb23baffe9b6f822debbf8ffebdfdaabe932b05d4d9c79861485dd8/vllm-0.30.0-cp38-abi3-manylinux_2_28_aarch64.whl"
+    },
+    "image_digest": "sha256:4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56",
+    "actual_export_job": 604777,
+    "replaced_member": "vllm/vllm-rs",
+    "actual_installed_sha256": "e918038efcc755733f3ffacbe35cd3c133c9d0b146f9ec05a88bcdc2519ff1a3",
+    "original_record_row": [
+      "vllm/vllm-rs",
+      "sha256=xvITAZWvoo9V4gQoPzvoLTt39wBDEv0nGAD5VsSusP4",
+      "54300872"
+    ],
+    "new_record_row": [
+      "vllm/vllm-rs",
+      "sha256=6RgDjvzHVXM_P_rL41zTwTPJ0LFG-ewFqIvNwlGf8aM",
+      "54300872"
+    ],
+    "modified_members": [
+      "vllm/vllm-rs",
+      "vllm-0.30.0.dist-info/RECORD"
+    ],
+    "all_other_members_byte_identical": true,
+    "all_record_hashes_validated": true,
+    "upstream_source_revision": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+    "correctness_acceptance": "NOT_EVALUATED",
+    "accuracy_acceptance": "NOT_EVALUATED"
+  },
+  "binary_base_origin_receipt_sha256": "8b3218c7d288a39559c2f1a2b43b428e229aa01a22efde20755305d8736a1eae",
+  "binary_base_wheel": "vllm-0.30.0-cp38-abi3-manylinux_2_28_aarch64.whl",
+  "binary_base_sha256": "fb53683eddeaddf1b069cad685bacd8d68e1c6b4a1eb30dddbe57ae2a69f5493",
+  "unchanged_native_binaries": {
+    "vllm/_C_stable_libtorch.abi3.so": "0c68fbc8e8abb686e529060ccee8d0e146dd8d3c17041c4570132265e5a15d12",
+    "vllm/_deepselect_C.abi3.so": "4560b5ecc8b6af054b4d74c9e048cf09c6f0673c7d01038d4a925127056c7e4b",
+    "vllm/_flashkda_C.abi3.so": "39583b3027ee922459d5870643198f1d25bb7676050ae99b6757235c7a30b5fc",
+    "vllm/_flashmla_C.abi3.so": "9c9d1158a7347f3794725231bb1cfaf6f7fbb2c2d550a832ad0e9f41f692c1cf",
+    "vllm/_flashmla_extension_C.abi3.so": "17efe18c58db680998274939f1f3c6889e695772e72f928fcf0d7276d989f954",
+    "vllm/_moe_C_stable_libtorch.abi3.so": "3c971bc6a84f3b9873faaa56e62b529d860deb27312310d3ce011dbe95bbeb2c",
+    "vllm/_qutlass_C.abi3.so": "58cb46b4dbff35d674fc33c5c9ad225e1c7ce8bae84c25d731c90a9b7aea6487",
+    "vllm/_rust_tool_parser.abi3.so": "6bcbac260c145323cd31ea1b8aacd6d506959846086ec46abec34e0e5f7056aa",
+    "vllm/cumem_allocator.abi3.so": "27084006d3f7ee279e576e7d8cf7f8e6199141225b77bb491d03a53fc98607c0",
+    "vllm/fs_io_C.abi3.so": "244ec7ba2009c869cb9663a18841ec2f41733e84edc14427bc7cd0b359b80d86",
+    "vllm/spinloop.abi3.so": "3b65016974af6fe3f9379228aae4ba8917ed07c321a1736fdbb5d7b7824a6a90",
+    "vllm/third_party/deep_gemm/_C.cpython-310-aarch64-linux-gnu.so": "82bad6be35c0e0b22f6569303eee6217d9f7a186667b133faf5c91e0a14ca8d9",
+    "vllm/third_party/deep_gemm/_C.cpython-311-aarch64-linux-gnu.so": "9097fecacc4b30d6bd785f8c7277b6e108e2f7841ac7ef9c50af9962c76ad6ff",
+    "vllm/third_party/deep_gemm/_C.cpython-312-aarch64-linux-gnu.so": "05ef0a210dbdf8cab5172170266a9e341d652d613b6ac698bb3f78eab1426602",
+    "vllm/third_party/deep_gemm/_C.cpython-313-aarch64-linux-gnu.so": "ae8e3db9cd7719adb45a48df66398b057bf0d86e3e9a10ed5f72ec3f30cbfec7",
+    "vllm/third_party/deep_gemm/_C.cpython-314-aarch64-linux-gnu.so": "3c04379599a53f1fb8168bef006ef0d12953a0a8d722d210eef1f53ff015a591",
+    "vllm/vllm-rs": "e918038efcc755733f3ffacbe35cd3c133c9d0b146f9ec05a88bcdc2519ff1a3",
+    "vllm/vllm_flash_attn/_vllm_fa2_C.abi3.so": "be52450ee26044a3903082a726e05d2f0f0acbdcce994e94e12c6f54274a2246",
+    "vllm/vllm_flash_attn/_vllm_fa3_C.abi3.so": "b78f50e5a8ec4bb2bc3ca4ff4877b250c5703134fa536963abd8cc646a1bfb9b"
+  },
+  "preserved_binary_base_legal_files": {
+    "vllm/third_party/flash_linear_attention/LICENSE": "1350bfbef13ce4d3d3bdaa2f1fc4b1d1117d846732a2a62f891a67f3d5356d0d",
+    "vllm-0.30.0.dist-info/licenses/LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  "correctness_acceptance": "NOT_EVALUATED",
+  "accuracy_acceptance": "NOT_EVALUATED"
+}

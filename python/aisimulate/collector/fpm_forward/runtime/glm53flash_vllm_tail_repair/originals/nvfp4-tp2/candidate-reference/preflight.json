@@ -1,0 +1,155 @@
+{
+  "status": "passed",
+  "runtime": {
+    "version": "0.30.0+glm53tail.eb4704514fdf",
+    "package_root": "/candidate",
+    "loaded_files": {
+      "vllm/config/cache.py": "f1c226ba679c884930dbfcaf41a57248b137a9a20d3ed8e3d3b31752bb484c07",
+      "vllm/config/offload.py": "6f2db3d9a2730588473d5155811690c6241b167a21dcb62fbbd9ebb6386de42c",
+      "vllm/config/parallel.py": "f012ace89e3fb730a467f729f602679bc145c49f0d10721811c9d818570e7b2b",
+      "vllm/models/glm5next/nvidia/attention.py": "400d7063db2aa27314c79dce688060710f5ef7bdbafbddfc6698eaaaea3b3a8f",
+      "vllm/models/glm5next/nvidia/kda.py": "37745b45892cb26d9193160c4f446191f6cc276031fe8f7de5dbb37784cf8e8b",
+      "vllm/models/glm5next/nvidia/model.py": "d7353ea0c5708e40d65364b6a32ab63372aafbbebbf954722d635a125252a813",
+      "vllm/models/glm5next/nvidia/ops/kpool_compress.py": "bd6f1d7b5e88a10d9756799a744d3e201421b6caabd32f7b3319d31904a91a0a",
+      "vllm/v1/core/kv_cache_manager.py": "58800535eda854580d84e1025bf32fe01b2a43ce0bba501b4f3d125e4f2c8afa",
+      "vllm/v1/core/sched/async_scheduler.py": "e586a0ef3c6778be56a93e7f9bb712d4de9de6e7d7fe7e3e1d51dae83ecfc508",
+      "vllm/v1/core/sched/output.py": "3a66c8efaefe10c572f6f33cf1f8aa4610758c945130cad62eb9f7331005677c",
+      "vllm/v1/core/sched/scheduler.py": "c1db45f3bbad3a875dd8638331b8870c4380ac1ab4734265ba5c863833a82884",
+      "vllm/v1/core/single_type_kv_cache_manager.py": "0233531d85aeced9e57a38c76d83db970519c92902b7e55484390cb2b64985bf",
+      "vllm/v1/request.py": "da610d5203e72d2d524adc5fb39df11502a23520f2f31d9a44cf13d343f9c25d",
+      "vllm/v1/worker/gpu/input_batch.py": "d5dd956eb319bd69dd9e762047833d81ad40b21fce619fcb2133759e73620694",
+      "vllm/v1/worker/gpu/model_runner.py": "174c93db921c23cf0396eee4764be25b2bd2d4b6a06e9fa41ce3598b884ce8ce",
+      "vllm/v1/worker/gpu/states.py": "99418f5df43ca612ded72609fee011620b065b2cab2f249ccb387096bf4ae71a",
+      "vllm/v1/worker/gpu_model_runner.py": "87c29d08c0bbf66993d8b984811e7325e35e6436242a773feb55ec88f16b2c51",
+      "vllm/v1/worker/gpu_worker.py": "6994436e4547c0996ab555b3e814e8ccea26b650dfc1b378b97d640745309347",
+      "vllm/v1/engine/llm_engine.py": "d4d5fba309db4d3f271ac7479e3ddaa623045499e4c6cfac41c0c7710012413c",
+      "vllm/v1/engine/core.py": "268bf40534a853812867ae8e80040f190983cb364b41182b55969aace20c93f5",
+      "vllm/engine/arg_utils.py": "ead004ca266419cd25f54a7aefc0e20e1eb046f363b7f5cc977e14f52ee44bb1",
+      "vllm/v1/engine/core_client.py": "fd6ca0cb7499b3086eef2fc57674b7ace56ef1c648f09e92e144b255b79018f8",
+      "vllm/entrypoints/llm.py": "52de4ac99489e004ef6c61d0bedc84aa96020dd58b8bd1ae500814b548b2b83e",
+      "vllm/v1/kv_cache_interface.py": "76fdecf31c8cd93479ebe7c788d699498e83957d18037eb5b39ccfe46f57c138",
+      "vllm/v1/worker/gpu/model_states/__init__.py": "07815d0b788fc88185772f581bbf892a675259f9288375571f29887622f8d93c",
+      "vllm/v1/worker/gpu/model_states/default.py": "bb614f814780f052e869f9acf31dfbfa68718ee7dc6252eefa901b5730ee8a2a",
+      "vllm/v1/worker/gpu/model_states/mamba_hybrid.py": "573e130ac5587d4822fabf97adad1ad0fda02ff83c5e70df879a5bb175ae845c",
+      "vllm/v1/worker/gpu/attn_utils.py": "b9b81e59dda2720b1f9c434471381f879228832443e52756e469b4ad4905888f",
+      "vllm/v1/worker/gpu/block_table.py": "61c004315d5af7e7eae4e2a9e6be92ea82c520327690a7f55a73bb9ce95f520a",
+      "vllm/v1/attention/backends/mla/indexer.py": "2acbc1c4fa57c3424ad95e6ecbe76eb7141747773c3e867ce704f4adccba892a",
+      "vllm/model_executor/layers/sparse_attn_indexer_kpool.py": "2aa61ce832e530f07a33ee2884a92bc30fca4f693b83174546020b70dca211e8",
+      "vllm/_C_stable_libtorch.abi3.so": "0c68fbc8e8abb686e529060ccee8d0e146dd8d3c17041c4570132265e5a15d12",
+      "vllm/_deepselect_C.abi3.so": "4560b5ecc8b6af054b4d74c9e048cf09c6f0673c7d01038d4a925127056c7e4b",
+      "vllm/_flashkda_C.abi3.so": "39583b3027ee922459d5870643198f1d25bb7676050ae99b6757235c7a30b5fc",
+      "vllm/_flashmla_C.abi3.so": "9c9d1158a7347f3794725231bb1cfaf6f7fbb2c2d550a832ad0e9f41f692c1cf",
+      "vllm/_flashmla_extension_C.abi3.so": "17efe18c58db680998274939f1f3c6889e695772e72f928fcf0d7276d989f954",
+      "vllm/_moe_C_stable_libtorch.abi3.so": "3c971bc6a84f3b9873faaa56e62b529d860deb27312310d3ce011dbe95bbeb2c",
+      "vllm/_qutlass_C.abi3.so": "58cb46b4dbff35d674fc33c5c9ad225e1c7ce8bae84c25d731c90a9b7aea6487",
+      "vllm/_rust_tool_parser.abi3.so": "6bcbac260c145323cd31ea1b8aacd6d506959846086ec46abec34e0e5f7056aa",
+      "vllm/cumem_allocator.abi3.so": "27084006d3f7ee279e576e7d8cf7f8e6199141225b77bb491d03a53fc98607c0",
+      "vllm/fs_io_C.abi3.so": "244ec7ba2009c869cb9663a18841ec2f41733e84edc14427bc7cd0b359b80d86",
+      "vllm/spinloop.abi3.so": "3b65016974af6fe3f9379228aae4ba8917ed07c321a1736fdbb5d7b7824a6a90",
+      "vllm/third_party/deep_gemm/_C.cpython-310-aarch64-linux-gnu.so": "82bad6be35c0e0b22f6569303eee6217d9f7a186667b133faf5c91e0a14ca8d9",
+      "vllm/third_party/deep_gemm/_C.cpython-311-aarch64-linux-gnu.so": "9097fecacc4b30d6bd785f8c7277b6e108e2f7841ac7ef9c50af9962c76ad6ff",
+      "vllm/third_party/deep_gemm/_C.cpython-312-aarch64-linux-gnu.so": "05ef0a210dbdf8cab5172170266a9e341d652d613b6ac698bb3f78eab1426602",
+      "vllm/third_party/deep_gemm/_C.cpython-313-aarch64-linux-gnu.so": "ae8e3db9cd7719adb45a48df66398b057bf0d86e3e9a10ed5f72ec3f30cbfec7",
+      "vllm/third_party/deep_gemm/_C.cpython-314-aarch64-linux-gnu.so": "3c04379599a53f1fb8168bef006ef0d12953a0a8d722d210eef1f53ff015a591",
+      "vllm/vllm-rs": "e918038efcc755733f3ffacbe35cd3c133c9d0b146f9ec05a88bcdc2519ff1a3",
+      "vllm/vllm_flash_attn/_vllm_fa2_C.abi3.so": "be52450ee26044a3903082a726e05d2f0f0acbdcce994e94e12c6f54274a2246",
+      "vllm/vllm_flash_attn/_vllm_fa3_C.abi3.so": "b78f50e5a8ec4bb2bc3ca4ff4877b250c5703134fa536963abd8cc646a1bfb9b"
+    },
+    "runtime_wheel_sha256": "538d440757a3bbf21b1b6a9f4348fee631789654e10ec8b8f4b13b8aa99b53e2"
+  },
+  "native_tail_api": {
+    "status": "ACTUAL_NATIVE_TAIL_API_AND_SPEC_PASS",
+    "model_state_signature": "(self, input_batch: vllm.v1.worker.gpu.input_batch.InputBatch, cudagraph_mode: vllm.config.compilation.CUDAGraphMode, block_tables: tuple[torch.Tensor, ...], slot_mappings: torch.Tensor, attn_groups: list[list[vllm.v1.worker.utils.AttentionGroup]], kv_cache_config: vllm.v1.kv_cache_interface.KVCacheConfig, for_capture: bool = False, ubatch_idx: int = 0) -> dict[str, typing.Any]",
+    "builder_signature": "(self, common_prefix_len: int, common_attn_metadata: vllm.v1.attention.backend.CommonAttentionMetadata, fast_build: bool = False) -> vllm.v1.attention.backends.mla.indexer.DeepseekV32IndexerMetadata",
+    "model_state_source": {
+      "path": "/candidate/vllm/v1/worker/gpu/model_states/mamba_hybrid.py",
+      "relative_path": "vllm/v1/worker/gpu/model_states/mamba_hybrid.py",
+      "sha256": "573e130ac5587d4822fabf97adad1ad0fda02ff83c5e70df879a5bb175ae845c"
+    },
+    "builder_source": {
+      "path": "/candidate/vllm/v1/attention/backends/mla/indexer.py",
+      "relative_path": "vllm/v1/attention/backends/mla/indexer.py",
+      "sha256": "2acbc1c4fa57c3424ad95e6ecbe76eb7141747773c3e867ce704f4adccba892a"
+    },
+    "tail_spec": {
+      "class": "vllm.v1.kv_cache_interface.KpoolTailSpec",
+      "uses_slot_mapping": false,
+      "dtype": "torch.bfloat16",
+      "fields": {
+        "block_size": 4,
+        "sliding_window": 4,
+        "num_kv_heads": 2,
+        "head_size": 128,
+        "head_size_v": 0
+      }
+    },
+    "ordinary_spec": {
+      "class": "vllm.v1.kv_cache_interface.SlidingWindowSpec",
+      "uses_slot_mapping": true,
+      "dtype": "torch.bfloat16",
+      "fields": {
+        "block_size": 4,
+        "sliding_window": 4,
+        "num_kv_heads": 2,
+        "head_size": 128,
+        "head_size_v": 0
+      }
+    },
+    "actual_model_groups": "NOT_EVALUATED",
+    "gpu_execution": false,
+    "formal_admission": false
+  },
+  "checkpoint_config_sha256": "6f0ec374c7f3273461e1cadbee8d682bb21ad822427ab5a3a986611f5247fdee",
+  "request_identity_protocol": "native_assign_request_id_v1",
+  "request_identity_source_sha256": {
+    "vllm/v1/engine/input_processor.py": "c8abd8e4e14d99929d45a7ff3b2a74898269c5e2a7fa30b826623ee85e4ce813",
+    "vllm/utils/__init__.py": "c58b3f45deeb98bccca22c945526fd15d483a2f5eb8a3c62cf7df218b081885f",
+    "vllm/v1/engine/output_processor.py": "e47b86cd69ce1c1e3f53dac655eaa75c32a4057d10f4a1db16bb83a397f2a329"
+  },
+  "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+  "cohort_admission_source_sha256": {
+    "vllm/entrypoints/llm.py": "52de4ac99489e004ef6c61d0bedc84aa96020dd58b8bd1ae500814b548b2b83e",
+    "vllm/entrypoints/offline_utils.py": "da427e190c1439c98cdc44e9c05117dcac6c65febb042c89327c33dec2a8af2d",
+    "vllm/v1/engine/llm_engine.py": "d4d5fba309db4d3f271ac7479e3ddaa623045499e4c6cfac41c0c7710012413c",
+    "vllm/v1/engine/core_client.py": "fd6ca0cb7499b3086eef2fc57674b7ace56ef1c648f09e92e144b255b79018f8",
+    "vllm/v1/engine/core.py": "268bf40534a853812867ae8e80040f190983cb364b41182b55969aace20c93f5"
+  },
+  "public_engine_args": {
+    "model": "/models/glm53flash-nvfp4",
+    "revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+    "tokenizer_revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+    "tensor_parallel_size": 2,
+    "pipeline_parallel_size": 1,
+    "data_parallel_size": 1,
+    "enable_expert_parallel": false,
+    "dtype": "bfloat16",
+    "kv_cache_dtype": "fp8_e4m3",
+    "max_model_len": 131079,
+    "max_num_seqs": 4,
+    "max_num_batched_tokens": 16398,
+    "long_prefill_token_threshold": 0,
+    "gpu_memory_utilization": 0.9,
+    "enable_chunked_prefill": true,
+    "enable_prefix_caching": false,
+    "mamba_cache_mode": "none",
+    "async_scheduling": false,
+    "distributed_executor_backend": "mp",
+    "enforce_eager": false,
+    "cudagraph_metrics": true,
+    "language_model_only": true,
+    "limit_mm_per_prompt": {
+      "image": 0,
+      "video": 0
+    },
+    "compilation_config": {
+      "cudagraph_capture_sizes": [
+        1,
+        2,
+        4
+      ]
+    },
+    "worker_extension_cls": "worker_probe.QualificationWorker"
+  },
+  "actual_engine_args_class": "vllm.engine.arg_utils.EngineArgs",
+  "gpu_execution": false
+}

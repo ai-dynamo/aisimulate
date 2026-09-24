@@ -135,10 +135,9 @@ def test_worker_closure_reads_real_file_bytes_and_rejects_substitution(tmp_path,
         identity.VLLM_TAIL_CANDIDATE + ".other",
     ],
 )
-def test_new_tail_runtime_stays_closed_at_every_public_identity_entrypoint(version):
-    # The real registry is empty; packaged build/CPU/partial functional evidence
-    # cannot authorize either the candidate or its diagnostic reference.
-    assert identity.ADMITTED_VLLM_REPAIRS == {}
+def test_unregistered_tail_runtime_stays_closed_at_every_public_identity_entrypoint(version, monkeypatch):
+    # TEST_ONLY: removing explicit registration must close every public entry.
+    monkeypatch.setattr(identity, "ADMITTED_VLLM_REPAIRS", {})
     for function in (identity.vllm_source_pins, identity.vllm_runtime_closure, identity.vllm_source_manifest_sha256):
         with pytest.raises(ValueError, match="unqualified"):
             function(version, source_manifest())
@@ -147,8 +146,8 @@ def test_new_tail_runtime_stays_closed_at_every_public_identity_entrypoint(versi
 
 
 def test_tail_registry_entry_still_requires_its_actual_complete_qualification(monkeypatch):
-    # TEST_ONLY registry insertion cannot substitute for the missing actual
-    # four-cell evidence package. No validator is replaced in this test.
+    # TEST_ONLY registry replacement cannot substitute a different summary SHA.
+    # No validator is replaced in this test.
     monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, identity.VLLM_TAIL_CANDIDATE, "a" * 64)
     with pytest.raises((ValueError, FileNotFoundError)):
         identity.validate_backend_version("vllm", identity.VLLM_TAIL_CANDIDATE)
@@ -239,3 +238,36 @@ def test_tail_reference_cannot_be_admitted_as_the_production_candidate(monkeypat
     monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, reference, "b" * 64)
     with pytest.raises(ValueError, match="unqualified"):
         identity.validate_backend_version("vllm", reference)
+
+
+def test_actual_four_cell_package_admits_only_the_reviewed_candidate():
+    version = identity.VLLM_TAIL_CANDIDATE
+    summary_sha = "8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45"
+    assert {version: summary_sha} == identity.ADMITTED_VLLM_REPAIRS
+    assert identity.validate_backend_version("vllm", version) == version
+    contract = identity.vllm_runtime_closure(version, source_manifest())
+    assert contract["qualification_receipt_sha256"] == summary_sha
+    assert len(contract["files"]) == 52
+    assert identity.vllm_unaligned_prefill_admitted(version) is True
+    for rejected in (identity.VLLM_KPOOL_CANDIDATE, identity.tail_qualification.VERSIONS["tail_reference"]):
+        with pytest.raises(ValueError, match="unqualified"):
+            identity.validate_backend_version("vllm", rejected)
+
+
+@pytest.mark.parametrize("corruption", ["missing_summary", "changed_summary", "missing_receipt", "changed_receipt"])
+def test_actual_tail_admission_rechecks_packaged_evidence(tmp_path, monkeypatch, corruption):
+    import shutil
+
+    root = tmp_path / "TEST_ONLY_PACKAGE"
+    shutil.copytree(identity._tail_root(), root)
+    summary_path = root / "qualification/admission-summary.json"
+    summary = json.loads(summary_path.read_text())
+    receipt = root / summary["functional_cells"][0]["original_comparison"]["path"]
+    selected = summary_path if corruption.endswith("summary") else receipt
+    if corruption.startswith("missing"):
+        selected.unlink()
+    else:
+        selected.write_bytes(selected.read_bytes() + b" ")
+    monkeypatch.setattr(identity, "_tail_root", lambda: root)
+    with pytest.raises((ValueError, FileNotFoundError)):
+        identity.validate_backend_version("vllm", identity.VLLM_TAIL_CANDIDATE)

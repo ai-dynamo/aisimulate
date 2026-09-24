@@ -1308,3 +1308,25 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
 ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+## GLM-5.3-Flash circular-tail runtime repair and reference
+
+- Derived files: `collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/`
+  contains the candidate/reference encoded patches and adjacent review diffs.
+  Build and native install-verifier scripts are original AISimulate wrappers;
+  adjacent identities and receipts preserve immutable source/binary lineage.
+- Upstream: https://github.com/vllm-project/vllm at immutable commit
+  `ced6857afa0ea7b2e3f0846a62e1394e90f15607`. Modified original paths are
+  `vllm/v1/kv_cache_interface.py` in both distributions and
+  `vllm/model_executor/layers/sparse_attn_indexer_kpool.py` in the candidate.
+  Original build APIs are in `setup.py` at the same revision.
+- Copyright: contributors to the vLLM project; modified by NVIDIA CORPORATION
+  & AFFILIATES, 2026. License: Apache-2.0. Full upstream LICENSE is preserved
+  in each directory; upstream has no root NOTICE. Original SPDX notices remain
+  in modified sources and NVIDIA modifications are marked explicitly.
+- Modified: disable generic slot mapping for the one-block circular tail spec;
+  the candidate also completes retained partial IndexPool groups. Original
+  metadata/cache-allocation/dispatch kernels are unchanged. No upstream binary
+  wheel is vendored; build/install tooling checks all19 native binaries and
+  preserves applicable binary license/notice files. CPU receipts do not grant
+  model qualification, runtime admission or performance accuracy acceptance.

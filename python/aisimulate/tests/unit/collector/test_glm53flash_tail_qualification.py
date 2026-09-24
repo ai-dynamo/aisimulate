@@ -478,7 +478,8 @@ def package(tmp_path, monkeypatch):
     return p
 
 
-def test_complete_test_only_package_does_not_open_runtime_registry(package):
+def test_complete_test_only_package_does_not_open_runtime_registry(package, monkeypatch):
+    monkeypatch.delitem(ADMITTED_VLLM_REPAIRS, gate.VERSIONS["candidate"], raising=False)
     before = dict(ADMITTED_VLLM_REPAIRS)
     assert package.run()["scope"] == gate.SCOPE
     assert ADMITTED_VLLM_REPAIRS == before == {}
