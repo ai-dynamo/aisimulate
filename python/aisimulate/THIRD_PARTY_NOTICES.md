@@ -1172,6 +1172,9 @@ this adapter. The corpus and new contract tests are original project content.
   `setup.py`, public Engine APIs in `vllm/{entrypoints/llm,engine/arg_utils}.py`
   and native worker/request APIs under `vllm/v1/worker/gpu/` and
   `vllm/v1/core/sched/scheduler.py` at the same revision.
+  External/internal request identity validation references
+  `vllm/v1/engine/{input_processor,output_processor}.py` and
+  `vllm/utils/__init__.py` at that immutable revision.
 - Copyright: contributors to the vLLM project; modified by NVIDIA CORPORATION
   & AFFILIATES, 2026. License: Apache-2.0, with the complete upstream LICENSE
   preserved adjacent. The immutable upstream root has no NOTICE file.

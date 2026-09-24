@@ -8,9 +8,13 @@ import json
 from pathlib import Path
 
 import pytest
+
 from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification import probe
 from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification.probe import CASES
-from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification.validate import validate_native
+from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification.validate import (
+    bind_native_request_ids,
+    validate_native,
+)
 from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification.worker_probe import token_digest
 
 pytestmark = pytest.mark.unit
@@ -57,6 +61,7 @@ def evidence(tmp_path):
                         "output_token_ids": answer,
                     }
                 )
+                rid += "-012abcde"
                 prompts.append({"request_id": rid, "prompt_token_ids": tokens, "prompt_sha256": token_digest(tokens)})
                 group.append((rid, i, tokens, answer))
             chunks = [[0, 4097], [4097, min(n - 4097, 4097)]]
@@ -187,3 +192,47 @@ def test_encoded_repair_keeps_original_candidate_identity():
     assert (root / "retained-tail-prefill.review.diff").read_text() == "\n".join(
         line.rstrip() for line in original.decode().splitlines()
     ) + "\n"
+
+
+@pytest.mark.parametrize("suffix", ["", "-012ABCde", "-012abcd", "-012abcdee", "_012abcde", "-012abcdeg"])
+def test_native_id_rejects_non_native_suffix(suffix):
+    prompt = [1, 2, 3]
+    with pytest.raises(ValueError, match="mapping"):
+        bind_native_request_ids(
+            [{"request_id": "a-b", "prompt_token_ids": prompt}],
+            [{"request_id": "a-b" + suffix, "prompt_token_ids": prompt, "prompt_sha256": token_digest(prompt)}],
+        )
+
+
+def test_native_id_preserves_entire_external_id_and_duplicate_prompt_bytes():
+    tokens = [7]
+    outputs = [{"request_id": rid, "prompt_token_ids": tokens} for rid in ["a-b", "a-b-012abcde"]]
+    prompts = [
+        {
+            "request_id": row["request_id"] + "-012abcde",
+            "prompt_token_ids": tokens,
+            "prompt_sha256": token_digest(tokens),
+        }
+        for row in outputs
+    ]
+    native, mapping = bind_native_request_ids(outputs, prompts)
+    assert native["a-b-012abcde-012abcde"] is outputs[1]
+    assert mapping == {"a-b": "a-b-012abcde", "a-b-012abcde": "a-b-012abcde-012abcde"}
+
+
+@pytest.mark.parametrize("defect", ["extra", "duplicate_external", "duplicate_native", "wrong_tokens", "wrong_digest"])
+def test_native_id_bijection_and_prompt_binding(defect):
+    outputs = [{"request_id": "request", "prompt_token_ids": [7]}]
+    prompts = [{"request_id": "request-012abcde", "prompt_token_ids": [7], "prompt_sha256": token_digest([7])}]
+    if defect == "extra":
+        prompts.append({**prompts[0], "request_id": "extra-012abcde"})
+    elif defect == "duplicate_external":
+        prompts.append({**prompts[0], "request_id": "request-123abcde"})
+    elif defect == "duplicate_native":
+        prompts.append(dict(prompts[0]))
+    elif defect == "wrong_tokens":
+        prompts[0]["prompt_token_ids"] = [8]
+    else:
+        prompts[0]["prompt_sha256"] = "0" * 64
+    with pytest.raises(ValueError):
+        bind_native_request_ids(outputs, prompts)
