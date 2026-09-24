@@ -13,6 +13,7 @@ from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification
 from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification.probe import CASES
 from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification.validate import (
     bind_native_request_ids,
+    validate_checkpoint_identity,
     validate_native,
 )
 from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification.worker_probe import token_digest
@@ -40,7 +41,18 @@ def evidence(tmp_path):
         },
         "candidate_wheel_sha256": expected["candidate_wheel_sha256"],
     }
-    write(tmp_path / "preflight.json", {"runtime": actual})
+    checkpoint = expected["checkpoints"]["fp8"]
+    write(
+        tmp_path / "preflight.json",
+        {
+            "runtime": actual,
+            "checkpoint_config_sha256": checkpoint["config_sha256"],
+            "public_engine_args": {
+                "revision": checkpoint["revision"],
+                "tokenizer_revision": checkpoint["revision"],
+            },
+        },
+    )
     outputs = []
     prompts = []
     rows = []
@@ -181,6 +193,36 @@ def test_reject_corrupt_evidence(evidence, failure):
 def test_reject_runtime_relabel(evidence):
     with pytest.raises(ValueError, match="runtime identity"):
         validate_native(evidence, 2, "split", "production", "stock")
+
+
+@pytest.mark.parametrize("checkpoint", ["fp8", "nvfp4"])
+def test_checkpoint_identity_uses_native_config_and_both_revisions(checkpoint):
+    expected = json.loads(Path(probe.__file__).with_name("expected-runtime.json").read_text())
+    pin = expected["checkpoints"][checkpoint]
+    preflight = {
+        "checkpoint_config_sha256": pin["config_sha256"],
+        "public_engine_args": {"revision": pin["revision"], "tokenizer_revision": pin["revision"]},
+    }
+    assert validate_checkpoint_identity(preflight, expected, checkpoint) == {"checkpoint": checkpoint, **pin}
+
+
+@pytest.mark.parametrize("defect", ["label", "config", "missing_config", "revision", "tokenizer_revision", "args"])
+def test_native_checkpoint_relabel_is_rejected(evidence, defect):
+    path = evidence / "preflight.json"
+    preflight = json.loads(path.read_text())
+    if defect == "config":
+        preflight["checkpoint_config_sha256"] = "0" * 64
+    elif defect == "missing_config":
+        del preflight["checkpoint_config_sha256"]
+    elif defect in ("revision", "tokenizer_revision"):
+        preflight["public_engine_args"][defect] = "main"
+    elif defect == "args":
+        del preflight["public_engine_args"]
+    write(path, preflight)
+    with pytest.raises(ValueError, match="checkpoint"):
+        validate_native(
+            evidence, 2, "split", "production", "candidate", checkpoint="nvfp4" if defect == "label" else "fp8"
+        )
 
 
 def test_encoded_repair_keeps_original_candidate_identity():
