@@ -337,10 +337,10 @@ def test_v2_graph_coordinates_bind_real_and_physical_geometry_separately():
         native_v2_coordinates(actual, schedule, batch, **kwargs)
 
 
-@pytest.mark.parametrize("calibration", [False, True])
+@pytest.mark.parametrize("calibration,piecewise_capture", [(False, False), (True, False), (True, True)])
 @pytest.mark.parametrize("failure_phase", [None, "before_sample", "native_sample"])
 def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_later_logits(
-    monkeypatch, tmp_path, calibration, failure_phase
+    monkeypatch, tmp_path, calibration, piecewise_capture, failure_phase
 ):
     import importlib.metadata
     import sys
@@ -416,6 +416,7 @@ def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_l
     path.write_text('{"backend_version":"0.30.0"}')
     monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(path))
     monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_graph" if calibration else "ops_graph_holdout")
+    monkeypatch.setenv("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", "1" if piecewise_capture else "0")
     if calibration:
         manifest = tmp_path / "manifest.json"
         manifest.write_text('{"TEST_ONLY":true}')
@@ -429,7 +430,12 @@ def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_l
         sys.modules, "vllm.v1.worker.gpu.cudagraph_utils", SimpleNamespace(ModelCudaGraphManager=Manager)
     )
     monkeypatch.setattr(graph, "install_holdout_capture", lambda output: calls.append("pre_request_capture_hook"))
-    monkeypatch.setattr(graph, "install", lambda *args: calls.append("pre_request_capture_hook"))
+
+    def install_capture(*args, include_piecewise=False):
+        assert include_piecewise is piecewise_capture
+        calls.append("pre_request_capture_hook")
+
+    monkeypatch.setattr(graph, "install", install_capture)
     policies = []
 
     def selected_policy(manager, model):
@@ -574,3 +580,22 @@ def test_before_preserves_actual_graph_flags_padding_and_only_logical_query_toke
     assert all(999 not in tokens for tokens in completed.values())
     if stage == "measure":
         assert state.whole_boundary == "native_metadata_to_logits_gpu_v1"
+
+
+@pytest.mark.parametrize(
+    "value,purpose",
+    [("1", "ops_graph_holdout"), ("1", "ops"), ("1", "ops_holdout"), ("true", "ops_graph"), ("", "ops_graph")],
+)
+def test_piecewise_capture_opt_in_cannot_profile_controls_or_invent_modes(monkeypatch, value, purpose):
+    from collector.glm53flash_vllm_runtime import _piecewise_capture_enabled
+
+    monkeypatch.setenv("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", value)
+    with pytest.raises(RuntimeError, match="capture-only"):
+        _piecewise_capture_enabled(purpose)
+
+
+def test_piecewise_capture_default_remains_off(monkeypatch):
+    from collector.glm53flash_vllm_runtime import _piecewise_capture_enabled
+
+    monkeypatch.delenv("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", raising=False)
+    assert _piecewise_capture_enabled("ops_graph") is False

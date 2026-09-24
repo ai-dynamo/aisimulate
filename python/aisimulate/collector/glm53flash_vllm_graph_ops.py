@@ -365,7 +365,15 @@ def install(manifest, provenance, output, *, include_piecewise=False):
             state = {"observer": observer, "rank": rank, "model": model, "inventory": inventory}
             models[id(model)] = state
             with (output / f"vllm-graph-inventory-rank-{rank}.json").open("x") as stream:
-                json.dump({"inventory": inventory, "source_pins": SOURCE_PINS}, stream, indent=2)
+                json.dump(
+                    {
+                        "inventory": inventory,
+                        "source_pins": SOURCE_PINS,
+                        "piecewise_capture_enabled": include_piecewise,
+                    },
+                    stream,
+                    indent=2,
+                )
         if state["model"] is not model or state["observer"].registry is not None:
             raise RuntimeError("native vLLM capture has a conflicting live model observer")
         manager._aisim_glm53_capture_state = state

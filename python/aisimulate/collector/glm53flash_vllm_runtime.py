@@ -530,6 +530,14 @@ def install_worker_lifecycle():
     Worker._aisim_glm53_ops_lifecycle_installed = True
 
 
+def _piecewise_capture_enabled(purpose):
+    """Explicit capture-only qualification; never turn a control into profiling."""
+    value = os.environ.get("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", "0")
+    if value not in ("0", "1") or (value == "1" and purpose != "ops_graph"):
+        raise RuntimeError("PIECEWISE capture-only observation requires explicit graph calibration purpose")
+    return value == "1"
+
+
 def install_v2():
     """Bind the pinned native V2 model forward and its later logits/sample step."""
     from importlib.metadata import version
@@ -554,6 +562,7 @@ def install_v2():
         raise RuntimeError("native V2 instrumentation must match explicit Ops/holdout purpose")
     graph_mode = purpose in ("ops_graph", "ops_graph_holdout")
     graph_calibration = purpose == "ops_graph"
+    include_piecewise = _piecewise_capture_enabled(purpose)
     manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
     if graph_mode:
         from vllm.v1.worker.gpu.cudagraph_utils import ModelCudaGraphManager
@@ -568,7 +577,7 @@ def install_v2():
         )
 
         if graph_calibration:
-            install_graph_capture(manifest, provenance, output)
+            install_graph_capture(manifest, provenance, output, include_piecewise=include_piecewise)
         else:
             install_holdout_capture(output)
         graph_policy_for = calibration_policy if graph_calibration else holdout_policy

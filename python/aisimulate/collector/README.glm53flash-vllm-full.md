@@ -37,3 +37,10 @@ complete production model's public query path. They do not provide GPU kernel
 qualification, graph timing equivalence or independent MAPE acceptance. FULL
 calibration/control/holdout GPU evidence and the separate PIECEWISE measurement
 path remain required for complete native-serving coverage.
+
+An explicitly frozen calibration can set
+`AISIM_GLM53_PIECEWISE_CAPTURE_ONLY=1` before worker imports to qualify the native
+PIECEWISE initialization alongside FULL targets. This records distinct segment
+and eager-callable ownership artifacts; it does not enable PIECEWISE timing or
+FULL table reuse. The default remains disabled, and controls/holdouts reject
+this profiling opt-in. The native inventory records the chosen capture setting.
