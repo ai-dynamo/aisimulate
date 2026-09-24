@@ -647,7 +647,19 @@ findings:
           collector models (collect_msa_module.py:892-897, use_graph). The
           identity probe disables CUDA graphs, so it saw the eager radix path.
           probe_sglang gained --cuda-graph (recorded as probe_cuda_graph);
-          M3 re-probed with graphs on to confirm — see the follow-up note.
+          M3 re-probed with graphs on: decode now runs _topk_index_partial /
+          _topk_index_merge (topk_split), matching the collector -> ALIGNED
+          (verdict computed with --serving-raw against that record). All
+          three gates green (vllm 33, sglang 12, trtllm 9).
+          HARNESS FOLLOW-UP this opens: the identity probes run eager on
+          every backend ("identity probe: no graph capture"). Any op whose
+          kernel choice reads capture-time static shapes (not just M3 top-k:
+          FlashMLA/FA split-KV planning, XQA multi-block, trtllm-gen decode
+          scheduling are candidates) is mis-identified by an eager probe.
+          The device-stream tables already see graph-replayed kernels, so the
+          probes can run decode under graphs; the question for the owner is
+          whether to make graph-mode the default decode evidence (production
+          truth) and keep eager only for prefill.
         ROSTER GATE (probe_driver --plan refused: "no fetched config for
         zai-org/GLM-5.3-FP8"): that repository does not exist on Hugging Face
         (404 with a token; zai-org lists GLM-5.3, GLM-5.3-BF16, GLM-5.3-Flash,
