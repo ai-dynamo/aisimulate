@@ -159,6 +159,32 @@ context and never applies or executes saved options automatically. Deployment
 changes invalidate affected acceptance and collection references: preserve the
 old campaign, archive superseded references with a reason, and use new output
 paths with the existing review workflow.
+Before submitting collection jobs, follow
+[campaign orchestration](docs/fpm-self-service.md#orchestrate-independent-collection-campaigns):
+save a per-configuration execution table with exact commands, isolated paths,
+generated allocation geometry, prerequisites and intended concurrency. Independent
+formal collection configurations submit independently by default. Use Slurm
+`afterany` for intentional sequencing and `afterok` only for a
+genuine data prerequisite;
+TP publication is not a prerequisite for an independent DEP collection. Keep
+worker completion, cell validity/publication, memory finalization and accuracy
+separate, retain truthful exit statuses and continue unrelated configurations.
+Inspect active jobs and collector evidence before retrying. Recover compatible
+post-processing without repeating passed GPU work; guided `--resume` can still
+launch unfinished cells and does not retry cells still marked failed. Follow the
+guide's lower-level retry procedure when needed. One coordinator records job
+history under checkpoint `research`, updates per-configuration progress/artifacts
+with revision checks and keeps volatile scheduler state out of accepted inputs.
+Formal `collect-fpm` jobs use separate roots and do not update the session
+checkpoint. `probe-runtime` (including preview) and `import-observations` do:
+the agent must serialize each full invocation with every other writer of that
+file, including coordinator saves and profile acceptance. No automatic lock
+covers that interval. Save intended commands/paths first, retain new job IDs and
+notes in ordinary job logs until safe to merge, and reload the current revision
+after completion or failure. Writer coordination does not require an independent
+predecessor to succeed. If a save conflicts, preserve produced evidence, reconcile
+the checkpoint and use compatible probe resume/import before repeating GPU work.
+Validation follows its own configuration's data/profile prerequisites.
 Prepare the compatible pinned image, accessible checkpoint and GPUs before
 execution. The engine initializes the model/cache
 and resolves runtime settings, then Dynamo self-benchmark generates and times the
