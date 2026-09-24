@@ -337,7 +337,20 @@ class _TraceState:
             if graph:
                 raise RuntimeError("native eager Ops campaign actually replayed a CUDA graph")
             for row in self.observer.end():
-                row.update({key: record.get(key) for key in ("stage", "benchmark_id", "repetition", "sampling_role")})
+                row.update(
+                    {
+                        key: record.get(key)
+                        for key in (
+                            "stage",
+                            "benchmark_id",
+                            "repetition",
+                            "sampling_role",
+                            "dataset_role",
+                            "request_set",
+                            "corpus_sha256",
+                        )
+                    }
+                )
                 self.append("ops", row)
         for request in record["requests"]:
             self.previous[request["request_id"]] = {
