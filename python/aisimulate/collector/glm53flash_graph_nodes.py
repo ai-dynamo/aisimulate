@@ -396,14 +396,21 @@ def trace_forward_identity(record: dict) -> dict:
     return {"schema": "glm53flash_graph_trace_forward_v1", **identity}
 
 
-def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
+def bind_execution_activity(binding: dict, events: list[dict], *, additional_bindings=()) -> dict:
     """Account for native GPU preparation outside the captured model graph.
 
     Each extra activity must correlate to a CUDA launch inside the one actual
     source-bound DecodeCudaGraphRunner.execute CPU range. An additional graph
     needs its own capture registry; it cannot be relabeled as ordinary setup.
     CPU gaps remain diagnostic elapsed time, never allocated back into units.
+    Explicit additional bindings require one distinct observed graph/launch
+    each; the default retains the single-graph contract. No extra graph can
+    enter through ordinary setup activity.
     """
+    bindings = [binding, *additional_bindings]
+    correlations = {item["correlation"]: item for item in bindings}
+    if len(correlations) != len(bindings) or len({item["graph_id"] for item in bindings}) != len(bindings):
+        raise ValueError("native execution contains aliased graph or launch identities")
     ranges = [row for row in events if row.get("name") == EXECUTION_RANGE and row.get("ph") == "X"]
     if len(ranges) != 1:
         raise ValueError("native execution lacks one complete source-bound profiler range")
@@ -437,10 +444,10 @@ def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
             raise ValueError("native execution CUDA call correlation is ambiguous")
         calls[correlation] = row
     launches = [row for row in calls.values() if row.get("name") in ("cudaGraphLaunch", "cuGraphLaunch")]
-    if len(launches) != 1 or launches[0]["args"]["correlation"] != binding["correlation"]:
-        raise ValueError("native metadata/model execution needs one registered graph launch")
+    if len(launches) != len(bindings) or {row["args"]["correlation"] for row in launches} != correlations.keys():
+        raise ValueError("native metadata/model execution needs its exact registered graph launches")
     setup = []
-    actual_graph = []
+    actual_graph = {correlation: [] for correlation in correlations}
     for index, event in enumerate(events):
         category, args = event.get("cat"), event.get("args", {})
         if category not in ("kernel", "gpu_memcpy", "gpu_memset"):
@@ -448,8 +455,8 @@ def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
         correlation = args.get("correlation")
         if correlation not in calls:
             raise ValueError("GPU activity is outside the source-bound native execution scope")
-        if correlation == binding["correlation"]:
-            actual_graph.append(event)
+        if correlation in correlations:
+            actual_graph[correlation].append(event)
             continue
         if args.get("graph id", 0) not in (0, None) or args.get("graph node id", 0) not in (0, None):
             raise ValueError("native preparation contains an unregistered additional CUDA graph")
@@ -543,8 +550,14 @@ def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
             row["launch_correlation"] == correlation and row["activity"] == expected for row in setup
         ):
             raise ValueError("native device-work call lacks its matching GPU activity; zero work is unproved")
-    if len(actual_graph) != len(binding["activities"]):
+    if any(len(actual_graph[item["correlation"]]) != len(item["activities"]) for item in bindings):
         raise ValueError("native graph activity differs between node and execution scope proofs")
+    if additional_bindings:
+        binding = {
+            "graphs": bindings,
+            "activities": [row for item in bindings for row in item["activities"]],
+            "composition": "disjoint_node_ownership_additive_active_unions_not_critical_path",
+        }
     return _compose_execution(binding, region, setup)
 
 
@@ -617,6 +630,8 @@ def bind_vllm_execution_activity(binding: dict, events: list[dict]) -> dict:
         if any(type(v) not in (int, float) or not math.isfinite(v) for v in (begin, duration)) or duration < 0:
             raise ValueError("native V2 CUDA call lacks its complete source-bound interval")
         left, right = unit["ts"], unit["ts"] + unit["dur"]
+        if duration == 0 and begin in (left, right):
+            raise ValueError("zero-duration CUDA call at logits boundary has ambiguous ownership")
         if begin < right and begin + duration > left:
             if begin < left or begin + duration > right:
                 raise ValueError("native CUDA call straddles logits ownership boundaries")

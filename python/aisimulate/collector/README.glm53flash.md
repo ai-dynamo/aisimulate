@@ -680,6 +680,20 @@ unaligned cached-prefill remains rejected; no local version prefix grants access
 This functional-runtime admission is separate from graph coverage and independent
 whole-forward accuracy, which remain unevaluated across the required Ops matrix.
 
+### PIECEWISE activity ownership
+
+The separate PIECEWISE activity binder joins the initialized graph segments
+and original eager callable scopes to their actual CUDA launch correlations.
+It preserves native segment order and checks GPU activity in both directions.
+An operation spanning multiple graph segments and eager work receives one
+union of its measured device intervals, with overlap and interval sums retained
+for diagnosis. Setup and external logits remain separate source-owned units.
+Zero-duration CUDA API records exactly at ownership boundaries are rejected
+as ambiguous; they cannot silently become setup. Structural-only graph segments
+remain unsupported until their launch identity has independent native evidence.
+These trace-contract tests do not enable PIECEWISE serving collection or table
+consumption. Native capture/replay, export, and independent accuracy gates remain.
+
 ### CUDA graph runtime provider
 
 The qualified SGLang GPU import path can load two separate instances of the

@@ -11,7 +11,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.glm53flash_graph_nodes import (
     VLLM_EXECUTION_RANGE,
     VLLM_LOGITS_RANGE,
@@ -84,6 +83,22 @@ def test_external_logits_and_setup_are_distinct_source_owned_measured_units():
     assert result["outside_graph_setup"][0]["activity"] == "gpu_memset"
     assert result["outside_graph_operations"][0]["launch_correlation"] == 3
     assert events == original
+
+
+@pytest.mark.parametrize("boundary", [20, 30])
+def test_zero_duration_launch_at_logits_boundary_cannot_be_reclassified_as_setup(boundary):
+    binding, events = trace()
+    events[4].update(ts=boundary, dur=0)
+    with pytest.raises(ValueError, match="ambiguous ownership"):
+        bind_vllm_execution_activity(binding, events)
+
+
+def test_zero_duration_launch_inside_logits_retains_source_ownership():
+    binding, events = trace()
+    events[4]["dur"] = 0
+    result = bind_vllm_execution_activity(binding, events)
+    assert result["outside_graph_operations"][0]["operation"] == "logits"
+    assert result["approximate_additive_operation_union_us"] == 25
 
 
 @pytest.mark.parametrize(

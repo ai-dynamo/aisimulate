@@ -995,7 +995,8 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `glm53flash_graph_nodes.py`, `glm53flash_graph_hooks.py`,
   `glm53flash_graph_callbacks.py`, `glm53flash_graph_policy.py`,
   `glm53flash_sglang_graph_ops.py`, `glm53flash_vllm_graph_ops.py`,
-  `glm53flash_vllm_piecewise.py` and its piecewise capture tests,
+  `glm53flash_vllm_piecewise.py`, `glm53flash_vllm_piecewise_activity.py`
+  and their piecewise capture/activity tests,
   and their graph-node/hook/execution CPU tests,
   `collect_glm53flash.py`, `{vllm,sglang}/collect_glm53flash.py`,
   `cases/base_ops/glm53flash_module.yaml`,
