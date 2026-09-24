@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+
 from collector.fpm_forward.hybrid_artifact import PROTOCOL, validate_real_hybrid_repetitions
 from collector.fpm_forward.native_artifact import _expected_scheduled
 
@@ -72,7 +73,12 @@ def fixture(tmp_path, phase):
     payload = {
         "kvwarm": {"state_protocol": PROTOCOL},
         "timing_boundary": "vllm_native_scheduler_output_interval",
-        "producer": {"warmup_repeats": 5, "measurement_repeats": 10, "context_policy_version": 1},
+        "producer": {
+            "warmup_repeats": 5,
+            "measurement_repeats": 10,
+            "context_policy_version": 1,
+            "vllm_package_version": "0.30.0",
+        },
         "limits": {"max_model_len": 131079},
         "context_policy": {
             "measured_context_limit": 131072,

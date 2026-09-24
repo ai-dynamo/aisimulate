@@ -320,6 +320,7 @@ impl FpmForwardOp {
     fn validate_glm53flash_native_start(
         &self,
         backend: &str,
+        version: &str,
         coords: &[f64],
     ) -> Result<(), AicError> {
         if backend != "vllm"
@@ -349,7 +350,11 @@ impl FpmForwardOp {
         }
         let query = coords[1] / coords[0];
         let prefix = coords[2] / coords[0];
-        if prefix % 4.0 != 0.0 && query >= 2.0 {
+        // Kept empty until a native Engine qualification receipt is accepted.
+        // Never infer repair support from a version prefix or a local suffix.
+        const ADMITTED_GLM53FLASH_VLLM_REPAIRS: &[&str] = &[];
+        let repaired = ADMITTED_GLM53FLASH_VLLM_REPAIRS.contains(&version);
+        if !repaired && prefix % 4.0 != 0.0 && query >= 2.0 {
             return Err(data_err("GLM-5.3-Flash stock vLLM IndexPool cached-prefill start is unqualified; separately qualified runtime repair required".into()));
         }
         Ok(())
@@ -361,7 +366,7 @@ impl FpmForwardOp {
         cell: &FpmForwardCell,
         coords: &[f64],
     ) -> Result<PerformanceResult, AicError> {
-        self.validate_glm53flash_native_start(&db.backend, coords)?;
+        self.validate_glm53flash_native_start(&db.backend, &db.version, coords)?;
         // Data-certified prefill batch clamp (mirrors Python _resolve): the
         // regime coordinate is the token TOTAL, which stays untouched — the
         // clamped query prices the same side of the capture cliff and is a
@@ -781,23 +786,38 @@ mod tests {
             // The native restriction does not apply to SGLang's separate path.
             assert!(
                 prefill
-                    .validate_glm53flash_native_start("sglang", &[1.0, 3.0, 4097.0])
+                    .validate_glm53flash_native_start("sglang", "0.5.20", &[1.0, 3.0, 4097.0])
                     .is_ok()
             );
         }
         let legacy = op(FpmPhase::Prefill);
         assert!(
             legacy
-                .validate_glm53flash_native_start("vllm", &[1.0, 3.0, 4097.0])
+                .validate_glm53flash_native_start("vllm", "0.30.0", &[1.0, 3.0, 4097.0])
                 .is_ok()
         );
         let mut decode = op(FpmPhase::Decode);
         decode.model_path = "zai-org/GLM-5.3-Flash".into();
         assert!(
             decode
-                .validate_glm53flash_native_start("vllm", &[1.0, 4097.0])
+                .validate_glm53flash_native_start("vllm", "0.30.0", &[1.0, 4097.0])
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn unqualified_glm_repair_suffix_does_not_bypass_native_pool_start() {
+        let mut prefill = op(FpmPhase::Prefill);
+        prefill.model_path = "zai-org/GLM-5.3-Flash".into();
+        for version in ["0.30.0", "0.30.0+unknown", "0.30.0+glm53kpool.bf5f6b0e689d"] {
+            assert!(
+                prefill
+                    .validate_glm53flash_native_start("vllm", version, &[1.0, 3.0, 4097.0])
+                    .unwrap_err()
+                    .to_string()
+                    .contains("cached-prefill start is unqualified")
+            );
+        }
     }
 
     #[test]

@@ -25,7 +25,7 @@ LEGACY_CONTEXT_OVERLAYS = {"e391db177f53430c4280807fcc0eafdace5310cda6f6549ef7f2
 def validate_vllm_hardware_receipts(cell, payload: dict, path: Path) -> None:
     """Formal GB300 rows require the actual native device on every TP worker."""
     from collector.glm53flash_protocol import validate_gb300_identity
-    from collector.glm53flash_runtime_identity import validate_vllm_source_identity
+    from collector.glm53flash_runtime_identity import validate_vllm_runtime_closure, validate_vllm_source_identity
 
     version = payload.get("producer", {}).get("hardware_contract_version")
     if type(version) is not int or version != 1:
@@ -66,6 +66,11 @@ def validate_vllm_hardware_receipts(cell, payload: dict, path: Path) -> None:
             or receipt.get("worker_source_sha256") != pins["vllm/v1/worker/gpu_worker.py"]
         ):
             raise ValueError("GLM vLLM native hardware identity differs from its runtime and rank")
+        validate_vllm_runtime_closure(
+            receipt["backend_version"],
+            Path(__file__).parent / "runtime/glm53flash/runtime-source-sha256.json",
+            receipt.get("runtime_closure"),
+        )
         hardware = receipt.get("hardware")
         validate_gb300_identity(hardware)
         if hardware.get("uuid") is not None:
@@ -100,6 +105,8 @@ def validate_vllm_context_policy(payload: dict) -> int:
 
 
 def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
+    from collector.glm53flash_runtime_identity import vllm_unaligned_prefill_admitted
+
     from .native_artifact import _expected_scheduled
 
     if cell.state_protocol != PROTOCOL or payload.get("kvwarm", {}).get("state_protocol") != PROTOCOL:
@@ -156,7 +163,11 @@ def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
         if context_tokens > batch * context_limit:
             raise ValueError("GLM vLLM requested point exceeds its measured context bound")
         seed = point["total_kv_read_tokens"] - (batch if decode else 0)
-        if cell.backend == "vllm" and not decode:
+        if (
+            cell.backend == "vllm"
+            and not decode
+            and not vllm_unaligned_prefill_admitted(producer.get("vllm_package_version"))
+        ):
             if point.get("rows") is not None:
                 rows = point["rows"]
             elif point.get("partition") is not None:

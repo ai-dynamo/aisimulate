@@ -15,6 +15,7 @@ pytestmark = pytest.mark.unit
 def test_repeated_real_hybrid_request_lifecycle():
     root = Path(__file__).resolve().parents[3]
     environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(filter(None, [str(root), environment.get("PYTHONPATH")]))
     environment["AIC_FPM_DSV41_PRODUCER"] = str(root / "collector/fpm_forward/runtime/dsv41/dsv41_scheduler.py")
     environment["AIC_FPM_GLM53FLASH_PRODUCER"] = str(
         root / "collector/fpm_forward/runtime/glm53flash/glm53flash_scheduler.py"
