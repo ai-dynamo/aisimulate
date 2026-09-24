@@ -305,6 +305,14 @@ def _verify_fpm_workflow() -> str:
             importlib.import_module("collector.fpm_forward.glm53flash_validation"),
             "collector/fpm_forward/glm53flash_validation.py",
         ),
+        (
+            importlib.import_module("collector.fpm_forward.glm53flash_publication"),
+            "collector/fpm_forward/glm53flash_publication.py",
+        ),
+        (
+            importlib.import_module("collector.fpm_forward.runtime.glm53flash.glm53flash_worker_hardware"),
+            "collector/fpm_forward/runtime/glm53flash/glm53flash_worker_hardware.py",
+        ),
         (importlib.import_module("collector.glm53flash_sglang_runtime"), "collector/glm53flash_sglang_runtime.py"),
         (importlib.import_module("collector.fpm_forward.sglang_driver"), "collector/fpm_forward/sglang_driver.py"),
     ):
