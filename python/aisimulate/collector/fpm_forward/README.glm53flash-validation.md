@@ -85,6 +85,15 @@ required to be disjoint globally between calibration and holdout, including
 across configurations. Geometry is phase/batch/total query/total cached tokens.
 Raw file digests and native runtime identities are retained in the report.
 
+For SGLang FPM, every rank, shard and calibration/holdout pair must also have
+the same actual resolved `ServerArgs`, excluding only `random_seed`. Memory
+fraction, graph buckets, scheduling settings and all other fields remain in
+this comparison. A mismatch blocks prediction while retaining requested points
+and available measurements. The report records the normalization name and
+normalized SHA256 alongside the original configuration-file receipts; complete
+settings stay internal so credential fields are not copied into reports.
+Ops continues to use its separate native execution contract.
+
 ## Gates and reports
 
 FPM requires per-configuration, per-phase MAPE at most 10%. Explicit `mode="ops"`

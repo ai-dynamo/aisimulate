@@ -35,6 +35,7 @@ REQUIRED = tuple(
     for tp in (2, 4)
     for phase in PHASES
 )
+SGLANG_POLICY_NORMALIZATION = "resolved_server_args_except_random_seed_v1"
 
 
 def canonical(value) -> str:
@@ -43,6 +44,40 @@ def canonical(value) -> str:
 
 def digest(value) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def _sglang_execution_policy(config: dict) -> dict:
+    """Compare actual serving settings except the native per-process random_seed.
+
+    Keep the complete normalized values private: ServerArgs may contain API
+    credentials. Public evidence carries the normalization name and digest,
+    alongside the original SHA-bound resolved-config receipt.
+    """
+    if not isinstance(config, dict) or not config:
+        raise ValueError("SGLang resolved execution policy is missing")
+    normalized = {key: value for key, value in config.items() if key != "random_seed"}
+    if not normalized:
+        raise ValueError("SGLang resolved execution policy is empty")
+    return {
+        "execution_policy": {
+            "normalization": SGLANG_POLICY_NORMALIZATION,
+            "sha256": digest(normalized),
+        },
+        "_execution_policy": normalized,
+    }
+
+
+def _require_sglang_policy(native: dict) -> str:
+    policy = native.get("_execution_policy")
+    normalized = _sglang_execution_policy(policy)
+    if "random_seed" in policy or native.get("execution_policy") != normalized["execution_policy"]:
+        raise ValueError("SGLang execution policy identity differs from its actual resolved settings")
+    return canonical(policy)
+
+
+def _same_sglang_policy(left: dict, right: dict, boundary: str) -> None:
+    if _require_sglang_policy(left) != _require_sglang_policy(right):
+        raise ValueError(f"SGLang resolved execution policies differ across {boundary}")
 
 
 def _sha(value) -> str:
@@ -192,6 +227,7 @@ def _native_run(run: dict, base: Path) -> dict:
         raise ValueError("native tokenizer revision differs from checkpoint pin")
     request_ids = set()
     receipts = []
+    execution_policy = None
     for path in sorted(root.rglob("*")):
         if path.is_file():
             receipts.append({"path": str(path.relative_to(root)), "sha256": file_sha256(path)})
@@ -207,12 +243,19 @@ def _native_run(run: dict, base: Path) -> dict:
         if manifest:
             from .sglang_artifact import read_receipt
 
+            if run["key"][0] == "sglang":
+                policy = _sglang_execution_policy(json.loads(read_receipt(path.parent, manifest["resolved_config"])))
+                if execution_policy is not None:
+                    _same_sglang_policy(execution_policy, policy, "native rank receipts")
+                execution_policy = policy
             requests = json.loads(read_receipt(path.parent, manifest["requests"]))
             if requests.get("dataset_role") != run["role"]:
                 raise ValueError("native SGLang request role differs from plan")
             request_ids.update(requests["requests"])
     if not request_ids:
         raise ValueError("native request identities are missing")
+    if run["key"][0] == "sglang" and execution_policy is None:
+        raise ValueError("SGLang resolved execution policy receipts are missing")
     return {
         "values": {bid: max(value for _, value in point.rank_wall_times) * 1000 for bid, point in observed.items()},
         "request_ids": request_ids,
@@ -221,6 +264,7 @@ def _native_run(run: dict, base: Path) -> dict:
         "runtime_grid_digest": native.runtime_grid_digest,
         "input_provenance": native.input_provenance,
         "backend_version": native.backend_version,
+        **(execution_policy or {}),
     }
 
 
@@ -286,8 +330,14 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
     if "children" in run:
         values, request_ids, children, receipts = {}, set(), {}, []
         boundaries, versions = set(), set()
+        execution_policy = None
         for child in run["children"]:
             native = _load_native(child, base, mode)
+            if mode == "fpm" and run["key"][0] == "sglang":
+                _require_sglang_policy(native)
+                if execution_policy is not None:
+                    _same_sglang_policy(execution_policy, native, "native shards")
+                execution_policy = {key: native[key] for key in ("execution_policy", "_execution_policy")}
             cid = child["cell"]["cell_id"]
             if request_ids & native["request_ids"]:
                 raise ValueError("native requests were reused across independent shard attempts")
@@ -302,7 +352,11 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
                     "child_cell_id": cid,
                     "source_plan_sha256": child["plan"]["sha256"],
                     "original_point_ids": child["original_point_ids"],
-                    **{key: value for key, value in native.items() if key not in {"values", "request_ids"}},
+                    **{
+                        key: value
+                        for key, value in native.items()
+                        if key not in {"values", "request_ids"} and not key.startswith("_")
+                    },
                 }
             )
             boundaries.add(native.get("timing_boundary", TIMING_BOUNDARIES[run["key"][0]]))
@@ -323,6 +377,7 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
             "timing_boundary": boundaries.pop(),
             "backend_version": version,
             "_children": children,
+            **(execution_policy or {}),
         }
     if mode == "fpm":
         return _native_run(run, base)
@@ -664,6 +719,10 @@ def evaluate(manifest: dict, base: Path) -> dict:
                     from collector.glm53flash_runtime_identity import validate_runtime_pair
 
                     validate_runtime_pair(key[0], record["calibration_native"], record["holdout_native"])
+                    if mode == "fpm" and key[0] == "sglang":
+                        _same_sglang_policy(
+                            record["calibration_native"], record["holdout_native"], "calibration/holdout"
+                        )
                     prediction = _predict(
                         record["holdout"],
                         record["entry"],
