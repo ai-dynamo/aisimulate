@@ -782,6 +782,79 @@ def test_cli_runtime_graph_policy_and_memory_fraction_reach_native_launch(
             assert "--no-async-scheduling" not in script
 
 
+@pytest.mark.parametrize("policy,enforce_eager", [("explicit", False), ("runtime", False), ("explicit", True)])
+def test_smoke_preserves_runtime_launch_and_bounds_sampling(tmp_path, no_models_or_timing_data, policy, enforce_eager):
+    profile = _profile()
+    if enforce_eager:
+        # Eager collection is currently qualified only for V4.1.
+        profile.update(model="deepseek-ai/DeepSeek-V4.1-Flash", architecture="DeepseekV41ForCausalLM")
+        for deployment in profile["deployments"]:
+            deployment.update(gemm_quant_mode="fp8_block", moe_quant_mode="w4a8_mxfp4_mxfp8")
+    argv = [
+        *_argv(profile),
+        "--fpm-max-num-batched-tokens",
+        "4096",
+        "--fpm-max-num-seqs",
+        "64",
+        "--fpm-prefill-cudagraph-policy",
+        policy,
+    ]
+    if policy == "explicit":
+        argv.extend(["--fpm-max-prefill-cudagraph-size", "512"])
+    if enforce_eager:
+        argv.append("--fpm-enforce-eager")
+    options = FPMCollectionOptions.from_args(cli._parser().parse_args(argv))
+    plan = _plan(profile, options=options)
+    for phase in ("prefill", "decode"):
+        cell = next(cell for cell in plan.cells if cell.workload_kind == phase)
+        capture_configs = {}
+        for smoke in (False, True):
+            target = tmp_path / f"{phase}-{'smoke' if smoke else 'full'}"
+            target.mkdir()
+            runner._render_cell(plan, cell, target, {}, smoke=smoke)
+            saved = json.loads((target / "generator-request.json").read_text())
+            arguments = saved["params"]["agg"]["extra_cli_args"]
+            script = (target / "run.sh").read_text()
+            assert arguments.count("--enforce-eager") == int(enforce_eager)
+            assert ("--enforce-eager" in script) == enforce_eager
+            for option, value in (
+                ("--benchmark-mode", phase),
+                ("--max-model-len", "8192"),
+                ("--max-num-batched-tokens", "4096"),
+                ("--max-num-seqs", "64"),
+            ):
+                assert arguments.count(option) == 1
+                assert arguments[arguments.index(option) + 1] == value
+                assert script.count(option) == 1
+                assert f"{option} {value}" in script
+            if phase == "prefill" and policy == "explicit" and not enforce_eager:
+                assert arguments.count("--compilation-config") == 1
+                compilation = arguments[arguments.index("--compilation-config") + 1]
+                assert f"--compilation-config '{compilation}'" in script
+                capture_configs[smoke] = json.loads(compilation)
+                assert capture_configs[smoke]["max_cudagraph_capture_size"] == 512
+                assert capture_configs[smoke]["cudagraph_capture_sizes"][-1] == 512
+            else:
+                assert "--compilation-config" not in arguments
+                assert "--compilation-config" not in script
+            if smoke:
+                samples = (
+                    {
+                        "--prefill-max-new-token-samples": "2",
+                        "--prefill-max-kv-read-token-samples": "2",
+                        "--prefix-max-batch-size-samples": "1",
+                    }
+                    if phase == "prefill"
+                    else {"--decode-max-kv-read-token-samples": "2", "--decode-max-batch-size-samples": "2"}
+                )
+                for option, value in samples.items():
+                    assert arguments.count(option) == 1
+                    assert arguments[arguments.index(option) + 1] == value
+                    assert f"{option} {value}" in script
+        if capture_configs:
+            assert capture_configs[True] == capture_configs[False]
+
+
 @pytest.mark.parametrize("smoke", [False, True])
 def test_omitted_prefill_defaults_stay_within_selected_profile_bounds(no_models_or_timing_data, smoke):
     profile = _profile()

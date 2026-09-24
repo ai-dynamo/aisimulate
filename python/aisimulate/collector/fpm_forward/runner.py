@@ -1243,16 +1243,16 @@ def _cell_generator_overrides(
             max_num_tokens = profile.max_total_prefill_tokens
         if profile.max_batch_size is not None:
             max_num_seqs = profile.max_batch_size
-    if cell.workload_kind == "prefill" and not smoke:
-        if profile.cudagraph_capture_sizes is not None:
+        if profile.cudagraph_capture_sizes is not None and not enforce_eager:
             compilation_config = {
                 "cudagraph_capture_sizes": list(profile.cudagraph_capture_sizes),
                 "max_cudagraph_capture_size": profile.max_cudagraph_capture_size,
             }
-            if not enforce_eager:
-                scheduler_args.extend(
-                    ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
-                )
+            scheduler_args.extend(
+                ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
+            )
+    if cell.workload_kind == "prefill" and not smoke:
+        if profile.cudagraph_capture_sizes is not None:
             scheduler_args.extend(["--prefill-max-new-token-samples", str(profile.max_new_token_samples)])
         # This cap depends only on scheduler bounds, not the runtime's graph
         # choices. The new-token axis remains Dynamo-owned in runtime mode.
