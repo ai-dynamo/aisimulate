@@ -83,6 +83,7 @@ def select_comparison(
     pr_number: str = "",
     *,
     api=github_api,
+    path_matcher=None,
 ) -> dict:
     if event == "push":
         match = re.fullmatch(r"refs/heads/pull-request/([1-9][0-9]*)", ref)
@@ -113,7 +114,9 @@ def select_comparison(
             reason = "PR file list is empty or incomplete; run conservatively."
         else:
             run = any(
-                matches_path(path) for item in files for path in (item["filename"], item.get("previous_filename", ""))
+                (path_matcher or matches_path)(path)
+                for item in files
+                for path in (item["filename"], item.get("previous_filename", ""))
             )
             reason = "PR changes affect forward prediction." if run else "No PR files affect forward prediction."
 
@@ -128,9 +131,9 @@ def select_comparison(
     }
 
 
-def main() -> int:
+def main(*, selector=None, title="Forward Prediction Performance") -> int:
     try:
-        selection = select_comparison(
+        selection = (selector or select_comparison)(
             os.environ["GITHUB_REPOSITORY"],
             os.environ["GITHUB_EVENT_NAME"],
             os.environ["GITHUB_REF"],
@@ -145,7 +148,7 @@ def main() -> int:
         OSError,
         subprocess.SubprocessError,
     ) as error:
-        print(f"Cannot select forward performance CI: {error}", file=sys.stderr)
+        print(f"Cannot select {title.lower()} CI: {error}", file=sys.stderr)
         return 1
     with Path(os.environ["GITHUB_OUTPUT"]).open("a") as output:
         for key, value in selection.items():
@@ -153,7 +156,7 @@ def main() -> int:
     decision = "RUN" if selection["run_comparison"] == "true" else "SKIPPED"
     with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as summary:
         summary.write(
-            "## Forward Prediction Performance selection\n\n"
+            f"## {title} selection\n\n"
             f"**{decision}** — {selection['reason']}\n\n"
             f"PR #{selection['number']}, head `{selection['head_sha']}`.\n"
         )

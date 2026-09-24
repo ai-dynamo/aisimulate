@@ -1,0 +1,338 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Simulation Performance (advisory)
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Pull request number to compare
+        required: true
+        type: number
+      self_compare:
+        description: Qualify this head with three same-revision comparisons
+        required: false
+        default: false
+        type: boolean
+  push:
+    # Start even when copy-pr-bot creates a ref with an empty push commit list.
+    # Select relevant PR files in the hosted job before allocating a benchmark runner.
+    branches:
+      - "pull-request/*"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: simulation-performance-${{ github.event_name == 'workflow_dispatch' && format('pull-request/{0}', inputs.pr_number) || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  select:
+    name: Select Simulation Performance
+    # Enable only after qualification on this runner; manual runs remain available.
+    if: github.event_name == 'workflow_dispatch' || vars.SIMULATION_PERF_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      number: ${{ steps.scope.outputs.number }}
+      head_sha: ${{ steps.scope.outputs.head_sha }}
+      base_ref: ${{ steps.scope.outputs.base_ref }}
+      run_comparison: ${{ steps.scope.outputs.run_comparison }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: Select from the complete PR change set
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: python scripts/select_simulation_perf.py
+
+  compare:
+    needs: select
+    if: needs.select.outputs.run_comparison == 'true'
+    name: Simulation Performance (advisory)
+    runs-on: prod-aisimulate-default-amd64-v1
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ${{ vars.CI_JOB_CONTAINER_IMAGE }}
+      env:
+        HOME: /__w/aisimulate/aisimulate
+        USER: runner
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.select.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+
+      - name: Configure Python linker path
+        run: echo "LIBRARY_PATH=${pythonLocation}/lib" >> "${GITHUB_ENV}"
+
+      - name: Install native build toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends build-essential util-linux
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Install wheel builder
+        run: python -m pip install 'maturin>=1.12,<2' 'uv==0.11.3'
+
+      - name: Prepare exact revisions
+        id: revisions
+        env:
+          PR_HEAD_SHA: ${{ needs.select.outputs.head_sha }}
+          BASE_REF: ${{ needs.select.outputs.base_ref }}
+          SELF_COMPARE: ${{ inputs.self_compare }}
+        run: |
+          set -euo pipefail
+          actual_head="$(git rev-parse HEAD)"
+          if [[ "${actual_head}" != "${PR_HEAD_SHA}" ]]; then
+            echo "checked out ${actual_head}, expected PR head ${PR_HEAD_SHA}" >&2
+            exit 1
+          fi
+          base_tip="$(git rev-parse "refs/remotes/origin/${BASE_REF}")"
+          base_sha="$(git merge-base "${PR_HEAD_SHA}" "${base_tip}")"
+
+          if [[ "${SELF_COMPARE}" == "true" ]]; then
+            base_sha="${PR_HEAD_SHA}"
+          fi
+
+          gate_path="python/aisimulate/tools/simulation_perf_gate"
+          skip_reason=""
+          invalid_reason=""
+          for revision_label in base head; do
+            if [[ "${revision_label}" == "base" ]]; then
+              revision="${base_sha}"
+            else
+              revision="${PR_HEAD_SHA}"
+            fi
+            for gate_file in __init__.py run.py worker.py; do
+              if ! git cat-file -e "${revision}:${gate_path}/${gate_file}" 2>/dev/null; then
+                if [[ "${revision_label}" == "base" ]]; then
+                  skip_reason="base revision \`${revision}\` does not contain the complete simulation-performance gate"
+                else
+                  invalid_reason="head revision \`${revision}\` is missing ${gate_file}"
+                fi
+                break 2
+              fi
+            done
+          done
+
+          if [[ -z "${skip_reason}" && -z "${invalid_reason}" ]]; then
+            base_protocol="$(
+              git show "${base_sha}:${gate_path}/__init__.py" 2>/dev/null |
+                sed -nE 's/^PROTOCOL_VERSION[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p'
+            )"
+            head_protocol="$(
+              git show "${PR_HEAD_SHA}:${gate_path}/__init__.py" 2>/dev/null |
+                sed -nE 's/^PROTOCOL_VERSION[[:space:]]*=[[:space:]]*([0-9]+)[[:space:]]*$/\1/p'
+            )"
+            if [[ ! "${base_protocol}" =~ ^[0-9]+$ ]]; then
+              invalid_reason="could not read PROTOCOL_VERSION from base revision \`${base_sha}\`"
+            elif [[ ! "${head_protocol}" =~ ^[0-9]+$ ]]; then
+              invalid_reason="could not read PROTOCOL_VERSION from head revision \`${PR_HEAD_SHA}\`"
+            elif [[ "${base_protocol}" != "${head_protocol}" ]]; then
+              invalid_reason="protocol versions differ: base is ${base_protocol}, head is ${head_protocol}"
+            fi
+          fi
+
+          if [[ -n "${invalid_reason}" ]]; then
+            echo "run_comparison=false" >> "${GITHUB_OUTPUT}"
+            {
+              echo "## Simulation Performance (advisory)"
+              echo
+              echo "**INVALID_COMPARISON** — ${invalid_reason}."
+              echo
+              echo "Base \`${base_sha}\`; head \`${PR_HEAD_SHA}\`. No benchmark was run."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "::error::Incompatible simulation benchmark protocol; see the summary."
+            exit 1
+          fi
+
+          if [[ -n "${skip_reason}" ]]; then
+            echo "run_comparison=false" >> "${GITHUB_OUTPUT}"
+            {
+              echo "## Simulation Performance (advisory)"
+              echo
+              echo "**SKIPPED** — ${skip_reason}."
+              echo
+              echo "Head \`${PR_HEAD_SHA}\` was not benchmarked."
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
+
+          controller_changes="$(git diff --name-only "${base_sha}" "${PR_HEAD_SHA}" -- \
+            ":(glob)${gate_path}/**/*.py" \
+            "${gate_path}/fixtures/agentx.jsonl")"
+          if [[ -n "${controller_changes}" ]]; then
+            echo "validate_head_controller=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "validate_head_controller=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+          git worktree prune
+
+          run_root="${RUNNER_TEMP}/simulation-perf-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          base_src="${run_root}/base-src"
+          head_src="${run_root}/head-src"
+          mkdir -p "${run_root}"
+
+          {
+            echo "BASE_SHA=${base_sha}"
+            echo "HEAD_SHA=${PR_HEAD_SHA}"
+            echo "BASE_SRC=${base_src}"
+            echo "HEAD_SRC=${head_src}"
+            echo "BASE_DIST=${run_root}/base-dist"
+            echo "HEAD_DIST=${run_root}/head-dist"
+            echo "BASE_VENV=${run_root}/base-venv"
+            echo "HEAD_VENV=${run_root}/head-venv"
+            echo "RESULTS_DIR=${run_root}/results"
+          } >> "${GITHUB_ENV}"
+
+          git worktree add --detach "${base_src}" "${base_sha}"
+          git worktree add --detach "${head_src}" "${PR_HEAD_SHA}"
+          echo "run_comparison=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and install both revisions
+        id: build
+        if: steps.revisions.outputs.run_comparison == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "${BASE_DIST}" "${HEAD_DIST}"
+          (
+            cd "${BASE_SRC}/python/aisimulate"
+            CARGO_TARGET_DIR="${RUNNER_TEMP}/simulation-perf-base-target" \
+              python -m maturin build --release --locked --out "${BASE_DIST}"
+          )
+          (
+            cd "${HEAD_SRC}/python/aisimulate"
+            CARGO_TARGET_DIR="${RUNNER_TEMP}/simulation-perf-head-target" \
+              python -m maturin build --release --locked --out "${HEAD_DIST}"
+          )
+          python -m venv "${BASE_VENV}"
+          python -m venv "${HEAD_VENV}"
+          uv export --project "${BASE_SRC}/python/aisimulate" --frozen --no-dev --no-emit-project \
+            --format requirements-txt --output-file "${BASE_DIST}/requirements.txt"
+          uv export --project "${HEAD_SRC}/python/aisimulate" --frozen --no-dev --no-emit-project \
+            --format requirements-txt --output-file "${HEAD_DIST}/requirements.txt"
+          "${BASE_VENV}/bin/python" -m pip install -r "${BASE_DIST}/requirements.txt"
+          "${BASE_VENV}/bin/python" -m pip install --no-deps "${BASE_DIST}"/aisimulate-*.whl
+          "${HEAD_VENV}/bin/python" -m pip install -r "${HEAD_DIST}/requirements.txt"
+          "${HEAD_VENV}/bin/python" -m pip install --no-deps "${HEAD_DIST}"/aisimulate-*.whl
+          mkdir -p "${RESULTS_DIR}/provenance"
+          cp "${BASE_DIST}/requirements.txt" "${RESULTS_DIR}/provenance/base-requirements.txt"
+          cp "${HEAD_DIST}/requirements.txt" "${RESULTS_DIR}/provenance/head-requirements.txt"
+          sha256sum "${BASE_DIST}"/*.whl "${HEAD_DIST}"/*.whl > "${RESULTS_DIR}/provenance/wheels.sha256"
+          git rev-parse "${BASE_SHA}:python/aisimulate/src/aisimulate_core" \
+            "${HEAD_SHA}:python/aisimulate/src/aisimulate_core" > "${RESULTS_DIR}/provenance/model-data-trees.txt"
+          rustc --version > "${RESULTS_DIR}/provenance/rustc.txt"
+          "${BASE_VENV}/bin/python" -m pip freeze > "${RESULTS_DIR}/provenance/base-packages.txt"
+          "${HEAD_VENV}/bin/python" -m pip freeze > "${RESULTS_DIR}/provenance/head-packages.txt"
+
+      - name: Run paired benchmark
+        if: steps.revisions.outputs.run_comparison == 'true'
+        env:
+          SELF_COMPARE: ${{ inputs.self_compare }}
+        run: |
+          set -euo pipefail
+          repetitions=1
+          qualification_args=()
+          if [[ "${SELF_COMPARE}" == "true" ]]; then
+            repetitions=3
+            qualification_args=(--qualification)
+          fi
+          status=0
+          for attempt in $(seq 1 "${repetitions}"); do
+            destination="${RESULTS_DIR}"
+            if [[ "${SELF_COMPARE}" == "true" ]]; then
+              destination="${RESULTS_DIR}/qualification-${attempt}"
+            fi
+            "${BASE_VENV}/bin/python" \
+              "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" \
+              --base-python "${BASE_VENV}/bin/python" \
+              --base-worker "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+              --base-revision "${BASE_SHA}" \
+              --head-python "${HEAD_VENV}/bin/python" \
+              --head-worker "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+              --head-revision "${HEAD_SHA}" \
+              --output-dir "${destination}" "${qualification_args[@]}" || status=1
+          done
+          exit "${status}"
+
+      - name: Validate PR benchmark controller
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.revisions.outputs.validate_head_controller == 'true' }}
+        run: |
+          set -euo pipefail
+          "${HEAD_VENV}/bin/python" \
+            "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/run.py" \
+            --base-python "${BASE_VENV}/bin/python" \
+            --base-worker "${BASE_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+            --base-revision "${BASE_SHA}" \
+            --head-python "${HEAD_VENV}/bin/python" \
+            --head-worker "${HEAD_SRC}/python/aisimulate/tools/simulation_perf_gate/worker.py" \
+            --head-revision "${HEAD_SHA}" \
+            --output-dir "${RESULTS_DIR}/head-controller"
+
+      - name: Publish summary and annotations
+        if: always() && steps.revisions.outputs.run_comparison == 'true'
+        run: |
+          for result in "${RESULTS_DIR}" "${RESULTS_DIR}"/qualification-*; do
+            if [[ -f "${result}/summary.md" ]]; then
+              cat "${result}/summary.md" >> "${GITHUB_STEP_SUMMARY}"
+            fi
+            if [[ -s "${result}/annotations.txt" ]]; then
+              echo "::error::Simulation performance needs review; see the summary and artifact."
+            fi
+          done
+
+      - name: Publish PR controller validation
+        if: always() && steps.revisions.outputs.validate_head_controller == 'true'
+        run: |
+          if [[ -f "${RESULTS_DIR}/head-controller/summary.md" ]]; then
+            {
+              echo "## PR controller validation"
+              echo
+              cat "${RESULTS_DIR}/head-controller/summary.md"
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          if [[ -s "${RESULTS_DIR}/head-controller/annotations.txt" ]]; then
+            blocker_count="$(grep -c . "${RESULTS_DIR}/head-controller/annotations.txt")"
+            echo "::error::PR controller validation found ${blocker_count} blocker(s); see the job summary and artifact for details."
+          fi
+
+      - name: Upload benchmark artifacts
+        if: always() && steps.revisions.outputs.run_comparison == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: simulation-performance-pr-${{ needs.select.outputs.number }}
+          path: ${{ env.RESULTS_DIR }}
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Remove benchmark worktrees
+        if: always()
+        run: |
+          if [[ -n "${BASE_SRC:-}" ]]; then
+            git worktree remove --force "${BASE_SRC}" || true
+          fi
+          if [[ -n "${HEAD_SRC:-}" ]]; then
+            git worktree remove --force "${HEAD_SRC}" || true
+          fi
+          git worktree prune || true

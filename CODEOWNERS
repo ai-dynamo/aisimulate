@@ -204,6 +204,7 @@
 /python/aisimulate/src/aisimulate/capacity.py            @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/cli_args.py            @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/resources.py           @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
+/python/aisimulate/tools/simulation_perf_gate/           @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-forward-pass-engine-codeowners @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/supervision.py         @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/.github/workflows/codeowners.yml      @ai-dynamo/aisimulate-infra-codeowners @ai-dynamo/access-aisimulate-maintain
 /python/aisimulate/src/aisimulate/resource_worker.py     @ai-dynamo/aisimulate-replay-codeowners @ai-dynamo/aisimulate-sweeper-codeowners @ai-dynamo/access-aisimulate-maintain

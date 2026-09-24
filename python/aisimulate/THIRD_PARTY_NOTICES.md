@@ -987,3 +987,21 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 - Modified: development-only two-predictor evaluation, public overview export,
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility. No Plotly assets included.
+
+
+## SemiAnalysis AgentX simulation-performance fixture
+
+`python/aisimulate/tools/simulation_perf_gate/fixtures/agentx.jsonl` is derived
+from `traces.jsonl` in the SemiAnalysis dataset
+https://huggingface.co/datasets/semianalysisai/cc-traces-weka-062126-256k/tree/8fecd2fc56694469f758f0afbbb6335ad3043740
+at revision `8fecd2fc56694469f758f0afbbb6335ad3043740`.
+The original dataset card is preserved as `fixtures/DATASET_CARD.md`.
+
+Upstream authors: SemiAnalysis. The upstream card supplies no separate
+copyright or NOTICE statement. License: Apache License 2.0, declared in the
+pinned dataset card and reproduced in `fixtures/LICENSE`.
+
+Modified by NVIDIA: selected the complete play
+`002001296e8a8c38ad9d7cc436d691afc602` and normalized JSON whitespace, without
+changing request values, dependencies, hashes, or timestamps. See the adjacent
+fixture README for the source, counts, and content checksum.

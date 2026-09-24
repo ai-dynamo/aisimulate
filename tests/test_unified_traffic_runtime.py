@@ -1121,3 +1121,67 @@ def test_native_dynamo_agentic_snapshot_retains_recorded_intervals_and_executes_
         first = min(report["per_request"], key=lambda record: record["first_admit_ms"])
         assert first["admission_history"][0]["reused_input_tokens"] == 0
         assert first["dispatched_at_ms"] == pytest.approx((starts[first["request_id"]] - cut) / speedup)
+
+
+@pytest.mark.parametrize(
+    "backend,mode,traffic_kind",
+    [
+        ("vllm", "aggregated", "synthetic"),
+        ("vllm", "aggregated", "multiworker"),
+        ("sglang", "disaggregated", "synthetic"),
+        ("vllm", "aggregated", "weka"),
+        ("sglang", "disaggregated", "weka"),
+    ],
+)
+def test_engine_runner_canonical_determinism(backend, mode, traffic_kind):
+    engine = {**_engine(mode), "backend": backend}
+    if traffic_kind == "multiworker":
+        engine["workers"]["aggregated"]["parallelism"] = {
+            "replicas": 2,
+            "attention_data": 2,
+        }
+    traffic = {
+        "source": {"type": "synthetic", "input_tokens": 8, "output_tokens": 4},
+        "load": {"type": "concurrency", "concurrency": 3},
+        "stop": {"requests": 8},
+    }
+    if traffic_kind == "weka":
+        traffic = {
+            "source": {
+                "type": "trace",
+                "format": "weka",
+                "paths": [str(_TRACE_FIXTURES / "weka-two-plays.jsonl")],
+            },
+            "load": {"type": "trace_timestamps", "agentic_lanes": 1},
+        }
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": engine, "traffic": traffic}))
+    records = []
+    for _ in range(2):
+        runner = EngineReplayRunnerFactory(determinism="canonical_v1").create(0)
+        try:
+            report = runner.run(
+                spec,
+                output_requirements=ReplayOutputRequirements(include_raw_report=True, capture_per_request=True),
+            ).metadata["native_report"]
+        finally:
+            runner.close()
+        records.append(
+            {
+                key: value
+                for key, value in report.items()
+                if key
+                not in {
+                    "wall_time_ms",
+                    "processed_tokens_per_s",
+                    "processed_output_tokens_per_s",
+                }
+            }
+        )
+    assert records[0] == records[1]
+    assert records[0]["completed_requests"] > 0
+
+
+def test_engine_runner_rejects_unknown_determinism():
+    spec = prediction_to_replay_spec(CorePredictionConfig.model_validate({"engine": _engine()}))
+    with pytest.raises(ValueError, match="unsupported replay determinism"):
+        EngineReplayRunnerFactory(determinism="typo").create(0).run(spec)
