@@ -9,6 +9,19 @@ native forward interval, including native graph load/replay work where the
 DeviceTimer includes it; they do not measure production scheduler throughput.
 Ordinary Engine smoke traces without this protocol cannot be formal data.
 
+For Ops prefill under the production decode policy, the driver accepts
+`--ops-native-prefill` only with a prefill target and `ops`/`ops_holdout`
+observation. It requires disabled prefill capture and FULL decode in both the
+declared and resolved native configuration. Decode graphs are constructed by
+the original runtime; prefill still reaches its native `EagerRunner` through
+`model_executor/model_runner.py:1774–1865` at the pinned revision below.
+The command builder exposes this as `ops_execution_mode="native_eager_prefill"`;
+an optional explicit `sglang_mem_fraction_static` is preserved in native argv.
+The evidence reader requires the same mode, actual NONE forwards, real request
+histories, and the existing embedding-to-logits GPU boundary. A separate control
+uses the calibration requests without operation hooks. This mode adds no graph
+fallback, state reconstruction or qualification by itself.
+
 For each repeat, the controller executes every prefix in real native chunks
 of at most 8192 new tokens, keeping the same request, KV row and KDA state slot.
 It then combines the parked requests into one native `ScheduleBatch` for the

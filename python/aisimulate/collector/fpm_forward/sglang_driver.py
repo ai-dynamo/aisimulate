@@ -164,26 +164,33 @@ def freeze_requests(points: list[dict], *, request_set: str, dataset_role: str, 
     }
 
 
-def validate_eager_args(server, *, resolved: bool) -> None:
+def validate_eager_args(server, *, resolved: bool, native_prefill: bool = False) -> None:
     """Respect native ServerArgs' separate declaration/resolution lifecycle."""
+    expected = {"prefill": "disabled", "decode": "full" if native_prefill else "disabled"}
+    scope = "disable prefill capture and retain FULL decode" if native_prefill else "disable both native graph phases"
     if resolved:
         # Native resolution freezes raw input fields and writes a declaration
         # stash; direct attributes still contain the original CLI values.
         config = server.resolved_dict().get("cuda_graph_config")
         if not isinstance(config, dict) or any(
-            config.get(phase, {}).get("backend") != "disabled" for phase in ("decode", "prefill")
+            config.get(phase, {}).get("backend") != mode for phase, mode in expected.items()
         ):
-            raise ValueError("resolved SGLang Ops execution must disable both native graph phases")
+            raise ValueError(f"resolved SGLang Ops execution must {scope}")
         return
     config = server.cuda_graph_config
     if config is None:
-        if server.cuda_graph_backend_decode != "disabled" or server.cuda_graph_backend_prefill != "disabled":
-            raise ValueError("declared SGLang Ops execution must disable both native graph phases")
+        if any(getattr(server, f"cuda_graph_backend_{phase}") != mode for phase, mode in expected.items()):
+            raise ValueError(f"declared SGLang Ops execution must {scope}")
     elif isinstance(config, dict):
-        if any(config.get(phase, {}).get("backend") != "disabled" for phase in ("decode", "prefill")):
-            raise ValueError("declared SGLang Ops graph config must disable both phases")
-    elif any(getattr(config, phase).backend != "disabled" for phase in ("decode", "prefill")):
-        raise ValueError("declared SGLang Ops graph config must disable both phases")
+        if any(config.get(phase, {}).get("backend") != mode for phase, mode in expected.items()):
+            raise ValueError(f"declared SGLang Ops graph config must {scope}")
+    elif any(getattr(config, phase).backend != mode for phase, mode in expected.items()):
+        raise ValueError(f"declared SGLang Ops graph config must {scope}")
+
+
+def validate_native_prefill_scope(purpose: str, phase: str, enabled: bool) -> None:
+    if enabled and (purpose not in ("ops", "ops_holdout") or phase != "prefill"):
+        raise ValueError("native eager prefill requires an Ops prefill target")
 
 
 def validate_server_args(args, *, measured_context_limit=MAX_MEASURED_CONTEXT) -> None:
@@ -376,13 +383,17 @@ def main(argv=None) -> None:
     parser.add_argument(
         "--observation-purpose", choices=("fpm", "ops", "ops_holdout", "ops_graph", "ops_graph_holdout"), default="fpm"
     )
+    parser.add_argument("--ops-native-prefill", action="store_true")
     args = parser.parse_args(argv)
+    validate_native_prefill_scope(args.observation_purpose, args.benchmark_mode, args.ops_native_prefill)
     server = ServerArgs.from_cli_args(args)
     validate_server_args(server, measured_context_limit=args.benchmark_max_context_length)
     if args.observation_purpose in ("ops", "ops_holdout"):
         if bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")) != (args.observation_purpose == "ops"):
             raise ValueError("SGLang Ops requires an explicit manifest and native eager execution")
-        validate_eager_args(server, resolved=False)
+        if os.environ.get("AISIM_GLM53_GRAPH_OPS_MANIFEST"):
+            raise ValueError("eager operation collection cannot also install graph observers")
+        validate_eager_args(server, resolved=False, native_prefill=args.ops_native_prefill)
     elif args.observation_purpose in ("ops_graph", "ops_graph_holdout"):
         if (
             os.environ.get("AISIM_GLM53_OPS_MANIFEST")
@@ -483,7 +494,7 @@ def main(argv=None) -> None:
     try:
         engine = create_observed_engine(server)
         if args.observation_purpose in ("ops", "ops_holdout"):
-            validate_eager_args(engine.server_args, resolved=True)
+            validate_eager_args(engine.server_args, resolved=True, native_prefill=args.ops_native_prefill)
         elif args.observation_purpose in ("ops_graph", "ops_graph_holdout"):
             config = engine.server_args.resolved_dict()["cuda_graph_config"]
             if config["decode"]["backend"] != "full" or config["prefill"]["backend"] != "disabled":

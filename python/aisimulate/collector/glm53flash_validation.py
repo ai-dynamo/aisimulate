@@ -65,7 +65,14 @@ def _required_files(tp_size: int, backend: str) -> set[str]:
 
 
 def _sglang_execution(
-    root: Path, fmt: str, tp: int, points: list[dict], *, graph: bool = False, requested_fraction=None
+    root: Path,
+    fmt: str,
+    tp: int,
+    points: list[dict],
+    *,
+    graph: bool = False,
+    requested_fraction=None,
+    native_eager_prefill: bool = False,
 ) -> dict:
     """Reuse the shared runtime receipt contract without the FPM timing reader."""
     from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
@@ -95,11 +102,11 @@ def _sglang_execution(
     }
     identity = _validate_runtime_receipts(cell, payload, root, receipts)
     resolved = json.loads((root / "sglang-resolved-config.json").read_bytes())
-    expected = {"prefill": "disabled", "decode": "full" if graph else "disabled"}
+    expected = {"prefill": "disabled", "decode": "full" if graph or native_eager_prefill else "disabled"}
     if any(resolved["cuda_graph_config"][phase]["backend"] != mode for phase, mode in expected.items()):
         raise ValueError(
             "Ops runtime receipts require disabled prefill and FULL decode"
-            if graph
+            if graph or native_eager_prefill
             else "Ops runtime receipts require both native SGLang graph phases disabled"
         )
     if set(identity["execution_identity"]) != set(EXECUTION_COLUMNS):
@@ -294,12 +301,17 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
     root = (base / raw_root).resolve()
     backend, fmt, tp, phase = run["key"]
     mode = run["spec"].get("ops_execution_mode", "eager")
-    if mode not in ("eager", "native_full_graph") or (
-        mode == "native_full_graph" and (backend not in ("sglang", "vllm") or phase != "decode")
+    if (
+        mode not in ("eager", "native_full_graph", "native_eager_prefill")
+        or (mode == "native_full_graph" and (backend not in ("sglang", "vllm") or phase != "decode"))
+        or (mode == "native_eager_prefill" and (backend != "sglang" or phase != "prefill"))
     ):
         raise ValueError("unsupported native Ops execution mode/backend/phase")
     graph = mode == "native_full_graph"
-    if run["role"] not in ("calibration", "holdout") and not (graph and run["role"] == "control"):
+    native_eager_prefill = mode == "native_eager_prefill"
+    if run["role"] not in ("calibration", "holdout") and not (
+        (graph or native_eager_prefill) and run["role"] == "control"
+    ):
         raise ValueError("unsupported native Ops dataset role")
     unprofiled = run["role"] in ("holdout", "control")
     boundary = (
@@ -313,7 +325,15 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
     pins = _runtime_audit(root, backend, version)
     requested_fraction = requested_sglang_memory(run)
     execution = (
-        _sglang_execution(root, fmt, tp, run["points"], graph=graph, requested_fraction=requested_fraction)
+        _sglang_execution(
+            root,
+            fmt,
+            tp,
+            run["points"],
+            graph=graph,
+            requested_fraction=requested_fraction,
+            native_eager_prefill=native_eager_prefill,
+        )
         if backend == "sglang"
         else None
     )

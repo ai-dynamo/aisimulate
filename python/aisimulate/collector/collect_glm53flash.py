@@ -79,7 +79,28 @@ def verify_target_completeness(output: Path, tp_size: int) -> dict:
     return mapping
 
 
-def native_command(backend, checkpoint, revision, tp, phase, output, corpus):
+def native_command(
+    backend,
+    checkpoint,
+    revision,
+    tp,
+    phase,
+    output,
+    corpus,
+    *,
+    ops_execution_mode="eager",
+    sglang_mem_fraction_static=None,
+):
+    from collector.fpm_forward.config import validate_sglang_mem_fraction_static
+
+    native_prefill = ops_execution_mode == "native_eager_prefill"
+    if ops_execution_mode not in ("eager", "native_eager_prefill") or (
+        native_prefill and (backend != "sglang" or phase != "prefill")
+    ):
+        raise ValueError("unsupported native operation command mode/backend/phase")
+    validate_sglang_mem_fraction_static(sglang_mem_fraction_static)
+    if backend != "sglang" and sglang_mem_fraction_static is not None:
+        raise ValueError("SGLang memory policy requires the SGLang backend")
     common = ["--benchmark-mode", phase, "--benchmark-points-file", str(output / "points.json")]
     if backend == "sglang":
         return [
@@ -104,7 +125,7 @@ def native_command(backend, checkpoint, revision, tp, phase, output, corpus):
             "fp8_e4m3",
             "--disable-radix-cache",
             "--cuda-graph-backend-decode",
-            "disabled",
+            "full" if native_prefill else "disabled",
             "--cuda-graph-backend-prefill",
             "disabled",
             "--observation-purpose",
@@ -115,6 +136,12 @@ def native_command(backend, checkpoint, revision, tp, phase, output, corpus):
             str(corpus),
             "--benchmark-output",
             str(output / "benchmark.json"),
+            *(["--ops-native-prefill"] if native_prefill else []),
+            *(
+                ["--mem-fraction-static", str(sglang_mem_fraction_static)]
+                if sglang_mem_fraction_static is not None
+                else []
+            ),
             *common,
         ]
     return [
