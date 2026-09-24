@@ -211,7 +211,8 @@ def test_v2_finalizes_after_native_later_logits_and_sample_not_execute(monkeypat
             return self.sample()
 
     class Trace:
-        def __init__(self, *args):
+        def __init__(self, *args, graph_calibration=False):
+            assert not graph_calibration
             calls.append("install_module_hooks")
 
         def before(self, schedule, input_ids, context, *, native_batch):
@@ -336,7 +337,11 @@ def test_v2_graph_coordinates_bind_real_and_physical_geometry_separately():
         native_v2_coordinates(actual, schedule, batch, **kwargs)
 
 
-def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_later_logits(monkeypatch, tmp_path):
+@pytest.mark.parametrize("calibration", [False, True])
+@pytest.mark.parametrize("failure_phase", [None, "before_sample", "native_sample"])
+def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_later_logits(
+    monkeypatch, tmp_path, calibration, failure_phase
+):
     import importlib.metadata
     import sys
 
@@ -344,6 +349,8 @@ def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_l
     from collector import glm53flash_vllm_runtime as runtime
 
     calls = []
+    failed = []
+    native_error = RuntimeError("TEST_ONLY original native failure")
     descriptor = object()
     batch = SimpleNamespace(input_ids="native_padded_ids")
     model = SimpleNamespace(forward=lambda: calls.append("must_not_call_python_model"))
@@ -365,18 +372,33 @@ def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_l
             self.cudagraph_manager.run_fullgraph(descriptor)
 
         def sample(self):
+            if failure_phase == "native_sample":
+                raise native_error
             calls.extend(["native_logits", "end_gpu_window", "native_sample"])
             return SimpleNamespace(sampled_token_ids=Tensor([[7]])), None, None
 
         def sample_tokens(self):
+            if failure_phase == "before_sample":
+                raise native_error
             return self.sample()
 
     class Trace:
         rank = 0
 
-        def __init__(self, runner, output, provenance, manifest):
+        def __init__(self, runner, output, provenance, manifest, *, graph_calibration=False):
             assert manifest is None
+            assert graph_calibration is calibration
             calls.append("no_eager_hooks")
+            self.graph_execution = SimpleNamespace(abort=self.abort) if calibration else None
+
+        def abort(self, error):
+            assert error is native_error
+            calls.append("abort")
+            raise RuntimeError("TEST_ONLY secondary cleanup failure")
+
+        def append(self, name, record):
+            assert name == "failed"
+            failed.append(record)
 
         def before(self, schedule, ids, context, **kwargs):
             assert ids == "native_padded_ids" and context is None
@@ -393,8 +415,13 @@ def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_l
     path = tmp_path / "provenance.json"
     path.write_text('{"backend_version":"0.30.0"}')
     monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(path))
-    monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_graph_holdout")
-    monkeypatch.delenv("AISIM_GLM53_OPS_MANIFEST", raising=False)
+    monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_graph" if calibration else "ops_graph_holdout")
+    if calibration:
+        manifest = tmp_path / "manifest.json"
+        manifest.write_text('{"TEST_ONLY":true}')
+        monkeypatch.setenv("AISIM_GLM53_OPS_MANIFEST", str(manifest))
+    else:
+        monkeypatch.delenv("AISIM_GLM53_OPS_MANIFEST", raising=False)
     monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.30.0")
     monkeypatch.setitem(sys.modules, "vllm.forward_context", SimpleNamespace(get_forward_context=lambda: None))
     monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu.model_runner", SimpleNamespace(GPUModelRunner=NativeRunner))
@@ -402,7 +429,18 @@ def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_l
         sys.modules, "vllm.v1.worker.gpu.cudagraph_utils", SimpleNamespace(ModelCudaGraphManager=Manager)
     )
     monkeypatch.setattr(graph, "install_holdout_capture", lambda output: calls.append("pre_request_capture_hook"))
-    monkeypatch.setattr(graph, "holdout_policy", lambda manager, model: {"backend_version": "0.30.0", "tp_rank": 0})
+    monkeypatch.setattr(graph, "install", lambda *args: calls.append("pre_request_capture_hook"))
+    policies = []
+
+    def selected_policy(manager, model):
+        policies.append(manager)
+        return {"backend_version": "0.30.0", "tp_rank": 0}
+
+    def wrong_policy(*args):
+        pytest.fail("calibration and independent holdout cannot share graph object provenance")
+
+    monkeypatch.setattr(graph, "holdout_policy", wrong_policy if calibration else selected_policy)
+    monkeypatch.setattr(graph, "calibration_policy", selected_policy if calibration else wrong_policy)
     monkeypatch.setattr(runtime, "_TraceState", Trace)
     runtime.install_v2()
     runner = NativeRunner()
@@ -410,7 +448,17 @@ def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_l
     runner._aisim_glm53_ops_serving_ready = True
     schedule = SimpleNamespace(total_num_scheduled_tokens=1)
     runner.execute_model(schedule)
+    assert policies == [runner.cudagraph_manager] * 2  # Prepare and actual replay.
     assert "completed_receipt" not in calls and "native_logits" not in calls
+    if failure_phase:
+        with pytest.raises(RuntimeError) as caught:
+            runner.sample_tokens()
+        assert caught.value is native_error
+        assert len(failed) == 1 and failed[0]["error"] == str(native_error)
+        assert bool(failed[0]["trace_cleanup_error"]) is calibration
+        assert calls.count("abort") == int(calibration)
+        assert "completed_receipt" not in calls
+        return
     runner.sample_tokens()
     assert calls == [
         "pre_request_capture_hook",

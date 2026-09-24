@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import inspect
 import json
 from pathlib import Path
 
@@ -26,6 +27,7 @@ SOURCE_PINS = {
     "v1/worker/gpu/cudagraph_utils.py": "6e9c042890603535e300a40df8ee159dbed1058a64a83ae50ff0329e332e05ff",
     "model_executor/offloader/base.py": "5157a59232715e7247761588efb88fc44e14970b580722a1f0b2e8b3a23a10fe",
 }
+LOGITS_SOURCE_PIN = "6b0603d67b0c756253c2fdc882a3896d2e873a16e9aa2ef877aabca8d36bdb5f"
 
 
 def install_holdout_capture(output):
@@ -100,6 +102,186 @@ def capture_receipt(manager, descriptor):
     return observation["registry"]
 
 
+def calibration_policy(manager, model):
+    captured = getattr(manager, "_aisim_glm53_ops_capture", None)
+    if captured is None or captured[0] is not model:
+        raise RuntimeError("native graph calibration lacks its pre-request initialization snapshot")
+    graphs = captured[2]
+    if graphs.keys() != manager.graphs.keys() or any(manager.graphs[key] is not graph for key, graph in graphs.items()):
+        raise RuntimeError("native graph calibration changed its initialized graph objects")
+    return captured[1]
+
+
+class NativeVllmGraphExecution:
+    """Profile one completed FULL forward, with source-bound external logits.
+
+    Calibration only. Independent control and holdout never instantiate this
+    helper. No event or profiler scope is inserted into a captured model graph.
+    """
+
+    def __init__(self, runner, output, rank):
+        import torch
+        from vllm.model_executor.layers.logits_processor import LogitsProcessor
+
+        self.torch, self.runner, self.output, self.rank = torch, runner, Path(output), rank
+        self.active = None
+        heads = [
+            module
+            for module in runner.model.modules()
+            if getattr(module, "lm_head", None) is not None and getattr(module, "logits_processor", None) is not None
+        ]
+        if len(heads) != 1 or type(heads[0].logits_processor) is not LogitsProcessor:
+            raise RuntimeError("native graph logits requires one exact source-bound LogitsProcessor")
+        logits = heads[0].logits_processor
+        source = Path(inspect.getfile(LogitsProcessor)).resolve()
+        if hashlib.sha256(source.read_bytes()).hexdigest() != LOGITS_SOURCE_PIN:
+            raise RuntimeError("native graph logits source differs from the reviewed V2 boundary")
+        if (
+            logits.use_all_gather is not True
+            or logits.head_dtype not in (None, torch.bfloat16)
+            or logits.logits_as_input
+            or logits.soft_cap is not None
+            or logits.scale != 1.0
+            or logits.org_vocab_size != 154880
+        ):
+            raise RuntimeError("native graph logits precision/collective/config differs from measured geometry")
+        original = logits.forward
+
+        @functools.wraps(original)
+        def forward(*args, **kwargs):
+            if self.active is None:
+                return original(*args, **kwargs)
+            from collector.glm53flash_graph_nodes import VLLM_LOGITS_RANGE
+
+            active = self.active
+            if active["logits_calls"] or not active["range_open"]:
+                raise RuntimeError("native graph logits lacks one enclosing execution range")
+            if kwargs.get("skip_gather", args[3] if len(args) > 3 else False):
+                raise RuntimeError("native graph logits cannot omit its declared all-gather")
+            active["logits_calls"] += 1
+            with torch.profiler.record_function(VLLM_LOGITS_RANGE):
+                return original(*args, **kwargs)
+
+        logits.forward = forward
+
+    def begin(self, record, descriptor):
+        if self.active is not None or record["stage"] != "measure" or record["runtime_mode"] != "FULL":
+            raise RuntimeError("native graph profiling needs a fresh target FULL forward")
+        registry = capture_receipt(self.runner.cudagraph_manager, descriptor)
+        if registry.get("capture_scope") != "vllm_hidden_states" or registry.get("uncaptured_operations") != ["logits"]:
+            raise RuntimeError("native V2 capture scope differs from hidden states plus external logits")
+        artifact = self.runner.cudagraph_manager._aisim_glm53_node_captures[descriptor].get("artifact")
+        if (
+            artifact is None
+            or hashlib.sha256((self.output / artifact["file"]).read_bytes()).hexdigest() != artifact["sha256"]
+        ):
+            raise RuntimeError("native V2 initialization capture file is absent or changed")
+        profiler = self.torch.profiler.profile(
+            activities=[self.torch.profiler.ProfilerActivity.CPU, self.torch.profiler.ProfilerActivity.CUDA]
+        )
+        self.active = {
+            "record": record,
+            "registry": registry,
+            "capture_artifact": artifact,
+            "profiler": profiler,
+            "range_open": False,
+            "logits_calls": 0,
+            "finished": False,
+        }
+        profiler.start()
+
+    def start_range(self):
+        from collector.glm53flash_graph_nodes import VLLM_EXECUTION_RANGE
+
+        active = self.active
+        if active is None or active["range_open"]:
+            raise RuntimeError("native graph execution range was not started exactly once")
+        active["range"] = self.torch.profiler.record_function(VLLM_EXECUTION_RANGE)
+        active["range"].__enter__()
+        active["range_open"] = True
+
+    def end_logits(self):
+        active = self.active
+        if active is None or not active["range_open"] or active["logits_calls"] != 1 or active["finished"]:
+            raise RuntimeError("native graph target omitted or repeated its logits completion")
+        active["range"].__exit__(None, None, None)
+        active["range_open"] = False
+        active["profiler"].stop()
+        active["finished"] = True
+        self._save_trace(active, failed=False)
+
+    def _save_trace(self, active, *, failed):
+        from collector.glm53flash_graph_nodes import trace_forward_identity
+
+        record = active["record"]
+        name = f"graph-profile-rank-{self.rank}-forward-{record['invocation']}.json"
+        if failed:
+            name = "failed-" + name
+        path = self.output / name
+        if path.exists():
+            raise RuntimeError("native graph trace cannot overwrite a previous forward")
+        active["profiler"].export_chrome_trace(str(path))
+        trace = json.loads(path.read_text())
+        trace["aisim_native_forward"] = trace_forward_identity(record)
+        trace["aisim_native_execution"] = {
+            "backend": "vllm",
+            "source_boundary": "GPUModelRunner.prepare_inputs_return_to_compute_logits",
+            "logits_source_sha256": LOGITS_SOURCE_PIN,
+            "failed": failed,
+        }
+        path.write_text(json.dumps(trace))
+        active["trace"], active["path"] = trace, path
+
+    def finish(self, record):
+        from collector.glm53flash_graph_nodes import bind_replay_kernels, bind_vllm_execution_activity
+
+        active = self.active
+        if (
+            active is None
+            or active["record"] is not record
+            or not active["finished"]
+            or record.get("gpu_completed") is not True
+            or record.get("native_graph_replay_completed") is not True
+            or any(type(request.get("sampled_token_id")) is not int for request in record["requests"])
+        ):
+            raise RuntimeError("native graph profile lacks its exact completed same-request forward")
+        events = active["trace"]["traceEvents"]
+        launches = [row for row in events if row.get("cat") == "cuda_runtime" and row.get("name") == "cudaGraphLaunch"]
+        if len(launches) != 1:
+            raise RuntimeError("native V2 profile lacks one actual FULL graph launch")
+        nodes = bind_replay_kernels(active["registry"], events, correlation=launches[0]["args"]["correlation"])
+        binding = bind_vllm_execution_activity(nodes, events)
+        binding.update(
+            trace_file=active["path"].name, trace_sha256=hashlib.sha256(active["path"].read_bytes()).hexdigest()
+        )
+        result = {
+            **record,
+            "replay_nodes": binding,
+            "capture_registry_file": active["capture_artifact"]["file"],
+            "capture_registry_sha256": active["capture_artifact"]["sha256"],
+            "logits_source_sha256": LOGITS_SOURCE_PIN,
+            "profiled": True,
+            "ops_instrumented": True,
+            "measurement_method": "native_cupti_graph_nodes_and_external_logits",
+            "formal_admission": False,
+            "accuracy_acceptance": "NOT_EVALUATED",
+        }
+        self.active = None
+        return result
+
+    def abort(self, error):
+        active = self.active
+        if active is None:
+            return
+        if active["range_open"]:
+            active["range"].__exit__(type(error), error, error.__traceback__)
+            active["range_open"] = False
+        if not active["finished"]:
+            active["profiler"].stop()
+            self._save_trace(active, failed=True)
+        self.active = None
+
+
 def install(manifest, provenance, output):
     """Install before native ModelCudaGraphManager.capture is first invoked.
 
@@ -156,13 +338,19 @@ def install(manifest, provenance, output):
         # This is the initialized native descriptor/candidate inventory, before
         # any real request or holdout is observed. Recording a PIECEWISE entry
         # does not supply its still-missing measured operation ownership.
-        persist_snapshot(manager, model, state["rank"], output)
+        policy = persist_snapshot(manager, model, state["rank"], output)
+        manager._aisim_glm53_ops_capture = (model, policy, dict(manager.graphs))
         pending = manager._aisim_glm53_capture_pending
         bind_captured_graphs(manager, pending)
         for descriptor in pending:
             registry = capture_receipt(manager, descriptor)
-            with (output / f"vllm-capture-rank-{state['rank']}-{sequence}.json").open("x") as stream:
+            path = output / f"vllm-capture-rank-{state['rank']}-{sequence}.json"
+            with path.open("x") as stream:
                 json.dump(registry, stream, indent=2, sort_keys=True)
+            manager._aisim_glm53_node_captures[descriptor]["artifact"] = {
+                "file": path.name,
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
             sequence += 1
         del manager._aisim_glm53_capture_pending
         return result

@@ -57,7 +57,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         self._real_request_set = f"{os.environ.get('FPM_RUN_ID', 'glm53flash')}-{uuid.uuid4().hex}"
         self._real_request_manifest = {}
         self._real_purpose = os.environ.get("AISIM_GLM53_PURPOSE", "fpm")
-        if self._real_purpose not in {"fpm", "ops", "ops_holdout", "ops_graph_holdout"}:
+        if self._real_purpose not in {"fpm", "ops", "ops_holdout", "ops_graph", "ops_graph_holdout"}:
             raise ValueError("unsupported GLM observation purpose")
         self._real_tags = {}
         self._real_callback_stage = None
@@ -80,7 +80,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         super()._bench_init(config)
         if not self._bench_active:
             raise ValueError("GLM-5.3-Flash canary overlay requires native benchmark mode")
-        if self._real_purpose in {"fpm", "ops_graph_holdout"} and config.model_config.enforce_eager:
+        if self._real_purpose in {"fpm", "ops_graph", "ops_graph_holdout"} and config.model_config.enforce_eager:
             raise ValueError("GLM-5.3-Flash formal collection requires native graph policy")
         if self._real_purpose in {"ops", "ops_holdout"} and not config.model_config.enforce_eager:
             raise ValueError("GLM operation observation currently requires explicit native eager execution")
@@ -635,6 +635,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             "fpm": "native_graph_policy",
             "ops": "eager_ops",
             "ops_holdout": "eager_ops",
+            "ops_graph": "native_graph_ops_calibration",
             "ops_graph_holdout": "native_graph_ops_holdout",
         }[self._real_purpose]
         output["observation_purpose"] = self._real_purpose

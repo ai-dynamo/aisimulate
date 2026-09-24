@@ -450,13 +450,11 @@ calls `join_after_forward` after the observed forward factory returns, and only
 the reviewed noop implementation guarantees no unobserved tail work there.
 Source at the same immutable revision: `vllm/model_executor/offloader/base.py`.
 
-This vLLM graph contains hidden states, not `compute_logits`; its raw registry
-explicitly lists logits as an uncaptured operation. Native output copies remain
-visible as setup nodes. A serving adapter must separately prove the actual
-selected graph, complete replay-node join, logits work and completed real-request
-chain. The capture adapter alone certifies none of those and writes no measured
-table. Child graphs, changed graph objects and incomplete capture observations
-still fail. CPU scope/identity tests are not native GPU qualification.
+This vLLM graph contains hidden states; its raw registry explicitly lists logits
+as an uncaptured operation. Native output copies remain visible as setup nodes.
+The capture adapter alone writes no measured table. Child graphs, changed graph
+objects and incomplete capture observations still fail. CPU scope/identity
+tests are not native GPU qualification.
 
 The V2 adapter also records `vllm-graph-policy-rank-N.json` immediately after
 native initialization. `glm53flash_vllm_graph_policy.py` binds the original
@@ -487,6 +485,32 @@ measured targets require FULL Q1 decode. This producer boundary has CPU tests;
 actual native class/GPU qualification and the vLLM graph exporter/consumer
 integration remain pending. It does not supply measured PIECEWISE operations
 or replace the independent whole-forward error gate.
+
+The separate experimental `ops_graph` calibration purpose combines the FULL
+capture registry with actual CUPTI activity from that same metadata-to-logits
+window. It retains one original trace per rank/forward and emits its graph
+receipt only after the actual replay and native sampled-token completion.
+Profiling starts before the first GPU timing event and stops after the final
+event, before sampling. Neither independent control nor holdout installs this
+profiler. Actual `LogitsProcessor.forward` calls get a CPU profiler range outside
+the captured graph; their GPU activities are owned by their CUDA launch
+correlations. The pinned source is
+[`logits_processor.py`](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/model_executor/layers/logits_processor.py),
+SHA256 `6b0603d67b0c756253c2fdc882a3896d2e873a16e9aa2ef877aabca8d36bdb5f`.
+The observer verifies its exact class, source, BF16 head policy, full vocabulary
+projection and all-gather; the native local-argmax alternative is not covered.
+
+The binder requires exactly one complete source-bound logits range, forbids
+straddling launches, missing device activity and extra unregistered graphs, and
+charges every remaining observed device activity to `native_graph_setup`.
+Logits cannot be owned both inside and outside the graph. Unit interval unions
+and cross-unit overlap remain explicit; CPU gaps and whole-forward residuals
+are never allocated to operations. Initialization registries stay in separate
+hashed files instead of being repeated in every forward. Failed native calls
+retain their failed trace and original exception. This path currently has CPU
+contract tests only: actual calibration-class/GPU qualification, vLLM
+raw-to-table export and independent accuracy are pending. Measured PIECEWISE
+coverage remains a separate required implementation.
 
 
 ## Native graph measured consumer and dispatch policy

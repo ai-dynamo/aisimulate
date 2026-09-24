@@ -360,6 +360,8 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
 
 
 EXECUTION_RANGE = "aisim.glm53/native_decode_execute"
+VLLM_EXECUTION_RANGE = "aisim.glm53/vllm_metadata_to_logits"
+VLLM_LOGITS_RANGE = "aisim.glm53/vllm_logits_processor"
 
 
 def trace_forward_identity(record: dict) -> dict:
@@ -543,7 +545,11 @@ def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
             raise ValueError("native device-work call lacks its matching GPU activity; zero work is unproved")
     if len(actual_graph) != len(binding["activities"]):
         raise ValueError("native graph activity differs between node and execution scope proofs")
-    combined = binding["activities"] + setup
+    return _compose_execution(binding, region, setup)
+
+
+def _compose_execution(binding, region, outside):
+    combined = binding["activities"] + outside
     groups = {}
     for row in combined:
         groups.setdefault(row["operation"], []).append(row)
@@ -560,7 +566,7 @@ def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
     ]
     return {
         "graph": binding,
-        "outside_graph_setup": setup,
+        "outside_graph_setup": outside,
         "execution_range": region,
         "activities": combined,
         "operation_activity_unions": units,
@@ -572,3 +578,68 @@ def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
         "formal_admission": False,
         "whole_forward_accuracy": "NOT_EVALUATED",
     }
+
+
+def bind_vllm_execution_activity(binding: dict, events: list[dict]) -> dict:
+    """Bind V2 metadata→FULL hidden states→separate native logits activity.
+
+    The frozen V2 boundary supplies one complete outer range and the actual
+    LogitsProcessor.forward range. Ownership follows the CPU launch correlation,
+    never GPU order or a whole-forward residual. The same bidirectional device
+    activity checks used by SGLang remain mandatory. Compiled or graph-backed
+    logits require a separate registry and therefore remain unsupported here.
+    """
+    ranges = [row for row in events if row.get("name") == VLLM_EXECUTION_RANGE and row.get("ph") == "X"]
+    logits = [row for row in events if row.get("name") == VLLM_LOGITS_RANGE and row.get("ph") == "X"]
+    if len(ranges) != 1 or len(logits) != 1 or any(row.get("name") == EXECUTION_RANGE for row in events):
+        raise ValueError("native V2 execution requires one independent outer and logits boundary")
+    region, unit = ranges[0], logits[0]
+    for row in (region, unit):
+        if (
+            any(type(row.get(key)) not in (int, float) or not math.isfinite(row[key]) for key in ("ts", "dur"))
+            or row["dur"] <= 0
+            or any(type(row.get(key)) is not int for key in ("pid", "tid"))
+        ):
+            raise ValueError("native V2 profiler boundary lacks a complete actual interval")
+    if (
+        any(unit[key] != region[key] for key in ("pid", "tid"))
+        or unit["ts"] < region["ts"]
+        or unit["ts"] + unit["dur"] > region["ts"] + region["dur"]
+    ):
+        raise ValueError("native logits boundary is outside the same-thread V2 execution")
+    correlations = set()
+    for row in events:
+        if row.get("cat") not in ("cuda_runtime", "cuda_driver") or any(
+            row.get(key) != region[key] for key in ("pid", "tid")
+        ):
+            continue
+        begin, duration = row.get("ts"), row.get("dur")
+        if any(type(v) not in (int, float) or not math.isfinite(v) for v in (begin, duration)) or duration < 0:
+            raise ValueError("native V2 CUDA call lacks its complete source-bound interval")
+        left, right = unit["ts"], unit["ts"] + unit["dur"]
+        if begin < right and begin + duration > left:
+            if begin < left or begin + duration > right:
+                raise ValueError("native CUDA call straddles logits ownership boundaries")
+            if row.get("name") in ("cudaGraphLaunch", "cuGraphLaunch"):
+                raise ValueError("native logits contains an unregistered graph")
+            correlations.add(row.get("args", {}).get("correlation"))
+    # Reuse the complete existing API↔GPU activity proof, without mutating the
+    # original trace. This name substitution carries no timing or cost values.
+    scoped = [dict(row, name=EXECUTION_RANGE) if row is region else row for row in events]
+    checked = bind_execution_activity(binding, scoped)
+    outside = checked["outside_graph_setup"]
+    for row in outside:
+        is_logits = row["launch_correlation"] in correlations
+        row["operation"] = "logits" if is_logits else "native_graph_setup"
+        row["source_boundary"] = (
+            "vllm.LogitsProcessor.forward" if is_logits else "vllm.GPUModelRunner.metadata_to_logits"
+        )
+    if not any(row["operation"] == "logits" and row["activity"] == "kernel" for row in outside):
+        raise ValueError("native logits lacks actual projected GPU activity")
+    if any(row["operation"] == "logits" for row in binding["activities"]):
+        raise ValueError("native logits cannot be charged inside and outside the same graph")
+    result = _compose_execution(binding, region, outside)
+    result["outside_graph_setup"] = [row for row in outside if row["operation"] == "native_graph_setup"]
+    result["outside_graph_operations"] = [row for row in outside if row["operation"] != "native_graph_setup"]
+    result["logits_range"] = unit
+    return result

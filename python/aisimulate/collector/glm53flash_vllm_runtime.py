@@ -183,7 +183,7 @@ def native_v2_coordinates(runner, scheduler_output, batch, *, graph_policy=None,
 
 
 class _TraceState:
-    def __init__(self, runner, output, provenance, manifest):
+    def __init__(self, runner, output, provenance, manifest, *, graph_calibration=False):
         import torch
         from vllm.distributed import get_tensor_model_parallel_rank
 
@@ -197,6 +197,13 @@ class _TraceState:
         self.counter = 0
         self.observer = NativeOperationObserver(manifest, provenance, self.rank) if manifest is not None else None
         self.whole_events = None
+        self.graph_execution = None
+        if graph_calibration:
+            from collector.glm53flash_vllm_graph_ops import NativeVllmGraphExecution
+
+            if manifest is not None:
+                raise RuntimeError("native graph calibration cannot install eager operation intervals")
+            self.graph_execution = NativeVllmGraphExecution(runner, output, self.rank)
         output.mkdir(parents=True, exist_ok=True)
         if self.observer is not None:
             inventory = install_native_hooks(runner.model, self.observer, "vllm")
@@ -212,6 +219,8 @@ class _TraceState:
                     raise RuntimeError("whole-forward logits receipt changed stream or repeated")
                 end.record(stream)
                 self.whole_end_recorded = True
+                if self.graph_execution is not None:
+                    self.graph_execution.end_logits()
             return result
 
         runner.model.compute_logits = compute_logits
@@ -323,7 +332,7 @@ class _TraceState:
             "state_layout_sha256": self.layout_sha256,
             "state_layout_admitted": self.layout["admitted"],
             "state_protocol": "glm53flash_same_request_real_hybrid_v1",
-            "ops_instrumented": self.observer is not None,
+            "ops_instrumented": self.observer is not None or getattr(self, "graph_execution", None) is not None,
         }
         mapping = json.loads(Path(os.environ["AISIM_GLM53_REQUEST_MANIFEST"]).read_text())
         if any(rid not in mapping.get("requests", {}) for rid in record["request_ids"]):
@@ -352,6 +361,9 @@ class _TraceState:
             )
             if self.observer is not None:
                 self.observer.begin(workload)
+            graph_execution = getattr(self, "graph_execution", None)
+            if graph_execution is not None:
+                graph_execution.begin(record, native_descriptor)
             # Calibration also needs one coherent native rank timeline. The
             # window ends at logits, before sampling/readback, exactly as the
             # independent uninstrumented holdout window does.
@@ -362,6 +374,8 @@ class _TraceState:
             self.whole_end_recorded = False
             self.whole_boundary = "native_metadata_to_logits_gpu_v1" if graph else "embedding_to_logits_gpu_v1"
             start.record(stream)
+            if graph_execution is not None:
+                graph_execution.start_range()
         return record, completed
 
     def after(self, record, completed):
@@ -410,11 +424,14 @@ class _TraceState:
                 }
         record["gpu_completed"] = True
         self.append("forward", record)
+        graph_execution = getattr(self, "graph_execution", None)
+        if record["stage"] == "measure" and graph_execution is not None:
+            self.append("graph-forward", graph_execution.finish(record))
 
 
 def install():
     """Call in each worker before execution; model hooks install after native load."""
-    if os.environ.get("AISIM_GLM53_PURPOSE") == "ops_graph_holdout":
+    if os.environ.get("AISIM_GLM53_PURPOSE") in ("ops_graph", "ops_graph_holdout"):
         # V2 owns explicit native FULL replay; importing the legacy runner must
         # not install an eager observer on a graph-serving control.
         return
@@ -531,22 +548,57 @@ def install_v2():
         raise RuntimeError("actual native worker package differs from frozen Ops provenance")
     manifest_path = os.environ.get("AISIM_GLM53_OPS_MANIFEST")
     purpose = os.environ.get("AISIM_GLM53_PURPOSE")
-    if purpose not in ("ops", "ops_holdout", "ops_graph_holdout") or bool(manifest_path) != (purpose == "ops"):
+    if purpose not in ("ops", "ops_holdout", "ops_graph", "ops_graph_holdout") or bool(manifest_path) != (
+        purpose in ("ops", "ops_graph")
+    ):
         raise RuntimeError("native V2 instrumentation must match explicit Ops/holdout purpose")
-    graph_holdout = purpose == "ops_graph_holdout"
-    if graph_holdout:
+    graph_mode = purpose in ("ops_graph", "ops_graph_holdout")
+    graph_calibration = purpose == "ops_graph"
+    manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
+    if graph_mode:
         from vllm.v1.worker.gpu.cudagraph_utils import ModelCudaGraphManager
 
-        from collector.glm53flash_vllm_graph_ops import holdout_policy, install_holdout_capture
+        from collector.glm53flash_vllm_graph_ops import (
+            calibration_policy,
+            holdout_policy,
+            install_holdout_capture,
+        )
+        from collector.glm53flash_vllm_graph_ops import (
+            install as install_graph_capture,
+        )
 
-        install_holdout_capture(output)
+        if graph_calibration:
+            install_graph_capture(manifest, provenance, output)
+        else:
+            install_holdout_capture(output)
+        graph_policy_for = calibration_policy if graph_calibration else holdout_policy
         original_replay = ModelCudaGraphManager.run_fullgraph
-    manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
     original_execute = GPUModelRunner.execute_model
     original_prepare = GPUModelRunner.prepare_inputs
     original_sample = GPUModelRunner.sample
     original_sample_tokens = GPUModelRunner.sample_tokens
     current, bindings = threading.local(), {}
+
+    def fail_observation(binding, error):
+        if binding is None or binding["pending"] is None:
+            return
+        record = binding["pending"][0]
+        if record.get("observation_failed"):
+            return
+        record["observation_failed"] = True
+        state = binding["state"]
+        cleanup_error = None
+        if getattr(state, "graph_execution", None) is not None:
+            try:
+                state.graph_execution.abort(error)
+            except BaseException as failure:
+                # Keep the original native exception even if trace flushing
+                # also fails. Neither failure can become an accepted forward.
+                cleanup_error = repr(failure)
+        state.append(
+            "failed",
+            {**record, "error_type": type(error).__name__, "error": str(error), "trace_cleanup_error": cleanup_error},
+        )
 
     @functools.wraps(original_prepare)
     def prepare(runner, scheduler_output, *args, **kwargs):
@@ -557,7 +609,9 @@ def install_v2():
             raise RuntimeError("native V2 InputBatch has no observed scheduling boundary")
         binding = bindings.get(id(runner))
         if binding is None:
-            state = _TraceState(runner, output, provenance, manifest)
+            state = _TraceState(
+                runner, output, provenance, None if graph_mode else manifest, graph_calibration=graph_calibration
+            )
             binding = bindings[id(runner)] = {"state": state, "pending": None, "sampled": None}
             original_forward = runner.model.forward
 
@@ -579,14 +633,14 @@ def install_v2():
                 binding["pending"] = record, completed
                 return result
 
-            if not graph_holdout:
+            if not graph_mode:
                 runner.model.forward = forward
         if binding["pending"] is not None:
             raise RuntimeError("native V2 previous forward did not complete its sampling step")
         binding["batch"] = batch
-        if graph_holdout:
+        if graph_mode:
             descriptor = kwargs.get("batch_desc", args[1] if len(args) > 1 else None)
-            policy = holdout_policy(runner.cudagraph_manager, runner.model)
+            policy = graph_policy_for(runner.cudagraph_manager, runner.model)
             if policy["backend_version"] != provenance["backend_version"] or policy["tp_rank"] != binding["state"].rank:
                 raise RuntimeError("native graph policy differs from actual worker version/rank")
             record, completed = binding["state"].before(
@@ -621,14 +675,17 @@ def install_v2():
                 if binding is None or binding["pending"] is None:
                     raise RuntimeError("native V2 scheduled tokens bypassed the observed serving boundary")
                 record = binding["pending"][0]
-                if graph_holdout and record["runtime_mode"] == "FULL" and not record["native_graph_replay_completed"]:
+                if graph_mode and record["runtime_mode"] == "FULL" and not record["native_graph_replay_completed"]:
                     raise RuntimeError("native V2 FULL forward omitted its actual registered graph replay")
             return result
+        except BaseException as error:
+            fail_observation(bindings.get(id(runner)), error)
+            raise
         finally:
             current.scheduler_output = None
             current.runner = None
 
-    if graph_holdout:
+    if graph_mode:
 
         @functools.wraps(original_replay)
         def replay(manager, descriptor, *args, **kwargs):
@@ -641,7 +698,7 @@ def install_v2():
             record = binding["pending"][0]
             if descriptor != binding["descriptor"] or record["native_graph_replay_completed"]:
                 raise RuntimeError("native FULL replay changed descriptor or executed twice")
-            holdout_policy(manager, runner.model)
+            graph_policy_for(manager, runner.model)
             result = original_replay(manager, descriptor, *args, **kwargs)
             record["native_graph_replay_completed"] = True
             return result
@@ -650,7 +707,11 @@ def install_v2():
 
     @functools.wraps(original_sample)
     def sample(runner, *args, **kwargs):
-        result = original_sample(runner, *args, **kwargs)
+        try:
+            result = original_sample(runner, *args, **kwargs)
+        except BaseException as error:
+            fail_observation(bindings.get(id(runner)), error)
+            raise
         binding = bindings.get(id(runner))
         if binding is not None and binding["pending"] is not None:
             if binding["sampled"] is not None:
@@ -662,18 +723,22 @@ def install_v2():
 
     @functools.wraps(original_sample_tokens)
     def sample_tokens(runner, *args, **kwargs):
-        result = original_sample_tokens(runner, *args, **kwargs)
-        binding = bindings.get(id(runner))
-        if binding is not None and binding["pending"] is not None:
-            record, completed = binding["pending"]
-            sampled = binding["sampled"]
-            if sampled is None or len(sampled) != len(record["requests"]) or any(len(row) != 1 for row in sampled):
-                raise RuntimeError("native V2 sampling receipt is not one token per actual request")
-            for request, tokens in zip(record["requests"], sampled, strict=True):
-                request["sampled_token_id"] = int(tokens[0])
-            binding["state"].after(record, completed)
-            binding["pending"], binding["sampled"] = None, None
-        return result
+        try:
+            result = original_sample_tokens(runner, *args, **kwargs)
+            binding = bindings.get(id(runner))
+            if binding is not None and binding["pending"] is not None:
+                record, completed = binding["pending"]
+                sampled = binding["sampled"]
+                if sampled is None or len(sampled) != len(record["requests"]) or any(len(row) != 1 for row in sampled):
+                    raise RuntimeError("native V2 sampling receipt is not one token per actual request")
+                for request, tokens in zip(record["requests"], sampled, strict=True):
+                    request["sampled_token_id"] = int(tokens[0])
+                binding["state"].after(record, completed)
+                binding["pending"], binding["sampled"] = None, None
+            return result
+        except BaseException as error:
+            fail_observation(bindings.get(id(runner)), error)
+            raise
 
     GPUModelRunner.prepare_inputs = prepare
     GPUModelRunner.execute_model = execute
