@@ -225,6 +225,8 @@ def aggregate_rank_records(
 ) -> list[dict]:
     """Median of per-invocation rank maxima, after complete graph/rank coverage.
 
+    This is a per-operation conservative approximation. Summing maxima across
+    operations does not reconstruct any one TP worker's physical timeline.
     The raw records retain layer occurrence, workload and sample identities.
     Identical shapes in different layers may reduce together only after every
     occurrence in each observed phase has been observed. Failed/incomplete attempts

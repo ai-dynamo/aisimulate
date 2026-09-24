@@ -57,7 +57,10 @@ occurrences per phase/rank; decoder observations alone cannot certify it.
 Raw rank JSONL records retain every layer occurrence, request/history identity,
 sample, invocation and excluded collective. Publication first requires complete
 graph occurrences on every rank, then takes the median of per-invocation rank
-maxima. Distinct checkpoint formats, runtimes, graph modes, seed policies or
+maxima per operation. Adding these per-operation maxima is a conservative
+approximation, not a reconstructed timeline of one TP worker. Every rank's raw
+operation and whole-forward values remain available to assess this approximation
+against the independent 20% gate. Distinct checkpoint formats, runtimes, graph modes, seed policies or
 state modes never silently collapse onto the same physical key. Failed attempts
 remain separate evidence. A collector success is not accuracy acceptance; the
 formal Ops gate is phase/cell MAPE <=20% against independent whole-forward truth.
@@ -217,7 +220,11 @@ medians before accepting the table. Content hashes alone are insufficient.
 
 Independent `ops_holdout` runs disable module hooks and record one GPU event
 window from embedding through logits. The separate native scheduler/DeviceTimer
-interval is retained but never substituted as the Ops comparator. The common
+interval is retained but never substituted as the Ops comparator. Device-event
+elapsed windows can include host enqueue gaps and cross-rank synchronization;
+they must not be described as summed GPU busy time. A separate ordinary Engine
+control with no retained observer reproduced close native DeviceTimer/model-event
+windows; this checks the timing boundary, not the cause of native latency. The common
 holdout validator checks disjoint workload geometry and request/corpus evidence,
 then calls the installed public strict Ops consumer with a 20% per-cell/phase
 MAPE gate. No graph-mode Ops data or accuracy pass is claimed by this code.
