@@ -50,8 +50,8 @@ def _load_targets_declarations() -> tuple[dict, dict, dict]:
             t = yaml.safe_load(cand.read_text())
             break
     else:
-        return {}, {}, {}
-    special, sib, drop = {}, {}, {}
+        return {}, {}, {}, {}
+    special, sib, drop, tok = {}, {}, {}, {}
     for fam, spec in (t.get("families") or {}).items():
         if fam != "roster":
             for ck in spec.get("checkpoints") or []:
@@ -64,10 +64,55 @@ def _load_targets_declarations() -> tuple[dict, dict, dict]:
                 sib[repo] = dv["hfquant_exclude_from_sibling"]
             if dv.get("drop_auto_map"):
                 drop[repo] = dv["drop_auto_map"]
-    return special, sib, drop
+            if dv.get("tokenizer_from"):
+                tok[repo] = dv["tokenizer_from"]
+    return special, sib, drop, tok
 
 
-_SPECIAL, _HFQUANT_COMPLETE_FROM_SIBLING, _DROP_AUTO_MAP = _load_targets_declarations()
+_SPECIAL, _HFQUANT_COMPLETE_FROM_SIBLING, _DROP_AUTO_MAP, _TOKENIZER_FROM = _load_targets_declarations()
+
+# Frameworks load more than config.json from the model dir even for a
+# dummy-weight probe: the tokenizer (vllm/sglang at engine init, trtllm at
+# generate for end_id), custom modeling / processor code (Kimi: tiktoken.model
+# + tokenization_kimi.py + modeling_*.py), preprocessor configs. None of it is
+# derivable from config.json and NO earlier step provisioned it for new roster
+# repos (found 2026-09-24: every GLM-5.3-BF16 run died on "Couldn't
+# instantiate the backend tokenizer"). Everything in the source dir except the
+# files this generator writes itself is an auxiliary artifact file.
+_GENERATED_FILES = ("config.json", "hf_quant_config.json", "dtype_probe.safetensors")
+
+
+def _provision_aux_files(out_dir: Path, repo: str, configs: Path, out_root: Path,
+                         edits: list[str], caveats: list[str]) -> None:
+    """Copy the auxiliary artifact files into a dummy dir. Sources, in order:
+    the fetched aux dir (configs/aux_files/<org>_<name>/), an existing variant
+    dir of the SAME repo (previous generation), the declared sibling
+    (targets.yaml dummy_overrides.tokenizer_from — same tokenizer/code family,
+    e.g. GLM-5.3-BF16 <- GLM-5.3). Anything else is a loud MISSING, never silent."""
+    import shutil
+    if (out_dir / "tokenizer_config.json").exists():
+        return
+    name = repo.split("/")[-1]
+    candidates = [configs / "aux_files" / repo.replace("/", "_")]
+    candidates += sorted(p for p in out_root.glob(f"*/{name}__*") if p.is_dir() and p != out_dir)
+    sib = _TOKENIZER_FROM.get(repo)
+    if sib:
+        candidates += sorted(p for p in out_root.glob(f"*/{sib.split('/')[-1]}__*") if p.is_dir())
+    for src in candidates:
+        if (src / "tokenizer_config.json").exists():
+            copied = []
+            for f in sorted(src.iterdir()):
+                if f.is_file() and f.name not in _GENERATED_FILES and not f.name.endswith(".safetensors") \
+                        and not (out_dir / f.name).exists():
+                    shutil.copy2(f, out_dir / f.name)
+                    copied.append(f.name)
+            where = src.relative_to(out_root) if src.is_relative_to(out_root) else src
+            edits.append(f"aux files {len(copied)} from {where}"
+                         + (f" (declared tokenizer_from {sib})" if sib and sib.split('/')[-1] in src.name else ""))
+            return
+    caveats.append("MISSING TOKENIZER/AUX FILES: no fetched aux dir, no earlier variant, no declared tokenizer_from")
+    print(f"MISSING TOKENIZER {repo}: declare dummy_overrides.tokenizer_from in targets.yaml "
+          f"or fetch configs/aux_files/{repo.replace('/', '_')}/", file=sys.stderr)
 
 
 def load_repos(configs_dir: Path) -> dict[str, str]:
@@ -531,6 +576,8 @@ def main() -> int:
             out_dir = args.out / family / tag
             out_dir.mkdir(parents=True, exist_ok=True)
             (out_dir / "config.json").write_text(json.dumps(cfg, indent=2))
+            caveats: list[str] = []
+            _provision_aux_files(out_dir, repo, args.configs, args.out, edits, caveats)
             _dtp = args.configs / "dsv4_expert_dtypes.json"
             if _dtp.exists():
                 _dt = json.loads(_dtp.read_text()).get(repo)
@@ -563,7 +610,7 @@ def main() -> int:
                 "source_config_sha256_16": src_sha,
                 "edits": edits,
                 "stale_layer_refs": stale,
-                "caveats": [],
+                "caveats": caveats,
             }
             if family == "glm":
                 freq, off = base.get("index_topk_freq"), base.get("index_skip_topk_offset")
