@@ -17,6 +17,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
+from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL, validate_retained_states
 
 WARMUPS = 5
 MEASUREMENTS = 10
@@ -52,10 +53,14 @@ def _trace_identity(record: dict) -> dict:
         or set(identity) != set(EXECUTION_COLUMNS)
         or any(not isinstance(value, str) or not value for value in identity.values())
         or record.get("telemetry_policy") != TELEMETRY_POLICY
+        or record.get("producer_protocol") != PRODUCER_PROTOCOL
         or not isinstance(record.get("context_policy"), dict)
     ):
         raise ValueError("SGLang raw forward execution provenance is missing or invalid")
-    return {key: record[key] for key in ("run_id", "execution_identity", "telemetry_policy", "context_policy")}
+    return {
+        key: record[key]
+        for key in ("run_id", "execution_identity", "telemetry_policy", "context_policy", "producer_protocol")
+    }
 
 
 def read_observations(
@@ -312,7 +317,6 @@ def _validate_runtime_receipts(cell, payload: dict, parent: Path, evidence: dict
             or config["context_length"] != policy["runtime_context_length"]
             or not isinstance(config["model_path"], str)
             or not config["model_path"]
-            or config.get("attn_dcp_size", 1) != 1
             or config.get("allow_auto_truncate", False)
         ):
             raise ValueError(f"SGLang {label} native configuration differs from the frozen execution")
@@ -335,6 +339,7 @@ def _validate_runtime_receipts(cell, payload: dict, parent: Path, evidence: dict
             "execution_identity": expected_identity,
             "telemetry_policy": payload["producer"]["telemetry_policy"],
             "context_policy": policy,
+            "producer_protocol": payload.get("producer_protocol"),
         }
     )
 
@@ -388,6 +393,13 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
     observations = read_observations(
         manifest, traces, [result["point"] for result in payload["results"]], expected_provenance=expected_provenance
     )
+    retained = evidence.get("retained_states")
+    if not isinstance(retained, list):
+        raise ValueError("SGLang retained-state lifecycle receipts are missing")
+    state_receipts = {entry["tp_rank"]: read_receipt(path.parent, entry) for entry in retained}
+    if len(state_receipts) != len(retained):
+        raise ValueError("SGLang retained-state lifecycle rank is duplicated")
+    validate_retained_states(manifest, traces, state_receipts)
     for result in payload["results"]:
         bid = result["point"]["benchmark_id"]
         values = [

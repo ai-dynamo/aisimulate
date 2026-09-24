@@ -1067,8 +1067,8 @@ the repository Apache-2.0 license text applies to these adaptations.
 - Modified/adapted: original wrappers call the native scheduler worker, forward
   runner and DeviceTimer, retaining actual request histories, phase coordinates,
   selected graph mode and exact frozen-target matching. No upstream compute,
-  request construction, hybrid state initialization or scheduling logic is
-  copied or replaced. Tests use independent CPU fixtures, not performance data.
+  request construction or hybrid state initialization is copied or replaced.
+  Tests use independent CPU fixtures, not performance data.
 
 ## GLM-5.3-Flash native SGLang request campaign
 
@@ -1084,7 +1084,7 @@ the repository Apache-2.0 license text applies to these adaptations.
 - Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
 - License: Apache-2.0 (full text above).
 - Modified/adapted: original integration code uses public native Engine and
-  ServerArgs APIs with real token-ID requests. It preserves native scheduling
+  ServerArgs APIs with real token-ID requests. It preserves native forward
   and DeviceTimer boundaries and normalizes only observations whose actual
   coordinates match a frozen request manifest. No native source is copied.
   The shared `collector/glm53flash_protocol.py` context-headroom calculation
@@ -1121,3 +1121,24 @@ Licensed under Apache-2.0; the upstream license is preserved in the adjacent
 `LICENSE`. No upstream root NOTICE exists. vLLM implementation files are not
 vendored; exact API source hashes and their revision are recorded alongside
 this adapter. The corpus and new contract tests are original project content.
+
+## GLM-5.3-Flash retained SGLang request benchmark
+
+- Adapted integration files: `python/aisimulate/collector/glm53flash_sglang_retained.py`,
+  `README.glm53flash_sglang.md`, the adjacent shared runtime and FPM driver/reader,
+  and `python/aisimulate/tests/unit/collector/test_glm53flash_sglang_retained.py`.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`. Original paths under
+  `python/sglang/srt`: `managers/{scheduler,schedule_batch,tp_worker}.py`,
+  `managers/scheduler_components/batch_result_processor.py`,
+  `mem_cache/{allocation,common,chunk_cache,memory_pool,kv_cache_builder,registry}.py`,
+  `observability/req_time_stats.py`,
+  and the model-runner paths pinned in the adjacent source inventory.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: original benchmark controller replaces the outer event loop
+  to serialize native requests, park actually computed prefixes, and form an
+  explicit target cohort. Native request construction, hybrid allocation,
+  forward/graph execution, sampling, chunk stashing and release APIs are called
+  directly. No upstream source is copied. Lifecycle fixtures are independent
+  synthetic CPU test data and do not establish GPU qualification.

@@ -26,6 +26,7 @@ from collector.glm53flash_protocol import (
     TIMING_BOUNDARIES,
     sglang_runtime_context_length,
 )
+from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL
 
 from .sglang_artifact import MEASUREMENTS, TELEMETRY_POLICY, WARMUPS, canonical, file_receipt, read_observations
 
@@ -36,13 +37,49 @@ def write_json(path: Path, value) -> None:
     temp.replace(path)
 
 
+def wait_retained_release(output: Path, request_ids: list[str], tp: int, timeout_seconds: int) -> None:
+    """Responses can precede worker-side release receipts; wait before hashing."""
+    deadline = time.monotonic() + timeout_seconds
+    pending = set(range(tp))
+    while pending:
+        for rank in tuple(pending):
+            failure = output / f"retained-failed-rank-{rank}.json"
+            if failure.exists():
+                raise RuntimeError(f"native retained cohort failed on rank {rank}: {failure.read_text()}")
+            try:
+                with (output / f"retained-rank-{rank}.jsonl").open("rb") as stream:
+                    stream.seek(0, 2)
+                    size = stream.tell()
+                    stream.seek(max(0, size - 262144))
+                    raw = stream.read()
+                if not raw.endswith(b"\n"):
+                    continue
+                event = json.loads(raw.splitlines()[-1])
+            except (FileNotFoundError, json.JSONDecodeError, IndexError):
+                continue
+            rows = event.get("requests", [])
+            if (
+                event.get("producer_protocol") == PRODUCER_PROTOCOL
+                and event.get("tp_rank") == rank
+                and [row.get("request_id") for row in rows] == request_ids
+                and all(row.get("released") is True and row.get("parked") is None for row in rows)
+            ):
+                pending.remove(rank)
+        if time.monotonic() >= deadline and pending:
+            raise TimeoutError(f"native retained release receipts missing on ranks {sorted(pending)}")
+        if pending:
+            time.sleep(0.01)
+
+
 def observed_scheduler_process(*args, **kwargs):
     """Spawn-safe entrypoint: install before creating each native TP worker."""
     from sglang.srt.managers.scheduler import run_scheduler_process
 
+    from collector.glm53flash_sglang_retained import install as install_retained
     from collector.glm53flash_sglang_runtime import install
 
     install()
+    install_retained()
     return run_scheduler_process(*args, **kwargs)
 
 
@@ -132,7 +169,7 @@ def validate_eager_args(server, *, resolved: bool) -> None:
 
 
 def validate_server_args(args, *, measured_context_limit=MAX_MEASURED_CONTEXT) -> None:
-    for name in ("pp_size", "dp_size", "ep_size", "attn_cp_size", "nnodes"):
+    for name in ("pp_size", "dp_size", "ep_size", "attn_cp_size", "dcp_size", "moe_dp_size", "dwdp_size", "nnodes"):
         if getattr(args, name, 1) != 1:
             raise ValueError(f"GLM SGLang collection requires {name}=1")
     runtime_limit = sglang_runtime_context_length(measured_context_limit)
@@ -146,6 +183,10 @@ def validate_server_args(args, *, measured_context_limit=MAX_MEASURED_CONTEXT) -
         "cpu_offload_gb",
         "enable_dp_attention",
         "enable_dp_lm_head",
+        "enable_fp32_lm_head",
+        "enable_attn_tp_input_scattered",
+        "enable_pdmux",
+        "enable_mixed_chunk",
     ):
         if getattr(args, name, None):
             raise ValueError(f"GLM SGLang collection rejects {name}")
@@ -207,6 +248,10 @@ def result_payload(
                 {"tp_rank": rank, **file_receipt(output.parent / f"state-layout-rank-{rank}.json")}
                 for rank in range(len(trace_paths))
             ],
+            "retained_states": [
+                {"tp_rank": rank, **file_receipt(output.parent / f"retained-rank-{rank}.jsonl")}
+                for rank in range(len(trace_paths))
+            ],
         },
     }
     return {
@@ -230,6 +275,7 @@ def result_payload(
         "kvwarm": {"enabled": True, "warm_eligible": True, "skip_reason": None, "state_protocol": PROTOCOL},
         "execution_identity": provenance["execution_identity"],
         "context_policy": provenance["context_policy"],
+        "producer_protocol": PRODUCER_PROTOCOL,
         "execution_mode": "native_graph_policy",
         "input_provenance": input_provenance,
         "timing_boundary": TIMING_BOUNDARIES["sglang"],
@@ -358,6 +404,7 @@ def main(argv=None) -> None:
         "run_id": args.run_id,
         "execution_identity": identity,
         "telemetry_policy": TELEMETRY_POLICY,
+        "producer_protocol": PRODUCER_PROTOCOL,
         "context_policy": {
             "measured_context_limit": args.benchmark_max_context_length,
             "runtime_context_length": server.context_length,
@@ -420,6 +467,9 @@ def main(argv=None) -> None:
                             "max_new_tokens": 2 if args.benchmark_mode == "decode" else 1,
                             "ignore_eos": True,
                         },
+                    )
+                    wait_retained_release(
+                        output.parent, [rid for rid, _ in selected], server.tp_size, args.request_timeout_seconds
                     )
                 finally:
                     signal.alarm(0)
