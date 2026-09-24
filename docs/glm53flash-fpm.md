@@ -24,7 +24,7 @@ These are qualification candidates, not evidence of measured GB300 coverage. Pre
 
 Implemented: GLM-specific planning and configuration identity; source-pinned vLLM real-hybrid scheduling; native SGLang Engine collection; Generator, Slurm and Kubernetes backend routing; exact request/dispatch/state evidence validation; and five warmup plus ten measurement medians. The native runtime adapters are shared with the companion Ops implementation. CPU contract tests and all eight deployment renders pass.
 
-GPU qualification and producer qualification are separate. Native vLLM FP8 and NVFP4, each at TP2/TP4, have completed real requests on GB300, including 131008 input tokens plus 32 decode tokens with max model length 131072. This does not qualify an exact past-KV=131072 timing point. The first formal producer canary failed before any measured point because inherited synthetic-prefix admission required block-aligned cached lengths. The GLM producer now admits exact same-request token prefixes against native allocator capacity, disables cross-request prefix caching, and preserves the failed tail point for a fresh GPU attempt. SGLang native qualification, full data matrix, independent MAPE acceptance and immutable Hugging Face publication are pending. No new profile is claimed as accepted.
+GPU qualification and producer qualification are separate. Native vLLM FP8 and NVFP4, each at TP2/TP4, have completed real requests on GB300, including 131008 input tokens plus 32 decode tokens with max model length 131072. This does not qualify the exact inclusive 128K timing boundary: decode past KV is at most 131071. The first formal producer canary failed before any measured point because inherited synthetic-prefix admission required block-aligned cached lengths. The GLM producer now admits exact same-request token prefixes against native allocator capacity, disables cross-request prefix caching, and preserves the failed tail point for a fresh GPU attempt. SGLang native qualification, full data matrix, independent MAPE acceptance and immutable Hugging Face publication are pending. No new profile is claimed as accepted.
 
 Formal collection retains at least five warmups and ten observations per point, and separate calibration/holdout token streams and geometry. Exact table self-queries verify integrity, not independent accuracy. Record complete coverage, phase MAPE, WAPE and tail errors. Existing data remains unchanged.
 
@@ -44,7 +44,10 @@ owned allocation, an explicit container image, and checkpoint/runtime mounts.
 
 The SGLang driver uses its unchanged native scheduler and observes actual
 coordinates. A requested cached extension that the native scheduler does not
-produce is missing coverage, never a substituted geometry. Long contexts are
+produce is missing coverage, never a substituted geometry. With a fixed native chunk budget, ordinary Engine scheduling cannot realize
+arbitrary cached-prefix lengths or homogeneous cached-prefill batches. Such
+points remain missing; the retained-state native benchmark protocol needs its
+own qualification before those points can be published. Long contexts are
 initialized by real forwards on the same requests. Every TP rank retains the
 actual input IDs and completed prefix chain, native DeviceTimer intervals,
 graph mode/padding, and allocated KDA/MLA/index-tail tensor layout.
@@ -59,3 +62,17 @@ latency cannot be admitted to the FPM database.
 The strict reader checks the complete frozen point set and the retained raw
 repetitions before the common Parquet publisher records each median. Raw
 producer failure artifacts remain available even when no table is published.
+
+SGLang distinguishes its measured context limit from its internal admission
+reserve. For inclusive 131072 measured tokens, the generated engine context is
+131079: the native worker reserves six slots and input admission rejects
+equality. Checkpoints support this context without a model override. Both
+limits are recorded, and real allocator admission remains necessary. The
+reader binds every seed/target/rank trace to the run, checkpoint/execution
+identity, telemetry policy and context policy. It also verifies hashed native
+source-preflight and declared/resolved configuration receipts.
+
+Use the [candidate generator](../python/aisimulate/collector/fpm_forward/README.glm53flash-sampling.md)
+and [installed-consumer holdout validator](../python/aisimulate/collector/fpm_forward/README.glm53flash-validation.md)
+for reproducible campaign construction and independent acceptance. The 547
+default geometries per cell are unqualified candidates, not an accepted dataset.
