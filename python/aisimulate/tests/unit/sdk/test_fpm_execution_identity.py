@@ -434,9 +434,11 @@ def test_model_config_builder_preserves_existing_positional_controls():
         True,
         64,
         fpm_fmha_quant_mode="fp8",
+        moe_kernel_source="sglang_flashinfer_trtllm_moe",
     )
     assert result.speculation is None
     assert result.moe_backend == "deepep_moe"
     assert result.enable_eplb is True
     assert result.wideep_num_slots == 64
     assert result.fpm_fmha_quant_mode == FMHAQuantMode.fp8
+    assert result.moe_kernel_source == "sglang_flashinfer_trtllm_moe"

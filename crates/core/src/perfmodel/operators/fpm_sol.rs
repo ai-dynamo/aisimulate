@@ -895,6 +895,7 @@ mod tests {
             workload_distribution: "uniform".into(),
             is_gated: true,
             moe_backend: None,
+            moe_kernel_source: None,
             enable_eplb: false,
             is_context: true,
         };

@@ -108,7 +108,10 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 20 (DeepSeek-V4.1 FPM): FpmForwardOp gained original_fmha_quant_mode
 //   for selector diagnostics. This appends a positional field after the schema-19
 //   release; serde defaults support legacy JSON, not legacy bincode.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 20;
+// - 21 (AIC-1781): EngineConfig and MoeOp gained exact `moe_kernel_source`
+//   identity. Renumbered from the branch's concurrent v20 claim after the
+//   DeepSeek-V4.1 FPM layout landed first.
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 21;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -152,6 +155,10 @@ pub struct EngineConfig {
     /// Use the backend-verified bounded DeepSeek-V4.1 decoder execution profile.
     #[serde(default)]
     pub decoder_replay: bool,
+    /// Exact collected MoE compute kernel-source lane.  Unlike
+    /// `moe_backend`, this selects one measured MoE table lane.
+    #[serde(default)]
+    pub moe_kernel_source: Option<String>,
 
     // KV
     pub kv_block_size: Option<u32>,
