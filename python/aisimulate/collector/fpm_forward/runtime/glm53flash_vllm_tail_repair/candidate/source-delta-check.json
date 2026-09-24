@@ -1,0 +1,7 @@
+{
+  "status": "CPU_SOURCE_DELTA_PASS",
+  "original_sha256": "1cf202f1a44d5bc5c3832b70b41507687ecceea3784e67a4f003bc0210d6eecb",
+  "patched_sha256": "76fdecf31c8cd93479ebe7c788d699498e83957d18037eb5b39ccfe46f57c138",
+  "only_ast_addition": "KpoolTailSpec.uses_slot_mapping property returns False",
+  "native_execution": "NOT_EVALUATED"
+}

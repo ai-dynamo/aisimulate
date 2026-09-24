@@ -1,0 +1,23 @@
+{
+  "schema": "glm53_tail_runtime_build_inputs_v1",
+  "version": "0.30.0+glm53tailref.4e4a40c2a838",
+  "files": {
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "README.md": "2d82346f688df6ca18a989465eeb662db89cdbb35f68071b5224230f3a539aa6",
+    "actual-archive-patch-check.json": "389a4c7c5430e9add1290e6cb7d612a07e16dae73e9cd675ce518873b5f8da3d",
+    "binary-base-origin.json": "8b3218c7d288a39559c2f1a2b43b428e229aa01a22efde20755305d8736a1eae",
+    "build.py": "bf782b28179ce3b0aa95e9d966ade554e53f8bed2b21323af66beed440632ee1",
+    "combined-repair.patch.b64": "a55ebf2ab1ac7c6b918a1f88c86461b5fe5a4956c5e7b40633b47f5d671a2e94",
+    "combined-repair.review.diff": "5b47a247c6eb2ea96dc2bcb2e5ad450e17bd4f74424fcf05a242cface73f4f08",
+    "expected-native-binaries.json": "2ffbf12cd5590804c821328510224bef9c2b5b25b64b7dbbda072037c68b541b",
+    "expected-source-sha256.json": "f63b434a40d4833621e2d6d860cdbe8f26e2b24f2652fbb65b6c20664ead79b3",
+    "patch-identity.json": "ed6750bdd13ba1ad10f7d7d1577f3cce788819ac9f38dcfa43be3dd3065dfab3",
+    "source-archive.json": "593d0556f4205b1a141d2055c317a73a8394d88a27022b979f44a3cb67732dcf",
+    "verify_install.py": "4e47ef24dd8ef81dd8f5f56d770bc2b803e03d328cc38bfe7e06dc7d3aa3ac79"
+  },
+  "independent_build_review_sha256": "f3d2d7c630a859d78c0ce2b12f8b0433d0c3a1a6bcdfa5585df95fbec8f0589c",
+  "independent_delta_review_sha256": "3737ac579144280d9f1f5120af9eda72b948e7067ad18bfb72ce4e1eb462c2e6",
+  "status": "FROZEN_FOR_ACTUAL_CPU_BUILD_INSTALL_ONLY",
+  "model_gpu_qualification": "NOT_EVALUATED",
+  "formal_admission": false
+}

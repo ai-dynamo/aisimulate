@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "status": "private_image_derived_binary_base_not_original_pypi_wheel",
+  "purpose": "Binary input to an actual upstream source build; never installed as an original release",
+  "archive": "vllm-0.30.0-cp38-abi3-manylinux_2_28_aarch64.whl",
+  "archive_sha256": "fb53683eddeaddf1b069cad685bacd8d68e1c6b4a1eb30dddbe57ae2a69f5493",
+  "original_pypi_wheel": {
+    "sha256": "eb3e11bab695d085098579a6eda2d602419adec3826ebfbcce9a3ffa543eb62e",
+    "url": "https://files.pythonhosted.org/packages/18/d9/8249dfb23baffe9b6f822debbf8ffebdfdaabe932b05d4d9c79861485dd8/vllm-0.30.0-cp38-abi3-manylinux_2_28_aarch64.whl"
+  },
+  "image_digest": "sha256:4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56",
+  "actual_export_job": 604777,
+  "replaced_member": "vllm/vllm-rs",
+  "actual_installed_sha256": "e918038efcc755733f3ffacbe35cd3c133c9d0b146f9ec05a88bcdc2519ff1a3",
+  "original_record_row": [
+    "vllm/vllm-rs",
+    "sha256=xvITAZWvoo9V4gQoPzvoLTt39wBDEv0nGAD5VsSusP4",
+    "54300872"
+  ],
+  "new_record_row": [
+    "vllm/vllm-rs",
+    "sha256=6RgDjvzHVXM_P_rL41zTwTPJ0LFG-ewFqIvNwlGf8aM",
+    "54300872"
+  ],
+  "modified_members": [
+    "vllm/vllm-rs",
+    "vllm-0.30.0.dist-info/RECORD"
+  ],
+  "all_other_members_byte_identical": true,
+  "all_record_hashes_validated": true,
+  "upstream_source_revision": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+  "correctness_acceptance": "NOT_EVALUATED",
+  "accuracy_acceptance": "NOT_EVALUATED"
+}
