@@ -20,6 +20,31 @@ SOURCE_PINS = {
 }
 
 
+def validate_model_receipt(receipt):
+    """Check persisted class/method proof before joining measured call evidence."""
+    glm5 = "vllm.models.glm5next.nvidia.model."
+    glm4 = "vllm.model_executor.models.glm4_1v.Glm4vForConditionalGeneration."
+    expected = {
+        "schema_name": "glm53flash_native_serving_none_model",
+        "schema_version": 1,
+        "source_pins": SOURCE_PINS,
+        "classes": [
+            glm5 + name for name in ("Glm5NextForConditionalGeneration", "Glm5NextForCausalLM", "Glm5NextModel")
+        ],
+        "methods": [
+            {"method": glm4 + "forward", "source": "model_executor/models/glm4_1v.py"},
+            {"method": glm4 + "compute_logits", "source": "model_executor/models/glm4_1v.py"},
+            {"method": glm5 + "Glm5NextForCausalLM.compute_logits", "source": "models/glm5next/nvidia/model.py"},
+            {"method": glm5 + "Glm5NextModel.forward", "source": "models/glm5next/nvidia/model.py"},
+        ],
+        "compiled_model": False,
+        "admission": "DIAGNOSTIC_ONLY_NATIVE_CALLS_STILL_REQUIRED",
+    }
+    if receipt != expected:
+        raise ValueError("native NONE model proof differs from the actual uncompiled source contract")
+    return receipt
+
+
 class NativeNoneModelWitness:
     """Retain exact original objects before post-initialization observation.
 
@@ -130,8 +155,7 @@ def validate_none_target(record):
         raise RuntimeError("serving NONE diagnostic requires actual unpadded native prefill dispatch")
 
 
-def diagnostic_operation_rows(record, rows):
-    """Tag raw complete leaf-call evidence, never create accepted query rows."""
+def _validate_operation_rows(record, rows):
     validate_none_target(record)
     if len(rows) != 277 or len({row["name"] for row in rows}) != 277:
         raise RuntimeError("serving NONE diagnostic requires all 277 physical native operations")
@@ -145,11 +169,43 @@ def diagnostic_operation_rows(record, rows):
             or row.get("phase") != record["phase"]
         ):
             raise RuntimeError("serving NONE operation was borrowed from a different execution")
+    return rows
+
+
+def diagnostic_operation_rows(record, rows):
+    """Tag raw complete leaf-call evidence, never create accepted query rows."""
+    for row in _validate_operation_rows(record, rows):
         row.update(
             serving_dispatch="NONE",
             native_dispatch=record["native_dispatch"],
             forward_id=record["forward_id"],
             serving_none_model_sha256=record["serving_none_model_sha256"],
             measurement_admission="DIAGNOSTIC_ONLY_NO_TABLE_EXPORT",
+        )
+    return rows
+
+
+def measured_operation_rows(record, rows):
+    """Write a distinct event contract; original diagnostic rows stay closed."""
+    from collector.glm53flash_vllm_none_activity import NONE_MEASUREMENT_CONTRACT
+
+    if (
+        record.get("measurement_contract") != NONE_MEASUREMENT_CONTRACT
+        or "measurement_admission" in record
+        or any("measurement_admission" in row for row in rows)
+    ):
+        raise RuntimeError("native NONE measured rows require their new original writer contract")
+    for row in _validate_operation_rows(record, rows):
+        row.update(
+            serving_dispatch="NONE",
+            native_dispatch=record["native_dispatch"],
+            forward_id=record["forward_id"],
+            serving_none_model_sha256=record["serving_none_model_sha256"],
+            measurement_contract=NONE_MEASUREMENT_CONTRACT,
+            measurement_method="native_module_cuda_events_v1",
+            profiled=record["profiled"],
+            # Original kernel names remain evidence, but do not qualify a
+            # specialization/interpolation rule by themselves.
+            dispatch_fingerprint="",
         )
     return rows

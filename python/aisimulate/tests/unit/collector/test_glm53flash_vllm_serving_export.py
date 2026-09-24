@@ -237,7 +237,7 @@ def test_native_none_seed_is_valid_but_diagnostic_measurement_cannot_export():
     with pytest.raises(ValueError, match="diagnostic"):
         serving.aggregate_serving(proof, evidence_sha256="e" * 64)
     del row["measurement_admission"]
-    with pytest.raises(ValueError, match="independent native qualification"):
+    with pytest.raises(ValueError, match="original native event/source proof"):
         serving.aggregate_serving(proof, evidence_sha256="e" * 64)
 
 
@@ -683,7 +683,8 @@ def test_piecewise_trace_rebinds_exact_native_segment_activity_and_each_forward(
         serving._replay_binding(tmp_path, copied, registry, set())
 
 
-def test_exported_schema3_table_uses_actual_public_rust_and_returns_binding(tmp_path, monkeypatch):
+@pytest.mark.parametrize("execution_mode", ["FULL", "NONE"])
+def test_exported_schema3_table_uses_actual_public_rust_and_returns_binding(tmp_path, monkeypatch, execution_mode):
     import shutil
     from importlib.resources import files
 
@@ -691,9 +692,12 @@ def test_exported_schema3_table_uses_actual_public_rust_and_returns_binding(tmp_
     from collector.glm53flash_contract import CHECKPOINTS
     from collector.glm53flash_jsonl import file_sha256
 
-    cal_run, cal = complete_full_files(tmp_path / "cal", monkeypatch)
-    control_run, control = complete_full_files(tmp_path / "control", monkeypatch, "control")
-    holdout_run, holdout = complete_full_files(tmp_path / "holdout", monkeypatch, "holdout")
+    from .test_glm53flash_vllm_none_export import none_files
+
+    create = none_files if execution_mode == "NONE" else complete_full_files
+    cal_run, cal = create(tmp_path / "cal", monkeypatch)
+    control_run, control = create(tmp_path / "control", monkeypatch, "control")
+    holdout_run, holdout = create(tmp_path / "holdout", monkeypatch, "holdout")
 
     def truth(run, root, **kwargs):
         proof = serving.read_serving_run(root, run)
@@ -735,7 +739,7 @@ def test_exported_schema3_table_uses_actual_public_rust_and_returns_binding(tmp_
         "enable_shared_layer": False,
     }
     result = serving.predict_homogeneous(holdout_run, holdout, config, native_cal, bound)
-    assert result["rows"] == {1: {"prediction_ms": pytest.approx(0.025)}}
+    assert result["rows"] == {1: {"prediction_ms": pytest.approx(0.282 if execution_mode == "NONE" else 0.025)}}
     assert result["calibration_binding"] == bound and bound["tables"][0]["sha256"] == file_sha256(output)
     bad = copy.deepcopy(bound)
     bad["tables"][0]["sha256"] = "0" * 64

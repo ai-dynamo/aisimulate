@@ -710,9 +710,9 @@ and preserves the original return and subsequent external logits computation.
 The independent control retains its own initialized entry and callable objects;
 it installs no operation hooks or profiler. Missing, repeated or substituted
 replay is rejected. Default FULL behavior is unchanged. This opt-in has no
-PIECEWISE table admission or native GPU qualification yet. Measured NONE targets
-remain unsupported; their serving-policy operation route requires separate
-native call evidence and cannot borrow enforced-eager calibration.
+native GPU qualification yet. PIECEWISE schema3 export requires the separate
+source/capture/activity checks below. NONE targets use their own explicit route
+and cannot borrow enforced-eager calibration.
 
 ### Native serving NONE diagnostic
 
@@ -738,9 +738,44 @@ Rows go only to `serving-none-ops-rank-N.jsonl`, carrying the actual dispatch,
 model-source receipt hash, and `DIAGNOSTIC_ONLY_NO_TABLE_EXPORT`. They are not
 eager query tables. The raw call inventory, setup windows and independent whole
 timing are the next native qualification evidence, not accepted costs or accuracy.
-No residual allocation or serving-NONE table admission is implemented. Actual
-native class, GPU call coverage, control overhead and the independent 20% gate
-remain required after runtime requalification.
+This diagnostic format remains permanently excluded from table export, including
+exact hits. Actual native class, GPU call coverage, control overhead and the
+independent 20% gate remain required after runtime requalification.
+
+### Native serving NONE event measurement
+
+`AISIM_GLM53_SERVING_NONE_MEASURED=1` enables a separate prefill producer with
+`measurement_contract=native_serving_none_events_v1`. It is default-disabled,
+requires `ops_graph` or `ops_graph_holdout`, and rejects the diagnostic NONE and
+PIECEWISE opt-ins. It retains the original native initialization, dispatch,
+request state and model calls. A target must actually dispatch to unpadded NONE;
+its real model class and original methods must match the source receipt.
+
+Calibration writes `serving-none-measured-ops-rank-N.jsonl`. Every original
+forward must complete each of the 277 named physical operations exactly once.
+Only the fifth excluded warmup uses the observer's single profiler. Its original
+trace binds the native run, rank and invocation to completed operation calls,
+source-owned CPU scopes and matching CUDA API/GPU activity correlations.
+Synchronous nested collectives have exclusive ownership established by their
+actual parent call, excluded source and correlation. Unknown, missing or
+ambiguous ownership fails. The profiler stops at logits completion before
+sampling; all ten retained repetitions use the original per-operation CUDA
+events without profiling.
+
+Setup is the sum of two directly recorded GPU event windows: prepared inputs to
+raw model entry, and raw model return to logits entry. Neither a whole-forward
+residual nor profile-derived scaling supplies setup or operation latency.
+The independent control installs no operation hooks or profiler and retains the
+same whole-forward interval. Its actual policy, configuration and requests must
+match calibration. Failures preserve original traces and partial call evidence.
+
+The schema3 reader independently rederives the warmup ownership, validates every
+retained event row and selects one coherent rank per actual forward. Its 277
+named costs plus setup can produce exact rows only after the common runtime,
+request/state/hardware and control checks pass. NONE fingerprints remain empty;
+kernel names alone do not qualify P/Q interpolation. This implementation and
+TEST_ONLY interoperability establish no native model qualification, runtime
+admission, measured coverage or independent accuracy acceptance.
 
 ### CUDA graph runtime provider
 

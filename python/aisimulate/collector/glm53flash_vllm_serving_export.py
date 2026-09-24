@@ -188,7 +188,21 @@ def check_serving_dispatch(row, snapshot):
         if row.get("measurement_admission") == "DIAGNOSTIC_ONLY_NO_TABLE_EXPORT":
             raise ValueError("diagnostic NONE evidence cannot become a measured serving table")
         if mode == "NONE":
-            raise ValueError("serving NONE measurement admission requires independent native qualification")
+            from collector.glm53flash_vllm_none_activity import NONE_MEASUREMENT_CONTRACT, NONE_SETUP_RANGES
+
+            boundaries = row.get("native_runtime_boundary_gpu_ms", {})
+            if (
+                row.get("measurement_contract") != NONE_MEASUREMENT_CONTRACT
+                or "measurement_admission" in row
+                or phase != "context"
+                or row.get("native_none_forward_completed") is not True
+                or row.get("native_graph_replay_completed") is not False
+                or not _hash(row.get("serving_none_model_sha256"))
+                or set(boundaries) != set(NONE_SETUP_RANGES)
+                or any(not _elapsed(value) for value in boundaries.values())
+            ):
+                raise ValueError("serving NONE measurement admission requires original native event/source proof")
+            return descriptor
         if row.get("native_graph_replay_completed") is not True:
             raise ValueError("serving graph lacks its actual completed native replay")
         if mode == "PIECEWISE":
@@ -292,7 +306,19 @@ def aggregate_serving(proof, *, evidence_sha256):
             units = record.get("binding", {})
             if set(units) != {entry["name"] for entry in entries[record["phase"]]}:
                 raise ValueError("serving forward has missing, duplicated or unknown named units")
-            for unit in units.values():
+            for name, unit in units.items():
+                if record["runtime_mode"] == "NONE":
+                    setup = name == "native_graph_setup"
+                    if (
+                        type(unit.get("activity_count")) is not int
+                        or unit["activity_count"] != (2 if setup else 1)
+                        or unit.get("dispatch") != ""
+                        or unit.get("method")
+                        != ("native_runtime_cuda_events_v1" if setup else "native_module_cuda_events_v1")
+                        or not _elapsed(unit.get("latency"), positive=not setup)
+                    ):
+                        raise ValueError("serving NONE unit lacks its original native event interval")
+                    continue
                 if (
                     type(unit.get("activity_count")) is not int
                     or unit["activity_count"] < 0
@@ -343,11 +369,11 @@ def aggregate_serving(proof, *, evidence_sha256):
     }
     rows = []
     for identity, samples in sorted(grouped.items()):
-        signatures = {(row["dispatch"], row["activity_count"]) for _, row in samples}
+        signatures = {(row["dispatch"], row["activity_count"], row.get("method", GRAPH_METHOD)) for _, row in samples}
         ids = {key for key, _ in samples}
         if len(signatures) != 1 or len(ids) != len(samples) or len(samples) < 10:
             raise ValueError("serving named unit mixes actual dispatch or repeats a physical measurement")
-        dispatch, count = signatures.pop()
+        dispatch, count, method = signatures.pop()
         rows.append(
             {
                 **dict(zip(KEYS, identity, strict=True)),
@@ -355,7 +381,7 @@ def aggregate_serving(proof, *, evidence_sha256):
                 "contribution_count": count,
                 "sample_count": len(samples),
                 "dispatch_fingerprint": dispatch,
-                "measurement_method": GRAPH_METHOD,
+                "measurement_method": method,
                 "graph_policy": canonical_json(policy),
                 "graph_policy_sha256": sha256_json(policy),
                 "dataset_role": "calibration",
@@ -578,6 +604,132 @@ def _replay_binding(root, row, registry, files):
     return derived
 
 
+def _none_observations(root, rank, targets, entries, provenance, files, *, calibrated):
+    """Join separate NONE event rows to excluded warmup source/activity proof."""
+    from collector.glm53flash_contract import validate_row
+    from collector.glm53flash_graph_export import _receipt
+    from collector.glm53flash_graph_nodes import trace_forward_identity
+    from collector.glm53flash_jsonl import iter_records
+    from collector.glm53flash_vllm_none import validate_model_receipt
+    from collector.glm53flash_vllm_none_activity import NONE_MEASUREMENT_CONTRACT, bind_none_execution
+
+    model_file = f"serving-none-model-rank-{rank}.json"
+    model = validate_model_receipt(json.loads(_local(root, model_file).read_bytes()))
+    files.add(model_file)
+    physical = {entry["name"]: entry for entry in entries if entry["component"] != "runtime"}
+    profiles = {}
+    for record in targets.values():
+        if record.get("serving_none_model_sha256") != sha256_json(model):
+            raise ValueError("native NONE forward changed its original model identity")
+        profiled = calibrated and record["repetition"] == 4
+        if record.get("profiled") is not profiled or ("native_none_profile" in record) is not profiled:
+            raise ValueError("native NONE must profile only its fifth excluded calibration warmup")
+        if calibrated and record.get("native_operation_calls") != dict.fromkeys(physical, 1):
+            raise ValueError("native NONE forward omitted or repeated a physical native operation")
+        if not profiled:
+            continue
+        recorded = record["native_none_profile"]
+        name = f"none-profile-rank-{rank}-forward-{record['invocation']}.json"
+        if recorded.get("trace_file") != name or name in files:
+            raise ValueError("native NONE warmup trace was reused across actual forwards")
+        trace = _receipt(root, {"file": name, "sha256": recorded["trace_sha256"]}, files)
+        metadata = trace.get("aisim_native_none", {})
+        calls = metadata.get("native_calls", [])
+        if trace.get("aisim_native_forward") != trace_forward_identity(record) or metadata != {
+            "measurement_contract": NONE_MEASUREMENT_CONTRACT,
+            "model_identity_sha256": sha256_json(model),
+            "source_boundary": "GPUModelRunner.prepare_inputs_return_to_compute_logits",
+            "native_calls": calls,
+            "failed": False,
+        }:
+            raise ValueError("native NONE warmup source trace belongs to another forward")
+        derived = bind_none_execution(trace["traceEvents"], calls, physical)
+        if recorded.get("binding") != derived or record["benchmark_id"] in profiles:
+            raise ValueError("native NONE warmup ownership differs from its original source/API activity")
+        profiles[record["benchmark_id"]] = {row["operation"]: row for row in calls}
+    if not calibrated:
+        return {}
+    if set(profiles) != {row["benchmark_id"] for row in targets.values()}:
+        raise ValueError("native NONE point lacks its independently observed fifth warmup")
+    path = f"serving-none-measured-ops-rank-{rank}.jsonl"
+    files.add(path)
+    units = {invocation: {} for invocation in targets}
+    for row in iter_records(_local(root, path)):
+        record = targets.get(row.get("invocation"))
+        entry = physical.get(row.get("name"))
+        if record is None or entry is None or row["name"] in units[record["invocation"]]:
+            raise ValueError("native NONE event row has an unknown/repeated forward or physical unit")
+        validate_row(row)
+        call = profiles[record["benchmark_id"]][row["name"]]
+        source = "+".join(sorted({call["source"], *call["included_sources"]}))
+        geometry = json.loads(entry["geometry"])
+        attention = entry["component"] == "attention"
+        query, prefix, batch = record["query_lengths"][0], record["prefix_lengths"][0], record["batch_size"]
+        coordinates = {
+            "batch_size": batch if attention else 1,
+            "prefix": prefix if attention else 0,
+            "x": query
+            if attention
+            else batch
+            if geometry.get("token_selection") == "last_per_request"
+            else batch * query,
+        }
+        same_forward = (
+            "stage",
+            "forward_id",
+            "tp_rank",
+            "phase",
+            "benchmark_id",
+            "repetition",
+            "sampling_role",
+            "dataset_role",
+            "request_set",
+            "corpus_sha256",
+            "request_ids",
+            "native_dispatch",
+            "serving_none_model_sha256",
+            "profiled",
+        )
+        excluded = row.get("excluded_collectives", [])
+        if (
+            any(
+                row.get(key) != value
+                for source_row in (entry, provenance, coordinates)
+                for key, value in source_row.items()
+            )
+            or any(row.get(key) != record.get(key) for key in same_forward)
+            or row.get("sample") != record["repetition"]
+            or row.get("measurement_contract") != NONE_MEASUREMENT_CONTRACT
+            or "measurement_admission" in row
+            or row.get("measurement_method") != "native_module_cuda_events_v1"
+            or row.get("used_cuda_graph") is not False
+            or row.get("sample_count") != 1
+            or row.get("dispatch_fingerprint") != ""
+            or row.get("kernel_source") != source
+            or not _elapsed(row.get("latency"), positive=True)
+            or not isinstance(excluded, list)
+            or sorted(item.get("source", "") for item in excluded) != sorted(call["excluded_collective_sources"])
+            or any(not _elapsed(item.get("latency")) for item in excluded)
+        ):
+            raise ValueError("native NONE event row differs from its original source/shape/forward identity")
+        units[record["invocation"]][row["name"]] = {
+            "latency": row["latency"],
+            "dispatch": "",
+            "activity_count": 1,
+            "method": "native_module_cuda_events_v1",
+        }
+    for invocation, values in units.items():
+        if set(values) != set(physical):
+            raise ValueError("native NONE event evidence omits physical units")
+        values["native_graph_setup"] = {
+            "latency": sum(targets[invocation]["native_runtime_boundary_gpu_ms"].values()),
+            "dispatch": "",
+            "activity_count": 2,
+            "method": "native_runtime_cuda_events_v1",
+        }
+    return units
+
+
 def read_serving_run(root, run):
     """Recompute serving graph evidence; common loader still checks native state.
 
@@ -620,8 +772,6 @@ def read_serving_run(root, run):
         if (snapshot["tp_rank"], snapshot["tp_size"], snapshot["backend_version"]) != (rank, tp, version):
             raise ValueError("serving policy differs from the frozen native worker/runtime")
         files.add(f"state-layout-rank-{rank}.json")
-        full = _captures(root, rank, snapshot, manifest, provenance, files) if calibrated else {}
-        piecewise = _piecewise_captures(root, rank, snapshot, manifest, provenance, files, full) if calibrated else {}
         forward_name = f"forward-rank-{rank}.jsonl"
         files.add(forward_name)
         targets = {}
@@ -631,7 +781,21 @@ def read_serving_run(root, run):
                 if row["invocation"] in targets or row["phase"] != target_phase:
                     raise ValueError("serving target is duplicated or belongs to another frozen phase")
                 targets[row["invocation"]] = row
-        if calibrated:
+        none_mode = any(row["runtime_mode"] == "NONE" for row in targets.values())
+        if none_mode and any(row["runtime_mode"] != "NONE" for row in targets.values()):
+            raise ValueError("native NONE measured producer cannot mix graph calibration targets")
+        none_units = (
+            _none_observations(root, rank, targets, entries, provenance, files, calibrated=calibrated)
+            if none_mode
+            else {}
+        )
+        full = _captures(root, rank, snapshot, manifest, provenance, files) if calibrated and not none_mode else {}
+        piecewise = (
+            _piecewise_captures(root, rank, snapshot, manifest, provenance, files, full)
+            if calibrated and not none_mode
+            else {}
+        )
+        if calibrated and not none_mode:
             graph_name = f"graph-forward-rank-{rank}.jsonl"
             files.add(graph_name)
             records = iter_records(_local(root, graph_name))
@@ -658,7 +822,9 @@ def read_serving_run(root, run):
             ):
                 raise ValueError("serving observation lacks actual source/completion/timing identity")
             binding = None
-            if calibrated:
+            if calibrated and none_mode:
+                binding = none_units[row["invocation"]]
+            elif calibrated:
                 registry, artifact = (
                     full[canonical_json(shape)] if shape["cg_mode"] == "FULL" else piecewise[shape["num_tokens"]]
                 )
@@ -813,6 +979,11 @@ def profile_control(root, proof, control_root, control_run):
         )
     return {
         "schema": "glm53flash_serving_profile_control_v1",
+        "calibration_timing": (
+            "unprofiled_native_module_cuda_events"
+            if {row["runtime_mode"] for group in proof["forwards"].values() for row in group.values()} == {"NONE"}
+            else "profiled_native_graph_activity"
+        ),
         "execution_policy": control["execution_policy"],
         "evidence_root": str(control_root.resolve()),
         "frozen_run": control_run,

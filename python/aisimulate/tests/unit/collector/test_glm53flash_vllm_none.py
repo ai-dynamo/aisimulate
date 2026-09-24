@@ -197,7 +197,8 @@ def test_none_observation_requires_separate_explicit_serving_diagnostic(monkeypa
         runtime._serving_none_enabled(purpose)
 
 
-def test_none_raw_timings_cannot_write_eager_query_file(tmp_path):
+@pytest.mark.parametrize("measured", [False, True])
+def test_none_raw_timings_cannot_write_eager_query_file(tmp_path, measured):
     class Event:
         def __init__(self, time):
             self.time = time
@@ -207,6 +208,7 @@ def test_none_raw_timings_cannot_write_eager_query_file(tmp_path):
 
     state = runtime._TraceState.__new__(runtime._TraceState)
     state.output, state.rank, state.serving_none = tmp_path, 0, True
+    state.serving_none_measured = measured
     state.previous, state.graph_execution = {}, None
     state.whole_events, state.whole_end_recorded = (Event(0), Event(20), 1), True
     state.none_boundaries = [Event(3), Event(17), Event(18)]
@@ -230,10 +232,22 @@ def test_none_raw_timings_cannot_write_eager_query_file(tmp_path):
         "requests": [],
         "native_none_forward_completed": True,
     }
+    if measured:
+        from collector.glm53flash_vllm_none_activity import NONE_MEASUREMENT_CONTRACT
+
+        record.update(measurement_contract=NONE_MEASUREMENT_CONTRACT, profiled=False)
     state.after(record, {})
     assert not (tmp_path / "rank-0.jsonl").exists()
-    rows = [json.loads(line) for line in (tmp_path / "serving-none-ops-rank-0.jsonl").read_text().splitlines()]
-    assert len(rows) == 277 and all(row["measurement_admission"] == "DIAGNOSTIC_ONLY_NO_TABLE_EXPORT" for row in rows)
+    name = "serving-none-measured-ops-rank-0.jsonl" if measured else "serving-none-ops-rank-0.jsonl"
+    rows = [json.loads(line) for line in (tmp_path / name).read_text().splitlines()]
+    assert len(rows) == 277
+    if measured:
+        assert all(
+            row["measurement_contract"] == NONE_MEASUREMENT_CONTRACT and "measurement_admission" not in row
+            for row in rows
+        )
+    else:
+        assert all(row["measurement_admission"] == "DIAGNOSTIC_ONLY_NO_TABLE_EXPORT" for row in rows)
     assert record["whole_forward_gpu_ms"] == 20
     assert record["native_runtime_boundary_gpu_ms"] == {
         "prepared_inputs_to_raw_model_entry": 3,
@@ -241,9 +255,42 @@ def test_none_raw_timings_cannot_write_eager_query_file(tmp_path):
     }
 
 
+@pytest.mark.parametrize(
+    "purpose,enabled", [("ops_graph", True), ("ops_graph_holdout", True), ("ops", False), ("unknown", False)]
+)
+def test_none_measured_flag_keeps_legacy_diagnostic_and_eager_paths_separate(monkeypatch, purpose, enabled):
+    monkeypatch.setenv("AISIM_GLM53_SERVING_NONE_MEASURED", "1")
+    for key in (
+        "AISIM_GLM53_SERVING_NONE_DIAGNOSTIC",
+        "AISIM_GLM53_PIECEWISE_CAPTURE_ONLY",
+        "AISIM_GLM53_PIECEWISE_REPLAY",
+    ):
+        monkeypatch.setenv(key, "0")
+    if enabled:
+        assert runtime._serving_none_measured_enabled(purpose)
+        assert not runtime._serving_none_enabled(purpose)
+    else:
+        with pytest.raises(RuntimeError, match="own explicit"):
+            runtime._serving_none_measured_enabled(purpose)
+
+
+@pytest.mark.parametrize(
+    "other",
+    ["AISIM_GLM53_SERVING_NONE_DIAGNOSTIC", "AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", "AISIM_GLM53_PIECEWISE_REPLAY"],
+)
+def test_none_measured_flag_rejects_combined_instrumentation(monkeypatch, other):
+    monkeypatch.setenv("AISIM_GLM53_SERVING_NONE_MEASURED", "1")
+    monkeypatch.setenv(other, "1")
+    with pytest.raises(RuntimeError, match="own explicit"):
+        runtime._serving_none_measured_enabled("ops_graph")
+
+
 @pytest.mark.parametrize("calibration", [True, False])
 @pytest.mark.parametrize("defect", [None, "omitted", "duplicate", "replaced_inner"])
-def test_none_serving_adapter_preserves_native_forward_and_later_logits(monkeypatch, tmp_path, calibration, defect):
+@pytest.mark.parametrize("measured", [False, True])
+def test_none_serving_adapter_preserves_native_forward_and_later_logits(
+    monkeypatch, tmp_path, calibration, defect, measured
+):
     import importlib.metadata
 
     from collector import glm53flash_vllm_graph_ops as graph
@@ -295,10 +342,26 @@ def test_none_serving_adapter_preserves_native_forward_and_later_logits(monkeypa
         rank = 0
         graph_execution = None
 
-        def __init__(self, runner, output, provenance, manifest, *, graph_calibration=False, serving_none=False):
+        def __init__(
+            self,
+            runner,
+            output,
+            provenance,
+            manifest,
+            *,
+            graph_calibration=False,
+            serving_none=False,
+            serving_none_measured=False,
+        ):
             assert serving_none and not graph_calibration
+            assert serving_none_measured is measured
             assert (manifest is not None) is calibration
             self.none_witness = none.NativeNoneModelWitness(runner.model)
+            self.none_execution = (
+                SimpleNamespace(boundary=lambda value: calls.append("source_scope_" + value), abort=lambda error: None)
+                if measured and calibration
+                else None
+            )
 
         def before(self, *args, **kwargs):
             calls.append("metadata_window_start")
@@ -317,7 +380,8 @@ def test_none_serving_adapter_preserves_native_forward_and_later_logits(monkeypa
             assert record["requests"][0]["sampled_token_id"] == 7
             calls.append("completed")
 
-    monkeypatch.setenv("AISIM_GLM53_SERVING_NONE_DIAGNOSTIC", "1")
+    monkeypatch.setenv("AISIM_GLM53_SERVING_NONE_DIAGNOSTIC", "0" if measured else "1")
+    monkeypatch.setenv("AISIM_GLM53_SERVING_NONE_MEASURED", "1" if measured else "0")
     monkeypatch.setenv("AISIM_GLM53_PIECEWISE_REPLAY", "0")
     monkeypatch.setenv("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", "0")
     monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_graph" if calibration else "ops_graph_holdout")
@@ -359,7 +423,9 @@ def test_none_serving_adapter_preserves_native_forward_and_later_logits(monkeypa
             "metadata_window_start",
             "metadata",
             "raw_model_boundary",
+            *(["source_scope_model"] if measured and calibration else []),
             "raw_model_boundary",
+            *(["source_scope_before_logits"] if measured and calibration else []),
             "native_logits",
             "completed",
         ]

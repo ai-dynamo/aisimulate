@@ -514,7 +514,20 @@ def bind_execution_activity(binding: dict, events: list[dict], *, additional_bin
     each; the default retains the single-graph contract. No extra graph can
     enter through ordinary setup activity.
     """
-    bindings = [binding, *additional_bindings]
+    return _bind_execution_activity([binding, *additional_bindings], events)
+
+
+def bind_native_eager_activity(events: list[dict]) -> dict:
+    """Require source-bound native API/activity joins with exactly zero graphs.
+
+    This is an explicit eager observation entry, not an empty graph registry.
+    Actual operation/setup ownership and event timing require their separate
+    source-bound observer. No CUDA launch can disappear into an empty result.
+    """
+    return _bind_execution_activity([], events)
+
+
+def _bind_execution_activity(bindings, events):
     correlations = {item["correlation"]: item for item in bindings}
     if len(correlations) != len(bindings) or len({item["graph_id"] for item in bindings}) != len(bindings):
         raise ValueError("native execution contains aliased graph or launch identities")
@@ -665,17 +678,21 @@ def bind_execution_activity(binding: dict, events: list[dict], *, additional_bin
             raise ValueError("native device-work call lacks its matching GPU activity; zero work is unproved")
     if any(len(actual_graph[item["correlation"]]) != len(item["activities"]) for item in bindings):
         raise ValueError("native graph activity differs between node and execution scope proofs")
-    if additional_bindings:
+    if len(bindings) > 1:
         binding = {
             "graphs": bindings,
             "activities": [row for item in bindings for row in item["activities"]],
             "composition": "disjoint_node_ownership_additive_active_unions_not_critical_path",
         }
+    else:
+        binding = bindings[0] if bindings else None
     return _compose_execution(binding, region, setup)
 
 
 def _compose_execution(binding, region, outside):
-    combined = binding["activities"] + outside
+    combined = ([] if binding is None else binding["activities"]) + outside
+    if not combined:
+        raise ValueError("native execution has no positive GPU activity")
     groups = {}
     for row in combined:
         groups.setdefault(row["operation"], []).append(row)
@@ -700,7 +717,7 @@ def _compose_execution(binding, region, outside):
         "activity_interval_sum_us": sum(row["end_us"] - row["start_us"] for row in combined),
         "activity_envelope_us": max(row["end_us"] for row in combined) - min(row["start_us"] for row in combined),
         "approximate_additive_operation_union_us": sum(row["active_union_us"] for row in units),
-        "composition": binding["composition"],
+        "composition": "actual_native_eager_api_activity_ownership" if binding is None else binding["composition"],
         "formal_admission": False,
         "whole_forward_accuracy": "NOT_EVALUATED",
     }

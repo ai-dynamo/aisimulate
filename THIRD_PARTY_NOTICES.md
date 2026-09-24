@@ -1133,7 +1133,9 @@ the repository Apache-2.0 license text applies to these adaptations.
 ## GLM-5.3-Flash vLLM native worker telemetry
 
 - Derived files: `python/aisimulate/collector/glm53flash_vllm_runtime.py`,
-  `python/aisimulate/collector/glm53flash_vllm_none.py` and its CPU tests,
+  `python/aisimulate/collector/glm53flash_vllm_none.py`,
+  `python/aisimulate/collector/glm53flash_vllm_none_activity.py` and their
+  CPU lifecycle and TEST_ONLY event/export tests,
   `python/aisimulate/collector/glm53flash_vllm_serving_export.py` and its
   TEST_ONLY capture/trace/export tests,
   `python/aisimulate/collector/glm53flash_serving_shards.py` and its TEST_ONLY
@@ -1228,7 +1230,8 @@ this adapter. The corpus and new contract tests are original project content.
 
 The independently authored strict memcpy and CPU annotation parsers in
 `python/aisimulate/collector/glm53flash_graph_nodes.py`,
-`python/aisimulate/collector/glm53flash_vllm_piecewise_activity.py`, their
+`python/aisimulate/collector/glm53flash_vllm_piecewise_activity.py`,
+`python/aisimulate/collector/glm53flash_vllm_none_activity.py`, their
 `test_glm53flash_graph_memcpy.py`, profiler category and graph execution/exporter tests, and
 `collector/README.glm53flash.md` reference the trace format in
 https://github.com/pytorch/kineto at immutable commit

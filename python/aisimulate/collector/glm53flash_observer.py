@@ -98,7 +98,7 @@ class NativeOperationObserver:
     their own measured contract, not an arithmetic correction here.
     """
 
-    def __init__(self, manifest: dict, provenance: dict, tp_rank: int, *, torch_module=None):
+    def __init__(self, manifest: dict, provenance: dict, tp_rank: int, *, torch_module=None, profile_callback=None):
         if torch_module is None:
             import torch as torch_module
 
@@ -113,6 +113,7 @@ class NativeOperationObserver:
         self.collective_calls = 0
         self.inside_collective = False
         self.profiler = None
+        self.profile_callback = profile_callback
         self.dispatches = {}
         self._entries = {
             phase: {entry["name"]: entry for entry in entries} for phase, entries in manifest["phases"].items()
@@ -129,7 +130,9 @@ class NativeOperationObserver:
         # The diagnostic CUPTI pass is the last excluded warmup. Timed retained
         # samples run without the profiler; missing native kernel attribution
         # disables interpolation rather than substituting method names.
-        if os.environ.get("AISIM_GLM53_DISPATCH_PROFILING") == "1" and workload.sample == 4:
+        if (
+            os.environ.get("AISIM_GLM53_DISPATCH_PROFILING") == "1" or self.profile_callback is not None
+        ) and workload.sample == 4:
             self.profiler = self.torch.profiler.profile(
                 activities=[
                     self.torch.profiler.ProfilerActivity.CPU,
@@ -152,6 +155,8 @@ class NativeOperationObserver:
             return
         profiler, self.profiler = self.profiler, None
         profiler.stop()
+        if self.profile_callback is not None:
+            self.profile_callback(profiler, self.workload, self.native_call_inventory())
         kernels = defaultdict(list)
         for event in profiler.events():
             launched = getattr(event, "kernels", ())
@@ -165,6 +170,20 @@ class NativeOperationObserver:
         for name in self._entries[self.workload.phase]:
             names = sorted(kernels.get(name, []))
             self.dispatches[self._dispatch_key(name)] = names
+
+    def native_call_inventory(self):
+        """Actual completed observer calls, including witnessed parent sources."""
+        return [
+            {
+                "operation": interval["name"],
+                "source": interval["source"],
+                "completed": True,
+                "included_sources": list(interval.get("included_native_calls", [])),
+                "excluded_collective_sources": [source for _, _, source in interval["collectives"]],
+                "parent_operation": interval.get("parent_operation"),
+            }
+            for interval in self.events
+        ]
 
     def wrap(
         self,
@@ -281,6 +300,7 @@ class NativeOperationObserver:
                             "stream": stream,
                             "collectives": [],
                             "source": witness,
+                            "parent_operation": None if interval is None else interval["name"],
                         }
                     )
                 return result

@@ -194,6 +194,7 @@ class _TraceState:
         graph_calibration=False,
         piecewise_replay=False,
         serving_none=False,
+        serving_none_measured=False,
     ):
         import torch
         from vllm.distributed import get_tensor_model_parallel_rank
@@ -207,6 +208,7 @@ class _TraceState:
         self.previous, self.matched = {}, set()
         self.counter = 0
         self.serving_none = serving_none
+        self.serving_none_measured = serving_none_measured
         self.none_witness, self.none_boundaries = None, None
         if serving_none:
             from collector.glm53flash_vllm_none import NativeNoneModelWitness
@@ -214,6 +216,11 @@ class _TraceState:
             self.none_witness = NativeNoneModelWitness(runner.model)
             self.none_identity_sha256 = _digest(self.none_witness.receipt)
         self.observer = NativeOperationObserver(manifest, provenance, self.rank) if manifest is not None else None
+        self.none_execution = None
+        if serving_none_measured and self.observer is not None:
+            from collector.glm53flash_vllm_none_activity import NativeNoneExecution
+
+            self.none_execution = NativeNoneExecution(self.observer, output)
         self.whole_events = None
         self.graph_execution = None
         self.piecewise_replay = piecewise_replay
@@ -242,6 +249,8 @@ class _TraceState:
                     raise RuntimeError("serving NONE logits preceded or repeated its original model return")
                 self.none_witness.validate()
                 self.mark_none_boundary()
+                if self.none_execution is not None:
+                    self.none_execution.boundary("logits")
             result = original_logits(*args, **kwargs)
             if self.whole_events is not None:
                 start, end, stream = self.whole_events
@@ -251,6 +260,8 @@ class _TraceState:
                 self.whole_end_recorded = True
                 if self.graph_execution is not None:
                     self.graph_execution.end_logits()
+                if self.none_execution is not None:
+                    self.none_execution.end_logits()
             return result
 
         runner.model.compute_logits = compute_logits
@@ -387,7 +398,13 @@ class _TraceState:
                 from collector.glm53flash_vllm_none import validate_none_target
 
                 validate_none_target(record)
-                record["measurement_admission"] = "DIAGNOSTIC_ONLY_NO_TABLE_EXPORT"
+                if getattr(self, "serving_none_measured", False):
+                    from collector.glm53flash_vllm_none_activity import NONE_MEASUREMENT_CONTRACT
+
+                    record["measurement_contract"] = NONE_MEASUREMENT_CONTRACT
+                    record["profiled"] = False
+                else:
+                    record["measurement_admission"] = "DIAGNOSTIC_ONLY_NO_TABLE_EXPORT"
                 record["serving_none_model_sha256"] = self.none_identity_sha256
             elif graph and (not allowed_graph_target or self.observer is not None):
                 raise RuntimeError("native V2 graph target requires actual FULL decode or explicit PIECEWISE replay")
@@ -426,6 +443,8 @@ class _TraceState:
             start.record(stream)
             if serving_none:
                 self.none_boundaries = []
+                if getattr(self, "none_execution", None) is not None:
+                    self.none_execution.begin(record)
             if graph_execution is not None:
                 graph_execution.start_range()
         return record, completed
@@ -438,9 +457,13 @@ class _TraceState:
                 record["native_operation_calls"] = dict(Counter(event["name"] for event in self.observer.events))
             rows = self.observer.end()
             if getattr(self, "serving_none", False):
-                from collector.glm53flash_vllm_none import diagnostic_operation_rows
+                from collector.glm53flash_vllm_none import diagnostic_operation_rows, measured_operation_rows
 
-                rows = diagnostic_operation_rows(record, rows)
+                rows = (
+                    measured_operation_rows(record, rows)
+                    if getattr(self, "serving_none_measured", False)
+                    else diagnostic_operation_rows(record, rows)
+                )
             for row in rows:
                 row.update(
                     {
@@ -456,7 +479,14 @@ class _TraceState:
                         )
                     }
                 )
-                self.append("serving-none-ops" if getattr(self, "serving_none", False) else "ops", row)
+                self.append(
+                    "serving-none-measured-ops"
+                    if getattr(self, "serving_none_measured", False)
+                    else "serving-none-ops"
+                    if getattr(self, "serving_none", False)
+                    else "ops",
+                    row,
+                )
         else:
             # Establish a completed real-prefix receipt; synchronization stays
             # outside every measured module interval and never populates state.
@@ -480,6 +510,8 @@ class _TraceState:
                 if any(value < 0 for value in record["native_runtime_boundary_gpu_ms"].values()):
                     raise RuntimeError("serving NONE runtime boundary interval is negative")
                 self.none_boundaries = None
+                if getattr(self, "none_execution", None) is not None:
+                    self.none_execution.complete(record)
             self.whole_events = None
         for request in record["requests"]:
             rid = request["request_id"]
@@ -631,9 +663,30 @@ def _serving_none_enabled(purpose):
             purpose not in ("ops_graph", "ops_graph_holdout")
             or os.environ.get("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", "0") != "0"
             or os.environ.get("AISIM_GLM53_PIECEWISE_REPLAY", "0") != "0"
+            or os.environ.get("AISIM_GLM53_SERVING_NONE_MEASURED", "0") != "0"
         )
     ):
         raise RuntimeError("serving NONE diagnostic requires its own explicit graph-purpose observation")
+    return value == "1"
+
+
+def _serving_none_measured_enabled(purpose):
+    value = os.environ.get("AISIM_GLM53_SERVING_NONE_MEASURED", "0")
+    if value not in ("0", "1") or (
+        value == "1"
+        and (
+            purpose not in ("ops_graph", "ops_graph_holdout")
+            or any(
+                os.environ.get(name, "0") != "0"
+                for name in (
+                    "AISIM_GLM53_SERVING_NONE_DIAGNOSTIC",
+                    "AISIM_GLM53_PIECEWISE_CAPTURE_ONLY",
+                    "AISIM_GLM53_PIECEWISE_REPLAY",
+                )
+            )
+        )
+    ):
+        raise RuntimeError("serving NONE measured route requires its own explicit graph-purpose observation")
     return value == "1"
 
 
@@ -663,7 +716,8 @@ def install_v2():
     graph_calibration = purpose == "ops_graph"
     include_piecewise = _piecewise_capture_enabled(purpose)
     piecewise_replay = _piecewise_replay_enabled(purpose)
-    serving_none = _serving_none_enabled(purpose)
+    serving_none_measured = _serving_none_measured_enabled(purpose)
+    serving_none = _serving_none_enabled(purpose) or serving_none_measured
     manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
     if graph_mode:
         from vllm.v1.worker.gpu.cudagraph_utils import ModelCudaGraphManager
@@ -712,6 +766,11 @@ def install_v2():
         record["observation_failed"] = True
         state = binding["state"]
         cleanup_error = None
+        if getattr(state, "none_execution", None) is not None:
+            try:
+                state.none_execution.abort(error)
+            except BaseException as failure:
+                cleanup_error = repr(failure)
         if getattr(state, "graph_execution", None) is not None:
             try:
                 state.graph_execution.abort(error)
@@ -741,6 +800,7 @@ def install_v2():
                 graph_calibration=graph_calibration and not serving_none,
                 **({"piecewise_replay": True} if piecewise_replay else {}),
                 **({"serving_none": True} if serving_none else {}),
+                **({"serving_none_measured": True} if serving_none_measured else {}),
             )
             binding = bindings[id(runner)] = {"state": state, "pending": None, "sampled": None}
             original_forward = runner.model.forward
@@ -760,9 +820,13 @@ def install_v2():
                     measured = record["stage"] == "measure"
                     if measured:
                         state.mark_none_boundary()
+                        if serving_none_measured and state.none_execution is not None:
+                            state.none_execution.boundary("model")
                     result = original_forward(*forward_args, **forward_kwargs)
                     if measured:
                         state.mark_none_boundary()
+                        if serving_none_measured and state.none_execution is not None:
+                            state.none_execution.boundary("before_logits")
                     state.none_witness.validate()
                     record["native_none_forward_completed"] = True
                     return result
@@ -964,7 +1028,8 @@ def install_v2():
                 "class": GPUModelRunner.__module__ + "." + GPUModelRunner.__name__,
                 "purpose": purpose,
                 "piecewise_replay_enabled": piecewise_replay,
-                "serving_none_diagnostic_enabled": serving_none,
+                "serving_none_diagnostic_enabled": serving_none and not serving_none_measured,
+                "serving_none_measured_enabled": serving_none_measured,
                 "pid": os.getpid(),
                 "status": "wrappers_installed_no_gpu_execution_claim",
             }
