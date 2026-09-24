@@ -239,6 +239,14 @@ def test_native_sglang_offload_disabled_sentinel_and_active_group():
         offload_num_in_group=1,
     )
     validate_server_args(args)
+    args.context_length = 131079
+    validate_server_args(args)
+    args.context_length = 131080
+    with pytest.raises(ValueError, match="native headroom"):
+        validate_server_args(args)
+    args.context_length = 131079
+    with pytest.raises(ValueError, match="measured context limit"):
+        validate_server_args(args, measured_context_limit=131073)
     args.offload_group_size = 4
     with pytest.raises(ValueError, match="grouped offloading disabled"):
         validate_server_args(args)
@@ -246,6 +254,19 @@ def test_native_sglang_offload_disabled_sentinel_and_active_group():
     args.cpu_offload_gb = 1
     with pytest.raises(ValueError, match="rejects cpu_offload_gb"):
         validate_server_args(args)
+
+
+def test_native_sglang_context_headroom_obeys_strict_input_admission():
+    from collector.glm53flash_protocol import sglang_runtime_context_length
+
+    measured_limit = 131072
+    configured = sglang_runtime_context_length(measured_limit)
+    # Native tp_worker leaves six slots; managers.utils rejects equality.
+    native_max_input = min(configured - 1, 200000 - 1) - 5
+    assert measured_limit < native_max_input
+    assert not measured_limit < min(configured - 2, 200000 - 1) - 5
+    # A smaller real allocator can still reject: headroom is not capacity proof.
+    assert not measured_limit < min(configured - 1, measured_limit - 1) - 5
 
 
 def test_ops_graph_policy_checks_native_declaration_then_resolution():

@@ -1134,6 +1134,8 @@ def _validate_points_receipts(plan, cell, raw_root: Path, attempt_id: str) -> No
 
 
 def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
+    from collector.glm53flash_protocol import sglang_runtime_context_length
+
     from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
 
     if smoke or not cell.state_protocol or _frozen_points(plan) is None:
@@ -1175,6 +1177,8 @@ def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
         cell.cell_id,
         "--disable-radix-cache",
         "--context-length",
+        str(sglang_runtime_context_length(plan.options.vllm_max_model_len)),
+        "--benchmark-max-context-length",
         str(plan.options.vllm_max_model_len),
         "--chunked-prefill-size",
         str(plan.options.max_prefill_isl),

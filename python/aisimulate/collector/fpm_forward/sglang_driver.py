@@ -19,7 +19,13 @@ import time
 import uuid
 from pathlib import Path
 
-from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
+from collector.glm53flash_protocol import (
+    MAX_MEASURED_CONTEXT,
+    PROTOCOL,
+    SGLANG_CONTEXT_HEADROOM,
+    TIMING_BOUNDARIES,
+    sglang_runtime_context_length,
+)
 
 from .sglang_artifact import MEASUREMENTS, TELEMETRY_POLICY, WARMUPS, canonical, file_receipt, read_observations
 
@@ -125,12 +131,13 @@ def validate_eager_args(server, *, resolved: bool) -> None:
         raise ValueError("declared SGLang Ops graph config must disable both phases")
 
 
-def validate_server_args(args) -> None:
+def validate_server_args(args, *, measured_context_limit=MAX_MEASURED_CONTEXT) -> None:
     for name in ("pp_size", "dp_size", "ep_size", "attn_cp_size", "nnodes"):
         if getattr(args, name, 1) != 1:
             raise ValueError(f"GLM SGLang collection requires {name}=1")
-    if args.tp_size not in (2, 4) or args.context_length is None or args.context_length > 131072:
-        raise ValueError("GLM SGLang requires TP2/TP4 and context_length <= 131072")
+    runtime_limit = sglang_runtime_context_length(measured_context_limit)
+    if args.tp_size not in (2, 4) or args.context_length is None or not 1 <= args.context_length <= runtime_limit:
+        raise ValueError("GLM SGLang requires TP2/TP4 and context_length within measured limit plus native headroom")
     if args.kv_cache_dtype != "fp8_e4m3" or not args.disable_radix_cache:
         raise ValueError("GLM SGLang requires FP8 KV and disabled cross-request radix reuse")
     for name in (
@@ -191,6 +198,9 @@ def result_payload(
     input_provenance = {
         **input_provenance,
         "native_forward_manifest": {
+            "runtime_preflight": file_receipt(output.parent / "runtime-preflight.json"),
+            "declared_config": file_receipt(output.parent / "sglang-declared-config.json"),
+            "resolved_config": file_receipt(output.parent / "sglang-resolved-config.json"),
             "requests": file_receipt(manifest_path),
             "traces": [{"tp_rank": rank, **file_receipt(path)} for rank, path in enumerate(trace_paths)],
             "state_layouts": [
@@ -219,6 +229,7 @@ def result_payload(
         "grid_digest": hashlib.sha256(canonical(points).encode()).hexdigest(),
         "kvwarm": {"enabled": True, "warm_eligible": True, "skip_reason": None, "state_protocol": PROTOCOL},
         "execution_identity": provenance["execution_identity"],
+        "context_policy": provenance["context_policy"],
         "execution_mode": "native_graph_policy",
         "input_provenance": input_provenance,
         "timing_boundary": TIMING_BOUNDARIES["sglang"],
@@ -277,6 +288,7 @@ def main(argv=None) -> None:
     parser.add_argument("--benchmark-mode", choices=("prefill", "decode"), required=True)
     parser.add_argument("--benchmark-points-file", type=Path, required=True)
     parser.add_argument("--benchmark-output", type=Path, default=Path("/results/benchmark.json"))
+    parser.add_argument("--benchmark-max-context-length", type=int, default=MAX_MEASURED_CONTEXT)
     parser.add_argument("--input-text", type=Path, default=Path("/tmp/fpm-bench/fpm_text.txt"))
     parser.add_argument("--tokenizer-revision", required=True, choices=tuple(MODEL_REVISIONS.values()))
     parser.add_argument("--dataset-role", choices=("calibration", "holdout"), default="calibration")
@@ -285,7 +297,7 @@ def main(argv=None) -> None:
     parser.add_argument("--observation-purpose", choices=("fpm", "ops", "ops_holdout"), default="fpm")
     args = parser.parse_args(argv)
     server = ServerArgs.from_cli_args(args)
-    validate_server_args(server)
+    validate_server_args(server, measured_context_limit=args.benchmark_max_context_length)
     if args.observation_purpose in ("ops", "ops_holdout"):
         if bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")) != (args.observation_purpose == "ops"):
             raise ValueError("SGLang Ops requires an explicit manifest and native eager execution")
@@ -319,6 +331,10 @@ def main(argv=None) -> None:
     ]
     if not points:
         raise ValueError("SGLang native driver requires a nonempty phase manifest")
+    for point in points:
+        queries = point["total_prefill_tokens"] if args.benchmark_mode == "prefill" else point["batch_size"]
+        if (queries + point["total_kv_read_tokens"]) > args.benchmark_max_context_length * point["batch_size"]:
+            raise ValueError("SGLang point exceeds frozen measured context limit")
     text_raw = args.input_text.read_bytes()
     tokenizer = AutoTokenizer.from_pretrained(server.model_path, revision=args.tokenizer_revision)
     tokens = tokenizer.encode(text_raw.decode(), add_special_tokens=False)
@@ -338,7 +354,16 @@ def main(argv=None) -> None:
     )
     manifest_path = output.parent / "sglang-requests.json"
     write_json(manifest_path, manifest)
-    provenance = {"run_id": args.run_id, "execution_identity": identity, "telemetry_policy": TELEMETRY_POLICY}
+    provenance = {
+        "run_id": args.run_id,
+        "execution_identity": identity,
+        "telemetry_policy": TELEMETRY_POLICY,
+        "context_policy": {
+            "measured_context_limit": args.benchmark_max_context_length,
+            "runtime_context_length": server.context_length,
+            "native_admission_headroom": SGLANG_CONTEXT_HEADROOM,
+        },
+    }
     if args.observation_purpose in ("ops", "ops_holdout"):
         provenance = {
             **read_ops_provenance(
