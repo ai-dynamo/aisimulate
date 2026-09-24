@@ -210,8 +210,7 @@ def validate_stage(root):
         cells.add(key)
         require(
             MODELS.get(part["model_id"]) == part["model_revision"]
-            and part["model_id"]
-            == ("nvidia/GLM-5.3-Flash-NVFP4" if key[1] == "nvfp4" else "zai-org/GLM-5.3-Flash"),
+            and part["model_id"] == ("nvidia/GLM-5.3-Flash-NVFP4" if key[1] == "nvfp4" else "zai-org/GLM-5.3-Flash"),
             "wrong model revision",
         )
         require(
