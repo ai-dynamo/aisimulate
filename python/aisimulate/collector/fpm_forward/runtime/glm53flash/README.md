@@ -28,7 +28,20 @@ Fixed API sources:
 The exact source-file hashes in `runtime-source-sha256.json` must match the
 installed image/overlay. Configure an independently qualified Dynamo overlay
 on PYTHONPATH; `runtime-paths.json` declares its default mounted location.
-The source-checked lazy bootstrap activates only in scheduler processes.
+The source-checked lazy bootstrap activates when a native scheduler or GPU
+worker is imported. Helper/compiler Python processes remain inert.
+
+Formal GB300 evidence includes `native-device-rank-N.json` for every TP worker.
+The wrapper calls `Worker.init_device` unchanged, then reads its selected CUDA
+device once, before model loading and outside all forward intervals. Receipts
+bind the actual name, capability, memory, device index and available native UUID
+to the rank, installed vLLM version, source hash and collector attempt hash.
+The reader rejects missing ranks, non-GB300/sm103 devices, duplicate UUIDs and
+rehashed receipts from another attempt. Failed device checks retain their raw
+receipts; existing receipts are never overwritten. Old smoke artifacts without
+this contract remain historical and cannot enter a new formal publication.
+Ops uses its separately bound per-worker state inventory instead of this FPM
+initializer receipt. No state tensors or GPU selection are changed by the wrapper.
 
 Required environment: `DYN_FPM_GLM53FLASH_REAL_KV=1`, `DYN_FPM_INPUT_TEXT`, and
 `DYN_FPM_TOKENIZER_REVISION` equal to the fixed FP8 or NVFP4 checkpoint revision.

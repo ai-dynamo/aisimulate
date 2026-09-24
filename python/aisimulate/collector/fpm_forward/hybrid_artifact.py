@@ -22,6 +22,55 @@ TIMING_BOUNDARIES = {
 LEGACY_CONTEXT_OVERLAYS = {"e391db177f53430c4280807fcc0eafdace5310cda6f6549ef7f2fb54e6cad984"}
 
 
+def validate_vllm_hardware_receipts(cell, payload: dict, path: Path) -> None:
+    """Formal GB300 rows require the actual native device on every TP worker."""
+    from collector.glm53flash_protocol import validate_gb300_identity
+
+    version = payload.get("producer", {}).get("hardware_contract_version")
+    if type(version) is not int or version != 1:
+        raise ValueError("GLM vLLM native hardware contract is missing or unknown")
+    entries = payload.get("input_provenance", {}).get("native_hardware_manifest")
+    tp = cell.topology.tp
+    if not isinstance(entries, list) or len(entries) != tp:
+        raise ValueError("GLM vLLM native hardware rank coverage is incomplete")
+    pins = json.loads((Path(__file__).parent / "runtime/glm53flash/runtime-source-sha256.json").read_text())
+    attempt_digest = hashlib.sha256(path.with_name("collector-provenance.json").read_bytes()).hexdigest()
+    seen_ranks, seen_uuids = set(), set()
+    for entry in entries:
+        rank, name = entry.get("tp_rank"), entry.get("file")
+        if type(rank) is not int or not 0 <= rank < tp or rank in seen_ranks:
+            raise ValueError("GLM vLLM native hardware rank is invalid or duplicated")
+        seen_ranks.add(rank)
+        if not isinstance(name, str) or Path(name).name != name or not name.endswith(".json"):
+            raise ValueError("GLM vLLM native hardware receipt must be adjacent")
+        raw = path.with_name(name).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != entry.get("sha256"):
+            raise ValueError("GLM vLLM native hardware receipt digest mismatch")
+        receipt = json.loads(raw)
+        if (
+            type(receipt.get("schema_version")) is not int
+            or receipt["schema_version"] != 1
+            or receipt.get("status") != "passed"
+            or receipt.get("backend") != "vllm"
+            or not isinstance(receipt.get("backend_version"), str)
+            or not receipt["backend_version"]
+            or receipt.get("backend_version") != payload.get("producer", {}).get("vllm_package_version")
+            or receipt.get("collector_provenance_sha256") != attempt_digest
+            or type(receipt.get("tp_rank")) is not int
+            or receipt["tp_rank"] != rank
+            or type(receipt.get("tp_size")) is not int
+            or receipt["tp_size"] != tp
+            or receipt.get("worker_source_sha256") != pins["vllm/v1/worker/gpu_worker.py"]
+        ):
+            raise ValueError("GLM vLLM native hardware identity differs from its runtime and rank")
+        hardware = receipt.get("hardware")
+        validate_gb300_identity(hardware)
+        if hardware.get("uuid") is not None:
+            if hardware["uuid"] in seen_uuids:
+                raise ValueError("GLM vLLM TP ranks share the same native GPU UUID")
+            seen_uuids.add(hardware["uuid"])
+
+
 def validate_vllm_context_policy(payload: dict) -> int:
     from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, VLLM_CONTEXT_POLICY_VERSION, vllm_context_policy
 
