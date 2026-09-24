@@ -6,8 +6,8 @@
     {
       "file": "verify_install.py",
       "original_sha256": "4e47ef24dd8ef81dd8f5f56d770bc2b803e03d328cc38bfe7e06dc7d3aa3ac79",
-      "packaged_sha256": "26e403365a3e7b4e423895da7ada0b1954131f4ce3f065e1d072c8756e86bcab",
-      "change": "ruff formatting only; AST identical",
+      "packaged_sha256": "181e9c1dbb8ae1c4c1afb839f620181dd78952c041617a0215b846328172aa86",
+      "change": "ruff formatting and complete original-wrapper NVIDIA copyright header; AST identical",
       "packaged_verifier_native_execution": "PENDING"
     }
   ],

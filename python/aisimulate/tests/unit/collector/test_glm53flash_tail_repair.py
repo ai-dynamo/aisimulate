@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Package provenance checks; these are not native model qualification tests."""
 
@@ -9,6 +9,8 @@ from pathlib import Path
 
 import pytest
 from collector.glm53flash_runtime_identity import ADMITTED_VLLM_REPAIRS
+
+pytestmark = pytest.mark.unit
 
 ROOT = Path(__file__).resolve().parents[3] / "collector/fpm_forward/runtime/glm53flash_vllm_tail_repair"
 TAIL_PATH = "vllm/v1/kv_cache_interface.py"
