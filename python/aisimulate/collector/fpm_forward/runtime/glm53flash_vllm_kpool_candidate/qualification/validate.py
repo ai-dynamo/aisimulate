@@ -56,6 +56,48 @@ def bind_native_request_ids(outputs, prompts):
     return native, mapping
 
 
+def validate_cohort_admission(root, preflight, outputs, mapping, tp):
+    protocol = preflight.get("cohort_admission_protocol")
+    if protocol is None:
+        return "legacy_generate_sequential_admission"
+    sources = json.loads(Path(__file__).with_name("cohort-source.json").read_text())["sources"]
+    if protocol != "native_scheduling_pause_enqueue_v1" or preflight.get("cohort_admission_source_sha256") != {
+        row["path"]: row["sha256"] for row in sources
+    }:
+        raise ValueError("native cohort admission protocol/source differs")
+    groups = {}
+    for row in outputs:
+        groups.setdefault((row["case"], row["repetition"]), []).append(row)
+    events = list(records(root / "cohort-admission.jsonl"))
+    if len(events) != len(groups) * 4:
+        raise ValueError("native cohort admission receipt is incomplete")
+    for index, (key, group) in enumerate(groups.items()):
+        selected = events[index * 4 : index * 4 + 4]
+        group = sorted(group, key=lambda row: row["item"])
+        native_ids = [mapping[row["request_id"]] for row in group]
+        if (
+            [(row["case"], row["repetition"]) for row in selected] != [key] * 4
+            or [row["event"] for row in selected]
+            != ["scheduling_paused", "cohort_enqueued", "scheduling_resumed", "cohort_completed"]
+            or selected[0].get("level") != 0
+            or selected[0].get("mode") != "keep"
+            or selected[1].get("native_request_ids") != native_ids
+            or selected[1].get("prompt_sha256") != [token_digest(row["prompt_token_ids"]) for row in group]
+            or selected[2].get("tags") != ["scheduling"]
+            or selected[3].get("external_request_ids") != [row["request_id"] for row in group]
+        ):
+            raise ValueError("native cohort admission differs from actual completed requests")
+        for rank in range(tp):
+            initial = [
+                {req["request_id"] for req in row["requests"] if req["prefix"] == 0}
+                for row in records(root / f"forward-rank-{rank}.jsonl")
+                if any(req["request_id"] in native_ids and req["prefix"] == 0 for req in row["requests"])
+            ]
+            if initial != [set(native_ids)]:
+                raise ValueError("native initial cohort was not one completed worker batch")
+    return protocol
+
+
 def validate_native(root, tp, mode, policy, runtime_kind=None):
     if __package__:
         from .probe import CASES
@@ -284,12 +326,14 @@ def validate_native(root, tp, mode, policy, runtime_kind=None):
                 or rows[0]["output_token_ids"] != rows[1]["output_token_ids"]
             ):
                 raise ValueError("greedy outputs changed across repeated identical real requests")
+    cohort_protocol = validate_cohort_admission(root, preflight, outputs, request_id_mapping, tp)
     return {
         "requests": len(outputs),
         "native_modes": sorted(modes),
         "all_tp_trace_digest": reference,
         "external_to_native_request_ids": request_id_mapping,
         "request_identity_protocol": identity_protocol or "pinned_source_offline_bijection",
+        "cohort_admission_protocol": cohort_protocol,
         "actual_prefill_splits": all_splits,
         "files": [{"path": p.name, "sha256": digest(p)} for p in sorted(root.iterdir()) if p.is_file()],
     }
@@ -309,6 +353,8 @@ def compare(stock, candidate, split, out):
     evidence = []
     for root, r in zip(roots, receipts, strict=True):
         evidence.append(validate_native(root, tp, r["mode"], policy, r["runtime_kind"]))
+    if len({item["cohort_admission_protocol"] for item in evidence}) != 1:
+        raise ValueError("comparison changes the native cohort admission policy")
     maps = [{(x["case"], x["repetition"], x["item"]): x for x in records(p / "outputs.jsonl")} for p in roots]
     differences = []
     for key in maps[0]:
