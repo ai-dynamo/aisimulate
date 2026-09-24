@@ -67,3 +67,22 @@ precedent. Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
 Apache-2.0; the upstream license is retained in `LICENSE`. No upstream root
 NOTICE exists. The exact derived path is listed in root THIRD_PARTY_NOTICES.md
 and its byte-identical packaged copy. vLLM implementation files are not vendored.
+
+## Inclusive measured context boundary
+
+The frozen measured limit remains at most 131072. For GLM, the renderer resolves
+`--fpm-max-model-len=-1` to that measured limit, then starts native vLLM with seven
+additional internal positions (131079 at the maximum). The producer requires
+`DYN_FPM_GLM53FLASH_MEASURED_CONTEXT` to agree with the actual native configured
+limit; if absent it uses 131072. This reserve allows the real seed and output
+lifecycle to reach the measured decode at past-KV 131071 without native request
+termination first. It does not enlarge the measured context or prove capacity.
+
+New artifacts bind context-policy version 1, measured/runtime/headroom fields,
+native `limits.max_model_len`, input provenance and the hybrid-state bound.
+Readers require that policy. The sole legacy exception is producer overlay
+`e391db177f53430c4280807fcc0eafdace5310cda6f6549ef7f2fb54e6cad984`, observed in both
+prefill/decode short canaries on allocation 603053 with native limit 131072.
+That exception preserves historical receipts and does not qualify exact 128K
+execution. Frozen existing canaries are unchanged; new boundary probes require
+new source and run receipts.

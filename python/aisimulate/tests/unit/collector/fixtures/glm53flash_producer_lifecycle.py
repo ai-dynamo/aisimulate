@@ -21,6 +21,27 @@ spec.loader.exec_module(impl)
 impl.DeepseekV41RealKVScheduler = impl.Glm53FlashRealKVScheduler
 precedent.impl = impl
 
+original_scheduler = precedent.scheduler
+original_write_results = precedent.Base._bench_write_results
+
+
+def scheduler_with_context(point):
+    scheduler = original_scheduler(point)
+    scheduler._real_configure_context(SimpleNamespace(model_config=SimpleNamespace(max_model_len=131079)))
+    return scheduler
+
+
+def write_native_results(self):
+    original_write_results(self)
+    destination = Path(self._bench_config.output_path)
+    payload = json.loads(destination.read_text())
+    payload["limits"] = {"max_model_len": self._real_context_policy["runtime_context_length"]}
+    destination.write_text(json.dumps(payload))
+
+
+precedent.scheduler = scheduler_with_context
+precedent.Base._bench_write_results = write_native_results
+
 
 @dataclass
 class GraphStats:
@@ -210,3 +231,23 @@ for prefix, query, admitted in [(4096, 3, True), (4097, 3, False), (4097, 4, Fal
         assert not admitted and "cached-prefill start is unqualified" in str(error)
     else:
         assert admitted
+
+# Constructor policy must bind the actual native configured context, before any grid.
+scheduler = precedent.scheduler(precedent.point("decode", batch=1, context=131071))
+scheduler._real_configure_context(SimpleNamespace(model_config=SimpleNamespace(max_model_len=131079)))
+assert scheduler._real_context_policy["measured_context_limit"] == 131072
+try:
+    scheduler._real_configure_context(SimpleNamespace(model_config=SimpleNamespace(max_model_len=131072)))
+except ValueError as error:
+    assert "seven internal positions" in str(error)
+else:
+    raise AssertionError("native context without required internal headroom accepted")
+os.environ["DYN_FPM_GLM53FLASH_MEASURED_CONTEXT"] = "1024"
+scheduler._real_configure_context(SimpleNamespace(model_config=SimpleNamespace(max_model_len=1031)))
+try:
+    scheduler._real_validate_grid()
+except ValueError as error:
+    assert "context bound" in str(error)
+else:
+    raise AssertionError("internal runtime headroom enlarged measured point scope")
+del os.environ["DYN_FPM_GLM53FLASH_MEASURED_CONTEXT"]

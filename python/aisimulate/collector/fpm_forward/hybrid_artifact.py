@@ -17,6 +17,36 @@ TIMING_BOUNDARIES = {
 }
 
 
+# Actual short-context FPM prefill/decode canaries from allocation 603053.
+# This exception retains their historical receipts; it grants no new boundary qualification.
+LEGACY_CONTEXT_OVERLAYS = {"e391db177f53430c4280807fcc0eafdace5310cda6f6549ef7f2fb54e6cad984"}
+
+
+def validate_vllm_context_policy(payload: dict) -> int:
+    from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, VLLM_CONTEXT_POLICY_VERSION, vllm_context_policy
+
+    producer = payload.get("producer", {})
+    policy = payload.get("context_policy")
+    version = producer.get("context_policy_version")
+    native_limit = payload.get("limits", {}).get("max_model_len")
+    if policy is None and version is None and producer.get("overlay_sha256") in LEGACY_CONTEXT_OVERLAYS:
+        if type(native_limit) is not int or native_limit != MAX_MEASURED_CONTEXT:
+            raise ValueError("historical GLM vLLM context limit differs from its qualified short canary")
+        return MAX_MEASURED_CONTEXT
+    if type(version) is not int or version != VLLM_CONTEXT_POLICY_VERSION or not isinstance(policy, dict):
+        raise ValueError("GLM vLLM producer requires an explicit versioned context policy")
+    measured = policy.get("measured_context_limit")
+    if type(measured) is not int or measured < 1 or policy != vllm_context_policy(measured):
+        raise ValueError("GLM vLLM measured/runtime context policy mismatch")
+    if type(native_limit) is not int or native_limit != policy["runtime_context_length"]:
+        raise ValueError("GLM vLLM native runtime context differs from its policy")
+    if payload.get("input_provenance", {}).get("context_policy") != policy:
+        raise ValueError("GLM vLLM context policy differs from input provenance")
+    if payload.get("kvwarm", {}).get("max_context") != measured:
+        raise ValueError("GLM vLLM state context bound differs from its policy")
+    return measured
+
+
 def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
     from .native_artifact import _expected_scheduled
 
@@ -26,6 +56,7 @@ def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
         raise ValueError("GLM FPM cannot admit operation-instrumented or eager Ops validation data")
     if payload.get("timing_boundary") != TIMING_BOUNDARIES[cell.backend]:
         raise ValueError("GLM native timing boundary mismatch")
+    context_limit = validate_vllm_context_policy(payload)
     producer = payload.get("producer", {})
     warmups, measurements = producer.get("warmup_repeats"), producer.get("measurement_repeats")
     if type(warmups) is not int or warmups < 5 or type(measurements) is not int or measurements < 10:
@@ -69,6 +100,9 @@ def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
         expected = _expected_scheduled(point)
         decode = point["point_type"] == "decode"
         batch = point["batch_size"]
+        context_tokens = point["total_kv_read_tokens"] + (batch if decode else point["total_prefill_tokens"])
+        if context_tokens > batch * context_limit:
+            raise ValueError("GLM vLLM requested point exceeds its measured context bound")
         seed = point["total_kv_read_tokens"] - (batch if decode else 0)
         if cell.backend == "vllm" and not decode:
             if point.get("rows") is not None:
@@ -122,6 +156,8 @@ def validate_real_hybrid_repetitions(cell, payload: dict, path: Path) -> None:
                 prompt_total += length
                 if request.get("computed_tokens") != length + (2 if decode else 0):
                     raise ValueError("GLM computed history differs from the completed forward")
+                if request["computed_tokens"] > context_limit:
+                    raise ValueError("GLM request history exceeds its measured context bound")
             if prompt_total != seed + (0 if decode else point["total_prefill_tokens"]):
                 raise ValueError("GLM request histories disagree with scheduled geometry")
             fpms = repetition.get("fpms")
