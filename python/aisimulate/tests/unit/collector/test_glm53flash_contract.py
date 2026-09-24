@@ -23,6 +23,52 @@ from collector.glm53flash_observer import NativeOperationObserver, NativeWorkloa
 pytestmark = pytest.mark.unit
 
 
+@pytest.mark.parametrize("candidate", [False, True])
+@pytest.mark.parametrize(
+    "defect", [None, "manifest_version", "provenance_version", "revision", "source", "unknown_version"]
+)
+def test_native_hook_entry_binds_actual_qualified_package_before_touching_model(monkeypatch, candidate, defect):
+    from collector import glm53flash_native_hooks as hooks
+    from collector.glm53flash_contract import runtime_source_pins, sha256_json
+    from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE
+
+    if defect == "source" and not candidate:
+        pytest.skip("stock source verification belongs to worker preflight, preserving its historical row contract")
+    installed = VLLM_KPOOL_CANDIDATE if candidate else BACKENDS["vllm"][0]
+    provenance = {
+        "backend": "vllm",
+        "backend_version": installed,
+        "backend_revision": BACKENDS["vllm"][1],
+        "source_sha256": sha256_json(runtime_source_pins("vllm", installed)),
+    }
+    frozen = dict(provenance)
+    if defect == "manifest_version":
+        frozen["backend_version"] = "different"
+    elif defect == "provenance_version":
+        provenance["backend_version"] = "different"
+    elif defect == "revision":
+        provenance["backend_revision"] = frozen["backend_revision"] = "0" * 40
+    elif defect == "source":
+        provenance["source_sha256"] = "0" * 64
+    elif defect == "unknown_version":
+        installed += ".unqualified"
+        provenance["backend_version"] = frozen["backend_version"] = installed
+    monkeypatch.setattr(hooks, "version", lambda name: installed)
+    touched = []
+    model = SimpleNamespace(modules=lambda: touched.append(True) or [])
+    observer = SimpleNamespace(provenance=provenance, manifest=frozen)
+    if defect is None:
+        # Passing the package gate still requires a complete real loaded model;
+        # this CPU fixture deliberately has none and must not install a wrapper.
+        with pytest.raises(RuntimeError, match="expected exactly 45"):
+            hooks.install_native_hooks(model, observer, "vllm")
+        assert touched == [True]
+    else:
+        with pytest.raises((RuntimeError, ValueError)):
+            hooks.install_native_hooks(model, observer, "vllm")
+        assert touched == []
+
+
 def test_native_launch_keeps_measured_128k_and_native_admission_headroom(tmp_path):
     from collector.collect_glm53flash import native_command
 

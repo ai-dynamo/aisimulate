@@ -15,7 +15,7 @@ import json
 from importlib.metadata import version
 from pathlib import Path
 
-from collector.glm53flash_contract import BACKENDS
+from collector.glm53flash_contract import BACKENDS, validate_runtime_row
 from collector.glm53flash_observer import NativeOperationObserver, require_fused_sglang_norm
 
 SGLANG_PROJECTION_SOURCE_PINS = {
@@ -63,8 +63,20 @@ def install_native_hooks(model, observer: NativeOperationObserver, backend: str)
     request. The serving adapter must uninstall through ``observer.close()``
     before its independent uninstrumented forward/control measurements.
     """
-    if backend not in BACKENDS or version(backend) != BACKENDS[backend][0]:
+    if backend not in BACKENDS:
         raise RuntimeError("native GLM hooks require the exact qualified framework release")
+    actual_version = version(backend)
+    for key, value in (
+        ("backend", backend),
+        ("backend_version", actual_version),
+        ("backend_revision", BACKENDS[backend][1]),
+    ):
+        if observer.provenance.get(key) != value or observer.manifest.get(key) != value:
+            raise RuntimeError("native GLM hook package differs from its frozen manifest/provenance")
+    # Reuse the exact admitted source contract, including the qualified repair.
+    # The serving adapter independently binds the actual worker files/binaries;
+    # no version prefix or ambient patched module can admit a different runtime.
+    validate_runtime_row(observer.provenance)
     if backend == "sglang":
         package = Path(importlib.import_module("sglang").__file__).resolve().parent
         for relative, wanted in SGLANG_PROJECTION_SOURCE_PINS.items():
