@@ -754,6 +754,33 @@ model is meant to be used, i.e. on the workload it was trained on:
 | prefill, default | 18 | 400 × 31 (0.05) | 4.5–6.3 µs | pooled 2.05 %, vLLM pair 5.09 % |
 | **prefill, recommended** | **10 (atomic)** | **100 × 15 (0.2)** | **0.8–1.1 µs** | **pooled 2.02 %, vLLM pair 5.03 %** |
 
+Atomic features: decode n, Σp, max p, min p, Σp²; prefill n, Σe, max e, min e, Σp, max p,
+min p, Σe·p, Σe², Σp² (§3.1). The recommended models on the GB300 SGLang 4 × 3 (rows =
+training data, columns = test data; MAPE %):
+
+Decode, 5 atomic features, 100 × 7 (lr 0.2):
+
+| train \ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.20 | 15.4 | 2.34 |
+| ShareGPT only | 4.03 | 2.19 | 3.08 |
+| LongBench only | 3.02 | 24.1 | 1.83 |
+| all three | 2.15 | 2.09 | 1.84 |
+
+Prefill, 10 atomic features, 100 × 15 (lr 0.2):
+
+| train \ test | AgentX | ShareGPT | LongBench |
+| --- | --- | --- | --- |
+| AgentX only | 2.35 | 3.15 | 0.95 |
+| ShareGPT only | 25.6 | 2.70 | 40.0 |
+| LongBench only | 5.16 | 71.8 | 0.64 |
+| all three | 2.30 | 2.60 | 0.64 |
+
+Same-workload cells (diagonal and last row) are within 0.1 pp of the default model's;
+cross-workload cells are within 2–3 pp except prefill LongBench → ShareGPT, where the 10
+atomic features give 72 % against 36 % for the 18 (§8.8 b): when the training traffic
+differs from the simulated traffic, use the 18 for prefill.
+
 Four findings support this:
 
 1. **Time per estimate depends on trees × leaves, not on the feature count.** 100 × 7 is
