@@ -19,6 +19,13 @@ import pyarrow.parquet as pq
 
 CAMPAIGN = "glm53flash-pr324"
 POLICY = "glm53flash-accepted-arrow-partitions-v1"
+POLICY_MODULES = (
+    "glm53flash.py",
+    "raw_campaign.py",
+    "raw_archive.py",
+    "external_control.py",
+    "external_control_vllm.py",
+)
 MODELS = {
     "zai-org/GLM-5.3-Flash": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
     "nvidia/GLM-5.3-Flash-NVFP4": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",

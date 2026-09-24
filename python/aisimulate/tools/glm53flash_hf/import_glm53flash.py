@@ -191,6 +191,12 @@ def load_manager(root):
         sys.dont_write_bytecode = old_bytecode
 
 
+def copy_policy(destination):
+    """Copy the complete standalone validator closure into a dataset snapshot."""
+    for module in policy.POLICY_MODULES:
+        shutil.copyfile(Path(__file__).with_name(module), destination / "scripts" / module)
+
+
 def prepare(base, stage_root, destination, external_receipts, source_revision, evidence_date):
     base, stage_root, destination = (Path(p).resolve() for p in (base, stage_root, destination))
     policy.require(not destination.exists(), "destination must not exist")
@@ -225,8 +231,7 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
         destination,
         ignore=shutil.ignore_patterns(".cache", "__pycache__", ".git"),
     )
-    for module in ("glm53flash.py", "raw_campaign.py", "raw_archive.py", "external_control.py"):
-        shutil.copyfile(Path(__file__).with_name(module), destination / "scripts" / module)
+    copy_policy(destination)
     route_policy(destination / "scripts/manage_dataset.py")
     manager = load_manager(destination)
     campaign = Path("campaigns") / policy.CAMPAIGN / stage_sha

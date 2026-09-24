@@ -67,7 +67,23 @@ def _key(cell):
     return tuple(cell[field] for field in ("backend", "weight_quantization", "tp", "phase"))
 
 
+def _policy_controls(dataset_root):
+    """Bind every standalone policy dependency to its reviewed source bytes."""
+    controls = {}
+    for module in policy.POLICY_MODULES:
+        path = dataset_root / "scripts" / module
+        policy.require(
+            path.is_file()
+            and not path.is_symlink()
+            and policy.sha(path) == policy.sha(Path(policy.__file__).with_name(module)),
+            f"canonical dataset does not contain the reviewed GLM policy: {module}",
+        )
+        controls["scripts/" + module] = policy.sha(path)
+    return controls
+
+
 def _load_import(stage_root, dataset_root, import_result_path):
+    policy_controls = _policy_controls(dataset_root)
     stage = policy.validate_stage(stage_root)
     report = policy.read(policy.checked(stage_root, stage["acceptance"]))
     input_manifest = policy.read(policy.checked(stage_root, stage["input_manifest"]))
@@ -86,6 +102,7 @@ def _load_import(stage_root, dataset_root, import_result_path):
     index = policy.read(dataset_root / "catalog/index.json")
     bundle = policy.read(dataset_root / "catalog/canonical-bundle.json")
     controls = {
+        **policy_controls,
         "catalog/index.json": policy.sha(dataset_root / "catalog/index.json"),
         "catalog/canonical-bundle.json": policy.sha(dataset_root / "catalog/canonical-bundle.json"),
         import_result_path.relative_to(dataset_root).as_posix(): policy.sha(import_result_path),
@@ -129,15 +146,7 @@ def _load_import(stage_root, dataset_root, import_result_path):
     for receipt in [stage["acceptance"], stage["input_manifest"], *stage["sources"], *partition_receipts]:
         path = policy.checked(archive, receipt)
         controls[path.relative_to(dataset_root).as_posix()] = receipt["sha256"]
-    for module in ("glm53flash.py", "raw_campaign.py", "raw_archive.py"):
-        policy.require(
-            policy.sha(dataset_root / "scripts" / module) == policy.sha(Path(policy.__file__).with_name(module)),
-            "canonical dataset does not contain the reviewed GLM policy",
-        )
-        controls["scripts/" + module] = policy.sha(dataset_root / "scripts" / module)
-
-    for path in ("scripts/glm53flash.py", "scripts/manage_dataset.py"):
-        controls[path] = policy.sha(dataset_root / path)
+    controls["scripts/manage_dataset.py"] = policy.sha(dataset_root / "scripts/manage_dataset.py")
     integration.load_manager(dataset_root).validate_dataset(dataset_root, write_report=False)
     return stage, report, input_manifest, manifests, controls, archive
 

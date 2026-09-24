@@ -21,6 +21,12 @@ unchanged. No upstream license is assumed or invented. Both the pinned file
 hash and structural hook counts must match before applying edits. A changed
 validator requires a new source inspection and pin.
 
+The standalone dataset includes all five modules listed in
+`glm53flash.POLICY_MODULES`, including both external-control adapters. Profile
+generation checks every module against the reviewed source and includes their
+hashes in immutable Hub readback verification. An isolated-process test imports
+the copied modules without the repository on Python's import path.
+
 ## What it checks
 
 - Exactly eight accepted configurations and sixteen prefill/decode cells, fixed
