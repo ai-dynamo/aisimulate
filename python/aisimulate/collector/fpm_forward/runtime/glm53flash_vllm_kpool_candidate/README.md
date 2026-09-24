@@ -1,11 +1,17 @@
 # GLM IndexPool runtime repair candidate
 
-**Status: bounded native Engine functional qualification passed and reviewed.**
-The separately versioned vLLM repair passed the frozen FP8/NVFP4 TP2/TP4 suite
-on GB300. Admission is restricted to the exact repaired distribution, source,
-binary closure and packaged summary below. The stock-runtime rejection for
-cached prefill beginning inside a pool remains active. Requested failing
-geometries stay visible; no point is dropped.
+**Status: quarantined after actual circular-tail slot-mapping out-of-bounds evidence.**
+Diagnostic612960 copied original native inputs on both GB300 TP ranks and showed
+position-derived reads exceeding the actual tail block-table tensor extent.
+The first three calls returned; the fourth failed inside the unchanged original
+slot-mapping call. The common KPool tail source is shared by FP8 and NVFP4.
+
+The earlier four-cell functional suite below remains historical evidence. It
+no longer grants runtime admission, and partial FPM measurements are retained
+outside delivered tables. Python's production repair allowlist is empty; Rust
+rejects this exact runtime for both phases, including exact hits and decode
+baselines. A new immutable runtime and new qualification are required. The
+original receipts are preserved without rewriting their historical status.
 
 The stock GB300 probe observed incorrect pooled cache entries for retained
 prefix4097 followed by query3 or4, while aligned-prefix controls, one-shot
@@ -138,7 +144,7 @@ every completed worker chain; missing or altered assignments fail validation.
 Historical runs without that declaration continue using the explicitly named
 `pinned_source_offline_bijection` correction above.
 
-The repaired-runtime consumer contract preserves stock manifest bytes
+The historical repaired-runtime consumer contract preserved stock manifest bytes
 and extends its own closure with the native Engine qualification sources plus
 `v2-source-sha256.json`. These additional hashes identify upstream
 vllm-project/vllm@ced6857afa0ea7b2e3f0846a62e1394e90f15607 under
@@ -147,16 +153,16 @@ vllm-project/vllm@ced6857afa0ea7b2e3f0846a62e1394e90f15607 under
 actual V2 graph, attention-cache initialization, warmup and hybrid state path;
 the legacy runner file alone is insufficient. No upstream implementation is
 copied by this manifest. Each repaired worker must hash the effective vLLM
-source files and all 19 native binaries before timing. The reviewed exception
-applies only to `0.30.0+glm53kpool.bf5f6b0e689d` and its immutable qualification
-summary. Stock and unknown runtime identities retain their existing gates.
+source files and all 19 native binaries before timing. The former exception
+applied only to `0.30.0+glm53kpool.bf5f6b0e689d` and its immutable qualification
+summary. That exception is now revoked; the production repair allowlist is empty.
 
-## Reviewed packaged admission evidence
+## Historical reviewed qualification evidence
 
 The reviewed `qualification/admission-summary.json` has SHA256
-`d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67`. The consumer
+`d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67`. The historical evidence validator
 requires these exact bytes and validates the complete packaged receipt chain;
-a matching version string alone does not admit a runtime. The original raw
+this validation no longer grants production admission. The original raw
 directories remain external. Small receipts and validator sources were copied
 to task-owned Lustre and verified by reading their actual remote bytes before
 constructing the final summary URIs.

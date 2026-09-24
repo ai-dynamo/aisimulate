@@ -106,7 +106,22 @@ fn data_err(msg: String) -> AicError {
 }
 
 impl FpmForwardOp {
+    fn validate_glm53flash_runtime(&self, backend: &str, version: &str) -> Result<(), AicError> {
+        if backend == "vllm"
+            && version == "0.30.0+glm53kpool.bf5f6b0e689d"
+            && matches!(
+                self.model_path.as_str(),
+                "zai-org/GLM-5.3-Flash" | "nvidia/GLM-5.3-Flash-NVFP4"
+            )
+        {
+            return Err(data_err("GLM-5.3-Flash vLLM runtime quarantined after actual circular-tail slot-mapping out-of-bounds evidence; new runtime qualification required".into()));
+        }
+        Ok(())
+    }
+
     fn select_cell<'a>(&self, db: &'a PerfDatabase) -> Result<&'a FpmForwardCell, AicError> {
+        // Applies to exact hits, interpolation, decode baselines and ceilings.
+        self.validate_glm53flash_runtime(&db.backend, &db.version)?;
         // Exact matching remains authoritative, including the recorded FMHA label.
         // A different precision cell is a miss; the selector never rewrites it.
         let cell = db
@@ -323,6 +338,7 @@ impl FpmForwardOp {
         version: &str,
         coords: &[f64],
     ) -> Result<(), AicError> {
+        self.validate_glm53flash_runtime(backend, version)?;
         if backend != "vllm"
             || self.phase != FpmPhase::Prefill
             || !matches!(
@@ -350,10 +366,9 @@ impl FpmForwardOp {
         }
         let query = coords[1] / coords[0];
         let prefix = coords[2] / coords[0];
-        // Four-cell Engine receipt packaged with the collector, SHA256
-        // d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67.
-        // Exact runtime only; this does not qualify a performance dataset.
-        const ADMITTED_GLM53FLASH_VLLM_REPAIRS: &[&str] = &["0.30.0+glm53kpool.bf5f6b0e689d"];
+        // The previous repaired runtime's functional evidence is historical;
+        // a separate circular-tail mapping defect requires new qualification.
+        const ADMITTED_GLM53FLASH_VLLM_REPAIRS: &[&str] = &[];
         let repaired = ADMITTED_GLM53FLASH_VLLM_REPAIRS.contains(&version);
         if !repaired && prefix % 4.0 != 0.0 && query >= 2.0 {
             return Err(data_err("GLM-5.3-Flash stock vLLM IndexPool cached-prefill start is unqualified; separately qualified runtime repair required".into()));
@@ -826,33 +841,83 @@ mod tests {
     }
 
     #[test]
-    fn reviewed_glm_repair_admits_unaligned_native_coordinates() {
-        let mut prefill = op(FpmPhase::Prefill);
+    fn quarantined_glm_runtime_rejects_every_public_table_query() {
+        use crate::perf_database::fpm_forward::tests::RowSpec;
         for model in ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"] {
-            prefill.model_path = model.into();
-            for coords in [[1.0, 3.0, 4097.0], [2.0, 6.0, 14.0], [4.0, 28.0, 32780.0]] {
-                assert!(
-                    prefill
-                        .validate_glm53flash_native_start(
-                            "vllm",
-                            "0.30.0+glm53kpool.bf5f6b0e689d",
-                            &coords
-                        )
-                        .is_ok()
-                );
+            let rows: Vec<_> = [("prefill", 3, 4096), ("decode", 0, 4096)]
+                .into_iter()
+                .map(|(phase, q, p)| RowSpec {
+                    model_path: model,
+                    workload_kind: phase,
+                    batch_size: 1,
+                    total_prefill_tokens: q,
+                    total_kv_read_tokens: p,
+                    latency_ms: 1.0,
+                    ..RowSpec::default()
+                })
+                .collect();
+            let tmp = tempfile::tempdir().unwrap();
+            write_pair(tmp.path(), &rows);
+            // TEST ONLY: create the runtime identity without requiring shipped
+            // data for the quarantined version, then attach real synthetic rows.
+            let mut db = PerfDatabase::load_with_sources_opts(
+                std::path::Path::new(SYSTEMS_ROOT),
+                "b200_sxm",
+                "vllm",
+                "0.30.0+glm53kpool.bf5f6b0e689d",
+                &Default::default(),
+                true,
+            )
+            .unwrap();
+            db.set_fpm_forward_for_test(crate::perf_database::FpmForwardTable::new(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                "vllm",
+                "0.25.1",
+            ));
+            for phase in [FpmPhase::Prefill, FpmPhase::Decode] {
+                let mut query = op(phase);
+                query.model_path = model.into();
+                let coords = if phase == FpmPhase::Prefill {
+                    vec![1.0, 3.0, 4096.0]
+                } else {
+                    vec![1.0, 4096.0]
+                };
+                for result in [
+                    query.query(&db, &ctx(1, 3, 4096)),
+                    query.query_totals(&db, &coords),
+                ] {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("runtime quarantined")
+                    );
+                }
+                if phase == FpmPhase::Decode {
+                    assert!(
+                        query
+                            .query_pass_baseline(&db, 1, 4096.0)
+                            .unwrap_err()
+                            .to_string()
+                            .contains("runtime quarantined")
+                    );
+                    assert!(
+                        query
+                            .decode_kv_ceiling(&db)
+                            .unwrap_err()
+                            .to_string()
+                            .contains("runtime quarantined")
+                    );
+                }
             }
-            assert!(
-                prefill
-                    .validate_glm53flash_native_start(
-                        "vllm",
-                        "0.30.0+glm53kpool.bf5f6b0e689d",
-                        &[2.0, 3.0, 14.0]
-                    )
-                    .unwrap_err()
-                    .to_string()
-                    .contains("homogeneous integral")
-            );
         }
+        // This finding is specific to this model/runtime identity.
+        assert!(
+            op(FpmPhase::Decode)
+                .validate_glm53flash_runtime("vllm", "0.30.0+glm53kpool.bf5f6b0e689d")
+                .is_ok()
+        );
     }
 
     #[test]
