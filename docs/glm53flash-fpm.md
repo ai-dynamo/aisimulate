@@ -24,7 +24,28 @@ These are qualification candidates, not evidence of measured GB300 coverage. Pre
 
 Implemented: GLM-specific planning and configuration identity; source-pinned vLLM real-hybrid scheduling; native SGLang Engine collection; Generator, Slurm and Kubernetes backend routing; exact request/dispatch/state evidence validation; and five warmup plus ten measurement medians. The native runtime adapters are shared with the companion Ops implementation. CPU contract tests and all eight deployment renders pass.
 
-GPU qualification and producer qualification are separate. Native vLLM FP8 and NVFP4, each at TP2/TP4, have completed real requests on GB300, including 131008 input tokens plus 32 decode tokens with max model length 131072. This does not qualify the exact inclusive 128K timing boundary: decode past KV is at most 131071. The first formal producer canary failed before any measured point because inherited synthetic-prefix admission required block-aligned cached lengths. The GLM producer now admits exact same-request token prefixes against native allocator capacity, disables cross-request prefix caching, and preserves the failed tail point for a fresh GPU attempt. SGLang native qualification, full data matrix, independent MAPE acceptance and immutable Hugging Face publication are pending. No new profile is claimed as accepted.
+GPU qualification and producer qualification are separate. All eight native
+model/request smoke configurations passed on GB300: vLLM job 601652 and SGLang
+job 603053. The long request used 131008 input tokens plus 32 decode tokens.
+This does not qualify the exact inclusive 128K timing boundary: decode past KV
+is at most 131071.
+
+The vLLM FP8 TP2 producer canary in job 603053 completed two prefill and two
+decode points, each with five warmups and ten retained observations. The
+production native reader and common aggregator passed all four points. Prefill
+Q1024/P0 used NONE dispatch; Q3/P4096 used PIECEWISE with four total tokens after padding (one padding token).
+Decode B1/P1024 and B4/P4099 used FULL for admission and measurement. These
+are producer receipts; independent ordinary-Engine output replay, full-matrix
+collection, MAPE acceptance and immutable Hugging Face publication are pending.
+The retained-request SGLang producer is under separate GPU qualification.
+
+Native GB300 split/one-shot IndexPool probes in job 604200 found wrong pooled
+cache entries for stock vLLM P4097/Q3 (B1/B2) and P4097/Q4 (B1). Aligned
+controls and all one-shot oracle cases passed. Producer, reader and Rust FPM
+queries reject the conservative unaligned-start contract P%4 != 0 with Q >= 2;
+requested coordinates remain in coverage. A source-pinned runtime repair must
+pass independent qualification before those points can be collected. No new
+profile is claimed as accepted.
 
 Formal collection retains at least five warmups and ten observations per point, and separate calibration/holdout token streams and geometry. Exact table self-queries verify integrity, not independent accuracy. Record complete coverage, phase MAPE, WAPE and tail errors. Existing data remains unchanged.
 
@@ -42,15 +63,15 @@ FPM translates the shared Generator's legacy decode graph-size options to
 `--fpm-executor slurm` transport are retained. A Slurm run requires an existing
 owned allocation, an explicit container image, and checkpoint/runtime mounts.
 
-The SGLang driver uses its unchanged native scheduler and observes actual
-coordinates. A requested cached extension that the native scheduler does not
-produce is missing coverage, never a substituted geometry. With a fixed native chunk budget, ordinary Engine scheduling cannot realize
-arbitrary cached-prefix lengths or homogeneous cached-prefill batches. Such
-points remain missing; the retained-state native benchmark protocol needs its
-own qualification before those points can be published. Long contexts are
-initialized by real forwards on the same requests. Every TP rank retains the
-actual input IDs and completed prefix chain, native DeviceTimer intervals,
-graph mode/padding, and allocated KDA/MLA/index-tail tensor layout.
+The SGLang driver uses the native Scheduler, ScheduleBatch and request/cache
+objects. Its retained-request benchmark protocol seeds each request through
+actual forwards, parks completed prefixes in the native ChunkCache, then
+forms the frozen homogeneous target batch from those same requests. Decode
+also executes its real admission forward. Actual KV/Mamba slots, prefix maps,
+input/output tokens and every TP rank's completed target/release receipts are
+validated. Arbitrary prefix counters and fake cache state are forbidden. The
+protocol requires its own GPU and ordinary-Engine output qualification; CPU
+lifecycle tests alone do not grant admission.
 
 SGLang timing is rank zero's native DeviceTimer forward interval, including its
 native logits boundary. Token readback happens outside that interval and is
@@ -74,5 +95,10 @@ source-preflight and declared/resolved configuration receipts.
 
 Use the [candidate generator](../python/aisimulate/collector/fpm_forward/README.glm53flash-sampling.md)
 and [installed-consumer holdout validator](../python/aisimulate/collector/fpm_forward/README.glm53flash-validation.md)
-for reproducible campaign construction and independent acceptance. The 547
-default geometries per cell are unqualified candidates, not an accepted dataset.
+for reproducible campaign construction and independent acceptance. The default 547 geometries per cell are unqualified candidates. The additive
+Ops-bracketing v2 bundle contains 618 per cell (397 calibration, 221 holdout),
+preserving every original holdout byte and ID. Necessary geometry coverage is
+not measured kernel coverage or accuracy acceptance. Long campaigns use
+[bounded shards](../python/aisimulate/collector/fpm_forward/README.glm53flash-shards.md)
+with immutable original-point mapping and complete-union publication; retries
+preserve previous attempts and their raw evidence.
