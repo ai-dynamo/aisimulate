@@ -93,9 +93,9 @@ def main():
     from vllm.v1.worker.gpu.model_runner import GPUModelRunner
 
     if __package__:
-        from .worker_probe import QualificationWorker
+        from .worker_probe import QualificationWorker, install_request_id_witness, request_identity_sources
     else:
-        from worker_probe import QualificationWorker
+        from worker_probe import QualificationWorker, install_request_id_witness, request_identity_sources
 
     for name in ("prepare_inputs", "execute_model", "sample", "sample_tokens"):
         if not callable(getattr(GPUModelRunner, name, None)):
@@ -108,6 +108,8 @@ def main():
             "status": "passed",
             "runtime": runtime,
             "checkpoint_config_sha256": config_sha,
+            "request_identity_protocol": "native_assign_request_id_v1",
+            "request_identity_source_sha256": request_identity_sources(),
             "public_engine_args": kwargs,
             "actual_engine_args_class": type(actual_args).__module__ + "." + type(actual_args).__name__,
             "gpu_execution": False,
@@ -133,6 +135,7 @@ def main():
             prompts[(case, i)] = tokens[:n]
     llm = LLM(**kwargs)
     try:
+        install_request_id_witness(llm.llm_engine.input_processor, args.output)
         save(
             args.output / "effective-native-config.json",
             {

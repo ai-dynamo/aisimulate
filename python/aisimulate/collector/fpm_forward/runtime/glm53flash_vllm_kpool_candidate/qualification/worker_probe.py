@@ -44,6 +44,51 @@ def verify_runtime(expected, runtime):
     }
 
 
+def request_identity_sources():
+    """Verify the native parent APIs whose real assignments are observed."""
+    import vllm
+
+    package = Path(vllm.__file__).resolve().parent.parent
+    sources = json.loads(Path(__file__).with_name("request-id-source.json").read_text())["sources"]
+    result = {}
+    for source in sources:
+        actual = digest(package / source["path"])
+        if actual != source["sha256"]:
+            raise RuntimeError("native request identity source differs from pinned contract")
+        result[source["path"]] = actual
+    return result
+
+
+def install_request_id_witness(processor, directory):
+    """Call original native assignment, retaining its actual before/after IDs."""
+    path = Path(directory) / "request-id-map.jsonl"
+    path.touch(exist_ok=False)
+    original = processor.assign_request_id
+
+    @functools.wraps(original)
+    def assign(request):
+        external = request.request_id
+        result = original(request)
+        if request.external_req_id != external:
+            raise RuntimeError("native request assignment did not preserve the external ID")
+        with path.open("a") as stream:
+            stream.write(
+                json.dumps(
+                    {
+                        "external_request_id": external,
+                        "native_request_id": request.request_id,
+                        "prompt_sha256": token_digest(request.prompt_token_ids),
+                        "original_assignment_returned": True,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        return result
+
+    processor.assign_request_id = assign
+
+
 class QualificationWorker:
     def install_repair_qualification_observer(self, directory, expected, runtime):
         import torch

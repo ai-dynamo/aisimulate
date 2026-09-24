@@ -118,3 +118,13 @@ chain on every TP rank. This is an offline validator correction: historical
 GPU logs and the original failed validator result remain unchanged; revalidation
 receipts identify the new validator hash separately. It does not qualify the
 candidate runtime or relax its native-state/functional gates.
+
+
+New qualification runs additionally hash-check the parent request-ID APIs and
+observe the original `InputProcessor.assign_request_id` before/after IDs in
+`request-id-map.jsonl`. They retain default native randomization and record
+only after the original assignment returns. The declared
+`native_assign_request_id_v1` protocol requires that witness to agree with
+every completed worker chain; missing or altered assignments fail validation.
+Historical runs without that declaration continue using the explicitly named
+`pinned_source_offline_bijection` correction above.
