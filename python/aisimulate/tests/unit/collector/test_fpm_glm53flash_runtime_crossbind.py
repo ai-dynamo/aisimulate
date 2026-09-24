@@ -20,6 +20,8 @@ CANDIDATE = identity.VLLM_KPOOL_CANDIDATE
 
 def chain(tmp_path, monkeypatch, outer, actual):
     # Process-local test admission only; no source or published data is modified.
+    # TEST_ONLY: this test isolates downstream runtime binding; summary validation has its own suite.
+    monkeypatch.setattr(identity, "_validate_qualification_summary", lambda _: {})
     monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, CANDIDATE, "a" * 64)
     pod = tmp_path / "pod"
     pod.mkdir()

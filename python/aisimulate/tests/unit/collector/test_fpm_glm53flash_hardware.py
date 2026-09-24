@@ -174,6 +174,8 @@ def test_rehashed_repair_receipt_needs_actual_every_rank_binary_closure(monkeypa
     from collector import glm53flash_runtime_identity as identity
 
     # TEST ONLY registry entry exercises dormant repaired-runtime validation.
+    # TEST_ONLY: this test isolates downstream runtime binding; summary validation has its own suite.
+    monkeypatch.setattr(identity, "_validate_qualification_summary", lambda _: {})
     monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, identity.VLLM_KPOOL_CANDIDATE, "a" * 64)
     cell, payload, path = artifact(tmp_path)
     manifest = Path(hardware.__file__).with_name("runtime-source-sha256.json")
