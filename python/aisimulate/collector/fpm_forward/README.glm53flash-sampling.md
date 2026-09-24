@@ -118,3 +118,22 @@ such as `--contexts`, `--cached-queries`, `--edge-batches`, `--block-anchors`,
 Required six batch anchors, 1K/64K/128K anchors and declared limits are retained.
 Changing inputs changes the campaign hash; the generator refuses to overwrite an
 existing bundle. Increase density when native dispatch evidence requires it.
+
+To add calibration anchors while retaining the original holdout selection, use
+an additive schema-3 input instead of changing the base grid options:
+
+```sh
+PYTHONPATH=python/aisimulate python -m collector.fpm_forward.glm53flash_sampling \
+  --supplemental-calibration-points /results/supplemental-calibration-points.json \
+  --output /results/glm53flash-candidates-v2
+```
+
+The new inventory binds the original campaign ID and supplemental payload hash.
+It preserves every original candidate ID, holdout byte, bracket and qualification
+status, and adds only previously unrequested calibration geometries. Existing
+calibration anchors are counted without duplicating them. Supplemental holdout
+collisions, duplicate requests, nonhomogeneous batches and points beyond the
+declared batch/context/prefill limits are errors. The supplemental input is copied
+into the output bundle for reproduction. All added points remain `NOT_EVALUATED`;
+geometric brackets still require compatible observed dispatch and independent
+accuracy acceptance. This operation does not alter an existing frozen campaign.

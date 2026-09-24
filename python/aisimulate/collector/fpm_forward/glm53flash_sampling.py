@@ -9,6 +9,7 @@ qualification-template JSON are planning receipts, never collector perf data.
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 from dataclasses import asdict, dataclass
@@ -267,6 +268,93 @@ def generate(options: SamplingOptions | None = None) -> dict:
     }
 
 
+def add_calibration_points(base: dict, supplement: dict) -> dict:
+    """Add requested anchors before freeze without moving any existing holdout.
+
+    This does not infer kernel compatibility or GPU admission. Original IDs,
+    holdout geometry and brackets remain evidence of the original selection.
+    """
+    if base.get("status") != "CANDIDATES_NOT_QUALIFIED" or "calibration_extension" in base:
+        raise ValueError("calibration extension requires an original unqualified candidate inventory")
+    if (
+        not isinstance(supplement, dict)
+        or set(supplement) != {"schema_version", "prefill", "decode"}
+        or type(supplement["schema_version"]) is not int
+        or supplement["schema_version"] != 3
+    ):
+        raise ValueError("supplemental calibration requires a schema3 point payload")
+    keys = set()
+    for phase in ("prefill", "decode"):
+        rows = supplement[phase]
+        if not isinstance(rows, list):
+            raise ValueError("supplemental calibration phases must contain point lists")
+        required = {"batch_size", "total_kv_read_tokens"}
+        if phase == "prefill":
+            required.add("total_prefill_tokens")
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != required or any(type(v) is not int for v in row.values()):
+                raise ValueError("supplemental calibration requires canonical integer coordinates")
+            batch, past = row["batch_size"], row["total_kv_read_tokens"]
+            new = row["total_prefill_tokens"] if phase == "prefill" else batch
+            if (
+                not 1 <= batch <= MAX_BATCH
+                or past < 0
+                or new < batch
+                or past % batch
+                or new % batch
+                or (phase == "decode" and past < batch)
+                or (past + new) // batch > MAX_CONTEXT
+                or (phase == "prefill" and new > MAX_PREFILL)
+            ):
+                raise ValueError("supplemental calibration is outside the homogeneous declared scope")
+            key = point_key(phase, batch, new // batch, past // batch)
+            if key in keys:
+                raise ValueError("duplicate supplemental calibration geometry")
+            keys.add(key)
+    if not keys:
+        raise ValueError("supplemental calibration must contain at least one point")
+
+    def existing_keys(role):
+        return {
+            (phase, row["batch_size"], row.get("total_prefill_tokens", 0), row["total_kv_read_tokens"])
+            for phase in ("prefill", "decode")
+            for row in base["payloads"][role][phase]
+        }
+
+    if keys & existing_keys("holdout"):
+        raise ValueError("supplemental calibration would contaminate an original holdout geometry")
+    existing = existing_keys("calibration")
+    result = copy.deepcopy(base)
+    for key in sorted(keys - existing):
+        result["payloads"]["calibration"][key[0]].append(payload_point(key))
+        result["points"]["calibration"].append(
+            {
+                "candidate_id": "calibration-" + digest([VERSION, "calibration", key])[:20],
+                "phase": key[0],
+                "point": payload_point(key),
+                "inclusive_context": context_length(key),
+                "families": ["supplemental_native_dispatch_anchor"],
+                "calibration_brackets": [],
+                "qualification_status": "NOT_EVALUATED",
+            }
+        )
+    extension = {
+        "schema": "glm53flash_additive_calibration_v1",
+        "base_campaign_id": base["campaign_id"],
+        "supplemental_points": copy.deepcopy(supplement),
+        "supplemental_points_sha256": digest(supplement),
+        "added_points": len(keys - existing),
+        "already_requested_points": len(keys & existing),
+        "holdout_payload_sha256": base["payload_sha256"]["holdout"],
+        "holdout_selection_unchanged": True,
+    }
+    result["calibration_extension"] = extension
+    result["payload_sha256"]["calibration"] = digest(result["payloads"]["calibration"])
+    result["campaign_id"] = digest({"extension": extension, "payloads": result["payloads"]})
+    result["request_namespaces"] = {role: f"glm53-{result['campaign_id'][:16]}-{role}" for role in ROLES}
+    return result
+
+
 def write_bundle(destination: Path, result: dict) -> None:
     """Write immutable candidate inputs plus unfilled receipt slots; never admit."""
     destination.mkdir(parents=True, exist_ok=False)
@@ -276,6 +364,8 @@ def write_bundle(destination: Path, result: dict) -> None:
 
     inventory = {key: value for key, value in result.items() if key != "payloads"}
     write("candidate-inventory.json", inventory)
+    if "calibration_extension" in result:
+        write("supplemental-calibration-points.json", result["calibration_extension"]["supplemental_points"])
     for role in ROLES:
         # These exact schema3 bytes are accepted by FPMCollectionOptions.
         (destination / f"{role}-points.json").write_text(canonical(result["payloads"][role]))
@@ -323,10 +413,16 @@ def int_list(value: str) -> tuple[int, ...]:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--supplemental-calibration-points", type=Path)
     for name, default in asdict(SamplingOptions()).items():
         parser.add_argument("--" + name.replace("_", "-"), type=int_list, default=default)
     args = parser.parse_args(argv)
     result = generate(SamplingOptions(**{name: getattr(args, name) for name in asdict(SamplingOptions())}))
+    if args.supplemental_calibration_points is not None:
+        from .config import _freeze_benchmark_points
+
+        payload, _ = _freeze_benchmark_points(str(args.supplemental_calibration_points))
+        result = add_calibration_points(result, json.loads(payload))
     write_bundle(args.output, result)
     print(
         json.dumps(

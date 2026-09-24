@@ -8,8 +8,16 @@ import json
 from dataclasses import replace
 
 import pytest
+
 from collector.fpm_forward.config import FPMCollectionOptions
-from collector.fpm_forward.glm53flash_sampling import SamplingOptions, canonical, generate, main, write_bundle
+from collector.fpm_forward.glm53flash_sampling import (
+    SamplingOptions,
+    add_calibration_points,
+    canonical,
+    generate,
+    main,
+    write_bundle,
+)
 from collector.fpm_forward.glm53flash_validation import _geometry, _group
 
 pytestmark = pytest.mark.unit
@@ -144,3 +152,71 @@ def test_reproducible_cli_and_pre_freeze_density_changes(tmp_path):
 def test_invalid_declared_matrix_fails_before_generating_points(options):
     with pytest.raises(ValueError):
         generate(options)
+
+
+def test_additive_anchors_preserve_original_holdout_and_candidate_identity(campaign, tmp_path):
+    supplement = {
+        "schema_version": 3,
+        "prefill": [{"batch_size": 2, "total_prefill_tokens": 6, "total_kv_read_tokens": 14}],
+        "decode": [campaign["payloads"]["calibration"]["decode"][0]],
+    }
+    before = canonical(campaign)
+    extended = add_calibration_points(campaign, supplement)
+    assert canonical(campaign) == before
+    assert extended["campaign_id"] != campaign["campaign_id"]
+    assert extended["points"]["holdout"] == campaign["points"]["holdout"]
+    assert canonical(extended["payloads"]["holdout"]) == canonical(campaign["payloads"]["holdout"])
+    assert extended["payload_sha256"]["holdout"] == campaign["payload_sha256"]["holdout"]
+    original = {item["candidate_id"]: item for item in campaign["points"]["calibration"]}
+    assert all(
+        item == original[item["candidate_id"]]
+        for item in extended["points"]["calibration"]
+        if item["candidate_id"] in original
+    )
+    assert extended["calibration_extension"]["added_points"] == 1
+    assert extended["calibration_extension"]["already_requested_points"] == 1
+    assert all(item["qualification_status"] == "NOT_EVALUATED" for item in extended["points"]["calibration"])
+    test_every_holdout_has_actual_same_axis_calibration_brackets(extended)
+    test_calibration_holdout_identity_and_geometry_are_globally_disjoint(extended)
+    path = tmp_path / "supplement.json"
+    path.write_text(canonical(supplement))
+    output = tmp_path / "extended"
+    assert main(["--output", str(output), "--supplemental-calibration-points", str(path)]) == 0
+    actual = json.loads((output / "candidate-inventory.json").read_text())
+    assert actual["campaign_id"] == extended["campaign_id"]
+    assert json.loads((output / "supplemental-calibration-points.json").read_text()) == supplement
+    test_existing_planner_accepts_exact_schema3_payloads_and_hashes(extended, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "phase,point",
+    [
+        ("prefill", {"batch_size": True, "total_prefill_tokens": 6, "total_kv_read_tokens": 14}),
+        ("prefill", {"batch_size": 2, "total_prefill_tokens": 5, "total_kv_read_tokens": 14}),
+        ("prefill", {"batch_size": 2, "total_prefill_tokens": 6, "total_kv_read_tokens": 15}),
+        ("prefill", {"batch_size": 1, "total_prefill_tokens": 8193, "total_kv_read_tokens": 0}),
+        ("decode", {"batch_size": 1, "total_kv_read_tokens": 131072}),
+        ("decode", {"batch_size": 33, "total_kv_read_tokens": 33}),
+        ("decode", {"batch_size": 1, "total_kv_read_tokens": 0}),
+        ("decode", {"batch_size": 1, "total_kv_read_tokens": 1, "latency": 0.1}),
+    ],
+)
+def test_additive_anchors_reject_nonphysical_or_noncanonical_points(campaign, phase, point):
+    payload = {"schema_version": 3, "prefill": [], "decode": []}
+    payload[phase].append(point)
+    with pytest.raises(ValueError):
+        add_calibration_points(campaign, payload)
+
+
+def test_additive_anchors_never_admit_holdout_contamination_or_duplicate_requests(campaign):
+    row = campaign["payloads"]["holdout"]["prefill"][0]
+    payload = {"schema_version": 3, "prefill": [row], "decode": []}
+    with pytest.raises(ValueError, match="contaminate"):
+        add_calibration_points(campaign, payload)
+    row = campaign["payloads"]["calibration"]["prefill"][0]
+    payload["prefill"] = [row, row]
+    with pytest.raises(ValueError, match="duplicate"):
+        add_calibration_points(campaign, payload)
+    payload["prefill"] = []
+    with pytest.raises(ValueError, match="at least one"):
+        add_calibration_points(campaign, payload)
