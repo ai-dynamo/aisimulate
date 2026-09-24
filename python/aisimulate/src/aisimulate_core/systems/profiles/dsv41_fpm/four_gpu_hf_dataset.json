@@ -1,7 +1,7 @@
 {
   "format_version": 1,
   "repo_id": "nvidia/aisimulate-fpm-dataset",
-  "revision": "98f92790e39ad9d0958265f192f94c5568e33201",
+  "revision": "73fdad29e619c00b29407702adb918fb100e519b",
   "profiles": {
     "gb200-tp4-full": {
       "admission": "serving",
@@ -247,6 +247,55 @@
         "weight_quantization": "fp8_block"
       },
       "source_artifact_revision": "a9c0c2b4fc65a890538288dded258521f3cb4a8e"
+    },
+    "b200-tp4-decoder_bounded": {
+      "admission": "serving",
+      "files": [
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b200-sxm/sglang/dev-c4ca651192e5-cleanup-formal22-6b3f904a0a66042281da03c9874bd47bc9f1007a1639cc3fb9e8200cefb470b5/pure-tp4/fpm/fpm_forward_perf.decoder_bounded.parquet",
+          "sha256": "b9f5380c1f69e80a69d3aca5f2bd2a6e9e744657b5d0836d8cac686786b9727f",
+          "target": "data/b200_sxm/sglang/dev-c4ca651192e5-cleanup-formal22-6b3f904a0a66042281da03c9874bd47bc9f1007a1639cc3fb9e8200cefb470b5/fpm_forward_perf.parquet"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b200-sxm/sglang/dev-c4ca651192e5-cleanup-formal22-6b3f904a0a66042281da03c9874bd47bc9f1007a1639cc3fb9e8200cefb470b5/pure-tp4/fpm/fpm_forward_perf.decoder_bounded.metadata.json",
+          "sha256": "f574356e46ed8d00fe9175ee4e04f5fa7e9decf145a9cdb8320dbf92adc39c9f",
+          "target": "data/b200_sxm/sglang/dev-c4ca651192e5-cleanup-formal22-6b3f904a0a66042281da03c9874bd47bc9f1007a1639cc3fb9e8200cefb470b5/fpm_forward_perf.metadata.json"
+        },
+        {
+          "path": "data/deepseek-ai--DeepSeek-V4.1-Flash/b200-sxm/sglang/dev-c4ca651192e5-cleanup-formal22-6b3f904a0a66042281da03c9874bd47bc9f1007a1639cc3fb9e8200cefb470b5/pure-tp4/fpm/provenance/systems.decoder_bounded.yaml",
+          "sha256": "2cf8081b7a78da88cc332d4fdaf4259ba7b47f48397f9c100bbf7206e5245cfd",
+          "target": "b200_sxm.yaml"
+        }
+      ],
+      "identity": {
+        "attention_backend": "auto",
+        "backend": "sglang",
+        "backend_version": "dev-c4ca651192e5-cleanup-formal22-6b3f904a0a66042281da03c9874bd47bc9f1007a1639cc3fb9e8200cefb470b5",
+        "comm_quant_mode": "half",
+        "cp": 1,
+        "dp": 1,
+        "enable_eplb": false,
+        "enable_wideep": false,
+        "engram_residency": "hbm_tp_sharded",
+        "execution_profile": "decoder_bounded",
+        "fmha_quant_mode": "fp8",
+        "fmha_resolution": "checkpoint_native",
+        "gemm_quant_mode": "fp8_block",
+        "input_modality": "text",
+        "kv_cache_dtype": "fp8",
+        "model_config_sha256": "22c3912140adeb60ecbd3c7a9b54e62997adf65ad4c69440f8082cf29f5ef0d4",
+        "model_path": "deepseek-ai/DeepSeek-V4.1-Flash",
+        "moe_backend": "auto",
+        "moe_ep": 1,
+        "moe_quant_mode": "w4a8_mxfp4_mxfp8_trtllm",
+        "moe_tp": 4,
+        "parallel_strategy": "pure_tp",
+        "pp": 1,
+        "system": "b200_sxm",
+        "tp": 4,
+        "weight_quantization": "fp8_block"
+      },
+      "source_artifact_revision": "f29a1bae99ef0c3552cf4de928883d756c4e9d2e"
     }
   }
 }

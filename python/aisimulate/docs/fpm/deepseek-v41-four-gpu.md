@@ -8,10 +8,10 @@ SPDX-License-Identifier: Apache-2.0
 This campaign requests DeepSeek-V4.1-Flash TP2 and TP4, separately for `full`
 and `decoder_bounded`. Its execution contract keeps the native checkpoint
 precision, GPU-resident TP-sharded Engram, DP1, PP1, EP1, eager execution,
-text inputs and speculation disabled. GB200 and H200 TP4 full/decoder_bounded
-and B200 TP4 full have independently validated HF tables. B200 TP4 bounded
-remains pending; H100 TP4 and all requested TP2 cells exceed the weight-only
-capacity bound. A requested cell is not an available FPM profile.
+text inputs and speculation disabled. GB200, H200 and B200 TP4 each have
+independently validated HF tables for `full` and `decoder_bounded`. H100 TP4 and
+all requested TP2 cells exceed the weight-only capacity bound. A requested cell
+is not an available FPM profile.
 
 The checkpoint is pinned to
 [`fb2764a5cf321eaa5070ca8f9e892818f477c16d`](https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/tree/fb2764a5cf321eaa5070ca8f9e892818f477c16d).
@@ -35,7 +35,7 @@ architecture and topology; a system YAML is not a live allocation receipt.
 | --- | ---: | --- | --- |
 | `h100_sxm` | 80 GiB | Weights exceed capacity | Weights exceed capacity |
 | `h200_sxm` | 141 GiB | Weights exceed capacity | Native Humming full and bounded tables admitted at static fraction 0.98 |
-| `b200_sxm` | 180 GiB | Weights exceed capacity | Full table admitted; bounded formal collection pending |
+| `b200_sxm` | 180 GiB | Weights exceed capacity | Native TRTLLM full and bounded tables admitted at static fraction 0.9 |
 | `gb200` | 185.03 GiB | Weights exceed capacity | Full and decoder_bounded tables admitted; independent coverage below |
 
 Capacity rejection is not a failed GPU experiment and must not be reported as
@@ -71,6 +71,19 @@ predeclared. Technical admission and reproducible prediction are separate from
 the accuracy a deployment requires. All profiles retain independent calibration
 and heldout run, request, and geometry identities, with no fitting or online
 observation updates.
+
+B200 TP4 bounded independently retains 145 calibration / 38 heldout geometries
+and ten fixed attempts per point. Its explicit per-request native API predicts
+38/38 geometries and 380/380 attempts: MAPE **2.81290416%**, maximum geometry
+error **7.90214539%**. Prefill MAPE is **2.88619064%** and decode MAPE is
+**2.60770204%**. The aggregate API predicts 26/38 geometries and 260/380 attempts
+with conditional MAPE **2.68722182%**; all 12 multi-prefill guard failures remain.
+
+The original B200 bounded formal export omitted two companion source files.
+They were later captured from the original node stage and distributed in a
+separately hashed source supplement. CPU replay adds them to a new working view
+before the unchanged native admission. Original archives and the first failed
+admission are preserved; no measurement is replaced or reselected.
 
 H200 TP4 uses the separately qualified native Humming route with BF16
 activations. The default Hopper CUTLASS route rejects the local intermediate

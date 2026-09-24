@@ -5,12 +5,13 @@ SPDX-License-Identifier: Apache-2.0
 
 # DeepSeek-V4.1 FPM databases
 
-`four_gpu_hf_dataset.json` pins five independently collected profiles from
-[HF PR #13](https://huggingface.co/datasets/nvidia/aisimulate-fpm-dataset/discussions/13)
-to data commit `98f92790e39ad9d0958265f192f94c5568e33201`. Each profile retains 145 calibration
-geometries and 38 separate heldout geometries, with ten fixed attempts per point.
+[`four_gpu_hf_dataset.json`](four_gpu_hf_dataset.json) pins six independently
+collected TP4 profiles to an immutable HF data revision and each downloaded
+file's SHA256. Each profile retains 145 calibration geometries and 38 separate
+heldout geometries, with ten fixed attempts per point.
 Rows use the first geometry-qualified calibration attempt by fixed index.
-No heldout observation, fitting, online correction, or outlier removal is used.
+No heldout observation enters calibration; predictions use no fitting, online
+correction, or outlier removal.
 
 | TP4 profile | Heldout coverage | MAPE | Maximum geometry error |
 | --- | --- | ---: | ---: |
@@ -19,12 +20,15 @@ No heldout observation, fitting, online correction, or outlier removal is used.
 | H200 full | 38/38 | 1.50639% | 3.66066% |
 | H200 decoder_bounded, explicit API | 38/38 | 2.93239% | 9.21125% |
 | B200 full | 38/38 | 8.48723% | 152.99520% |
+| B200 decoder_bounded, explicit API | 38/38 | 2.81290% | 7.90215% |
 
 Each MAPE equally weights geometry errors against medians of ten heldout
 observations. The unchanged aggregate bounded API supports 26/38 geometries
-and 260/380 attempts: conditional MAPE is 1.23254% for GB200 and 2.71503% for
-H200. The other 12 multi-prefill geometries require explicit per-request native
-extend lengths. Explicit coverage does not expand aggregate support.
+and 260/380 attempts: conditional MAPE is 1.23254% for GB200, 2.71503% for
+H200 and 2.68722% for B200. The other 12 multi-prefill geometries require explicit
+per-request native extend lengths. Explicit coverage does not expand aggregate
+support. B200 bounded retains all 380 attempts; its prefill/decode geometry MAPE
+is 2.88619% / 2.60770%.
 
 B200 full retains two large prefill errors: 333.311 ms predicted versus
 131.746 ms observed at `(batch=1, query=192, past-KV=256)`, and 311.172 ms
@@ -41,12 +45,16 @@ of observed CUDA input arguments. Use the manifest's exact backend version
 and `moe_quant_mode=identity["moe_quant_mode"]` in the canonical SDK config.
 
 The [source replay instructions](../../../../../collector/fpm_forward/README.md)
-use separate immutable source pins. The new H200/B200 source artifacts are at
-`a9c0c2b4fc65a890538288dded258521f3cb4a8e`; this is an HF artifact commit, not an AISimulate
-producer Git revision. Both existing GB200 source/table identities remain
-unchanged. Calibration self-queries check reader integrity, not accuracy.
-B200 decoder_bounded remains pending. H100 TP4 and all four TP2 configurations
-exceed the native weight-only capacity bound; they have no FPM profile.
+use replay recipes that pin their own immutable source revisions. The SDK
+manifest separately retains each profile's dataset/source provenance; its
+source revision can differ from the replay recipe's pin. These are HF artifact
+commits, not AISimulate producer Git revisions. Calibration self-queries check
+reader integrity, not accuracy.
+B200 bounded replay requires the separately hashed original-source supplement
+for two companion files omitted from its formal export. The original archives
+and failed first admission remain preserved. H100 TP4 and all four TP2
+configurations exceed the native weight-only capacity bound; they have no FPM
+profile.
 
 This directory defines the loading contract for DeepSeek-V4.1 whole-forward
 measurements on GB300 at TP2 and B300 at TP2 or TP4. Published tables

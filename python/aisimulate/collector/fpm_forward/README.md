@@ -94,7 +94,7 @@ image and cohort adapter; the recorded SGLang Git revision is
 `1aa0e962b206102b7c439a4a0c4981cfec6e87bc`.
 
 
-## H200 TP4 full/bounded and B200 TP4 full
+## H200 and B200 TP4 full and decoder bounded
 
 The same public recipe loader supports these additional immutable pins:
 
@@ -103,26 +103,54 @@ The same public recipe loader supports these additional immutable pins:
 | `dsv41_h200_tp4_full.json` | `h200-tp4-full` | `w4a16_mxfp4_humming` |
 | `dsv41_h200_tp4_decoder_bounded.json` | `h200-tp4-decoder_bounded` | `w4a16_mxfp4_humming` |
 | `dsv41_b200_tp4_full.json` | `b200-tp4-full` | `w4a8_mxfp4_mxfp8_trtllm` |
+| `dsv41_b200_tp4_decoder_bounded.json` | `b200-tp4-decoder_bounded` | `w4a8_mxfp4_mxfp8_trtllm` |
 
 Use the selected pin and key in the materialization commands above. The
-H200/B200 source artifacts have a separate immutable source revision; the data
-manifest pins their tables, metadata and systems YAML by SHA256. H200 uses its
+recipe pins each source artifact at its own immutable revision; the SDK data
+manifest pins tables, metadata and systems YAML by SHA256. H200 uses its
 recorded Humming runtime at memory fraction 0.98; B200 uses TRTLLM at 0.9.
 Preserve the exact backend version and pass the manifest identity's
 `moe_quant_mode` when constructing `ForwardPassPerfModelConfig`.
 
-Each archive retains its original source and licenses and adds a `recipe.json`
-manifest. `entrypoint.py reduce --help` documents the explicit archive inputs:
-H200 needs qualification raw/prepared and formal raw/prepared archives plus
-the original terminal receipt; B200 full needs its combined raw/prepared archive
-and terminal receipt. Their immutable paths and hashes are in the data leaf's
-sidecar and `fpm/provenance/original/`. `predict` consumes the reduction and the
-materialized systems root. Source remains read-only; outputs use new directories.
-CPU reproduction needs no cluster, model weights or GPU.
+Each archive retains its original source and licenses and includes `recipe.json`.
+Use its declared entry point: H200 full/bounded and B200 full provide
+`entrypoint.py reduce --help`. H200 needs qualification raw/prepared and formal
+raw/prepared archives plus the original terminal receipt; B200 full needs its
+combined raw/prepared archive and terminal receipt. Published artifact paths and
+hashes are retained in the data sidecar and `fpm/provenance/original/`.
 
-Each profile reproduces all 145 calibration rows and retains 38 independent
-heldout geometries / 380 attempts. H200 bounded uses actual native per-request
-witnesses for full explicit coverage; the aggregate guard still rejects 12
-multi-prefill geometries. The [coverage report](../../docs/fpm/deepseek-v41-four-gpu.md)
-includes measured errors, including B200 full's large prefill outliers.
-B200 bounded has no published recipe or profile yet.
+B200 bounded uses **`replay.py`**, documented in `ACTUAL-REPLAY.md`.
+`replay.py reduce --help` requires the original combined qualification and formal
+archives, a separate source supplement, and the original terminal receipt. Check
+their hashes against `replay-contract.json` and use the data manifest's immutable
+revision when downloading evidence:
+
+```bash
+python -B /path/to/reproduction/source/replay.py reduce \
+  --qualification-archive /path/to/qualification-raw-evidence.tar.gz \
+  --formal-archive /path/to/formal-raw-evidence.tar.gz \
+  --source-supplement /path/to/source-supplement.tar.gz \
+  --terminal /path/to/job-exit.json \
+  --work /path/to/new-cpu-work
+python -B /path/to/reproduction/source/replay.py predict \
+  --reduction /path/to/new-cpu-work/reduction \
+  --systems /path/to/materialized-systems \
+  --output /path/to/comparison.json
+```
+
+`predict` consumes **`WORK/reduction`** and writes separate
+`explicit_per_request` and `aggregate` results. The supplement contains two
+companion source files omitted from the original formal export and later read
+from the original node stage. Replay adds only those captured originals to a new
+CPU view before unchanged native admission. The original archives and first
+failed admission remain retained evidence. Source stays read-only; outputs use
+new directories. CPU replay needs no cluster, model weights or GPU.
+
+Each of the six profiles reproduces all 145 calibration rows and retains 38
+independent heldout geometries / 380 attempts. B200 bounded's explicit native
+API predicts 38/38 with MAPE **2.81290416%**. Its aggregate API predicts 26/38 with
+conditional MAPE **2.68722182%** and preserves the 12 multi-prefill guard failures.
+H200 bounded also uses actual per-request witnesses for full explicit coverage;
+explicit coverage does not expand aggregate support. The
+[coverage report](../../docs/fpm/deepseek-v41-four-gpu.md) includes measured
+errors and limits, including B200 full's large prefill outliers.
