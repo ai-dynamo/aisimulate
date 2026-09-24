@@ -93,6 +93,44 @@ Existing GLM canonical leaves cause a hard error. A later revision needs an
 explicit current-to-history migration; silently overwriting accepted history
 is not implemented.
 
+## Generate consumer profiles after the real Hub commit
+
+`profile.py` requires the accepted stage, the canonical dataset copy, its explicit
+`import-result.json`, and the actual 40-character commit returned by HF after
+publication. It confirms that commit through the Hub API, then reads and hashes
+the pinned consumer files and evidence receipts. A syntactically valid SHA alone
+does not establish a published pin. There is no offline or test-admission override
+for this production command, and it performs no HF writes.
+
+```sh
+python tools/glm53flash_hf/profile.py \
+  --stage /absolute/path/to/accepted-glm-stage \
+  --dataset /absolute/path/to/published-canonical-dataset-copy \
+  --import-result /absolute/path/to/published-canonical-dataset-copy/campaigns/glm53flash-pr324/STAGE_SHA/import-result.json \
+  --revision ACTUAL_HF_40_CHARACTER_COMMIT \
+  --destination /absolute/path/to/new-profile-output/ACTUAL_HF_40_CHARACTER_COMMIT
+```
+
+The output `hf_dataset.json` uses the existing SDK format and contains exactly
+eight serving profiles named `gb300-<backend>-<precision>-tp<tp>-full`. Every
+profile retains the exact checkpoint revision, execution identity and source row
+lineage. Its Parquet and sidecar paths come from the canonical manifests. Its
+`gb300.yaml` comes from the accepted consumer data receipts, including the
+original source path and byte hash; no repository default is substituted.
+Prefill and decode must have used identical YAML bytes. Targets follow that
+YAML's actual relative `data_dir` and the exact runtime version. For example,
+canonical HF paths can contain `0.30.0-glm53kpool...` while the materialized
+consumer directory contains `0.30.0+glm53kpool...`.
+
+`generation.json` records verified remote file hashes and says
+`PIN_VERIFIED_OFFLINE_VALIDATION_PENDING`. Check the generated pin into the FPM
+PR, build/install its wheel, materialize each profile with
+`aisimulate_core.sdk.fpm_dataset.materialize_fpm_profile`, reproduce the accepted
+predictions, then repeat with `local_files_only=True`. Generating and verifying
+the pin does not replace those installed-consumer and offline accuracy checks.
+Explicit synthetic/test markers in stage, report, original input or rows are
+rejected before a production profile can be written.
+
 ## Tests
 
 ```sh
@@ -111,3 +149,9 @@ The complete baseline integration test is skipped unless `GLM_TEST_BASE` is
 explicitly set. Normal CI runs the other local unit tests without GPU access,
 a dataset download, or an HF connection.
 **Never upload test output.**
+
+The profile contract tests are
+`tests/unit/tools/test_glm53flash_hf_profiles.py`. They use an explicitly mocked
+Hub, test-only bypasses installed through pytest monkeypatch, and isolated test
+outputs. They check all eight SDK materializations and subsequent offline loads;
+they do not claim native prediction or real GLM publication acceptance.
