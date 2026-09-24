@@ -94,6 +94,8 @@ def test_config_adapter_readme_remains_repository_only(verifier):
     assert "aisimulate/sdk/config_adapter/schemas/estimate-request-v1.schema.json" in payload
     assert "collector/cases/base_ops/mla_module.yaml" in payload
     assert "collector/fpm_forward/runtime/fpm_exec.sh" in payload
+    assert "collector/fpm_forward/glm53flash_corpora/calibration.txt" in payload
+    assert "collector/fpm_forward/glm53flash_corpora/holdout.txt" in payload
 
 
 def test_release_verifier_checks_packaged_legal_files(verifier, monkeypatch, tmp_path):
