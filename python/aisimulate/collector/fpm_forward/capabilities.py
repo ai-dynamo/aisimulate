@@ -200,7 +200,7 @@ def resolve_model_capability(
     model_family = common.ARCHITECTURE_TO_MODEL_FAMILY.get(architecture) if architecture else None
     if architecture == "Glm5NextForConditionalGeneration":
         return _glm53flash_capability(
-            resolved_config, backend, requested_weight_quantizations, requested_kv_cache_dtypes
+            resolved_config, backend, requested_weight_quantizations, requested_kv_cache_dtypes, database_version
         )
     exact_source = resolve_attention_source(selected_ops, required=False)
     # DSA is currently an MoE-only exact source in AIC. MLA is not: dense MLA
@@ -390,12 +390,14 @@ def resolve_model_capability(
     )
 
 
-def _glm53flash_capability(resolved_config, backend, requested_weights, requested_kv):
+def _glm53flash_capability(resolved_config, backend, requested_weights, requested_kv, database_version=None):
     """Collection establishes timing support; historical MLA tables cannot admit it."""
     from aisimulate_core.sdk.glm53flash import Glm53FlashConfig
+    from collector.glm53flash_runtime_identity import BASELINE_VERSIONS, validate_backend_version
 
     if backend not in {"vllm", "sglang"}:
         raise ValueError("GLM-5.3-Flash native FPM supports vLLM and SGLang")
+    version = validate_backend_version(backend, database_version or BASELINE_VERSIONS[backend])
     payload = resolved_config.payload
     Glm53FlashConfig.from_text_config(payload["text_config"])
     config = _attach_inferred_quant_fields(resolved_config.effective_payload)
@@ -420,7 +422,7 @@ def _glm53flash_capability(resolved_config, backend, requested_weights, requeste
         template_version=TEMPLATE_VERSION,
         support_reason="pinned hybrid architecture; every runtime cell requires real-state qualification",
         allow_pure_tp=True,
-        aic_database_version={"vllm": "0.30.0", "sglang": "0.5.20"}[backend],
+        aic_database_version=version,
         model_config=resolved_config,
         dtype=ResolvedDTypeProfile(
             gemm_quant_mode=gemm,
