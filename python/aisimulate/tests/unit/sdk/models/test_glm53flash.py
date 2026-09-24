@@ -61,6 +61,17 @@ def test_native_graph_boundary_precision_and_state(path, backend, tp):
             if backend == "vllm"
             else {"expand": 1, "contract": 1, "pre": 90, "post": 90}
         )
+        runtime = [op["Glm53Runtime"] for op in native if "Glm53Runtime" in op]
+        assert runtime == [
+            {
+                "name": "native_graph_setup",
+                "backend": backend,
+                "checkpoint_format": expected_format,
+                "tp_size": tp,
+                "is_context": attn[0]["is_context"],
+            }
+        ]
+        assert len(native) - len(runtime) == (277 if backend == "vllm" else 366)
         assert not any("Glm53Router" in op or "Moe" in op for op in native)
         ffns = [op["Glm53Ffn"] for op in native if "Glm53Ffn" in op]
         assert len(ffns) == 45

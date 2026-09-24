@@ -26,13 +26,15 @@ Native Ops collection and its Rust measured consumer are implemented on the
 shared SOL graph. The observer covers all 45 attention modules, 45 whole FFNs,
 backend-specific mHC sites, embedding, final norm, logits and 91 TP all-reduces.
 Local compute and synchronous collective intervals are separately accounted;
-unobserved or overlapping boundaries fail admission. The measured-table contract
-currently admits explicit eager execution only. An experimental SGLang FULL
+unobserved or overlapping boundaries fail admission. Existing published-table admission remains eager only. A separate source-bound
+FULL decode table consumer is implemented, including an explicit setup marker
+and actual capture-size dispatch; no graph table is supplied yet. An experimental SGLang FULL
 decode observer now assigns native capture nodes to operation boundaries and
 requires an exact API-backed join to CUPTI replay activity. It inserts no CUDA graph nodes;
 its separate holdout observes only the complete native replay. This path emits
 raw evidence, not admitted profiles. Actual native qualification, profiling
-controls, complete metadata-node accounting and graph prediction remain pending.
+controls, complete raw-to-table evidence binding and independent graph accuracy
+remain pending. Mixed or aggregate-only inputs that lose graph geometry are rejected.
 
 Measured lookup keeps exact physical identity, backend, checkpoint, TP and phase.
 Bounded workload interpolation requires complete measured corners with matching
@@ -43,7 +45,8 @@ SILICON and HYBRID; neither mode silently falls back to SOL. The installed wheel
 constructs all eight required model graphs and rejects missing measurements in
 all eight SILICON and all eight HYBRID checks.
 
-Current bounded validation passes 273 GLM collector tests and 18 Rust GLM tests.
+Current bounded validation passes 431 GLM collector tests (3 skipped),
+24 Rust GLM tests and 17 Rust compiled-spec/serialization tests.
 Graph-node/hook validation includes 40 CPU tests covering CUDA13 ABI
 pointer writes, complete kernel/memcpy/memset activity matching, native
 enumeration consistency and retention of nondefault dependency metadata. The preceding

@@ -821,6 +821,13 @@ mod tests {
                 collective: "none".into(),
                 children: vec![],
             }),
+            OpSpec::Glm53Runtime(crate::operators::Glm53RuntimeOp {
+                name: "native_graph_setup".into(),
+                backend: "sglang".into(),
+                checkpoint_format: "fp8".into(),
+                tp_size: 4,
+                is_context: false,
+            }),
         ];
 
         // Exhaustiveness guard: if a variant is added to `Op`, this match
@@ -871,6 +878,7 @@ mod tests {
                 | OpSpec::Glm53Router(_)
                 | OpSpec::Glm53Ffn(_)
                 | OpSpec::Glm53Primitive(_)
+                | OpSpec::Glm53Runtime(_)
                 | OpSpec::Dsv41Linear(_)
                 | OpSpec::TokenScale(_) => {}
             }
@@ -969,11 +977,11 @@ mod tests {
         let appended: Vec<_> = all_op_variants().iter().skip(36).map(index_of).collect();
         assert_eq!(
             appended,
-            vec![36, 37, 38, 39, 40, 41, 42, 43, 44, 45],
+            vec![36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46],
             "V41/GLM appended indices moved"
         );
         assert_eq!(
-            TOKEN_SCALE_INDEX as usize + 11,
+            TOKEN_SCALE_INDEX as usize + 12,
             all_op_variants().len(),
             "all_op_variants() must cover exactly the pinned variant count"
         );

@@ -104,15 +104,21 @@ def build_model_manifest(backend: str, checkpoint_format: str, tp_size: int) -> 
 
 def build_manifest(model) -> dict:
     """Take identities from a configured production model, never reconstruct them."""
-    phases = {}
+    phases, runtime_operations = {}, {}
     for phase, ops in (("context", model.context_ops), ("generation", model.generation_ops)):
-        entries = []
+        entries, runtime_entries = [], []
 
         def visit(spec):
             kind, body = next(iter(spec.items()))
             if kind in COMPONENTS:
                 entries.append(
                     {"component": COMPONENTS[kind], "name": body["name"], "geometry": operation_geometry(body)}
+                )
+            elif kind == "Glm53Runtime":
+                if body["name"] != "native_graph_setup" or body["is_context"] != (phase == "context"):
+                    raise ValueError("invalid GLM runtime operation marker")
+                runtime_entries.append(
+                    {"component": "runtime", "name": body["name"], "geometry": operation_geometry(body)}
                 )
             elif kind == "Overlap":
                 for child in (*body["group_a"], *body["group_b"]):
@@ -129,8 +135,11 @@ def build_manifest(model) -> dict:
             raise ValueError("GLM manifest must cover all text attention, FFN and primitive boundaries")
         if len({entry["name"] for entry in entries}) != len(entries):
             raise ValueError("native operation display names must uniquely identify graph occurrences")
+        if len(runtime_entries) > 1:
+            raise ValueError("GLM native graph setup must appear at most once per forward")
         phases[phase] = entries
-    return {"schema_version": 1, "phases": phases}
+        runtime_operations[phase] = runtime_entries
+    return {"schema_version": 1, "phases": phases, "runtime_operations": runtime_operations}
 
 
 def _uint32(value, label: str, *, positive: bool = False) -> None:

@@ -195,6 +195,7 @@ pub mod dsv4_megamoe;
 pub mod fpm_forward;
 pub mod gemm;
 pub mod glm53flash;
+pub mod glm53flash_graph;
 mod interpolation;
 pub mod mhc;
 pub mod mla;
@@ -255,6 +256,7 @@ pub struct PerfTables {
     pub dsv4: Dsv4Table,
     pub dsv41: Dsv41Table,
     pub glm53flash: Glm53Table,
+    pub glm53flash_graph: glm53flash_graph::Glm53GraphTable,
     pub dsv4_megamoe: Dsv4MegaMoeTable,
     pub mhc: MhcTable,
     pub trtllm_alltoall: TrtllmAlltoallTable,
@@ -541,6 +543,9 @@ impl PerfDatabase {
             // inherited from legacy or sibling runtime measurements.
             dsv41: Dsv41Table::with_sources(&data_root, &resolver)?,
             glm53flash: Glm53Table::with_sources(&data_root, &resolver)?,
+            glm53flash_graph: glm53flash_graph::Glm53GraphTable::with_sources(
+                &data_root, &resolver,
+            )?,
             // Single-primary by design: the MegaMoE loader reads one unified
             // path and never the shared-layer source list (see
             // `dsv4_megamoe.rs`) — but that one path IS family-first

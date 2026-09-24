@@ -158,6 +158,12 @@ def install(manifest, provenance, output, *, holdout=False):
         glue = native_runner._metadata_glue
         if glue is not None and not glue.disabled:
             raise RuntimeError("native metadata glue graph requires a separate capture-node ownership registry")
+        from collector.glm53flash_graph_policy import persist_snapshot
+
+        # Snapshot actual initialized eligibility/capture sizes before the
+        # measured interval. Calibration and unprofiled controls use the same
+        # inspection boundary; prediction never consults holdout dispatches.
+        policy_receipt = persist_snapshot(native_runner, output)
         active = {"record": record, "replayed": False}
         state["active"] = active
         profiler = None
@@ -206,6 +212,7 @@ def install(manifest, provenance, output, *, holdout=False):
             "start": start,
             "end": end,
             "native_shape_key": dataclasses.asdict(shape_key),
+            "native_dispatch_policy_receipt": policy_receipt,
             "capture_registry_sha256": (
                 hashlib.sha256(json.dumps(registry, sort_keys=True).encode()).hexdigest()
                 if registry is not None

@@ -56,6 +56,12 @@ fn measured<T: Serialize>(
             "GLM-5.3-Flash {component} has no empirical anchor"
         )));
     }
+    let shape = serde_json::to_value(op).map_err(|e| AicError::InvalidPerfData(e.to_string()))?;
+    if shape.get("is_context") == Some(&serde_json::Value::Bool(false))
+        && db.glm53flash_graph.has_measurements()?
+    {
+        return Err(AicError::InvalidPerfData("native graph data requires the Op RuntimeContext query; token-only/direct legacy lookup is unsupported".into()));
+    }
     if batch == 0 || x == 0 {
         return Ok(PerformanceResult::with_energy(0.0, 0.0, Source::Silicon));
     }
@@ -825,6 +831,51 @@ impl Glm53PrimitiveOp {
             return measured(db, "primitive", self, 1, 0, tokens);
         }
         self.sol(db, ctx)
+    }
+}
+
+/// Explicit runtime bookkeeping, separate from the 277/366 physical model
+/// boundaries. SOL/eager have no graph setup cost. A selected native graph
+/// profile must answer this marker from measured setup nodes exactly once.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Glm53RuntimeOp {
+    pub name: String,
+    pub backend: String,
+    pub checkpoint_format: String,
+    pub tp_size: u32,
+    pub is_context: bool,
+}
+impl Glm53RuntimeOp {
+    pub fn validate(&self) -> Result<(), AicError> {
+        identity(&self.backend, &self.checkpoint_format)?;
+        if self.name != "native_graph_setup" || !matches!(self.tp_size, 1 | 2 | 4) {
+            return Err(AicError::ModelConfig(
+                "invalid GLM native runtime marker".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub fn query(
+        &self,
+        db: &PerfDatabase,
+        ctx: &RuntimeContext,
+    ) -> Result<PerformanceResult, AicError> {
+        self.validate()?;
+        if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            return Ok(zero());
+        }
+        if db.database_mode == DatabaseMode::Empirical {
+            return Err(AicError::EmpiricalNotImplemented(
+                "GLM native runtime setup has no empirical anchor".into(),
+            ));
+        }
+        if let Some(value) = db
+            .glm53flash_graph
+            .query(&Op::Glm53Runtime(self.clone()), ctx)?
+        {
+            return Ok(value);
+        }
+        Ok(PerformanceResult::with_energy(0.0, 0.0, Source::Silicon))
     }
 }
 

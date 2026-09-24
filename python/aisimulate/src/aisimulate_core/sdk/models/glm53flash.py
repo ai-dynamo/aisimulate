@@ -271,6 +271,7 @@ class Glm53FlashModel(BaseModel):
                 mhc("mhc_contract", "contract"),
                 primitive("final_norm", "final_norm", context, [ops.ElementWise("final_norm_local", 1, h, h, 0.8)]),
                 primitive("logits", "logits", context, logits),
+                _native("Glm53Runtime", name="native_graph_setup", tp_size=tp, is_context=context, **identity),
             ]
         self._resident_weight_bytes = float(sum(op.get_weights() for op in self.context_ops))
         # Generic GEMM/MoE FP8 weight inventory omits block scales; NVFP4's

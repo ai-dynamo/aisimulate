@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
 import pytest
-
 from collector import glm53flash_sglang_graph_ops as sglang_graph
 from collector.glm53flash_graph_nodes import EXECUTION_RANGE, bind_execution_activity, bind_replay_kernels
 
@@ -173,6 +172,14 @@ def test_holdout_gpu_events_enclose_native_preparation_and_model_but_not_samplin
             return "TEST_ONLY"
 
     monkeypatch.setattr(sglang_graph, "SOURCE_PINS", Pins())
+    from collector import glm53flash_graph_policy
+
+    def test_only_snapshot(runner, output):
+        assert output == tmp_path
+        timeline.append("policy snapshot")
+        return {"file": "TEST_ONLY", "sha256": "a" * 64}
+
+    monkeypatch.setattr(glm53flash_graph_policy, "persist_snapshot", test_only_snapshot)
     sglang_graph.install(None, {"TEST_ONLY": True}, tmp_path, holdout=True)
     runner = DecodeCudaGraphRunner()
     runner.backend.capture_one(Shape(4), lambda: None)
@@ -184,6 +191,7 @@ def test_holdout_gpu_events_enclose_native_preparation_and_model_but_not_samplin
     timeline.append("sampling and token readback")
     pending = runner.model_runner._aisim_glm53_graph_pending[1]
     assert timeline == [
+        "policy snapshot",
         pending["start"],
         "native metadata and copies",
         "model including logits",

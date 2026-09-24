@@ -77,7 +77,7 @@ fn validate_body<T: DeserializeOwned + Serialize>(value: &Value) -> Result<T, Ai
     Ok(op)
 }
 
-fn validate_geometry(component: &str, encoded: &str) -> Result<Value, AicError> {
+pub(crate) fn validate_geometry(component: &str, encoded: &str) -> Result<Value, AicError> {
     let value: Value = serde_json::from_str(encoded).map_err(|e| invalid(e.to_string()))?;
     match component {
         "attention" => validate_body::<Glm53AttentionOp>(&value)?.validate()?,
@@ -94,11 +94,76 @@ fn validate_geometry(component: &str, encoded: &str) -> Result<Value, AicError> 
     Ok(value)
 }
 
-fn sha256(value: &str) -> bool {
+pub(crate) fn sha256(value: &str) -> bool {
     value.len() == 64
         && value
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+pub(crate) fn primary_path(
+    data_root: &Path,
+    resolver: &SourceResolver,
+    basename: &str,
+) -> Result<Option<PathBuf>, AicError> {
+    let primary = resolver
+        .prioritized_sources_for(basename, data_root)?
+        .into_iter()
+        .find(|source| source.channel == "primary");
+    if primary
+        .as_ref()
+        .is_some_and(|source| source.source.kernel_sources().is_some())
+    {
+        return Err(invalid(
+            "GLM53 primary kernel_sources filters are not supported; select an unfiltered homogeneous module table",
+        ));
+    }
+    let path = primary.map(|source| source.source.0);
+    if let Some(path) = &path {
+        let system_root = data_root
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| invalid("GLM53 data root must include system/backend/version"))?;
+        let belongs_to_request = |source: &Path, root: &Path| {
+            let Ok(relative) = source.strip_prefix(root) else {
+                return false;
+            };
+            let parts: Vec<_> = relative.components().collect();
+            // Only <backend>/<version>/<file> or one family directory
+            // beneath this system root. Parent traversal is never a donor.
+            matches!(parts.len(), 3 | 4)
+                && parts
+                    .iter()
+                    .all(|part| matches!(part, Component::Normal(_)))
+                && source.file_name().is_some_and(|name| name == basename)
+                && source.parent().and_then(Path::file_name) == data_root.file_name()
+                && source
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::file_name)
+                    == data_root.parent().and_then(Path::file_name)
+        };
+        if !belongs_to_request(path, system_root) {
+            return Err(invalid(
+                "GLM53 primary source must belong to the requested system, backend and version",
+            ));
+        }
+        // A whole data root may be relocated through a symlink. Resolve
+        // both sides together, while rejecting a file/family symlink that
+        // borrows another system's measurements. Absent data stays a gap.
+        if path.try_exists().map_err(|e| invalid(e.to_string()))? {
+            let resolved_source = path.canonicalize().map_err(|e| invalid(e.to_string()))?;
+            let resolved_root = system_root
+                .canonicalize()
+                .map_err(|e| invalid(e.to_string()))?;
+            if !belongs_to_request(&resolved_source, &resolved_root) {
+                return Err(invalid(
+                    "GLM53 primary source resolves outside the requested system, backend and version",
+                ));
+            }
+        }
+    }
+    Ok(path)
 }
 
 impl Glm53Table {
@@ -114,63 +179,7 @@ impl Glm53Table {
     /// excluding declared/sibling/cross-backend donors. A filtered primary is
     /// unsupported: never discard its requested kernel admission constraint.
     pub fn with_sources(data_root: &Path, resolver: &SourceResolver) -> Result<Self, AicError> {
-        let primary = resolver
-            .prioritized_sources_for(BASENAME, data_root)?
-            .into_iter()
-            .find(|source| source.channel == "primary");
-        if primary
-            .as_ref()
-            .is_some_and(|source| source.source.kernel_sources().is_some())
-        {
-            return Err(invalid(
-                "GLM53 primary kernel_sources filters are not supported; select an unfiltered homogeneous module table",
-            ));
-        }
-        let path = primary.map(|source| source.source.0);
-        if let Some(path) = &path {
-            let system_root = data_root
-                .parent()
-                .and_then(Path::parent)
-                .ok_or_else(|| invalid("GLM53 data root must include system/backend/version"))?;
-            let belongs_to_request = |source: &Path, root: &Path| {
-                let Ok(relative) = source.strip_prefix(root) else {
-                    return false;
-                };
-                let parts: Vec<_> = relative.components().collect();
-                // Only <backend>/<version>/<file> or one family directory
-                // beneath this system root. Parent traversal is never a donor.
-                matches!(parts.len(), 3 | 4)
-                    && parts
-                        .iter()
-                        .all(|part| matches!(part, Component::Normal(_)))
-                    && source.file_name().is_some_and(|name| name == BASENAME)
-                    && source.parent().and_then(Path::file_name) == data_root.file_name()
-                    && source
-                        .parent()
-                        .and_then(Path::parent)
-                        .and_then(Path::file_name)
-                        == data_root.parent().and_then(Path::file_name)
-            };
-            if !belongs_to_request(path, system_root) {
-                return Err(invalid(
-                    "GLM53 primary source must belong to the requested system, backend and version",
-                ));
-            }
-            // A whole data root may be relocated through a symlink. Resolve
-            // both sides together, while rejecting a file/family symlink that
-            // borrows another system's measurements. Absent data stays a gap.
-            if path.try_exists().map_err(|e| invalid(e.to_string()))? {
-                let resolved_source = path.canonicalize().map_err(|e| invalid(e.to_string()))?;
-                let resolved_root = system_root
-                    .canonicalize()
-                    .map_err(|e| invalid(e.to_string()))?;
-                if !belongs_to_request(&resolved_source, &resolved_root) {
-                    return Err(invalid(
-                        "GLM53 primary source resolves outside the requested system, backend and version",
-                    ));
-                }
-            }
-        }
+        let path = primary_path(data_root, resolver, BASENAME)?;
         let version = data_root
             .file_name()
             .and_then(|name| name.to_str())

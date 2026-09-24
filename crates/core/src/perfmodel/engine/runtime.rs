@@ -874,6 +874,7 @@ impl Engine {
         if ctx_tokens == 0 && gen_tokens == 0 {
             return Ok([0.0; 4]);
         }
+        crate::perf_database::glm53flash_graph::reject_mixed(&self.context_ops, &self.db)?;
         // Whole-model FPM ops must never reach the name-filtered three-pass
         // composition below (they match neither attention filter and would
         // ride pass 1 with the wrong workload shape). Python branches the
@@ -2034,6 +2035,13 @@ impl Engine {
         let has_prefill = sched.sum_prefill_tokens > 0;
         let has_decode = sched.num_decode_requests > 0 || sched.sum_decode_kv_tokens > 0;
 
+        // Aggregate telemetry defaults missing history variance to zero. It
+        // cannot prove homogeneous histories for B>1, so graph profiles must
+        // use the explicit homogeneous decode API instead of an integer mean.
+        if has_decode && (has_prefill || sched.num_decode_requests > 1) {
+            crate::perf_database::glm53flash_graph::reject_mixed(&self.context_ops, &self.db)?;
+        }
+
         // The whole-forward rewrite retains the original stage graph in
         // sol_ops. Apply the same replay restriction before its table lookup
         // can return early. FPM v1 variance describes whole prompt lengths,
@@ -2378,6 +2386,53 @@ mod tests {
             osl,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn glm53_graph_setup_keeps_scalar_breakdown_stride_and_mixed_guards() {
+        use crate::perf_database::glm53flash_graph::tests::{db, marker, mhc};
+        let root = tempfile::tempdir().unwrap();
+        let database = db(root.path());
+        let mut cfg = fixture_engine_config(None);
+        cfg.backend = BackendKind::Sglang;
+        cfg.backend_version = Some("0.5.20".into());
+        cfg.parallel.tp_size = 2;
+        let mut context_marker = marker();
+        if let Op::Glm53Runtime(value) = &mut context_marker {
+            value.is_context = true;
+        }
+        let engine = Engine::build(
+            EngineSpec::new(cfg, vec![context_marker], vec![mhc(), marker()]),
+            Arc::new(database),
+        )
+        .unwrap();
+        let rt = runtime(3, 128, 4);
+        let mut folded = Vec::new();
+        let total = engine
+            .run_generation_phase_with(&rt, 2, |op, result| {
+                folded.push((op.name().to_owned(), result.latency_ms))
+            })
+            .unwrap();
+        // Step129: (mhc3+setup1)*2; step131 interpolates 3.5+1.5 once.
+        assert_eq!(total, 13.0);
+        assert_eq!(folded.iter().map(|(_, value)| value).sum::<f64>(), total);
+        assert_eq!(
+            folded
+                .iter()
+                .filter(|(name, _)| name == "native_graph_setup")
+                .map(|(_, v)| v)
+                .sum::<f64>(),
+            3.5
+        );
+        assert!(
+            engine
+                .mixed_step_latency(0, 3, 128, 2, 0, 1.0, 1.0)
+                .is_err()
+        );
+        let mut metrics = ForwardPassMetrics::default();
+        metrics.scheduled_requests.num_decode_requests = 3;
+        metrics.scheduled_requests.sum_decode_kv_tokens = 3 * 129;
+        assert!(engine.rank_latency_ms(&metrics).is_err());
     }
 
     #[test]

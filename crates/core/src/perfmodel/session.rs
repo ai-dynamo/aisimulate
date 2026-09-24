@@ -281,6 +281,7 @@ pub(crate) fn get_mix_step_ops(
     kv_per_decode_req: u32,
     decode_batch: u32,
 ) -> Result<f64, AicError> {
+    crate::perf_database::glm53flash_graph::reject_mixed(context_ops, db)?;
     // ---- Pass 1: combined non-attention work (batch=1, isl=ctx+gen) ----
     // Python: `run_static` is called with `isl = num_tokens_combined`
     // and `prefix = prefix * floor(ctx_tokens / isl)`, which makes

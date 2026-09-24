@@ -175,6 +175,7 @@ pub(crate) fn wrap_op(py: Python<'_>, op: Op) -> PyResult<Py<PyAny>> {
         | Op::Glm53Router(_)
         | Op::Glm53Ffn(_)
         | Op::Glm53Primitive(_)
+        | Op::Glm53Runtime(_)
         | Op::Dsv41Linear(_)
         | Op::TokenScale(_) => Ok(Py::new(py, PyOperation { inner: op })?.into_any()),
         // Vision is never wrapped: compile decomposes it into child ops.

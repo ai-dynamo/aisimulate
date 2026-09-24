@@ -457,3 +457,48 @@ selected graph, complete replay-node join, logits work and completed real-reques
 chain. The capture adapter alone certifies none of those and writes no measured
 table. Child graphs, changed graph objects and incomplete capture observations
 still fail. CPU scope/identity tests are not native GPU qualification.
+
+
+## Native graph measured consumer and dispatch policy
+
+The separate `glm53flash_graph_perf.parquet` contract consumes complete physical
+operation rows plus one `native_graph_setup` runtime row at each measured decode
+point. Every row carries the same canonical source/config/capture policy,
+calibration evidence and coherent-forward rank-selection receipt. The cost is
+an explicitly approximate sum of each unit's disjoint-node activity union;
+setup includes observed preparation and memory activity. It does not reconstruct
+a critical path or distribute any whole-forward residual. No graph table is
+included yet, and raw-to-table qualification and independent accuracy remain
+pending.
+
+`glm53flash_graph_policy.py` reads the actual initialized native decode runner,
+all captured ShapeKeys and eligibility flags before timing. It verifies the
+pinned runner sources plus the model source-manifest hash. Padding is selected
+from that actual capture list, with the native disable-padding rule: the pilot
+list `[1, 2, 4]` yields B3/pad4, whereas a deployment captured at every size1–32
+yields B3/pad3. Unsupported variants, extra metadata graphs, torch.compile,
+unknown flags and missing all-rank source/state/capture receipts fail. Holdout
+observations never supply a missing prediction policy. A formal deployment
+must collect and validate its own frozen capture policy.
+
+The Rust consumer retains complete homogeneous one-token `RuntimeContext`
+coordinates through scalar, per-op, compiled-spec and stride paths. A selected
+graph file cannot fall back to an eager row. History interpolation keeps active
+batch, actual padding, physical shape, kernel fingerprint, activity count and
+IndexPool state/short-path partition fixed, requires measured brackets, and
+rejects extrapolation. Legacy token-only queries, mixed-step composition and
+aggregate decode telemetry with more than one request lack sufficient geometry
+and explicitly reject graph data.
+
+The append-only `Glm53Runtime` enum value46 is held by the model's operation list
+once per phase. It contributes zero in SOL and eager execution; FULL mode must
+query the measured setup row. Existing variant values0–45 and the numerical SOL
+costs are unchanged. The 277 vLLM /366 SGLang physical operation counts exclude
+this additional runtime marker. A decode stride charges the marker once per
+represented step, consistently in scalar and breakdown output.
+
+The native dispatch predicates above are independently expressed from
+`sgl-project/sglang@94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
+`python/sglang/srt/model_executor/runner/{base_cuda_graph_runner,decode_cuda_graph_runner,shape_key}.py`
+and `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`
+(Apache-2.0, SGLang Team and contributors). No native compute is copied or changed.
