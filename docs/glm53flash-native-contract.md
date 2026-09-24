@@ -20,13 +20,13 @@ formal targets; TP1 acceptance requires measured allocator admission.
 TensorRT-LLM fails explicitly. No new estimator constructor is introduced.
 
 The appended native variants are `Glm53Attention`, `Glm53Mhc`, and
-`Glm53Router` (diagnostic), and `Glm53Ffn`. Their serialized bodies include `backend` and
+`Glm53Router` (diagnostic), `Glm53Ffn`, and `Glm53Primitive`. Their serialized bodies include `backend` and
 `checkpoint_format`; the display name is not physical geometry. Attention
 also identifies `is_context`, `layer_kind`, TP-local heads and dimensions,
 replicated indexer geometry, projection dtype and cache dtype. Rust owns
 all latency/SOL arithmetic, including the fractional workload coordinates
 used by whole-model FPM interpolation. The existing generic GEMM, MoE and
-NCCL operators model FFN compute and explicit output reductions.
+NCCL operators supply analytical children within these boundaries.
 
 - Attention includes local projections, KDA gates/convolution/recurrence/output
   norm, or NoPE sparse MLA and its IndexPool. Block input norm and output
@@ -36,9 +36,9 @@ NCCL operators model FFN compute and explicit output reductions.
   for short prefill and also omits index query/head-gate projections there. KDA uses BF16 projections
   and FP32 recurrent state. vLLM also materializes sparse MLA projections in
   BF16; SGLang retains FP8 main sparse projections for the native FP8 checkpoint.
-- mHC requires explicit `tp_size` in its native identity: TP1/2/4 cannot
+- mHC requires explicit `tp_size` and `is_context` in its native identity: TP1/2/4 cannot
   borrow one another's measured dispatch. Its replicated local SOL work is
-  unchanged by this identity field. Missing TP metadata is rejected.
+  unchanged by this identity field. Missing TP or phase metadata is rejected.
   mHC `pre` includes input RMSNorm. vLLM emits one pre, 89 fused post/pre,
   and one post, plus expand/contract. SGLang emits 90 pre and 90 post, plus
   expand/contract. A collector must include SGLang's fallback RMSNorm if its
@@ -76,3 +76,18 @@ acceptance steps and are not certified by the CPU model tests.
 Configuration and execution-source licenses and immutable revisions are
 recorded in the canonical root `THIRD_PARTY_NOTICES.md`; the Python package
 contains an identical notice and the configuration's complete MIT license.
+
+`Glm53Primitive` owns the remaining production boundaries: local `embedding`,
+`final_norm`, whole `logits`, and separately observed `allreduce` calls. Its
+physical key includes backend, checkpoint, TP, phase, role, token selection,
+output dtype and collective type. Analytical children are excluded from measured
+identity and run only through the Rust SOL view. Strict measured mode cannot
+borrow generic embedding, GEMM, elementwise or collective data.
+
+Logits select one final scheduled token per request for both full and cached
+prefill, as well as decode. The native processor includes a BF16 local LM head
+and BF16 vocab all-gather; SGLang additionally casts output to FP32. Its SOL child
+token count is therefore batch size, independently of scheduled query length.
+The other primitives consume all scheduled tokens. Primitive names are phase
+independent; `is_context` remains part of the key. Local embedding, attention and
+FFN observations exclude their separately witnessed output collective intervals.

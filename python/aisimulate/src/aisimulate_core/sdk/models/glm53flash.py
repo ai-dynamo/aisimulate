@@ -94,6 +94,7 @@ class Glm53FlashModel(BaseModel):
                 name=name,
                 role=role,
                 tp_size=tp,
+                is_context=context,
                 hidden_size=h,
                 hc_mult=d.hc_mult,
                 sinkhorn_iters=d.hc_sinkhorn_iters,
@@ -129,8 +130,26 @@ class Glm53FlashModel(BaseModel):
                 self._cache_specs.append(json.dumps(spec))
             return _native("Glm53Attention", **spec)
 
-        def allreduce(name):
-            return ops.NCCL(name, 1, "all_reduce", h, tp, common.CommQuantMode.half)
+        def primitive(name, role, context, children):
+            return _native(
+                "Glm53Primitive",
+                name=name,
+                role=role,
+                tp_size=tp,
+                is_context=context,
+                hidden_size=h,
+                vocab_size=self._vocab_size,
+                token_selection="last_per_request" if role == "logits" else "all_scheduled",
+                output_dtype="float32" if role == "logits" and backend_name == "sglang" else "bfloat16",
+                collective={"allreduce": "all_reduce", "logits": "all_gather"}.get(role, "none"),
+                children=[json.loads(op._spec_json()) for op in children],
+                **identity,
+            )
+
+        def allreduce(name, context):
+            return primitive(
+                name, "allreduce", context, [ops.NCCL(name, 1, "all_reduce", h, tp, common.CommQuantMode.half)]
+            )
 
         def mlp(layer, phase):
             dense = d.mlp_layer_types[layer] == "dense"
@@ -199,14 +218,19 @@ class Glm53FlashModel(BaseModel):
                 children=[json.loads(op._spec_json()) for op in result],
                 **identity,
             )
-            return [module, allreduce(f"{phase}_ffn_allreduce_{layer}")]
+            return [module, allreduce(f"ffn_allreduce_{layer}", phase == "context")]
 
         for context in (True, False):
             phase = "context" if context else "generation"
             target = self.context_ops if context else self.generation_ops
             target += [
-                ops.Embedding(f"{phase}_embedding", 1, self._vocab_size // tp, h, 0.3),
-                allreduce(f"{phase}_embedding_allreduce"),
+                primitive(
+                    "embedding",
+                    "embedding",
+                    context,
+                    [ops.Embedding("embedding_local", 1, self._vocab_size // tp, h, 0.3)],
+                ),
+                allreduce("embedding_allreduce", context),
                 mhc("mhc_expand", "expand"),
             ]
             for layer in range(len(d.layer_types)):
@@ -216,7 +240,7 @@ class Glm53FlashModel(BaseModel):
                     )
                 else:
                     target.append(mhc(f"mhc_pre_attn_{layer}", "pre"))
-                target += [attention(layer, context), allreduce(f"{phase}_attention_allreduce_{layer}")]
+                target += [attention(layer, context), allreduce(f"attention_allreduce_{layer}", context)]
                 if backend_name == "vllm":
                     target.append(mhc(f"mhc_fused_ffn_{layer}", "fused_post_pre"))
                 else:
@@ -224,10 +248,29 @@ class Glm53FlashModel(BaseModel):
                 target += mlp(layer, phase)
                 if backend_name == "sglang" or layer == len(d.layer_types) - 1:
                     target.append(mhc(f"mhc_post_ffn_{layer}", "post"))
+            # Both native logits processors select the last scheduled token
+            # per request before the BF16 LM head and BF16 vocab all-gather.
+            # SGLang then casts the gathered output to FP32; vLLM returns BF16.
+            # Pinned sources and revisions: THIRD_PARTY_NOTICES.md.
+            logits = [
+                ops.GEMM("logits_local", 1, self._vocab_size // tp, h, common.GEMMQuantMode.bfloat16),
+                ops.NCCL("logits_vocab_gather", 1, "all_gather", self._vocab_size, tp, common.CommQuantMode.half),
+            ]
+            if backend_name == "sglang":
+                logits.append(
+                    _native(
+                        "Elementwise",
+                        name="logits_fp32_cast",
+                        scale_factor=1.0,
+                        bytes_per_token=6.0 * self._vocab_size,
+                        scale_num_tokens=1,
+                        seq_split=1,
+                    )
+                )
             target += [
                 mhc("mhc_contract", "contract"),
-                ops.ElementWise(f"{phase}_final_norm", 1, h, h, 0.8),
-                ops.GEMM(f"{phase}_logits_gemm", 1, self._vocab_size // tp, h, common.GEMMQuantMode.bfloat16),
+                primitive("final_norm", "final_norm", context, [ops.ElementWise("final_norm_local", 1, h, h, 0.8)]),
+                primitive("logits", "logits", context, logits),
             ]
         self._resident_weight_bytes = float(sum(op.get_weights() for op in self.context_ops))
         # Generic GEMM/MoE FP8 weight inventory omits block scales; NVFP4's

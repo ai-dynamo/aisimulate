@@ -64,4 +64,4 @@ pub use vision::VisionEncoderOp;
 pub use wideep_mla::{WideEpContextMlaOp, WideEpGenerationMlaOp};
 
 pub mod glm53flash;
-pub use glm53flash::{Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53RouterOp};
+pub use glm53flash::{Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53PrimitiveOp, Glm53RouterOp};
