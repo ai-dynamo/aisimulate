@@ -165,23 +165,25 @@ def stage(manifest_path: Path, destination: Path) -> dict:
     if len(keys) != 8 or set(keys) != {key[:3] for key in validation.REQUIRED}:
         raise ValueError("publication partitions must cover exactly the eight accepted configurations")
     # Archive source bytes once even when sixteen phase entries share them.
-    source_receipts = []
+    source_receipts = {}
     for path, digest in sorted(sources.items()):
         raw = path.read_bytes()
         if hashlib.sha256(raw).hexdigest() != digest:
             raise ValueError("consumer source changed during partition export")
+        if digest in source_receipts:
+            receipt = source_receipts[digest]
+            receipt["original_consumer_paths"] = sorted(set(receipt["original_consumer_paths"]) | origins[path])
+            continue
         target = destination / "sources" / f"{digest}{path.suffix}"
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
             with target.open("xb") as stream:
                 stream.write(raw)
-        source_receipts.append(
-            {
-                "path": target.relative_to(destination).as_posix(),
-                "sha256": digest,
-                "original_consumer_paths": sorted(origins[path]),
-            }
-        )
+        source_receipts[digest] = {
+            "path": target.relative_to(destination).as_posix(),
+            "sha256": digest,
+            "original_consumer_paths": sorted(origins[path]),
+        }
     if manifest_path.read_bytes() != manifest_raw:
         raise ValueError("acceptance input manifest changed during publication staging")
     input_target = destination / "validation/input-manifest.json"
@@ -200,7 +202,7 @@ def stage(manifest_path: Path, destination: Path) -> dict:
             "path": "validation/acceptance.json",
             "sha256": file_sha256(destination / "validation/acceptance.json"),
         },
-        "sources": source_receipts,
+        "sources": [source_receipts[key] for key in sorted(source_receipts)],
         "configurations": configurations,
         "remaining": [
             "canonical dataset policy and catalogs",

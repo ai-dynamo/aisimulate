@@ -145,9 +145,11 @@ def test_full_matrix_stages_each_original_once_without_claiming_hub_publication(
             backend=backend, backend_version=version, parquet_sha256=hashlib.sha256(path.read_bytes()).hexdigest()
         )
         metadata.write_text(json.dumps(info))
+        system = directory / "gb300.yaml"
+        system.write_text("# identical test-only system in two consumer roots\ndata_dir: data/gb300\n")
         receipts.extend(
             {"path": str(item.relative_to(tmp_path)), "sha256": hashlib.sha256(item.read_bytes()).hexdigest()}
-            for item in (path, metadata)
+            for item in (path, metadata, system)
         )
     manifest = tmp_path / "manifest.json"
     manifest.write_text(json.dumps({"mode": "fpm", "entries": [{"consumer_data": receipts}] * 16}))
@@ -155,7 +157,10 @@ def test_full_matrix_stages_each_original_once_without_claiming_hub_publication(
     output = publication.stage(manifest, tmp_path / "stage")
     assert output["status"] == "STAGED_NOT_PUBLISHED"
     assert "revision" not in output
-    assert len(output["sources"]) == 4
+    assert len(output["sources"]) == 5
+    yaml_receipts = [receipt for receipt in output["sources"] if receipt["path"].endswith(".yaml")]
+    assert len(yaml_receipts) == 1
+    assert yaml_receipts[0]["original_consumer_paths"] == ["sglang/gb300.yaml", "vllm/gb300.yaml"]
     assert len(output["configurations"]) == 8
     assert (tmp_path / "stage" / output["input_manifest"]["path"]).read_bytes() == manifest.read_bytes()
     assert output["input_manifest"]["sha256"] == output["input_manifest_sha256"]
