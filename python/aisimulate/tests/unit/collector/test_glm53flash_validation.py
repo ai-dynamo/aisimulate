@@ -97,6 +97,11 @@ def campaign(tmp_path, monkeypatch):
         }
 
     monkeypatch.setattr(validation, "_native_run", native)
+    monkeypatch.setattr(
+        validation,
+        "_load_native",
+        lambda run, base, mode: dict(validation._native_run(run, base), timing_boundary="test_gpu_boundary"),
+    )
     monkeypatch.setattr(validation, "_predict", predict)
     monkeypatch.setattr(validation, "installed_consumer_identity", lambda: {"payload_sha256": "f" * 64})
     return manifest
@@ -391,3 +396,57 @@ def test_predict_calls_public_sdk_for_every_frozen_point(tmp_path, monkeypatch, 
     assert configs[0].database_mode == "SILICON"
     assert configs[0].fpm_fmha_quant_mode == ("fp8" if mode == "fpm" else None)
     assert result["calibration_binding"]["native_runtime_run_id"] == "real-run"
+
+
+def test_installed_consumer_follows_unified_runtime_and_rejects_shim_replacement(monkeypatch):
+    import base64
+    from pathlib import Path
+
+    import aisimulate
+    import aisimulate_core
+    from aisimulate import _runtime
+    from aisimulate_core import _native
+    from aisimulate_core.sdk import rust_engine_step
+
+    modules = {
+        "aisimulate/__init__.py": aisimulate,
+        "aisimulate/" + Path(_runtime.__file__).name: _runtime,
+        "aisimulate_core/__init__.py": aisimulate_core,
+        "aisimulate_core/_native.py": _native,
+        "aisimulate_core/sdk/rust_engine_step.py": rust_engine_step,
+    }
+
+    class File(str):
+        pass
+
+    files = []
+    for name, module in modules.items():
+        item = File(name)
+        raw = Path(module.__file__).read_bytes()
+        item.hash = SimpleNamespace(
+            mode="sha256", value=base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).decode().rstrip("=")
+        )
+        item.size = len(raw)
+        files.append(item)
+    distribution = SimpleNamespace(
+        files=files, version="test-only", locate_file=lambda name: modules[str(name)].__file__
+    )
+    monkeypatch.setattr(validation.importlib.metadata, "distribution", lambda name: distribution)
+    assert validation.installed_consumer_identity()["version"] == "test-only"
+    monkeypatch.setattr(_native, "RustForwardPassPerfModel", object())
+    with pytest.raises(ValueError, match="canonical native binding"):
+        validation.installed_consumer_identity()
+
+
+def test_ops_native_loader_keeps_gpu_boundary_separate(tmp_path, monkeypatch):
+    import sys
+
+    run = validation._plan_run(write_plan(tmp_path, validation.REQUIRED[0], "holdout"), tmp_path, "holdout")
+    result = {"values": {1: 1.0, 2: 2.0, 3: 3.0}, "timing_boundary": "embedding_to_logits_gpu_v1"}
+    monkeypatch.setitem(
+        sys.modules, "collector.glm53flash_validation", SimpleNamespace(load_native=lambda run, base: result)
+    )
+    assert validation._load_native(run, tmp_path, "ops")["timing_boundary"] == "embedding_to_logits_gpu_v1"
+    result["values"].pop(3)
+    with pytest.raises(ValueError, match="omits frozen requested points"):
+        validation._load_native(run, tmp_path, "ops")
