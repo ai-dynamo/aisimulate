@@ -731,6 +731,7 @@ def predict_homogeneous(run, base, config, calibration_native, binding):
     from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig
     from collector.fpm_forward.glm53flash_validation import _same_sglang_policy
     from collector.glm53flash_contract import CHECKPOINTS
+    from collector.glm53flash_sglang_prefill_shards import validate_prediction_binding
     from collector.glm53flash_validation import load_native
 
     if (
@@ -746,14 +747,11 @@ def predict_homogeneous(run, base, config, calibration_native, binding):
     if (
         policy != holdout["prefill_policy"]
         or binding.get("prefill_policy_sha256") != sha256_json(policy)
-        or binding.get("native_runtime_run_id") != calibration_native["runtime_run_id"]
         or not binding.get("tables")
         or any(file_sha256(Path(item["path"])) != item["sha256"] for item in binding["tables"])
     ):
         raise ValueError("native prefill prediction lacks original calibration table/policy binding")
-    root = Path(calibration_native["evidence_root"])
-    if binding.get("evidence_sha256") != file_sha256(root / "prefill-calibration-evidence.json"):
-        raise ValueError("native prefill prediction calibration evidence changed")
+    validate_prediction_binding(calibration_native, binding)
     cfg = ForwardPassPerfModelConfig(**config)
     if (
         (cfg.backend, cfg.backend_version, cfg.tp, cfg.database_mode, cfg.estimation_mode, cfg.fallback_policy)

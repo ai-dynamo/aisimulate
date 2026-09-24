@@ -246,3 +246,24 @@ existing `execution_policy_sha256`. Schema1 retains the original meaning of
 `resolved_config_sha256` and binds allocator evidence through its Python
 execution-policy and raw/control evidence closure. No public allocator query
 axis or competing deployment policy is introduced.
+
+### Native prefill shard publication
+
+Schema4 calibration can be published from the exact complete child union of
+an original frozen parent plan. Each child is rederived from its native raw
+events, fifth-warmup Chrome trace, whole-forward rank selection and independent
+control. The merge preserves all 366 named units plus setup at each original
+B/Q/P point, individual evidence hashes and child run IDs; it does not average
+duplicate geometries or fill failed children from another run.
+
+The parent and every child must share the full prefill policy, including the
+normalized actual allocator identity. Calibration and control roots, run IDs
+and request IDs cannot be reused across children. Publication and later
+consumer binding recheck the original point map and complete row union.
+Prediction retains real child identities and remaps each independent holdout
+result, including missing-exact errors, to its original parent point ID.
+There is no synthetic aggregate native run or evidence root.
+
+This adds publication and evidence handling only. Schema4 remains exact-only;
+independent disjoint holdout coverage and accuracy acceptance still require
+further measured evidence and a separately reviewed interpolation contract.

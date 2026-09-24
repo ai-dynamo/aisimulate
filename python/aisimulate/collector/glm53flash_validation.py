@@ -941,6 +941,12 @@ def publish_sharded_calibration(
     """Publish only after callers admitted every child with load_native()."""
     from collector.glm53flash_contract import write_parquet
 
+    if any(run["spec"].get("ops_execution_mode") == "native_eager_prefill" for run, _ in children):
+        from collector.glm53flash_sglang_prefill_shards import publish_calibration as publish_prefill
+
+        if parent_run is None or parent_run.get("shard_manifest") != frozen_shard_manifest:
+            raise ValueError("prefill shard publication requires its original complete parent plan")
+        return publish_prefill(parent_run, children, destination)
     if any(run["spec"].get("ops_execution_mode") == "native_serving" for run, _ in children):
         from collector.glm53flash_serving_shards import publish_calibration as publish_serving
 
@@ -967,6 +973,12 @@ def bind_sharded_calibration(
     """Reproduce frozen ownership and validate a complete final table, without averaging shards."""
     import pyarrow.parquet as pq
 
+    if any(run["spec"].get("ops_execution_mode") == "native_eager_prefill" for run, _ in children):
+        from collector.glm53flash_sglang_prefill_shards import bind_calibration as bind_prefill
+
+        if parent_run is None or parent_run.get("shard_manifest") != frozen_shard_manifest:
+            raise ValueError("prefill shard binding requires its original complete parent plan")
+        return bind_prefill(paths, parent_run, children)
     if any(run["spec"].get("ops_execution_mode") == "native_serving" for run, _ in children):
         from collector.glm53flash_serving_shards import bind_calibration as bind_serving
 

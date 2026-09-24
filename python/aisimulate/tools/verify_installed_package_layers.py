@@ -340,6 +340,10 @@ def _verify_fpm_workflow() -> str:
             "collector/glm53flash_sglang_prefill_export.py",
         ),
         (
+            importlib.import_module("collector.glm53flash_sglang_prefill_shards"),
+            "collector/glm53flash_sglang_prefill_shards.py",
+        ),
+        (
             importlib.import_module("collector.fpm_forward.glm53flash_validation"),
             "collector/fpm_forward/glm53flash_validation.py",
         ),

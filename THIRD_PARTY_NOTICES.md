@@ -1133,7 +1133,8 @@ the repository Apache-2.0 license text applies to these adaptations.
 ## GLM-5.3-Flash source-bound SGLang prefill observation
 
 - Derived files: `python/aisimulate/collector/glm53flash_sglang_prefill_activity.py`,
-  `python/aisimulate/collector/glm53flash_sglang_prefill_export.py`, their
+  `python/aisimulate/collector/glm53flash_sglang_prefill_export.py`,
+  `python/aisimulate/collector/glm53flash_sglang_prefill_shards.py`, their
   TEST_ONLY collector tests, the native-prefill additions to the existing
   observer/runtime/driver and validation adapters,
   `crates/core/src/perfmodel/perf_database/glm53flash_sglang_prefill.rs`,
@@ -1152,7 +1153,9 @@ the repository Apache-2.0 license text applies to these adaptations.
   implementations execute unchanged; no compute implementation is copied.
   The one allocator event is measured directly, and raw Chrome correlations
   establish exclusive ownership. TEST_ONLY fixtures are original synthetic
-  proofs, never measured GPU data.
+  proofs, never measured GPU data. The independently expressed shard reader
+  preserves original point ownership, per-child native/control evidence and
+  actual execution policy without copying native implementation code.
 - CPU user-annotation category semantics use Kineto
   https://github.com/pytorch/kineto at
   `094d3c1d072362d0a919a77299459eee94f97931`,
