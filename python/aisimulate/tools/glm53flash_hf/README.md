@@ -264,6 +264,10 @@ provenance receipts. Source, hook, and CPU proof must already be hashed in the
 admission. Identical bytes are stored once, while distinct original paths remain
 visible. Historical failed-attempt or source-diff evidence in that closure is
 preserved as history; it is not promoted to a passing observation.
+Some original preparation `source.json` files omit `wheel_sha256`; when present
+it must match. In both cases, the frozen launcher must retain the actual passed
+producer CPU receipt and installed-wheel source record, and their source/wheel
+identities must agree with admission and every original child started receipt.
 
 Choose an archive source root containing the original per-child `started.json`
 as well as the accepted native roots. `bind` joins these original bytes to the
