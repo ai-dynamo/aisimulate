@@ -687,8 +687,8 @@ DefaultHFModels = {
     "zai-org/GLM-5.2",
     "zai-org/GLM-5.2-FP8",
     "nvidia/GLM-5.2-NVFP4",
-    "zai-org/GLM-5.3",
-    "zai-org/GLM-5.3-FP8",
+    "zai-org/GLM-5.3-BF16",
+    "zai-org/GLM-5.3",  # the FP8 artifact; GLM-5.3-FP8 does not exist on the Hub
     "nvidia/GLM-5.3-NVFP4",
     # DeepSeek V4
     *DEEPSEEK_V4_HF_MODELS,

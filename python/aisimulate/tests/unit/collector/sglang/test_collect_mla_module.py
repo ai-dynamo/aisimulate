@@ -269,7 +269,7 @@ class TestBuildModuleTestCases:
 
     @pytest.mark.parametrize(
         "model_path",
-        ["zai-org/GLM-5.3", "zai-org/GLM-5.3-FP8", "nvidia/GLM-5.3-NVFP4"],
+        ["zai-org/GLM-5.3-BF16", "zai-org/GLM-5.3", "nvidia/GLM-5.3-NVFP4"],
     )
     def test_glm53_alias_configs_match_glm52_geometry(self, model_path):
         mod = _import_module()
