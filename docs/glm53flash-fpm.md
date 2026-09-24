@@ -102,3 +102,13 @@ not measured kernel coverage or accuracy acceptance. Long campaigns use
 [bounded shards](../python/aisimulate/collector/fpm_forward/README.glm53flash-shards.md)
 with immutable original-point mapping and complete-union publication; retries
 preserve previous attempts and their raw evidence.
+
+
+## Weight sizing during rendering
+
+The Generator reuses the shared GLM SOL resident-weight model for the native
+checkpoint's mixed precision and layer schedule. Its TP1 weight estimate still
+feeds the existing 1.5× naive sizing heuristic; it is not a measured memory
+qualification and excludes serving cache, CUDA graphs and workspace. Frozen
+FPM plans require no additional model lookup while rendering. Requested FPM TP2
+and TP4 configurations still use their explicitly frozen pure-TP topology.

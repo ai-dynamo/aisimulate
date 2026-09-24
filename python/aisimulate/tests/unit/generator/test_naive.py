@@ -537,3 +537,59 @@ def test_preserve_engine_limits_strips_disagg_roles():
         assert "max_batch_size" not in role_params
         assert "gpu_memory_utilization" not in role_params
     assert params["preserve_engine_limits"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("model_path", ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"])
+def test_glm_frozen_sizing_uses_shared_mixed_precision_without_resolution(monkeypatch, backend, model_path):
+    import aisimulate.generator.naive as naive
+    from aisimulate_core.sdk.config import ModelConfig
+    from aisimulate_core.sdk.models import get_model
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+    frozen = get_model_config_from_model_path(model_path)
+    model = get_model(model_path, ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1), backend)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("frozen sizing must not reload the checkpoint")
+
+    monkeypatch.setattr(naive, "_load_model_config_from_model_path", forbidden)
+    monkeypatch.setattr(naive, "get_model_config_from_model_path", forbidden)
+    size = naive._estimate_weight_bytes_from_config(frozen, model_path, backend_name=backend)
+    assert size == model.get_resident_weights_bytes()
+    assert (170 if "NVFP4" in model_path else 290) * 1024**3 < size < 350 * 1024**3
+    params = naive.build_naive_generator_params(model_path, 2, "gb300", backend, model_config=frozen)
+    # NVFP4 TP1 remains a sizing candidate, not a capacity-qualified run.
+    assert params["ModelConfig"]["required_tp"] == (1 if "NVFP4" in model_path else 2)
+    assert params["ModelConfig"]["fits_in_memory"] is True
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_glm_live_sizing_preserves_original_raw_checkpoint(monkeypatch, backend):
+    import aisimulate.generator.naive as naive
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+    path = "zai-org/GLM-5.3-Flash"
+    frozen = get_model_config_from_model_path(path)
+    monkeypatch.setattr(naive, "_load_model_config_from_model_path", lambda _: frozen["raw_config"])
+    metadata = {}
+    assert naive._estimate_model_weight_bytes(path, model_metadata=metadata, backend_name=backend) == (
+        naive._estimate_weight_bytes_from_config(frozen, path, backend_name=backend)
+    )
+    assert metadata == {"architecture": "Glm5NextForConditionalGeneration", "is_moe": True}
+
+
+@pytest.mark.unit
+def test_glm_invalid_layer_schedule_does_not_fall_back_to_dense_estimate(monkeypatch):
+    import copy
+
+    import aisimulate.generator.naive as naive
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+    raw = copy.deepcopy(get_model_config_from_model_path("zai-org/GLM-5.3-Flash")["raw_config"])
+    raw["text_config"]["layer_types"].pop()
+    monkeypatch.setattr(naive, "_load_model_config_from_model_path", lambda _: raw)
+    with pytest.raises(RuntimeError, match="Invalid GLM-5.3-Flash sizing contract"):
+        naive._estimate_model_weight_bytes("invalid-glm")
