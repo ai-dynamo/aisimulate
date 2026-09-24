@@ -292,6 +292,22 @@ def result_payload(
     }
 
 
+def raw_checkpoint_config(model_path: str, revision: str, expected_model: str) -> tuple[dict, str]:
+    """Keep exact checkpoint-file provenance separate from SDK inferred fields."""
+    from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
+
+    local = Path(model_path) / "config.json"
+    if not local.is_file():
+        from huggingface_hub import hf_hub_download
+
+        local = Path(hf_hub_download(model_path, "config.json", revision=revision))
+    raw = local.read_bytes()
+    config = json.loads(raw)
+    if config != _load_pre_downloaded_hf_config(expected_model):
+        raise ValueError("native checkpoint config file differs from pinned original config")
+    return config, hashlib.sha256(raw).hexdigest()
+
+
 def read_ops_provenance(path: Path, *, raw_config: dict, checkpoint_revision: str, runtime_audit: dict) -> dict:
     """Bind operation rows to the loaded config and verified native source files."""
     import re
@@ -412,14 +428,18 @@ def main(argv=None) -> None:
         },
     }
     if args.observation_purpose in ("ops", "ops_holdout"):
+        checkpoint_config, checkpoint_file_sha256 = raw_checkpoint_config(
+            server.model_path, args.tokenizer_revision, expected_model
+        )
         provenance = {
             **read_ops_provenance(
                 Path(os.environ["AISIM_GLM53_OPS_PROVENANCE"]),
-                raw_config=raw_config,
+                raw_config=checkpoint_config,
                 checkpoint_revision=args.tokenizer_revision,
                 runtime_audit=json.loads((output.parent / "runtime-preflight.json").read_text()),
             ),
             **provenance,
+            "checkpoint_config_file_sha256": checkpoint_file_sha256,
         }
     provenance_path = output.parent / "sglang-provenance.json"
     write_json(provenance_path, provenance)
