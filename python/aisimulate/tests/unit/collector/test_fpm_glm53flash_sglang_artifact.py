@@ -7,11 +7,35 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from collector.fpm_forward.sglang_artifact import read_observations, validate_sglang_repetitions
+from collector.fpm_forward.sglang_artifact import (
+    TELEMETRY_POLICY,
+    file_receipt,
+    read_observations,
+    validate_sglang_repetitions,
+)
 from collector.fpm_forward.sglang_driver import freeze_requests, result_payload
 from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
 
 pytestmark = pytest.mark.unit
+
+
+def provenance():
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+
+    config = get_model_config_from_model_path("zai-org/GLM-5.3-Flash")["raw_config"]
+    return {
+        "run_id": "run",
+        "execution_identity": dict(
+            zip(EXECUTION_COLUMNS, execution_identity(config, backend="sglang", input_modality="text"), strict=True)
+        ),
+        "telemetry_policy": TELEMETRY_POLICY,
+        "context_policy": {
+            "measured_context_limit": 131072,
+            "runtime_context_length": 131079,
+            "native_admission_headroom": 7,
+        },
+    }
 
 
 def fixture():
@@ -31,6 +55,7 @@ def fixture():
                 fid = f"rank-{rank}/forward-{rep * 2 + step}"
                 history = [4, 5] if step == 0 else [4, 5, 7]
                 record = {
+                    **provenance(),
                     "tp_rank": rank,
                     "state_protocol": PROTOCOL,
                     "allocated_fake_tokens": 0,
@@ -80,8 +105,45 @@ def raw(records):
     return {rank: ("\n".join(json.dumps(row) for row in rows) + "\n").encode() for rank, rows in records.items()}
 
 
-def test_native_sglang_median_excludes_warmup_and_roundtrips(tmp_path):
+def artifact(tmp_path):
+    from collector.fpm_forward import sglang_artifact
+
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
+    from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+
     point, manifest, records = fixture()
+    pins = json.loads(
+        (
+            sglang_artifact.Path(sglang_artifact.__file__).parent
+            / "runtime/glm53flash_sglang/runtime-source-sha256.json"
+        ).read_text()
+    )
+    native_config = {
+        "model_path": "/models/GLM-5.3-Flash",
+        "revision": MODEL_REVISIONS["zai-org/GLM-5.3-Flash"],
+        "tp_size": 2,
+        "pp_size": 1,
+        "dp_size": 1,
+        "ep_size": 1,
+        "attn_cp_size": 1,
+        "nnodes": 1,
+        "context_length": 131079,
+        "kv_cache_dtype": "fp8_e4m3",
+        "disable_radix_cache": True,
+        "chunked_prefill_size": 8192,
+        "cuda_graph_config": {"decode": {"backend": "full"}, "prefill": {"backend": "disabled"}},
+    }
+    for name, value in {
+        "runtime-preflight.json": {
+            "backend": "sglang",
+            "backend_version": "0.5.20",
+            "status": "passed",
+            "sources": pins,
+        },
+        "sglang-declared-config.json": {**native_config, "cuda_graph_config": None},
+        "sglang-resolved-config.json": native_config,
+    }.items():
+        (tmp_path / name).write_text(json.dumps(value))
     layout = {
         "admitted": True,
         "logical_kv_dtype": "torch.float8_e4m3fn",
@@ -117,15 +179,89 @@ def test_native_sglang_median_excludes_warmup_and_roundtrips(tmp_path):
         output=tmp_path / "benchmark.json",
         manifest_path=manifest_path,
         trace_paths=paths,
-        provenance={"run_id": "run", "execution_identity": {}},
-        input_provenance={"text_sha256": "a" * 64},
+        provenance=provenance(),
+        input_provenance={"text_sha256": "a" * 64, "tokenizer_revision": native_config["revision"]},
         elapsed=100,
     )
+    cell = SimpleNamespace(
+        state_protocol=PROTOCOL,
+        topology=SimpleNamespace(tp=2),
+        execution_identity=tuple(provenance()["execution_identity"][key] for key in EXECUTION_COLUMNS),
+    )
+    return cell, payload
+
+
+def test_native_sglang_median_excludes_warmup_and_roundtrips(tmp_path):
+    cell, payload = artifact(tmp_path)
     assert payload["results"][0]["fpms"][0]["wall_time"] == pytest.approx(0.0105)
-    cell = SimpleNamespace(state_protocol=PROTOCOL, topology=SimpleNamespace(tp=2))
     validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
     payload["results"][0]["fpms"][0]["wall_time"] = 0.999
     with pytest.raises(ValueError, match="median"):
+        validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
+
+
+@pytest.mark.parametrize("index", [10, 11])
+@pytest.mark.parametrize("field", ["run_id", "execution_identity", "telemetry_policy", "context_policy"])
+def test_native_sglang_binds_seed_and_target_identity(field, index):
+    point, manifest, records = fixture()
+    records[1][index].pop(field)
+    with pytest.raises(ValueError, match="provenance"):
+        read_observations(manifest, raw(records), [point])
+
+
+@pytest.mark.parametrize("field", ["run_id", "execution_identity", "context_policy"])
+def test_native_sglang_rejects_rehashed_consistent_trace_from_other_execution(tmp_path, field):
+    cell, payload = artifact(tmp_path)
+    evidence = payload["input_provenance"]["native_forward_manifest"]
+    for rank, receipt in enumerate(evidence["traces"]):
+        path = tmp_path / receipt["file"]
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        for row in rows:
+            if field == "run_id":
+                row[field] = "other-run"
+            elif field == "execution_identity":
+                row[field]["model_config_sha256"] = "b" * 64
+            else:
+                row[field]["runtime_context_length"] -= 1
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        evidence["traces"][rank] = {"tp_rank": rank, **file_receipt(path)}
+    with pytest.raises(ValueError, match="provenance differs"):
+        validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
+
+
+@pytest.mark.parametrize("kind", ["runtime_preflight", "declared_config", "resolved_config"])
+def test_native_sglang_requires_runtime_receipts(tmp_path, kind):
+    cell, payload = artifact(tmp_path)
+    del payload["input_provenance"]["native_forward_manifest"][kind]
+    with pytest.raises(ValueError, match="receipt is missing"):
+        validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
+
+
+@pytest.mark.parametrize(
+    "kind,field,value",
+    [
+        ("runtime_preflight", "sources", {}),
+        ("runtime_preflight", "backend_version", "0.5.19"),
+        ("declared_config", "revision", "other-checkpoint"),
+        ("resolved_config", "tp_size", 4),
+        ("resolved_config", "kv_cache_dtype", "bfloat16"),
+        ("resolved_config", "disable_radix_cache", False),
+        ("resolved_config", "context_length", 131078),
+        ("resolved_config", "model_path", "/models/other-checkpoint"),
+        ("resolved_config", "cuda_graph_config", None),
+        ("resolved_config", "allow_auto_truncate", True),
+        ("resolved_config", "attn_dcp_size", 2),
+    ],
+)
+def test_native_sglang_rejects_rehashed_runtime_config_corruption(tmp_path, kind, field, value):
+    cell, payload = artifact(tmp_path)
+    evidence = payload["input_provenance"]["native_forward_manifest"]
+    path = tmp_path / evidence[kind]["file"]
+    config = json.loads(path.read_text())
+    config[field] = value
+    path.write_text(json.dumps(config))
+    evidence[kind] = file_receipt(path)
+    with pytest.raises(ValueError):
         validate_sglang_repetitions(cell, payload, tmp_path / "benchmark.json")
 
 
