@@ -14,6 +14,7 @@ import json
 import math
 import statistics
 from pathlib import Path
+from types import SimpleNamespace
 
 from collector.glm53flash_contract import (
     BACKENDS,
@@ -34,7 +35,7 @@ def file_sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _required_files(tp_size: int) -> set[str]:
+def _required_files(tp_size: int, backend: str) -> set[str]:
     files = {
         "requests.json",
         "manifest.json",
@@ -52,7 +53,44 @@ def _required_files(tp_size: int) -> set[str]:
             ("state-layout-rank", "json"),
         )
     )
+    if backend == "sglang":
+        files.update({"sglang-provenance.json", "sglang-declared-config.json", "sglang-resolved-config.json"})
     return files
+
+
+def _sglang_execution(root: Path, fmt: str, tp: int, points: list[dict]) -> dict:
+    """Reuse the shared runtime receipt contract without the FPM timing reader."""
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
+    from aisimulate_core.sdk.utils import get_model_config_from_model_path
+    from collector.fpm_forward.sglang_artifact import _validate_runtime_receipts, file_receipt
+
+    provenance = json.loads((root / "sglang-provenance.json").read_bytes())
+    raw_config = get_model_config_from_model_path(CHECKPOINTS[fmt][0])["raw_config"]
+    cell = SimpleNamespace(
+        execution_identity=execution_identity(raw_config, backend="sglang", input_modality="text"),
+        topology=SimpleNamespace(tp=tp),
+    )
+    payload = {
+        **provenance,
+        "input_provenance": {"tokenizer_revision": CHECKPOINTS[fmt][1]},
+        "producer": {"telemetry_policy": provenance.get("telemetry_policy")},
+        "results": [{"point": point} for point in points],
+    }
+    receipts = {
+        key: file_receipt(root / name)
+        for key, name in (
+            ("runtime_preflight", "runtime-preflight.json"),
+            ("declared_config", "sglang-declared-config.json"),
+            ("resolved_config", "sglang-resolved-config.json"),
+        )
+    }
+    identity = _validate_runtime_receipts(cell, payload, root, receipts)
+    resolved = json.loads((root / "sglang-resolved-config.json").read_bytes())
+    if any(resolved["cuda_graph_config"][phase]["backend"] != "disabled" for phase in ("prefill", "decode")):
+        raise ValueError("Ops runtime receipts require both native SGLang graph phases disabled")
+    if set(identity["execution_identity"]) != set(EXECUTION_COLUMNS):
+        raise ValueError("Ops native execution identity is incomplete")
+    return identity
 
 
 def _runtime_audit(root: Path, backend: str) -> dict:
@@ -107,7 +145,7 @@ def freeze_evidence(output: Path, tp_size: int, manifest: dict) -> str:
     requests = json.loads((output / "requests.json").read_text())
     if requests["dataset_role"] != "calibration":
         raise ValueError("only calibration observations may produce measured rows")
-    required = _required_files(tp_size)
+    required = _required_files(tp_size, manifest["backend"])
     if not all((output / name).is_file() for name in required):
         raise FileNotFoundError("native calibration evidence is incomplete")
     audit = json.loads((output / "runtime-preflight.json").read_text())
@@ -144,7 +182,7 @@ def _read_evidence(root: Path) -> dict:
         names.add(item["path"])
         if file_sha(source) != item["sha256"]:
             raise ValueError("retained native Ops evidence changed after calibration")
-    if not _required_files(receipt["tp_size"]) <= names:
+    if not _required_files(receipt["tp_size"], receipt["backend"]) <= names:
         raise ValueError("Ops calibration evidence omits required native files")
     _runtime_audit(root, receipt["backend"])
     return receipt
@@ -158,6 +196,7 @@ def load_native(run: dict, base: Path) -> dict:
     root = (base / raw_root).resolve()
     backend, fmt, tp, phase = run["key"]
     pins = _runtime_audit(root, backend)
+    execution = _sglang_execution(root, fmt, tp, run["points"]) if backend == "sglang" else None
     from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 
     expected_config = sha256_json(_load_pre_downloaded_hf_config(CHECKPOINTS[fmt][0]))
@@ -205,6 +244,8 @@ def load_native(run: dict, base: Path) -> dict:
         previous, observed, seen_forward_ids = {}, set(), set()
         for line in (root / f"forward-rank-{rank}.jsonl").read_bytes().splitlines():
             row = json.loads(line)
+            if execution is not None and any(row.get(key) != value for key, value in execution.items()):
+                raise ValueError("Ops raw forward execution differs from the retained native runtime receipts")
             if row.get("forward_id") in seen_forward_ids:
                 raise ValueError("Ops native forward identity was reused")
             seen_forward_ids.add(row["forward_id"])

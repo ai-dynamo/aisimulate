@@ -22,9 +22,36 @@ These are qualification candidates, not evidence of measured GB300 coverage. Pre
 
 ## Acceptance and data status
 
-The model registration, nested configuration parser, per-layer graph, native Rust SOL and persistent-state accounting are implemented. The public consumer constructs both checkpoints on both supported backends through 128K context. Independent Python/Rust contract checks and both parity suites passed: 419 checks, plus 21 focused Rust arithmetic/serialization checks. Existing parity records are unchanged; four GLM records were appended. See [the native contract](glm53flash-native-contract.md) for exact operation and precision boundaries.
+Native Ops collection and its Rust measured consumer are implemented on the
+shared SOL graph. The observer covers all 45 attention modules, 45 whole FFNs,
+backend-specific mHC sites, embedding, final norm, logits and 91 TP all-reduces.
+Local compute and synchronous collective intervals are separately accounted;
+unobserved or overlapping boundaries fail admission. The current observer
+admits explicit eager execution only. Production CUDA-graph collection and
+replay-bound timing remain unfinished.
 
-SOL is theoretical cost and payload accounting. Native allocator qualification, FPM data, Ops data and independent error acceptance belong to the companion campaigns. They are not certified by these CPU tests. The initial native GB300 qualification has completed FP8 TP2 and TP4 real-request cases through 128K; it is not prediction accuracy evidence.
+Measured lookup keeps exact physical identity, backend, checkpoint, TP and phase.
+Bounded workload interpolation requires complete measured corners with matching
+observed kernel signatures and state/graph policy; KDA chunk and IndexPool
+short-context/tail partitions remain separate. Missing coverage fails in both
+SILICON and HYBRID; neither mode silently falls back to SOL. The installed wheel
+constructs all eight required model graphs and rejects missing measurements in
+all eight SILICON and all eight HYBRID checks.
+
+CPU validation passed 2,362 collector tests (8 skipped), 13 Rust GLM tests and
+43 focused observer/contract/evidence/runtime tests. Subsequent shared SGLang
+context/receipt integration passed 87 focused checks. These checks establish
+software behavior and evidence integrity, not native GPU performance coverage.
+**All eight deployment cells retain data/accuracy status `NOT_EVALUATED`.** No
+measured GLM profiles or independent 20% MAPE pass are included. Native framework
+qualification and the first Ops GPU smoke are separate pending evidence.
+
+See [the collector contract](../python/aisimulate/collector/README.glm53flash.md),
+[the Ops evidence adapter](../python/aisimulate/collector/glm53flash_validation.py)
+and [the independent holdout validator](../python/aisimulate/collector/fpm_forward/glm53flash_validation.py)
+for native timing boundaries, retained request/state/source receipts and
+fail-closed acceptance. See [the shared native graph](glm53flash-native-contract.md)
+for operation and precision boundaries.
 
 Formal collection retains at least five warmups and ten observations per point, and separate calibration/holdout token streams and geometry. Exact table self-queries verify integrity, not independent accuracy. Record complete coverage, phase MAPE, WAPE and tail errors. Existing data remains unchanged.
 

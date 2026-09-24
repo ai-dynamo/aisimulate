@@ -10,6 +10,7 @@ import pytest
 
 from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 from collector import glm53flash_validation as evidence
+from collector.fpm_forward.sglang_artifact import TELEMETRY_POLICY
 from collector.glm53flash_contract import (
     BACKENDS,
     CHECKPOINTS,
@@ -45,6 +46,8 @@ def put_lines(path, rows):
 
 
 def native_fixture(tmp_path, role="holdout"):
+    from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, execution_identity
+
     root = tmp_path / "native"
     root.mkdir()
     pins = json.loads(
@@ -83,7 +86,41 @@ def native_fixture(tmp_path, role="holdout"):
         "config_sha256": sha256_json(_load_pre_downloaded_hf_config(CHECKPOINTS["fp8"][0])),
         "source_sha256": sha256_json(pins),
         "runtime_digest": "sha256:" + "b" * 64,
+        "run_id": "authored-unit-run",
+        "execution_identity": dict(
+            zip(
+                EXECUTION_COLUMNS,
+                execution_identity(
+                    _load_pre_downloaded_hf_config(CHECKPOINTS["fp8"][0]), backend="sglang", input_modality="text"
+                ),
+                strict=True,
+            )
+        ),
+        "telemetry_policy": TELEMETRY_POLICY,
+        "context_policy": {
+            "measured_context_limit": 131072,
+            "runtime_context_length": 131079,
+            "native_admission_headroom": 7,
+        },
     }
+    put(root / "sglang-provenance.json", identity)
+    native_config = {
+        "model_path": "/models/authored-cpu-fixture",
+        "revision": CHECKPOINTS["fp8"][1],
+        "tp_size": 2,
+        "pp_size": 1,
+        "dp_size": 1,
+        "ep_size": 1,
+        "attn_cp_size": 1,
+        "nnodes": 1,
+        "context_length": 131079,
+        "kv_cache_dtype": "fp8_e4m3",
+        "disable_radix_cache": True,
+        "chunked_prefill_size": 8192,
+        "cuda_graph_config": {"prefill": {"backend": "disabled"}, "decode": {"backend": "disabled"}},
+    }
+    put(root / "sglang-declared-config.json", native_config)
+    put(root / "sglang-resolved-config.json", native_config)
     layout = {
         "admitted": True,
         "logical_kv_dtype": "torch.float8_e4m3fn",
@@ -221,6 +258,26 @@ def test_whole_gpu_truth_is_rank_max_then_median_and_never_host_fpm(tmp_path):
     assert result["values"] == {1: 5.0}
     assert result["timing_boundary"] == "embedding_to_logits_gpu_v1"
     assert len(result["request_ids"]) == 15
+
+
+@pytest.mark.parametrize("field", ["run_id", "context_policy", "execution_identity"])
+def test_ops_rejects_consistent_cross_rank_trace_from_another_execution(tmp_path, field):
+    run, root, records, _, _ = native_fixture(tmp_path)
+    for rank, rows in records.items():
+        for row in rows:
+            row[field] = "another-run" if field == "run_id" else {"unrelated": "identity"}
+        put_lines(root / f"forward-rank-{rank}.jsonl", rows)
+    with pytest.raises(ValueError, match="raw forward execution"):
+        evidence.load_native(run, tmp_path)
+
+
+def test_ops_rejects_resolved_graph_enablement_even_when_trace_says_eager(tmp_path):
+    run, root, _, _, _ = native_fixture(tmp_path)
+    config = json.loads((root / "sglang-resolved-config.json").read_bytes())
+    config["cuda_graph_config"]["decode"]["backend"] = "full"
+    put(root / "sglang-resolved-config.json", config)
+    with pytest.raises(ValueError, match="both native SGLang graph phases disabled"):
+        evidence.load_native(run, tmp_path)
 
 
 @pytest.mark.parametrize(
