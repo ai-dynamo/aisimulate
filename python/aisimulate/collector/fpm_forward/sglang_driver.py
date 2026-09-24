@@ -83,6 +83,15 @@ def observed_scheduler_process(*args, **kwargs):
     return run_scheduler_process(*args, **kwargs)
 
 
+def create_observed_engine(server_args):
+    # The public sglang.Engine is a LazyImport proxy: attribute assignment on
+    # that object does not reach the native class used by its __call__.
+    from sglang.srt.entrypoints.engine import Engine
+
+    Engine.run_scheduler_process_func = staticmethod(observed_scheduler_process)
+    return Engine(server_args=server_args)
+
+
 def verify_runtime(output: Path) -> None:
     import importlib.metadata
 
@@ -337,7 +346,6 @@ def read_ops_provenance(path: Path, *, raw_config: dict, checkpoint_revision: st
 
 
 def main(argv=None) -> None:
-    from sglang import Engine
     from sglang.srt.server_args import ServerArgs
     from transformers import AutoTokenizer
 
@@ -450,11 +458,10 @@ def main(argv=None) -> None:
         AISIM_GLM53_PROVENANCE=str(provenance_path),
         AISIM_GLM53_REQUEST_MANIFEST=str(manifest_path),
     )
-    Engine.run_scheduler_process_func = staticmethod(observed_scheduler_process)
     start = time.monotonic()
     engine = None
     try:
-        engine = Engine(server_args=server)
+        engine = create_observed_engine(server)
         if args.observation_purpose in ("ops", "ops_holdout"):
             validate_eager_args(engine.server_args, resolved=True)
         write_json(output.parent / "sglang-resolved-config.json", engine.server_args.resolved_dict())
