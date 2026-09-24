@@ -157,6 +157,9 @@ def test_full_matrix_stages_each_original_once_without_claiming_hub_publication(
     assert "revision" not in output
     assert len(output["sources"]) == 4
     assert len(output["configurations"]) == 8
+    assert (tmp_path / "stage" / output["input_manifest"]["path"]).read_bytes() == manifest.read_bytes()
+    assert output["input_manifest"]["sha256"] == output["input_manifest_sha256"]
     for receipt in output["sources"]:
         assert hashlib.sha256((tmp_path / "stage" / receipt["path"]).read_bytes()).hexdigest() == receipt["sha256"]
+        assert receipt["original_consumer_paths"]
     assert "Hub immutable commit" in output["remaining"]
