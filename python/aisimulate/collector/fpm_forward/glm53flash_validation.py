@@ -146,7 +146,7 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         "role": role,
     }
     if "shards" in spec:
-        from .shards import validate_point_union
+        from collector.glm53flash_shard_contract import validate_point_union
 
         shard_manifest = _read_json_receipt(spec["shard_manifest"], base)
         children = [_plan_run(child, base, role) for child in spec["shards"]]
