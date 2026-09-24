@@ -15,7 +15,7 @@ Upstream dataset code and source fragments are not included in this tool or
 copied into AISimulate. The importer copies an entire user-provided local
 snapshot to a **new** destination. It applies AST-selected routing edits only
 to that external destination's validator and adds the original `glm53flash.py`
-policy module there. Source fragments are obtained only from the external
+policy modules there. Source fragments are obtained only from the external
 snapshot at runtime; unrelated bytes and copyright/license comments remain
 unchanged. No upstream license is assumed or invented. Both the pinned file
 hash and structural hook counts must match before applying edits. A changed
@@ -66,13 +66,105 @@ python tools/glm53flash_hf/import_glm53flash.py \
   --evidence-date ACTUAL_YYYY_MM_DD
 ```
 
-External receipts are a JSON list with fields `backend`, `weight_quantization`
-(`fp8` or `nvfp4`), `tp`, `phase`, `role` (`calibration` or `holdout`), `uri`,
-`sha256`, and `bytes`. At least one archive receipt must cover every one of the
-32 phase/role combinations. A shared archive can appear in multiple role
-records when it actually contains each referenced role. Large raw and failed
-artifacts should remain in the archive; do not claim a compact metric report is
-the raw archive. Download/extract and verify the archived originals separately.
+The importer accepts only `glm53flash_bound_raw_evidence_v1` records produced
+by the archive binding workflow below. There must be **exactly 32** records:
+one per backend/precision/TP/phase/role. Labels-only receipts from the low-level
+archive helper are deliberately insufficient. Binding verifies:
+
+- Exact stage, original input-manifest and accepted report content SHA256.
+- Frozen plan file content SHA256 and selected cell/phase/role. Sharded roles
+  require the exact accepted child-cell union and every child plan.
+- The exact accepted native file set and every SHA256 under each recorded
+  `raw_root`, mapped to an explicit prefix in the archive inventory. Missing,
+  extra or changed files under that accepted root fail; other files (including
+  failed attempts) remain in the complete campaign inventory.
+- `consumer_sources`: every original `consumer_data` path and SHA matches the
+  accepted prediction receipts and `stage.sources[].original_consumer_paths`;
+  the archived stage source bytes are rehashed. Consumer files remain in the
+  stage; they are not falsely represented as native raw files.
+- The complete inventory, archive input manifest, archive verification receipt,
+  byte counts, verified method and source recheck, with immutable small-file
+  receipts. The importer preserves all these files, and profile generation
+  verifies them at the actual immutable Hub revision.
+
+## Archive the closed campaigns on the storage host
+
+`raw_archive.py` and `raw_campaign.py` are original Apache-2.0 implementations
+using only Python's standard library. They can run with Python 3.12 on the
+remote Lustre host without importing AISimulate, torch, Arrow or a GPU runtime.
+The final dataset importer still runs the full accepted-stage/Arrow validator.
+The earlier host-local `glm53flash-raw-archive-v1` helper is the original source
+of `raw_archive.py`; no external implementation was copied.
+
+First stop writers and preserve failed attempts. On the host where the original
+acceptance manifest's paths are valid, create a new plan:
+
+```sh
+python3.12 tools/glm53flash_hf/raw_campaign.py plan \
+  --stage /lustre/evidence/accepted-stage \
+  --manifest-base /lustre/campaign/original-manifest-directory \
+  --output /lustre/evidence/archive-plan.json
+```
+
+`manifest-base` is the directory against which the original acceptance input
+manifest resolved relative `plan.path`, `shard_manifest.path`, and `raw_root`.
+Absolute original paths remain absolute. No alternate mount or path prefix is
+guessed. Each of the 32 jobs contains its accepted raw roots and an entry index.
+Fill only `source_root` and `uri`: the former must be the **entire closed
+phase/role campaign directory, including failed attempts**, enclosing all its
+accepted raw roots; the latter must be a stable credential-free `ssh://`,
+`s3://`, or `https://` archive location. Source roots and URIs are deliberately
+not inferred. For example, a URI can be
+`ssh://ocijhb/lustre/evidence/ROLE/campaign.tar.gz`. URI availability is not
+checked, and this tool performs no upload or remote write.
+
+Each job can run independently, making retries explicit new outputs:
+
+```sh
+python3.12 tools/glm53flash_hf/raw_campaign.py archive \
+  --stage /lustre/evidence/accepted-stage \
+  --plan /lustre/evidence/archive-plan.json \
+  --label sglang-fp8-2-decode-calibration \
+  --output /lustre/evidence/archive-bundles/sglang-fp8-2-decode-calibration
+```
+
+The output parent must already exist and the output itself must be new and
+outside its source. Run the same command for each job's label (the five fields
+`backend`, `weight_quantization`, `tp`, `phase`, `role` joined with `-`). Then
+write an explicit `archive-bundles.json` object mapping all 32 labels to their
+successful absolute bundle directories. A failed run's output is preserved;
+choose a new output directory on retry and point the map to that verified run.
+
+```sh
+python3.12 tools/glm53flash_hf/raw_campaign.py bind \
+  --stage /lustre/evidence/accepted-stage \
+  --plan /lustre/evidence/archive-plan.json \
+  --bundles /lustre/evidence/archive-bundles.json \
+  --output /lustre/evidence/new-bound-raw-evidence
+```
+
+`archive` records every source file (including hidden/empty files and failure
+logs), hashes it while reading, streams gzip/tar with bounded buffers, fully
+re-reads each tar member and checks the original SHA, size and exact membership,
+then rechecks source stat and hashes. It rejects symlinks, special files,
+traversal, overwrite, source mutation and malformed archives. `bind` repeats
+the complete tar verification for every archive before producing the bound
+receipts. There is no on-disk extraction or copy of payloads to the root host.
+Memory does not scale with raw payload bytes; inventory/native file lists do
+scale with file count. These are observations of a quiescent tree, not an atomic
+filesystem snapshot. The tool cannot discover failed attempts outside the
+explicitly supplied campaign root; the operator must choose its complete scope.
+
+Only transfer the **new-bound-raw-evidence directory** to the dataset import
+host, preserving its relative paths. Pass its `external-raw-evidence.json` as
+`--external-receipts`. It contains inventory JSONL, source input/verification
+receipts, and exact frozen plan/shard-manifest bytes. Large `campaign.tar.gz`
+files stay at their external locations. The portable importer rechecks every
+small-file hash and the full native/consumer binding; it does not fetch the tar
+or claim an external URI was reached. Low-level archive receipts keep
+`native_or_accuracy_acceptance=NOT_EVALUATED`: byte preservation cannot grant
+native or prediction acceptance. Formal binding requires a separately accepted
+stage; synthetic/test/diagnostic markers are rejected with no production bypass.
 
 The new dataset contains the entire original publication stage and raw archive
 receipts under `campaigns/glm53flash-pr324/<stage-sha256>/`, and eight normal
@@ -155,3 +247,11 @@ The profile contract tests are
 Hub, test-only bypasses installed through pytest monkeypatch, and isolated test
 outputs. They check all eight SDK materializations and subsequent offline loads;
 they do not claim native prediction or real GLM publication acceptance.
+
+Raw archive and binding tests are `test_glm53flash_raw_archive.py` and
+`test_glm53flash_raw_campaign.py`. Tiny TEST_ONLY fixtures exercise 32 roles,
+sharded accepted roots, complete failure preservation, corruption, traversal,
+source mutation, rehashed-inventory mismatch and consumer-origin mismatch.
+Test-only monkeypatches permit synthetic receipts solely inside pytest; no CLI
+flag permits them in a formal binding or import. Local tests do not establish
+ARM/Lustre qualification or formal campaign acceptance.

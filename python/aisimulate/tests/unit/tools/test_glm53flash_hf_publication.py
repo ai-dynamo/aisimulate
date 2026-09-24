@@ -211,7 +211,11 @@ def test_routing_rejects_uninspected_validator_without_changes(tmp_path):
     assert path.read_text() == source
 
 
-def test_prepare_checks_api_pin_before_importing_external_code(staged, tmp_path):
+def test_prepare_checks_api_pin_before_importing_external_code(staged, tmp_path, monkeypatch):
+    from tests.unit.tools.test_glm53flash_raw_campaign import build_bound_fixture
+
+    _, _, root, _ = build_bound_fixture(staged[0], tmp_path, monkeypatch)
+    staged = staged[0], root / "external-raw-evidence.json"
     base = tmp_path / "UNINSPECTED_BASE"
     (base / "scripts").mkdir(parents=True)
     (base / "scripts/manage_dataset.py").write_text('raise RuntimeError("must not execute")\n')
@@ -250,17 +254,9 @@ def test_acceptance_rejects_misrepresentation(mutation):
         policy.validate_acceptance(report)
 
 
-@pytest.mark.parametrize("mutation", ["omitted_cell", "secret_uri", "missing_hash"])
-def test_external_receipts_fail_closed(staged, mutation):
-    records = policy.read(staged[1])
-    if mutation == "omitted_cell":
-        records.pop()
-    elif mutation == "secret_uri":
-        records[0]["uri"] = "https://example.invalid/raw?token=not-a-real-secret"
-    else:
-        records[0]["sha256"] = ""
-    with pytest.raises(ValueError):
-        policy.validate_external_receipts(records)
+def test_unbound_external_receipts_require_explicit_stage_and_evidence_roots(staged):
+    with pytest.raises(ValueError, match="requires stage and evidence roots"):
+        policy.validate_external_receipts(policy.read(staged[1]))
 
 
 def test_source_mutation_rejected(staged):
@@ -317,7 +313,11 @@ def test_symlink_escape_rejected(tmp_path):
 
 @pytest.mark.skipif(not os.environ.get("GLM_TEST_BASE"), reason="requires immutable local dataset base")
 @pytest.mark.timeout(300)
-def test_canonical_integration_keeps_baseline_and_rejects_tampering(staged, tmp_path):
+def test_canonical_integration_keeps_baseline_and_rejects_tampering(staged, tmp_path, monkeypatch):
+    from tests.unit.tools.test_glm53flash_raw_campaign import build_bound_fixture
+
+    _, _, root, _ = build_bound_fixture(staged[0], tmp_path, monkeypatch)
+    staged = staged[0], root / "external-raw-evidence.json"
     base = Path(os.environ["GLM_TEST_BASE"])
     before = {
         str(p.relative_to(base)): policy.sha(p) for p in base.rglob("*") if p.is_file() and "__pycache__" not in p.parts

@@ -313,7 +313,11 @@ def test_failed_remote_verification_leaves_no_profile_output(profile_context, tm
 @pytest.mark.skipif(not os.environ.get("GLM_TEST_BASE"), reason="requires immutable local dataset base")
 @pytest.mark.timeout(300)
 def test_complete_import_to_profile_pipeline_with_mock_hub(profile_context, tmp_path, monkeypatch):
-    stage, _, _, _, external = profile_context
+    from tests.unit.tools.test_glm53flash_raw_campaign import build_bound_fixture
+
+    stage, _, _, _, _ = profile_context
+    _, _, root, _ = build_bound_fixture(stage, tmp_path, monkeypatch)
+    external = root / "external-raw-evidence.json"
     dataset = tmp_path / "TEST_ONLY_FULL_BASELINE_COPY"
     imported = integration.prepare(Path(os.environ["GLM_TEST_BASE"]), stage, dataset, external, "1" * 40, "2026-09-23")
     result_path = dataset / "campaigns" / policy.CAMPAIGN / imported["stage_sha256"] / "import-result.json"
