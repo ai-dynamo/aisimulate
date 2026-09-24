@@ -38,6 +38,7 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",

@@ -651,8 +651,10 @@ findings:
           _topk_index_merge (topk_split), matching the collector -> ALIGNED
           (verdict computed with --serving-raw against that record). All
           three gates green (vllm 33, sglang 12, trtllm 9).
-          HARNESS FOLLOW-UP this opens: the identity probes run eager on
-          every backend ("identity probe: no graph capture"). Any op whose
+          HARNESS FOLLOW-UP this opens (RESOLVED 2026-09-24, owner decision:
+          probes now run the framework's own mode for prefill AND decode —
+          see probe_execution_mode_is_the_framework_default_2026_09_24):
+          the identity probes ran eager on every backend. Any op whose
           kernel choice reads capture-time static shapes (not just M3 top-k:
           FlashMLA/FA split-KV planning, XQA multi-block, trtllm-gen decode
           scheduling are candidates) is mis-identified by an eager probe.
@@ -660,8 +662,18 @@ findings:
           probes can run decode under graphs; the question for the owner is
           whether to make graph-mode the default decode evidence (production
           truth) and keep eager only for prefill.
-        ROSTER GATE (probe_driver --plan refused: "no fetched config for
-        zai-org/GLM-5.3-FP8"): that repository does not exist on Hugging Face
+        ROSTER GATE — RESOLVED 2026-09-24 (owner: "fp8 就用 zai-org/GLM-5.3"):
+        rename landed in ac274b36 — case YAML model_paths + both alias rows,
+        packaged model_configs (GLM-5.3 = Hub fp8 config, GLM-5.3-BF16 = the
+        former bf16 file, -FP8 removed), sdk/common.py list, support-matrix
+        b60.csv rows, two unit tests (178 pass); workspace roster
+        (configs/repos.txt, targets.yaml overlay) + GLM-5.3-BF16 dummies
+        generated; probe_driver --plan now enumerates GLM-5.3 (fp8),
+        GLM-5.3-BF16 (bfloat16) and GLM-5.3-NVFP4 on all three backends, and a
+        roster repo without dummy variants is skipped loudly instead of
+        crashing enumeration. Original: (probe_driver --plan refused: "no
+        fetched config for zai-org/GLM-5.3-FP8"): that repository does not
+        exist on Hugging Face
         (404 with a token; zai-org lists GLM-5.3, GLM-5.3-BF16, GLM-5.3-Flash,
         GLM-5.3-Flash-BF16). zai-org/GLM-5.3 itself is the FP8 artifact
         (config quantization_config fp8 e4m3 block 128) and GLM-5.3-BF16 the
@@ -778,6 +790,84 @@ findings:
     - family:dsv4
     - moonshotai/Kimi-K3
     - Qwen/Qwen3-VL-2B-Instruct
+  probe_execution_mode_is_the_framework_default_2026_09_24:
+    statement: |
+      OWNER DECISION 2026-09-24: the identity probes run the framework's OWN
+      execution mode — torch.compile + piecewise/full CUDA graphs exactly as
+      the rendered config asks — for prefill AND decode; `--eager` is an A/B
+      switch only (records carry runtime.probe_eager / probe_cuda_graph;
+      None = a pre-2026-09-24 eager record). Why they ran eager before: a
+      kernel-visibility shortcut from before the device-stream tables existed
+      (graph-replayed kernels have no CPU launch event) plus capture time /
+      capture failures on dummies. It had become a fidelity liability: any
+      dispatch that reads capture-time static shapes is mis-identified by an
+      eager probe (sglang MiniMax-M3 top-k was the proven case), and eager
+      prefill is not serving's prefill.
+      A/B (9 records re-probed in framework mode, eager raws kept under
+      facts/raw_superseded/eager_2026-09-24/): vllm Llama-3.1-8B,
+      DeepSeek-V3.2 bf16-KV + fp8-KV, MiniMax-M3 bf16-KV + fp8-KV; sglang
+      DeepSeek-V3.2 bf16, MiniMax-M3 fp8-KV; trtllm Llama-3.1-8B,
+      DeepSeek-V3.2. Attention / GEMM / MoE / indexer kernel sets are
+      IDENTICAL to the eager records on every one of them (trtllm: same
+      14+16 and 36+32 kernels; vllm DSV3.2 prefill 46/46, M3 38/38; sglang
+      DSV3.2 prefill 61/61). What changes is what the profiler SEES and the
+      glue: (a) the Python API spans (AIC::attn::*, AIC::quant_apply::*)
+      that attributed GEMM/quant/attention kernels to ops vanish under graph
+      replay and under torch.compile (vllm Llama: both phases) — the kernels
+      arrive as orphans; (b) vLLM compile replaces its custom elementwise
+      ops (act_and_mul, rms_norm, rotary_embedding, _typeConvert) with
+      Inductor triton_{poi,red}_fused_* kernels on Llama (not on DSV3.2/M3,
+      whose rendered configs keep them); (c) sglang M3 fp8-KV decode under
+      graphs runs _topk_index_partial/_merge (topk_split = the collector's
+      path) — the eager fp8-KV record had hidden it and diff_sgl picked that
+      record over the graph-mode bf16 one, so msa_gen read DIVERGED until
+      the re-probe. sglang graph mode adds _fused_dsa_decode_metadata_kernel
+      / _fused_metadata_kernel_general (metadata glue, framework_native).
+      HARNESS CONSEQUENCES (all landed): probe_driver keeps every
+      taxonomy-labeled orphan (cublas/vllm_kernel/sgl_kernel/torch were
+      previously capped as noise — under graphs they are the ONLY place
+      GEMM and quant kernels appear); identity.attn_backend falls back to
+      the attention kernel family when no span exists; taxonomy gained the
+      Inductor and sglang-metadata rules. path_diff: the first recompute
+      after the no-collector-signal rule flipped FOUR gemm-class verdicts
+      (gemm_bf16 Llama, gemm_fp8 Qwen3-32B, mla_bmm_gen DSV3, compute_scale)
+      that had been graded "aligned" BEFORE the rule existed — their only
+      families (cublas, vllm_kernel) are infra by design, so they can never
+      have a signal family. Rule refined: no signal family -> grade on
+      kernel-NAME overlap inside the infra families (infra_family_name_matches
+      in the report). Three re-align on names (the collector's nvjet /
+      scaled_fp8_quant instantiations are ones serving launched);
+      compute_scale did not — it had been paired with fp8-BLOCK DeepSeek-V3.2
+      (per_token_group_quant), never a valid instance of scaled_fp8_quant;
+      re-paired with per-tensor Qwen3-32B-FP8 -> aligned. Gates after all of
+      it: vllm 33 / sglang 15 / trtllm 9 aligned, zero non-aligned files.
+      sglang DSA prefill is LENGTH-CONDITIONAL and the collector mirrors it:
+      at isl 512 (framework mode, fp8-KV and bf16-KV alike — both probed)
+      serving runs dense FA3 with NO indexer logits or top-k (only
+      _quantize_k_cache); at isl 4096 the
+      indexer (sm90_fp8_mqa_logits) + fp8 sparse decode kernel. The
+      whole-sweep fp8 ctx capture unions both regimes and read DIVERGED
+      (fa3 collector-only vs the 4096 record; mqa_logits collector-only vs
+      the 512 record — the prefix>0 cells push kv_len over the threshold).
+      Single-cell captures (frozen sweep spec replaced; AIC_DSA_CONTEXT_*
+      env filters do the same): s=4096 vs the framework-mode fp8-KV isl-4096
+      record -> ALIGNED (dsa_ctx_fp8_DeepSeek-V3.2); s=512 prefix-0 vs the
+      isl-512 record -> ALIGNED (dsa_ctx_fp8_s512_DeepSeek-V3.2: FA3 only,
+      no indexer on either side). sglang gate: 15 aligned.
+      NOT DONE: the other ~600 records are still eager-probed (identity-safe
+      per the A/B, but their op attribution differs from framework-mode
+      records); re-probe them when a verdict needs one, not wholesale.
+    applies_to:
+    - instrument:probe_vllm
+    - instrument:probe_sglang
+    - instrument:probe_trtllm
+    - instrument:probe_driver
+    - instrument:path_diff
+    - instrument:kernel_taxonomy
+    - framework:vllm-0.29.0
+    - framework:sglang-0.5.16
+    - framework:trtllm-1.3.0rc23
+    - platform:sm90
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.

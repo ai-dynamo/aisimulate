@@ -39,6 +39,7 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "deep_gemm::fp8_gemm_kernel_swapAB",
   "deep_gemm::sm90_fp8_gemm_1d2d_impl",
@@ -51,9 +52,6 @@
   "nvjet_sm90_tst_128x8_64x12_2x1_v_bz_TNT",
   "per_token_group_quant_8bit_kernel"
  ],
- "collector_unmatched_kernels": [
-  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_slice_view_",
-  "triton_poi_fused__to_copy_abs_ceil_clamp_div_log2_mul_pow_reciprocal_view_zeros_"
- ],
+ "collector_unmatched_kernels": [],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
 }

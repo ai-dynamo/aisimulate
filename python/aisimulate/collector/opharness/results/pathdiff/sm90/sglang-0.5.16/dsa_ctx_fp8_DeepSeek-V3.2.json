@@ -3,33 +3,35 @@
  "repo": "deepseek-ai/DeepSeek-V3.2",
  "framework": "sglang",
  "version": "0.5.16",
- "capture_file": "facts/pathdiff/opcov_sgl_dsa_gen.json",
+ "capture_file": "facts/pathdiff/opcov_sgl_dsa_ctx_fp8_s4096.json",
  "capture_cmd": [
-  "/work/s/caps/sgl_dsa_gen.py"
+  "/work/s/caps/sgl_dsa_ctx_fp8_s4096.py"
  ],
  "capture_run_error": null,
- "kv_dtype": "auto",
+ "kv_dtype": "fp8",
  "op_hint": "mla|dsa|nsa|attn|indexer|flash|mqa|sparse|gemm|deepgemm|quant|topk",
  "serving_record": {
-  "id": "e55f5dd30dce",
+  "id": "9be0fc733d2f",
   "tp": 1,
-  "kv_cache_dtype": "bfloat16",
+  "kv_cache_dtype": "fp8_e4m3",
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 2
+  "candidates": 1
  },
  "collector_backends": [
   "cublas",
   "deepgemm",
   "dsa_nsa",
-  "fa3"
+  "flashmla",
+  "sgl_kernel"
  ],
  "serving_backends": [
   "cublas",
   "deepgemm",
   "dsa_nsa",
-  "fa3"
+  "flashmla",
+  "sgl_kernel"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
@@ -37,19 +39,20 @@
  "serving_kernels_matched_in_collector": [
   "Activity",
   "_act_quant_kernel",
-  "alloc_decode_kernel",
+  "_get_k_and_s_triton_kernel",
+  "_quantize_k_cache_fast_kernel",
   "alloc_extend_kernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
+  "compute_position_kernel",
   "cublasLt::splitKreduce_kernel",
-  "deep_gemm::sched::sm90_paged_mqa_logits_metadata",
-  "deep_gemm::sm90_fp8_gemm_1d2d_impl",
-  "deep_gemm::sm90_fp8_paged_mqa_logits"
+  "deep_gemm::sm90_fp8_gemm_1d2d_impl"
  ],
  "collector_unmatched_kernels": [
   "INVALID",
   "_act_quant_kernel",
-  "alloc_decode_kernel",
+  "_get_k_and_s_triton_kernel",
+  "compute_position_kernel",
   "kernel_cutlass_kernel_flashinfernormkernelslayernormLayerNormKernel"
  ],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."

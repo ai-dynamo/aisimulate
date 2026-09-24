@@ -33,21 +33,23 @@
   "flashmla",
   "sgl_kernel",
   "tilelang",
-  "torch"
+  "torch",
+  "vllm_kernel"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
+  "_apply_grammar_bitmask_kernel",
   "_apply_write_kernel",
   "_build_c128a_topk_metadata_kernel",
   "_compute_global_topk_indices_and_lens_kernel",
+  "_compute_slot_mappings_kernel",
   "_compute_swa_indices_and_lens_kernel",
   "_dsv4_topk_kernel",
   "_fused_inv_rope_fp8_quant_per_head",
   "_fused_q_kv_rmsnorm_kernel",
-  "_gumbel_sample_kernel",
-  "_min_p_kernel",
-  "_penalties_kernel"
+  "_gather_block_tables_kernel"
  ],
  "collector_unmatched_kernels": [
   "compute_cuda_kernel",

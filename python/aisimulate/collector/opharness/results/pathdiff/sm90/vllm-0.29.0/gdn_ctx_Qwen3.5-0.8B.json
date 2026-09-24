@@ -32,6 +32,7 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_causal_conv1d_fwd_kernel",
   "kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel",

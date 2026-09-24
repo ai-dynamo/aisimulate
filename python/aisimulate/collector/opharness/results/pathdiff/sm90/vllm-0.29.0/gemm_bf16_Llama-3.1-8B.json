@@ -24,10 +24,16 @@
  ],
  "serving_backends": [
   "cublas",
-  "fa3"
+  "fa3",
+  "torch"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": {
+  "cublas": [
+   "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN"
+  ]
+ },
  "serving_kernels_matched_in_collector": [
   "namespace",
   "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN"

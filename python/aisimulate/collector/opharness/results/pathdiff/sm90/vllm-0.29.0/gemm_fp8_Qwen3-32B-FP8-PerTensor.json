@@ -29,6 +29,11 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": {
+  "vllm_kernel": [
+   "vllm::scaled_fp8_quant_kernel_strided_group_shape"
+  ]
+ },
  "serving_kernels_matched_in_collector": [
   "namespace",
   "vllm::scaled_fp8_quant_kernel_strided_group_shape"

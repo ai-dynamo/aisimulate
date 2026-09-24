@@ -22,13 +22,13 @@
  "kv_dtype": null,
  "op_hint": "attn|sparse|msa|topk|index|score|merge|block",
  "serving_record": {
-  "id": "9cf016bdbd38",
+  "id": "a0ec7fb0a0d9",
   "tp": 1,
-  "kv_cache_dtype": "auto",
+  "kv_cache_dtype": "fp8_e4m3",
   "isl": 4096,
   "prefix_caching": false,
   "raw_file": null,
-  "candidates": 1
+  "candidates": 2
  },
  "collector_backends": [
   "cublas",
@@ -43,14 +43,15 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
-  "Command",
   "_flash_attn_fwd_with_block_score_kernel",
   "_gqa_share_sparse_fwd_kernel",
   "_topk_index_kernel",
   "alloc_extend_kernel",
   "compute_position_kernel",
-  "cuLaunchKernelEx",
+  "nvjet_sm90_tst_128x256_64x4_2x1_v_bz_coopA_TNN",
+  "nvjet_sm90_tst_320x128_64x3_1x2_h_bz_coopB_TNT",
   "write_req_to_token_pool_triton"
  ],
  "collector_unmatched_kernels": [

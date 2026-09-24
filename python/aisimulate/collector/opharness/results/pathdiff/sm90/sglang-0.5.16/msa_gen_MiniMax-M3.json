@@ -22,13 +22,13 @@
  "kv_dtype": null,
  "op_hint": "attn|sparse|msa|topk|index|score|merge|block",
  "serving_record": {
-  "id": "raw:9cf016bdbd38_graph.json",
-  "tp": null,
-  "kv_cache_dtype": null,
+  "id": "a0ec7fb0a0d9",
+  "tp": 1,
+  "kv_cache_dtype": "fp8_e4m3",
   "isl": 4096,
   "prefix_caching": false,
-  "raw_file": "facts/reprobe_nopc/9cf016bdbd38_graph.json",
-  "candidates": 1
+  "raw_file": null,
+  "candidates": 2
  },
  "collector_backends": [
   "cublas",
@@ -44,17 +44,18 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_decode_score_kernel",
   "_gqa_share_sparse_decode_kernel",
   "_merge_topk_attn_out_kernel",
   "_topk_index_merge_kernel",
   "_topk_index_partial_kernel",
+  "alloc_decode_kernel",
+  "alloc_extend_kernel",
   "cublasLt::splitKreduce_kernel",
   "flash::prepare_varlen_num_blocks_kernel",
-  "nvjet_sm90_tst_128x8_64x12_2x1_v_bz_TNT",
-  "nvjet_sm90_tst_64x8_64x16_2x1_v_bz_splitK_TNT",
-  "nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT"
+  "nvjet_sm90_tst_128x8_64x12_2x1_v_bz_TNT"
  ],
  "collector_unmatched_kernels": [
   "Command",

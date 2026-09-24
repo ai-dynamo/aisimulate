@@ -34,10 +34,12 @@
   "flashmla",
   "sgl_kernel",
   "tilelang",
-  "torch"
+  "torch",
+  "vllm_kernel"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_compute_global_topk_indices_and_lens_kernel",
   "_compute_swa_indices_and_lens_kernel",
@@ -45,10 +47,10 @@
   "_fused_q_kv_rmsnorm_kernel",
   "_save_partial_states_kernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
+  "compute_cuda_kernel",
   "deep_gemm::fp8_gemm_kernel_swapAB",
   "deep_gemm::sched::sm90_paged_mqa_logits_metadata",
-  "deep_gemm::sm90_fp8_gemm_1d2d_impl",
-  "deep_gemm::sm90_fp8_paged_mqa_logits"
+  "deep_gemm::sm90_fp8_gemm_1d2d_impl"
  ],
  "collector_unmatched_kernels": [
   "compute_cuda_kernel",

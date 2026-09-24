@@ -30,10 +30,12 @@
   "flashmla",
   "sgl_kernel",
   "tilelang",
-  "torch"
+  "torch",
+  "vllm_kernel"
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "deep_gemm::sched::sm90_paged_mqa_logits_metadata",
   "deep_gemm::sm90_fp8_paged_mqa_logits",

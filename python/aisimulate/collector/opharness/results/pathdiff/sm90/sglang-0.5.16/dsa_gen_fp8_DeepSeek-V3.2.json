@@ -35,13 +35,14 @@
  ],
  "collector_only_signal": [],
  "kernel_drift": null,
+ "infra_family_name_matches": null,
  "serving_kernels_matched_in_collector": [
   "_act_quant_kernel",
   "_quantize_k_cache_fast_kernel",
+  "alloc_decode_kernel",
   "alloc_extend_kernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanInitKernel",
   "at_cuda_detail::cub::detail::scan::DeviceScanKernel",
-  "cuLaunchKernelEx",
   "cublasLt::splitKreduce_kernel",
   "deep_gemm::sched::sm90_paged_mqa_logits_metadata",
   "deep_gemm::sm90_fp8_gemm_1d2d_impl",
@@ -50,9 +51,7 @@
  "collector_unmatched_kernels": [
   "_act_quant_kernel",
   "alloc_decode_kernel",
-  "kernel_cutlass_kernel_flashinfernormkernelslayernormLayerNormKernel",
-  "triton_poi_fused_mul_0",
-  "triton_poi_fused_mul_unsqueeze_0"
+  "kernel_cutlass_kernel_flashinfernormkernelslayernormLayerNormKernel"
  ],
  "note": "subset semantics: the collector exercises ONE op; serving runs the whole model. 'diverged' = the collector executed a signal backend family serving never did."
 }
