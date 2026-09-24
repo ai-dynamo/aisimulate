@@ -364,7 +364,9 @@ def main(argv=None) -> None:
     parser.add_argument("--dataset-role", choices=("calibration", "holdout"), default="calibration")
     parser.add_argument("--run-id", default=os.environ.get("DYN_FPM_RUN_ID", "glm53flash"))
     parser.add_argument("--request-timeout-seconds", type=int, default=900)
-    parser.add_argument("--observation-purpose", choices=("fpm", "ops", "ops_holdout"), default="fpm")
+    parser.add_argument(
+        "--observation-purpose", choices=("fpm", "ops", "ops_holdout", "ops_graph", "ops_graph_holdout"), default="fpm"
+    )
     args = parser.parse_args(argv)
     server = ServerArgs.from_cli_args(args)
     validate_server_args(server, measured_context_limit=args.benchmark_max_context_length)
@@ -372,7 +374,16 @@ def main(argv=None) -> None:
         if bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")) != (args.observation_purpose == "ops"):
             raise ValueError("SGLang Ops requires an explicit manifest and native eager execution")
         validate_eager_args(server, resolved=False)
-    elif os.environ.get("AISIM_GLM53_OPS_MANIFEST"):
+    elif args.observation_purpose in ("ops_graph", "ops_graph_holdout"):
+        if (
+            os.environ.get("AISIM_GLM53_OPS_MANIFEST")
+            or bool(os.environ.get("AISIM_GLM53_GRAPH_OPS_MANIFEST")) != (args.observation_purpose == "ops_graph")
+            or args.benchmark_mode != "decode"
+        ):
+            raise ValueError("native graph Ops requires a separate manifest and decode target scope")
+        if server.cuda_graph_backend_decode != "full" or server.cuda_graph_backend_prefill != "disabled":
+            raise ValueError("initial native graph Ops requires explicit FULL decode and disabled prefill capture")
+    elif os.environ.get("AISIM_GLM53_OPS_MANIFEST") or os.environ.get("AISIM_GLM53_GRAPH_OPS_MANIFEST"):
         raise ValueError("SGLang FPM cannot run with Ops instrumentation")
     output = args.benchmark_output
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -435,7 +446,7 @@ def main(argv=None) -> None:
             "native_admission_headroom": SGLANG_CONTEXT_HEADROOM,
         },
     }
-    if args.observation_purpose in ("ops", "ops_holdout"):
+    if args.observation_purpose != "fpm":
         checkpoint_config, checkpoint_file_sha256 = raw_checkpoint_config(
             server.model_path, args.tokenizer_revision, expected_model
         )
@@ -464,6 +475,10 @@ def main(argv=None) -> None:
         engine = create_observed_engine(server)
         if args.observation_purpose in ("ops", "ops_holdout"):
             validate_eager_args(engine.server_args, resolved=True)
+        elif args.observation_purpose in ("ops_graph", "ops_graph_holdout"):
+            config = engine.server_args.resolved_dict()["cuda_graph_config"]
+            if config["decode"]["backend"] != "full" or config["prefill"]["backend"] != "disabled":
+                raise ValueError("resolved native graph policy differs from explicit graph Ops scope")
         write_json(output.parent / "sglang-resolved-config.json", engine.server_args.resolved_dict())
         for point in points:
             for repetition in range(WARMUPS + MEASUREMENTS):
@@ -514,7 +529,7 @@ def main(argv=None) -> None:
                         + "\n"
                     )
         trace_paths = [output.parent / f"forward-rank-{rank}.jsonl" for rank in range(server.tp_size)]
-        if args.observation_purpose in ("ops", "ops_holdout"):
+        if args.observation_purpose != "fpm":
             write_json(
                 output.parent / "ops-run-summary.json",
                 {

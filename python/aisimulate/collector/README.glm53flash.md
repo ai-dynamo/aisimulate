@@ -279,3 +279,51 @@ calls also remain unobserved. A non-dummy call outside that lifecycle before
 successful readiness fails, as do missing request manifests or unknown serving
 request IDs afterward. The historical 604896 initialization failure remains
 preserved; this correction is not a GPU collection qualification.
+
+
+Native SGLang FULL decode graph collection has separate experimental purposes
+`ops_graph` and `ops_graph_holdout`. They require explicit FULL decode and
+disabled prefill capture; captured Python ownership rejects torch.compile.
+`glm53flash_sglang_graph_ops.py` installs at the real scheduler entry, before
+model initialization captures any graph. It uses the complete existing native
+operation hooks for all45 layers, whole FFNs, mHC, embedding/norm/logits and
+collectives. Native capture warmups and ordinary eager seed forwards execute
+unchanged. Capture hooks only enumerate existing CUDA graph nodes; they add no
+CUDA event, kernel, dependency or stream wait. Native same-operation lazy
+callbacks are included once; collectives own disjoint captured nodes.
+
+`glm53flash_graph_nodes.py` binds those nodes to replay CUPTI `graph id`,
+`graph node id` and actual launch correlation. `glm53flash_graph_hooks.py`
+retains native shape/padding and full operation boundaries. Kernel launch
+geometry, interval overlaps and in-graph setup nodes are kept explicitly.
+Missing nodes, recaptured/unregistered graphs, child graphs and unknown fusion
+scopes fail. Native selected requests/sample histories and hardware/state
+receipts are still required from the shared retained lifecycle.
+
+The graph calibration path uses CUPTI; the separate graph holdout installs no
+module hooks or profiler and measures the unchanged native FULL replay with
+outer GPU events. Its boundary is explicitly
+`native_full_graph_metadata_to_logits_gpu_v1`. The current measured consumer
+**does not admit these experimental raw graph observations**: native mechanism
+qualification, profiling controls, complete metadata-node ownership/cost and
+the independent <=20% whole-forward comparison are pending. Kernel sums are
+not treated as whole-forward critical-path times. Existing eager admission is
+unchanged and all8 deployment accuracy cells remain NOT_EVALUATED.
+
+The original primitive external-event GPU606363 probe recorded identical kernel
+launches/outputs and updated events, but outer median0.020992→0.030864ms (about47%
+slower). It proves event mechanics, not low-perturbation native GLM timing. The
+read-only node path is a separate implementation and preserves that failure to
+establish equivalence.
+
+CUDA API references (original bindings; no upstream code copied):
+https://docs.nvidia.com/cuda/archive/11.4.1/pdf/CUDA_Runtime_API.pdf
+(`cudaStreamGetCaptureInfo_v2`, legal graph inspection during capture),
+https://docs.nvidia.com/cuda/archive/12.4.1/cuda-runtime-api/group__CUDART__GRAPH.html
+(`cudaGraphGetNodes`, `cudaGraphGetEdges`, `cudaGraphNodeGetType`), and
+https://docs.nvidia.com/cupti/13.1.0/api/group__CUPTI__ACTIVITY__API.html
+(`cuptiGetGraphId`, `cuptiGetGraphNodeId`). Actual loaded CUDA/CUPTI binary hashes
+are recorded separately; API documentation is not substituted for runtime proof.
+Native SGLang source pin94602c9 additionally binds
+`python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`
+and `python/sglang/srt/model_executor/runner/shape_key.py`.

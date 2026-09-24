@@ -292,7 +292,7 @@ class _TraceState:
             "forward_id": f"rank-{self.rank}/forward-{invocation}",
             "requests": snapshots,
             "timing_boundary": "sglang_native_forward_device_timer",
-            "ops_instrumented": self.observer is not None,
+            "ops_instrumented": self.observer is not None or self.purpose == "ops_graph",
             "allocated_fake_tokens": 0,
             "state_protocol": "glm53flash_same_request_real_hybrid_v1",
             "state_layout_sha256": self.state_layout_sha256,
@@ -403,6 +403,19 @@ class _TraceState:
                 raise RuntimeError("whole-forward GPU interval must be positive")
             record["whole_forward_boundary"] = "embedding_to_logits_gpu_v1"
         record.pop("_completed_tokens")
+        if self.purpose in ("ops_graph", "ops_graph_holdout"):
+            from collector.glm53flash_sglang_graph_ops import finish_native_forward
+
+            graph_record = finish_native_forward(self.runner, record)
+            if graph_record is not None:
+                self.append("graph-forward", graph_record)
+                record.update(
+                    whole_forward_gpu_ms=graph_record["whole_forward_gpu_ms"],
+                    whole_forward_boundary=graph_record["whole_forward_boundary"],
+                    graph_ops_profiled=graph_record["profiled"],
+                    graph_ops_formal_admission=False,
+                )
+            self.runner._aisim_glm53_graph_forward = None
         self.current_invocation = None
         self.append("forward", record)
         del self.records[invocation]
@@ -478,6 +491,17 @@ def install() -> None:
     manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
     request_manifest_path = os.environ.get("AISIM_GLM53_REQUEST_MANIFEST")
     request_manifest = json.loads(Path(request_manifest_path).read_text()) if request_manifest_path else None
+    purpose = os.environ.get("AISIM_GLM53_PURPOSE", "fpm")
+    if purpose in ("ops_graph", "ops_graph_holdout"):
+        from collector.glm53flash_sglang_graph_ops import install as install_graph
+
+        graph_path = os.environ.get("AISIM_GLM53_GRAPH_OPS_MANIFEST")
+        graph_manifest = json.loads(Path(graph_path).read_text()) if graph_path else None
+        if manifest is not None:
+            raise RuntimeError("native graph collection cannot also install eager operation events")
+        # Called in the actual scheduler entry, before native model loading and
+        # its decode graph construction. First-request TraceState is too late.
+        install_graph(graph_manifest, provenance, output, holdout=purpose == "ops_graph_holdout")
     current = threading.local()
     states = {}
     original_forward = ModelRunner.forward
@@ -492,6 +516,8 @@ def install() -> None:
         if state is None:
             state = states[id(runner)] = _TraceState(runner, output, provenance, manifest, request_manifest)
         invocation = state.before(forward_batch, context["requests"])
+        if purpose in ("ops_graph", "ops_graph_holdout"):
+            runner._aisim_glm53_graph_forward = state.records[invocation]
         context["calls"].append((state, invocation))
         try:
             result = original_forward(runner, forward_batch, *args, **kwargs)

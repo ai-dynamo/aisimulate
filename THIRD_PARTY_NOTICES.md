@@ -992,6 +992,8 @@ Copyright 2018- The Hugging Face team. All rights reserved.
 
 - Derived files: `python/aisimulate/collector/glm53flash_native_hooks.py`,
   `glm53flash_observer.py`, `glm53flash_contract.py`, `glm53flash_validation.py`,
+  `glm53flash_graph_nodes.py`, `glm53flash_graph_hooks.py`,
+  `glm53flash_sglang_graph_ops.py`, and their graph-node/hook CPU tests,
   `collect_glm53flash.py`, `{vllm,sglang}/collect_glm53flash.py`,
   `cases/base_ops/glm53flash_module.yaml`,
   `cases/models/Glm5NextForConditionalGeneration_cases.yaml`,
@@ -1014,6 +1016,8 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `python/sglang/srt/layers/logits_processor.py`,
   `python/sglang/srt/arg_groups/exec_.py`, and
   `python/sglang/srt/model_executor/cuda_graph_config.py`,
+  `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`,
+  `python/sglang/srt/model_executor/runner/{shape_key,decode_cuda_graph_runner}.py`,
   `python/sglang/srt/layers/attention/dsa/kpool_fp8_index.py`, and
   `python/sglang/kernels/ops/attention/fla/kda.py`.
 - Copyright: contributors to the vLLM project; Copyright 2023-2024 SGLang
