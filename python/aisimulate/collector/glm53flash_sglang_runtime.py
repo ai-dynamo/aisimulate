@@ -143,7 +143,11 @@ class _TraceState:
         output.mkdir(parents=True, exist_ok=True)
         (output / f"state-layout-rank-{self.rank}.json").write_text(json.dumps(self.state_layout, indent=2))
         native_prefill = getattr(runner, "prefill_cuda_graph_runner", None)
-        if native_prefill is not None and hasattr(native_prefill, "load_batch"):
+        # Pinned setup aliases this slot to EagerRunner when prefill capture is
+        # disabled. EagerRunner.load_batch has no graph backend/padding state.
+        if native_prefill is not None and all(
+            hasattr(native_prefill, attr) for attr in ("load_batch", "prefill_backend_name", "_is_full_backend")
+        ):
             original_load = native_prefill.load_batch
 
             @functools.wraps(original_load)
