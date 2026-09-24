@@ -105,3 +105,16 @@ source/binary/runtime checks. Full Engine qualification is pending. Only after
 that result may the shared runtime contract admit the exact new identity.
 No performance rows, graph Ops support, full-matrix coverage, FPM10% or Ops20%
 accuracy pass is claimed by this bundle.
+
+
+Offline request identity validation follows native `InputProcessor.assign_request_id`
+(input_processor.py:262–279), `random_uuid` (utils/__init__.py:11–12), and
+`OutputProcessor` (output_processor.py:384) at the immutable revision above.
+The exact source hashes are in `qualification/request-id-source.json`. Native
+worker IDs must be a bijection with the complete external ID followed by a
+hyphen and exactly eight lowercase hexadecimal characters. Every pair also
+requires identical prompt bytes/hash and the complete native sampled-token
+chain on every TP rank. This is an offline validator correction: historical
+GPU logs and the original failed validator result remain unchanged; revalidation
+receipts identify the new validator hash separately. It does not qualify the
+candidate runtime or relax its native-state/functional gates.

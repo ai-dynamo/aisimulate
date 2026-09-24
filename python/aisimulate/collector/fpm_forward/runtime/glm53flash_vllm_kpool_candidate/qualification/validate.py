@@ -5,6 +5,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
 if __package__:
@@ -18,6 +19,41 @@ def records(path):
         for line in f:
             if line.strip():
                 yield json.loads(line)
+
+
+def bind_native_request_ids(outputs, prompts):
+    """Validate the pinned native external/internal bijection without rewriting raw.
+
+    vLLM ced6857: v1/engine/input_processor.py:262-279 appends '-' and the
+    first eight lowercase hexadecimal characters of utils.random_uuid();
+    v1/engine/output_processor.py:384 returns the original external ID.
+    Prompt bytes and their digest bind each pair. validate_native subsequently
+    checks every completed worker token/sample chain against that same output.
+    """
+    external = {item["request_id"]: item for item in outputs}
+    if len(external) != len(outputs) or any(type(key) is not str or not key for key in external):
+        raise ValueError("external request IDs must be unique nonempty strings")
+    native = {}
+    mapping = {}
+    for prompt in prompts:
+        rid = prompt["request_id"]
+        if type(rid) is not str or rid in native:
+            raise ValueError("native request IDs must be unique strings")
+        matches = [key for key in external if re.fullmatch(re.escape(key) + r"-[0-9a-f]{8}", rid)]
+        if len(matches) != 1 or matches[0] in mapping:
+            raise ValueError("native request ID does not form the pinned unique external/internal mapping")
+        key = matches[0]
+        out = external[key]
+        if (
+            prompt["prompt_token_ids"] != out["prompt_token_ids"]
+            or token_digest(prompt["prompt_token_ids"]) != prompt["prompt_sha256"]
+        ):
+            raise ValueError("worker prompt bytes differ from actual request API")
+        native[rid] = out
+        mapping[key] = rid
+    if set(mapping) != set(external):
+        raise ValueError("worker prompt identity coverage differs")
+    return native, mapping
 
 
 def validate_native(root, tp, mode, policy, runtime_kind=None):
@@ -61,6 +97,7 @@ def validate_native(root, tp, mode, policy, runtime_kind=None):
     reference = None
     all_splits = {}
     uuids = set()
+    request_id_mapping = None
     for rank in range(tp):
         worker = json.loads((root / f"worker-rank-{rank}.json").read_text())
         if (
@@ -107,14 +144,10 @@ def validate_native(root, tp, mode, policy, runtime_kind=None):
         if worker.get("settings") != settings:
             raise ValueError("actual native runtime settings differ from frozen public arguments")
         prompts = list(records(root / f"prompts-rank-{rank}.jsonl"))
-        if len(prompts) != len(by_id) or {x["request_id"] for x in prompts} != set(by_id):
-            raise ValueError("worker prompt identity coverage differs")
-        for p in prompts:
-            if (
-                p["prompt_token_ids"] != by_id[p["request_id"]]["prompt_token_ids"]
-                or token_digest(p["prompt_token_ids"]) != p["prompt_sha256"]
-            ):
-                raise ValueError("worker prompt bytes differ from actual request API")
+        by_id, mapping = bind_native_request_ids(outputs, prompts)
+        if request_id_mapping is not None and mapping != request_id_mapping:
+            raise ValueError("TP workers disagree on external/internal request identity")
+        request_id_mapping = mapping
         histories = {}
         sampled = {}
         slots = {}
@@ -230,6 +263,7 @@ def validate_native(root, tp, mode, policy, runtime_kind=None):
         "requests": len(outputs),
         "native_modes": sorted(modes),
         "all_tp_trace_digest": reference,
+        "external_to_native_request_ids": request_id_mapping,
         "actual_prefill_splits": all_splits,
         "files": [{"path": p.name, "sha256": digest(p)} for p in sorted(root.iterdir()) if p.is_file()],
     }
