@@ -103,8 +103,13 @@ cached-prefill cohorts, complete TP state/token chains and exact output agreemen
 between stock/reference, candidate/reference and candidate/split. An independent
 recheck reproduced the receipt and verified all 60 raw file hashes, plus the
 original checkpoint config and revision identity. This is bounded functional
-qualification of that deployment; the other three vLLM deployments and latency
-acceptance remain separate requirements. Stock support is not claimed repaired.
+qualification. The same required Engine suite subsequently passed FP8 TP2 and
+NVFP4 TP2/TP4; the portable twelve-profile receipt chain is bound by summary
+`d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67`.
+The shared runtime helper admits only that exact built version and source/binary
+closure. Ops-specific producer/table gates still require a separate version-aware
+integration; neither runtime qualification nor these assets qualify latency data.
+Stock support is not claimed repaired.
 
 The first native vLLM Ops attempt completed request execution but produced no
 rank observations because the runtime selected its V2 runner. The observer now
