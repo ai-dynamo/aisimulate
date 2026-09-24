@@ -90,6 +90,11 @@ def campaign(tmp_path, monkeypatch):
             "receipts": [{"path": "raw.json", "sha256": "e" * 64}],
             "runtime_run_id": run["spec"]["cell_id"],
             "backend_version": {"vllm": "0.30.0", "sglang": "0.5.20"}[run["key"][0]],
+            **(
+                validation._sglang_execution_policy({"mem_fraction_static": 0.9063, "random_seed": 1})
+                if run["key"][0] == "sglang"
+                else {}
+            ),
         }
 
     def predict(run, entry, mode, base, **kwargs):
