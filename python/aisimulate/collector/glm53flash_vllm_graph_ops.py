@@ -20,6 +20,7 @@ from collector.glm53flash_graph_callbacks import CloneCallbacks, resolve_registr
 from collector.glm53flash_graph_hooks import NativeGraphOperationObserver
 from collector.glm53flash_graph_nodes import NativeGraphAPI
 from collector.glm53flash_native_hooks import install_native_hooks
+from collector.glm53flash_vllm_graph_policy import persist_snapshot
 
 SOURCE_PINS = {
     "v1/worker/gpu/cudagraph_utils.py": "6e9c042890603535e300a40df8ee159dbed1058a64a83ae50ff0329e332e05ff",
@@ -100,6 +101,10 @@ def install(manifest, provenance, output):
         manager._aisim_glm53_capture_state = state
         manager._aisim_glm53_capture_pending = {}
         result = original_model_capture(manager, model, *args, **kwargs)
+        # This is the initialized native descriptor/candidate inventory, before
+        # any real request or holdout is observed. Recording a PIECEWISE entry
+        # does not supply its still-missing measured operation ownership.
+        persist_snapshot(manager, model, state["rank"], output)
         pending = manager._aisim_glm53_capture_pending
         bind_captured_graphs(manager, pending)
         for descriptor in pending:

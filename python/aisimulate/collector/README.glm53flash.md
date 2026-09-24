@@ -458,6 +458,21 @@ chain. The capture adapter alone certifies none of those and writes no measured
 table. Child graphs, changed graph objects and incomplete capture observations
 still fail. CPU scope/identity tests are not native GPU qualification.
 
+The V2 adapter also records `vllm-graph-policy-rank-N.json` immediately after
+native initialization. `glm53flash_vllm_graph_policy.py` binds the original
+manager's capture sizes, complete descriptors, candidate priorities and native
+breakable PIECEWISE entries, with the exact source hashes. Its ordinary Q1
+decode contract rejects compiled model wrappers, speculative decoding, LoRA,
+microbatching and other unsupported eligibility predicates. This is a policy
+inventory, not measured PIECEWISE coverage. The native source is
+[`_init_candidates` and `dispatch`](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/worker/gpu/cudagraph_utils.py)
+and the original
+[`BreakableCUDAGraphWrapper`](https://github.com/vllm-project/vllm/blob/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/compilation/breakable_cudagraph.py).
+The same three new tokens can select FULL with three decode requests, or
+PIECEWISE for a prefill; physical padding never replaces the actual request
+geometry. Out-of-range tokens retain the native NONE identity. No holdout
+dispatch is used to populate this pre-request policy.
+
 
 ## Native graph measured consumer and dispatch policy
 
