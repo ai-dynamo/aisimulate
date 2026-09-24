@@ -131,7 +131,9 @@ class NativeGraphAPI:
         handles = (ctypes.c_void_p * capacity)()
         if capacity:
             self._call(self.runtime.cudaGraphGetNodes, graph, handles, ctypes.byref(count))
-            if count.value != capacity:
+            confirmed = ctypes.c_size_t()
+            self._call(self.runtime.cudaGraphGetNodes, graph, None, ctypes.byref(confirmed))
+            if count.value != capacity or confirmed.value != capacity:
                 raise RuntimeError("native capture node count changed during its read-only enumeration")
         # CUDA13 rejects a nonnull zero-capacity output array. An empty result
         # is based on the actual native count, and every boundary queries again.
@@ -153,7 +155,9 @@ class NativeGraphAPI:
         metadata = (GraphEdgeData * capacity)()
         if capacity:
             self._call(self.runtime.cudaGraphGetEdges, graph, sources, targets, metadata, ctypes.byref(count))
-            if count.value != capacity:
+            confirmed = ctypes.c_size_t()
+            self._call(self.runtime.cudaGraphGetEdges, graph, None, None, None, ctypes.byref(confirmed))
+            if count.value != capacity or confirmed.value != capacity:
                 raise RuntimeError("native capture edge count changed during its read-only enumeration")
         if any(
             source not in by_handle or target not in by_handle for source, target in zip(sources, targets, strict=True)
