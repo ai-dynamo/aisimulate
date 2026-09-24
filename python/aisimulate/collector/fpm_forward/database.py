@@ -529,6 +529,7 @@ def write_formal_database(
     rows: list[dict[str, Any]],
     *,
     systems_root: Path | None = None,
+    reject_replaced_cells: bool = False,
 ) -> tuple[Path, Path, tuple[str, ...]]:
     """Atomically merge conflict-free native-grid rows into the AIC data tree.
 
@@ -637,6 +638,8 @@ def write_formal_database(
                     incoming_identity,
                 )
         if skipped_cells:
+            if reject_replaced_cells:
+                raise ValueError(f"complete shard union conflicts with published child attempts: {skipped_cells}")
             skipped_set = set(skipped_cells)
             rows = [row for row in rows if row.get("cell_id") not in skipped_set]
             if not rows:

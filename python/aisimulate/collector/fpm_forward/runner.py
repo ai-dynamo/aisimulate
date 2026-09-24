@@ -162,6 +162,24 @@ def _file_manifest(root: Path) -> dict[str, dict[str, int | str]]:
     return manifest
 
 
+def _archive_native_attempt(cell_dir: Path, previous: dict) -> None:
+    """Retain the complete old attempt before rendering a replacement."""
+    sources = [path for path in cell_dir.iterdir() if path.name != "attempts"]
+    if not sources:
+        return
+    archive_id = str(previous.get("attempt_id") or f"untracked-{uuid.uuid4().hex}")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", archive_id):
+        raise ValueError("unsafe native attempt identity in checkpoint")
+    archive = cell_dir / "attempts" / archive_id
+    if archive.exists():
+        raise ValueError(f"refusing to overwrite archived native evidence: {archive}")
+    archive.mkdir(parents=True)
+    for source in sources:
+        source.rename(archive / source.name)
+    _atomic_json(archive / "checkpoint-entry.json", previous)
+    _atomic_json(archive / "file-receipts.json", _file_manifest(archive))
+
+
 def _command_env() -> dict[str, str]:
     env = os.environ.copy()
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
@@ -1919,10 +1937,27 @@ def run_collection(
     cell_limit: int | None = None,
     database_root: str | None = None,
     publish_partial: bool = False,
+    collect_only: bool = False,
 ) -> list[dict[str, object]]:
     """Render and run every cell, always tearing down owned resources."""
 
     with _sigterm_as_interrupt():
+        if getattr(plan.options, "shard_token_budget", None) is not None:
+            from .shards import run_sharded_collection
+
+            return run_sharded_collection(
+                plan,
+                generator_overrides=generator_overrides,
+                checkpoint_dir=checkpoint_dir,
+                artifact_root=artifact_root,
+                resume=resume,
+                retry_failed=retry_failed,
+                smoke=smoke,
+                cell_limit=cell_limit,
+                database_root=database_root,
+                publish_partial=publish_partial,
+                collect_only=collect_only,
+            )
         return _run_collection_impl(
             plan,
             generator_overrides=generator_overrides,
@@ -1934,6 +1969,7 @@ def run_collection(
             cell_limit=cell_limit,
             database_root=database_root,
             publish_partial=publish_partial,
+            collect_only=collect_only,
         )
 
 
@@ -1949,6 +1985,7 @@ def _run_collection_impl(
     cell_limit: int | None = None,
     database_root: str | None = None,
     publish_partial: bool = False,
+    collect_only: bool = False,
 ) -> list[dict[str, object]]:
     if _frozen_points(plan) is not None and smoke:
         raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
@@ -2099,7 +2136,9 @@ def _run_collection_impl(
                     )
                     _atomic_json(checkpoint_path, checkpoint)
                     continue
-        if cell_dir.exists() and not resume:
+        if cell.state_protocol and cell_dir.exists():
+            _archive_native_attempt(cell_dir, previous)
+        if cell_dir.exists() and not resume and not cell.state_protocol:
             shutil.rmtree(cell_dir)
         cell_dir.mkdir(parents=True, exist_ok=True)
         for stale_dir in (cell_dir / "raw", cell_dir / "logs"):
@@ -2194,7 +2233,10 @@ def _run_collection_impl(
             _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="before")
             phase_marks["stage_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
-            resource.execute(pods)
+            if getattr(plan.options, "execution_timeout_seconds", None) is None:
+                resource.execute(pods)
+            else:
+                resource.execute(pods, timeout_seconds=plan.options.execution_timeout_seconds)
             _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="after")
             phase_marks["execute_wall_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
@@ -2289,6 +2331,17 @@ def _run_collection_impl(
         },
     )
     if formal_database_terminal:
+        return errors
+    if collect_only:
+        checkpoint["collection_only"] = {
+            "status": "passed"
+            if not errors
+            and all(checkpoint["cells"].get(cell.cell_id, {}).get("status") == "passed" for cell in plan.cells)
+            else "incomplete",
+            "formal_database_written": False,
+            "accuracy_acceptance": "NOT_EVALUATED",
+        }
+        _atomic_json(checkpoint_path, checkpoint)
         return errors
     if getattr(plan.options, "dataset_role", "calibration") == "holdout":
         checkpoint["holdout"] = {

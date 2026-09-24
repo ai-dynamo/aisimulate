@@ -250,6 +250,8 @@ class FPMCollectionOptions:
     enforce_eager: bool = False
     benchmark_points_json: str | None = None
     benchmark_points_sha256: str | None = None
+    shard_token_budget: int | None = None
+    execution_timeout_seconds: int | None = None
     executor: str = "kubernetes"
     slurm_container_image: str = ""
     slurm_container_mounts: tuple[str, ...] = ()
@@ -330,6 +332,8 @@ class FPMCollectionOptions:
             dataset_role=getattr(args, "fpm_dataset_role", None) or "calibration",
             benchmark_points_json=points_json,
             benchmark_points_sha256=points_sha256,
+            shard_token_budget=getattr(args, "fpm_shard_token_budget", None),
+            execution_timeout_seconds=getattr(args, "fpm_execution_timeout_seconds", None),
             max_gpus=max_gpus,
             gpu_counts=tuple(counts),
             parallel_presets=requested_presets,
@@ -408,11 +412,28 @@ class FPMCollectionOptions:
                 "payload": json.loads(self.benchmark_points_json),
                 "sha256": self.benchmark_points_sha256,
             }
+        if self.shard_token_budget is not None:
+            payload["shard_token_budget"] = self.shard_token_budget
+        if self.execution_timeout_seconds is not None:
+            payload["execution_timeout_seconds"] = self.execution_timeout_seconds
         return payload
 
 
 def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
     """Add FPM campaign controls to a collector or dedicated parser."""
+
+    parser.add_argument(
+        "--fpm-shard-token-budget",
+        type=_positive_int,
+        default=None,
+        help="Bound GLM child runs by real tokens across 5+10 repetitions; oversized points stay intact.",
+    )
+    parser.add_argument(
+        "--fpm-execution-timeout-seconds",
+        type=_positive_int,
+        default=None,
+        help="Explicit outer timeout per native engine run, including initialization (default 14400).",
+    )
 
     group = parser.add_argument_group(
         "FPM forward collection",
@@ -694,6 +715,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_decoder_replay",
         "fpm_enforce_eager",
         "fpm_benchmark_points_file",
+        "fpm_shard_token_budget",
+        "fpm_execution_timeout_seconds",
         "fpm_executor",
         "fpm_slurm_container_image",
         "fpm_slurm_container_mount",

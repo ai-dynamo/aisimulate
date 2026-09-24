@@ -2676,3 +2676,15 @@ def test_v41_truncated_native_artifact_raises_actionable_value_error(tmp_path, c
         path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="native"):
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def test_formal_database_complete_union_refuses_replaced_child_without_mutation(tmp_path):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+    systems = tmp_path / "systems"
+    parquet, metadata, _ = write_formal_database(plan, rows, systems_root=systems)
+    sealed = (parquet.read_bytes(), metadata.read_bytes())
+    changed = [{**row, "collector_attempt_id": "new-attempt", "runtime_run_id": "new-runtime"} for row in rows]
+    with pytest.raises(ValueError, match="complete shard union"):
+        write_formal_database(plan, changed, systems_root=systems, reject_replaced_cells=True)
+    assert (parquet.read_bytes(), metadata.read_bytes()) == sealed
