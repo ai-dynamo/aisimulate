@@ -161,12 +161,21 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         "text",
     ):
         raise ValueError("holdout requires full text execution identity")
+    from .config import validate_sglang_mem_fraction_static
+
+    requested_fraction = options.get("sglang_mem_fraction_static")
+    validate_sglang_mem_fraction_static(requested_fraction)
+    if cell.get("sglang_mem_fraction_static") != requested_fraction or (
+        requested_fraction is not None and key[0] != "sglang"
+    ):
+        raise ValueError("SGLang memory fraction differs between frozen plan and cell")
     runtime_cell = SimpleNamespace(
         **{
             k: cell[k]
             for k in ("cell_id", "workload_kind", "parallel_strategy", "input_text_sha256", "backend", "state_protocol")
         },
         topology=SimpleNamespace(**topology),
+        sglang_mem_fraction_static=requested_fraction,
         execution_identity=tuple(identity[k] for k in EXECUTION_COLUMNS),
     )
     run = {

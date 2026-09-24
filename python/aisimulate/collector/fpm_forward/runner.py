@@ -1200,6 +1200,10 @@ def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
         "--chunked-prefill-size",
         str(plan.options.max_prefill_isl),
     ]
+    if cell.sglang_mem_fraction_static != plan.options.sglang_mem_fraction_static:
+        raise ValueError("SGLang memory fraction differs between frozen plan and cell")
+    if cell.sglang_mem_fraction_static is not None:
+        native_args.extend(["--mem-fraction-static", str(cell.sglang_mem_fraction_static)])
     max_batch = max(plan.options.max_decode_batch_size or 32, plan.options.max_prefill_batch_size or 32)
     native_args.extend(["--max-running-requests", str(max_batch)])
     native_args.extend(["--cuda-graph-bs-decode", *map(str, range(1, max_batch + 1))])
