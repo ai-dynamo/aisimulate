@@ -6,7 +6,6 @@ import ctypes
 from types import SimpleNamespace
 
 import pytest
-
 from collector import glm53flash_graph_nodes as graph_nodes
 from collector.glm53flash_graph_nodes import CaptureNodeRegistry, bind_replay_kernels
 
