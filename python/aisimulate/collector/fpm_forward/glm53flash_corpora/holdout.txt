@@ -1,0 +1,23 @@
+In the coastal town of Bellhaven, a community kitchen opens before the fishing boats return. The cook begins by arranging empty bowls on a long table. A chalkboard lists the dishes planned for the afternoon, while a separate sheet records ingredients that actually arrived. A menu can promise lentil soup without proving that the lentils have reached the kitchen.
+
+The harbor library maintains a collection of handmade maps. One map shows the positions of benches along the seawall. Another marks places where musicians sometimes perform. The maps answer different questions even when they share the same coastline. Combining them requires preserving the meaning of each symbol; a square representing a bench must not become a square representing an electrical outlet.
+
+A volunteer is asked to sort envelopes into four drawers. The drawer labels are North, South, East, and West. Every envelope includes an address, a date, and a short note. The volunteer first checks that each envelope has an address, then uses the district printed on that address. Guessing a district from the color of an envelope would create an orderly display with unreliable contents.
+
+Suppose a recipe calls for seven cups of flour and four cups of water. Doubling the recipe requires fourteen cups of flour and eight cups of water. If the kitchen has only eleven cups of flour, the doubled recipe cannot be completed as written. The shortage is a constraint on this attempt. It is not evidence that the recipe's arithmetic should be changed.
+
+An apprentice describes a sorting algorithm with a deck of numbered cards. Keep one pile in increasing order. Take a card from the unsorted pile and insert it before the first larger card in the ordered pile. Repeat until the unsorted pile is empty. Cards with equal numbers require an additional convention if preserving their original order matters to the task.
+
+A ferry timetable contains planned departures, actual departures, and cancellations. A cancelled trip has no travel duration, but it still belongs in a report about the reliability of the timetable. Removing cancelled trips before calculating service coverage would answer a narrower question than the passengers asked. The report therefore gives both the durations of completed trips and the number of requested trips that did not occur.
+
+On an evening walk, two friends compare the sound of footsteps on gravel, brick, and timber. They use the same route and record each surface separately. The recordings cannot identify the material under an unrelated walkway without additional observations. Similarity may suggest a hypothesis, but the label on a recording must describe the surface that was actually present.
+
+An imaginary database has entries for pear, plum, melon, and lime. Each entry stores a count and the date of inspection. Updating the count for plum should not alter the inspection date for melon. A test that reads only the total number of fruit would miss that mistake. The correct check examines the affected record and enough neighboring records to detect unintended changes.
+
+The kitchen's delivery log includes a parcel identifier and a receipt identifier. Two parcels can arrive at the same minute without being the same parcel. Conversely, copying a receipt into a second folder does not create a second delivery. Identity follows the event being recorded, not the place where a copy of the record happens to be stored.
+
+During a writing exercise, a child invents a conversation between a lighthouse and a passing cloud. The lighthouse asks whether the cloud has seen the far side of the island. The cloud replies that it has crossed the island but did not look beneath every roof. The answer is incomplete in a useful way: it states the limits of what was observed instead of pretending to know more.
+
+To compare two estimates, write the observation beside each estimate and calculate the absolute difference. Dividing that difference by the observation gives a relative error when the observation is positive. A large observation and a small observation contribute differently to a weighted summary. Reporting both ordinary and weighted averages makes the choice visible rather than hiding it inside a single score.
+
+夜里，图书管理员给新到的手稿编号。编号用于追踪手稿，不能证明内容已经审查。若某一页缺失，目录仍然保留那一页的位置并注明原因。下一位读者因此知道哪些部分可以使用、哪些部分尚未检查，以及哪些结论必须等待新的材料。
