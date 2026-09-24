@@ -1092,6 +1092,51 @@ findings:
     - moonshotai/Kimi-K3
     - Qwen/Qwen3-32B-FP8-Static-PerTensor
     - nvidia/Llama-3.1-70B-Instruct-FP8
+  followups_after_full_reprobe_2026_09_24:
+    statement: |
+      Owner directives after the full re-probe report:
+      (1) "统一所有的都对齐到64整数倍，别case by case了": the 64-alignment of
+      token budgets is now ONE rule in backend_config_mapping.yaml applied to
+      every backend (vllm max-num-batched-tokens, trtllm max_num_tokens,
+      sglang max-prefill-tokens and chunked-prefill-size); the vllm rule
+      formulas are plain again (commit 2446f6cc, mirrored into the aic
+      checkout the golden CLI renders with). Verified: sglang 5500 -> 5504,
+      trtllm 4500 -> 4544, vllm 6012 -> 6016.
+      (2) "关于hf config的quant，能不能看看其他字段": the KV fact is not in
+      config.json for the modelopt NVFP4 artifacts at all — the SDK loader
+      attaches the bundled hf_quant_config.json (kv_cache_quant_algo: FP8)
+      to the loaded config, so vllm_dsa_kv_cache_dtype now reads that merged
+      view. All five NVFP4 DSA artifacts (GLM-5 / 5.1 / 5.2 / 5.3, DeepSeek-
+      V3.2) render --kv-cache-dtype fp8; GLM-5-NVFP4 and DeepSeek-V3.2-NVFP4
+      re-probed with the new render (see the matrix).
+      (3) "关于kimi k3，我感觉可能还有其他构造问题": a construction defect WAS
+      found — the depth cut kept Kimi-K3's linear_attn_config.kda_layers /
+      full_attn_layers index lists verbatim, so in the 2-layer dummy index 0
+      silently became a full-attention layer and index 1 a KDA layer, and
+      the stale-reference check (strings only) missed it. Fixed in the dummy
+      generator (index lists remapped, kind axis synthesized so the default
+      variant holds one KDA + one full-attention layer; commit 85d1dd32).
+      It is NOT what crashes the framework-mode probe, though — eleven A/Bs
+      on the rendered config (max-num-seqs 512): construction variants
+      (rep, 3-layer with the dense layer, remapped kda+kda, remapped
+      full+kda, the new all_kinds) ALL fail; CUDA graphs off passes; compile
+      off (graphs on) fails; piecewise-only graphs fail; text-only
+      (limit-mm image 0) fails; max-num-seqs 64 and 256 PASS. CUDA_LAUNCH_
+      BLOCKING places the illegal memory access after graph capture, in
+      warmup_kernels -> _run_decode_step -> run_fullgraph — the decode
+      warm-up step at the generator's max_num_seqs=512 with CUDA graphs. So:
+      our dummy had a real defect (fixed), and independently vLLM 0.29's K3
+      decode warm-up faults at batch 512 on SM90 (256 passes) — the latter is
+      what the record shows; the generator's 512 is what real deployments
+      get. Upstream draft 7 updated. K3 records stay on the eager A/B for
+      kda_ctx.
+    applies_to:
+    - instrument:dummies
+    - instrument:probe_vllm
+    - moonshotai/Kimi-K3
+    - nvidia/Kimi-K3-NVFP4
+    - framework:vllm-0.29.0
+    - platform:sm90
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.
