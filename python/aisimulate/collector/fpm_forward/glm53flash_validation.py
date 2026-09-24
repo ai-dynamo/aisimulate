@@ -20,8 +20,8 @@ from types import SimpleNamespace
 
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
 from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
 
-from .hybrid_artifact import PROTOCOL, TIMING_BOUNDARIES
 from .native_artifact import _expected_scheduled, validate_native_collection
 
 SCHEMA = "glm53flash_independent_holdout_v1"
