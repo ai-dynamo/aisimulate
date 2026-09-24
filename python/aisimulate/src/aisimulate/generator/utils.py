@@ -183,25 +183,39 @@ _DSA_ARCHITECTURES = ("GlmMoeDsaForCausalLM", "DeepseekV32ForCausalLM")
 
 
 def _bundled_quantization(model_path: str) -> dict | None:
-    """``quantization_config`` of the bundled checkpoint config, None when the
-    config is unresolvable or carries none. Indirection so tests can stub it."""
+    """The artifact's quantization facts as the SDK loader exposes them:
+    config.json ``quantization_config`` merged with the ``hf_quant_config``
+    the loader attaches from the bundled ``<repo>_hf_quant_config.json`` (the
+    modelopt artifacts keep ``kv_cache_quant_algo`` ONLY there — their
+    config.json has no quantization block at all). None when the config is
+    unresolvable or carries neither. Indirection so tests can stub it."""
     from aisimulate_core.sdk.utils import _load_model_config_from_model_path
 
     try:
-        return _load_model_config_from_model_path(model_path).get("quantization_config") or None
+        raw = _load_model_config_from_model_path(model_path)
     except (FileNotFoundError, KeyError, ValueError):
         return None
+    merged: dict = {}
+    hfq = raw.get("hf_quant_config")
+    if isinstance(hfq, dict):
+        merged.update(hfq.get("quantization") if isinstance(hfq.get("quantization"), dict) else hfq)
+    if isinstance(raw.get("quantization_config"), dict):
+        merged.update(raw["quantization_config"])
+    return merged or None
 
 
 def _artifact_pins_fp8_kv(quantization: dict | None) -> bool:
-    """modelopt artifacts declare their KV cache scheme in config.json
-    (``kv_cache_scheme: {num_bits: 8, type: float}``) or via
-    ``kv_cache_quant_algo: FP8`` when the hf_quant block is inlined."""
+    """modelopt artifacts pin the KV cache either as ``kv_cache_quant_algo:
+    FP8`` (hf_quant_config.json) or as ``kv_cache_scheme: {num_bits: 8,
+    type: float}`` (config.json quantization block); either spelling counts."""
     if not quantization:
         return False
     if str(quantization.get("kv_cache_quant_algo") or "").upper() == "FP8":
         return True
-    scheme = quantization.get("kv_cache_scheme") or {}
+    scheme = quantization.get("kv_cache_scheme")
+    if isinstance(scheme, str):
+        return scheme.upper() == "FP8"
+    scheme = scheme or {}
     return scheme.get("num_bits") == 8 and str(scheme.get("type", "")).lower() == "float"
 
 

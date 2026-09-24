@@ -123,16 +123,25 @@ parameters:
   sglang: max-running-requests
   trtllm: max_batch_size
 
+# Token budgets render as multiples of 64 on EVERY backend (one rule, here,
+# never per formula): engines size per-cache-group slot-mapping rows and
+# scheduler chunks by these budgets, and a non-idiomatic width misaligns
+# every row after the first (vLLM 0.29 DSV4: 6012 crashes the cutedsl
+# compress kernel at first forward, 6016 passes). Rounding is always UP —
+# a lower budget can violate scheduler minimums. Owner decision 2026-09-24:
+# align all budgets uniformly instead of case by case.
 - param_key: enable_chunked_prefill
   vllm: enable-chunked-prefill
-  sglang: 
+  sglang:
     key: chunked-prefill-size
-    value: "max_num_tokens if max_num_tokens else -1"
+    value: "((max_num_tokens + 63) // 64) * 64 if max_num_tokens else -1"
   trtllm: enable_chunked_prefill
 
 - param_key: max_prefill_tokens
   vllm: null
-  sglang: max-prefill-tokens
+  sglang:
+    key: max-prefill-tokens
+    value: "((max_prefill_tokens + 63) // 64) * 64 if max_prefill_tokens is defined and max_prefill_tokens is not none else none"
   trtllm: null
 
 - param_key: enable_mixed_chunk
@@ -141,22 +150,16 @@ parameters:
   trtllm: null
 
 - param_key: max_num_tokens
-  # vllm: round the budget UP to a multiple of 64 (never down — a lower
-  # budget can violate scheduler minimums). The runner stores per-cache-group
-  # slot mappings as rows of one 2D buffer whose row width is
-  # max_num_batched_tokens; a budget that is not a multiple of 8 places every
-  # row after the first at a 64-byte-misaligned int64 offset, and
-  # multi-cache-group models (DeepSeek-V4: MLA main + compressor state +
-  # indexer caches) then feed a misaligned slot_mapping into kernels that
-  # assert 64B alignment (cutedsl compress, tvm_ffi "Misaligned Tensor data
-  # on argument #3" @ vllm 0.29.0). Single-variable A/B: 6012 crashes DSV4
-  # at first forward, 6016 (=64*94) and framework defaults pass. vLLM itself
-  # never produces a non-idiomatic budget; rendered configs must not either.
+  # same 64-alignment rule as above (the vLLM 0.29 DSV4 slot-mapping A/B is
+  # where it was found: 6012 crashes, 6016 passes); trtllm's block rounding
+  # in trtllm.rule (tokens_per_block = 32) is compatible with it.
   vllm:
     key: max-num-batched-tokens
     value: "((max_num_tokens + 63) // 64) * 64 if max_num_tokens is defined and max_num_tokens is not none else none"
   sglang: null
-  trtllm: max_num_tokens
+  trtllm:
+    key: max_num_tokens
+    value: "((max_num_tokens + 63) // 64) * 64 if max_num_tokens is defined and max_num_tokens is not none else none"
 
 - param_key: max_seq_len
   vllm: max-model-len

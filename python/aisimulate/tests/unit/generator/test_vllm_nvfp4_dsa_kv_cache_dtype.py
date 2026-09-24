@@ -30,13 +30,19 @@ _ARCH = {
 
 _MODELOPT_FP8_KV = {"quant_method": "modelopt", "quant_algo": "NVFP4",
                     "kv_cache_scheme": {"dynamic": False, "num_bits": 8, "type": "float"}}
+# what utils._bundled_quantization returns: config.json quantization block
+# merged with the SDK-attached hf_quant_config (kv_cache_quant_algo lives there)
 _QUANT = {
-    "nvidia/GLM-5.2-NVFP4": _MODELOPT_FP8_KV,          # bundled config carries the KV scheme
-    "nvidia/GLM-5.3-NVFP4": None,                      # bundled config without quantization_config
-    "nvidia/DeepSeek-V3.2-NVFP4": None,                # Hub config keeps quant in hf_quant_config.json only
+    "nvidia/GLM-5.2-NVFP4": _MODELOPT_FP8_KV,          # config.json carries the KV scheme
+    "nvidia/GLM-5.3-NVFP4": {"quant_method": "modelopt", "quant_algo": "MIXED_PRECISION",
+                             "kv_cache_quant_algo": "FP8"},            # hf_quant only
+    "nvidia/DeepSeek-V3.2-NVFP4": {"quant_method": "nvfp4", "quant_algo": "NVFP4",
+                                   "kv_cache_quant_algo": "FP8"},      # hf_quant only
+    "nvidia/GLM-5-NVFP4-unquant-bundle": {"quant_method": "nvfp4"},    # neither spelling present
     "zai-org/GLM-5.3": {"quant_method": "fp8", "fmt": "e4m3", "weight_block_size": [128, 128]},
     "nvidia/Llama-3.3-70B-Instruct-FP4": _MODELOPT_FP8_KV,
 }
+_ARCH["nvidia/GLM-5-NVFP4-unquant-bundle"] = "GlmMoeDsaForCausalLM"
 
 
 @pytest.fixture(autouse=True)
@@ -51,10 +57,11 @@ def _stub_sdk_lookups(monkeypatch):
         # optimized path: the task's nvfp4 GEMM quant mode is the artifact fact
         ("vllm", "nvidia/GLM-5.3-NVFP4", "nvfp4", "fp8"),
         ("vllm", "nvidia/DeepSeek-V3.2-NVFP4", "nvfp4", "fp8"),
-        # naive path (no quant mode): the bundled config's fp8 KV scheme
-        ("vllm", "nvidia/GLM-5.2-NVFP4", None, "fp8"),
-        ("vllm", "nvidia/GLM-5.3-NVFP4", None, None),             # no bundled quant fact: known gap
-        ("vllm", "nvidia/DeepSeek-V3.2-NVFP4", None, None),
+        # naive path (no quant mode): the artifact's fp8 KV fact, either spelling
+        ("vllm", "nvidia/GLM-5.2-NVFP4", None, "fp8"),             # config.json kv_cache_scheme
+        ("vllm", "nvidia/GLM-5.3-NVFP4", None, "fp8"),             # hf_quant kv_cache_quant_algo
+        ("vllm", "nvidia/DeepSeek-V3.2-NVFP4", None, "fp8"),
+        ("vllm", "nvidia/GLM-5-NVFP4-unquant-bundle", None, None),  # no KV fact anywhere: no prescription
         ("vllm", "zai-org/GLM-5.3", "fp8_block", None),          # fp8 DSA artifact: auto is fine
         ("vllm", "zai-org/GLM-5.3", None, None),
         ("vllm", "nvidia/Llama-3.3-70B-Instruct-FP4", "nvfp4", None),  # NVFP4 but not DSA
