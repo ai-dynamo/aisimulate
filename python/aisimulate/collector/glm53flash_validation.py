@@ -104,21 +104,41 @@ def _sglang_execution(root: Path, fmt: str, tp: int, points: list[dict], *, grap
     return identity
 
 
-def _runtime_audit(root: Path, backend: str) -> dict:
+def expected_runtime_version(run: dict) -> str:
+    """Frozen plan wins; standalone runs must explicitly opt into a repair."""
+    from collector.glm53flash_runtime_identity import validate_backend_version
+
+    backend = run["key"][0]
+    planned = run.get("plan", {}).get("capability", {}).get("aic_database_version")
+    explicit = run["spec"].get("backend_version")
+    if planned is not None and explicit is not None and planned != explicit:
+        raise ValueError("Ops explicit runtime differs from frozen plan capability")
+    return validate_backend_version(backend, planned or explicit or BACKENDS[backend][0])
+
+
+def _runtime_audit(root: Path, backend: str, expected_version: str | None = None) -> dict:
     audit = json.loads((root / "runtime-preflight.json").read_bytes())
     runtime = "glm53flash" if backend == "vllm" else "glm53flash_sglang"
-    from collector.glm53flash_runtime_identity import validate_backend_version, vllm_source_pins
+    from collector.glm53flash_runtime_identity import (
+        validate_backend_version,
+        validate_vllm_runtime_closure,
+        vllm_source_pins,
+    )
 
     version = validate_backend_version(backend, audit.get("backend_version"))
+    if expected_version is not None and version != expected_version:
+        raise ValueError("Ops actual native runtime differs from frozen expected backend version")
     manifest = Path(__file__).parent / "fpm_forward/runtime" / runtime / "runtime-source-sha256.json"
     pins = vllm_source_pins(version, manifest) if backend == "vllm" else json.loads(manifest.read_bytes())
     if (audit.get("status"), audit.get("backend"), audit.get("backend_version"), audit.get("sources")) != (
         "passed",
         backend,
-        BACKENDS[backend][0],
+        version,
         pins,
     ):
         raise ValueError("Ops actual native source audit differs from pinned runtime")
+    if backend == "vllm":
+        validate_vllm_runtime_closure(version, manifest, audit.get("runtime_closure"))
     return pins
 
 
@@ -264,11 +284,34 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         raise ValueError("unsupported native Ops dataset role")
     unprofiled = run["role"] in ("holdout", "control")
     boundary = "native_full_graph_metadata_to_logits_gpu_v1" if graph else BOUNDARY
-    pins = _runtime_audit(root, backend)
+    version = expected_runtime_version(run)
+    if version != BACKENDS[backend][0] and tp not in (2, 4):
+        raise ValueError("repaired Ops runtime is qualified only at TP2/TP4")
+    pins = _runtime_audit(root, backend, version)
     execution = _sglang_execution(root, fmt, tp, run["points"], graph=graph) if backend == "sglang" else None
     from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 
     expected_config = sha256_json(_load_pre_downloaded_hf_config(CHECKPOINTS[fmt][0]))
+    if version != BACKENDS[backend][0]:
+        manifest = json.loads((root / "manifest.json").read_bytes())
+        provenance = json.loads((root / "provenance.json").read_bytes())
+        expected_identity = {
+            "backend": backend,
+            "backend_version": version,
+            "backend_revision": BACKENDS[backend][1],
+            "checkpoint_revision": CHECKPOINTS[fmt][1],
+            "config_sha256": expected_config,
+        }
+        if (
+            any(
+                value.get(key) != expected
+                for value in (manifest, provenance)
+                for key, expected in expected_identity.items()
+            )
+            or manifest.get("tp_size") != tp
+            or provenance.get("source_sha256") != sha256_json(pins)
+        ):
+            raise ValueError("repaired Ops manifest/provenance differs from frozen runtime identity")
     requests = json.loads((root / "requests.json").read_bytes())
     dataset_role = "calibration" if run["role"] == "control" else run["role"]
     if requests["dataset_role"] != dataset_role or requests["corpus_sha256"] != run["corpus"]:
@@ -320,6 +363,11 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
             json.dumps(layout, sort_keys=True, **({"separators": (",", ":")} if backend == "vllm" else {})).encode()
         ).hexdigest()
         _state_layout(layout, backend)
+        if backend == "vllm":
+            from collector.glm53flash_runtime_identity import validate_vllm_runtime_closure
+
+            source_manifest = Path(__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-sha256.json"
+            validate_vllm_runtime_closure(version, source_manifest, layout.get("runtime_closure"))
         if type(layout.get("tp_rank")) is not int or layout["tp_rank"] != rank:
             raise ValueError("Ops actual hardware/state inventory belongs to another TP rank")
         hardware = layout["hardware"]
@@ -330,6 +378,12 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         hardware_by_rank[str(rank)] = hardware
         previous, observed, seen_forward_ids, completed_requests = {}, set(), set(), set()
         for row in iter_records(root / f"forward-rank-{rank}.jsonl"):
+            if (row.get("backend"), row.get("backend_version"), row.get("backend_revision")) != (
+                backend,
+                version,
+                BACKENDS[backend][1],
+            ):
+                raise ValueError("Ops native seed/target runtime differs from frozen plan")
             if backend == "vllm":
                 _validate_vllm_context(row)
                 if row.get("native_runner") != "v2":
@@ -368,7 +422,7 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
             for request, query, prefix in zip(
                 row["requests"], row["query_lengths"], row["prefix_lengths"], strict=True
             ):
-                validate_native_workload(backend, row["phase"], prefix, query)
+                validate_native_workload(backend, row["phase"], prefix, query, version)
                 rid = request["request_id"]
                 if rid not in requests["requests"]:
                     raise ValueError("Ops observed an unfrozen request")
@@ -436,7 +490,7 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
                 row.get("backend_version"),
                 row.get("backend_revision"),
                 row.get("checkpoint_revision"),
-            ) != (backend, *BACKENDS[backend], CHECKPOINTS[fmt][1]):
+            ) != (backend, version, BACKENDS[backend][1], CHECKPOINTS[fmt][1]):
                 raise ValueError("Ops native runtime/checkpoint differs from pinned identity")
             observed.add(key)
             if unprofiled:
@@ -495,7 +549,7 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         "runtime_run_id": requests["request_set"],
         "runtime_grid_digest": hashlib.sha256(canonical_json(expected).encode()).hexdigest(),
         "input_provenance": {"text_sha256": requests["corpus_sha256"], "tokenizer_revision": CHECKPOINTS[fmt][1]},
-        "backend_version": BACKENDS[backend][0],
+        "backend_version": version,
         "timing_boundary": boundary,
         "evidence_root": str(root),
         "hardware_by_rank": hardware_by_rank,
@@ -575,6 +629,9 @@ def bind_calibration(paths: list[Path], frozen_run: dict, native_receipt: dict) 
     digest = file_sha(root / "calibration-evidence.json")
     manifest = json.loads((root / "manifest.json").read_bytes())
     backend, fmt, tp, phase = frozen_run["key"]
+    version = expected_runtime_version(frozen_run)
+    if native_receipt.get("backend_version", version) != version:
+        raise ValueError("Ops calibration runtime differs from frozen plan")
     production = build_model_manifest(backend, fmt, tp)
     if manifest.get("phases") != production["phases"]:
         raise ValueError("Ops calibration manifest differs from the complete production graph")
@@ -628,6 +685,11 @@ def _sharded_calibration_rows(children: list[tuple[dict, dict]], frozen_shard_ma
     if not children or len({tuple(run["key"]) for run, _ in children}) != 1:
         raise ValueError("Ops calibration shards must describe one complete deployment phase")
     backend, fmt, tp, _ = children[0][0]["key"]
+    versions = {expected_runtime_version(run) for run, _ in children}
+    if len(versions) != 1 or any(
+        native.get("backend_version", next(iter(versions))) not in versions for _, native in children
+    ):
+        raise ValueError("Ops calibration shards cannot mix native runtime versions")
     production = build_model_manifest(backend, fmt, tp)
     declared = {shard["child_cell_id"]: shard for shard in frozen_shard_manifest["shards"]}
     rows_by_shard, parents, evidence_receipts, request_ids, run_ids = {}, set(), [], set(), set()

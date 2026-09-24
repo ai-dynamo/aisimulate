@@ -562,3 +562,18 @@ eager prediction paths retain their prior APIs. Initial graph export is SGLang
 uncompiled FULL decode with one fully receipted data root; vLLM FULL/PIECEWISE
 mapping and graph shard publication remain pending. No graph performance data
 or accuracy acceptance is bundled with this implementation.
+
+
+### Exact repaired vLLM Ops identity
+
+The qualified `0.30.0+glm53kpool.bf5f6b0e689d` package is a separate runtime.
+The native launcher records its actual version and effective source closure;
+each worker records all observed source and 19 native binary hashes outside
+measurement. The reader binds those receipts to the frozen plan capability's
+`aic_database_version` (or an explicit standalone `spec.backend_version`).
+Absent an explicit repaired version, standalone evidence retains the stock
+expectation. Cross-version shards and stock/candidate data-directory reuse fail.
+The Rust table requires the exact repaired source hash and TP2/TP4 scope. Stock
+unaligned cached-prefill remains rejected; no local version prefix grants access.
+This functional-runtime admission is separate from graph coverage and independent
+whole-forward accuracy, which remain unevaluated across the required Ops matrix.

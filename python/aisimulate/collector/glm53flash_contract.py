@@ -15,6 +15,7 @@ import math
 import re
 import statistics
 from collections import defaultdict
+from functools import cache
 from pathlib import Path
 
 from collector.glm53flash_jsonl import file_sha256, iter_records
@@ -78,7 +79,38 @@ def operation_geometry(body: dict) -> str:
     return canonical_json({key: value for key, value in body.items() if key not in ("name", "children")})
 
 
-def build_model_manifest(backend: str, checkpoint_format: str, tp_size: int) -> dict:
+@cache
+def _runtime_contract(backend: str, version: str) -> tuple[str, str]:
+    """Snapshot the packaged immutable admission once per process, outside timing.
+
+    Worker and evidence entry points independently verify actual package files;
+    this cache avoids rereading the entire reviewed qualification for every row.
+    """
+    from collector.glm53flash_runtime_identity import validate_backend_version, vllm_source_pins
+
+    validate_backend_version(backend, version)
+    runtime = "glm53flash" if backend == "vllm" else "glm53flash_sglang"
+    manifest = Path(__file__).parent / "fpm_forward/runtime" / runtime / "runtime-source-sha256.json"
+    pins = vllm_source_pins(version, manifest) if backend == "vllm" else json.loads(manifest.read_bytes())
+    return BACKENDS[backend][1], canonical_json(pins)
+
+
+def runtime_source_pins(backend: str, version: str) -> dict:
+    return json.loads(_runtime_contract(backend, version)[1])
+
+
+def validate_runtime_row(row: dict) -> None:
+    backend, version = row["backend"], row["backend_version"]
+    revision, pins = _runtime_contract(backend, version)
+    if row["backend_revision"] != revision:
+        raise ValueError("unqualified backend revision")
+    if version != BACKENDS[backend][0] and row["source_sha256"] != hashlib.sha256(pins.encode()).hexdigest():
+        raise ValueError("repaired Ops row differs from the exact admitted native source closure")
+
+
+def build_model_manifest(
+    backend: str, checkpoint_format: str, tp_size: int, backend_version: str | None = None
+) -> dict:
     from aisimulate_core.sdk.config import ModelConfig
     from aisimulate_core.sdk.models import get_model
     from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
@@ -87,6 +119,10 @@ def build_model_manifest(backend: str, checkpoint_format: str, tp_size: int) -> 
         raise ValueError("unqualified GLM collection model configuration")
     if tp_size == 1 and checkpoint_format != "nvfp4":
         raise ValueError("TP1 is optional only for admitted NVFP4")
+    backend_version = backend_version or BACKENDS[backend][0]
+    _runtime_contract(backend, backend_version)
+    if backend_version != BACKENDS[backend][0] and tp_size not in (2, 4):
+        raise ValueError("repaired native runtime is qualified only at TP2/TP4")
     model_path, revision = CHECKPOINTS[checkpoint_format]
     model = get_model(model_path, ModelConfig(tp_size=tp_size, moe_tp_size=tp_size, moe_ep_size=1), backend)
     return {
@@ -94,7 +130,7 @@ def build_model_manifest(backend: str, checkpoint_format: str, tp_size: int) -> 
         "model_path": model_path,
         "checkpoint_revision": revision,
         "backend": backend,
-        "backend_version": BACKENDS[backend][0],
+        "backend_version": backend_version,
         "backend_revision": BACKENDS[backend][1],
         "config_sha256": sha256_json(_load_pre_downloaded_hf_config(model_path)),
         "tp_size": tp_size,
@@ -147,8 +183,14 @@ def _uint32(value, label: str, *, positive: bool = False) -> None:
         raise ValueError(f"{label} must be an exact {'positive ' if positive else ''}uint32")
 
 
-def validate_native_workload(backend: str, phase: str, prefix: int, query: int) -> None:
-    """Conservative stock-native admission after source and GB300 cache oracle."""
+def validate_native_workload(
+    backend: str, phase: str, prefix: int, query: int, backend_version: str | None = None
+) -> None:
+    """Keep stock rejection; admit only the reviewed, separately versioned repair."""
+    backend_version = backend_version or BACKENDS[backend][0]
+    _runtime_contract(backend, backend_version)
+    if backend_version != BACKENDS[backend][0]:
+        return
     if backend == "vllm" and phase in ("context", "prefill") and prefix % 4 and query >= 2:
         raise ValueError(
             "stock vLLM GLM cached prefill with unaligned IndexPool start is unqualified "
@@ -173,8 +215,9 @@ def validate_row(row: dict) -> None:
         raise ValueError("geometry must preserve the exact checkpoint format")
     if row["checkpoint_revision"] != CHECKPOINTS[checkpoint_format][1]:
         raise ValueError("unqualified checkpoint revision")
-    if row["backend"] not in BACKENDS or (row["backend_version"], row["backend_revision"]) != BACKENDS[row["backend"]]:
-        raise ValueError("unqualified backend revision")
+    validate_runtime_row(row)
+    if row["backend_version"] != BACKENDS[row["backend"]][0] and shape.get("tp_size") not in (2, 4):
+        raise ValueError("repaired native runtime is qualified only at TP2/TP4")
     if shape.get("backend") != row["backend"]:
         raise ValueError("operation geometry and observed backend disagree")
     for key in INTEGER_COLUMNS:
@@ -212,7 +255,7 @@ def validate_row(row: dict) -> None:
         if not isinstance(shape.get("is_context"), bool):
             raise ValueError("attention is_context must be boolean")
         if shape["is_context"]:
-            validate_native_workload(row["backend"], "context", row["prefix"], row["x"])
+            validate_native_workload(row["backend"], "context", row["prefix"], row["x"], row["backend_version"])
             expected_modes = ("cached_prefill", "chunked_prefill") if row["prefix"] else ("full_prefill",)
             if row["state_mode"] not in expected_modes:
                 raise ValueError("prefill state mode disagrees with its measured prefix")
@@ -264,13 +307,11 @@ def canonical_native_source(row: dict) -> str:
     for method, (role, native_class) in vllm_roles.items():
         if entrypoint != f"{vllm_module}.{method}":
             continue
-        pins = json.loads(
-            (Path(__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-sha256.json").read_bytes()
-        )
+        pins = runtime_source_pins("vllm", row["backend_version"])
         geometry = json.loads(row["geometry"])
         if (
             row["backend"] != "vllm"
-            or (row["backend_version"], row["backend_revision"]) != BACKENDS["vllm"]
+            or row["backend_revision"] != BACKENDS["vllm"][1]
             or row["component"] != "mhc"
             or geometry.get("backend") != "vllm"
             or geometry.get("role") != role

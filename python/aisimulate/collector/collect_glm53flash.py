@@ -19,11 +19,11 @@ from pathlib import Path
 
 from collector.case_generator import _framework_specific_model_case_values, get_base_common_case_values
 from collector.glm53flash_contract import (
-    BACKENDS,
     CHECKPOINTS,
     WHOLE_FORWARD_RANK,
     aggregate_rank_records,
     build_model_manifest,
+    runtime_source_pins,
     sha256_json,
     validate_native_workload,
 )
@@ -184,7 +184,10 @@ def _execute(command, output, env, backend):
 
 
 def verify_sources(backend: str, pins: dict, output: Path) -> None:
-    audit = {"backend": backend, "backend_version": version(backend), "sources": {}}
+    from collector.glm53flash_runtime_identity import observe_vllm_runtime_closure, validate_backend_version
+
+    backend_version = validate_backend_version(backend, version(backend))
+    audit = {"backend": backend, "backend_version": backend_version, "sources": {}}
     try:
         import torch
 
@@ -192,7 +195,8 @@ def verify_sources(backend: str, pins: dict, output: Path) -> None:
         if not audit["devices"] or any("GB300" not in name.upper() for name in audit["devices"]):
             raise ValueError("native GLM calibration requires actual GB300 devices")
         for name, expected in pins.items():
-            module = name[:-3].replace("/", ".") if backend == "vllm" else "sglang." + name[:-3].replace("/", ".")
+            module_path = name.removesuffix("/__init__.py") if name.endswith("/__init__.py") else name[:-3]
+            module = module_path.replace("/", ".") if backend == "vllm" else "sglang." + module_path.replace("/", ".")
             spec = importlib.util.find_spec(module)
             if spec is None or spec.origin is None:
                 raise RuntimeError(f"pinned native module is missing: {name}")
@@ -200,6 +204,11 @@ def verify_sources(backend: str, pins: dict, output: Path) -> None:
             audit["sources"][name] = actual
             if actual != expected:
                 raise RuntimeError(f"pinned native module differs: {name}")
+        if backend == "vllm":
+            manifest = Path(__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-sha256.json"
+            closure = observe_vllm_runtime_closure(backend_version, manifest)
+            if closure is not None:
+                audit["runtime_closure"] = closure
         audit["status"] = "passed"
     except BaseException as error:
         audit.update(status="failed", error=str(error))
@@ -212,8 +221,9 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
     from collector.helper import log_perf
 
     del device  # One native TP invocation owns its visible GPU group.
-    if version(backend) != BACKENDS[backend][0]:
-        raise RuntimeError("native GLM requires the pinned framework version")
+    from collector.glm53flash_runtime_identity import validate_backend_version
+
+    backend_version = validate_backend_version(backend, version(backend))
     checkpoint = json.loads(Path(os.environ["AISIM_GLM53_MODEL_PATHS"]).read_text())[model_path]
     corpus = Path(os.environ["AISIM_GLM53_INPUT_TEXT"]).resolve()
     runtime_digest = os.environ["AISIM_GLM53_RUNTIME_DIGEST"]
@@ -225,13 +235,13 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
         / uuid.uuid4().hex
     )
     output.mkdir(parents=True)
-    manifest = build_model_manifest(backend, checkpoint_format, tp_size)
+    manifest = build_model_manifest(backend, checkpoint_format, tp_size, backend_version)
     if sha256_json(json.loads((Path(checkpoint) / "config.json").read_bytes())) != manifest["config_sha256"]:
         raise RuntimeError("actual checkpoint config differs from pinned production model")
     runtime = (
         Path(__file__).parent / "fpm_forward/runtime" / ("glm53flash" if backend == "vllm" else "glm53flash_sglang")
     )
-    pins = json.loads((runtime / "runtime-source-sha256.json").read_text())
+    pins = runtime_source_pins(backend, backend_version)
     provenance = {
         key: manifest[key]
         for key in ("backend", "backend_version", "backend_revision", "checkpoint_revision", "config_sha256")
@@ -245,7 +255,7 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
         prefix = point["total_kv_read_tokens"] // batch
         query = point["total_prefill_tokens"] // batch if phase == "prefill" else 1
         try:
-            validate_native_workload(backend, phase, prefix, query)
+            validate_native_workload(backend, phase, prefix, query, backend_version)
         except ValueError as error:
             unsupported.append({"benchmark_id": benchmark_id, "point": point, "reason": str(error)})
     if unsupported:
@@ -298,7 +308,7 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
             log_perf(
                 [{key: value for key, value in row.items() if key != "kernel_source"}],
                 backend,
-                BACKENDS[backend][0],
+                backend_version,
                 "cuda",
                 "glm53flash_module",
                 row["kernel_source"],

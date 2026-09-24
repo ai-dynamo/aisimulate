@@ -748,3 +748,35 @@ def test_writer_does_not_mix_tp_aggregation_policies(tmp_path):
     b = {**a, "x": 256, "aggregation_policy": WHOLE_FORWARD_RANK, "rank_selection_sha256": "a" * 64}
     with pytest.raises(ValueError, match="mixes native Ops TP aggregation"):
         write_parquet([a, b], tmp_path / "test-only.parquet")
+
+
+def test_qualified_repair_does_not_admit_stock_unaligned_rows_or_version_aliases():
+    from collector.glm53flash_contract import runtime_source_pins, sha256_json
+    from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE
+
+    row = sample_row()
+    row.update(prefix=4097, x=3, state_mode="cached_prefill", kv_seed_regime="real_kv")
+    with pytest.raises(ValueError, match="unaligned"):
+        validate_row(row)
+    row["backend_version"] = VLLM_KPOOL_CANDIDATE
+    with pytest.raises(ValueError, match="source closure"):
+        validate_row(row)
+    row["source_sha256"] = sha256_json(runtime_source_pins("vllm", VLLM_KPOOL_CANDIDATE))
+    validate_row(row)
+    rust = Path(__file__).resolve().parents[5] / "crates/core/src/perfmodel/perf_database/glm53flash.rs"
+    assert f'const REPAIRED_VLLM_SOURCE: &str =\n    "{row["source_sha256"]}";' in rust.read_text()
+    row["backend_version"] += ".unknown"
+    with pytest.raises(ValueError, match="unqualified"):
+        validate_row(row)
+
+
+def test_manifest_repaired_runtime_is_explicit_and_keeps_physical_graph():
+    from collector.glm53flash_contract import build_model_manifest
+    from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE
+
+    stock = build_model_manifest("vllm", "fp8", 4)
+    repaired = build_model_manifest("vllm", "fp8", 4, VLLM_KPOOL_CANDIDATE)
+    assert stock["backend_version"] == "0.30.0"
+    assert repaired == {**stock, "backend_version": VLLM_KPOOL_CANDIDATE}
+    with pytest.raises(ValueError, match="TP2/TP4"):
+        build_model_manifest("vllm", "nvfp4", 1, VLLM_KPOOL_CANDIDATE)

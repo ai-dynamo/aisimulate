@@ -32,9 +32,9 @@ and actual capture-size dispatch; no graph table is supplied yet. An experimenta
 decode observer now assigns native capture nodes to operation boundaries and
 requires an exact API-backed join to CUPTI replay activity. It inserts no CUDA graph nodes;
 its separate holdout observes only the complete native replay. This path emits
-raw evidence, not admitted profiles. Actual native qualification, profiling
-controls, complete raw-to-table evidence binding and independent graph accuracy
-remain pending. Mixed or aggregate-only inputs that lose graph geometry are rejected.
+raw evidence with an implemented raw-to-table exporter and positive calibration
+lineage binding. Actual native model qualification, profiling controls and
+independent graph accuracy remain pending. Mixed or aggregate-only inputs that lose graph geometry are rejected.
 
 Measured lookup keeps exact physical identity, backend, checkpoint, TP and phase.
 Bounded workload interpolation requires complete measured corners with matching
@@ -120,8 +120,11 @@ qualification. The same required Engine suite subsequently passed FP8 TP2 and
 NVFP4 TP2/TP4; the portable twelve-profile receipt chain is bound by summary
 `d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67`.
 The shared runtime helper admits only that exact built version and source/binary
-closure. Ops-specific producer/table gates still require a separate version-aware
-integration; neither runtime qualification nor these assets qualify latency data.
+closure. Ops producer, worker, evidence reader and Rust table gates now share
+that exact version; every repaired worker must supply observed source and native
+binary hashes, and tables must match the qualified effective source hash.
+Frozen plan versions cannot be replaced by raw self-declarations. These gates
+and functional qualification do not qualify Ops latency data.
 Stock support is not claimed repaired.
 
 The first native vLLM Ops attempt completed request execution but produced no

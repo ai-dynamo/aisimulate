@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 
 import pytest
+
+from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 from collector import glm53flash_validation as evidence
 from collector.fpm_forward.sglang_artifact import TELEMETRY_POLICY
 from collector.glm53flash_contract import (
@@ -18,8 +20,6 @@ from collector.glm53flash_contract import (
     write_parquet,
 )
 from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL
-
-from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 
 pytestmark = pytest.mark.unit
 
@@ -549,3 +549,37 @@ def test_coherent_calibration_freezes_and_rechecks_actual_rank_selection(tmp_pat
     put(root / "calibration-evidence.json", receipt)
     with pytest.raises(ValueError, match="rank-selection sidecar differs"):
         evidence.load_native(run, tmp_path)
+
+
+def test_frozen_plan_runtime_cannot_be_replaced_by_raw_or_explicit_version(tmp_path):
+    run, root, *_ = native_fixture(tmp_path)
+    run["plan"]["capability"] = {"aic_database_version": "0.5.19"}
+    with pytest.raises(ValueError, match="unqualified"):
+        evidence.load_native(run, root)
+    run["spec"]["backend_version"] = "0.5.20"
+    with pytest.raises(ValueError, match="frozen plan capability"):
+        evidence.load_native(run, root)
+
+
+def test_repaired_audit_requires_actual_full_binary_and_source_closure(tmp_path):
+    from collector.glm53flash_contract import runtime_source_pins, sha256_json
+    from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE, vllm_runtime_closure
+
+    manifest = Path(evidence.__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-sha256.json"
+    expected = vllm_runtime_closure(VLLM_KPOOL_CANDIDATE, manifest)
+    observed = {"contract_sha256": sha256_json(expected), "observed_files": expected["files"]}
+    audit = {
+        "status": "passed",
+        "backend": "vllm",
+        "backend_version": VLLM_KPOOL_CANDIDATE,
+        "sources": runtime_source_pins("vllm", VLLM_KPOOL_CANDIDATE),
+        "runtime_closure": observed,
+    }
+    put(tmp_path / "runtime-preflight.json", audit)
+    assert evidence._runtime_audit(tmp_path, "vllm", VLLM_KPOOL_CANDIDATE) == audit["sources"]
+    with pytest.raises(ValueError, match="expected backend version"):
+        evidence._runtime_audit(tmp_path, "vllm", "0.30.0")
+    observed["observed_files"]["vllm/vllm-rs"] = "0" * 64
+    put(tmp_path / "runtime-preflight.json", audit)
+    with pytest.raises(ValueError, match="source/binary closure"):
+        evidence._runtime_audit(tmp_path, "vllm", VLLM_KPOOL_CANDIDATE)

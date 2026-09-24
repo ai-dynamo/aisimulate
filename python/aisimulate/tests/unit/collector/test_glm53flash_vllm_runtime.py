@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from collector.glm53flash_vllm_runtime import _TraceState, native_context_receipt, native_coordinates
 
 pytestmark = pytest.mark.unit
@@ -80,7 +81,7 @@ def test_dynamic_frozen_mapping_requires_real_worker_prefix(monkeypatch, tmp_pat
     monkeypatch.setenv("AISIM_GLM53_REQUEST_MANIFEST", str(path))
     state = _TraceState.__new__(_TraceState)
     state.runner = runner(128)
-    state.counter, state.rank, state.provenance = 0, 0, {}
+    state.counter, state.rank, state.provenance = 0, 0, {"backend_version": "0.30.0"}
     state.previous, state.matched = {}, set()
     state.layout, state.layout_sha256 = {"admitted": True}, "b" * 64
     started = []
@@ -177,7 +178,8 @@ def test_v2_reads_real_input_batch_and_rejects_gpu_cpu_state_disagreement():
         native_v2_coordinates(actual, schedule, batch)
 
 
-def test_v2_finalizes_after_native_later_logits_and_sample_not_execute(monkeypatch, tmp_path):
+@pytest.mark.parametrize("backend_version", ["0.30.0", "0.30.0+glm53kpool.bf5f6b0e689d"])
+def test_v2_finalizes_after_native_later_logits_and_sample_not_execute(monkeypatch, tmp_path, backend_version):
     import importlib.metadata
     import sys
 
@@ -222,12 +224,12 @@ def test_v2_finalizes_after_native_later_logits_and_sample_not_execute(monkeypat
             calls.append("after")
 
     for name in ("provenance", "manifest"):
-        (tmp_path / f"{name}.json").write_text("{}")
+        (tmp_path / f"{name}.json").write_text(json.dumps({"backend_version": backend_version}))
     monkeypatch.setenv("AISIM_GLM53_TRACE_DIR", str(tmp_path))
     monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(tmp_path / "provenance.json"))
     monkeypatch.setenv("AISIM_GLM53_OPS_MANIFEST", str(tmp_path / "manifest.json"))
     monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops")
-    monkeypatch.setattr(importlib.metadata, "version", lambda _: "0.30.0")
+    monkeypatch.setattr(importlib.metadata, "version", lambda _: backend_version)
     monkeypatch.setitem(
         sys.modules, "vllm.forward_context", SimpleNamespace(get_forward_context=lambda: "native_context")
     )

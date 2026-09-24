@@ -192,6 +192,12 @@ class _TraceState:
 
         runner.model.compute_logits = compute_logits
         self.layout = allocated_state_inventory(runner.model, runner.cache_config.cache_dtype)
+        from collector.glm53flash_runtime_identity import observe_vllm_runtime_closure
+
+        source_manifest = Path(__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-sha256.json"
+        closure = observe_vllm_runtime_closure(provenance["backend_version"], source_manifest)
+        if closure is not None:
+            self.layout["runtime_closure"] = closure
         self.layout.update(tp_rank=self.rank, hardware=native_gpu_identity(torch))
         self.layout_sha256 = _digest(self.layout)
         (output / f"state-layout-rank-{self.rank}.json").write_text(json.dumps(self.layout, indent=2))
@@ -213,7 +219,7 @@ class _TraceState:
             else native_v2_coordinates(self.runner, scheduler_output, native_batch)
         )
         for prefix, query in zip(coords["prefix_lengths"], coords["query_lengths"], strict=True):
-            validate_native_workload("vllm", coords["phase"], prefix, query)
+            validate_native_workload("vllm", coords["phase"], prefix, query, self.provenance["backend_version"])
             if prefix + query > context_receipt["context_policy"]["measured_context_limit"]:
                 raise RuntimeError("actual native forward exceeds frozen measured context")
         runtime_mode = forward_context.cudagraph_runtime_mode.name
@@ -363,8 +369,9 @@ def install():
     """Call in each worker before execution; model hooks install after native load."""
     from importlib.metadata import version
 
-    if version("vllm") != "0.30.0":
-        raise RuntimeError("GLM eager Ops requires pinned vLLM0.30.0")
+    from collector.glm53flash_runtime_identity import validate_backend_version
+
+    backend_version = validate_backend_version("vllm", version("vllm"))
     from vllm.forward_context import get_forward_context
     from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
@@ -372,6 +379,8 @@ def install():
         return
     output = Path(os.environ["AISIM_GLM53_TRACE_DIR"])
     provenance = json.loads(Path(os.environ["AISIM_GLM53_PROVENANCE"]).read_text())
+    if provenance.get("backend_version") != backend_version:
+        raise RuntimeError("actual native worker package differs from frozen Ops provenance")
     manifest_path = os.environ.get("AISIM_GLM53_OPS_MANIFEST")
     purpose = os.environ.get("AISIM_GLM53_PURPOSE")
     if purpose not in ("ops", "ops_holdout") or bool(manifest_path) != (purpose == "ops"):
@@ -457,8 +466,9 @@ def install_v2():
     """Bind the pinned native V2 model forward and its later logits/sample step."""
     from importlib.metadata import version
 
-    if version("vllm") != "0.30.0":
-        raise RuntimeError("GLM eager Ops requires pinned vLLM0.30.0")
+    from collector.glm53flash_runtime_identity import validate_backend_version
+
+    backend_version = validate_backend_version("vllm", version("vllm"))
     from vllm.forward_context import get_forward_context
     from vllm.v1.worker.gpu.model_runner import GPUModelRunner
 
@@ -466,6 +476,8 @@ def install_v2():
         return
     output = Path(os.environ["AISIM_GLM53_TRACE_DIR"])
     provenance = json.loads(Path(os.environ["AISIM_GLM53_PROVENANCE"]).read_text())
+    if provenance.get("backend_version") != backend_version:
+        raise RuntimeError("actual native worker package differs from frozen Ops provenance")
     manifest_path = os.environ.get("AISIM_GLM53_OPS_MANIFEST")
     purpose = os.environ.get("AISIM_GLM53_PURPOSE")
     if purpose not in ("ops", "ops_holdout") or bool(manifest_path) != (purpose == "ops"):

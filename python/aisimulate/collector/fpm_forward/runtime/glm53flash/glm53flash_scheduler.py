@@ -268,6 +268,9 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         return required <= self._bench_grid_usable_blocks(batch_size)
 
     def _real_validate_grid(self):
+        from collector.glm53flash_runtime_identity import vllm_unaligned_prefill_admitted
+
+        repaired_start = vllm_unaligned_prefill_admitted(__import__("vllm").__version__)
         self._real_expected_warmup_ids = []
         context_limit = self._real_context_policy["measured_context_limit"]
         for point in self._bench_grid:
@@ -282,7 +285,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
                 # GB300 split/one-shot probes fail at P4097/Q3 and Q4; keep
                 # the broader unaligned-start contract unqualified, including
                 # geometries that were not individually numerically probed.
-                if any(p % 4 and q >= 2 for p, q in zip(prefix, suffix, strict=True)):
+                if not repaired_start and any(p % 4 and q >= 2 for p, q in zip(prefix, suffix, strict=True)):
                     raise ValueError(
                         "stock vLLM IndexPool cached-prefill start is unqualified: "
                         f"benchmark_id={point.benchmark_id}, prefixes={prefix}, queries={suffix}; "
@@ -641,13 +644,15 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             "max_batch": MAX_BATCH,
             "max_context": self._real_context_policy["measured_context_limit"],
         }
+        from collector.glm53flash_runtime_identity import vllm_source_manifest_sha256
+
         output["producer"] = {
             "instrumentation_revision": DYNAMO_SHA,
             "vllm_package_version": __import__("vllm").__version__,
             "reviewed_scheduler_api_revision": VLLM_SHA,
-            "runtime_source_manifest_sha256": hashlib.sha256(
-                Path(__file__).with_name("runtime-source-sha256.json").read_bytes()
-            ).hexdigest(),
+            "runtime_source_manifest_sha256": vllm_source_manifest_sha256(
+                __import__("vllm").__version__, Path(__file__).with_name("runtime-source-sha256.json")
+            ),
             "overlay_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "context_policy_version": 1,
             "warmup_repeats": WARMUP_REPEATS,
