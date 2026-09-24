@@ -1200,6 +1200,20 @@ def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
         "--chunked-prefill-size",
         str(plan.options.max_prefill_isl),
     ]
+    from .sglang_allocator import ENV_KEYS, configured_environment
+
+    if cell.sglang_allocator_max_split_size_mb != plan.options.sglang_allocator_max_split_size_mb:
+        raise ValueError("SGLang allocator differs between frozen plan and cell")
+    if cell.sglang_allocator_max_split_size_mb is not None:
+        native_args.extend(["--sglang-allocator-max-split-size-mb", str(cell.sglang_allocator_max_split_size_mb)])
+    expected_allocator = configured_environment(cell.sglang_allocator_max_split_size_mb)
+    for entry in deployment.get("extra_env", []):
+        if entry["name"] in ENV_KEYS and (
+            "valueFrom" in entry
+            or expected_allocator[entry["name"]] is None
+            or entry.get("value") != expected_allocator[entry["name"]]
+        ):
+            raise ValueError("conflicting SGLang allocator deployment environment")
     if cell.sglang_mem_fraction_static != plan.options.sglang_mem_fraction_static:
         raise ValueError("SGLang memory fraction differs between frozen plan and cell")
     if cell.sglang_mem_fraction_static is not None:

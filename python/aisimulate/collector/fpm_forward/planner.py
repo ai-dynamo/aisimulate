@@ -453,10 +453,16 @@ class FPMCell:
     backend: str = "vllm"
     state_protocol: str = ""
     sglang_mem_fraction_static: float | None = None
+    sglang_allocator_max_split_size_mb: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "cell_id": self.cell_id,
+            **(
+                {"sglang_allocator_max_split_size_mb": self.sglang_allocator_max_split_size_mb}
+                if self.sglang_allocator_max_split_size_mb is not None
+                else {}
+            ),
             **(
                 {"sglang_mem_fraction_static": self.sglang_mem_fraction_static}
                 if self.sglang_mem_fraction_static is not None
@@ -603,6 +609,7 @@ def _cell_id(
     execution: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY,
     input_text_sha256: str = "",
     sglang_mem_fraction_static: float | None = None,
+    sglang_allocator_max_split_size_mb: int | None = None,
 ) -> str:
     payload = {
         "backend": backend,
@@ -617,6 +624,8 @@ def _cell_id(
         "input_text_sha256": input_text_sha256,
         "point_source": "dynamo_native_self_benchmark",
     }
+    if sglang_allocator_max_split_size_mb is not None:
+        payload["sglang_allocator_max_split_size_mb"] = sglang_allocator_max_split_size_mb
     if sglang_mem_fraction_static is not None:
         payload["sglang_mem_fraction_static"] = sglang_mem_fraction_static
     return f"fpm-{_canonical_hash(payload)[:16]}"
@@ -637,6 +646,8 @@ def build_collection_plan(
 ) -> FPMCollectionPlan:
     if backend not in {"vllm", "sglang"}:
         raise ValueError("FPM collection supports backend=vllm or sglang")
+    if options.sglang_allocator_max_split_size_mb is not None and backend != "sglang":
+        raise ValueError("--sglang-allocator-max-split-size-mb requires backend=sglang")
     if options.sglang_mem_fraction_static is not None and backend != "sglang":
         raise ValueError("--sglang-mem-fraction-static requires backend=sglang")
     collector_config = collector_config or {}
@@ -750,9 +761,11 @@ def build_collection_plan(
                 execution=execution,
                 input_text_sha256=input_text_sha256,
                 sglang_mem_fraction_static=options.sglang_mem_fraction_static,
+                sglang_allocator_max_split_size_mb=options.sglang_allocator_max_split_size_mb,
             ),
             execution_identity=execution,
             sglang_mem_fraction_static=options.sglang_mem_fraction_static,
+            sglang_allocator_max_split_size_mb=options.sglang_allocator_max_split_size_mb,
             backend=backend,
             state_protocol="glm53flash_same_request_real_hybrid_v1" if is_glm else "",
             input_text_sha256=input_text_sha256,

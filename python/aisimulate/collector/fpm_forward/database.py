@@ -190,6 +190,20 @@ def aggregate_cell(
             return "fake_fallback"
         return "legacy"
 
+    allocator_columns = {}
+    if collection.allocator_policy is not None:
+        from .sglang_allocator import digest, validate_max_split_size
+
+        requested = cell.sglang_allocator_max_split_size_mb
+        validate_max_split_size(requested)
+        if collection.allocator_policy["requested_policy"]["max_split_size_mb"] != requested:
+            raise ValueError("export allocator evidence differs from frozen cell")
+        allocator_columns = {
+            "sglang_allocator_policy_sha256": digest(collection.allocator_policy),
+            "sglang_allocator_max_split_size_mb": requested,
+        }
+    elif cell.sglang_allocator_max_split_size_mb is not None:
+        raise ValueError("export requires actual native allocator evidence for requested policy")
     rows = []
     for measurement in selected:
         point = measurement.point
@@ -206,6 +220,7 @@ def aggregate_cell(
         rows.append(
             {
                 "cell_id": cell.cell_id,
+                **allocator_columns,
                 "model_path": plan.model_path,
                 "system": plan.system,
                 "backend": plan.backend,
@@ -625,6 +640,7 @@ def write_formal_database(
                 f"existing FPM database runtime version mismatch: actual={sorted(existing_versions)!r} "
                 f"expected={version!r}"
             )
+        _validate_allocator_deployments([*merged, *rows])
         existing_identities = _run_identities_by_cell(merged, source="existing")
         skipped_cells: list[str] = []
         for cell_id, incoming_identity in sorted(incoming_identities.items()):
@@ -677,6 +693,10 @@ def write_formal_database(
                 row.setdefault("state_protocol", None)
                 row.setdefault("timing_boundary", None)
 
+        if any(row.get("sglang_allocator_policy_sha256") is not None for row in merged):
+            for row in merged:
+                row.setdefault("sglang_allocator_policy_sha256", None)
+                row.setdefault("sglang_allocator_max_split_size_mb", None)
         temporary = _temporary_path(parquet_path)
         temporary_metadata = _temporary_path(metadata_path)
         try:
@@ -717,3 +737,38 @@ def write_formal_database(
             temporary.unlink(missing_ok=True)
             temporary_metadata.unlink(missing_ok=True)
     return parquet_path, metadata_path, tuple(skipped_cells)
+
+
+def _validate_allocator_deployments(rows):
+    """One actual allocator identity per deployment, even at disjoint coordinates."""
+    from .sglang_allocator import validate_max_split_size
+
+    coordinate_keys = {
+        "cell_id",
+        "workload_kind",
+        "batch_size",
+        "total_prefill_tokens",
+        "total_kv_read_tokens",
+        "partition_policy",
+    }
+    groups = {}
+    for row in rows:
+        if row.get("backend") != "sglang":
+            if (
+                row.get("sglang_allocator_policy_sha256") is not None
+                or row.get("sglang_allocator_max_split_size_mb") is not None
+            ):
+                raise ValueError("SGLang allocator policy cannot label another backend")
+            continue
+        requested = row.get("sglang_allocator_max_split_size_mb")
+        validate_max_split_size(requested)
+        digest = row.get("sglang_allocator_policy_sha256")
+        if (digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest))) or (
+            requested is not None and digest is None
+        ):
+            raise ValueError("FPM allocator profile lacks actual policy digest")
+        key = tuple(row.get(k) for k in _ROW_KEY if k not in coordinate_keys)
+        identity = requested, digest
+        if key in groups and groups[key] != identity:
+            raise ValueError("FPM deployment mixes different or unknown allocator policies")
+        groups[key] = identity

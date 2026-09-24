@@ -112,3 +112,43 @@ empty. Idle gaps and paused-engine accounting call the native paths. These are
 scheduler bookkeeping changes; they do not seed or repair GPU hybrid state.
 The first retained GPU attempt exposed this missing queue before any request or
 timing; its failure remains a failed qualification, not a data observation.
+
+
+## Explicit native allocator policy
+
+FPM accepts `--sglang-allocator-max-split-size-mb N` for SGLang only. `N` is an
+integer of at least 20 MiB, matching the pinned PyTorch native parser. The
+option creates a new plan, cell and shard identity. Omission preserves legacy
+plan serialization; it does not assert that historical artifacts recorded the
+allocator environment.
+
+The driver sets `PYTORCH_CUDA_ALLOC_CONF=backend:native,max_split_size_mb:N`
+before importing serving frameworks. Conflicting inherited CUDA, HIP or unified
+allocator settings, including empty values and disabled memory caching, fail
+explicitly. The default path also rejects such inherited settings. No allocator
+API is reconfigured after initialization, and no cache flush or forward-loop
+change is introduced.
+
+Each new worker records the actual allocator backend and effective split limit,
+allowlisted environment, Torch version/commit/CUDA version, and hashes of its
+actual Python source, native extension and three mapped Torch libraries. The
+original rank receipt binds the native run, precision/checkpoint identity and
+GPU; every forward row binds that receipt's SHA256. These observations describe
+the running package, not a claim that a declared version alone identifies its
+binaries. No historical run is retroactively assigned this evidence.
+
+Strict readers require all ranks and all shards to agree and compare calibration
+and holdout allocator policy together with the complete normalized ServerArgs.
+Legacy artifacts without allocator evidence remain readable only for an
+unrequested policy; they cannot satisfy an explicit candidate. New known-policy
+and legacy unknown-policy runs cannot be paired. Exported FPM rows retain the
+actual policy digest and requested split limit. A published deployment must use
+one qualified allocator policy across phases and coordinates: publishing a
+second policy into the same deployment is rejected even when point sets do not
+overlap. The public FPM query has no allocator selection parameter, so competing
+policies require separate publication roots and separately bound acceptance.
+
+This is configuration and evidence plumbing. It does not qualify capacity,
+repair historical OOMs, admit new runtime source, or establish prediction
+accuracy. Each changed policy needs its own actual GPU qualification and formal
+calibration/holdout evidence before publication.

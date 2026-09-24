@@ -148,6 +148,23 @@ class _TraceState:
         (output / f"state-layout-rank-{self.rank}.json").write_text(json.dumps(self.state_layout, indent=2))
         # Retain the observed identity even when this allocation is rejected.
         validate_gb300_identity(self.state_layout["hardware"])
+        self.allocator_identity_sha256 = None
+        if "allocator_policy" in provenance:
+            from collector.fpm_forward.sglang_allocator import observe_worker
+
+            allocator = observe_worker(
+                torch,
+                rank=self.rank,
+                run_id=provenance["run_id"],
+                execution_identity=provenance["execution_identity"],
+                policy=provenance["allocator_policy"],
+                hardware=self.state_layout["hardware"],
+            )
+            allocator_path = output / f"allocator-identity-rank-{self.rank}.json"
+            with allocator_path.open("x") as stream:
+                stream.write(json.dumps(allocator, sort_keys=True, indent=2) + "\n")
+            self.allocator_identity_sha256 = hashlib.sha256(allocator_path.read_bytes()).hexdigest()
+
         native_prefill = getattr(runner, "prefill_cuda_graph_runner", None)
         # Pinned setup aliases this slot to EagerRunner when prefill capture is
         # disabled. EagerRunner.load_batch has no graph backend/padding state.
@@ -298,6 +315,8 @@ class _TraceState:
             "state_layout_sha256": self.state_layout_sha256,
             "state_layout_admitted": self.state_layout["admitted"],
         }
+        if self.allocator_identity_sha256 is not None:
+            record["allocator_identity_sha256"] = self.allocator_identity_sha256
         self.records[invocation] = record
         record["_completed_tokens"] = completed_tokens
         self.pending.append(invocation)
