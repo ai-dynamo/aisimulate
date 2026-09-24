@@ -105,22 +105,24 @@ def freeze_requests(points: list[dict], *, request_set: str, dataset_role: str, 
 
 def validate_eager_args(server, *, resolved: bool) -> None:
     """Respect native ServerArgs' separate declaration/resolution lifecycle."""
-    config = server.cuda_graph_config
     if resolved:
-        if (
-            config is None
-            or isinstance(config, dict)
-            or any(getattr(config, phase).backend != "disabled" for phase in ("decode", "prefill"))
+        # Native resolution freezes raw input fields and writes a declaration
+        # stash; direct attributes still contain the original CLI values.
+        config = server.resolved_dict().get("cuda_graph_config")
+        if not isinstance(config, dict) or any(
+            config.get(phase, {}).get("backend") != "disabled" for phase in ("decode", "prefill")
         ):
             raise ValueError("resolved SGLang Ops execution must disable both native graph phases")
-    elif config is None:
+        return
+    config = server.cuda_graph_config
+    if config is None:
         if server.cuda_graph_backend_decode != "disabled" or server.cuda_graph_backend_prefill != "disabled":
             raise ValueError("declared SGLang Ops execution must disable both native graph phases")
     elif isinstance(config, dict):
         if any(config.get(phase, {}).get("backend") != "disabled" for phase in ("decode", "prefill")):
             raise ValueError("declared SGLang Ops graph config must disable both phases")
-    else:
-        validate_eager_args(server, resolved=True)
+    elif any(getattr(config, phase).backend != "disabled" for phase in ("decode", "prefill")):
+        raise ValueError("declared SGLang Ops graph config must disable both phases")
 
 
 def validate_server_args(args) -> None:
