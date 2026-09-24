@@ -1,0 +1,16 @@
+{
+  "schema": "glm53_tail_runtime_packaging_v1",
+  "original_build_job": 613836,
+  "original_input_inventory_sha256": "ecda77034c7d13381506b5f1aefa11a11305da006188bbff2c85a49cc2e60831",
+  "formatted_files": [
+    {
+      "file": "verify_install.py",
+      "original_sha256": "4e47ef24dd8ef81dd8f5f56d770bc2b803e03d328cc38bfe7e06dc7d3aa3ac79",
+      "packaged_sha256": "26e403365a3e7b4e423895da7ada0b1954131f4ce3f065e1d072c8756e86bcab",
+      "change": "ruff formatting only; AST identical",
+      "packaged_verifier_native_execution": "PENDING"
+    }
+  ],
+  "runtime_patch_bytes_changed": false,
+  "production_admission": "CLOSED"
+}

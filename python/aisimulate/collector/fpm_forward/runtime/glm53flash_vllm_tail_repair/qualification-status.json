@@ -1,0 +1,13 @@
+{
+  "schema": "glm53flash_tail_repair_qualification_v1",
+  "actual_cpu_build_install_job": 613836,
+  "cpu_status": "ACTUAL_BUILD_INSTALL_SOURCE_AND_NATIVE_SPEC_PASS",
+  "candidate_version": "0.30.0+glm53tail.eb4704514fdf",
+  "reference_version": "0.30.0+glm53tailref.4e4a40c2a838",
+  "production_admission": "CLOSED",
+  "model_correctness": "NOT_EVALUATED",
+  "formal_fpm_accuracy": "NOT_EVALUATED",
+  "formal_ops_accuracy": "NOT_EVALUATED",
+  "old_runtime": "0.30.0+glm53kpool.bf5f6b0e689d",
+  "old_runtime_status": "QUARANTINED_SLOT_MAPPING_OUT_OF_BOUNDS"
+}
