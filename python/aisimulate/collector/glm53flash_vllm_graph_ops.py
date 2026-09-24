@@ -22,6 +22,7 @@ from collector.glm53flash_native_hooks import install_native_hooks
 
 SOURCE_PINS = {
     "v1/worker/gpu/cudagraph_utils.py": "6e9c042890603535e300a40df8ee159dbed1058a64a83ae50ff0329e332e05ff",
+    "model_executor/offloader/base.py": "5157a59232715e7247761588efb88fc44e14970b580722a1f0b2e8b3a23a10fe",
 }
 
 
@@ -58,6 +59,7 @@ def install(manifest, provenance, output):
     import torch
     import vllm
     from vllm.distributed import get_tensor_model_parallel_rank
+    from vllm.model_executor.offloader.base import NoopOffloader, get_offloader
     from vllm.v1.worker.gpu.cudagraph_utils import CudaGraphManager, ModelCudaGraphManager, has_compiled_submodule
 
     package = Path(vllm.__file__).resolve().parent
@@ -79,6 +81,10 @@ def install(manifest, provenance, output):
             raise RuntimeError("read-only module capture cannot alter a compiled native model boundary")
         if manager.ubatch_runner is not None:
             raise RuntimeError("native microbatch capture needs a separately reviewed cross-thread node owner")
+        if type(get_offloader()) is not NoopOffloader:
+            # Native capture joins an offloader stream after forward_fn returns.
+            # The reviewed noop implementation inserts no tail work there.
+            raise RuntimeError("native offloader tail lies outside the reviewed model capture boundary")
         state = models.get(id(model))
         if state is None:
             rank = get_tensor_model_parallel_rank()

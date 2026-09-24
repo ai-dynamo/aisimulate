@@ -354,6 +354,10 @@ active. Original warmups and PIECEWISE execution remain unchanged. Installation
 must occur before native graph initialization. Actual compiled model submodules
 and cross-thread microbatch runners are rejected: compiled leaf implementations
 inside otherwise uncompiled GLM units are left intact.
+The actual offloader must be the exact pinned `NoopOffloader`: native capture
+calls `join_after_forward` after the observed forward factory returns, and only
+the reviewed noop implementation guarantees no unobserved tail work there.
+Source at the same immutable revision: `vllm/model_executor/offloader/base.py`.
 
 This vLLM graph contains hidden states, not `compute_logits`; its raw registry
 explicitly lists logits as an uncaptured operation. Native output copies remain

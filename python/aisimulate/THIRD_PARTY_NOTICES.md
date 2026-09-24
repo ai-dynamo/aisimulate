@@ -1009,7 +1009,8 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `vllm/model_executor/layers/logits_processor.py`,
   `vllm/model_executor/layers/sparse_attn_indexer_kpool.py`,
   `vllm/models/glm5next/nvidia/ops/kpool_compress.py`,
-  `vllm/v1/worker/gpu/cudagraph_utils.py`;
+  `vllm/v1/worker/gpu/cudagraph_utils.py`,
+  `vllm/model_executor/offloader/base.py`;
   https://github.com/sgl-project/sglang at
   `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20), original paths
   `python/sglang/srt/models/{glm5_next,deepseek_v2}.py` and
