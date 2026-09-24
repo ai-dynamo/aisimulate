@@ -264,6 +264,7 @@ def _verify_fpm_workflow() -> str:
             "collector/model_cases.py",
             "collector/glm53flash_protocol.py",
             "collector/glm53flash_runtime_identity.py",
+            "collector/glm53flash_tail_qualification.py",
             "collector/glm53flash_shard_contract.py",
             "collector/glm53flash_jsonl.py",
             "collector/glm53flash_sglang_retained.py",
@@ -300,6 +301,10 @@ def _verify_fpm_workflow() -> str:
         (runner, "collector/fpm_forward/runner.py"),
         (importlib.import_module("collector.glm53flash_protocol"), "collector/glm53flash_protocol.py"),
         (importlib.import_module("collector.glm53flash_runtime_identity"), "collector/glm53flash_runtime_identity.py"),
+        (
+            importlib.import_module("collector.glm53flash_tail_qualification"),
+            "collector/glm53flash_tail_qualification.py",
+        ),
         (importlib.import_module("collector.glm53flash_shard_contract"), "collector/glm53flash_shard_contract.py"),
         (importlib.import_module("collector.glm53flash_jsonl"), "collector/glm53flash_jsonl.py"),
         (importlib.import_module("collector.glm53flash_sglang_retained"), "collector/glm53flash_sglang_retained.py"),
@@ -342,6 +347,34 @@ def _verify_fpm_workflow() -> str:
             raise RuntimeError(f"installed FPM runtime asset is missing: {asset}")
         if asset != exact_distribution_path(relative_path):
             raise RuntimeError(f"installed FPM runtime asset did not resolve from its exact RECORD path: {asset}")
+
+    # These immutable inputs are needed once functional qualification admits a
+    # repaired runtime. A closed registry must not conceal missing wheel assets.
+    tail_assets = [
+        "qualification/expected-runtime.json",
+        "packaged-verifier-executed-inputs.json",
+    ]
+    for role in ("candidate", "reference"):
+        tail_assets.extend(
+            f"{role}/{name}"
+            for name in (
+                "actual-build-receipt.json",
+                "actual-install-receipt.json",
+                "actual-packaged-verifier-receipt.json",
+                "actual-packaged-verifier-launch.json",
+                "expected-source-sha256.json",
+                "expected-native-binaries.json",
+                "combined-repair.patch.b64",
+                "combined-repair.review.diff",
+                "README.md",
+                "LICENSE",
+            )
+        )
+    for name in tail_assets:
+        relative = f"glm53flash_vllm_tail_repair/{name}"
+        asset = Path(os.fspath(runtime / relative)).resolve()
+        if not asset.is_file() or asset != exact_distribution_path(f"collector/fpm_forward/runtime/{relative}"):
+            raise RuntimeError(f"installed tail qualification asset is missing or outside its RECORD path: {asset}")
 
     env = {
         key: value for key, value in os.environ.items() if key not in {"FPM_COLLECTOR_SOURCE_REVISION", "PYTHONPATH"}

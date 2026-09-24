@@ -122,6 +122,7 @@ def _source_payloads() -> set[str]:
         "cases/**/*.yaml",
         "glm53flash_protocol.py",
         "glm53flash_runtime_identity.py",
+        "glm53flash_tail_qualification.py",
         "glm53flash_shard_contract.py",
         "glm53flash_jsonl.py",
         "glm53flash_sglang_retained.py",
@@ -141,6 +142,11 @@ def _source_payloads() -> set[str]:
         "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/**/README.md",
         "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/**/LICENSE",
         "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/qualification/input.txt",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/*.json",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/*.patch.b64",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/*.review.diff",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/README.md",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/LICENSE",
     ):
         expected.update(
             (Path("collector") / path.relative_to(collector_root)).as_posix()
