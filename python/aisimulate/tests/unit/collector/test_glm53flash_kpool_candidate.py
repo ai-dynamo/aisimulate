@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """CPU integrity tests only; these fixtures are not native qualification data."""
 
+import base64
+import hashlib
 import json
 from pathlib import Path
 
@@ -174,3 +176,14 @@ def test_reject_corrupt_evidence(evidence, failure):
 def test_reject_runtime_relabel(evidence):
     with pytest.raises(ValueError, match="runtime identity"):
         validate_native(evidence, 2, "split", "production", "stock")
+
+
+def test_encoded_repair_keeps_original_candidate_identity():
+    root = Path(probe.__file__).parents[1]
+    original = base64.b64decode((root / "retained-tail-prefill.patch.b64").read_bytes().strip(), validate=True)
+    identity = json.loads((root / "patch-identity.json").read_text())
+    assert hashlib.sha256(original).hexdigest() == identity["patch_sha256"]
+    assert original.startswith(b"--- a/vllm/model_executor/layers/sparse_attn_indexer_kpool.py\n")
+    assert (root / "retained-tail-prefill.review.diff").read_text() == "\n".join(
+        line.rstrip() for line in original.decode().splitlines()
+    ) + "\n"

@@ -7,6 +7,7 @@ wheel is an unqualified candidate until separate native correctness tests pass.
 """
 
 import argparse
+import base64
 import email.parser
 import hashlib
 import importlib.metadata
@@ -87,12 +88,11 @@ def main():
     original = source_root / identity["source_path"]
     if digest(original) != identity["base_sha256"]:
         raise RuntimeError("source helper differs from immutable base")
-    patch = root / "retained-tail-prefill.patch"
-    patch_digest = digest(patch)
+    patch = base64.b64decode((root / "retained-tail-prefill.patch.b64").read_bytes().strip(), validate=True)
+    patch_digest = hashlib.sha256(patch).hexdigest()
     if patch_digest != identity["patch_sha256"]:
         raise RuntimeError("repair patch differs from frozen candidate")
-    with patch.open("rb") as patch_input:
-        subprocess.run(["patch", "--batch", "--forward", "-p1"], cwd=source_root, stdin=patch_input, check=True)
+    subprocess.run(["patch", "--batch", "--forward", "-p1"], cwd=source_root, input=patch, check=True)
     if digest(original) != identity["patched_sha256"]:
         raise RuntimeError("applied source repair differs from frozen candidate bytes")
     version = "0.30.0+glm53kpool." + patch_digest[:12]
