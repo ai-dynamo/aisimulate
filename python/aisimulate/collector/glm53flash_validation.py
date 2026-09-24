@@ -538,7 +538,13 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         graph_proof = read_graph_run(root, run)
         if run["role"] == "calibration" and calibration_evidence:
             verify_evidence(root, graph_proof)
+    execution_policy = {}
+    if backend == "sglang":
+        from collector.fpm_forward.glm53flash_validation import _sglang_execution_policy
+
+        execution_policy = _sglang_execution_policy(json.loads((root / "sglang-resolved-config.json").read_bytes()))
     return {
+        **execution_policy,
         "values": values,
         "request_ids": set(requests["requests"]),
         "receipts": [
@@ -690,6 +696,11 @@ def _sharded_calibration_rows(children: list[tuple[dict, dict]], frozen_shard_ma
         native.get("backend_version", next(iter(versions))) not in versions for _, native in children
     ):
         raise ValueError("Ops calibration shards cannot mix native runtime versions")
+    if backend == "sglang":
+        from collector.fpm_forward.glm53flash_validation import _same_sglang_policy
+
+        for _, native in children:
+            _same_sglang_policy(children[0][1], native, "Ops calibration shards")
     production = build_model_manifest(backend, fmt, tp)
     declared = {shard["child_cell_id"]: shard for shard in frozen_shard_manifest["shards"]}
     rows_by_shard, parents, evidence_receipts, request_ids, run_ids = {}, set(), [], set(), set()

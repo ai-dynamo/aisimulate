@@ -333,7 +333,7 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
         execution_policy = None
         for child in run["children"]:
             native = _load_native(child, base, mode)
-            if mode == "fpm" and run["key"][0] == "sglang":
+            if run["key"][0] == "sglang":
                 _require_sglang_policy(native)
                 if execution_policy is not None:
                     _same_sglang_policy(execution_policy, native, "native shards")
@@ -719,7 +719,7 @@ def evaluate(manifest: dict, base: Path) -> dict:
                     from collector.glm53flash_runtime_identity import validate_runtime_pair
 
                     validate_runtime_pair(key[0], record["calibration_native"], record["holdout_native"])
-                    if mode == "fpm" and key[0] == "sglang":
+                    if key[0] == "sglang":
                         _same_sglang_policy(
                             record["calibration_native"], record["holdout_native"], "calibration/holdout"
                         )

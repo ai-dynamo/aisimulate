@@ -7,8 +7,6 @@ import json
 from pathlib import Path
 
 import pytest
-
-from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 from collector import glm53flash_validation as evidence
 from collector.fpm_forward.sglang_artifact import TELEMETRY_POLICY
 from collector.glm53flash_contract import (
@@ -20,6 +18,8 @@ from collector.glm53flash_contract import (
     write_parquet,
 )
 from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL
+
+from aisimulate_core.sdk.utils import _load_pre_downloaded_hf_config
 
 pytestmark = pytest.mark.unit
 
@@ -490,6 +490,26 @@ def test_sharded_publication_revalidates_native_evidence_and_frozen_owner(tmp_pa
     run["original_point_ids"] = {1: 8}
     with pytest.raises(ValueError, match="ownership differs"):
         evidence.bind_sharded_calibration([path], [(run, native)], shards)
+
+
+def test_direct_sharded_publication_rejects_different_actual_memory_policies(tmp_path):
+    children = []
+    for index, fraction in enumerate((0.82, 0.9063)):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        run, root, _, _, manifest = native_fixture(directory, "calibration")
+        for name in ("sglang-declared-config.json", "sglang-resolved-config.json"):
+            path = root / name
+            config = json.loads(path.read_text())
+            config["mem_fraction_static"] = fraction
+            put(path, config)
+        # This is a new authored fixture, not mutation of retained GPU evidence.
+        (root / "calibration-evidence.json").unlink()
+        evidence.freeze_evidence(root, 2, manifest)
+        children.append((run, evidence.load_native(run, directory)))
+    with pytest.raises(ValueError, match="execution policies differ across Ops calibration shards"):
+        evidence.publish_sharded_calibration(children, {}, tmp_path / "must-not-exist.parquet")
+    assert not (tmp_path / "must-not-exist.parquet").exists()
 
 
 @pytest.mark.parametrize("change", ["missing", "wrong_model", "wrong_capability", "rank", "device", "duplicate_uuid"])

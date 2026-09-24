@@ -550,6 +550,13 @@ run over the same calibration corpus, token histories and geometries. Control
 requests and run IDs must be distinct. Independent accuracy uses a third run
 with role `holdout` and separate frozen corpus/geometries.
 
+SGLang eager and graph acceptance compare the complete actual resolved
+ServerArgs across calibration, unprofiled controls, independent holdout and
+shards. Only the native per-process `random_seed` is excluded. Different memory,
+kernel or scheduler settings are rejected before export/prediction, with every
+original requested holdout point retained. Reports contain the normalized digest
+and original file receipts; private configuration values remain outside reports.
+
 The exporter reconstructs each executable node registry from the original
 capture plus native clone callbacks, then reconstructs all unit activity unions
 from saved CUPTI traces. The source-bound native policy snapshot includes every

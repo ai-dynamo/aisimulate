@@ -200,8 +200,43 @@ def control_fixture(tmp_path, monkeypatch):
             text = text.replace('"dataset_role": "holdout"', '"dataset_role": "calibration"')
             text = text.replace('"dataset_role":"holdout"', '"dataset_role":"calibration"')
             path.write_text(text)
+    for name in ("sglang-declared-config.json", "sglang-resolved-config.json"):
+        path = root / name
+        config = json.loads(path.read_text())
+        config["model_path"] = "/models/authored-cpu-fixture"
+        put(path, config)
     run["role"] = "control"
     return {"control_run": run, "control_root": root}
+
+
+@pytest.mark.parametrize(
+    "field,value", [("mem_fraction_static", 0.82), ("max_running_requests", 16), ("moe_runner_backend", "changed")]
+)
+def test_graph_profile_control_rejects_different_actual_native_settings(tmp_path, monkeypatch, field, value):
+    run, root = fixture(tmp_path, monkeypatch)
+    control = control_fixture(tmp_path, monkeypatch)
+    for name in ("sglang-declared-config.json", "sglang-resolved-config.json"):
+        path = control["control_root"] / name
+        config = json.loads(path.read_text())
+        config[field] = value
+        put(path, config)
+    with pytest.raises(ValueError, match="execution policies differ across graph calibration/profile control"):
+        graph.export_graph(root, run, root / graph.BASENAME, **control)
+
+
+def test_graph_profile_control_normalizes_only_random_seed(tmp_path, monkeypatch):
+    run, root = fixture(tmp_path, monkeypatch)
+    control = control_fixture(tmp_path, monkeypatch)
+    for directory, seed in ((root, 123), (control["control_root"], 456)):
+        for name in ("sglang-declared-config.json", "sglang-resolved-config.json"):
+            path = directory / name
+            config = json.loads(path.read_text())
+            config.update(random_seed=seed, api_key="TEST_ONLY_PRIVATE")
+            put(path, config)
+    graph.export_graph(root, run, root / graph.BASENAME, **control)
+    receipt = json.loads((root / "graph-profile-control.json").read_text())
+    assert receipt["execution_policy"]["normalization"] == "resolved_server_args_except_random_seed_v1"
+    assert "TEST_ONLY_PRIVATE" not in json.dumps(receipt)
 
 
 def test_original_node_activity_export_and_public_binding(tmp_path, monkeypatch):
@@ -355,7 +390,12 @@ def test_public_homogeneous_rust_prediction_uses_frozen_past_coordinate(tmp_path
     from aisimulate_core.sdk.models import get_model
 
     calibration_run, calibration_root = fixture(tmp_path, monkeypatch)
-    policy = graph.read_graph_run(calibration_root, calibration_run)["policy"]
+    proof = graph.read_graph_run(calibration_root, calibration_run)
+    policy = proof["policy"]
+    calibration_native = {
+        "graph_policy": policy,
+        **{key: proof[key] for key in ("execution_policy", "_execution_policy")},
+    }
     holdout_dir = tmp_path / "holdout"
     holdout_dir.mkdir()
     run, root = fixture(holdout_dir, monkeypatch, "holdout")
@@ -413,13 +453,19 @@ def test_public_homogeneous_rust_prediction_uses_frozen_past_coordinate(tmp_path
         "strict_provenance": True,
         "enable_shared_layer": False,
     }
-    result = graph.predict_homogeneous(run, root, config, {"graph_policy": policy})
+    result = graph.predict_homogeneous(run, root, config, calibration_native)
     assert result["rows"] == {1: {"prediction_ms": 376.0}}
     assert result["diagnostics"]["consumer"] == "public_EngineHandle_predict_decode_latency"
     changed = copy.deepcopy(policy)
     changed["capture_sizes"] = [1, 2, 4]
     with pytest.raises(ValueError, match="changed its frozen"):
-        graph.predict_homogeneous(run, root, config, {"graph_policy": changed})
+        graph.predict_homogeneous(run, root, config, {**calibration_native, "graph_policy": changed})
+    resolved = root / "sglang-resolved-config.json"
+    changed_config = json.loads(resolved.read_text())
+    changed_config["mem_fraction_static"] = 0.82
+    put(resolved, changed_config)
+    with pytest.raises(ValueError, match="execution policies differ across graph calibration/holdout"):
+        graph.predict_homogeneous(run, root, config, calibration_native)
 
 
 @pytest.mark.parametrize("defect", ["filename", "copied_bytes", "rank", "invocation", "run", "role", "missing"])

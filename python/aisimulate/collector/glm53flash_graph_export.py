@@ -332,7 +332,10 @@ def read_graph_run(root: Path, run: dict) -> dict:
         if calibrated
         else {"native_snapshot": comparable[0], "provenance": provenance}
     )
+    from collector.fpm_forward.glm53flash_validation import _sglang_execution_policy
+
     return {
+        **_sglang_execution_policy(json.loads(_local(root, "sglang-resolved-config.json").read_bytes())),
         "policy": policy,
         "native_snapshot": comparable[0],
         "provenance": provenance,
@@ -441,6 +444,7 @@ def verify_evidence(root, proof):
 
 def profile_control(root, proof, control_root, control_run):
     """Retain profiled/unprofiled elapsed differences, without fitting unit costs."""
+    from collector.fpm_forward.glm53flash_validation import _same_sglang_policy
     from collector.glm53flash_validation import load_native
 
     if control_run["role"] != "control" or control_run["spec"].get("ops_execution_mode") != "native_full_graph":
@@ -449,6 +453,7 @@ def profile_control(root, proof, control_root, control_run):
     if Path(native["evidence_root"]) != control_root.resolve() or control_root.resolve() == root.resolve():
         raise ValueError("graph profiling control must retain a separate original native run")
     control = read_graph_run(control_root, control_run)
+    _same_sglang_policy(proof, control, "graph calibration/profile control")
     if control["native_snapshot"] != proof["native_snapshot"] or control["provenance"] != proof["provenance"]:
         raise ValueError("graph profiling control changes actual native policy/runtime identity")
     if control["forwards"].keys() != proof["forwards"].keys():
@@ -503,6 +508,7 @@ def profile_control(root, proof, control_root, control_run):
         )
     return {
         "schema": "glm53flash_graph_profile_control_v1",
+        "execution_policy": control["execution_policy"],
         "evidence_root": str(control_root.resolve()),
         "frozen_run": control_run,
         "receipts": native["receipts"],
@@ -595,6 +601,7 @@ def predict_homogeneous(run, base, config, calibration_native):
     """
     from aisimulate_core.sdk.engine import EngineHandle
     from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig
+    from collector.fpm_forward.glm53flash_validation import _same_sglang_policy
     from collector.glm53flash_validation import load_native
 
     if run["spec"].get("ops_execution_mode") != "native_full_graph" or run["role"] != "holdout":
@@ -602,6 +609,7 @@ def predict_homogeneous(run, base, config, calibration_native):
     if len(config["systems_paths"]) != 1:
         raise ValueError("initial graph prediction requires one fully receipted calibration root")
     holdout = load_native(run, base)
+    _same_sglang_policy(calibration_native, holdout, "graph calibration/holdout")
     policy = calibration_native["graph_policy"]
     actual = holdout["graph_policy"]
     snapshot = actual["native_snapshot"]

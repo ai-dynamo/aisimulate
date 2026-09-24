@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""TEST_ONLY CPU fixtures for independent FPM serving-policy acceptance."""
+"""TEST_ONLY CPU fixtures for independent FPM and Ops serving-policy acceptance."""
 
 import hashlib
 import json
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward import glm53flash_validation as validation
+
 from tests.unit.collector.test_glm53flash_validation import campaign as _campaign_fixture
 from tests.unit.collector.test_glm53flash_validation import write_plan
 
@@ -43,9 +43,11 @@ def policy(seed=1):
         ("future_native_option", True),
     ],
 )
+@pytest.mark.parametrize("mode", ["fpm", "ops"])
 def test_different_actual_settings_reject_before_prediction_and_keep_all_points(
-    campaign, tmp_path, monkeypatch, field, value
+    campaign, tmp_path, monkeypatch, field, value, mode
 ):
+    campaign["mode"] = mode
     original = validation._native_run
     predict = validation._predict
     predicted_backends = []
@@ -76,7 +78,9 @@ def test_different_actual_settings_reject_before_prediction_and_keep_all_points(
         assert all(row["status"] == "MEASURED_NO_PREDICTION" for row in cell["points"])
 
 
-def test_only_random_seed_is_normalized_and_private_settings_are_not_reported(campaign, tmp_path, monkeypatch):
+@pytest.mark.parametrize("mode", ["fpm", "ops"])
+def test_only_random_seed_is_normalized_and_private_settings_are_not_reported(campaign, tmp_path, monkeypatch, mode):
+    campaign["mode"] = mode
     original = validation._native_run
 
     def native(run, base):
@@ -97,7 +101,9 @@ def test_only_random_seed_is_normalized_and_private_settings_are_not_reported(ca
 
 
 @pytest.mark.parametrize("damage", ["missing", "empty", "digest", "normalization"])
-def test_missing_or_inconsistent_policy_is_not_accepted(campaign, tmp_path, monkeypatch, damage):
+@pytest.mark.parametrize("mode", ["fpm", "ops"])
+def test_missing_or_inconsistent_policy_is_not_accepted(campaign, tmp_path, monkeypatch, damage, mode):
+    campaign["mode"] = mode
     original = validation._native_run
 
     def native(run, base):
@@ -119,7 +125,10 @@ def test_missing_or_inconsistent_policy_is_not_accepted(campaign, tmp_path, monk
 
 
 @pytest.mark.parametrize("different", [False, True])
-def test_shard_union_requires_one_policy_and_keeps_private_values_out_of_receipts(tmp_path, monkeypatch, different):
+@pytest.mark.parametrize("mode", ["fpm", "ops"])
+def test_shard_union_requires_one_policy_and_keeps_private_values_out_of_receipts(
+    tmp_path, monkeypatch, different, mode
+):
     children = [
         {
             "key": ("sglang", "fp8", 2, "prefill"),
@@ -127,6 +136,7 @@ def test_shard_union_requires_one_policy_and_keeps_private_values_out_of_receipt
             "cell": {"cell_id": f"TEST_ONLY-child-{index}"},
             "plan": {"sha256": str(index)},
             "original_point_ids": {1: index + 1},
+            "points": [{"benchmark_id": 1}],
         }
         for index in range(2)
     ]
@@ -147,15 +157,19 @@ def test_shard_union_requires_one_policy_and_keeps_private_values_out_of_receipt
             "request_ids": {run["cell"]["cell_id"]},
             "backend_version": "0.5.20",
             "receipts": [],
+            "timing_boundary": "TEST_ONLY_GPU_FORWARD",
             **validation._sglang_execution_policy(config),
         }
 
     monkeypatch.setattr(validation, "_native_run", native)
+    from collector import glm53flash_validation as ops_validation
+
+    monkeypatch.setattr(ops_validation, "load_native", native)
     if different:
         with pytest.raises(ValueError, match="execution policies differ across native shards"):
-            validation._load_native(parent, tmp_path, "fpm")
+            validation._load_native(parent, tmp_path, mode)
     else:
-        result = validation._load_native(parent, tmp_path, "fpm")
+        result = validation._load_native(parent, tmp_path, mode)
         assert result["values"] == {1: 12, 2: 12}
         assert "TEST_ONLY_SECRET" not in json.dumps(result["shards"])
         assert "_execution_policy" not in json.dumps(result["shards"])
