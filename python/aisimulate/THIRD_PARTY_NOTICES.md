@@ -1353,3 +1353,114 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
   wheel is vendored; build/install tooling checks all19 native binaries and
   preserves applicable binary license/notice files. CPU receipts do not grant
   model qualification, runtime admission or performance accuracy acceptance.
+
+
+## GLM SGLang native allocator policy integration
+
+- Integration files: `python/aisimulate/collector/fpm_forward/sglang_allocator.py`,
+  the allocator-only additions to its driver/artifact/validation peers,
+  `collector/glm53flash_sglang_runtime.py`, and
+  `tests/unit/collector/test_glm53flash_sglang_allocator.py` under the same
+  Python application.
+- Ops adaptation retains the shared helper and native receipt adapters from
+  internal FPM commit `636206a73f391a1340b57acd8c396c557061c9db`; the existing
+  Ops orchestration is unchanged.
+- Source: https://github.com/pytorch/pytorch at immutable revision
+  `cf30153c4c131c8164ee7798e5022d810682e2cb`, original paths
+  `c10/core/AllocatorConfig.cpp`, `c10/cuda/CUDAAllocatorConfig.cpp`,
+  `c10/cuda/CUDACachingAllocator.cpp`, and `torch/cuda/memory.py`.
+- Original integration uses public read-only allocator APIs and independently
+  expresses the pinned minimum and environment precedence contract. No upstream
+  allocator implementation is copied, modified or executed by the tests.
+  CPU test files and receipts are explicitly synthetic, not measured data.
+- Copyright and license: PyTorch contributors and the copyright holders listed
+  below; BSD-style license. The unmodified upstream `LICENSE` at that revision
+  follows for attribution.
+
+```text
+From PyTorch:
+
+Copyright (c) 2016-     Facebook, Inc            (Adam Paszke)
+Copyright (c) 2014-     Facebook, Inc            (Soumith Chintala)
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+
+From Caffe2:
+
+Copyright (c) 2016-present, Facebook Inc. All rights reserved.
+
+All contributions by Facebook:
+Copyright (c) 2016 Facebook Inc.
+
+All contributions by Google:
+Copyright (c) 2015 Google Inc.
+All rights reserved.
+
+All contributions by Yangqing Jia:
+Copyright (c) 2015 Yangqing Jia
+All rights reserved.
+
+All contributions by Kakao Brain:
+Copyright 2019-2020 Kakao Brain
+
+All contributions by Cruise LLC:
+Copyright (c) 2022 Cruise LLC.
+All rights reserved.
+
+All contributions by Tri Dao:
+Copyright (c) 2024 Tri Dao.
+All rights reserved.
+
+All contributions by Arm:
+Copyright (c) 2021, 2023-2025 Arm Limited and/or its affiliates
+
+All contributions from Caffe:
+Copyright(c) 2013, 2014, 2015, the respective contributors
+All rights reserved.
+
+All other contributions:
+Copyright(c) 2015, 2016 the respective contributors
+All rights reserved.
+
+Caffe2 uses a copyright model similar to Caffe: each contributor holds
+copyright over their contributions to Caffe2. The project versioning records
+all such contribution and copyright details. If a contributor wants to further
+mark their specific copyright on a particular contribution, they should
+indicate their copyright solely in the commit message of the change when it is
+committed.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+3. Neither the names of Facebook, Deepmind Technologies, NYU, NEC Laboratories America
+   and IDIAP Research Institute nor the names of its contributors may be
+   used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+```

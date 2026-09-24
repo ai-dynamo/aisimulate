@@ -214,3 +214,23 @@ and are rederived against the calibration files during publication.
 This mechanism still needs actual native CPU and GPU qualification. Original
 failed controls stay failed. No new timing data, formal matrix coverage or
 accuracy acceptance follows from CPU fixtures.
+
+
+### Recorded native allocator policy
+
+The shared native driver accepts `--sglang-allocator-max-split-size-mb N`, an
+exact integer of at least 20 MiB under the pinned native PyTorch parser. It sets
+`PYTORCH_CUDA_ALLOC_CONF=backend:native,max_split_size_mb:N` before framework
+imports. Conflicting inherited CUDA/HIP/unified allocator settings and disabled
+caching are rejected, including explicitly empty settings. Omission follows
+the original default and does not reclassify historical unknown environments.
+
+Each new worker records the actual native backend, effective split limit,
+allowlisted environment, Torch source and loaded library identities, native
+run/precision identity and GPU. Every forward binds the original rank receipt
+SHA. Shared readers compare the normalized actual allocator with ServerArgs;
+known-policy evidence cannot be paired with legacy unknown evidence. These
+adapters are ported from FPM commit636206a73f391a1340b57acd8c396c557061c9db.
+Ops keeps its existing orchestration; externally frozen public FPM plans/cells
+must retain any explicit allocator option. This records execution identity,
+not capacity qualification, an OOM repair or performance acceptance.

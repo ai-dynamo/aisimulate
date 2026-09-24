@@ -159,6 +159,23 @@ class _TraceState:
             ):
                 raise RuntimeError("native sampling source witness has another observation purpose")
             write_new(output / f"sampling-source-rank-{self.rank}.json", worker_identity(runner))
+        self.allocator_identity_sha256 = None
+        if "allocator_policy" in provenance:
+            from collector.fpm_forward.sglang_allocator import observe_worker
+
+            allocator = observe_worker(
+                torch,
+                rank=self.rank,
+                run_id=provenance["run_id"],
+                execution_identity=provenance["execution_identity"],
+                policy=provenance["allocator_policy"],
+                hardware=self.state_layout["hardware"],
+            )
+            allocator_path = output / f"allocator-identity-rank-{self.rank}.json"
+            with allocator_path.open("x") as stream:
+                stream.write(json.dumps(allocator, sort_keys=True, indent=2) + "\n")
+            self.allocator_identity_sha256 = hashlib.sha256(allocator_path.read_bytes()).hexdigest()
+
         native_prefill = getattr(runner, "prefill_cuda_graph_runner", None)
         # Pinned setup aliases this slot to EagerRunner when prefill capture is
         # disabled. EagerRunner.load_batch has no graph backend/padding state.
@@ -322,6 +339,8 @@ class _TraceState:
             "state_layout_sha256": self.state_layout_sha256,
             "state_layout_admitted": self.state_layout["admitted"],
         }
+        if self.allocator_identity_sha256 is not None:
+            record["allocator_identity_sha256"] = self.allocator_identity_sha256
         self.records[invocation] = record
         record["_completed_tokens"] = completed_tokens
         self.pending.append(invocation)

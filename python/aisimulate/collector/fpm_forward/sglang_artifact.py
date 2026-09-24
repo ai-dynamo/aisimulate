@@ -64,7 +64,15 @@ def _trace_identity(record: dict) -> dict:
         raise ValueError("SGLang raw forward execution provenance is missing or invalid")
     return {
         key: record[key]
-        for key in ("run_id", "execution_identity", "telemetry_policy", "context_policy", "producer_protocol")
+        for key in (
+            "run_id",
+            "execution_identity",
+            "telemetry_policy",
+            "context_policy",
+            "producer_protocol",
+            "allocator_policy",
+        )
+        if key in record
     }
 
 
@@ -364,6 +372,7 @@ def _validate_runtime_receipts(cell, payload: dict, parent: Path, evidence: dict
             raise ValueError("SGLang frozen point exceeds the measured context scope")
     return _trace_identity(
         {
+            **({"allocator_policy": payload["allocator_policy"]} if "allocator_policy" in payload else {}),
             "run_id": payload.get("run_id"),
             "execution_identity": expected_identity,
             "telemetry_policy": payload["producer"]["telemetry_policy"],
@@ -373,7 +382,7 @@ def _validate_runtime_receipts(cell, payload: dict, parent: Path, evidence: dict
     )
 
 
-def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
+def validate_sglang_repetitions(cell, payload: dict, path: Path) -> dict | None:
     if cell.state_protocol != PROTOCOL or payload.get("kvwarm", {}).get("state_protocol") != PROTOCOL:
         raise ValueError("SGLang hybrid state protocol mismatch")
     if payload.get("timing_boundary") != TIMING_BOUNDARIES["sglang"]:
@@ -403,6 +412,7 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
         "index_tail_key": "torch.bfloat16",
         "index_tail_score": "torch.bfloat16",
     }
+    allocator_policy, allocator_hashes = validate_allocator_receipts(cell, payload, path.parent, layouts=layouts)
     observed_uuids = set()
     for rank, layout in layouts.items():
         if type(layout.get("tp_rank")) is not int or layout["tp_rank"] != rank:
@@ -429,6 +439,12 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
             raise ValueError("SGLang allocated state differs from the worker's actual CUDA device")
         digest = hashlib.sha256(json.dumps(layout, sort_keys=True).encode()).hexdigest()
         for record in iter_records(traces[rank]):
+            if allocator_policy is not None and (
+                record.get("allocator_identity_sha256") != allocator_hashes[rank]
+                or record.get("allocator_policy") != payload["allocator_policy"]
+            ):
+                raise ValueError("SGLang forward is not bound to its actual allocator identity")
+
             if record.get("stage") == "measure" and (
                 record.get("state_layout_sha256") != digest or record.get("state_layout_admitted") is not True
             ):
@@ -454,3 +470,45 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
         ]
         if not math.isclose(result["fpms"][0]["wall_time"], statistics.median(values), rel_tol=1e-12):
             raise ValueError("SGLang published median differs from native observations")
+    return allocator_policy
+
+
+def validate_allocator_receipts(cell, payload, parent, *, layouts=None):
+    """Bind each actual worker to the explicit frozen policy; legacy stays unknown."""
+    from .sglang_allocator import canonical as allocator_canonical
+    from .sglang_allocator import request_policy, validate_worker
+
+    requested = getattr(cell, "sglang_allocator_max_split_size_mb", None)
+    expected = request_policy(requested)
+    evidence = payload["input_provenance"]["native_forward_manifest"]
+    policy = payload.get("allocator_policy")
+    refs = evidence.get("allocator_identities")
+    if "allocator_policy" not in payload and requested is None and refs is None:
+        return None, {}
+    if policy != expected or not isinstance(refs, list) or len(refs) != cell.topology.tp:
+        raise ValueError("SGLang allocator policy/worker evidence is missing or differs from frozen cell")
+    ranks, pids, hashes, normalized = set(), set(), {}, None
+    for ref in refs:
+        rank = ref.get("tp_rank")
+        if type(rank) is not int or rank not in range(cell.topology.tp) or rank in ranks:
+            raise ValueError("SGLang allocator rank coverage differs")
+        if ref.get("file") != f"allocator-identity-rank-{rank}.json":
+            raise ValueError("SGLang allocator evidence does not use its original rank file")
+        ranks.add(rank)
+        value = json.loads(read_receipt(parent, ref))
+        actual = validate_worker(
+            value,
+            rank=rank,
+            run_id=payload["run_id"],
+            execution_identity=payload["execution_identity"],
+            policy=policy,
+            hardware=layouts[rank]["hardware"] if layouts is not None else None,
+        )
+        if value["pid"] in pids:
+            raise ValueError("SGLang allocator ranks reuse a worker PID")
+        pids.add(value["pid"])
+        if normalized is not None and allocator_canonical(normalized) != allocator_canonical(actual):
+            raise ValueError("SGLang actual allocator policies differ across ranks")
+        normalized = actual
+        hashes[rank] = ref["sha256"]
+    return normalized, hashes

@@ -267,6 +267,16 @@ def result_payload(
             "runtime_preflight": file_receipt(output.parent / "runtime-preflight.json"),
             "declared_config": file_receipt(output.parent / "sglang-declared-config.json"),
             "resolved_config": file_receipt(output.parent / "sglang-resolved-config.json"),
+            **(
+                {
+                    "allocator_identities": [
+                        {"tp_rank": rank, **file_receipt(output.parent / f"allocator-identity-rank-{rank}.json")}
+                        for rank in range(len(trace_paths))
+                    ]
+                }
+                if "allocator_policy" in provenance
+                else {}
+            ),
             "requests": file_receipt(manifest_path),
             "traces": [{"tp_rank": rank, **file_receipt(path)} for rank, path in enumerate(trace_paths)],
             "state_layouts": [
@@ -299,6 +309,7 @@ def result_payload(
         "grid_digest": hashlib.sha256(canonical(points).encode()).hexdigest(),
         "kvwarm": {"enabled": True, "warm_eligible": True, "skip_reason": None, "state_protocol": PROTOCOL},
         "execution_identity": provenance["execution_identity"],
+        **({"allocator_policy": provenance["allocator_policy"]} if "allocator_policy" in provenance else {}),
         "context_policy": provenance["context_policy"],
         "producer_protocol": PRODUCER_PROTOCOL,
         "execution_mode": "native_graph_policy",
@@ -389,6 +400,9 @@ def generate_native_request(
 
 
 def main(argv=None) -> None:
+    from .sglang_allocator import OPTION, cli_max_split_size, prepare_environment
+
+    allocator_policy = prepare_environment(argv)
     from sglang.srt.server_args import ServerArgs
     from transformers import AutoTokenizer
 
@@ -398,6 +412,7 @@ def main(argv=None) -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     ServerArgs.add_cli_args(parser)
+    parser.add_argument(OPTION, type=cli_max_split_size, default=None)
     parser.add_argument("--benchmark-mode", choices=("prefill", "decode"), required=True)
     parser.add_argument("--benchmark-points-file", type=Path, required=True)
     parser.add_argument("--benchmark-output", type=Path, default=Path("/results/benchmark.json"))
@@ -424,6 +439,8 @@ def main(argv=None) -> None:
         args.ops_graph_control_inputs_sha256,
     )
     validate_native_prefill_scope(args.observation_purpose, args.benchmark_mode, args.ops_native_prefill)
+    if args.sglang_allocator_max_split_size_mb != allocator_policy["max_split_size_mb"]:
+        raise ValueError("allocator request differs from pre-import policy; use the complete option name")
     server = ServerArgs.from_cli_args(args)
     validate_server_args(server, measured_context_limit=args.benchmark_max_context_length)
     if args.observation_purpose in ("ops", "ops_holdout"):
@@ -508,6 +525,7 @@ def main(argv=None) -> None:
     manifest_path = output.parent / "sglang-requests.json"
     write_json(manifest_path, manifest)
     provenance = {
+        "allocator_policy": allocator_policy,
         "run_id": args.run_id,
         **(
             {
