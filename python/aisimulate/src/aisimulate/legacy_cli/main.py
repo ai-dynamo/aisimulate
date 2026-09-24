@@ -44,7 +44,7 @@ from aisimulate.sdk.errors import (
 from aisimulate.sdk.performance_result import MOE_COMM_FALLBACKS_COLUMN
 from aisimulate.sdk.rust_engine_step import validate_engine_step_backend
 from aisimulate.sdk.speculative import normalize_speculative_decoding
-from aisimulate.sdk.task_v2 import Task, _lookup_num_gpus_per_node, _warn_large_ep_flag
+from aisimulate.sdk.task_v2 import Task, _warn_large_ep_flag
 from aisimulate.sdk.utils import ListFlowDumper, get_model_config_from_model_path
 
 logger = logging.getLogger(__name__)
@@ -324,26 +324,6 @@ def _validate_model_path(model_path: str) -> str:
         ) from e
 
 
-def _parse_afd_max_a_batch_size(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("AFD max A batch size must be an integer >= 32.") from exc
-    if parsed < 32:
-        raise argparse.ArgumentTypeError("AFD max A batch size must be an integer >= 32.")
-    return parsed
-
-
-def _parse_afd_max_candidates(value: str) -> int:
-    try:
-        parsed = int(value)
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("AFD max candidates must be a positive integer.") from exc
-    if parsed < 1:
-        raise argparse.ArgumentTypeError("AFD max candidates must be a positive integer.")
-    return parsed
-
-
 def _add_attention_backend_argument(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--attention-backend",
@@ -419,33 +399,11 @@ def _add_default_mode_arguments(parser):
     )
     parser.add_argument(
         "--serving-mode",
-        choices=["auto", "all", "agg", "disagg", "afd"],
+        choices=["auto", "all", "agg", "disagg"],
         type=str,
         default="auto",
-        help="Serving modes to sweep and compare. 'auto' (default) compares agg and disagg; "
-        "'all' compares agg, disagg, and afd; pick a single mode to restrict the search. "
-        "The current node-granular AFD model requires one full A node and one full F node "
-        "(at least 2 nodes); 'all' skips AFD with a warning when that budget is unavailable.",
-    )
-    parser.add_argument(
-        "--afd-max-a-batch-size",
-        type=_parse_afd_max_a_batch_size,
-        default=1024,
-        help="[expert] Maximum total in-flight batch per A worker during the AFD auto-batch search. "
-        "Candidates are aligned down to a multiple of 8. Default: 1024.",
-    )
-    parser.add_argument(
-        "--afd-max-candidates",
-        type=_parse_afd_max_candidates,
-        default=10_000,
-        help="[expert] Maximum number of AFD topology candidates. Default: 10000.",
-    )
-    parser.add_argument(
-        "--afd-candidate-overflow",
-        choices=["error", "truncate"],
-        default="error",
-        help="[expert] Behavior when the AFD topology search exceeds --afd-max-candidates. "
-        "Default: error; use truncate only as an explicit bounded-search opt-in.",
+        help="Serving modes to sweep and compare. 'auto' (default) and 'all' both compare agg and "
+        "disagg; pick a single mode to restrict the search.",
     )
     parser.add_argument(
         "--perf-db-version",
@@ -920,13 +878,12 @@ def _add_estimate_mode_arguments(parser):
     )
     parser.add_argument(
         "--estimate-mode",
-        choices=["agg", "disagg", "afd", "static", "static_ctx", "static_gen"],
+        choices=["agg", "disagg", "static", "static_ctx", "static_gen"],
         type=str,
         default="agg",
         help="Estimation mode: 'agg' (default, IFB), 'disagg' (separate prefill/decode workers), "
-        "'afd' (attention-FFN disaggregated), or one of the static modes "
-        "'static' / 'static_ctx' / 'static_gen' for a single-pass, no-IFB latency/memory "
-        "breakdown.",
+        "or one of the static modes 'static' / 'static_ctx' / 'static_gen' for a single-pass, "
+        "no-IFB latency/memory breakdown.",
     )
     parser.add_argument(
         "--system",
@@ -1213,84 +1170,6 @@ def _add_estimate_mode_arguments(parser):
         type=int,
         default=None,
         help="Number of decode workers (disagg). Required for disagg mode. Alias: --d-workers.",
-    )
-
-    # AFD (Attention-FFN Disaggregation) specific parameters
-    parser.add_argument(
-        "--n-a-nodes",
-        type=int,
-        default=None,
-        help="Number of A-Worker (attention) nodes (AFD mode). Required for afd mode.",
-    )
-    parser.add_argument(
-        "--n-f-nodes",
-        type=int,
-        default=None,
-        help="Number of F-Worker (FFN/MoE) nodes (AFD mode). Required for afd mode.",
-    )
-    parser.add_argument(
-        "--a-tp-size",
-        type=int,
-        default=1,
-        help="Attention-side tensor parallelism (AFD mode). Default: 1.",
-    )
-    parser.add_argument(
-        "--a-batch-size",
-        type=int,
-        default=128,
-        help=("Total in-flight batch size per A-Worker before microbatch splitting (AFD mode). Default: 128."),
-    )
-    parser.add_argument(
-        "--f-moe-ep-size",
-        type=int,
-        default=1,
-        help="FFN-side MoE expert parallelism (AFD mode). Default: 1.",
-    )
-    parser.add_argument(
-        "--num-microbatches",
-        type=int,
-        default=3,
-        help="Number of micro-batches for ping-pong pipeline (AFD mode). Default: 3.",
-    )
-    parser.add_argument(
-        "--pipeline-model",
-        choices=["optimistic", "conservative"],
-        type=str,
-        default="optimistic",
-        help="Pipeline model for AFD: 'optimistic' (K=3, comm hidden) or 'conservative' (K=2). Default: optimistic.",
-    )
-    parser.add_argument(
-        "--comm-overhead-factor",
-        type=float,
-        default=1.0,
-        help="Communication overhead multiplier (AFD mode). Default: 1.0.",
-    )
-    parser.add_argument(
-        "--afd-phase",
-        choices=["prefill", "decode", "both"],
-        type=str,
-        default="decode",
-        help="Which phase AFD is applied to. AFD is orthogonal to P/D disaggregation: "
-        "'decode' (default) models AFD on decode only (existing behavior), 'prefill' "
-        "models AFD on the context phase and reports TTFT, and 'both' reports TTFT+TPOT "
-        "for a deployment where AFD is used on both phases.",
-    )
-    parser.add_argument(
-        "--afd-combined-with-pd",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Combine the single-phase AFD estimate with a regular static "
-        "estimate for the other phase. When enabled (default), --afd-phase=decode "
-        "also runs a static prefill estimate (and vice versa), merging TTFT/TPOT, "
-        "throughput (rate-matched on min seq/s), and GPU budget into one result. "
-        "Pass --no-afd-combined-with-pd to report only the AFD phase. Required to "
-        "be off when --afd-phase=both (AFD covers both phases internally).",
-    )
-    parser.add_argument(
-        "--boundary-on-ffn",
-        action="store_true",
-        default=False,
-        help="Assign boundary ops (add_norm_2, logits_gemm) to F-Worker. Default is A-Worker; pass this flag to flip.",
     )
 
     # Quantization
@@ -1738,9 +1617,6 @@ def build_default_tasks(
     engine_step_backend: str | None = None,
     forward_model: str | None = None,
     serving_mode: str = "auto",
-    afd_max_a_batch_size: int = 1024,
-    afd_max_candidates: int = 10_000,
-    afd_candidate_overflow: str = "error",
     video_height: int = 0,
     video_width: int = 0,
     video_frames: int = 0,
@@ -1788,11 +1664,8 @@ def build_default_tasks(
         forward_model: Forward-pass modeling mode ("op_level" or "fpm"). None
             keeps the default. Both evaluate on the compiled engine ("fpm"
             through its native FpmForward operation).
-        serving_mode: Serving modes to build. ``"auto"`` builds agg and disagg,
-            ``"all"`` also includes AFD, and an explicit mode builds only that mode.
-        afd_max_a_batch_size: Maximum attention batch size considered by AFD.
-        afd_max_candidates: Maximum AFD candidates to enumerate.
-        afd_candidate_overflow: Behavior when the AFD candidate limit is exceeded.
+        serving_mode: Serving modes to build. ``"auto"`` and ``"all"`` both build
+            agg and disagg, and an explicit mode builds only that mode.
 
     Returns:
         Task objects keyed by serving mode and, when requested, backend.
@@ -1808,16 +1681,14 @@ def build_default_tasks(
         _warn_large_ep_flag("moe_backend=deepep_moe")
 
     decode_system = decode_system or system
-    if serving_mode not in ("auto", "all", "agg", "disagg", "afd"):
-        raise ValueError(f"Invalid serving_mode: {serving_mode!r}. Use 'auto', 'all', 'agg', 'disagg', or 'afd'.")
-    if serving_mode == "auto":
+    if serving_mode not in ("auto", "all", "agg", "disagg"):
+        raise ValueError(f"Invalid serving_mode: {serving_mode!r}. Use 'auto', 'all', 'agg', or 'disagg'.")
+    if serving_mode in ("auto", "all"):
         modes_to_sweep = {"agg", "disagg"}
-    elif serving_mode == "all":
-        modes_to_sweep = {"agg", "disagg", "afd"}
     else:
         modes_to_sweep = {serving_mode}
     if enable_epd and not (modes_to_sweep & {"agg", "disagg"}):
-        raise ValueError("enable_epd requires an agg or disagg experiment; 'afd' does not support EPD.")
+        raise ValueError("enable_epd requires an agg or disagg experiment.")
     needs_disagg = "disagg" in modes_to_sweep
 
     backends_to_sweep = [b.value for b in common.BackendName] if backend == "auto" else [backend]
@@ -2011,21 +1882,6 @@ def build_default_tasks(
     # model shape) the multi-node large-EP regimes per parallel tuple, so the
     # frontier is the union of what the removed variants produced.
     tasks: dict[str, Task] = {}
-    afd_feasible = False
-    if "afd" in modes_to_sweep:
-        afd_gpus_per_node = _lookup_num_gpus_per_node(system)
-        if afd_gpus_per_node is None:
-            logger.warning("Skipping afd: could not resolve num_gpus_per_node for system %s.", system)
-        elif total_gpus < 2 * afd_gpus_per_node:
-            logger.warning(
-                "Skipping afd: the current node-granular topology requires one full A node "
-                "and one full F node (%d GPUs total at %d GPUs/node), got total_gpus=%d.",
-                2 * afd_gpus_per_node,
-                afd_gpus_per_node,
-                total_gpus,
-            )
-        else:
-            afd_feasible = True
 
     for backend_name in backends_to_sweep:
         backend_moe = _sglang_moe_backend_override(backend_name)
@@ -2033,28 +1889,6 @@ def build_default_tasks(
         if "agg" in modes_to_sweep:
             exp_name = f"agg_{backend_name}" if backend == "auto" else "agg"
             tasks[exp_name] = _make_agg(backend_name, backend_moe)
-
-        if "afd" in modes_to_sweep and afd_feasible:
-            try:
-                afd_task = Task(
-                    serving_mode="afd",
-                    model_path=model_path,
-                    system_name=system,
-                    backend_name=backend_name,
-                    backend_version=backend_version,
-                    enable_wideep=enable_wideep,
-                    enable_chunked_prefill=enable_chunked_prefill,
-                    moe_backend=backend_moe,
-                    afd_max_a_batch_size=afd_max_a_batch_size,
-                    afd_max_candidates=afd_max_candidates,
-                    afd_candidate_overflow=afd_candidate_overflow,
-                    **global_kwargs,
-                )
-            except ValueError as exc:
-                logger.warning("Skipping afd for backend %s: %s", backend_name, exc)
-            else:
-                exp_name = f"afd_{backend_name}" if backend == "auto" else "afd"
-                tasks[exp_name] = afd_task
 
         if "disagg" not in modes_to_sweep:
             continue
@@ -2137,7 +1971,7 @@ def build_experiment_tasks(
         model_path = (
             exp_config.get("model_path") or exp_config.get("prefill_model_path") or exp_config.get("decode_model_path")
         )
-        if serving_mode not in {"agg", "disagg", "afd"} or not model_path:
+        if serving_mode not in {"agg", "disagg"} or not model_path:
             logger.warning("Skipping experiment '%s': missing serving_mode or model_path.", exp_name)
             continue
 
@@ -2194,9 +2028,6 @@ def build_experiment_tasks(
 
         try:
             task_config = {**exp_config, "database_mode": database_mode}
-            if serving_mode == "afd":
-                task_config.setdefault("model_path", model_path)
-                task_config.setdefault("system_name", system_name)
             tasks[exp_name] = Task.from_yaml(task_config, **overrides)
         except Exception as exc:
             if is_expected_cli_error(exc):
@@ -2626,12 +2457,12 @@ def _print_per_ops_section(title: str, ops: dict) -> None:
 
 
 def _print_per_ops_latency(per_ops_data: dict) -> None:
-    """Print per-operation latency breakdown from run_agg / run_disagg / run_afd.
+    """Print per-operation latency breakdown from run_agg / run_disagg.
 
     NOTE: ``cli estimate`` now surfaces per-op breakdowns through
     ``format_estimate_detail_report`` (driven by ``--detail``). These helpers
-    are kept available for the AFD path / future callers that still want the
-    standalone summary print.
+    are kept available for future callers that still want the standalone
+    summary print.
     """
     print("\n" + "-" * 60)
     print("  Per-Operation Latency Breakdown")
@@ -2663,28 +2494,6 @@ def _print_per_ops_latency(per_ops_data: dict) -> None:
     if decode_ops:
         print()
         _print_per_ops_section("Decode (static_gen)", decode_ops)
-
-    afd_sections = [
-        ("Prefill A-Worker", per_ops_data.get("prefill_a_worker", {})),
-        ("Prefill F-Worker", per_ops_data.get("prefill_f_worker", {})),
-        ("Decode A-Worker", per_ops_data.get("decode_a_worker", {})),
-        ("Decode F-Worker", per_ops_data.get("decode_f_worker", {})),
-    ]
-    afd_emitted = False
-    for title, ops in afd_sections:
-        if not ops:
-            continue
-        if not afd_emitted:
-            afd_emitted = True
-        print()
-        _print_per_ops_section(title, ops)
-
-    comm = per_ops_data.get("comm", {})
-    if comm:
-        directional = {k: v for k, v in comm.items() if k.endswith("_a2f") or k.endswith("_f2a")}
-        if directional:
-            print()
-            _print_per_ops_section("AFD Transfer (per layer, a2f + f2a)", directional)
 
 
 def _run_estimate_epd(args, estimate_mode: str) -> None:
@@ -2942,24 +2751,6 @@ def _run_estimate_mode(args):
             prefill_max_seq_len=args.prefill_max_seq_len,
             decode_max_seq_len=args.decode_max_seq_len,
         )
-    elif estimate_mode == "afd":
-        # gpus_per_node and f_tp_size are intentionally derived from the
-        # system_spec / topology by cli_estimate -> _run_afd_estimate;
-        # they are no longer exposed as CLI flags to prevent silent
-        # mis-shaping (e.g. gb200 has 4 GPUs/node, not the historical 8).
-        estimate_kwargs.update(
-            n_a_nodes=args.n_a_nodes,
-            n_f_nodes=args.n_f_nodes,
-            a_tp_size=args.a_tp_size,
-            a_batch_size=args.a_batch_size,
-            f_moe_ep_size=args.f_moe_ep_size,
-            num_microbatches=args.num_microbatches,
-            pipeline_model=args.pipeline_model,
-            comm_overhead_factor=args.comm_overhead_factor,
-            afd_phase=args.afd_phase,
-            afd_combined_with_pd=getattr(args, "afd_combined_with_pd", True),
-            afd_boundary_on_attn=not getattr(args, "boundary_on_ffn", False),
-        )
 
     result = cli_estimate(**estimate_kwargs)
     _warn_moe_comm_fallbacks(result)
@@ -3003,7 +2794,7 @@ def _run_estimate_mode(args):
         print(f"  Encoder parallel: {'TP (weight-sharded)' if args.disable_encoder_dp else 'DP (data-parallel)'}")
 
     # ``--prefix`` and ``--nextn`` are common parameters applied to every
-    # mode (agg / disagg / afd / static*), so surface them in the summary box
+    # mode (agg / disagg / static*), so surface them in the summary box
     # for all modes rather than gating on mode.
     if args.prefix:
         print(f"  Prefix:           {args.prefix}")
@@ -3021,26 +2812,6 @@ def _run_estimate_mode(args):
         print(f"  (d) BS:           {raw.get('(d)bs', 'N/A')}")
         print(f"  (d) Workers:      {raw.get('(d)workers', 'N/A')}")
         print(f"  Total GPUs:       {raw.get('num_total_gpus', 'N/A')}")
-    elif result.mode == "afd":
-        raw = result.raw
-        print(f"  AFD Phase:        {raw.get('phase', 'decode')}")
-        if raw.get("combined_with_pd"):
-            print("  Combined w/ P/D:  yes")
-        print(f"  GPUs/Node:        {raw.get('gpus_per_node', 'N/A')}")
-        print(f"  (a) Nodes:        {raw.get('(a)nodes', 'N/A')}")
-        print(f"  (a) TP:           {raw.get('(a)tp', 'N/A')}")
-        print(f"  (a) BS:           {raw.get('(a)bs', 'N/A')}")
-        print(f"  (a) Workers(DP):  {raw.get('(a)workers', 'N/A')}")
-        print(f"  (f) Nodes:        {raw.get('(f)nodes', 'N/A')}")
-        print(f"  (f) TP:           {raw.get('(f)tp', 'N/A')}")
-        print(f"  (f) EP:           {raw.get('(f)ep', 'N/A')}")
-        print(f"  (f) Workers:      {raw.get('(f)workers', 'N/A')}")
-        print(f"  B_total:          {raw.get('b_total', 'N/A')}")
-        print(f"  Total GPUs:       {raw.get('num_total_gpus', 'N/A')}")
-        print(f"  Pipeline Model:   {raw.get('pipeline_model', 'N/A')}")
-        print(f"  Micro-batches:    {raw.get('num_microbatches', 'N/A')}")
-        boundary_side = "A-Worker" if raw.get("boundary_on_attn", True) else "F-Worker"
-        print(f"  Boundary on:      {boundary_side}")
     else:
         # agg / static / static_ctx / static_gen share the same single-replica shape.
         print(f"  Batch Size:       {result.batch_size}")
@@ -3059,49 +2830,6 @@ def _run_estimate_mode(args):
         print(f"  TPOT:             {result.tpot:.3f} ms")
     elif result.mode == "static_ctx":
         print(f"  TTFT:             {result.ttft:.3f} ms")
-    elif result.mode == "afd":
-        raw = result.raw
-        afd_phase = raw.get("phase")
-        if afd_phase == "both":
-            # phase="both" runs prefill + decode through AFD; un-prefixed
-            # layer scalars are deliberately NaN to keep the two estimates
-            # distinguishable. Render the paired ``prefill_*`` / ``decode_*``
-            # blocks instead so users can compare A/F balance per phase.
-            print("  -- Prefill (AFD) --")
-            print(f"  T_a_layer:        {raw.get('prefill_t_a_layer', 0):.3f} ms")
-            print(f"  T_f_layer:        {raw.get('prefill_t_f_layer', 0):.3f} ms")
-            print(f"  T_a2f_layer:      {raw.get('prefill_t_a2f_layer', 0):.3f} ms")
-            print(f"  T_f2a_layer:      {raw.get('prefill_t_f2a_layer', 0):.3f} ms")
-            print(f"  T_c_layer:        {raw.get('prefill_t_c_layer', 0):.3f} ms  (round-trip = a2f + f2a)")
-            print(f"  T_step:           {raw.get('prefill_t_step', 0):.3f} ms")
-            print(f"  Balance Ratio:    {raw.get('prefill_balance_ratio', 0):.3f}")
-            print("  -- Decode (AFD) --")
-            print(f"  T_a_layer:        {raw.get('decode_t_a_layer', 0):.3f} ms")
-            print(f"  T_f_layer:        {raw.get('decode_t_f_layer', 0):.3f} ms")
-            print(f"  T_a2f_layer:      {raw.get('decode_t_a2f_layer', 0):.3f} ms")
-            print(f"  T_f2a_layer:      {raw.get('decode_t_f2a_layer', 0):.3f} ms")
-            print(f"  T_c_layer:        {raw.get('decode_t_c_layer', 0):.3f} ms  (round-trip = a2f + f2a)")
-            print(f"  T_step:           {raw.get('decode_t_step', 0):.3f} ms")
-            print(f"  Balance Ratio:    {raw.get('decode_balance_ratio', 0):.3f}")
-        else:
-            print(f"  T_a_layer:        {raw.get('t_a_layer', 0):.3f} ms")
-            print(f"  T_f_layer:        {raw.get('t_f_layer', 0):.3f} ms")
-            print(f"  T_a2f_layer:      {raw.get('t_a2f_layer', 0):.3f} ms")
-            print(f"  T_f2a_layer:      {raw.get('t_f2a_layer', 0):.3f} ms")
-            print(f"  T_c_layer:        {raw.get('t_c_layer', 0):.3f} ms  (round-trip = a2f + f2a)")
-            print(f"  T_step:           {raw.get('t_step', 0):.3f} ms")
-            print(f"  Balance Ratio:    {raw.get('balance_ratio', 0):.3f}")
-        # Composition row: shown when the combined-with-PD merge has
-        # written (p)impl/(d)impl markers, i.e. when the AFD result was
-        # merged with a static estimate of the other phase. Lets the user
-        # see at a glance which phase is AFD vs static.
-        p_impl = raw.get("(p)impl")
-        d_impl = raw.get("(d)impl")
-        if p_impl or d_impl:
-            print(f"  Composition:      (p)={p_impl or 'unmodeled'}  (d)={d_impl or 'unmodeled'}")
-        print(f"  TTFT:             {result.ttft:.3f} ms")
-        print(f"  TPOT:             {result.tpot:.3f} ms")
-        print(f"  Request Latency:  {result.request_latency:.3f} ms")
     else:
         print(f"  TTFT:             {result.ttft:.3f} ms")
         print(f"  TPOT:             {result.tpot:.3f} ms")
@@ -3128,12 +2856,6 @@ def _run_estimate_mode(args):
         encoder_memory = float(raw.get("(e)memory", 0.0) or 0.0)
         if encoder_memory > 0.0:
             print(f"  Encoder memory:   {encoder_memory:.3f} GB (included in prefill)")
-    elif result.mode == "afd":
-        raw = result.raw
-        a_oom = " (OOM!)" if raw.get("(a)is_oom") else ""
-        f_oom = " (OOM!)" if raw.get("(f)is_oom") else ""
-        print(f"  (a) Memory:       {raw.get('(a)memory', 'N/A')} GB{a_oom}")
-        print(f"  (f) Memory:       {raw.get('(f)memory', 'N/A')} GB{f_oom}")
     else:
         print(f"  Memory (GPU):     {result.memory:.2f} GB")
         encoder_memory = float(result.raw.get("encoder_memory", 0.0) or 0.0)
@@ -3417,9 +3139,6 @@ def main(args):
             engine_step_backend=args.engine_step_backend,
             forward_model=args.forward_model,
             serving_mode=args.serving_mode,
-            afd_max_a_batch_size=getattr(args, "afd_max_a_batch_size", 1024),
-            afd_max_candidates=getattr(args, "afd_max_candidates", 10_000),
-            afd_candidate_overflow=getattr(args, "afd_candidate_overflow", "error"),
             enable_wideep=getattr(args, "enable_wideep", False),
             moe_backend=getattr(args, "moe_backend", None),
             attention_backend=getattr(args, "attention_backend", None),

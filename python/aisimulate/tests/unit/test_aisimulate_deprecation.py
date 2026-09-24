@@ -79,7 +79,7 @@ def test_version_command_remains_unaffected() -> None:
     assert captured == []
 
 
-@pytest.mark.parametrize("entry_point", [sweep.sweep_agg, sweep.sweep_disagg, sweep.sweep_afd])
+@pytest.mark.parametrize("entry_point", [sweep.sweep_agg, sweep.sweep_disagg])
 def test_each_legacy_sweeper_entry_point_warns_once_at_caller(entry_point) -> None:
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")

@@ -55,35 +55,6 @@ def test_hopper_mla_task_resolves_execution_before_model_construction(monkeypatc
     assert attention["fmha_quant_mode"] == expected.name
 
 
-@pytest.mark.parametrize("explicit_role", [None, "agg", "prefill"])
-def test_afd_static_prefill_preserves_explicit_fmha(monkeypatch, explicit_role):
-    monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
-    overrides = {}
-    if explicit_role is not None:
-        field = "fmha_quant_mode" if explicit_role == "agg" else "prefill_fmha_quant_mode"
-        overrides[field] = common.FMHAQuantMode.fp8
-    task = Task(
-        serving_mode="afd",
-        total_gpus=32,
-        afd_combined_with_pd=True,
-        model_path="deepseek-ai/DeepSeek-V3",
-        system_name="h200_sxm",
-        backend_name="sglang",
-        backend_version="0.5.14",
-        attention_backend="fa3",
-        **overrides,
-    )
-    expected = common.FMHAQuantMode.fp8 if explicit_role else common.FMHAQuantMode.bfloat16
-    mc = task.build_model_config(role="prefill")
-    restored = Task.from_yaml(yaml.safe_load(task.to_yaml()))
-    assert restored.build_model_config(role="prefill").fmha_quant_mode == expected
-    model = get_model(task.prefill_model_path, mc, "sglang")
-    specs = [json.loads(op._spec_json()) for op in model.context_ops]
-    block = next(spec["Fallback"] for spec in specs if "Fallback" in spec)
-    attention = next(spec["ContextMla"] for spec in block["fallback"] if "ContextMla" in spec)
-    assert attention["fmha_quant_mode"] == expected.name
-
-
 @pytest.mark.parametrize("explicit", [None, common.FMHAQuantMode.fp8])
 def test_disagg_yaml_preserves_attention_precision(monkeypatch, explicit):
     monkeypatch.setattr(Task, "_context_fmha_supported_modes", lambda *_a: ["fp8", "bfloat16"])
@@ -126,13 +97,6 @@ def test_enable_epd_pins_encoder_dp_off():
     # only outside EPD.
     assert Task().enable_encoder_dp is True
     assert Task(enable_epd=True).enable_encoder_dp is False
-
-
-def test_enable_epd_rejects_afd_serving_mode():
-    # sweep_afd carries no EPD parameters; accepting the combination would
-    # silently run a plain AFD sweep with every encoder knob dropped.
-    with pytest.raises(ValueError, match="serving_mode 'agg' or 'disagg'"):
-        Task(serving_mode="afd", enable_epd=True)
 
 
 def test_run_single_epd_arg_validation():
@@ -520,49 +484,6 @@ def test_video_fields_preserve_existing_task_positional_constructor_contract():
     assert task.num_video_tokens == 0
 
 
-def test_afd_rejects_visual_encoder_workload():
-    task = Task(
-        serving_mode="afd",
-        model_path="Qwen/Qwen3.5-27B",
-        system_name="h200_sxm",
-        total_gpus=16,
-        video_height=448,
-        video_width=448,
-        video_frames=8,
-        num_videos_per_request=1,
-    )
-
-    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
-        task.validate()
-
-
-def test_afd_rejects_partial_video_workload():
-    task = Task(
-        serving_mode="afd",
-        model_path="Qwen/Qwen3.5-27B",
-        system_name="h200_sxm",
-        total_gpus=16,
-        video_frames=8,
-        num_videos_per_request=0,
-    )
-
-    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
-        task.validate()
-
-
-def test_afd_rejects_token_only_video_workload():
-    task = Task(
-        serving_mode="afd",
-        model_path="Qwen/Qwen3.5-27B",
-        system_name="h200_sxm",
-        total_gpus=16,
-        num_video_tokens=196,
-    )
-
-    with pytest.raises(NotImplementedError, match="AFD does not support image/video encoder workloads"):
-        task.validate()
-
-
 def test_build_model_config_agg_uses_resolved_quant():
     t = Task(
         serving_mode="agg",
@@ -744,25 +665,6 @@ def test_fmha_data_fallback_unknown_arch_downgrades_with_warning(caplog):
         )
     assert t2.fmha_quant_mode == common.FMHAQuantMode.fp8
     assert not any("falling back to bfloat16 FMHA" in r.message for r in caplog.records)
-
-
-def test_fmha_data_fallback_afd_uses_the_aggregate_role(caplog):
-    import logging
-
-    from aisimulate.sdk import common
-
-    with caplog.at_level(logging.WARNING):
-        task = Task(
-            serving_mode="afd",
-            model_path="Qwen/Qwen3-32B-FP8-Static-PerTensor",
-            system_name="a100_sxm",
-            backend_name="sglang",
-            total_gpus=16,
-            kvcache_quant_mode=common.KVCacheQuantMode.bfloat16,
-        )
-    assert task.fmha_quant_mode == common.FMHAQuantMode.bfloat16
-    fallback_msgs = [r.message for r in caplog.records if "falling back to bfloat16 FMHA" in r.message]
-    assert len(fallback_msgs) == 1 and fallback_msgs[0].startswith("agg ")
 
 
 def test_fmha_data_fallback_skips_generation_only_decode(caplog):
@@ -2432,7 +2334,7 @@ def test_nvfp4_preserved_on_blackwell():
 def test_engine_step_backend_is_validated_at_task_construction():
     """Every programmatic entry point funnels through Task construction, so
     the retired "python" token (and any typo) fails closed HERE — including
-    paths like the AFD session that never reach the step routing gate."""
+    paths that never reach the step routing gate."""
     import pytest
 
     from aisimulate.sdk.task_v2 import Task

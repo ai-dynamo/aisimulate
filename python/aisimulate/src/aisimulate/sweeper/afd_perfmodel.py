@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
@@ -144,45 +144,29 @@ def measurement_request_from_candidate(
 
 
 class AICAFDPerformanceModel:
-    """Measure A/F layer components through AIC's public estimate API."""
-
-    def __init__(self, estimator: Callable[..., Any] | None = None) -> None:
-        self._estimator = estimator
+    """Measure A/F layer components through AIC's SDK."""
 
     def measure(self, request: AFDMeasurementRequest) -> tuple[AFDLayerTimes, ...]:
-        estimator = self._estimator
-        if estimator is None:
-            from aisimulate.legacy_cli.api import cli_estimate
+        # Imported lazily: the SDK pulls in the perf database and every model
+        # definition, and this module is imported by the sweeper package root.
+        from .afd_measure import measure_afd_layer_times
 
-            estimator = cli_estimate
-
-        topology = request.topology
         try:
-            result = estimator(
-                request.model_name,
-                request.hardware_sku,
-                mode="afd",
+            return measure_afd_layer_times(
+                model_path=request.model_name,
+                system_name=request.hardware_sku,
                 backend_name=request.backend,
                 backend_version=request.backend_version,
                 isl=request.input_length,
                 osl=request.output_length,
-                n_a_nodes=topology.n_a_nodes,
-                n_f_nodes=topology.n_f_nodes,
-                a_tp_size=topology.tp_a,
-                a_batch_size=topology.a_batch_size,
-                f_moe_ep_size=topology.f_moe_ep_size,
-                num_microbatches=topology.num_microbatches,
-                pipeline_model=topology.pipeline_model.value,
-                # Layer measurements are uncalibrated inputs. The backend-neutral
-                # evaluator applies this candidate's factor exactly once.
-                comm_overhead_factor=1.0,
-                afd_phase=topology.phase.value,
-                afd_combined_with_pd=False,
-                afd_boundary_on_attn=topology.boundary_on_attn,
+                topology=request.topology,
                 prefix=request.prefix,
                 nextn=request.nextn,
                 max_seq_len=request.max_seq_len,
             )
+        except AFDInfeasible:
+            # Already carries a specific category and provenance.
+            raise
         except Exception as exc:
             raise AFDInfeasible(
                 AFDReasonCategory.INVALID_MEASUREMENT,
@@ -195,56 +179,6 @@ class AICAFDPerformanceModel:
                     "backend_version": request.backend_version,
                 },
             ) from exc
-
-        raw = getattr(result, "raw", None)
-        payload = raw.get("afd_layer_measurements") if isinstance(raw, Mapping) else None
-        if not isinstance(payload, Mapping):
-            raise AFDInfeasible(
-                AFDReasonCategory.INVALID_MEASUREMENT,
-                "AIC estimate did not return afd_layer_measurements",
-                provenance={"provider": "aic", "backend_version": request.backend_version},
-            )
-        phases = (AFDPhase.PREFILL, AFDPhase.DECODE) if topology.phase is AFDPhase.BOTH else (topology.phase,)
-        measurements: list[AFDLayerTimes] = []
-        for phase in phases:
-            item = payload.get(phase.value)
-            if not isinstance(item, Mapping):
-                raise AFDInfeasible(
-                    AFDReasonCategory.INVALID_MEASUREMENT,
-                    f"AIC estimate omitted the {phase.value!r} AFD layer measurement",
-                    provenance={"provider": "aic", "available_phases": sorted(payload)},
-                )
-            try:
-                measurements.append(
-                    AFDLayerTimes(
-                        phase=phase,
-                        attention_ms=float(item["attention_ms"]),
-                        ffn_ms=float(item["ffn_ms"]),
-                        a_to_f_ms=float(item["a_to_f_ms"]),
-                        f_to_a_ms=float(item["f_to_a_ms"]),
-                        num_layers=int(item["num_layers"]),
-                        provenance={
-                            "provider": "aic",
-                            "source": "aisimulate.legacy_cli.api.cli_estimate",
-                            "api_version": AFD_MEASUREMENT_API_VERSION,
-                            "units": "milliseconds_per_layer",
-                            "communication_calibration": "unscaled",
-                            "model": request.model_name,
-                            "hardware": request.hardware_sku,
-                            "backend": request.backend,
-                            "backend_version": request.backend_version,
-                            "input_length": request.input_length,
-                            "output_length": request.output_length,
-                        },
-                    )
-                )
-            except (KeyError, TypeError, ValueError) as exc:
-                raise AFDInfeasible(
-                    AFDReasonCategory.INVALID_MEASUREMENT,
-                    f"AIC returned an invalid {phase.value!r} AFD layer measurement: {exc}",
-                    provenance={"provider": "aic", "measurement": dict(item)},
-                ) from exc
-        return tuple(measurements)
 
 
 def _measurement_payload(measurement: AFDLayerTimes) -> dict[str, Any]:

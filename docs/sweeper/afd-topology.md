@@ -157,7 +157,7 @@ required.
 ## Infeasibility and Provenance
 
 Every topology failure uses a stable category such as `invalid_topology`, `gpu_budget`,
-`expert_divisibility`, or `candidate_limit`. Searched enumeration reports filter counts, the
+`expert_divisibility`, `out_of_memory`, or `candidate_limit`. Searched enumeration reports filter counts, the
 canonical candidate dimensions, and whether its finite domain was complete. Pinned enumeration
 identifies `AFDSearchConfig.pinned_topologies` as its source and does not claim generated candidate
 dimensions. Each topology records its phase, parallel shape, and lossless A/F GPU accounting;

@@ -330,20 +330,18 @@ class AFDConfig:
     # prefill (TTFT) and decode (TPOT).
     phase: str = "decode"  # "prefill" | "decode" | "both"
     # Whether this AFD pool runs together with a separate static
-    # (non-AFD) pool covering the *other* phase. Concretely, in CLI
-    # ``estimate`` mode:
+    # (non-AFD) pool covering the *other* phase:
     #
     #   * ``phase`` ∈ {"prefill", "decode"} + ``combined_with_pd=True``
-    #     → the AFD path estimates only its own phase and the CLI
-    #     orchestration layer (``cli/api._combine_afd_static_estimate_results``)
-    #     runs a standard static estimate for the other phase, then
-    #     merges TTFT/TPOT, throughput (rate-matched on min seq/s), GPU
-    #     budget (``afd_gpus + static_gpus``) and per-phase impl labels
-    #     into a single ``EstimateResult``.
+    #     → the AFD path estimates only its own phase. Estimating the
+    #     other phase with a standard static pool and merging TTFT/TPOT,
+    #     throughput (rate-matched on min seq/s), GPU budget
+    #     (``afd_gpus + static_gpus``) and per-phase impl labels is the
+    #     caller's responsibility.
     #   * ``phase`` ∈ {"prefill", "decode"} + ``combined_with_pd=False``
-    #     → the CLI returns the AFD-only estimate for the chosen phase
-    #     (the other phase is left unmodeled; user is on their own to
-    #     size it). Use this when you only care about that single phase.
+    #     → the estimate covers the chosen AFD phase only (the other
+    #     phase is left unmodeled; user is on their own to size it).
+    #     Use this when you only care about that single phase.
     #   * ``phase == "both"`` → AFD covers both phases internally;
     #     ``combined_with_pd`` must be ``False`` (the two are
     #     mutually exclusive and ``__post_init__`` enforces this).

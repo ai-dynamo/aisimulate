@@ -51,6 +51,7 @@ class AFDReasonCategory(str, Enum):
     CANDIDATE_LIMIT = "candidate_limit"
     NO_FEASIBLE_TOPOLOGY = "no_feasible_topology"
     INVALID_MEASUREMENT = "invalid_measurement"
+    OUT_OF_MEMORY = "out_of_memory"
 
 
 class AFDInfeasible(ValueError):

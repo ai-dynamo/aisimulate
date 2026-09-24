@@ -438,23 +438,10 @@ def test_hgx_blackwell_has_published_scalar_fp32_rate(system):
 
 
 @pytest.mark.parametrize("decoder_replay", [False, True])
-def test_afd_rejects_v41_before_search_or_session_construction(decoder_replay):
+def test_afd_rejects_v41_before_session_construction(decoder_replay):
     from aisimulate.sdk.inference_session import AFDInferenceSession
-    from aisimulate.sdk.task_v2 import Task
     from aisimulate_core.sdk.config import ModelConfig
 
-    with pytest.raises(NotImplementedError, match="AFD does not support DeepSeek-V4.1"):
-        Task(
-            model_path=MODEL_PATH,
-            system_name="gb300",
-            backend_name="sglang",
-            total_gpus=8,
-            database_mode="SOL",
-            serving_mode="afd",
-            isl=1024,
-            osl=128,
-            nextn=0,
-        )
     with pytest.raises(NotImplementedError, match="AFD does not support DeepSeek-V4.1"):
         AFDInferenceSession(
             MODEL_PATH,
