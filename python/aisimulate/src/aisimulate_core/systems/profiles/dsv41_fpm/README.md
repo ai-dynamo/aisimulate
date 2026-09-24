@@ -5,6 +5,57 @@ SPDX-License-Identifier: Apache-2.0
 
 # DeepSeek-V4.1 FPM databases
 
+[`four_gpu_hf_dataset.json`](four_gpu_hf_dataset.json) pins six independently
+collected TP4 profiles to an immutable HF data revision and each downloaded
+file's SHA256. Each profile retains 145 calibration geometries and 38 separate
+heldout geometries, with ten fixed attempts per point.
+Rows use the first geometry-qualified calibration attempt by fixed index.
+No heldout observation enters calibration; predictions use no fitting, online
+correction, or outlier removal.
+
+| TP4 profile | Heldout coverage | MAPE | Maximum geometry error |
+| --- | --- | ---: | ---: |
+| GB200 full | 38/38 | 1.18418% | 14.28997% |
+| GB200 decoder_bounded, explicit API | 38/38 | 1.12314% | 8.85221% |
+| H200 full | 38/38 | 1.50639% | 3.66066% |
+| H200 decoder_bounded, explicit API | 38/38 | 2.93239% | 9.21125% |
+| B200 full | 38/38 | 8.48723% | 152.99520% |
+| B200 decoder_bounded, explicit API | 38/38 | 2.81290% | 7.90215% |
+
+Each MAPE equally weights geometry errors against medians of ten heldout
+observations. The unchanged aggregate bounded API supports 26/38 geometries
+and 260/380 attempts: conditional MAPE is 1.23254% for GB200, 2.71503% for
+H200 and 2.68722% for B200. The other 12 multi-prefill geometries require explicit
+per-request native extend lengths. Explicit coverage does not expand aggregate
+support. B200 bounded retains all 380 attempts; its prefill/decode geometry MAPE
+is 2.88619% / 2.60770%.
+
+B200 full retains two large prefill errors: 333.311 ms predicted versus
+131.746 ms observed at `(batch=1, query=192, past-KV=256)`, and 311.172 ms
+versus 133.498 ms at `(1,384,1536)`. Its prefill MAPE is 11.09427%; decode MAPE
+is 1.18752%. Technical admission and reproducible prediction do not establish
+a numerical accuracy target; no pass/fail accuracy threshold was predeclared.
+
+These results cover the recorded eager runtime, four request slots and a
+5120-token physical pool, with heldout batches of one or two. H200 uses its
+separate `w4a16_mxfp4_humming` identity and static memory fraction 0.98;
+Blackwell uses `w4a8_mxfp4_mxfp8_trtllm` and fraction 0.9. H200 activation
+precision is source-derived BF16 with loaded-candidate evidence, not a claim
+of observed CUDA input arguments. Use the manifest's exact backend version
+and `moe_quant_mode=identity["moe_quant_mode"]` in the canonical SDK config.
+
+The [source replay instructions](../../../../../collector/fpm_forward/README.md)
+use replay recipes that pin their own immutable source revisions. The SDK
+manifest separately retains each profile's dataset/source provenance; its
+source revision can differ from the replay recipe's pin. These are HF artifact
+commits, not AISimulate producer Git revisions. Calibration self-queries check
+reader integrity, not accuracy.
+B200 bounded replay requires the separately hashed original-source supplement
+for two companion files omitted from its formal export. The original archives
+and failed first admission remain preserved. H100 TP4 and all four TP2
+configurations exceed the native weight-only capacity bound; they have no FPM
+profile.
+
 This directory defines the loading contract for DeepSeek-V4.1 whole-forward
 measurements on GB300 at TP2 and B300 at TP2 or TP4. Published tables
 cover B300 TP2/TP4 and GB300 TP2 in both the `full` and
