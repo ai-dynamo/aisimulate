@@ -455,9 +455,17 @@ def _worker_engine_args(
             if isinstance(engine.context_length, int)
             else resolve_model_context_length(engine.model)
         )
+    if cache.prefix_match_unit is not None:
+        payload["prefix_match_unit"] = cache.prefix_match_unit
+    if cache.state_cache is not None:
+        payload["state_cache"] = cache.state_cache.model_dump(mode="json", exclude_none=True)
+        payload["kv_cache_bytes_per_token"] = cache.bytes_per_token
     if capacity.type == "fixed":
-        assert capacity.blocks is not None
-        payload["num_gpu_blocks"] = capacity.blocks
+        if capacity.blocks is not None:
+            payload["num_gpu_blocks"] = capacity.blocks
+        else:
+            assert capacity.bytes is not None and isinstance(cache.bytes_per_token, int)
+            payload["num_gpu_blocks"] = capacity.bytes // (block_size * cache.bytes_per_token)
     else:
         assert memory_fraction is not None
         payload["cuda_graph_reserved_bytes"] = capacity.cuda_graph_reserved_bytes
@@ -477,7 +485,7 @@ def _worker_engine_args(
     elif worker.timing.type == "polynomial":
         payload["timing_model"] = {"type": "polynomial"}
     if worker.timing.type != "default":
-        if capacity.type == "default":
+        if capacity.type == "default" and cache.state_cache is None:
             payload = materialize_aic_num_gpu_blocks(payload)
         for name in (
             "aic_backend_version",
@@ -614,6 +622,8 @@ def _traffic(
                 workload["agentic_lanes"] = load.agentic_lanes
             if load.agentic_snapshot is not None:
                 workload["agentic_snapshot"] = load.agentic_snapshot.model_dump(mode="json")
+            if load.agentic_warmup:
+                workload["agentic_warmup"] = True
         if stop is not None and stop.max_virtual_time_seconds is not None:
             workload["max_sim_time_ms"] = 1_000.0 * stop.max_virtual_time_seconds
         return workload, None

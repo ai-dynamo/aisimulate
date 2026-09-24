@@ -985,11 +985,11 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "wideep_num_slots": 64,
     }
     config = ForwardPassPerfModelConfig(*legacy_fields.values())
-    assert vars(config) == {**legacy_fields, "moe_kernel_source": None}
+    assert vars(config) == {**legacy_fields, "fpm_fmha_quant_mode": None, "moe_kernel_source": None}
 
     source = " source_with_spaces "
     pinned = ForwardPassPerfModelConfig(*legacy_fields.values(), moe_kernel_source=source)
-    assert vars(pinned) == {**legacy_fields, "moe_kernel_source": source}
+    assert vars(pinned) == {**legacy_fields, "fpm_fmha_quant_mode": None, "moe_kernel_source": source}
     assert json.loads(json.dumps(pinned.to_dict()))["moe_kernel_source"] == source
 
 

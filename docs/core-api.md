@@ -407,6 +407,21 @@ that distinction when producing power metrics: absence of evidence is not a
 zero-watt prediction. FPM decode timing continues to query the exact total
 past-KV coordinate rather than the op-level mean-context coordinate.
 
+## Agentic report source migration (0.13)
+
+The replay report additions require the coordinated 0.13.0 wheel/crate version,
+aligned with main's release preparation in PR #268. They must not be released
+as a 0.12 patch. Downstream exhaustive Rust `ReplayReport` literals must supply
+`agentic_phases: None` for a cold run (or its prepared phase evidence).
+Exhaustive `PerRequestRecord` literals must supply `agentic_phase: None` for
+cold replay, or `Some(AgenticReplayPhase::Profile)` for measured warmed requests.
+Exhaustive destructuring must name these fields or use `..`.
+
+The external-consumer compile fixture `rebuild_replay_report_literals` constructs
+both public structs exhaustively against this boundary. JSON consumers retain
+the existing cold shape: absent optional phase evidence is not serialized.
+This source migration does not change the engine-config/spec or FPM wire schemas.
+
 ## Compatibility rules
 
 - The `aisimulate` wheel and `aisimulate-core` crate versions must match for
