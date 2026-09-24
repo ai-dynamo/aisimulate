@@ -1650,6 +1650,7 @@ def _validate_runtime_collection(
     *,
     expected_plan_sha256: str | None = None,
     expected_attempt_id: str | None = None,
+    expected_backend_version: str | None = None,
 ) -> int:
     """Validate PR11509 native rank artifacts and return the runtime point count."""
     return _runtime_collection_summary(
@@ -1657,6 +1658,7 @@ def _validate_runtime_collection(
         raw_root,
         expected_plan_sha256=expected_plan_sha256,
         expected_attempt_id=expected_attempt_id,
+        expected_backend_version=expected_backend_version,
     )["measured_point_count"]
 
 
@@ -1666,6 +1668,7 @@ def _runtime_collection_summary(
     *,
     expected_plan_sha256: str | None = None,
     expected_attempt_id: str | None = None,
+    expected_backend_version: str | None = None,
 ) -> dict[str, int]:
     """Return auditable unique-axis counts from a validated native grid."""
 
@@ -1674,6 +1677,7 @@ def _runtime_collection_summary(
         raw_root,
         expected_plan_sha256=expected_plan_sha256,
         expected_attempt_id=expected_attempt_id,
+        expected_backend_version=expected_backend_version,
     )
     points = tuple(measurement.point for measurement in collection.points)
     summary = {
@@ -1823,6 +1827,7 @@ def _recover_completed_attempt(
             cell_dir / "raw",
             expected_plan_sha256=plan.sha256,
             expected_attempt_id=attempt_id,
+            expected_backend_version=plan.capability.aic_database_version if cell.state_protocol else None,
         )
     except (OSError, TypeError, ValueError) as error:
         logger.info(
@@ -2092,6 +2097,7 @@ def _run_collection_impl(
                     root / "cells" / cell.cell_id / "raw",
                     expected_plan_sha256=plan.sha256,
                     expected_attempt_id=_required_attempt_id(entry, cell.cell_id),
+                    expected_backend_version=plan.capability.aic_database_version if cell.state_protocol else None,
                 )
             )
         except (OSError, TypeError, ValueError) as error:
@@ -2253,6 +2259,7 @@ def _run_collection_impl(
                 cell_dir / "raw",
                 expected_plan_sha256=plan.sha256,
                 expected_attempt_id=attempt_id,
+                expected_backend_version=plan.capability.aic_database_version if cell.state_protocol else None,
             )
             checkpoint["cells"][cell.cell_id] = {
                 **base_record,
