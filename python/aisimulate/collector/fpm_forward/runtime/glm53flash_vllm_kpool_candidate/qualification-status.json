@@ -1,0 +1,26 @@
+{
+  "status": "NOT_QUALIFIED",
+  "version": "0.30.0+glm53kpool.bf5f6b0e689d",
+  "wheel_sha256": "a3b63cb3c95cf976f717077102e8172a33501c7d05092bc84cc58e3aaef47d36",
+  "actual_source_build": {
+    "job": 604885,
+    "status": "passed",
+    "native_binaries_unchanged": 19
+  },
+  "actual_private_install": {
+    "job": 604941,
+    "status": "passed"
+  },
+  "native_cache_probe": {
+    "job": 604684,
+    "status": "passed",
+    "cases": 16,
+    "scope": "source-overlay bytewise pooled-cache and tail correctness only"
+  },
+  "native_full_engine": "NOT_EVALUATED",
+  "collector_runtime_admission": "DENIED",
+  "accuracy_acceptance": "NOT_EVALUATED",
+  "performance_cells": "NOT_EVALUATED",
+  "wheel_location": "/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-wheel-build-results/604885/build/dist/vllm-0.30.0+glm53kpool.bf5f6b0e689d-cp312-cp312-linux_aarch64.whl",
+  "private_install_location": "/lustre/fsw/portfolios/coreai/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472/kpool-wheel-runtime/604941/python"
+}
