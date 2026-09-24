@@ -94,6 +94,7 @@ def test_stable_function_signatures() -> None:
         "moe_tp_size: 'int | None' = None, moe_ep_size: 'int | None' = None, "
         "gemm_quant_mode: 'str | None' = None, moe_quant_mode: 'str | None' = None, "
         "kvcache_quant_mode: 'str | None' = None, fmha_quant_mode: 'str | None' = None, "
+        "fpm_fmha_quant_mode: 'str | None' = None, "
         "comm_quant_mode: 'str | None' = None, attention_backend: 'str | None' = None, "
         "moe_kernel_source: 'str | None' = None, "
         "moe_backend: 'str | None' = None, enable_eplb: 'bool' = False, wideep_num_slots: 'int | None' = None, "

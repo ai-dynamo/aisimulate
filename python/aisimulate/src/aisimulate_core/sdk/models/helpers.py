@@ -645,7 +645,8 @@ def _infer_quant_modes_from_raw_config(raw_config: dict, architecture: str | Non
 
     if (
         architecture == "DeepseekV41ForCausalLM"
-        and str(raw_config.get("quantization_config", {}).get("expert_dtype", "")).lower() == "fp4"
+        and str((_get_language_quantization_config(raw_config) or {}).get("expert_dtype", "")).lower() == "fp4"
+        and overrides.get("moe_quant_mode") != common.MoEQuantMode.nvfp4
     ):
         overrides["moe_quant_mode"] = common.MoEQuantMode.w4a8_mxfp4_mxfp8
 
@@ -804,7 +805,9 @@ def _is_dsv4_fp4_expert_model(model_path: str) -> bool:
         return False
     raw_config = info.get("raw_config", {})
     expert_config = (
-        raw_config.get("quantization_config", {}) if architecture == "DeepseekV41ForCausalLM" else raw_config
+        (_get_language_quantization_config(raw_config) or {})
+        if architecture == "DeepseekV41ForCausalLM"
+        else raw_config
     )
     if str(expert_config.get("expert_dtype") or "").lower() != "fp4":
         return False

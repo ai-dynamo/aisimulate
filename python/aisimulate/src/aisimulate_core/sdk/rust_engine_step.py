@@ -116,6 +116,7 @@ class ForwardPassPerfModelConfig:
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None
     fmha_quant_mode: str | None = None
+    fpm_fmha_quant_mode: str | None = dataclass_field(default=None, kw_only=True)
     kvcache_quant_mode: str | None = None
     comm_quant_mode: str | None = None
     nextn: int = 0
@@ -1184,6 +1185,7 @@ def _engine_config_json(model: Any, database: Any) -> str:
         "weight_dtype": _quant_to_dtype(getattr(model_config, "gemm_quant_mode", None)),
         "moe_dtype": _moe_quant_to_dtype(getattr(model_config, "moe_quant_mode", None)),
         "activation_dtype": _quant_to_dtype(getattr(model_config, "fmha_quant_mode", None)),
+        "fpm_fmha_dtype": _quant_to_dtype(getattr(model_config, "fpm_fmha_quant_mode", None)),
         "kv_cache_dtype": _quant_to_dtype(getattr(model_config, "kvcache_quant_mode", None)),
         "kv_block_size": None,
         "nextn": int(nextn) if nextn is not None else None,

@@ -217,3 +217,28 @@ def test_task_cannot_rewrite_an_explicit_moe_source_into_whole_forward_fpm():
     model_config = task.build_model_config(role="agg")
     with pytest.raises(InvalidEngineConfigurationError, match="moe_kernel_source.*forward_model='fpm'"):
         get_model(task.model_path, model_config, "sglang")
+
+
+@pytest.mark.parametrize(
+    ("forward_model", "message"),
+    [
+        ("op_level", "fpm_fmha_quant_mode requires forward_model='fpm'"),
+        ("fpm", "moe_kernel_source is not supported with forward_model='fpm'"),
+    ],
+)
+def test_independent_selectors_cannot_silently_discard_each_other(forward_model, message):
+    from aisimulate_core.sdk.config_builders import build_model_config
+    from aisimulate_core.sdk.models import get_model
+
+    config = build_model_config(
+        1,
+        1,
+        1,
+        1,
+        1,
+        forward_model=forward_model,
+        moe_kernel_source=SOURCE,
+        fpm_fmha_quant_mode="fp8",
+    )
+    with pytest.raises(InvalidEngineConfigurationError, match=message):
+        get_model("Qwen/Qwen3-30B-A3B", config, "sglang")
