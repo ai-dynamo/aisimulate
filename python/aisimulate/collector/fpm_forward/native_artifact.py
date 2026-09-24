@@ -57,10 +57,13 @@ def _validate_seed_regime(row: dict[str, Any], path: Path) -> str | None:
     observed_stamps = reasons.intersection(stamps.values())
     if regime in stamps and observed_stamps != {stamps[regime]}:
         raise ValueError(f"native kv_seed_regime disagrees with point injection stamps: {path}")
-    if regime in {"real_prefix", "fake_prefix"} and (
-        row["point"]["point_type"] != "prefill" or row["point"]["total_kv_read_tokens"] <= 0
-    ):
-        raise ValueError(f"native prefix seed regime requires cached prefill: {path}")
+    if regime in {"real_prefix", "fake_prefix"} and row["point"]["point_type"] != "prefill":
+        raise ValueError(f"native prefix seed regime requires prefill: {path}")
+    # Real-seed staging stamps the path before checking whether any KV needs
+    # seeding; an uncached prefill can therefore retain real_prefix provenance.
+    # https://github.com/ai-dynamo/dynamo/blob/b83b1d9304ebfc624709ac46db32b1b6f1ff1615/components/src/dynamo/vllm/instrumented_scheduler.py#L4298
+    if regime == "fake_prefix" and row["point"]["total_kv_read_tokens"] <= 0:
+        raise ValueError(f"native fake prefix seed regime requires cached prefill: {path}")
     if regime not in stamps and observed_stamps:
         raise ValueError(f"native kv_seed_regime disagrees with point injection stamps: {path}")
     return regime

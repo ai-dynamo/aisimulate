@@ -1168,6 +1168,7 @@ def test_native_collection_validation_accepts_balanced_total_points(tmp_path):
     ("phase", "regime", "stamp", "kv_tokens"),
     [
         ("prefill", "real_prefix", "prefill_real_seed", 128),
+        ("prefill", "real_prefix", "prefill_real_seed", 0),
         ("prefill", "fake_prefix", "prefill_fake_prefix", 128),
         ("prefill", "not_applicable", None, 0),
         ("decode", "real_kv", "kvwarm_real_kv", 128),
@@ -1199,10 +1200,13 @@ def test_native_seed_diagnostics_report_observed_regime(tmp_path, phase, regime,
 
 
 @pytest.mark.parametrize("regime", ["real_prefix", "fake_prefix", "not_applicable"])
-def test_native_seed_diagnostics_reject_contradictory_injection_evidence(tmp_path, regime):
+@pytest.mark.parametrize("kv_tokens", [0, 128])
+def test_native_seed_diagnostics_reject_contradictory_injection_evidence(tmp_path, regime, kv_tokens):
     cell = _cell()
     payload = _native_payload(phase="prefill", rank=0, dp=1)
     payload["results"][0]["kv_seed_regime"] = regime
+    payload["results"][0]["point"]["total_kv_read_tokens"] = kv_tokens
+    payload["results"][0]["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = kv_tokens
     if regime != "real_prefix":
         payload["results"][0]["point"]["sample_reasons"].append("prefill_real_seed")
     pod = tmp_path / "pod-0"
@@ -1213,18 +1217,50 @@ def test_native_seed_diagnostics_reject_contradictory_injection_evidence(tmp_pat
         _runtime_collection_summary(cell, tmp_path)
 
 
-def test_native_seed_diagnostics_reject_rank_evidence_disagreement(tmp_path):
+@pytest.mark.parametrize("kv_tokens", [0, 128])
+def test_native_seed_diagnostics_reject_rank_evidence_disagreement(tmp_path, kv_tokens):
     cell = _cell(dp=2)
     for rank in range(2):
         path = tmp_path / f"pod-{rank}" / ("benchmark.json" if rank == 0 else "benchmark_dp1.json")
         path.parent.mkdir()
         payload = _native_payload(phase="prefill", rank=rank, dp=2)
         payload["results"][0]["point"]["sample_reasons"].append("prefill_real_seed")
+        payload["results"][0]["point"]["total_kv_read_tokens"] = kv_tokens
+        payload["results"][0]["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = kv_tokens
         if rank == 0:
             payload["results"][0]["kv_seed_regime"] = "real_prefix"
         _write_provenance(path.parent / "collector-provenance.json", cell_id=cell.cell_id)
         path.write_text(json.dumps(payload))
     with pytest.raises(ValueError, match="DP ranks disagree on per-point KV seed regime"):
+        _runtime_collection_summary(cell, tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("phase", "regime", "stamp", "kv_tokens", "scheduled_kv_tokens", "error"),
+    [
+        ("decode", "real_prefix", "prefill_real_seed", 128, 128, "requires prefill"),
+        ("decode", "fake_prefix", "prefill_fake_prefix", 128, 128, "requires prefill"),
+        ("prefill", "fake_prefix", "prefill_fake_prefix", 0, 0, "requires cached prefill"),
+        ("prefill", "real_prefix", "prefill_real_seed", -1, -1, "invalid totals"),
+        ("prefill", "real_prefix", "prefill_real_seed", 0, 128, "workload mismatch"),
+    ],
+)
+def test_native_prefix_seed_diagnostics_reject_invalid_workload(
+    tmp_path, phase, regime, stamp, kv_tokens, scheduled_kv_tokens, error
+):
+    cell = _cell(phase=phase)
+    payload = _native_payload(phase=phase, rank=0, dp=1)
+    row = payload["results"][0]
+    row["kv_seed_regime"] = regime
+    row["point"]["sample_reasons"].append(stamp)
+    row["point"]["total_kv_read_tokens"] = kv_tokens
+    row["fpms"][0]["scheduled_requests"][f"sum_{phase}_kv_tokens"] = scheduled_kv_tokens
+    pod = tmp_path / "pod-0"
+    pod.mkdir()
+    _write_provenance(pod / "collector-provenance.json", cell_id=cell.cell_id)
+    (pod / "benchmark.json").write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match=error):
         _runtime_collection_summary(cell, tmp_path)
 
 
@@ -1596,6 +1632,92 @@ def test_resume_retry_recovers_complete_salvaged_attempt_without_rerun(monkeypat
         "validation": "native_collection_plan_and_attempt_identity",
     }
     assert checkpoint["smoke"]["status"] == "passed"
+
+
+@pytest.mark.parametrize("missing_decode", [False, True])
+def test_resume_publishes_saved_zero_kv_prefill_without_rerun(monkeypatch, tmp_path, missing_decode):
+    """Synthetic saved native results exercise recovery and formal publication on CPU."""
+    import pyarrow.parquet as pq
+
+    cell = _cell()
+    plan = _plan(cell)
+    decode = _cell(phase="decode")
+    if missing_decode:
+        plan.cells = (cell, decode)
+    artifact_root = tmp_path / "artifacts"
+    root = artifact_root / plan.sha256[:16]
+    raw = root / "cells" / cell.cell_id / "raw" / "pod-0"
+    raw.mkdir(parents=True)
+    _write_provenance(
+        raw / "collector-provenance.json",
+        cell_id=cell.cell_id,
+        plan_sha256=plan.sha256,
+        attempt_id="attempt-1",
+    )
+    payload = _native_payload(phase="prefill", rank=0, dp=1)
+    row = payload["results"][0]
+    row["kv_seed_regime"] = "real_prefix"
+    row["point"]["sample_reasons"].append("prefill_real_seed")
+    row["point"]["total_kv_read_tokens"] = 0
+    row["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = 0
+    native_path = raw / "benchmark.json"
+    native_path.write_text(json.dumps(payload))
+    native_bytes = native_path.read_bytes()
+
+    records = {
+        cell.cell_id: {
+            "status": "failed",
+            "attempt_id": "attempt-1",
+            "error_type": "ValueError",
+            "error": "native prefix seed regime requires cached prefill",
+        }
+    }
+    if missing_decode:
+        records[decode.cell_id] = {"status": "failed", "attempt_id": "attempt-decode"}
+    checkpoint_dir = tmp_path / "checkpoints"
+    checkpoint_dir.mkdir()
+    checkpoint_path = checkpoint_dir / "fpm_forward.json"
+    checkpoint_path.write_text(
+        json.dumps({"schema": fpm_runner.CHECKPOINT_SCHEMA, "plan_sha256": plan.sha256, "cells": records})
+    )
+
+    def reject_cluster_work(*_args, **_kwargs):
+        raise AssertionError("saved prefill recovery must not launch GPU work")
+
+    monkeypatch.setattr(fpm_runner, "_render_cell", reject_cluster_work)
+    monkeypatch.setattr(fpm_runner, "_cell_runner", reject_cluster_work)
+    errors = run_collection(
+        plan,
+        generator_overrides={},
+        checkpoint_dir=str(checkpoint_dir),
+        artifact_root=str(artifact_root),
+        resume=True,
+        retry_failed=False,
+        database_root=str(tmp_path / "db"),
+        publish_partial=missing_decode,
+    )
+
+    assert [error["classification"] for error in errors] == (["campaign_incomplete"] if missing_decode else [])
+    checkpoint = json.loads(checkpoint_path.read_text())
+    record = checkpoint["cells"][cell.cell_id]
+    assert record["status"] == "passed"
+    assert record["attempt_id"] == "attempt-1"
+    assert record["native_kv_seed_regime_counts"] == {"real_prefix": 1}
+    assert record["artifact_recovery"]["original_status"] == "failed"
+    assert record["artifact_recovery"]["error"] == records[cell.cell_id]["error"]
+    assert native_path.read_bytes() == native_bytes
+    assert json.loads((root / "run-manifest.json").read_text())["attempts"] == []
+    database = checkpoint["database"]
+    assert database["status"] == "passed"
+    assert database["missing_cells"] == ([decode.cell_id] if missing_decode else [])
+    rows = pq.read_table(database["parquet"]).to_pylist()
+    assert len(rows) == 1
+    assert rows[0]["total_kv_read_tokens"] == 0
+    assert rows[0]["kv_seed_regime"] == "n/a"
+    assert rows[0]["latency_ms"] == pytest.approx(10.0)
+    assert rows[0]["collector_attempt_id"] == "attempt-1"
+    if missing_decode:
+        assert checkpoint["cells"][decode.cell_id] == records[decode.cell_id]
 
 
 def test_plain_resume_recovers_interrupted_attempt_without_rerun(monkeypatch, tmp_path):
