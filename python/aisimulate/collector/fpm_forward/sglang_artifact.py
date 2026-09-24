@@ -16,6 +16,7 @@ import statistics
 from pathlib import Path
 from types import SimpleNamespace
 
+from collector.glm53flash_jsonl import file_sha256, iter_records
 from collector.glm53flash_protocol import PROTOCOL, TIMING_BOUNDARIES
 from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL, validate_retained_states
 
@@ -29,17 +30,21 @@ def canonical(value) -> str:
 
 
 def file_receipt(path: Path) -> dict:
-    return {"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+    return {"file": path.name, "sha256": file_sha256(path)}
 
 
-def read_receipt(parent: Path, receipt: dict) -> bytes:
+def verified_receipt_path(parent: Path, receipt: dict) -> Path:
     name = receipt.get("file")
     if not isinstance(name, str) or Path(name).name != name or name in (".", ".."):
         raise ValueError("SGLang evidence must be an adjacent file")
-    raw = (parent / name).read_bytes()
-    if hashlib.sha256(raw).hexdigest() != receipt.get("sha256"):
+    path = parent / name
+    if file_sha256(path) != receipt.get("sha256"):
         raise ValueError("SGLang native evidence digest mismatch")
-    return raw
+    return path
+
+
+def read_receipt(parent: Path, receipt: dict) -> bytes:
+    return verified_receipt_path(parent, receipt).read_bytes()
 
 
 def _trace_identity(record: dict) -> dict:
@@ -64,7 +69,12 @@ def _trace_identity(record: dict) -> dict:
 
 
 def read_observations(
-    manifest: dict, traces: dict[int, bytes], points: list[dict], *, expected_provenance: dict | None = None
+    manifest: dict,
+    traces: dict[int, bytes | Path],
+    points: list[dict],
+    *,
+    expected_provenance: dict | None = None,
+    compact: bool = False,
 ) -> dict:
     """Reconstruct completed prefix chains and select exact frozen occurrences."""
     mappings = manifest.get("requests")
@@ -103,10 +113,11 @@ def read_observations(
     reference = None
     for rank, raw in sorted(traces.items()):
         previous = {}
+        completed = set()
         seen_forwards = set()
         selected = {}
-        for line in raw.splitlines():
-            record = json.loads(line)
+        geometry = {}
+        for record in iter_records(raw):
             identity = _trace_identity(record)
             if expected_provenance is None:
                 expected_provenance = identity
@@ -136,6 +147,8 @@ def read_observations(
                 raise ValueError("SGLang native token totals disagree")
             for request, query, prefix in zip(requests, queries, prefixes, strict=True):
                 rid = request["request_id"]
+                if rid in completed:
+                    raise ValueError("SGLang native request was reused after its terminal target")
                 if rid not in mappings or type(query) is not int or query < 1 or type(prefix) is not int or prefix < 0:
                     raise ValueError("SGLang observed an unplanned request or invalid geometry")
                 tokens = request.get("native_query_token_ids")
@@ -209,31 +222,38 @@ def read_observations(
                 raise ValueError("SGLang requires actual native graph mode and padding")
             if record.get("used_cuda_graph") != (record["runtime_mode"] != "NONE"):
                 raise ValueError("SGLang actual graph witnesses disagree")
+            geometry[key] = (
+                ids,
+                queries,
+                prefixes,
+                record["runtime_mode"],
+                padded,
+                [
+                    (
+                        request["request_id"],
+                        hashlib.sha256(canonical(request["prompt_token_ids"]).encode()).hexdigest(),
+                        hashlib.sha256(canonical(request["native_query_token_ids"]).encode()).hexdigest(),
+                        request["input_tokens_sha256"],
+                        request["sampled_token_id"],
+                    )
+                    for request in requests
+                ],
+            )
+            if compact:
+                # Complete token arrays remain in immutable raw files. Keep
+                # only small witnesses needed by the envelope's timing writer.
+                for request in requests:
+                    request.pop("prompt_token_ids")
+                    request.pop("native_query_token_ids")
+                    request.pop("output_token_ids_before", None)
             selected[key] = record
+            for rid in ids:
+                del previous[rid]
+            completed.update(ids)
         if set(selected) != set(expected):
             raise ValueError(
                 f"SGLang rank {rank} missing exact frozen forwards: {sorted(set(expected) - set(selected))}"
             )
-        geometry = {
-            key: (
-                row["request_ids"],
-                row["query_lengths"],
-                row["prefix_lengths"],
-                row["runtime_mode"],
-                row["num_padded_tokens"],
-                [
-                    (
-                        request["request_id"],
-                        request["prompt_token_ids"],
-                        request["native_query_token_ids"],
-                        request["input_tokens_sha256"],
-                        request["sampled_token_id"],
-                    )
-                    for request in row["requests"]
-                ],
-            )
-            for key, row in selected.items()
-        }
         if reference is not None and geometry != reference:
             raise ValueError("SGLang TP ranks disagree on actual request/dispatch identity")
         reference = geometry
@@ -361,7 +381,7 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
     manifest = json.loads(read_receipt(path.parent, evidence["requests"]))
     if manifest.get("corpus_sha256") != payload["input_provenance"]["text_sha256"]:
         raise ValueError("SGLang request manifest corpus mismatch")
-    traces = {entry["tp_rank"]: read_receipt(path.parent, entry) for entry in evidence["traces"]}
+    traces = {entry["tp_rank"]: verified_receipt_path(path.parent, entry) for entry in evidence["traces"]}
     if len(traces) != len(evidence["traces"]) or set(traces) != set(range(cell.topology.tp)):
         raise ValueError("SGLang actual TP rank coverage is incomplete")
     layouts = {entry["tp_rank"]: json.loads(read_receipt(path.parent, entry)) for entry in evidence["state_layouts"]}
@@ -384,19 +404,22 @@ def validate_sglang_repetitions(cell, payload: dict, path: Path) -> None:
             if not groups.get(group) or any(t.get("dtype") != dtype for t in groups[group]):
                 raise ValueError(f"SGLang allocated {group} dtype differs from the frozen contract")
         digest = hashlib.sha256(json.dumps(layout, sort_keys=True).encode()).hexdigest()
-        for line in traces[rank].splitlines():
-            record = json.loads(line)
+        for record in iter_records(traces[rank]):
             if record.get("stage") == "measure" and (
                 record.get("state_layout_sha256") != digest or record.get("state_layout_admitted") is not True
             ):
                 raise ValueError("SGLang forward is not bound to its allocated hybrid state")
     observations = read_observations(
-        manifest, traces, [result["point"] for result in payload["results"]], expected_provenance=expected_provenance
+        manifest,
+        traces,
+        [result["point"] for result in payload["results"]],
+        expected_provenance=expected_provenance,
+        compact=True,
     )
     retained = evidence.get("retained_states")
     if not isinstance(retained, list):
         raise ValueError("SGLang retained-state lifecycle receipts are missing")
-    state_receipts = {entry["tp_rank"]: read_receipt(path.parent, entry) for entry in retained}
+    state_receipts = {entry["tp_rank"]: verified_receipt_path(path.parent, entry) for entry in retained}
     if len(state_receipts) != len(retained):
         raise ValueError("SGLang retained-state lifecycle rank is duplicated")
     validate_retained_states(manifest, traces, state_receipts)

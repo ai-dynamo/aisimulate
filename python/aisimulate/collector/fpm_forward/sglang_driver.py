@@ -502,9 +502,7 @@ def main(argv=None) -> None:
                 },
             )
             return
-        observations = read_observations(
-            manifest, {rank: path.read_bytes() for rank, path in enumerate(trace_paths)}, points
-        )
+        observations = read_observations(manifest, dict(enumerate(trace_paths)), points, compact=True)
         payload = result_payload(
             points,
             observations,
