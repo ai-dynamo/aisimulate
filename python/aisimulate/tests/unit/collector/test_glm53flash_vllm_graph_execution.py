@@ -51,8 +51,8 @@ def trace():
         }
 
     events = [
-        {"ph": "X", "name": VLLM_EXECUTION_RANGE, "ts": 0, "dur": 50, "pid": 1, "tid": 2},
-        {"ph": "X", "name": VLLM_LOGITS_RANGE, "ts": 20, "dur": 10, "pid": 1, "tid": 2},
+        {"cat": "user_annotation", "ph": "X", "name": VLLM_EXECUTION_RANGE, "ts": 0, "dur": 50, "pid": 1, "tid": 2},
+        {"cat": "user_annotation", "ph": "X", "name": VLLM_LOGITS_RANGE, "ts": 20, "dur": 10, "pid": 1, "tid": 2},
         call("cudaMemsetAsync", 1, 2),
         call("cudaGraphLaunch", 2, 8),
         call("cudaLaunchKernel", 3, 22),

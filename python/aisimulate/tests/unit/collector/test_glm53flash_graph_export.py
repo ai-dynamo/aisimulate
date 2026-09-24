@@ -120,7 +120,15 @@ def fixture(tmp_path, monkeypatch, role="calibration"):
                 used_cuda_graph=True, runtime_mode="FULL", num_padded_tokens=1, whole_forward_boundary=graph.BOUNDARY
             )
             events = [
-                {"ph": "X", "name": EXECUTION_RANGE, "pid": 1, "tid": 2, "ts": 0, "dur": 10000},
+                {
+                    "cat": "user_annotation",
+                    "ph": "X",
+                    "name": EXECUTION_RANGE,
+                    "pid": 1,
+                    "tid": 2,
+                    "ts": 0,
+                    "dur": 10000,
+                },
                 {
                     "cat": "cuda_runtime",
                     "name": "cudaMemsetAsync",

@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from types import ModuleType, SimpleNamespace
 
 import pytest
-
 from collector import glm53flash_sglang_graph_ops as sglang_graph
 from collector.glm53flash_graph_nodes import EXECUTION_RANGE, bind_execution_activity, bind_replay_kernels
 
@@ -17,7 +16,7 @@ pytestmark = pytest.mark.unit
 
 def fixture_events():
     events = [
-        {"ph": "X", "name": EXECUTION_RANGE, "ts": 0, "dur": 20, "pid": 1, "tid": 2},
+        {"cat": "user_annotation", "ph": "X", "name": EXECUTION_RANGE, "ts": 0, "dur": 20, "pid": 1, "tid": 2},
         {
             "cat": "cuda_runtime",
             "name": "cudaMemsetAsync",

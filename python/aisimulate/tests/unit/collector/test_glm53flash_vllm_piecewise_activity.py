@@ -14,10 +14,10 @@ pytestmark = pytest.mark.unit
 
 def fixture():
     def region(name, ts, dur):
-        return {"ph": "X", "name": name, "ts": ts, "dur": dur, "pid": 1, "tid": 2}
+        return {"cat": "user_annotation", "ph": "X", "name": name, "ts": ts, "dur": dur, "pid": 1, "tid": 2}
 
     def call(name, correlation, ts):
-        return {"cat": "cuda_runtime", "args": {"correlation": correlation}, **region(name, ts, 1)}
+        return {**region(name, ts, 1), "cat": "cuda_runtime", "args": {"correlation": correlation}}
 
     def kernel(name, correlation, ts, dur, graph=0, node=0):
         return {

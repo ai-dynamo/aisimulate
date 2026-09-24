@@ -1220,15 +1220,17 @@ this adapter. The corpus and new contract tests are original project content.
   and separate candidate qualification status are retained. No binary wheel is
   vendored and this unqualified candidate does not replace stock admission.
 
-## Kineto memcpy activity trace contract
+## Kineto memcpy and CPU annotation trace contracts
 
-The independently authored strict memcpy parser in
-`python/aisimulate/collector/glm53flash_graph_nodes.py`, its
-`test_glm53flash_graph_memcpy.py` and graph exporter tests, and
+The independently authored strict memcpy and CPU annotation parsers in
+`python/aisimulate/collector/glm53flash_graph_nodes.py`,
+`python/aisimulate/collector/glm53flash_vllm_piecewise_activity.py`, their
+`test_glm53flash_graph_memcpy.py`, profiler category and graph execution/exporter tests, and
 `collector/README.glm53flash.md` reference the trace format in
 https://github.com/pytorch/kineto at immutable commit
 `094d3c1d072362d0a919a77299459eee94f97931`, original paths
-`libkineto/src/CuptiActivity.h` and `libkineto/src/cupti_strings.cpp`.
+`libkineto/src/CuptiActivity.h`, `libkineto/src/cupti_strings.cpp` and
+`libkineto/include/ActivityType.h`.
 That gitlink is pinned by PyTorch `cf30153c4c131c8164ee7798e5022d810682e2cb`.
 The format checks are adapted for fail-closed source/callback/replay binding;
 no Kineto implementation or profiling binary is redistributed. The original

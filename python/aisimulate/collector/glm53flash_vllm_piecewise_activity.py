@@ -5,6 +5,8 @@
 Original observation of vllm-project/vllm@ced6857afa0ea7b2e3f0846a62e1394e90f15607,
 vllm/compilation/breakable_cudagraph.py (Apache-2.0). This does not reconstruct
 native execution or provide serving dispatch, table admission or accuracy.
+CPU/GPU annotation categories follow Kineto 094d3c1d072362d0a919a77299459eee94f97931
+libkineto/include/ActivityType.h (BSD); see THIRD_PARTY_NOTICES.md.
 """
 
 from __future__ import annotations
@@ -86,8 +88,16 @@ def bind_piecewise_execution(capture, events):
     for graph in graphs:
         for node in graph["nodes"]:
             check_owner(node)
-    ranges = [row for row in events if row.get("name") == VLLM_EXECUTION_RANGE and row.get("ph") == "X"]
-    logits = [row for row in events if row.get("name") == VLLM_LOGITS_RANGE and row.get("ph") == "X"]
+    ranges = [
+        row
+        for row in events
+        if row.get("name") == VLLM_EXECUTION_RANGE and row.get("ph") == "X" and row.get("cat") == "user_annotation"
+    ]
+    logits = [
+        row
+        for row in events
+        if row.get("name") == VLLM_LOGITS_RANGE and row.get("ph") == "X" and row.get("cat") == "user_annotation"
+    ]
     if len(ranges) != 1 or len(logits) != 1 or any(row.get("name") == EXECUTION_RANGE for row in events):
         raise ValueError("piecewise execution lacks one outer and external logits range")
     region, logits_range = ranges[0], logits[0]
@@ -96,7 +106,11 @@ def bind_piecewise_execution(capture, events):
         raise ValueError("piecewise logits is outside the original execution thread/range")
     eager = [row for row in segments if row["kind"] == "eager"]
     expected_ranges = {row["range"]: row for row in eager}
-    actual_ranges = [row for row in events if row.get("name", "").startswith(EAGER_RANGE_PREFIX)]
+    actual_ranges = [
+        row
+        for row in events
+        if row.get("name", "").startswith(EAGER_RANGE_PREFIX) and row.get("cat") == "user_annotation"
+    ]
     if len(expected_ranges) != len(eager) or len(actual_ranges) != len(eager):
         raise ValueError("piecewise eager range count is incomplete or duplicated")
     scopes = [(logits_range, "logits", "vllm.LogitsProcessor.forward")]

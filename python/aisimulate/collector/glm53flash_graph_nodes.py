@@ -7,7 +7,8 @@ See README.glm53flash.md for API references and qualification limits. No event,
 kernel, dependency, stream wait or other graph node is inserted by this module.
 
 The memcpy trace contract references Kineto 094d3c1d072362d0a919a77299459eee94f97931,
-libkineto/src/{CuptiActivity.h,cupti_strings.cpp}; independently authored strict
+libkineto/src/{CuptiActivity.h,cupti_strings.cpp} and include/ActivityType.h;
+independently authored strict
 parser, not copied C++ code. BSD attribution is in THIRD_PARTY_NOTICES.md.
 """
 
@@ -517,7 +518,13 @@ def bind_execution_activity(binding: dict, events: list[dict], *, additional_bin
     correlations = {item["correlation"]: item for item in bindings}
     if len(correlations) != len(bindings) or len({item["graph_id"] for item in bindings}) != len(bindings):
         raise ValueError("native execution contains aliased graph or launch identities")
-    ranges = [row for row in events if row.get("name") == EXECUTION_RANGE and row.get("ph") == "X"]
+    # Kineto emits same-named GPU annotations for each stream. Only its CPU
+    # user_annotation owns runtime launch calls; GPU ranges remain diagnostic.
+    ranges = [
+        row
+        for row in events
+        if row.get("name") == EXECUTION_RANGE and row.get("ph") == "X" and row.get("cat") == "user_annotation"
+    ]
     if len(ranges) != 1:
         raise ValueError("native execution lacks one complete source-bound profiler range")
     region = ranges[0]
@@ -708,8 +715,16 @@ def bind_vllm_execution_activity(binding: dict, events: list[dict]) -> dict:
     activity checks used by SGLang remain mandatory. Compiled or graph-backed
     logits require a separate registry and therefore remain unsupported here.
     """
-    ranges = [row for row in events if row.get("name") == VLLM_EXECUTION_RANGE and row.get("ph") == "X"]
-    logits = [row for row in events if row.get("name") == VLLM_LOGITS_RANGE and row.get("ph") == "X"]
+    ranges = [
+        row
+        for row in events
+        if row.get("name") == VLLM_EXECUTION_RANGE and row.get("ph") == "X" and row.get("cat") == "user_annotation"
+    ]
+    logits = [
+        row
+        for row in events
+        if row.get("name") == VLLM_LOGITS_RANGE and row.get("ph") == "X" and row.get("cat") == "user_annotation"
+    ]
     if len(ranges) != 1 or len(logits) != 1 or any(row.get("name") == EXECUTION_RANGE for row in events):
         raise ValueError("native V2 execution requires one independent outer and logits boundary")
     region, unit = ranges[0], logits[0]
