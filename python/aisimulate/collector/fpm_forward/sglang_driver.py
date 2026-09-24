@@ -264,8 +264,8 @@ def main(argv=None) -> None:
     if args.observation_purpose in ("ops", "ops_holdout"):
         if (
             bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")) != (args.observation_purpose == "ops")
-            or not server.disable_cuda_graph
-            or not server.disable_piecewise_cuda_graph
+            or server.cuda_graph_config.decode.backend != "disabled"
+            or server.cuda_graph_config.prefill.backend != "disabled"
         ):
             raise ValueError("SGLang Ops requires an explicit manifest and native eager execution")
     elif os.environ.get("AISIM_GLM53_OPS_MANIFEST"):
