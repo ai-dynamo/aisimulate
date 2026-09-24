@@ -247,6 +247,31 @@ def validate_native(root, tp, mode, policy, runtime_kind=None):
             raise ValueError("native TP workers disagree on actual token/phase/sample traces")
         reference = signature
         all_splits[str(rank)] = splits
+    identity_protocol = preflight.get("request_identity_protocol")
+    if identity_protocol is not None:
+        sources = json.loads(Path(__file__).with_name("request-id-source.json").read_text())["sources"]
+        if identity_protocol != "native_assign_request_id_v1" or preflight.get("request_identity_source_sha256") != {
+            item["path"]: item["sha256"] for item in sources
+        }:
+            raise ValueError("native request identity protocol/source closure differs")
+        assigned = list(records(root / "request-id-map.jsonl"))
+        if len(assigned) != len(outputs):
+            raise ValueError("native request assignment witness is incomplete")
+        output_ids = {item["request_id"]: item for item in outputs}
+        witnessed = {}
+        for row in assigned:
+            external = row["external_request_id"]
+            if (
+                external in witnessed
+                or row.get("original_assignment_returned") is not True
+                or external not in output_ids
+                or row["native_request_id"] != request_id_mapping.get(external)
+                or row["prompt_sha256"] != token_digest(output_ids[external]["prompt_token_ids"])
+            ):
+                raise ValueError("actual native request assignment disagrees with completed worker chain")
+            witnessed[external] = row["native_request_id"]
+        if witnessed != request_id_mapping:
+            raise ValueError("actual native request assignment does not cover the worker bijection")
     if policy == "eager" and modes != {"NONE"}:
         raise ValueError("requested eager policy encountered graph dispatch")
     if policy == "production" and "FULL" not in modes:
@@ -264,6 +289,7 @@ def validate_native(root, tp, mode, policy, runtime_kind=None):
         "native_modes": sorted(modes),
         "all_tp_trace_digest": reference,
         "external_to_native_request_ids": request_id_mapping,
+        "request_identity_protocol": identity_protocol or "pinned_source_offline_bijection",
         "actual_prefill_splits": all_splits,
         "files": [{"path": p.name, "sha256": digest(p)} for p in sorted(root.iterdir()) if p.is_file()],
     }

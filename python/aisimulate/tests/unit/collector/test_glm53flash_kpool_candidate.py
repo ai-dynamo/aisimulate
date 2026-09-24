@@ -236,3 +236,66 @@ def test_native_id_bijection_and_prompt_binding(defect):
         prompts[0]["prompt_sha256"] = "0" * 64
     with pytest.raises(ValueError):
         bind_native_request_ids(outputs, prompts)
+
+
+@pytest.mark.parametrize("defect", [None, "missing", "native_id", "returned", "digest", "source"])
+def test_actual_native_assignment_must_bind_the_completed_worker_chain(evidence, defect):
+    path = evidence / "preflight.json"
+    preflight = json.loads(path.read_text())
+    sources = json.loads(Path(probe.__file__).with_name("request-id-source.json").read_text())["sources"]
+    preflight["request_identity_protocol"] = "native_assign_request_id_v1"
+    preflight["request_identity_source_sha256"] = {item["path"]: item["sha256"] for item in sources}
+    if defect == "source":
+        preflight["request_identity_source_sha256"][sources[0]["path"]] = "0" * 64
+    write(path, preflight)
+    outputs = [json.loads(row) for row in (evidence / "outputs.jsonl").read_text().splitlines()]
+    assigned = [
+        {
+            "external_request_id": row["request_id"],
+            "native_request_id": row["request_id"] + "-012abcde",
+            "prompt_sha256": token_digest(row["prompt_token_ids"]),
+            "original_assignment_returned": True,
+        }
+        for row in outputs
+    ]
+    if defect == "native_id":
+        assigned[0]["native_request_id"] += "bad"
+    elif defect == "returned":
+        del assigned[0]["original_assignment_returned"]
+    elif defect == "digest":
+        assigned[0]["prompt_sha256"] = "0" * 64
+    if defect != "missing":
+        lines(evidence / "request-id-map.jsonl", assigned)
+    if defect:
+        with pytest.raises((ValueError, FileNotFoundError)):
+            validate_native(evidence, 2, "split", "production", "candidate")
+    else:
+        assert (
+            validate_native(evidence, 2, "split", "production", "candidate")["request_identity_protocol"]
+            == "native_assign_request_id_v1"
+        )
+
+
+def test_assignment_witness_calls_original_and_preserves_its_result(tmp_path):
+    from types import SimpleNamespace
+
+    from collector.fpm_forward.runtime.glm53flash_vllm_kpool_candidate.qualification.worker_probe import (
+        install_request_id_witness,
+    )
+
+    def original(request):
+        request.external_req_id = request.request_id
+        request.request_id += "-012abcde"
+        return "native-return-value"
+
+    processor = SimpleNamespace(assign_request_id=original)
+    request = SimpleNamespace(request_id="complete-original-id", prompt_token_ids=[1, 3])
+    install_request_id_witness(processor, tmp_path)
+    assert processor.assign_request_id(request) == "native-return-value"
+    row = json.loads((tmp_path / "request-id-map.jsonl").read_text())
+    assert row == {
+        "external_request_id": "complete-original-id",
+        "native_request_id": "complete-original-id-012abcde",
+        "prompt_sha256": token_digest([1, 3]),
+        "original_assignment_returned": True,
+    }
