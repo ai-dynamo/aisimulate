@@ -131,6 +131,47 @@ def test_canonical_profile_owns_verified_tables_despite_default_cache_and_later_
         RustForwardPassPerfModel.best_available(saved)
 
 
+def test_failed_profile_build_recovers_after_disk_repair_with_shared_database_alive(tmp_path):
+    config = graph_config()
+    source = Path(config["systems_paths"][0])
+    shutil.copy2(source / "vr200_hecate.yaml", tmp_path / "vr200_hecate.yaml")
+    shutil.copytree(source / "data/vr200_hecate", tmp_path / "data/vr200_hecate")
+    config["systems_paths"] = [str(tmp_path)]
+    ordinary_config = copy.deepcopy(config)
+    ordinary_config["estimator_config"]["op_level"] = {}
+    # This public model retains the process-wide shared tables throughout both
+    # rejected builds and repairs; dropping it would hide the cached-error bug.
+    ordinary = RustForwardPassPerfModel.best_available(ordinary_config)
+    ordinary_before = ordinary.static_phase_latency(batch_size=1, input_tokens=1024, output_tokens=2, prefill=True)
+    gemm = next(tmp_path.rglob("gemm_perf.parquet"))
+    approved = gemm.read_bytes()
+    gemm.write_bytes(b"incomplete parquet during data sync")
+    with pytest.raises(ValueError, match="retained input changed.*gemm_perf"):
+        RustForwardPassPerfModel.best_available(config)
+
+    gemm.write_bytes(approved)
+    selected = RustForwardPassPerfModel.best_available(config)
+    saved = selected.diagnostics()["provenance"]["config"]
+    assert saved["systems_paths"] == [str(tmp_path)]
+    assert saved["estimator_config"]["op_level"]["prefill_graph_profile_id"] == PROFILE_ID
+
+    # A subsequent broken source must fail fresh admission without changing the
+    # identity or answers of an already admitted engine's private snapshot.
+    gemm.write_bytes(b"second incomplete parquet during data sync")
+    with pytest.raises(ValueError, match="retained input changed.*gemm_perf"):
+        RustForwardPassPerfModel.best_available(saved)
+    for call, expected, _ in CASES:
+        assert selected.predict_prefill_latency(*call) == pytest.approx(expected, rel=1e-12, abs=1e-10)
+    assert selected.diagnostics()["provenance"]["config"] == saved
+    gemm.write_bytes(approved)
+    recovered = RustForwardPassPerfModel.best_available(saved)
+    for call, expected, _ in CASES:
+        assert recovered.predict_prefill_latency(*call) == pytest.approx(expected, rel=1e-12, abs=1e-10)
+    assert (
+        ordinary.static_phase_latency(batch_size=1, input_tokens=1024, output_tokens=2, prefill=True) == ordinary_before
+    )
+
+
 @pytest.mark.parametrize(
     "key,value",
     [

@@ -240,6 +240,50 @@ def test_v2_native_scope_is_unchanged(tmp_path, field, value):
         v1.load(wire)
 
 
+@pytest.mark.parametrize("profile", [v1.PROFILE, PROFILE])
+@pytest.mark.parametrize("phase", ["context_ops", "generation_ops"])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("kind", ["CustomAllReduce", "Nccl", "MoeDispatch"])
+@pytest.mark.parametrize("quant", ["half", "fp8", "int8"])
+def test_serialized_communication_precision_is_checked_through_composites(
+    tmp_path, profile, phase, nested, kind, quant
+):
+    wire = v1.spec(dataset(tmp_path / "valid"), selected=profile)
+    if kind == "CustomAllReduce":
+        fields = dict(name="communication", scale_factor=1.0, hidden_size=6144, tp_size=4, quant=quant)
+    elif kind == "Nccl":
+        fields = dict(
+            name="communication", scale_factor=1.0, hidden_size=6144.0, num_gpus=4, dtype=quant, operation="allreduce"
+        )
+    else:
+        # Use the model's real dispatch operator, changing only its wire precision.
+        model = get_model(v1.MODEL, v1.build_model_config(**v1.KWARGS), "sglang")
+        fields = next(op[kind] for op in json.loads(build_ops_json(model.context_ops)) if kind in op)
+        fields["is_context"] = phase == "context_ops"
+        fields["comm_quant"] = quant
+    op = {kind: fields}
+    if nested:
+        op = {
+            "Dsv41Stage": dict(
+                name="nested_communication",
+                is_context=phase == "context_ops",
+                decoder_replay=False,
+                bounded=False,
+                window_size=128,
+                children=[op],
+            )
+        }
+        op = {"TokenScale": dict(op=op, numerator=1, denominator=1)}
+        op = {"Fallback": dict(name="communication_fallback", primary=op, fallback=[copy.deepcopy(op)])}
+        op = {"Overlap": dict(name="communication_overlap", group_a=[], group_b=[op])}
+    wire[phase].append(op)
+    if quant == "half":
+        assert v1.load(wire) is not None
+    else:
+        with pytest.raises(DecodeMoeProfileError, match="requires half communication"):
+            v1.load(wire)
+
+
 def test_selector_preserves_context_and_unrelated_generation_ops():
     base = v1.build_model_config(**v1.KWARGS)
     normal = get_model(v1.MODEL, base, "sglang")

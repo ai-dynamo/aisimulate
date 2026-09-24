@@ -7,6 +7,7 @@ import copy
 import hashlib
 import io
 import json
+import re
 import shutil
 import statistics
 import tarfile
@@ -274,9 +275,9 @@ def composite(tmp_path, monkeypatch):
     return Composite(tmp_path, monkeypatch)
 
 
-def rejected(composite, match=None, **kwargs):
+def rejected(composite, match, *, errors=ValueError, **kwargs):
     before = publisher._inventory(composite.base)
-    with pytest.raises((ValueError, KeyError, FileNotFoundError), match=match):
+    with pytest.raises(errors, match=match):
         composite.run(**kwargs)
     assert not composite.output.exists()
     assert publisher._inventory(composite.base) == before
@@ -350,7 +351,10 @@ def test_fixed_base_identity_is_required(composite, kind, validate_only):
     else:
         composite.identity["base"]["systems_tree_sha256"] = "0" * 64 if kind == "mismatch" else None
     write_json(composite.identity_path, composite.identity)
-    rejected(composite, validate_only=validate_only)
+    if kind == "missing":
+        rejected(composite, "^'systems_tree_sha256'$", errors=KeyError, validate_only=validate_only)
+    else:
+        rejected(composite, "Unapproved base systems tree", validate_only=validate_only)
 
 
 def test_complete_union_preserves_exact_rows_schema_history_and_source_evidence(composite):
@@ -462,24 +466,24 @@ def test_complete_schedule_is_mandatory(composite, role, kind):
 
 @pytest.mark.parametrize("cohort", [3, 29, 31])
 @pytest.mark.parametrize(
-    "kind",
+    "kind,match",
     [
-        "physical",
-        "logical",
-        "padding",
-        "ordinal",
-        "cache",
-        "capture",
-        "graph",
-        "substitution",
-        "boolean",
-        "nonfinite",
-        "chronology",
-        "observer",
-        "drift",
+        ("physical", "Tail logical/physical/rank/cache identity mismatch"),
+        ("logical", "Missing, duplicate or reordered tail case"),
+        ("padding", "Tail native padding/input identity mismatch"),
+        ("ordinal", "Tail native padding/input identity mismatch"),
+        ("cache", "Tail logical/physical/rank/cache identity mismatch"),
+        ("capture", "Tail native padding/input identity mismatch"),
+        ("graph", "Unqualified tail timing method"),
+        ("substitution", "Wrong observer control or substituted instrumented timing"),
+        ("boolean", "Invalid positive finite number"),
+        ("nonfinite", "Nonfinite JSON number: NaN"),
+        ("chronology", "Tail helper order mismatch"),
+        ("observer", "Tail controls exceed fixed 5% gate"),
+        ("drift", "Tail controls exceed fixed 5% gate"),
     ],
 )
-def test_every_cohort_rejects_bad_identity_timing_and_controls(composite, cohort, kind):
+def test_every_cohort_rejects_bad_identity_timing_and_controls(composite, cohort, kind, match):
     def change(rows):
         row = next(r for r in rows if r["logical"] == cohort)
         if kind in ("physical", "logical"):
@@ -506,7 +510,7 @@ def test_every_cohort_rejects_bad_identity_timing_and_controls(composite, cohort
             row["normalized_ms_per_layer"] = row["plain_mean_ms"] / 75
 
     composite.mutate("rank-0/primary-measurements.json", change)
-    rejected(composite)
+    rejected(composite, match)
 
 
 @pytest.mark.parametrize("kind", ["adjacent", "rank_spread"])
@@ -526,26 +530,34 @@ def test_stability_controls_are_recomputed_from_all_raw_a_brackets(composite, ki
 
 
 @pytest.mark.parametrize(
-    "name,change",
+    "name,change,match",
     [
-        ("rank-1/result.json", lambda x: x["coverage"].update(primary_cases=71)),
-        ("rank-1/result.json", lambda x: x["coverage"].update(cache_before_after_equal=False)),
-        ("rank-1/weights-after.json", lambda x: x.update(fixture_weight_sha256="0" * 64)),
-        ("rank-1/saved-native-cache.json", lambda x: x.update(unapproved_tactic=1)),
-        ("rank-1/preflight.json", lambda x: x["versions"].update(sglang="wrong")),
-        ("source/producer.py", None),
-        ("campaign.json", lambda x: x.update(tp_mean_representative=False)),
-        ("campaign.json", lambda x: x["plan"].update(capture_schema_version=3)),
-        ("campaign.json", lambda x: x["capture_input"].update(manifest_sha256="0" * 64)),
+        ("rank-1/result.json", lambda x: x["coverage"].update(primary_cases=71), "Incomplete tail coverage"),
+        (
+            "rank-1/result.json",
+            lambda x: x["coverage"].update(cache_before_after_equal=False),
+            "Incomplete tail coverage",
+        ),
+        (
+            "rank-1/weights-after.json",
+            lambda x: x.update(fixture_weight_sha256="0" * 64),
+            "Tail weights changed or differ from v1",
+        ),
+        ("rank-1/saved-native-cache.json", lambda x: x.update(unapproved_tactic=1), "Tail saved cache mismatch"),
+        ("rank-1/preflight.json", lambda x: x["versions"].update(sglang="wrong"), "Tail runtime mismatch"),
+        ("source/producer.py", None, "Executed producer file mismatch"),
+        ("campaign.json", lambda x: x.update(tp_mean_representative=False), "Unqualified tail tp_mean_representative"),
+        ("campaign.json", lambda x: x["plan"].update(capture_schema_version=3), "Wrong tail physical plan or image"),
+        ("campaign.json", lambda x: x["capture_input"].update(manifest_sha256="0" * 64), "Tail capture mismatch"),
     ],
 )
-def test_runtime_weights_source_cache_and_qualification_fail_closed(composite, name, change):
+def test_runtime_weights_source_cache_and_qualification_fail_closed(composite, name, change, match):
     if change is None:
         (composite.native / name).write_text("# changed native producer\n")
         composite.seal()
     else:
         composite.mutate(name, change)
-    rejected(composite)
+    rejected(composite, match)
 
 
 @pytest.mark.parametrize("role", ["v1", "tail"])
@@ -586,20 +598,20 @@ def test_unsafe_native_archive_cannot_escape(composite, tmp_path, kind):
 
 
 @pytest.mark.parametrize(
-    "kind",
+    "kind,match",
     [
-        "v1_identity",
-        "v1_source",
-        "case_plan",
-        "wrong_physical_label",
-        "base_hash",
-        "duplicate",
-        "nonfinite",
-        "history",
-        "runtime",
+        ("v1_identity", "v1 publisher source closure changed"),
+        ("v1_source", "v1 publisher source closure changed"),
+        ("case_plan", "Composite case plan or role count mismatch"),
+        ("wrong_physical_label", "Wrong composite publication identity"),
+        ("base_hash", "Unapproved base systems tree"),
+        ("duplicate", "Duplicate base row keys"),
+        ("nonfinite", "Invalid positive finite number"),
+        ("history", "Incomplete or mismatched original collection history"),
+        ("runtime", "Wrong base count/schema/runtime"),
     ],
 )
-def test_preserved_source_and_base_identity_are_mandatory(composite, kind):
+def test_preserved_source_and_base_identity_are_mandatory(composite, kind, match):
     if kind == "v1_identity":
         composite.old.identity_path.write_text("{}")
     elif kind == "v1_source":
@@ -630,14 +642,22 @@ def test_preserved_source_and_base_identity_are_mandatory(composite, kind):
             meta["runtime"]["version"] = "wrong"
         (composite.table / "collection_meta.yaml").write_text(yaml.safe_dump(meta))
         composite.bind()
-    rejected(composite)
+    rejected(composite, match)
 
 
 @pytest.mark.parametrize(
-    "kind",
-    ["unknown", "nonempty_lock", "directory_lock", "symlink_lock", "missing_lock", "finalizer_failure", "source_race"],
+    "kind,match",
+    [
+        ("unknown", "Unexpected file in private publication staging"),
+        ("nonempty_lock", "Unexpected private merge lock"),
+        ("directory_lock", r"Expected regular file: .*moe_perf\.parquet\.mergelock"),
+        ("symlink_lock", r"Expected regular file: .*moe_perf\.parquet\.mergelock"),
+        ("missing_lock", r"Expected regular file: .*moe_perf\.parquet\.mergelock"),
+        ("finalizer_failure", "synthetic finalizer failure"),
+        ("source_race", "Publisher source changed"),
+    ],
 )
-def test_failed_private_staging_never_promotes(composite, monkeypatch, kind):
+def test_failed_private_staging_never_promotes(composite, monkeypatch, kind, match):
     finalize = helper.finalize_perf_files
 
     def failure(*args, **kwargs):
@@ -663,7 +683,7 @@ def test_failed_private_staging_never_promotes(composite, monkeypatch, kind):
         return result
 
     monkeypatch.setattr(helper, "finalize_perf_files", failure)
-    rejected(composite)
+    rejected(composite, match)
 
 
 def test_private_lock_is_released_before_removal(composite, monkeypatch):
@@ -697,10 +717,19 @@ def test_preexisting_output_and_unowned_lock_are_preserved(composite):
     assert lock.read_text() == "unowned"
 
 
-@pytest.mark.parametrize("value", [0, -1, float("inf"), float("-inf"), "0.1"])
-def test_nonpositive_nonfinite_and_nonnumeric_times_reject(composite, value):
+@pytest.mark.parametrize(
+    "value,match",
+    [
+        (0, "Invalid positive finite number"),
+        (-1, "Invalid positive finite number"),
+        (float("inf"), "Nonfinite JSON number: Infinity"),
+        (float("-inf"), "Nonfinite JSON number: -Infinity"),
+        ("0.1", "Invalid positive finite number"),
+    ],
+)
+def test_nonpositive_nonfinite_and_nonnumeric_times_reject(composite, value, match):
     composite.mutate("rank-0/primary-measurements.json", lambda rows: rows[0]["before"]["raw"].update(latency_ms=value))
-    rejected(composite)
+    rejected(composite, match)
 
 
 @pytest.mark.parametrize(
@@ -709,7 +738,7 @@ def test_nonpositive_nonfinite_and_nonnumeric_times_reject(composite, value):
 def test_missing_native_file_is_not_a_partial_publication(composite, name):
     (composite.native / name).unlink()
     composite.seal()
-    rejected(composite)
+    rejected(composite, re.escape(name), errors=FileNotFoundError)
 
 
 def test_duplicate_json_key_rejects(composite):

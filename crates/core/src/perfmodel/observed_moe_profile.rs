@@ -178,6 +178,9 @@ pub(crate) fn validate_communication(
             Op::Nccl(op) if op.dtype != CommQuantMode::Half => {
                 return Err(selected.error("requires half communication"));
             }
+            Op::MoeDispatch(op) if op.comm_quant != CommQuantMode::Half => {
+                return Err(selected.error("requires half communication"));
+            }
             Op::Overlap(op) => {
                 validate_communication(selected, &op.group_a)?;
                 validate_communication(selected, &op.group_b)?;
@@ -187,6 +190,7 @@ pub(crate) fn validate_communication(
                 validate_communication(selected, &op.fallback)?;
             }
             Op::TokenScale(op) => validate_communication(selected, std::slice::from_ref(&op.op))?,
+            Op::Dsv41Stage(op) => validate_communication(selected, &op.children)?,
             _ => {}
         }
     }

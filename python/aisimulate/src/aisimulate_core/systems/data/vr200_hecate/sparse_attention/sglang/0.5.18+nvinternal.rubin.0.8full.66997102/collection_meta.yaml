@@ -13,7 +13,7 @@ tables:
     rows: 304
     status: complete
     collections:
-    - collector_ref: unknown
+    - collector_ref: https://gitlab-master.nvidia.com/dl/jet/ci/-/jobs/445688753/artifacts/file/workspace/logs/basic/aisim-vr-dsa-projection-recollect/jet_log.zip
       collector_hash: sha256:95fde0cd25cd058a03572855c2f0795683b3c225d47b0a729d49a28065a506ec
       case_plan_hash: sha256:7fc717fc3059a1ca956b6e7b7cbdba722626cb76e09d16cf88aa928e121ebc5c
       collected_at: '2026-09-18'
@@ -23,7 +23,7 @@ tables:
     rows: 84
     status: complete
     collections:
-    - collector_ref: unknown
+    - collector_ref: https://gitlab-master.nvidia.com/dl/jet/ci/-/jobs/445688753/artifacts/file/workspace/logs/basic/aisim-vr-dsa-projection-recollect/jet_log.zip
       collector_hash: sha256:95fde0cd25cd058a03572855c2f0795683b3c225d47b0a729d49a28065a506ec
       case_plan_hash: sha256:adfef72106217c90ca1fb1a40bd0b83694d6a8c3ca6c25591266aaaf16688b2d
       collected_at: '2026-09-18'

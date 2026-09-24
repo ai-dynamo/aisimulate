@@ -776,5 +776,47 @@ mod tests {
             PerfDataFilename::Dsv4HcaGenerationModule.as_str(),
             "dsv4_hca_generation_module_perf.parquet"
         );
+        assert_eq!(
+            PerfDataFilename::SglangPrefillAttentionSequence.as_str(),
+            "sglang_prefill_attention_sequence_perf.parquet"
+        );
+        assert_eq!(
+            PerfDataFilename::SglangPrefillCommNormBoundary.as_str(),
+            "sglang_prefill_comm_norm_boundary_perf.parquet"
+        );
+    }
+
+    #[cfg(feature = "python")]
+    #[test]
+    fn prefill_data_filenames_match_live_python_enum() {
+        use pyo3::prelude::*;
+
+        pyo3::prepare_freethreaded_python();
+        Python::with_gil(|py| {
+            let filenames = py
+                .import("aisimulate_core.sdk.common")
+                .unwrap()
+                .getattr("PerfDataFilename")
+                .unwrap();
+            for (rust, name) in [
+                (
+                    PerfDataFilename::SglangPrefillAttentionSequence,
+                    "sglang_prefill_attention_sequence",
+                ),
+                (
+                    PerfDataFilename::SglangPrefillCommNormBoundary,
+                    "sglang_prefill_comm_norm_boundary",
+                ),
+            ] {
+                let python: String = filenames
+                    .getattr(name)
+                    .unwrap()
+                    .getattr("value")
+                    .unwrap()
+                    .extract()
+                    .unwrap();
+                assert_eq!(rust.as_str(), python, "PerfDataFilename.{name}");
+            }
+        });
     }
 }

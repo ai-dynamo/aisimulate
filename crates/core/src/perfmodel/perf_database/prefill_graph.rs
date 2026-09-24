@@ -454,7 +454,9 @@ impl PrefillGraphTable {
     }
 
     pub(crate) fn validate_sources(&self, db: &super::PerfDatabase) -> Result<(), AicError> {
-        let value: Profile = serde_json::from_str(self.profile_json()?).map_err(error)?;
+        // Admission must recheck the caller's mutable files, even if shared
+        // tables have cached data or an error from an earlier read.
+        let value: Profile = serde_json::from_str(&self.read()?.json).map_err(error)?;
         for file in &value.retained_files {
             if file.path.extension().and_then(|s| s.to_str()) != Some("parquet") {
                 continue;
