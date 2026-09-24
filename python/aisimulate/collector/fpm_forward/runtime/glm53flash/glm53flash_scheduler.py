@@ -84,7 +84,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             raise ValueError("GLM-5.3-Flash formal collection requires native graph policy")
         if self._real_purpose in {"ops", "ops_holdout"} and not config.model_config.enforce_eager:
             raise ValueError("GLM operation observation currently requires explicit native eager execution")
-        if (self._real_purpose == "ops") != bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")):
+        if (self._real_purpose in {"ops", "ops_graph"}) != bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")):
             raise ValueError("GLM Ops instrumentation must match its explicit collection purpose")
         if not config.observability_config.cudagraph_metrics:
             raise ValueError("GLM-5.3-Flash FPM requires actual CUDA graph dispatch metrics")
@@ -639,7 +639,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             "ops_graph_holdout": "native_graph_ops_holdout",
         }[self._real_purpose]
         output["observation_purpose"] = self._real_purpose
-        output["ops_instrumented"] = self._real_purpose == "ops"
+        output["ops_instrumented"] = self._real_purpose in {"ops", "ops_graph"}
         output["timing_boundary"] = "vllm_native_scheduler_output_interval"
         output["kvwarm"] = {
             "enabled": True,
