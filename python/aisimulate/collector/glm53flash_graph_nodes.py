@@ -33,9 +33,15 @@ def _library(stem):
         for line in Path("/proc/self/maps").read_text().splitlines()
         if len(line.split()) >= 6 and Path(line.split()[-1]).name.startswith(f"lib{stem}.so")
     }
+    binding = None
     if len(mapped) > 1:
-        raise RuntimeError(f"multiple loaded {stem} libraries cannot form one capture identity")
-    name = next(iter(mapped), None) or ctypes.util.find_library(stem)
+        if stem != "cudart":
+            raise RuntimeError(f"multiple loaded {stem} libraries cannot form one capture identity")
+        from .glm53flash_graph_libraries import resolve_torch_cudart
+
+        name, binding = resolve_torch_cudart(mapped)
+    else:
+        name = next(iter(mapped), None) or ctypes.util.find_library(stem)
     if name is None:
         for directory in ("/usr/local/cuda/extras/CUPTI/lib64", "/usr/local/cuda/lib64"):
             found = sorted(Path(directory).glob(f"lib{stem}.so*"))
@@ -50,11 +56,15 @@ def _library(stem):
         for line in Path("/proc/self/maps").read_text().splitlines()
         if len(line.split()) >= 6 and Path(line.split()[-1]).name.startswith(f"lib{stem}.so")
     }
-    if len(mapped) != 1:
+    if binding is None and len(mapped) != 1:
         raise RuntimeError(f"loaded {stem} library identity is ambiguous")
-    path = Path(mapped.pop()).resolve()
+    path = Path(name).resolve() if binding is not None else Path(mapped.pop()).resolve()
+    if binding is not None and mapped != {item["path"] for item in binding["candidates"]}:
+        raise RuntimeError("CUDA runtime mappings changed after actual provider selection")
     with path.open("rb") as stream:
         receipt = {"path": str(path), "sha256": hashlib.file_digest(stream, "sha256").hexdigest()}
+    if binding is not None:
+        receipt["provider_binding"] = binding
     return library, receipt
 
 

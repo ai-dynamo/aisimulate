@@ -592,3 +592,29 @@ The Rust table requires the exact repaired source hash and TP2/TP4 scope. Stock
 unaligned cached-prefill remains rejected; no local version prefix grants access.
 This functional-runtime admission is separate from graph coverage and independent
 whole-forward accuracy, which remain unevaluated across the required Ops matrix.
+
+### CUDA graph runtime provider
+
+The qualified SGLang GPU import path can load two separate instances of the
+same CUDA 13 runtime binary. For that case, the graph observer reads the actual
+ELF graph/stream/event relocation slots in the active PyTorch package's
+`libtorch_cuda.so` and `libc10_cuda.so`. All inspected slots, including graph
+launch, instantiation and stream capture, must identify one mapped runtime
+instance by both path and load address. Selecting the first path or merely
+finding identical file hashes is insufficient. Mixed, unresolved, missing or
+different-binary providers fail. Multiple CUPTI instances remain unsupported.
+
+This inspection requires Linux ELF64 (aarch64 or x86_64), readable process maps
+and relocation memory, and `readelf` from binutils. Direct `dlopen` with
+`RTLD_NOLOAD | RTLD_LAZY` preserves the existing loader state; it avoids
+`ctypes.CDLL(path)` adding `RTLD_NOW`. Raw evidence retains all observed runtime
+and caller hashes, load identities and actual relocation bindings. No CUDA
+function runs during provider selection. The production graph API then binds
+the selected existing runtime and still verifies the CUDA 13 API contract.
+Full-model capture and independent accuracy require their separate GPU gates.
+
+These are original bindings to documented interfaces, not copied implementation:
+[dlopen](https://man7.org/linux/man-pages/man3/dlopen.3.html),
+[dlinfo](https://man7.org/linux/man-pages/man3/dlinfo.3.html),
+[dladdr](https://man7.org/linux/man-pages/man3/dladdr.3.html), and
+[CPython ctypes loader flags](https://github.com/python/cpython/blob/v3.12.9/Modules/_ctypes/callproc.c).
