@@ -574,6 +574,11 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
         else:
             binding = bind_calibration(paths, calibration, calibration_native)
     config["systems_paths"] = roots
+    if mode == "ops" and calibration["spec"].get("ops_execution_mode") == "native_serving":
+        from collector.glm53flash_vllm_serving_export import predict_homogeneous
+
+        prediction = predict_homogeneous(run, base, config, calibration_native, binding)
+        return {**prediction, "config": config, "data_receipts": receipts, "calibration_binding": binding}
     if mode == "ops" and calibration["spec"].get("ops_execution_mode") == "native_full_graph":
         from collector.glm53flash_graph_export import predict_homogeneous
 

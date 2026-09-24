@@ -310,6 +310,10 @@ def _verify_fpm_workflow() -> str:
         (importlib.import_module("collector.glm53flash_graph_libraries"), "collector/glm53flash_graph_libraries.py"),
         (importlib.import_module("collector.glm53flash_vllm_none"), "collector/glm53flash_vllm_none.py"),
         (
+            importlib.import_module("collector.glm53flash_vllm_serving_export"),
+            "collector/glm53flash_vllm_serving_export.py",
+        ),
+        (
             importlib.import_module("collector.glm53flash_vllm_graph_policy"),
             "collector/glm53flash_vllm_graph_policy.py",
         ),

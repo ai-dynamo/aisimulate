@@ -302,12 +302,14 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
     backend, fmt, tp, phase = run["key"]
     mode = run["spec"].get("ops_execution_mode", "eager")
     if (
-        mode not in ("eager", "native_full_graph", "native_eager_prefill")
+        mode not in ("eager", "native_full_graph", "native_eager_prefill", "native_serving")
         or (mode == "native_full_graph" and (backend not in ("sglang", "vllm") or phase != "decode"))
         or (mode == "native_eager_prefill" and (backend != "sglang" or phase != "prefill"))
+        or (mode == "native_serving" and (backend != "vllm" or phase not in ("prefill", "decode")))
     ):
         raise ValueError("unsupported native Ops execution mode/backend/phase")
-    graph = mode == "native_full_graph"
+    serving = mode == "native_serving"
+    graph = mode in ("native_full_graph", "native_serving")
     native_eager_prefill = mode == "native_eager_prefill"
     if run["role"] not in ("calibration", "holdout") and not (
         (graph or native_eager_prefill) and run["role"] == "control"
@@ -466,7 +468,10 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
             if row.get("state_layout_sha256") != layout_hash or row.get("state_layout_admitted") is not True:
                 raise ValueError("Ops forward state inventory differs from its retained allocation")
             if vllm_graph_snapshot is not None:
-                from collector.glm53flash_vllm_graph_export import check_dispatch
+                if serving:
+                    from collector.glm53flash_vllm_serving_export import check_serving_dispatch as check_dispatch
+                else:
+                    from collector.glm53flash_vllm_graph_export import check_dispatch
 
                 check_dispatch(row, vllm_graph_snapshot)
             else:
@@ -599,7 +604,11 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
             raise ValueError("Ops calibration evidence belongs to another native run")
     graph_proof = None
     if graph:
-        from collector.glm53flash_graph_export import read_graph_run, verify_evidence
+        if serving:
+            from collector.glm53flash_vllm_serving_export import read_serving_run as read_graph_run
+            from collector.glm53flash_vllm_serving_export import verify_evidence
+        else:
+            from collector.glm53flash_graph_export import read_graph_run, verify_evidence
 
         graph_proof = read_graph_run(root, run)
         if run["role"] == "calibration" and calibration_evidence:
@@ -694,6 +703,10 @@ def _bind_raw_to_forwards(root: Path, tp: int) -> None:
 
 def bind_calibration(paths: list[Path], frozen_run: dict, native_receipt: dict) -> dict:
     """Reaggregate retained native rows and compare every selected physical row."""
+    if frozen_run["spec"].get("ops_execution_mode") == "native_serving":
+        from collector.glm53flash_vllm_serving_export import bind_calibration as bind_serving
+
+        return bind_serving(paths, frozen_run, native_receipt)
     if frozen_run["spec"].get("ops_execution_mode") == "native_full_graph":
         from collector.glm53flash_graph_export import bind_calibration as bind_graph
 

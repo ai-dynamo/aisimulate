@@ -794,3 +794,57 @@ produce a measured row. Native source parameters, callback0, and all failed
 proofs remain evidence; copying is charged once to its actual operation owner.
 The new native GetParams ABI and full SGLang B1 replay remain subject to actual
 CPU and GPU qualification. vLLM mapping keeps the previous strict default.
+
+
+### Native serving schema3
+
+`glm53flash_vllm_serving_export.py` implements an explicit `native_serving`
+reader for vLLM homogeneous prefill/decode. Existing SGLang schema1 and vLLM
+FULL-only schema2 retain their original meanings. Schema3 stores each of the
+277 physical operation names separately plus exactly one runtime setup term;
+it does not merge different layers merely because their geometries match.
+Every point uses all intervals from the rank with the largest actual
+metadata-to-logits GPU interval for that same forward, with the lowest rank
+breaking exact ties. Five original warmups remain in the evidence and ten
+measured repetitions form each median. The result is an additive measured-unit
+approximation, not an exact critical path or an arbitrary PDL scheduler.
+
+The stable policy contains the complete initialized native capture descriptors,
+priority candidates, PIECEWISE entries, source pins, checkpoint/runtime identity,
+and actual EngineArgs hash with only seed excluded. Its native snapshot has no
+invented schema-version field. Per-attempt file hashes, native executable IDs
+and rank selection are retained separately. FULL uses its native padded request
+count; PIECEWISE uses its captured token bucket and actual active request count;
+NONE uses actual B*Q tokens and B requests. Context Q1 never becomes decode FULL.
+Tables key phase/B/Q/past/physical tokens/physical requests as well as the full
+operation geometry and name. RuntimeContext context `num_tokens` remains B*Q,
+including logits; the native logits primitive independently selects B rows.
+
+The reader reconstructs every FULL/PW executable from original source nodes and
+CUPTI callbacks, including unique source and live executable identities across
+descriptors. PIECEWISE keeps its native graph/eager segment order; one physical
+operation can own activity in several segments and is charged by its interval
+union once. Every replay trace has a unique native run/rank/invocation identity,
+its GPU activities and runtime API correlations are rechecked, and independent
+control executes the same requests/configuration without operation profiling.
+Zero-activity operations require actual completed native call evidence. Setup
+contains source-owned device work; no whole-forward residual creates a cost.
+
+`export_serving(..., control_root=..., control_run=...)` writes a new canonical
+`glm53flash_graph_perf.parquet` only after these checks and the common native
+request/state/hardware reader. `bind_calibration` recomputes original evidence
+and compares every row. The public homogeneous prediction helper requires that
+binding, verifies current table hashes, and returns it with the predictions.
+Holdout policy checks cannot supply prediction dispatch or missing measurements.
+The shared acceptance path preserves the independent whole-forward 20% gate.
+
+Initial interpolation is history-P only, with fixed phase/B/Q/name/mode/padded
+geometry and equal nonempty actual dispatch fingerprints within the native
+state partition. The frozen 397 calibration / 221 holdout geometry has only a
+185-point structural P-only upper bound; all 36 uncovered points are P0 with
+unsampled Q. Existing Q neighbors do not prove kernel compatibility. Q-axis
+support requires measured source-bound specialization/workload-extent evidence;
+there is no geometry-only waiver or residual scaling. NONE diagnostic files
+remain `DIAGNOSTIC_ONLY_NO_TABLE_EXPORT` and are rejected even for exact hits.
+Its measured producer admission remains a separate native qualification step.
+No schema or TEST_ONLY test admits a repaired runtime or establishes GPU accuracy.
