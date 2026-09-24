@@ -317,13 +317,24 @@ read-only node path is a separate implementation and preserves that failure to
 establish equivalence.
 
 CUDA API references (original bindings; no upstream code copied):
-https://docs.nvidia.com/cuda/archive/11.4.1/pdf/CUDA_Runtime_API.pdf
-(`cudaStreamGetCaptureInfo_v2`, legal graph inspection during capture),
-https://docs.nvidia.com/cuda/archive/12.4.1/cuda-runtime-api/group__CUDART__GRAPH.html
-(`cudaGraphGetNodes`, `cudaGraphGetEdges`, `cudaGraphNodeGetType`), and
+https://docs.nvidia.com/cuda/archive/13.0.2/cuda-runtime-api/group__CUDART__STREAM.html
+(`cudaStreamGetCaptureInfo`, seven arguments including edge metadata),
+https://docs.nvidia.com/cuda/archive/13.0.2/cuda-runtime-api/group__CUDART__GRAPH.html
+(`cudaGraphGetNodes`, five-argument `cudaGraphGetEdges`, `cudaGraphNodeGetType`),
+https://docs.nvidia.com/cuda/archive/13.0.2/cuda-runtime-api/structcudaGraphEdgeData.html
+(eight-byte dependency metadata, retained including nondefault PDL edges), and
 https://docs.nvidia.com/cupti/13.1.0/api/group__CUPTI__ACTIVITY__API.html
 (`cuptiGetGraphId`, `cuptiGetGraphNodeId`). Actual loaded CUDA/CUPTI binary hashes
 are recorded separately; API documentation is not substituted for runtime proof.
+CPU607166 verified both frozen ARM64 containers export the CUDA13 names and
+installed declarations above. Their actual `libcudart.so.13` SHA256 is
+`7bdba2b5b08cbdc85203c41cc94598adedb1bcfea7cb574ca693ac73599e4e63`;
+the selected CUDA13 header SHA256 is
+`3f91d3f84f1aafb17cccc475803f9c489b6474f2a3bf0fbc75a5380821c966e0`.
+The original CPU606857 failure remains recorded: the CUDA12-era
+`cudaStreamGetCaptureInfo_v2` symbol is absent. This ABI correction neither
+qualifies GPU graph timing nor changes any already frozen attempt. Other CUDA
+major versions fail explicitly before calling the capture-query ABI.
 Native SGLang source pin94602c9 additionally binds
 `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`
 and `python/sglang/srt/model_executor/runner/shape_key.py`.

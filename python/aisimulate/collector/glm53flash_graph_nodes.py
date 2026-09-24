@@ -16,6 +16,17 @@ import math
 from pathlib import Path
 
 
+class GraphEdgeData(ctypes.Structure):
+    """CUDA13 documented eight-byte edge ABI; preserve nondefault PDL data."""
+
+    _fields_ = (
+        ("from_port", ctypes.c_ubyte),
+        ("to_port", ctypes.c_ubyte),
+        ("type", ctypes.c_ubyte),
+        ("reserved", ctypes.c_ubyte * 5),
+    )
+
+
 def _library(stem):
     mapped = {
         line.split()[-1]
@@ -57,20 +68,31 @@ class NativeGraphAPI:
         pointer = ctypes.c_void_p
         pointer_out = ctypes.POINTER(pointer)
         size_out = ctypes.POINTER(ctypes.c_size_t)
+        self._bind(self.runtime, "cudaRuntimeGetVersion", [ctypes.POINTER(ctypes.c_int)])
+        version = ctypes.c_int()
+        self._call(self.runtime.cudaRuntimeGetVersion, ctypes.byref(version))
+        if version.value // 1000 != 13:
+            raise RuntimeError("native graph query ABI currently requires verified CUDA13 runtime")
+        self.libraries["cudart"].update(runtime_version=version.value, abi="CUDA13_capture7_edges5")
         self._bind(
             self.runtime,
-            "cudaStreamGetCaptureInfo_v2",
+            "cudaStreamGetCaptureInfo",
             [
                 pointer,
                 ctypes.POINTER(ctypes.c_int),
                 ctypes.POINTER(ctypes.c_ulonglong),
                 pointer_out,
                 ctypes.POINTER(pointer_out),
+                ctypes.POINTER(ctypes.POINTER(GraphEdgeData)),
                 size_out,
             ],
         )
         self._bind(self.runtime, "cudaGraphGetNodes", [pointer, pointer_out, size_out])
-        self._bind(self.runtime, "cudaGraphGetEdges", [pointer, pointer_out, pointer_out, size_out])
+        self._bind(
+            self.runtime,
+            "cudaGraphGetEdges",
+            [pointer, pointer_out, pointer_out, ctypes.POINTER(GraphEdgeData), size_out],
+        )
         self._bind(self.runtime, "cudaGraphNodeGetType", [pointer, ctypes.POINTER(ctypes.c_int)])
         self._bind(self.cupti, "cuptiGetGraphId", [pointer, ctypes.POINTER(ctypes.c_uint32)])
         self._bind(self.cupti, "cuptiGetGraphNodeId", [pointer, ctypes.POINTER(ctypes.c_uint64)])
@@ -90,11 +112,12 @@ class NativeGraphAPI:
     def snapshot(self, stream: int) -> dict:
         status, capture_id, graph = ctypes.c_int(), ctypes.c_ulonglong(), ctypes.c_void_p()
         self._call(
-            self.runtime.cudaStreamGetCaptureInfo_v2,
+            self.runtime.cudaStreamGetCaptureInfo,
             stream,
             ctypes.byref(status),
             ctypes.byref(capture_id),
             ctypes.byref(graph),
+            None,
             None,
             None,
         )
@@ -118,12 +141,22 @@ class NativeGraphAPI:
             nodes[node_id.value] = {"node_type": node_type.value}
             by_handle[handle] = node_id.value
         count = ctypes.c_size_t()
-        self._call(self.runtime.cudaGraphGetEdges, graph, None, None, ctypes.byref(count))
+        self._call(self.runtime.cudaGraphGetEdges, graph, None, None, None, ctypes.byref(count))
         sources, targets = (ctypes.c_void_p * count.value)(), (ctypes.c_void_p * count.value)()
-        self._call(self.runtime.cudaGraphGetEdges, graph, sources, targets, ctypes.byref(count))
+        metadata = (GraphEdgeData * count.value)()
+        self._call(self.runtime.cudaGraphGetEdges, graph, sources, targets, metadata, ctypes.byref(count))
         edges = [
-            [by_handle[source], by_handle[target]]
-            for source, target in zip(sources[: count.value], targets[: count.value], strict=True)
+            {
+                "from": by_handle[source],
+                "to": by_handle[target],
+                "from_port": data.from_port,
+                "to_port": data.to_port,
+                "type": data.type,
+                "reserved": list(data.reserved),
+            }
+            for source, target, data in zip(
+                sources[: count.value], targets[: count.value], metadata[: count.value], strict=True
+            )
         ]
         return {"capture_id": capture_id.value, "graph_id": graph_id.value, "nodes": nodes, "edges": edges}
 

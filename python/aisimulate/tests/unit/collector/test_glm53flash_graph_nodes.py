@@ -2,11 +2,119 @@
 # SPDX-License-Identifier: Apache-2.0
 """CPU integrity tests; synthetic graph nodes never qualify GPU observations."""
 
+import ctypes
+from types import SimpleNamespace
+
 import pytest
 
+from collector import glm53flash_graph_nodes as graph_nodes
 from collector.glm53flash_graph_nodes import CaptureNodeRegistry, bind_replay_kernels
 
 pytestmark = pytest.mark.unit
+
+
+def native_abi_fixture(monkeypatch, version=13000):
+    """Exercise real ctypes pointer writes; these are never GPU evidence."""
+    pointer = ctypes.c_void_p
+    pointer_out = ctypes.POINTER(pointer)
+    size_out = ctypes.POINTER(ctypes.c_size_t)
+    edge_type = graph_nodes.GraphEdgeData
+    runtime, cupti = SimpleNamespace(), SimpleNamespace()
+
+    def attach(library, name, arguments, implementation):
+        function = ctypes.CFUNCTYPE(ctypes.c_int, *arguments)(implementation)
+        function.__name__ = name
+        setattr(library, name, function)
+
+    def write_version(result):
+        result[0] = version
+        return 0
+
+    def capture(stream, status, capture_id, graph, dependencies, edges, count):
+        assert stream == 77 and not dependencies and not edges and not count
+        status[0], capture_id[0], graph[0] = 1, 3, 100
+        return 0
+
+    def nodes(graph, handles, count):
+        assert graph == 100
+        if handles:
+            handles[0], handles[1] = 101, 102
+        count[0] = 2
+        return 0
+
+    def edges(graph, sources, targets, data, count):
+        assert graph == 100
+        if sources:
+            assert data
+            sources[0], targets[0] = 101, 102
+            data[0].from_port, data[0].to_port, data[0].type = 2, 0, 1
+            data[0].reserved[:] = [3, 4, 5, 6, 7]
+        count[0] = 1
+        return 0
+
+    def graph_id(graph, result):
+        result[0] = 4
+        return 0
+
+    def node_id(node, result):
+        result[0] = node + 1000
+        return 0
+
+    def node_type(node, result):
+        result[0] = 0
+        return 0
+
+    attach(runtime, "cudaRuntimeGetVersion", [ctypes.POINTER(ctypes.c_int)], write_version)
+    attach(
+        runtime,
+        "cudaStreamGetCaptureInfo",
+        [
+            pointer,
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_ulonglong),
+            pointer_out,
+            ctypes.POINTER(pointer_out),
+            ctypes.POINTER(ctypes.POINTER(edge_type)),
+            size_out,
+        ],
+        capture,
+    )
+    attach(runtime, "cudaGraphGetNodes", [pointer, pointer_out, size_out], nodes)
+    attach(
+        runtime, "cudaGraphGetEdges", [pointer, pointer_out, pointer_out, ctypes.POINTER(edge_type), size_out], edges
+    )
+    attach(runtime, "cudaGraphNodeGetType", [pointer, ctypes.POINTER(ctypes.c_int)], node_type)
+    attach(cupti, "cuptiGetGraphId", [pointer, ctypes.POINTER(ctypes.c_uint32)], graph_id)
+    attach(cupti, "cuptiGetGraphNodeId", [pointer, ctypes.POINTER(ctypes.c_uint64)], node_id)
+    monkeypatch.setattr(graph_nodes, "_library", lambda name: ({"cudart": runtime, "cupti": cupti}[name], {}))
+
+
+def test_cuda13_pointer_abi_retains_nondefault_dependency_metadata(monkeypatch):
+    native_abi_fixture(monkeypatch)
+    api = graph_nodes.NativeGraphAPI()
+    result = api.snapshot(77)
+    assert result["graph_id"] == 4 and result["capture_id"] == 3
+    assert result["nodes"] == {1101: {"node_type": 0}, 1102: {"node_type": 0}}
+    assert result["edges"] == [
+        {"from": 1101, "to": 1102, "from_port": 2, "to_port": 0, "type": 1, "reserved": [3, 4, 5, 6, 7]}
+    ]
+    assert ctypes.sizeof(graph_nodes.GraphEdgeData) == 8
+    assert [
+        getattr(graph_nodes.GraphEdgeData, name).offset for name in ("from_port", "to_port", "type", "reserved")
+    ] == [
+        0,
+        1,
+        2,
+        3,
+    ]
+    assert api.libraries["cudart"] == {"runtime_version": 13000, "abi": "CUDA13_capture7_edges5"}
+
+
+@pytest.mark.parametrize("version", [12080, 14000])
+def test_unverified_cuda_major_cannot_use_cuda13_capture_abi(monkeypatch, version):
+    native_abi_fixture(monkeypatch, version)
+    with pytest.raises(RuntimeError, match="verified CUDA13"):
+        graph_nodes.NativeGraphAPI()
 
 
 def test_nested_collective_nodes_have_one_owner_without_interval_subtraction():

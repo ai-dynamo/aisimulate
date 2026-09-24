@@ -26,9 +26,13 @@ Native Ops collection and its Rust measured consumer are implemented on the
 shared SOL graph. The observer covers all 45 attention modules, 45 whole FFNs,
 backend-specific mHC sites, embedding, final norm, logits and 91 TP all-reduces.
 Local compute and synchronous collective intervals are separately accounted;
-unobserved or overlapping boundaries fail admission. The current observer
-admits explicit eager execution only. Production CUDA-graph collection and
-replay-bound timing remain unfinished.
+unobserved or overlapping boundaries fail admission. The measured-table contract
+currently admits explicit eager execution only. An experimental SGLang FULL
+decode observer now assigns native capture nodes to operation boundaries and
+joins those IDs to actual CUPTI replay activity. It inserts no CUDA graph nodes;
+its separate holdout observes only the complete native replay. This path emits
+raw evidence, not admitted profiles. Actual native qualification, profiling
+controls, complete metadata-node accounting and graph prediction remain pending.
 
 Measured lookup keeps exact physical identity, backend, checkpoint, TP and phase.
 Bounded workload interpolation requires complete measured corners with matching
@@ -39,11 +43,14 @@ SILICON and HYBRID; neither mode silently falls back to SOL. The installed wheel
 constructs all eight required model graphs and rejects missing measurements in
 all eight SILICON and all eight HYBRID checks.
 
-Current focused validation passed 17 Rust GLM tests and 79 Ops contract, evidence,
-native V2 runtime and shared retained-lifecycle tests. A wheel built from commit
-`5e13be56` passed installation checks outside the source checkout, including
-12 collector/evidence helper imports, all eight model graphs and 16 strict
-missing-measurement queries. The earlier broad collector
+Current graph-node/hook validation passes 23 CPU tests, including CUDA13 ABI
+pointer writes and retention of nondefault dependency metadata. The preceding
+graph/runtime change passed 112 focused tests. Historical validation passed
+17 Rust GLM tests and 79 Ops contract, evidence, native V2 runtime and shared
+retained-lifecycle tests. The installed wheel from commit `a1142ea3` verified
+2,165 RECORD entries, 14 collector/evidence helper imports, all eight model
+graphs and 16 strict missing-measurement queries. Later graph additions still
+require an updated installed-wheel check. The earlier broad collector
 run passed 2,362 tests (8 skipped); that count is historical and predates the
 latest bounded evidence and native launch fixes. These checks establish software
 behavior and evidence integrity, not native GPU performance coverage.
@@ -76,7 +83,18 @@ wraps that actual class and joins its separate model and logits completion
 phases; its whole-GPU event ends at `compute_logits`, before sampling. An actual
 pinned-class CPU probe verified all four entry wrappers. SGLang uses the actual
 Engine constructor and initializes the same overlap result queue as its native
-loop. New immutable GPU retries are pending; prior failed inputs remain intact.
+loop. Subsequent GPU attempts exposed native initialization warmups entering the
+vLLM observer and an SGLang lazy QKV callback nested inside attention. Both have
+specific source-bound fixes and new immutable retries; prior failures remain
+intact. No completed Ops performance qualification is claimed.
+
+An actual GB300 primitive test established that capture-bound external CUDA
+events update on replay, but increased the measured outer window by about 47%.
+That result is preserved as a failed timing-equivalence control. The separate
+read-only node observer first failed CPU binding against CUDA13; installed
+headers and symbols now establish the corrected seven-argument capture-info
+and five-argument edge-query ABI. These diagnostics do not establish native
+model graph coverage or prediction accuracy.
 
 See [the collector contract](../python/aisimulate/collector/README.glm53flash.md),
 [the Ops evidence adapter](../python/aisimulate/collector/glm53flash_validation.py)
