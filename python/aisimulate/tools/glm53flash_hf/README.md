@@ -89,11 +89,12 @@ archive helper are deliberately insufficient. Binding verifies:
 
 ## Archive the closed campaigns on the storage host
 
-`raw_archive.py`, `raw_campaign.py` and `external_control.py` are original Apache-2.0 implementations
+`raw_archive.py`, `raw_campaign.py`, `external_control.py` and
+`external_control_vllm.py` are original Apache-2.0 implementations
 using only Python's standard library. They can run with Python 3.12 on the
 remote Lustre host without importing AISimulate, torch, Arrow or a GPU runtime.
 These are repository maintenance tools, not installed SDK entry points. For
-remote use, deploy all three modules together in a new
+remote use, deploy all four modules together in a new
 versioned bundle directory, retain the Apache-2.0 license, and record the exact
 AISimulate source commit and SHA256 of every file before transfer. Recheck all
 hashes on the destination and invoke `python3.12 /bundle/raw_campaign.py`; do not
@@ -205,18 +206,19 @@ stage; synthetic/test/diagnostic markers are rejected with no production bypass.
 
 ### Retain external cache-hook execution controls
 
-For a campaign using the task-private `sitecustomize.py` cache hook, the accepted
+For a campaign using a task-private Python startup cache hook, the accepted
 input manifest must include an `external_control: {path, sha256}` receipt on each
 calibration/holdout role spec. This is a **post-execution attachment** preserving
 the existing launch chain: original `started.json` hashes the frozen admission
 and launcher manifest; those files enumerate the original source and CPU proof
 bytes. Attachment creation does not establish that new files existed before a
 measurement. The original native data and frozen plans remain unchanged.
-The current adapter is explicitly `sglang_pid_private_sitecustomize_v1`, pinned
+The default adapter is `sglang_pid_private_sitecustomize_v1`, pinned
 to the observed SGLang 0.5.20 launch. It requires the admitted hook at the first
-native PYTHONPATH entry and its read-only `/opt/glm53flash-cache` mount. A vLLM
-bootstrap that then invokes a packaged observer needs a separately validated
-adapter bound to its actual freeze; this adapter cannot qualify that chain.
+native PYTHONPATH entry and its read-only `/opt/glm53flash-cache` mount.
+The separate vLLM adapter below requires the original packaged observer and
+Python's `usercustomize` route. It does not accept the historical bootstrap that
+manually invoked another `sitecustomize`.
 
 After all children have closed, create a request JSON with these fields:
 
@@ -283,6 +285,90 @@ For the first SG campaign, parent runtime preflight hashes 24 SGLang source file
 rank evidence separately records state layout, GPU identity and cache startup.
 The control attachment preserves this distinction and creates no per-rank source
 hashes or accuracy acceptance claims.
+
+### vLLM packaged observer plus usercustomize
+
+Set the request's `adapter` to `vllm_packaged_observer_usercustomize_v1`.
+Retain the same launcher/admission/source anchors and add the following exact
+eight-anchor set (paths below illustrate the schema, not published evidence):
+
+```json
+{
+  "launcher_manifest": "launch/manifest.sha256",
+  "admission": "launch/admission.json",
+  "source_identity": "preparation/source.json",
+  "cache_cpu_result": "cpu/public-environment-receipt.json",
+  "cache_hook": "cpu-bundle/cache-hook/cache_hook.py",
+  "usercustomize": "cpu-bundle/cache-hook/usercustomize.py",
+  "observer_entry": "cpu/diagnostic-cell/slurm-runtime/sitecustomize.py",
+  "runtime_manifest": "cpu/diagnostic-cell/slurm-runtime/runtime-source-sha256.json"
+}
+```
+
+Before executing any formal child, its original admission must contain `backend:
+"vllm"`, the exact `framework_version`, and a `vllm_startup` object:
+
+```json
+{
+  "cpu_result": "cpu/result.json",
+  "cpu_source_identity": "cpu-bundle/source.json",
+  "cpu_bundle_manifest": "cpu-bundle/manifest.sha256",
+  "cpu_identity_paths": [
+    "cpu/diagnostic-cell/raw/node0000/preparation-identity.json",
+    "cpu/diagnostic-cell/raw/node0000/execution-identity.json"
+  ],
+  "mounts": {
+    "/opt/glm53flash-cache": "/lustre/task/cpu-bundle/cache-hook",
+    "/opt/glm53flash-current": "/lustre/task/current-producer-python",
+    "/opt/glm53flash-candidate": "/lustre/task/candidate-python",
+    "/opt/glm53flash-dynamo": "/lustre/task/dynamo-python"
+  }
+}
+```
+
+Admission bindings must enumerate all CPU bundle manifest members, original
+result/public/prepare/execute JSON, both CPU processes' original cache/order JSON,
+and the staged observer, runtime manifest, scheduler and worker hook. Include
+every child's staged `run.sh`, `collector-runtime-env.sh`, observer, manifest,
+scheduler and worker hook. CPU source/wheel/version must equal the admitted
+producer; a historical CPU receipt for a different producer cannot qualify it.
+The child scheduler is compared with the original CPU staging bytes. The worker
+hook is also compared with its original CPU observed source SHA. This preserves
+what was actually recorded without inventing a historical scheduler source hash.
+
+The frozen native environment must use the exact PYTHONPATH order
+`/tmp/fpm-bench:/opt/glm53flash-cache:/opt/glm53flash-current:/opt/glm53flash-candidate:/opt/glm53flash-dynamo`,
+normal Python startup, `DYN_FPM_GLM53FLASH_REAL_KV=1` and
+`AISIM_GLM53_PURPOSE=fpm`. Runtime mounts must be read-only and cannot shadow
+those paths. Every child keeps its own original started/admission/launcher chain.
+
+After execution, each request `runs[]` item also supplies `nvml_receipt` and
+`nvml_stdout` paths, plus `workers` in exact TP-rank order. Every worker object
+has exactly `device`, `cache`, and `order` paths: its original
+`native-device-rank-N.json`, `cache-setup-PID.json` and
+`cache-startup-order-PID.json` from the selected native raw root. The independent
+original NVML command receipt must retain the job, observation timestamp, exit
+code, output SHA and exact `srun --jobid=JOB --overlap --ntasks=1 --nodes=1
+--cpus-per-task=1 nvidia-smi --query-compute-apps=pid,gpu_uuid,process_name,used_gpu_memory
+--format=csv,noheader` argv. Preserve its original CSV; a derived join assertion
+alone is insufficient.
+
+The adapter recomputes worker rank → native GPU UUID → original NVML
+`VLLM::Worker_TPN` PID → original startup receipts. It requires distinct workers,
+complete TP2/TP4 coverage, matching native provenance/version, the same observed
+47-file runtime closure (including 19 binaries) as both original CPU processes,
+and PID/allocation-private cache paths created before framework imports. Final
+binding also requires each worker receipt's exact bytes in the accepted native
+file inventory and physical archive. This does not replace the strict native
+reader or its runtime admission checks. CPU helpers' cache receipts cannot stand
+in for native GPU workers.
+
+This adapter's complete launch tests are **TEST_ONLY**. The original CPU 610254
+and GPU 610709 files support component replay only; no formal vLLM admission or
+accepted archive has been constructed from those qualification jobs. Final
+formal archive acceptance remains pending the actual frozen launch, its own
+worker witnesses, and accepted calibration/holdout data. Failed attempts and
+diagnostics remain preserved under their original scope.
 
 The new dataset contains the entire original publication stage and raw archive
 receipts under `campaigns/glm53flash-pr324/<stage-sha256>/`, and eight normal
