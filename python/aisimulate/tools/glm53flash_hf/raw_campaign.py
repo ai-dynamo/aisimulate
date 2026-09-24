@@ -18,8 +18,10 @@ import stat
 from pathlib import Path
 
 if __package__:
+    from . import external_control
     from . import raw_archive as archive
 else:
+    import external_control
     import raw_archive as archive
 
 FIELDS = ("backend", "weight_quantization", "tp", "phase", "role")
@@ -161,6 +163,46 @@ def native_pairs(spec, evidence):
         "accepted shard union mismatch",
     )
     return [(children[cid], observed[cid]) for cid in sorted(children)]
+
+
+def external_controls(spec, record, root, pairs, paths, source):
+    plans = {path: read(file) for path, file in paths.items()}
+    uses_hook = any(
+        Path(item["path"]).name.startswith("cache-setup-") for _, evidence in pairs for item in evidence["receipts"]
+    ) or any(
+        "/opt/glm53flash-cache" in mount
+        for plan in plans.values()
+        for mount in plan.get("options", {}).get("slurm_container_mounts", [])
+    )
+    expected = spec.get("external_control")
+    actual = record.get("external_control")
+    require(not uses_hook or expected is not None, "external cache hook requires original execution controls")
+    require((expected is None) == (actual is None), "missing/unexpected external control attachment")
+    if expected is None:
+        return {}
+    require(
+        actual["original_path"] == expected["path"] and actual["sha256"] == expected["sha256"],
+        "external control differs from accepted input manifest",
+    )
+    manifest = checked(root, actual)
+    document = read(manifest)
+    production(document)
+    index, get, admission = external_control.validate(manifest.parent, document)
+    external_control.bind_role(
+        document,
+        get,
+        admission,
+        pairs,
+        plans,
+        record["manifest_base"],
+        archive.inventory_records(checked(root, record["source_inventory"])),
+        source,
+    )
+    files = {actual["path"]: actual["sha256"]}
+    for item in index.values():
+        path = manifest.parent / item["path"]
+        files[path.relative_to(root).as_posix()] = item["sha256"]
+    return files
 
 
 def consumer_sources(stage_root, stage, entry, cell):
@@ -354,7 +396,8 @@ def _bindings(stage_root, ctx, record, root):
                 observed[prefix][item["path"][len(prefix) + 1 :] if prefix else item["path"]] = item["sha256"]
     require(root_stat == archive_input["source_root_stat"], "archive input root stat differs from inventory")
     require(observed == expected_files, "archived accepted native file set/SHA differs from acceptance")
-    return roots, consumer_sources(stage_root, stage, entry, cell), counts
+    external_files = external_controls(spec, record, root, pairs, paths, source)
+    return roots, consumer_sources(stage_root, stage, entry, cell), counts, external_files
 
 
 def validate(records, stage_root, root):
@@ -445,7 +488,10 @@ def validate(records, stage_root, root):
             and archive_input["external_uri"] == record["uri"],
             "archive input manifest mismatch",
         )
-        roots, consumers, counts = _bindings(stage_root, ctx, record, root)
+        roots, consumers, counts, external_files = _bindings(stage_root, ctx, record, root)
+        for path, digest in external_files.items():
+            require(path not in files or files[path] == digest, "conflicting external control files")
+            files[path] = digest
         require(
             record["native_roots"] == roots and record["consumer_sources"] == consumers,
             "raw/consumer source binding mismatch",
@@ -566,7 +612,28 @@ def bind(stage_root, plan, bundles, destination):
                     shutil.copyfile(source, copied)
                 controls.append(dict(receipt(copied, destination), original_path=item["path"]))
             record["controls"] = controls
-            roots, consumers, _ = _bindings(stage_root, ctx, record, destination)
+            if "external_control" in spec:
+                item = spec["external_control"]
+                original = archive.absolute_safe(original_path(plan["manifest_base"], item["path"]))
+                require(archive.sha_file(original) == item["sha256"], "external control manifest changed")
+                document = read(original)
+                index, get, _ = external_control.validate(original.parent, document)
+                copied = destination / "external-controls" / item["sha256"]
+                (copied / "files").mkdir(parents=True, exist_ok=True)
+                for source_item in index.values():
+                    content = get(source_item["original_path"])
+                    target_file = copied / source_item["path"]
+                    if not target_file.exists():
+                        with target_file.open("xb") as stream:
+                            stream.write(content)
+                    require(archive.sha_file(target_file) == source_item["sha256"], "copied external control changed")
+                copied_manifest = copied / "external-control.json"
+                if not copied_manifest.exists():
+                    with copied_manifest.open("xb") as stream:
+                        stream.write(original.read_bytes())
+                require(archive.sha_file(copied_manifest) == item["sha256"], "copied external manifest changed")
+                record["external_control"] = dict(receipt(copied_manifest, destination), original_path=item["path"])
+            roots, consumers, _, _ = _bindings(stage_root, ctx, record, destination)
             record.update(native_roots=roots, consumer_sources=consumers)
             records.append(record)
         validate(records, stage_root, destination)
