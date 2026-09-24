@@ -83,6 +83,7 @@ def test_all_required_glm_deployments_render_native_precision_and_scope(tmp_path
         assert "--enable-expert-parallel" not in argv
         if backend == "vllm":
             assert "--cudagraph-metrics" in argv and "--language-model-only" in argv
+            assert "--no-enable-prefix-caching" in argv
             assert "--compilation-config" not in argv
         else:
             assert "collector.fpm_forward.sglang_driver" in argv
