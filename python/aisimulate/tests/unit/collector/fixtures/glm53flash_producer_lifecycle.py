@@ -200,3 +200,13 @@ for prefix, admitted in [(131071, True), (131072, False)]:
     else:
         assert admitted
 print("GLM real-state repetition, unaligned-tail capacity, inclusive-context, median and dispatch gates passed")
+
+# Pool-start qualification is independent of memory-capacity feasibility.
+for prefix, query, admitted in [(4096, 3, True), (4097, 3, False), (4097, 4, False), (4099, 1, True)]:
+    scheduler = precedent.scheduler(precedent.point("prefill", batch=1, context=prefix, new=query))
+    try:
+        scheduler._real_validate_grid()
+    except ValueError as error:
+        assert not admitted and "cached-prefill start is unqualified" in str(error)
+    else:
+        assert admitted

@@ -261,6 +261,16 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             ):
                 raise ValueError("GLM-5.3-Flash canary point exceeds batch/context bound")
             if point.point_type == "prefill":
+                # Stock vLLM's prefill pooling assumes pool-aligned starts.
+                # GB300 split/one-shot probes fail at P4097/Q3 and Q4; keep
+                # the broader unaligned-start contract unqualified, including
+                # geometries that were not individually numerically probed.
+                if any(p % 4 and q >= 2 for p, q in zip(prefix, suffix, strict=True)):
+                    raise ValueError(
+                        "stock vLLM IndexPool cached-prefill start is unqualified: "
+                        f"benchmark_id={point.benchmark_id}, prefixes={prefix}, queries={suffix}; "
+                        "requires a separately qualified runtime repair, no coordinate substitution"
+                    )
                 if sum(suffix) > MAX_NEW:
                     raise ValueError("GLM-5.3-Flash canary prefill exceeds total new-token bound")
                 if any(p + q > MAX_CONTEXT for p, q in zip(prefix, suffix, strict=True)):
