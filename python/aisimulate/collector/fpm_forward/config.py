@@ -12,6 +12,8 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
+from .sglang_allocator import cli_max_split_size, validate_max_split_size
+
 FPM_FORWARD_OP = "fpm_forward"
 FPM_WARMUP_ITERATIONS = 5
 FPM_MEASUREMENT_REPEATS = 1
@@ -275,9 +277,11 @@ class FPMCollectionOptions:
     input_text_sha256: str = ""
     dataset_role: str = "calibration"
     sglang_mem_fraction_static: float | None = None
+    sglang_allocator_max_split_size_mb: int | None = None
 
     def __post_init__(self) -> None:
         validate_sglang_mem_fraction_static(self.sglang_mem_fraction_static)
+        validate_max_split_size(self.sglang_allocator_max_split_size_mb)
 
     @property
     def prefill_sampling(self) -> PrefillSamplingProfile:
@@ -351,6 +355,7 @@ class FPMCollectionOptions:
             ),
             dataset_role=getattr(args, "fpm_dataset_role", None) or "calibration",
             sglang_mem_fraction_static=getattr(args, "sglang_mem_fraction_static", None),
+            sglang_allocator_max_split_size_mb=getattr(args, "sglang_allocator_max_split_size_mb", None),
             benchmark_points_json=points_json,
             benchmark_points_sha256=points_sha256,
             shard_token_budget=getattr(args, "fpm_shard_token_budget", None),
@@ -422,6 +427,8 @@ class FPMCollectionOptions:
             "point_source": "dynamo_native_self_benchmark",
             "prefill_sampling": self.prefill_sampling.to_dict(),
         }
+        if self.sglang_allocator_max_split_size_mb is not None:
+            payload["sglang_allocator_max_split_size_mb"] = self.sglang_allocator_max_split_size_mb
         if self.sglang_mem_fraction_static is not None:
             payload["sglang_mem_fraction_static"] = self.sglang_mem_fraction_static
         if self.enforce_eager:
@@ -461,6 +468,12 @@ def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group(
         "FPM forward collection",
         "Whole-model forward-pass planning, execution, and publication.",
+    )
+    group.add_argument(
+        "--sglang-allocator-max-split-size-mb",
+        type=cli_max_split_size,
+        default=None,
+        help="SGLang-only native allocator max split size in MiB (>=20); omit for the original allocator default.",
     )
     group.add_argument(
         "--sglang-mem-fraction-static",
@@ -718,6 +731,7 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
     explicitly_set = []
     for name in (
         "sglang_mem_fraction_static",
+        "sglang_allocator_max_split_size_mb",
         "fpm_max_gpus",
         "fpm_gpu_counts",
         "fpm_weight_quantizations",

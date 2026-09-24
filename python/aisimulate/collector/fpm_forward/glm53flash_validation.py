@@ -46,7 +46,7 @@ def digest(value) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
-def _sglang_execution_policy(config: dict) -> dict:
+def _sglang_execution_policy(config: dict, allocator: dict | None = None) -> dict:
     """Compare actual serving settings except the native per-process random_seed.
 
     Keep the complete normalized values private: ServerArgs may contain API
@@ -60,19 +60,22 @@ def _sglang_execution_policy(config: dict) -> dict:
         raise ValueError("SGLang resolved execution policy is empty")
     return {
         "execution_policy": {
-            "normalization": SGLANG_POLICY_NORMALIZATION,
-            "sha256": digest(normalized),
+            "normalization": SGLANG_POLICY_NORMALIZATION
+            if allocator is None
+            else "resolved_server_args_and_native_allocator_v2",
+            "sha256": digest(normalized if allocator is None else {"server_args": normalized, "allocator": allocator}),
         },
         "_execution_policy": normalized,
+        **({"_allocator_policy": allocator} if allocator is not None else {}),
     }
 
 
 def _require_sglang_policy(native: dict) -> str:
     policy = native.get("_execution_policy")
-    normalized = _sglang_execution_policy(policy)
+    normalized = _sglang_execution_policy(policy, native.get("_allocator_policy"))
     if "random_seed" in policy or native.get("execution_policy") != normalized["execution_policy"]:
         raise ValueError("SGLang execution policy identity differs from its actual resolved settings")
-    return canonical(policy)
+    return canonical(normalized)
 
 
 def _same_sglang_policy(left: dict, right: dict, boundary: str) -> None:
@@ -169,6 +172,14 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         requested_fraction is not None and key[0] != "sglang"
     ):
         raise ValueError("SGLang memory fraction differs between frozen plan and cell")
+    from .sglang_allocator import validate_max_split_size
+
+    requested_allocator = options.get("sglang_allocator_max_split_size_mb")
+    validate_max_split_size(requested_allocator)
+    if cell.get("sglang_allocator_max_split_size_mb") != requested_allocator or (
+        requested_allocator is not None and key[0] != "sglang"
+    ):
+        raise ValueError("SGLang allocator differs between frozen plan and cell")
     runtime_cell = SimpleNamespace(
         **{
             k: cell[k]
@@ -176,6 +187,7 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         },
         topology=SimpleNamespace(**topology),
         sglang_mem_fraction_static=requested_fraction,
+        sglang_allocator_max_split_size_mb=requested_allocator,
         execution_identity=tuple(identity[k] for k in EXECUTION_COLUMNS),
     )
     run = {
@@ -260,7 +272,12 @@ def _native_run(run: dict, base: Path) -> dict:
             from .sglang_artifact import read_receipt
 
             if run["key"][0] == "sglang":
-                policy = _sglang_execution_policy(json.loads(read_receipt(path.parent, manifest["resolved_config"])))
+                from .sglang_artifact import validate_allocator_receipts
+
+                allocator, _ = validate_allocator_receipts(run["runtime_cell"], payload, path.parent)
+                policy = _sglang_execution_policy(
+                    json.loads(read_receipt(path.parent, manifest["resolved_config"])), allocator
+                )
                 if execution_policy is not None:
                     _same_sglang_policy(execution_policy, policy, "native rank receipts")
                 execution_policy = policy
@@ -353,7 +370,11 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
                 _require_sglang_policy(native)
                 if execution_policy is not None:
                     _same_sglang_policy(execution_policy, native, "native shards")
-                execution_policy = {key: native[key] for key in ("execution_policy", "_execution_policy")}
+                execution_policy = {
+                    key: native[key]
+                    for key in ("execution_policy", "_execution_policy", "_allocator_policy")
+                    if key in native
+                }
             cid = child["cell"]["cell_id"]
             if request_ids & native["request_ids"]:
                 raise ValueError("native requests were reused across independent shard attempts")
@@ -470,6 +491,10 @@ def _bind_fpm_rows(paths: list[Path], run: dict, native: dict, *, _allowed_cells
         "cp": 1,
         "moe_tp": tp,
         "moe_ep": 1,
+        "sglang_allocator_policy_sha256": digest(native["_allocator_policy"])
+        if native.get("_allocator_policy") is not None
+        else None,
+        "sglang_allocator_max_split_size_mb": run["cell"].get("sglang_allocator_max_split_size_mb"),
         **run["cell"]["execution_identity"],
     }
     expected = {_geometry(point): native["values"][point["benchmark_id"]] for point in run["points"]}

@@ -84,6 +84,7 @@ class NativeCollection:
     # None only for artifacts predating the kvwarm-enabled runtime.
     kvwarm_meta: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | None = None
+    allocator_policy: dict[str, Any] | None = None
 
 
 def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
@@ -396,7 +397,9 @@ def validate_native_collection(
     kvwarm_meta: dict[str, Any] | None = None
     kvwarm_seen: object = _KVWARM_UNSEEN
     input_provenance: dict[str, Any] | None = None
+    allocator_policy: dict[str, Any] | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
+    allocator_seen = False
     rank_timings: list[tuple[int, float, float]] = []
 
     for path, payload in rank_payloads:
@@ -433,7 +436,11 @@ def validate_native_collection(
                 if cell.backend == "sglang":
                     from .sglang_artifact import validate_sglang_repetitions
 
-                    validate_sglang_repetitions(cell, payload, path)
+                    actual_allocator = validate_sglang_repetitions(cell, payload, path)
+                    if allocator_seen and allocator_policy != actual_allocator:
+                        raise ValueError("native rank payloads disagree on allocator policy")
+                    allocator_policy = actual_allocator
+                    allocator_seen = True
                 else:
                     from .hybrid_artifact import validate_real_hybrid_repetitions, validate_vllm_hardware_receipts
 
@@ -609,4 +616,5 @@ def validate_native_collection(
         runtime_grid_digest=run_identity[1],
         kvwarm_meta=kvwarm_meta,
         input_provenance=input_provenance,
+        allocator_policy=allocator_policy,
     )
