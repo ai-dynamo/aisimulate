@@ -21,6 +21,10 @@ use crate::operators::glm53flash::{
 };
 
 const BASENAME: &str = "glm53flash_module_perf.parquet";
+// Exact candidate admitted by the packaged four-cell functional, cache-oracle
+// and original 128K qualification summary 8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45.
+// Capacity and performance accuracy remain separate per-deployment gates.
+pub(super) const VLLM_TAIL_VERSION: &str = "0.30.0+glm53tail.eb4704514fdf";
 // Historical repaired bytes are retained only in TEST_ONLY rejection fixtures.
 #[cfg(test)]
 const REPAIRED_VLLM_VERSION: &str = "0.30.0+glm53kpool.bf5f6b0e689d";
@@ -30,11 +34,12 @@ const REPAIRED_VLLM_SOURCE: &str =
 
 /// Production admission, before every phase and every exact/interpolated hit.
 /// The old repair's bounded Engine receipts remain historical: actual long-prefix
-/// slot-map bounds failed. No repaired runtime is currently admitted.
+/// slot-map bounds failed. Only the separately qualified exact tail candidate
+/// is admitted; local version prefixes and the diagnostic reference are not.
 pub(crate) fn validate_runtime(backend: &str, version: &str) -> Result<(), AicError> {
     if !matches!(
         (backend, version),
-        ("vllm", "0.30.0") | ("sglang", "0.5.20")
+        ("vllm", "0.30.0" | VLLM_TAIL_VERSION) | ("sglang", "0.5.20")
     ) {
         return Err(invalid(
             "GLM53 native runtime is unqualified or quarantined",
@@ -280,6 +285,7 @@ pub(super) fn validate_native_workload(
         && shape["is_context"] == true
         && prefix % 4 != 0
         && query >= 2
+        && version != Some(VLLM_TAIL_VERSION)
     {
         return Err(invalid(
             "stock vLLM GLM cached prefill with unaligned IndexPool start is unqualified (prefix % 4 != 0, query >= 2); native cache oracle failed crossing pools",
@@ -912,6 +918,36 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn only_admitted_tail_can_use_unaligned_cached_prefill() {
+        let shape = serde_json::json!({"backend":"vllm", "is_context":true});
+        for prefix in [1, 118, 125, 4097, 98049] {
+            validate_native_workload("attention", &shape, prefix, 3, Some(VLLM_TAIL_VERSION))
+                .unwrap();
+            for version in [
+                None,
+                Some("0.30.0"),
+                Some(REPAIRED_VLLM_VERSION),
+                Some("0.30.0+glm53tailref.4e4a40c2a838"),
+                Some("0.30.0+glm53tail.unknown"),
+            ] {
+                assert!(validate_native_workload("attention", &shape, prefix, 3, version).is_err());
+            }
+        }
+        assert!(validate_runtime("sglang", VLLM_TAIL_VERSION).is_err());
+        // This admission does not extend the historical module-table format.
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join(BASENAME);
+        let mut cols = fixture();
+        for col in &mut cols {
+            if let Col::Str("backend_version", values) = col {
+                *values = vec![VLLM_TAIL_VERSION; 2];
+            }
+        }
+        write_parquet(&path, &cols);
+        assert!(load(&path, Some(&("vllm".into(), VLLM_TAIL_VERSION.into()))).is_err());
     }
 
     #[test]

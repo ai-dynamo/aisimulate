@@ -6,7 +6,8 @@
 //! This reader never grants runtime admission or borrows eager/FULL-only rows.
 
 use super::glm53flash::{
-    geometry, sha256, validate_geometry, validate_native_workload, validate_runtime,
+    VLLM_TAIL_VERSION, geometry, sha256, validate_geometry, validate_native_workload,
+    validate_runtime,
 };
 use super::glm53flash_graph::{VLLM_REVISION, VLLM_STOCK_SOURCE, vllm_flags, vllm_pins};
 use super::parquet_loader::PerfReader;
@@ -19,6 +20,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+const VLLM_TAIL_SOURCE: &str = "603066c63ced49b8e059ff020a372acb75539d45c9d1bff591fade9d4f51f63b";
 
 fn invalid(message: impl Into<String>) -> AicError {
     AicError::InvalidPerfData(message.into())
@@ -255,6 +258,13 @@ impl ServingPolicy {
     fn validate(&self) -> Result<(), AicError> {
         validate_runtime(&self.backend, &self.backend_version)?;
         self.native_policy.validate()?;
+        // Canonical effective model-source maps, not the four unchanged native
+        // graph-policy files or the separate worker source/library inventory.
+        let source = match self.backend_version.as_str() {
+            "0.30.0" => VLLM_STOCK_SOURCE,
+            VLLM_TAIL_VERSION => VLLM_TAIL_SOURCE,
+            _ => return Err(invalid("unqualified native serving runtime")),
+        };
         let revision = match self.checkpoint_format.as_str() {
             "fp8" => "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
             "nvfp4" => "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
@@ -262,9 +272,8 @@ impl ServingPolicy {
         };
         if self.schema_version != 3
             || self.backend != "vllm"
-            || self.backend_version != "0.30.0"
             || self.backend_revision != VLLM_REVISION
-            || self.source_sha256 != VLLM_STOCK_SOURCE
+            || self.source_sha256 != source
             || self.source_pins != vllm_pins()
             || self.checkpoint_revision != revision
             || !matches!(self.tp_size, 2 | 4)
@@ -993,7 +1002,7 @@ mod tests {
                 2 => {
                     p.piecewise_entries.pop();
                 }
-                3 => p.backend_version = "0.30.0+glm53tail.eb4704514fdf".into(),
+                3 => p.backend_version = "0.30.0+glm53tailref.4e4a40c2a838".into(),
                 _ => p
                     .native_flags
                     .insert("prefix_caching".into(), true)
@@ -1005,6 +1014,93 @@ mod tests {
         let mut encoded = serde_json::to_value(policy(true)).unwrap();
         encoded["schema_version"] = 1.into();
         assert!(serde_json::from_value::<NativePolicy>(encoded).is_err());
+    }
+
+    #[test]
+    fn admitted_tail_policy_requires_exact_source_and_matching_native_version() {
+        for piecewise in [false, true] {
+            for (format, revision) in [
+                ("fp8", "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a"),
+                ("nvfp4", "09b04e5e74bca08ca8549fc736d4cdd8624bfde3"),
+            ] {
+                for tp in [2, 4] {
+                    let mut native = policy(piecewise);
+                    native.backend_version = VLLM_TAIL_VERSION.into();
+                    native.tp_size = tp;
+                    let p = ServingPolicy {
+                        schema_version: 3,
+                        backend: "vllm".into(),
+                        backend_version: VLLM_TAIL_VERSION.into(),
+                        backend_revision: VLLM_REVISION.into(),
+                        checkpoint_format: format.into(),
+                        checkpoint_revision: revision.into(),
+                        config_sha256: SHA.into(),
+                        execution_policy_sha256: SHA.into(),
+                        native_policy_sha256: digest(&canonical(&native).unwrap()),
+                        native_policy: native,
+                        runtime_digest: format!("sha256:{SHA}"),
+                        source_pins: vllm_pins(),
+                        source_sha256: VLLM_TAIL_SOURCE.into(),
+                        timing_boundary: "native_metadata_to_logits_gpu_v1".into(),
+                        tp_size: tp,
+                    };
+                    p.validate().unwrap();
+                    for defect in 0..5 {
+                        let mut bad = p.clone();
+                        match defect {
+                            0 => bad.source_sha256 = VLLM_STOCK_SOURCE.into(),
+                            1 => bad.source_sha256 = SHA.into(),
+                            2 => bad.backend_version = "0.30.0".into(),
+                            3 => {
+                                bad.native_policy.backend_version = "0.30.0".into();
+                                bad.native_policy_sha256 =
+                                    digest(&canonical(&bad.native_policy).unwrap());
+                            }
+                            _ => {
+                                bad.source_pins
+                                    .insert("config/compilation.py".into(), SHA.into());
+                            }
+                        }
+                        assert!(bad.validate().is_err(), "defect {defect}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tail_model_source_pin_matches_packaged_python_admission_closure() {
+        let runtime = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../python/aisimulate/collector/fpm_forward/runtime");
+        let read = |relative: &str| std::fs::read_to_string(runtime.join(relative)).unwrap();
+        let mut sources: BTreeMap<String, String> =
+            serde_json::from_str(&read("glm53flash/runtime-source-sha256.json")).unwrap();
+        for relative in [
+            "glm53flash_vllm_tail_repair/candidate/expected-source-sha256.json",
+            "glm53flash_vllm_kpool_candidate/v2-source-sha256.json",
+        ] {
+            sources
+                .extend(serde_json::from_str::<BTreeMap<String, String>>(&read(relative)).unwrap());
+        }
+        assert_eq!(sources.len(), 37);
+        assert_eq!(digest(&canonical(&sources).unwrap()), VLLM_TAIL_SOURCE);
+        let build: Value = serde_json::from_str(&read(
+            "glm53flash_vllm_tail_repair/candidate/actual-build-receipt.json",
+        ))
+        .unwrap();
+        assert_eq!(build["version"], VLLM_TAIL_VERSION);
+        for patch in build["patch"]["sources"].as_array().unwrap() {
+            assert_eq!(
+                sources[patch["source_path"].as_str().unwrap()],
+                patch["patched_sha256"]
+            );
+        }
+        assert_eq!(
+            digest(&read(
+                "glm53flash_vllm_tail_repair/qualification/admission-summary.json"
+            )),
+            "8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45"
+        );
     }
     fn key(prefix: u32) -> Key {
         Key {
