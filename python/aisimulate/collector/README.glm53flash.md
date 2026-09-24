@@ -335,6 +335,12 @@ The original CPU606857 failure remains recorded: the CUDA12-era
 `cudaStreamGetCaptureInfo_v2` symbol is absent. This ABI correction neither
 qualifies GPU graph timing nor changes any already frozen attempt. Other CUDA
 major versions fail explicitly before calling the capture-query ABI.
+The subsequent tiny GPU607527 probe reached capture but failed on the second
+node-enumeration call with an empty graph: CUDA13 rejects a nonnull output array
+with zero capacity. Empty node/edge snapshots now use the actual native count
+query without submitting a zero-capacity array. Every later boundary queries
+again, and count/fill inconsistencies or edges to absent nodes fail explicitly.
+No model stage ran after that failed tiny prerequisite.
 Native SGLang source pin94602c9 additionally binds
 `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`
 and `python/sglang/srt/model_executor/runner/shape_key.py`.

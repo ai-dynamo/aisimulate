@@ -13,13 +13,14 @@ from collector.glm53flash_graph_nodes import CaptureNodeRegistry, bind_replay_ke
 pytestmark = pytest.mark.unit
 
 
-def native_abi_fixture(monkeypatch, version=13000):
+def native_abi_fixture(monkeypatch, version=13000, node_count=2, changed_count=None):
     """Exercise real ctypes pointer writes; these are never GPU evidence."""
     pointer = ctypes.c_void_p
     pointer_out = ctypes.POINTER(pointer)
     size_out = ctypes.POINTER(ctypes.c_size_t)
     edge_type = graph_nodes.GraphEdgeData
     runtime, cupti = SimpleNamespace(), SimpleNamespace()
+    calls = []
 
     def attach(library, name, arguments, implementation):
         function = ctypes.CFUNCTYPE(ctypes.c_int, *arguments)(implementation)
@@ -37,19 +38,27 @@ def native_abi_fixture(monkeypatch, version=13000):
 
     def nodes(graph, handles, count):
         assert graph == 100
+        calls.append("nodes-fill" if handles else "nodes-count")
         if handles:
-            handles[0], handles[1] = 101, 102
-        count[0] = 2
+            if node_count == 0:
+                return 1
+            for index in range(node_count):
+                handles[index] = 101 + index
+        count[0] = node_count + (1 if handles and changed_count == "nodes" else 0)
         return 0
 
     def edges(graph, sources, targets, data, count):
         assert graph == 100
+        calls.append("edges-fill" if sources else "edges-count")
+        edge_count = max(0, node_count - 1)
         if sources:
+            if edge_count == 0:
+                return 1
             assert data
             sources[0], targets[0] = 101, 102
             data[0].from_port, data[0].to_port, data[0].type = 2, 0, 1
             data[0].reserved[:] = [3, 4, 5, 6, 7]
-        count[0] = 1
+        count[0] = edge_count + (1 if sources and changed_count == "edges" else 0)
         return 0
 
     def graph_id(graph, result):
@@ -87,6 +96,7 @@ def native_abi_fixture(monkeypatch, version=13000):
     attach(cupti, "cuptiGetGraphId", [pointer, ctypes.POINTER(ctypes.c_uint32)], graph_id)
     attach(cupti, "cuptiGetGraphNodeId", [pointer, ctypes.POINTER(ctypes.c_uint64)], node_id)
     monkeypatch.setattr(graph_nodes, "_library", lambda name: ({"cudart": runtime, "cupti": cupti}[name], {}))
+    return calls
 
 
 def test_cuda13_pointer_abi_retains_nondefault_dependency_metadata(monkeypatch):
@@ -115,6 +125,25 @@ def test_unverified_cuda_major_cannot_use_cuda13_capture_abi(monkeypatch, versio
     native_abi_fixture(monkeypatch, version)
     with pytest.raises(RuntimeError, match="verified CUDA13"):
         graph_nodes.NativeGraphAPI()
+
+
+@pytest.mark.parametrize("node_count", [0, 1])
+def test_empty_capture_enumerates_native_counts_without_nonnull_zero_capacity_arrays(monkeypatch, node_count):
+    calls = native_abi_fixture(monkeypatch, node_count=node_count)
+    api = graph_nodes.NativeGraphAPI()
+    snapshot = api.snapshot(77)
+    assert len(snapshot["nodes"]) == node_count and snapshot["edges"] == []
+    expected = ["nodes-count", "nodes-fill", "edges-count"] if node_count else ["nodes-count", "edges-count"]
+    assert calls == expected
+    api.snapshot(77)
+    assert calls == expected + expected  # Each boundary obtains new actual counts.
+
+
+@pytest.mark.parametrize("changed_count", ["nodes", "edges"])
+def test_changed_native_count_between_queries_fails_instead_of_truncating(monkeypatch, changed_count):
+    native_abi_fixture(monkeypatch, changed_count=changed_count)
+    with pytest.raises(RuntimeError, match="count changed"):
+        graph_nodes.NativeGraphAPI().snapshot(77)
 
 
 def test_nested_collective_nodes_have_one_owner_without_interval_subtraction():
