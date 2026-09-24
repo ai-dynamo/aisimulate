@@ -45,8 +45,12 @@ SILICON and HYBRID; neither mode silently falls back to SOL. The installed wheel
 constructs all eight required model graphs and rejects missing measurements in
 all eight SILICON and all eight HYBRID checks.
 
-Current bounded validation passes 431 GLM collector tests (3 skipped),
-24 Rust GLM tests and 17 Rust compiled-spec/serialization tests.
+The graph consumer review fixes pass 27 Rust GLM tests, 17 Rust compiled-spec/serialization
+tests and 104 focused Python model, compile, engine-step and policy tests. A rebuilt
+public native API check rejects complete schema-20 specifications with zero or two
+setup markers, and verifies static/native-total coordinate equivalence through the
+inclusive 128K boundary. The preceding graph implementation passed 431 GLM collector
+tests (3 skipped); shared repaired-runtime integration passed 113 focused tests.
 Graph-node/hook validation includes 40 CPU tests covering CUDA13 ABI
 pointer writes, complete kernel/memcpy/memset activity matching, native
 enumeration consistency and retention of nondefault dependency metadata. The preceding
@@ -64,7 +68,8 @@ latest bounded evidence and native launch fixes. These checks establish software
 behavior and evidence integrity, not native GPU performance coverage.
 
 Actual FP8 TP4 eager smoke produced every declared operation on all four ranks
-for two SGLang prefill points and one vLLM point in each phase. Original
+for two SGLang prefill points and, in the subsequent vLLM v4 smoke, two prefill
+points and one decode point. Original
 postprocessing failures remain preserved; exact pinned mHC source-ownership
 normalization permits separate complete reaggregation receipts. The SGLang smoke
 exposed overcounting from selecting a different maximum-latency TP rank per
@@ -76,6 +81,14 @@ scaling factor is introduced. On the same two instrumented calibration points,
 the installed wheel's Rust consumer differs from native DeviceTimer by 3.29% and 2.26%;
 these are internal diagnostics, not independent holdout accuracy. Old vLLM smoke
 lacks whole-forward GPU intervals and cannot be relabelled with the new policy.
+The vLLM v4 native run recorded coherent-rank whole-forward evidence and actual
+kernel signatures; its original finalization failed only because `pyarrow` was
+absent. Separate offline finalization preserved every original raw, rank-selection
+and evidence hash and produced 25 prefill and 13 decode physical rows. Current
+strict native evidence validation and the rebuilt Rust consumer pass. Same-calibration
+errors are 3.33%/5.01% for prefill and 4.68% for decode, again instrumented diagnostics
+with no independent accuracy claim. These frozen v4 observations use stock vLLM
+eager execution and do not establish repaired-runtime or native graph performance.
 **All eight deployment cells retain data/accuracy status `NOT_EVALUATED`.** No
 measured GLM profiles or independent 20% MAPE pass are included. Native framework
 qualification and Ops GPU observation are separate evidence streams.
@@ -130,8 +143,14 @@ headers and symbols now establish the corrected seven-argument capture-info
 and five-argument edge-query ABI. The next GPU probe captured and replayed
 successfully, but strict matching rejected different capture and executable
 graph/node identities. No positional or bit-field inference admits these nodes.
-These diagnostics do not establish native model graph coverage or prediction
-accuracy. All physical memory operations remain required evidence; their
+The corrected CUPTI resource/clone mapping subsequently passed actual GB300
+tiny capture/replay qualification in both runtime images (job 609710), with exact
+node ownership and no inserted graph nodes. All three following SGLang model
+profiles stopped before construction at a strict multiple-loaded-CUDA-runtime
+identity guard. Its library-provider diagnosis remains pending. The frozen graph
+v4 payload also predates the current native dispatch-policy snapshot and cannot
+be silently promoted into formal evidence. These diagnostics do not establish
+native model graph coverage or prediction accuracy. All physical memory operations remain required evidence; their
 intervals cannot be omitted from operation accounting.
 
 See [the collector contract](../python/aisimulate/collector/README.glm53flash.md),
