@@ -1,5 +1,5 @@
 {
- "verdict": "diverged",
+ "verdict": "aligned",
  "repo": "MiniMaxAI/MiniMax-M3",
  "framework": "sglang",
  "version": "0.5.16",
@@ -22,12 +22,12 @@
  "kv_dtype": null,
  "op_hint": "attn|sparse|msa|topk|index|score|merge|block",
  "serving_record": {
-  "id": "9cf016bdbd38",
-  "tp": 1,
-  "kv_cache_dtype": "auto",
+  "id": "raw:9cf016bdbd38_graph.json",
+  "tp": null,
+  "kv_cache_dtype": null,
   "isl": 4096,
   "prefix_caching": false,
-  "raw_file": null,
+  "raw_file": "facts/reprobe_nopc/9cf016bdbd38_graph.json",
   "candidates": 1
  },
  "collector_backends": [
@@ -43,32 +43,18 @@
   "triton_fused_moe"
  ],
  "collector_only_signal": [],
- "kernel_drift": {
-  "triton": {
-   "collector_only_kernels": [
-    "_topk_index_merge_kernel",
-    "_topk_index_partial_kernel"
-   ],
-   "serving_kernels": [
-    "_decode_score_kernel",
-    "_flash_attn_fwd_with_block_score_kernel",
-    "_gqa_share_sparse_decode_kernel",
-    "_gqa_share_sparse_fwd_kernel",
-    "_merge_topk_attn_out_kernel",
-    "_topk_index_kernel"
-   ]
-  }
- },
+ "kernel_drift": null,
  "serving_kernels_matched_in_collector": [
-  "Command",
   "_decode_score_kernel",
   "_gqa_share_sparse_decode_kernel",
   "_merge_topk_attn_out_kernel",
-  "alloc_decode_kernel",
-  "alloc_extend_kernel",
-  "cuLaunchKernelEx",
+  "_topk_index_merge_kernel",
+  "_topk_index_partial_kernel",
+  "cublasLt::splitKreduce_kernel",
   "flash::prepare_varlen_num_blocks_kernel",
-  "write_req_to_token_pool_triton"
+  "nvjet_sm90_tst_128x8_64x12_2x1_v_bz_TNT",
+  "nvjet_sm90_tst_64x8_64x16_2x1_v_bz_splitK_TNT",
+  "nvjet_sm90_tst_64x8_64x16_4x1_v_bz_splitK_TNT"
  ],
  "collector_unmatched_kernels": [
   "Command",
