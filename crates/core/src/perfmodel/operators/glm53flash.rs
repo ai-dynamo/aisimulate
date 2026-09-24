@@ -836,8 +836,9 @@ impl Glm53PrimitiveOp {
 }
 
 /// Explicit runtime bookkeeping, separate from the 277/366 physical model
-/// boundaries. SOL/eager have no graph setup cost. A selected native graph
-/// profile must answer this marker from measured setup nodes exactly once.
+/// boundaries. SOL preserves its analytic zero. A selected native graph or
+/// SG prefill profile must answer this marker from measured setup exactly once;
+/// historical tables without an explicit setup contract retain their behavior.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Glm53RuntimeOp {
     pub name: String,

@@ -197,6 +197,7 @@ pub mod gemm;
 pub mod glm53flash;
 pub mod glm53flash_graph;
 mod glm53flash_serving;
+mod glm53flash_sglang_prefill;
 mod interpolation;
 pub mod mhc;
 pub mod mla;

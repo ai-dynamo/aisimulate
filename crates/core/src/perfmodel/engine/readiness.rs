@@ -284,6 +284,7 @@ impl Availability<'_> {
                     DatabaseMode::Silicon | DatabaseMode::Hybrid => {
                         if self.db.glm53flash.has_measurements()?
                             || self.db.glm53flash_graph.has_measurements()?
+                            || self.db.glm53flash_graph.has_prefill_measurements()?
                         {
                             Ok(())
                         } else {

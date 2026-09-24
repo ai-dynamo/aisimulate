@@ -224,7 +224,8 @@ pub(crate) fn reject_mixed(
         db.database_mode,
         crate::common::enums::DatabaseMode::Silicon | crate::common::enums::DatabaseMode::Hybrid
     ) && ops.iter().any(contains_glm)
-        && db.glm53flash_graph.has_measurements()?
+        && (db.glm53flash_graph.has_measurements()?
+            || db.glm53flash_graph.sglang_prefill.has_measurements()?)
     {
         return Err(invalid(
             "native graph Ops do not support the legacy mixed-step composition without actual homogeneous dispatch coordinates",
@@ -263,6 +264,9 @@ pub(crate) fn validate_context_ops(
     if !ops.iter().any(contains_glm) {
         return Ok(false);
     }
+    if db.glm53flash_graph.sglang_prefill.has_measurements()? {
+        return db.glm53flash_graph.sglang_prefill.validate_ops(ops);
+    }
     db.glm53flash_graph.validate_serving_ops(ops, true)
 }
 
@@ -274,7 +278,7 @@ pub(crate) fn validate_model_ops(
     spec: &crate::perfmodel::engine::spec::EngineSpec,
     db: &crate::perf_database::PerfDatabase,
 ) -> Result<(), AicError> {
-    let context = validate_context_ops(&spec.context_ops, db)?;
+    validate_context_ops(&spec.context_ops, db)?;
     validate_generation_ops(&spec.generation_ops, db)?;
     if !matches!(
         db.database_mode,
@@ -283,6 +287,25 @@ pub(crate) fn validate_model_ops(
     {
         return Ok(());
     }
+    let prefill = &db.glm53flash_graph.sglang_prefill;
+    if prefill.has_measurements()?
+        && (spec
+            .context_ops
+            .iter()
+            .chain(&spec.generation_ops)
+            .any(contains_glm)
+            || prefill.matches_model(&spec.engine.model_name, spec.engine.parallel.tp_size)?)
+    {
+        // Schema4 prices context only, but its complete GLM model cannot erase
+        // either compiled phase and obtain zero. Generation keeps its original
+        // table/query semantics and requires its own measured coverage.
+        prefill.validate_ops(&spec.context_ops)?;
+        prefill.validate_generation_contract(&spec.generation_ops, &spec.context_ops)?;
+    }
+    let context = spec.context_ops.iter().any(contains_glm)
+        && db
+            .glm53flash_graph
+            .validate_serving_ops(&spec.context_ops, true)?;
     let generation = spec.generation_ops.iter().any(contains_glm)
         && db
             .glm53flash_graph
@@ -406,6 +429,7 @@ struct Profile {
 type Profiles = BTreeMap<(String, u32), Profile>;
 pub struct Glm53GraphTable {
     serving: super::glm53flash_serving::ServingTable,
+    sglang_prefill: super::glm53flash_sglang_prefill::PrefillTable,
     path: Option<PathBuf>,
     request: (String, String),
     profile: OnceLock<Result<Option<Profiles>, String>>,
@@ -413,7 +437,7 @@ pub struct Glm53GraphTable {
 impl Glm53GraphTable {
     pub fn with_sources(root: &Path, resolver: &SourceResolver) -> Result<Self, AicError> {
         let path = primary_path(root, resolver, BASENAME)?;
-        let request = (
+        let request: (String, String) = (
             root.parent()
                 .and_then(Path::file_name)
                 .and_then(|s| s.to_str())
@@ -425,6 +449,14 @@ impl Glm53GraphTable {
                 .into(),
         );
         Ok(Self {
+            sglang_prefill: super::glm53flash_sglang_prefill::PrefillTable::new(
+                primary_path(root, resolver, super::glm53flash_sglang_prefill::BASENAME)?,
+                request.clone(),
+                root.parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::file_name)
+                    .is_some_and(|name| name == "gb300"),
+            ),
             serving: super::glm53flash_serving::ServingTable::new(path.clone(), request),
             path,
             request: (
@@ -480,6 +512,9 @@ impl Glm53GraphTable {
         Ok(self.serving.identities()?.contains(&(format.into(), tp)))
     }
     pub(crate) fn requires_serving_context(&self, shape: &Value) -> Result<bool, AicError> {
+        if self.sglang_prefill.requires_context(shape)? {
+            return Ok(true);
+        }
         self.check_schema_identities()?;
         let identity = (
             shape["checkpoint_format"]
@@ -497,6 +532,9 @@ impl Glm53GraphTable {
     pub fn has_measurements(&self) -> Result<bool, AicError> {
         self.check_schema_identities()?;
         Ok(self.profile()?.is_some() || self.serving.has_measurements()?)
+    }
+    pub(crate) fn has_prefill_measurements(&self) -> Result<bool, AicError> {
+        self.sglang_prefill.has_measurements()
     }
     pub fn query(
         &self,
@@ -528,6 +566,9 @@ impl Glm53GraphTable {
         };
         validate_runtime(&self.request.0, &self.request.1)?;
         self.check_schema_identities()?;
+        if let Some(value) = self.sglang_prefill.query(op, ctx)? {
+            return Ok(Some(value));
+        }
         if let Some(value) = self.serving.query(op, ctx)? {
             return Ok(Some(value));
         }
