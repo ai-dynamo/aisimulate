@@ -1262,6 +1262,10 @@ where
             self.dispatch_placements(placements)?;
         }
         for &id in &removed {
+            // Canceled startups were never registered with placement.
+            if starting_before.binary_search(&id).is_ok() {
+                continue;
+            }
             let placements = self.placement.worker_removed(
                 WorkerTopology {
                     worker_id: id,
