@@ -2074,6 +2074,49 @@ def test_runner_threads_optional_decode_profile_alias(alias, selected):
         assert timing["decode_workload_distribution"] == selected
 
 
+@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
+@pytest.mark.parametrize(
+    "timing",
+    [{"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0}, {"type": "polynomial"}],
+)
+def test_runner_rejects_active_decode_profile_with_non_aic_timing(alias, timing):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args(timing=timing)
+    engine_args[alias] = "observed_glm52_nvfp4_decode_1ab2c747975e_v1"
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    with pytest.raises(ValueError, match="decode_workload_distribution requires an AIC timing model"):
+        EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    assert runtime.execution_spec is None
+
+
+@pytest.mark.parametrize("alias", ["decode_workload_distribution", "aic_decode_workload_distribution"])
+@pytest.mark.parametrize(
+    "timing",
+    [{"type": "fixed", "prefill_ms": 2.0, "decode_ms": 1.0}, {"type": "polynomial"}],
+)
+def test_runner_preserves_non_aic_timing_with_no_decode_profile(alias, timing):
+    runtime = RecordingRuntime()
+    engine_args = _engine_args(timing=timing)
+    engine_args[alias] = None
+    deployment = BackendDeploymentSpec(
+        deployment_mode="agg",
+        backend="vllm",
+        backend_version="test",
+        agg_engine_args=engine_args,
+        num_workers=2,
+    )
+    EngineReplayRunnerFactory(runtime=runtime).create(0).run(_spec(deployment=deployment))
+    rank = runtime.execution_spec["engine"]["rank"]
+    assert rank["timing_model"] == timing
+    assert alias not in rank
+
+
 @pytest.mark.parametrize(
     "extras",
     [

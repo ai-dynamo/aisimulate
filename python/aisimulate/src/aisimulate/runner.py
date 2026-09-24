@@ -192,6 +192,8 @@ class AICAFDCompanionPerformanceModel:
 
         timing_model = args.get("timing_model")
         if isinstance(timing_model, Mapping) and timing_model.get("type") == "fixed":
+            if any(args.get(alias) is not None for alias in _AIC_TIMING_FIELD_ALIASES["decode_workload_distribution"]):
+                raise ValueError("decode_workload_distribution is not supported by fixed AFD companion timing")
             if any(args.get(alias) is not None for alias in _AIC_TIMING_FIELD_ALIASES["moe_kernel_source"]):
                 raise ValueError("moe_kernel_source is not supported by fixed AFD companion timing")
             key = "prefill_ms" if role == "prefill" else "decode_ms"
@@ -328,6 +330,10 @@ class AICAFDCompanionPerformanceModel:
                 raw = {metric: latency}
                 source = "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
             else:
+                if "decode_workload_distribution" in timing_overrides:
+                    raise ValueError(
+                        "decode_workload_distribution is not supported by the AFD companion legacy estimator"
+                    )
                 if timing_overrides.get("moe_kernel_source") is not None:
                     raise ValueError("moe_kernel_source is not supported by the AFD companion legacy estimator")
                 result = estimator(model_name, hardware, **kwargs)
@@ -1602,6 +1608,8 @@ def _materialize_engine_role(
     # model. They have already served their non-timing purposes and must not be
     # interpreted as an attempt to override that concrete timing model.
     if not uses_aic_timing:
+        if "decode_workload_distribution" in aic_timing_overrides:
+            raise ValueError(f"engine provider {role} decode_workload_distribution requires an AIC timing model")
         if any(
             is_active_engine_model_control(name, aic_timing_overrides.get(name)) for name in ENGINE_MODEL_CONTROL_FIELDS
         ):

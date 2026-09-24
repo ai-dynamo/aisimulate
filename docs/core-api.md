@@ -318,6 +318,8 @@ nested paths. The supported namespaces are:
 - `op_level`: optional `decode_workload_distribution` selects a measured decode-MoE distribution, and `prefill_graph_profile` selects a qualified direct-prefill graph composition. Saved configurations retain the resolved immutable `prefill_graph_profile_id`, which is validated on reload. Unknown fields are rejected.
 - `fpm_interpolation`: optional `fpm_parquet_path` selects an external FPM parquet with its same-stem metadata sidecar. Unknown fields are rejected.
 
+Engine replay rank arguments accept `decode_workload_distribution` (alias `aic_decode_workload_distribution`) only with AIC timing. An active selector paired with a non-AIC timing model, including fixed or polynomial timing, is rejected. The AFD companion's fixed timing and legacy estimator paths also reject active selectors because they cannot apply the profile. `None` preserves ordinary timing in these paths.
+
 Sampling defaults to `bins_per_axis: [4, 4]` and `max_observations: 64` per
 logical store. Rectangular grids are supported. Regression uses dynamic
 `log1p` retention coordinates and fits standardized raw features. Correction
