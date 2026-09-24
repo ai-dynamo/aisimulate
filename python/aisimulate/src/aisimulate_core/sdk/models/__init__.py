@@ -280,6 +280,7 @@ from aisimulate_core.sdk.models.gemma4 import Gemma4MixModel
 from aisimulate_core.sdk.models.gpt import GPTModel
 from aisimulate_core.sdk.models.hybrid_moe import HybridMoEModel
 from aisimulate_core.sdk.models.llama import LLAMAModel
+from aisimulate_core.sdk.models.mistral3 import Mistral3Model
 from aisimulate_core.sdk.models.moe import MOEModel
 from aisimulate_core.sdk.models.nemotron_h import NemotronHModel
 from aisimulate_core.sdk.models.nemotron_nas import NemotronNas
@@ -296,6 +297,7 @@ __all__ = [
     "HybridMoEModel",
     "LLAMAModel",
     "MOEModel",
+    "Mistral3Model",
     "NemotronHModel",
     "NemotronNas",
     "Qwen3VLMoEModel",

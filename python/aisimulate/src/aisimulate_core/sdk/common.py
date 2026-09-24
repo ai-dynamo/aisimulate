@@ -188,6 +188,9 @@ class VisionEncoderConfig:
             rotated fraction — the 2-axis vision RoPE always rotates the full
             head_dim (vLLM ApplyRotaryEmb / SGLang cat([cos, cos])). Only gates
             the encoder_rope_apply op; 0.0 means no RoPE.
+        gated_mlp (bool): ViT FFN is a gated (SwiGLU-style) MLP with separate
+            gate and up projections (e.g. Pixtral, hidden_act="silu"). False
+            (default) models a plain up/down MLP (e.g. Qwen3-VL, GELU).
         in_channels (int): Number of image/video input channels consumed by the
             patch embedding projection.
         qkv_hidden_size (int): Optional QKV projection width before the three-way
@@ -231,6 +234,9 @@ class VisionEncoderConfig:
     projector_dims: tuple[tuple[int, int], ...] = ()
     projector_n_instances: int = 1
     partial_rotary_factor: float = 0.0
+    # Keyword-only: inserted after existing positional fields shipped, so it must
+    # not shift the positional binding of in_channels and the fields below it.
+    gated_mlp: bool = field(default=False, kw_only=True)
     in_channels: int = 3
     image_size: int = 0
     has_cls_token: bool = False
@@ -760,6 +766,8 @@ DefaultHFModels = {
     "stepfun-ai/Step-3.7-Flash-FP8",
     "nvidia/Gemma-4-26B-A4B-NVFP4",
     "nvidia/Gemma-4-31B-IT-NVFP4",
+    # Mistral Medium 3.5 Models
+    "mistralai/Mistral-Medium-3.5-128B",
 }
 
 # Bundled model configs and the default support-matrix roster intentionally have
@@ -827,6 +835,7 @@ ModelFamily = {
     "MINIMAXM3",
     "MUSEGLIMMER",
     "STEP3P7",
+    "MISTRAL3",
 }
 ARCHITECTURE_TO_MODEL_FAMILY = {
     "LlamaForCausalLM": "LLAMA",
@@ -870,6 +879,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "Qwen3_5MoeForCausalLM": "QWEN35",
     "Gemma4ForConditionalGeneration": "GEMMA4MIX",
     "MuseGlimmerForConditionalGeneration": "MUSEGLIMMER",
+    "Mistral3ForConditionalGeneration": "MISTRAL3",
 }
 
 # Multimodal architectures whose LLM config lives under a nested key (e.g. "text_config").
@@ -891,6 +901,7 @@ MULTIMODAL_TEXT_CONFIG_KEY = {
     "Qwen3VLForConditionalGeneration": "text_config",
     "Qwen3VLMoeForConditionalGeneration": "text_config",
     "MiniMaxM3SparseForConditionalGeneration": "text_config",
+    "Mistral3ForConditionalGeneration": "text_config",
 }
 
 # Architectures whose speculative decoding is DSPARK-style: ``nextn`` is the
