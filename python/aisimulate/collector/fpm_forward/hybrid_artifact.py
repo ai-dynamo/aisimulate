@@ -37,7 +37,15 @@ def validate_vllm_hardware_receipts(cell, payload: dict, path: Path) -> None:
     pins = validate_vllm_source_identity(
         payload.get("producer", {}), Path(__file__).parent / "runtime/glm53flash/runtime-source-sha256.json"
     )
-    attempt_digest = hashlib.sha256(path.with_name("collector-provenance.json").read_bytes()).hexdigest()
+    provenance_raw = path.with_name("collector-provenance.json").read_bytes()
+    runtime = json.loads(provenance_raw).get("runtime")
+    if (
+        not isinstance(runtime, dict)
+        or runtime.get("backend") != "vllm"
+        or runtime.get("backend_version") != payload["producer"].get("vllm_package_version")
+    ):
+        raise ValueError("GLM vLLM hardware producer differs from Collector runtime version")
+    attempt_digest = hashlib.sha256(provenance_raw).hexdigest()
     seen_ranks, seen_uuids = set(), set()
     for entry in entries:
         rank, name = entry.get("tp_rank"), entry.get("file")

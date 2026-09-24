@@ -52,6 +52,7 @@ def write_plan(tmp_path, key, role):
         "schema_name": "aic_fpm_collection_plan",
         "system": "gb300",
         "backend": backend,
+        "capability": {"aic_database_version": {"vllm": "0.30.0", "sglang": "0.5.20"}[backend]},
         "sha256": "d" * 64,
         "model_path": "zai-org/GLM-5.3-Flash" if quant == "fp8" else "nvidia/GLM-5.3-Flash-NVFP4",
         "cells": [cell],
@@ -295,7 +296,11 @@ def test_native_adapter_uses_validated_producer_timings_and_real_request_ids(tmp
     result = validation._native_run(run, tmp_path)
     assert result["values"] == {1: 12, 2: 12, 3: 12}
     assert result["request_ids"] == {"actual-request"}
-    assert calls[0][2] == {"expected_plan_sha256": "d" * 64, "expected_attempt_id": spec["attempt_id"]}
+    assert calls[0][2] == {
+        "expected_plan_sha256": "d" * 64,
+        "expected_attempt_id": spec["attempt_id"],
+        "expected_backend_version": "0.30.0",
+    }
 
 
 def calibration_table(tmp_path):

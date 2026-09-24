@@ -114,6 +114,7 @@ def aggregate_cell(
         cell_dir / "raw",
         expected_plan_sha256=plan.sha256,
         expected_attempt_id=expected_attempt_id,
+        expected_backend_version=plan.capability.aic_database_version if cell.state_protocol else None,
     )
     backend_version = collection.backend_version
     capability = plan.capability

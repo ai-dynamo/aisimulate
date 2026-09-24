@@ -80,7 +80,7 @@ def artifact(tmp_path):
     source_manifest = source_path.read_bytes()
     source_pin = json.loads(source_manifest)["vllm/v1/worker/gpu_worker.py"]
     provenance = tmp_path / "collector-provenance.json"
-    provenance.write_text('{"attempt_id":"test-attempt"}\n')
+    provenance.write_text('{"attempt_id":"test-attempt","runtime":{"backend":"vllm","backend_version":"0.30.0"}}\n')
     entries = []
     for rank in range(2):
         receipt = {
@@ -183,10 +183,17 @@ def test_rehashed_repair_receipt_needs_actual_every_rank_binary_closure(monkeypa
     closure = identity.vllm_runtime_closure(version, manifest)
     observations = {"contract_sha256": identity._canonical_sha256(closure), "observed_files": closure["files"]}
     entries = payload["input_provenance"]["native_hardware_manifest"]
+    provenance_path = path.with_name("collector-provenance.json")
+    provenance = json.loads(provenance_path.read_text())
+    provenance["runtime"]["backend_version"] = version
+    provenance_path.write_text(json.dumps(provenance))
+    provenance_sha = hashlib.sha256(provenance_path.read_bytes()).hexdigest()
     for entry in entries:
         receipt_path = path.with_name(entry["file"])
         receipt = json.loads(receipt_path.read_text())
-        receipt.update(backend_version=version, runtime_closure=observations)
+        receipt.update(
+            backend_version=version, runtime_closure=observations, collector_provenance_sha256=provenance_sha
+        )
         receipt_path.write_text(json.dumps(receipt))
         entry["sha256"] = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
     validate_vllm_hardware_receipts(cell, payload, path)

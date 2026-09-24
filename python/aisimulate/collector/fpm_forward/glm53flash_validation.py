@@ -176,8 +176,15 @@ def _native_run(run: dict, base: Path) -> dict:
     attempt = spec.get("attempt_id")
     if not isinstance(attempt, str) or not attempt:
         raise ValueError("a frozen collector attempt_id is required")
+    expected_version = run["plan"].get("capability", {}).get("aic_database_version")
+    if not isinstance(expected_version, str) or not expected_version:
+        raise ValueError("GLM formal acceptance requires the frozen plan backend version")
     native = validate_native_collection(
-        run["runtime_cell"], root, expected_plan_sha256=run["plan"]["sha256"], expected_attempt_id=attempt
+        run["runtime_cell"],
+        root,
+        expected_plan_sha256=run["plan"]["sha256"],
+        expected_attempt_id=attempt,
+        expected_backend_version=expected_version,
     )
     from collector.glm53flash_runtime_identity import validate_backend_version
 

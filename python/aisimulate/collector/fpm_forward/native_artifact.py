@@ -218,6 +218,7 @@ def _validate_collector_provenance(
     *,
     expected_plan_sha256: str | None,
     expected_attempt_id: str | None,
+    expected_backend_version: str | None = None,
 ) -> tuple[str, str]:
     pod_names = set()
     for path, _payload in rank_payloads:
@@ -268,7 +269,19 @@ def _validate_collector_provenance(
             raise ValueError(f"Collector provenance differs across pods: {path}")
 
     assert canonical is not None
-    return str(canonical["runtime"]["backend_version"]), str(canonical["attempt_id"])
+    backend_version = str(canonical["runtime"]["backend_version"])
+    if getattr(cell, "state_protocol", "") == "glm53flash_same_request_real_hybrid_v1":
+        from collector.glm53flash_runtime_identity import validate_backend_version
+
+        validate_backend_version(cell.backend, backend_version)
+        if expected_backend_version is not None and backend_version != expected_backend_version:
+            raise ValueError("GLM native runtime differs from the frozen plan backend version")
+        for path, payload in rank_payloads:
+            producer = payload.get("producer")
+            version_field = "vllm_package_version" if cell.backend == "vllm" else "backend_version"
+            if not isinstance(producer, dict) or producer.get(version_field) != backend_version:
+                raise ValueError(f"GLM native producer differs from Collector runtime version: {path}")
+    return backend_version, str(canonical["attempt_id"])
 
 
 def _require_int(point: dict[str, Any], key: str) -> int:
@@ -360,6 +373,7 @@ def validate_native_collection(
     *,
     expected_plan_sha256: str | None = None,
     expected_attempt_id: str | None = None,
+    expected_backend_version: str | None = None,
 ) -> NativeCollection:
     """Validate a complete native rank set and return synchronized measurements."""
 
@@ -372,6 +386,7 @@ def validate_native_collection(
         rank_payloads,
         expected_plan_sha256=expected_plan_sha256,
         expected_attempt_id=expected_attempt_id,
+        expected_backend_version=expected_backend_version,
     )
     expected_ranks = list(range(cell.topology.dp))
     seen_ranks: set[int] = set()
