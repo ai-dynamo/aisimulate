@@ -51,6 +51,17 @@ def main() -> None:
                     help="generator-rendered sglang CLI args (cli_args_agg); parsed by sglang's own parser")
     ap.add_argument("--run-forward", action="store_true",
                     help="keep cuda-graph capture ON so a real decode forward executes (execution check, not just load)")
+    # Production decode runs under CUDA graphs, and some kernel choices are made
+    # from the CAPTURE-time (static) shapes rather than the live ones — sglang's
+    # MiniMax sparse indexer gates its decode top-k kernel on
+    # ceil(max_context_len / block) under capture vs the live KV length in eager
+    # (minimax_sparse_backend.py:175-178 @0.5.16). An eager probe therefore
+    # records the wrong decode identity for such ops. --cuda-graph keeps
+    # capture on for the profiled decode; the device-stream kernel tables see
+    # graph-replayed kernels, so the evidence stays complete. Recorded as
+    # probe_cuda_graph so records can select on it.
+    ap.add_argument("--cuda-graph", action="store_true",
+                    help="do not disable CUDA graphs (decode dispatch may depend on capture-time shapes)")
     ap.add_argument("--trace", action="store_true",
                     help="run one eager prefill + decode under torch.profiler; record kernel names and MoE dispatch")
     ap.add_argument("--py-paths", action="store_true",
@@ -74,7 +85,7 @@ def main() -> None:
     # cuda-graph disable flags MUST be passed at construction: __post_init__
     # derives capture state from them, so post-hoc assignment is ignored
     # (verified: DSV4 decode-graph capture ran with all flags set post-hoc).
-    graph_off = {} if args.run_forward else {
+    graph_off = {} if (args.run_forward or args.cuda_graph) else {
         f: True for f in ServerArgs.__dataclass_fields__
         if "cuda_graph" in f and f.startswith("disable")
     }
@@ -123,6 +134,7 @@ def main() -> None:
             **({"kv_cache_dtype": args.kv_dtype} if args.kv_dtype else {}),
         )
     rec["cuda_graph_fields_disabled"] = sorted(graph_off)
+    rec["probe_cuda_graph"] = bool(args.run_forward or args.cuda_graph)
     rec["probe_isl"] = args.isl
     rec["probe_prefix_caching"] = False  # disable_radix_cache on both construction paths
     rec["probe_kv_cache_dtype"] = args.kv_dtype  # kv-variant probes (fp8_e4m3); records key on it

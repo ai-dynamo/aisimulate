@@ -626,20 +626,42 @@ findings:
         trtllm ALIGNED: attn ctx (Llama, fmha_v2 causal), dsa ctx+gen (DSV3.2),
         mla ctx+gen (DSV3), gemm fp8_block, moe fp8_block, gdn ctx (FlashInfer
         chunk + trtllm conv1d).
-        OPEN — real divergences left red for the owner:
-        - trtllm attention_generation (Llama-3.1-8B, TRTLLM backend): the
-          collector's decode runs the legacy MMHA kernel
-          (mmha::masked_multihead_attention_kernel); serving runs XQA
-          (kernel_mha). The collector sets TRTLLM_ENABLE_XQA_JIT=1 at run time
-          (collect_attn.py:135-139) but the flag is consumed by the C++ op
-          (no Python reader in rc23); XQA eligibility for the collector's
-          module construction needs a serving-parity audit.
-        - sglang msa_generation (MiniMax-M3): the collector's top-k lane gate
-          mirrors sglang (collect_msa_module.py:860-872:
-          SGLANG_OPT_USE_MINIMAX_DECODE_TOPK_RADIX && score_blocks<=4096 &&
-          topk_blocks<=32) yet selected topk_split (_topk_index_partial/merge)
-          where the serving probe ran the radix path — one of the three inputs
-          differs between the collector's module build and serving; audit.
+        RESOLVED (2026-09-24, owner asked for these one at a time):
+        - trtllm attention_generation (Llama-3.1-8B): NOT a collector bug —
+          a cell mismatch. The first capture took the kv_len=1 cell, where
+          trtllm's own heuristic declines XQA (TLLM debug: "JIT XQA is not
+          used: maybe no performance gain" -> MMHA); the serving probe's
+          warmup does the same at short KV (8 of 424 decisions) and selects
+          XQA (kernel_mha) for the 4096-token decode. At the grid point that
+          matches the probe (batch 1, kv 4095) the collector selects XQA too
+          -> ALIGNED. TRTLLM_ENABLE_XQA_JIT no longer exists in rc23 binaries
+          (only TRTLLM_FORCE_XQA / TRTLLM_XQA_BLOCKS_PER_SEQUENCE); the
+          collector's toggle is documented as inert. Rule reinforced: capture
+          the collector cell at the probe's kv length, never the first cell.
+        - sglang msa_generation (MiniMax-M3): the PROBE is the unfaithful side.
+          The gate (flash_with_topk_idx.py:822-826) uses score.shape[2], which
+          under CUDA-graph capture is ceil(max_context_len / 128) (static
+          shapes, minimax_sparse_backend.py:175-178) and the live KV length in
+          eager. Production decodes under graphs; M3's context_len makes the
+          static block count exceed 4096 -> topk_split, which is what the
+          collector models (collect_msa_module.py:892-897, use_graph). The
+          identity probe disables CUDA graphs, so it saw the eager radix path.
+          probe_sglang gained --cuda-graph (recorded as probe_cuda_graph);
+          M3 re-probed with graphs on to confirm — see the follow-up note.
+        ROSTER GATE (probe_driver --plan refused: "no fetched config for
+        zai-org/GLM-5.3-FP8"): that repository does not exist on Hugging Face
+        (404 with a token; zai-org lists GLM-5.3, GLM-5.3-BF16, GLM-5.3-Flash,
+        GLM-5.3-Flash-BF16). zai-org/GLM-5.3 itself is the FP8 artifact
+        (config quantization_config fp8 e4m3 block 128) and GLM-5.3-BF16 the
+        bf16 one — 5.3 inverted the 5.x naming. The collector case file
+        (cases/models/GlmMoeDsaForCausalLM_cases.yaml) aliases GLM-5.3 to the
+        bf16 row and GLM-5.3-FP8 to the fp8 row, and the SDK's supported-model
+        list (src/aisimulate_core/sdk/common.py:690-692) names GLM-5.3-FP8
+        too — a producer+consumer naming fix (collector YAML + tests + SDK
+        list), so it is an OWNER DECISION: rename (GLM-5.3 -> fp8 row,
+        GLM-5.3-BF16 -> bf16 row) or sign an exclusion. configs/ already holds
+        zai-org_GLM-5.3.json and nvidia_GLM-5.3-NVFP4.json; GLM-5.3-BF16's
+        config fetches fine (200) once the rename lands.
         EXPLAINED (kept out of the gate, same class as vllm kda_gen): trtllm
         gdn_gen — FlashInfer decode row matches serving kernel-for-kernel; the
         FLA fused_recurrent row is the deliberate fallback lane.
