@@ -92,7 +92,13 @@ archive helper are deliberately insufficient. Binding verifies:
 `raw_archive.py` and `raw_campaign.py` are original Apache-2.0 implementations
 using only Python's standard library. They can run with Python 3.12 on the
 remote Lustre host without importing AISimulate, torch, Arrow or a GPU runtime.
-The final dataset importer still runs the full accepted-stage/Arrow validator.
+These are repository maintenance tools, not installed SDK entry points. For
+remote use, deploy `raw_archive.py` and `raw_campaign.py` together in a new
+versioned bundle directory, retain the Apache-2.0 license, and record the exact
+AISimulate source commit and SHA256 of both files before transfer. Recheck both
+hashes on the destination and invoke `python3.12 /bundle/raw_campaign.py`; do not
+add a generic `tools` package to the SDK wheel. The final dataset importer still
+runs the full accepted-stage/Arrow validator.
 The earlier host-local `glm53flash-raw-archive-v1` helper is the original source
 of `raw_archive.py`; no external implementation was copied.
 
@@ -110,29 +116,55 @@ python3.12 tools/glm53flash_hf/raw_campaign.py plan \
 manifest resolved relative `plan.path`, `shard_manifest.path`, and `raw_root`.
 Absolute original paths remain absolute. No alternate mount or path prefix is
 guessed. Each of the 32 jobs contains its accepted raw roots and an entry index.
-Fill only `source_root` and `uri`: the former must be the **entire closed
-phase/role campaign directory, including failed attempts**, enclosing all its
-accepted raw roots; the latter must be a stable credential-free `ssh://`,
+Fill only `source_root` and `uri`: the former must be an explicit absolute path
+to the **entire closed campaign directory, including failed attempts**, enclosing
+all its accepted raw roots; the latter must be a stable credential-free `ssh://`,
 `s3://`, or `https://` archive location. Source roots and URIs are deliberately
 not inferred. For example, a URI can be
 `ssh://ocijhb/lustre/evidence/ROLE/campaign.tar.gz`. URI availability is not
 checked, and this tool performs no upload or remote write.
 
-Each job can run independently, making retries explicit new outputs:
+The production sharder places both phases beneath one parent. For example,
+with `artifact_root=/lustre/campaign/vllm-fp8-tp2-calibration/artifacts` and
+`checkpoint_dir=/lustre/campaign/vllm-fp8-tp2-calibration/checkpoints`, its layout is:
+
+```text
+vllm-fp8-tp2-calibration/             # explicit source_root
+  checkpoints/                      # original resume/failure state
+  artifacts/<parent-plan-sha16>/
+    collection-plan.json
+    shard-manifest.json
+    plans/<child-cell-id>.json
+    shards/<child-plan-sha16>/cells/<child-cell-id>/
+      raw/                          # one accepted child root
+      attempts/<attempt-id>/        # preserved superseded/failed attempts
+```
+
+Assign that same `source_root` and same URI to the parent's prefill and decode
+jobs. `archive` derives the exact shared label set from the 32-job plan. Archive
+that physical parent once, then map both logical labels to its bundle. Separate
+calibration/holdout parent directories normally require 16 physical archives
+for all eight deployments. No directory or URI is inferred; one URI may not name
+different source roots. An archive's attested label set must exactly equal all
+bound records referencing its URI, SHA and byte size.
+
+Each distinct physical archive can run independently, making retries explicit
+new outputs:
 
 ```sh
 python3.12 tools/glm53flash_hf/raw_campaign.py archive \
   --stage /lustre/evidence/accepted-stage \
   --plan /lustre/evidence/archive-plan.json \
   --label sglang-fp8-2-decode-calibration \
-  --output /lustre/evidence/archive-bundles/sglang-fp8-2-decode-calibration
+  --output /lustre/evidence/archive-bundles/sglang-fp8-2-calibration
 ```
 
 The output parent must already exist and the output itself must be new and
-outside its source. Run the same command for each job's label (the five fields
-`backend`, `weight_quantization`, `tp`, `phase`, `role` joined with `-`). Then
-write an explicit `archive-bundles.json` object mapping all 32 labels to their
-successful absolute bundle directories. A failed run's output is preserved;
+outside its source. Run once for each distinct source-root/URI pair, using one
+of its labels (the five fields `backend`, `weight_quantization`, `tp`, `phase`,
+`role` joined with `-`). Then write an explicit `archive-bundles.json` object
+mapping all 32 labels to their successful absolute bundle directories; shared
+labels must point to the same verified bundle. A failed run's output is preserved;
 choose a new output directory on retry and point the map to that verified run.
 
 ```sh
@@ -148,8 +180,13 @@ logs), hashes it while reading, streams gzip/tar with bounded buffers, fully
 re-reads each tar member and checks the original SHA, size and exact membership,
 then rechecks source stat and hashes. It rejects symlinks, special files,
 traversal, overwrite, source mutation and malformed archives. `bind` repeats
-the complete tar verification for every archive before producing the bound
-receipts. There is no on-disk extraction or copy of payloads to the root host.
+the complete tar verification once per physical bundle within that invocation.
+Before reusing that result and before writing success, it rechecks the same
+physical file identities and rehashes every small receipt and the full inventory.
+A replacement, symlink or changed byte/stat invalidates reuse. No verification
+cache survives the invocation; each logical record independently binds its exact
+native and consumer source set. There is no on-disk extraction or copy of
+payloads to the root host.
 Memory does not scale with raw payload bytes; inventory/native file lists do
 scale with file count. These are observations of a quiescent tree, not an atomic
 filesystem snapshot. The tool cannot discover failed attempts outside the
@@ -249,7 +286,9 @@ outputs. They check all eight SDK materializations and subsequent offline loads;
 they do not claim native prediction or real GLM publication acceptance.
 
 Raw archive and binding tests are `test_glm53flash_raw_archive.py` and
-`test_glm53flash_raw_campaign.py`. Tiny TEST_ONLY fixtures exercise 32 roles,
+`test_glm53flash_raw_campaign.py`; `test_glm53flash_shared_archive.py` uses
+actual production planner/sharder schemas and the strict plan reader. Tiny
+TEST_ONLY fixtures exercise 32 roles bound to 16 shared physical archives,
 sharded accepted roots, complete failure preservation, corruption, traversal,
 source mutation, rehashed-inventory mismatch and consumer-origin mismatch.
 Test-only monkeypatches permit synthetic receipts solely inside pytest; no CLI

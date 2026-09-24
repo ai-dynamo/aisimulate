@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
+import stat
 from pathlib import Path
 
 if __package__:
@@ -218,15 +220,21 @@ def load_plan(stage_root, plan):
     require(plan["schema"] == PLAN and plan["stage_sha256"] == expected["stage_sha256"], "archive plan stage mismatch")
     jobs = {key(j): j for j in plan["jobs"]}
     require(len(jobs) == len(plan["jobs"]) == 32 and jobs.keys() == KEYS, "exact thirty-two archive jobs required")
+    uri_sources = {}
     for original in expected["jobs"]:
         job = jobs[key(original)]
         require(
             all(job[k] == v for k, v in original.items() if k not in ("source_root", "uri")),
             "archive plan changed accepted selection",
         )
+        require(Path(job["source_root"]).is_absolute(), "closed source root must be absolute")
         source = archive.absolute_safe(job["source_root"])
         require(source.is_dir(), "closed campaign source must be a directory")
         archive.validate_identity(job["uri"], [{k: job[k] for k in FIELDS}])
+        require(
+            uri_sources.setdefault(job["uri"], source) == source,
+            "one archive URI cannot identify different source roots",
+        )
         for raw in job["accepted_raw_roots"]:
             require(
                 archive.absolute_safe(raw).is_relative_to(source),
@@ -246,7 +254,12 @@ def archive_one(stage_root, plan, label, output):
         not any(output.is_relative_to(root) for root in immutable_roots),
         "archive output is inside campaign/stage input",
     )
-    return archive.create_archive(job["source_root"], output, job["uri"], [{k: job[k] for k in FIELDS}])
+    labels = [
+        {k: other[k] for k in FIELDS}
+        for _, other in sorted(jobs.items())
+        if Path(other["source_root"]) == Path(job["source_root"]) and other["uri"] == job["uri"]
+    ]
+    return archive.create_archive(job["source_root"], output, job["uri"], labels)
 
 
 def _bindings(stage_root, ctx, record, root):
@@ -355,6 +368,14 @@ def validate(records, stage_root, root):
     stage = ctx[0]
     seen, files = set(), {}
     require(isinstance(records, list), "external raw evidence must be a list")
+    archive_labels, uri_identities, archive_sidecars = {}, {}, {}
+    for record in records:
+        identity = (record["uri"], record["sha256"], record["bytes"])
+        require(
+            uri_identities.setdefault(record["uri"], identity) == identity,
+            "archive URI has conflicting content identities",
+        )
+        archive_labels.setdefault(identity, []).append({k: record[k] for k in FIELDS})
     for record in records:
         production(record)
         ident = key(record)
@@ -374,6 +395,12 @@ def validate(records, stage_root, root):
             "raw archive verification is missing",
         )
         sidecars = [record[k] for k in ("archive_receipt", "source_inventory", "archive_input_manifest")]
+        identity = (record["uri"], record["sha256"], record["bytes"])
+        sidecar_identity = tuple((item["sha256"], item["bytes"]) for item in sidecars)
+        require(
+            archive_sidecars.setdefault(identity, sidecar_identity) == sidecar_identity,
+            "shared archive has conflicting receipt/inventory identities",
+        )
         for item in [*sidecars, *record["controls"]]:
             checked(root, item)
             require(
@@ -385,13 +412,15 @@ def validate(records, stage_root, root):
         archive_input = read(checked(root, record["archive_input_manifest"]))
         production(attestation)
         production(archive_input)
+        archive.validate_identity(attestation["external_uri"], attestation["labels"])
+        labels = archive_labels[(record["uri"], record["sha256"], record["bytes"])]
         require(
             attestation.get("schema") == archive.SCHEMA
             and attestation.get("status") == "PASS"
             and attestation.get("source_recheck") == "STAT_AND_SHA256_PASS"
             and attestation.get("native_or_accuracy_acceptance") == "NOT_EVALUATED"
             and attestation.get("external_uri_verification") == "NOT_CHECKED"
-            and attestation["labels"] == [label]
+            and sorted(attestation["labels"], key=key) == sorted(labels, key=key)
             and attestation["external_uri"] == record["uri"],
             "archive attestation mismatch",
         )
@@ -412,7 +441,7 @@ def validate(records, stage_root, root):
             archive_input.get("schema") == archive.SCHEMA
             and archive_input.get("native_or_accuracy_acceptance") == "NOT_EVALUATED"
             and archive_input["source_inventory"] == attestation["source_inventory"]
-            and archive_input["labels"] == [label]
+            and archive_input["labels"] == attestation["labels"]
             and archive_input["external_uri"] == record["uri"],
             "archive input manifest mismatch",
         )
@@ -429,6 +458,49 @@ def validate(records, stage_root, root):
         )
     require(seen == KEYS, "external raw evidence must cover exactly thirty-two phase/roles")
     return files
+
+
+def _bundle_identity(bundle):
+    """Observe physical files plus immutable small-file bytes around tar verification.
+
+    The tar is streamed by verify_bundle; its device/inode/stat identity must
+    stay unchanged before/after that read, each reuse and the final bind check.
+    Small receipts and the complete inventory are also rehashed on every check.
+    No verification cache survives this bind invocation.
+    """
+    bundle = archive.absolute_safe(bundle)
+    root_stat = archive.stat_identity(bundle.lstat())
+    result = {"root": root_stat}
+    for filename in (
+        archive.ARCHIVE,
+        archive.INVENTORY,
+        archive.INPUT_MANIFEST,
+        "receipt.json",
+        "external-raw-evidence.json",
+    ):
+        path = archive.absolute_safe(bundle / filename)
+        before = archive.stat_identity(path.lstat())
+        require(stat.S_ISREG(before["mode"]), "archive bundle member is not a regular file")
+        with os.fdopen(os.open(path, archive.FLAGS), "rb") as stream:
+            require(
+                archive.stat_identity(os.fstat(stream.fileno())) == before, "archive bundle object changed before read"
+            )
+            content = archive.hash_stream(stream) if filename != archive.ARCHIVE else None
+            require(archive.stat_identity(os.fstat(stream.fileno())) == before, "archive bundle changed during read")
+        require(archive.stat_identity(path.lstat()) == before, "archive bundle path changed during read")
+        result[filename] = {"stat": before, "content": content}
+    require(archive.stat_identity(bundle.lstat()) == root_stat, "archive bundle directory changed")
+    return result
+
+
+def _verify_once(bundle, verified):
+    before = _bundle_identity(bundle)
+    if bundle in verified:
+        require(before == verified[bundle], "verified archive bundle changed before reuse")
+        return
+    archive.verify_bundle(bundle)  # Full tar member extraction/hash verification.
+    require(_bundle_identity(bundle) == before, "archive bundle changed during verification")
+    verified[bundle] = before
 
 
 def bind(stage_root, plan, bundles, destination):
@@ -448,11 +520,11 @@ def bind(stage_root, plan, bundles, destination):
         "binding destination is inside immutable input",
     )
     destination.mkdir(mode=0o700)
-    records = []
+    records, verified = [], {}
     try:
         for ident, job in sorted(jobs.items()):
             bundle = archive.absolute_safe(bundles[name(job)])
-            archive.verify_bundle(bundle)  # Re-read every tar member, not just gzip SHA.
+            _verify_once(bundle, verified)
             attestation = read(bundle / "receipt.json")
             archive_input = read(bundle / archive.INPUT_MANIFEST)
             require(
@@ -498,6 +570,8 @@ def bind(stage_root, plan, bundles, destination):
             record.update(native_roots=roots, consumer_sources=consumers)
             records.append(record)
         validate(records, stage_root, destination)
+        for bundle, identity in verified.items():
+            require(_bundle_identity(bundle) == identity, "verified archive bundle changed before final binding")
         archive.write_json(destination / "external-raw-evidence.json", records)
         return records
     except Exception as error:
