@@ -6,7 +6,6 @@ import hashlib
 from pathlib import Path
 
 import pytest
-
 from collector import glm53flash_runtime_identity as identity
 
 pytestmark = pytest.mark.unit
@@ -55,6 +54,8 @@ def test_closed_candidate_cannot_generate_a_source_or_binary_admission():
 
 def test_reviewed_repair_contract_binds_distinct_sources_and_all_native_binaries(monkeypatch):
     # TEST ONLY: exercise the dormant contract. This does not qualify the runtime.
+    # TEST_ONLY: summary admission has its own suite; isolate downstream binding.
+    monkeypatch.setattr(identity, "_validate_qualification_summary", lambda _: {})
     monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, identity.VLLM_KPOOL_CANDIDATE, "a" * 64)
     contract = identity.vllm_runtime_closure(identity.VLLM_KPOOL_CANDIDATE, source_manifest())
     stock = identity.vllm_source_pins("0.30.0", source_manifest())
