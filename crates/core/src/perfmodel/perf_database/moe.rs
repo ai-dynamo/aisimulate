@@ -39,7 +39,7 @@ use super::{SourceResolver, kernel_source_ok};
 use crate::common::enums::MoeQuantMode;
 use crate::common::error::AicError;
 use crate::config::{PerfDbSources, PerfSource};
-use crate::perf_database::parquet_loader::PerfReader;
+use crate::perf_database::parquet_loader::{PerfReader, PerfRow};
 
 pub struct MoeTable {
     data_root: PathBuf,
@@ -75,8 +75,9 @@ pub struct MoeSiblingSlice {
 }
 
 /// Parallel grids split by `kernel_source`. `default` and `low_latency`
-/// preserve the legacy automatic lookup behavior, while `by_kernel_source`
-/// retains every named lane for an exact user-selected lookup.
+/// contain default-eligible rows (all legacy rows when the metadata column is
+/// absent), while `by_kernel_source` retains every named lane for an exact
+/// user-selected lookup.
 struct LoadedMoeGrids {
     default: MoeGrids,
     low_latency: MoeGrids,
@@ -611,6 +612,37 @@ pub(crate) fn moe_kernel_quant_rewrite(raw_quant: String, kernel_source: &str) -
     }
 }
 
+/// Optional selection metadata shared by the query loader and coverage view.
+/// An absent column preserves legacy automatic selection; malformed metadata
+/// is not a coverage miss and must never trigger an estimator fallback.
+pub(crate) fn moe_default_eligible(
+    reader: &PerfReader,
+    row: &PerfRow,
+    column: Option<usize>,
+    kernel_source_column: Option<usize>,
+) -> Result<bool, AicError> {
+    let Some(column) = column else {
+        return Ok(true);
+    };
+    let eligible = row.bool_strict(column).map_err(|_| {
+        AicError::InvalidPerfData(format!(
+            "default_eligible must be a non-null Boolean at {}",
+            reader.path().display()
+        ))
+    })?;
+    if !eligible
+        && row
+            .str_optional(kernel_source_column)?
+            .is_none_or(|source| source.trim().is_empty())
+    {
+        return Err(AicError::InvalidPerfData(format!(
+            "default_eligible=false requires a nonblank string kernel_source at {}",
+            reader.path().display()
+        )));
+    }
+    Ok(eligible)
+}
+
 fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> {
     let mut default_index: MoeIndex<MoeShapeKey, BTreeMap<u32, LeafValue>> = MoeIndex::default();
     let mut low_latency_index: MoeIndex<MoeShapeKey, BTreeMap<u32, LeafValue>> =
@@ -645,11 +677,14 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
         // the `default` grid (matching the pre-split behavior). The same column
         // gates the per-source shared-layer `kernel_source` allowlist.
         let kernel_source_col = reader.col_optional("kernel_source");
+        let default_eligible_col = reader.col_optional("default_eligible");
         for row in reader.rows()? {
             let row = row?;
             if !kernel_source_ok(source.kernel_sources(), kernel_source_col, &row)? {
                 continue;
             }
+            let default_eligible =
+                moe_default_eligible(&reader, &row, default_eligible_col, kernel_source_col)?;
             let kernel_source = row
                 .str_optional(kernel_source_col)?
                 .unwrap_or("")
@@ -683,15 +718,17 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
             let power = row.f64_optional(power_col)?.unwrap_or(0.0);
             let value = LeafValue::with_power(latency, power);
             let num_tokens = row.u32(num_tokens_col)?;
-            insert_moe_row(
-                target,
-                target_quants,
-                &quant,
-                &distribution,
-                shape,
-                num_tokens,
-                value,
-            );
+            if default_eligible {
+                insert_moe_row(
+                    target,
+                    target_quants,
+                    &quant,
+                    &distribution,
+                    shape,
+                    num_tokens,
+                    value,
+                );
+            }
             if !kernel_source.is_empty() {
                 let source_index = kernel_source_indices
                     .entry(kernel_source.clone())
@@ -709,7 +746,11 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
             }
         }
     }
-    if !any_source || (default_index.is_empty() && low_latency_index.is_empty()) {
+    if !any_source
+        || (default_index.is_empty()
+            && low_latency_index.is_empty()
+            && kernel_source_indices.is_empty())
+    {
         return Err(AicError::PerfDatabase(format!(
             "no rows loaded from {} source(s) (first: {})",
             sources.len(),
@@ -749,7 +790,10 @@ fn load_moe_parquet(sources: &[PerfSource]) -> Result<LoadedMoeGrids, AicError> 
 }
 
 fn clone_err(err: &AicError) -> AicError {
-    AicError::PerfDatabase(err.to_string())
+    match err {
+        AicError::InvalidPerfData(message) => AicError::InvalidPerfData(message.clone()),
+        _ => AicError::PerfDatabase(err.to_string()),
+    }
 }
 
 #[cfg(test)]
