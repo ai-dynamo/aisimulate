@@ -343,3 +343,128 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
         "whole_forward_accuracy": "NOT_EVALUATED",
         "formal_admission": False,
     }
+
+
+EXECUTION_RANGE = "aisim.glm53/native_decode_execute"
+
+
+def bind_execution_activity(binding: dict, events: list[dict]) -> dict:
+    """Account for native GPU preparation outside the captured model graph.
+
+    Each extra activity must correlate to a CUDA launch inside the one actual
+    source-bound DecodeCudaGraphRunner.execute CPU range. An additional graph
+    needs its own capture registry; it cannot be relabeled as ordinary setup.
+    CPU gaps remain diagnostic elapsed time, never allocated back into units.
+    """
+    ranges = [row for row in events if row.get("name") == EXECUTION_RANGE and row.get("ph") == "X"]
+    if len(ranges) != 1:
+        raise ValueError("native execution lacks one complete source-bound profiler range")
+    region = ranges[0]
+    begin, duration = region.get("ts"), region.get("dur")
+    if any(type(v) not in (int, float) or not math.isfinite(v) for v in (begin, duration)) or duration <= 0:
+        raise ValueError("native execution profiler range lacks a positive interval")
+    if any(type(region.get(key)) is not int for key in ("pid", "tid")):
+        raise ValueError("native execution profiler range lacks its actual process/thread")
+    calls = {}
+    for row in events:
+        if row.get("cat") not in ("cuda_runtime", "cuda_driver"):
+            continue
+        start, length = row.get("ts"), row.get("dur")
+        if (
+            row.get("pid") != region.get("pid")
+            or row.get("tid") != region.get("tid")
+            or type(start) not in (int, float)
+            or type(length) not in (int, float)
+            or not math.isfinite(start)
+            or not math.isfinite(length)
+            or length < 0
+            or start < begin
+            or start + length > begin + duration
+        ):
+            continue
+        correlation = row.get("args", {}).get("correlation")
+        if type(correlation) is not int or correlation < 0:
+            raise ValueError("native execution CUDA call lacks its actual launch correlation")
+        if correlation in calls:
+            raise ValueError("native execution CUDA call correlation is ambiguous")
+        calls[correlation] = row
+    launches = [row for row in calls.values() if row.get("name") in ("cudaGraphLaunch", "cuGraphLaunch")]
+    if len(launches) != 1 or launches[0]["args"]["correlation"] != binding["correlation"]:
+        raise ValueError("native metadata/model execution needs one registered graph launch")
+    setup = []
+    actual_graph = []
+    for index, event in enumerate(events):
+        category, args = event.get("cat"), event.get("args", {})
+        if category not in ("kernel", "gpu_memcpy", "gpu_memset"):
+            continue
+        correlation = args.get("correlation")
+        if correlation not in calls:
+            raise ValueError("GPU activity is outside the source-bound native execution scope")
+        if correlation == binding["correlation"]:
+            actual_graph.append(event)
+            continue
+        if args.get("graph id", 0) not in (0, None) or args.get("graph node id", 0) not in (0, None):
+            raise ValueError("native preparation contains an unregistered additional CUDA graph")
+        start, length = event.get("ts"), event.get("dur")
+        if (
+            any(type(v) not in (int, float) or not math.isfinite(v) for v in (start, length))
+            or length <= 0
+            or type(args.get("stream")) is not int
+        ):
+            raise ValueError("native preparation activity lacks a positive actual device interval")
+        if category == "kernel":
+            if (
+                any(not isinstance(args.get(k), list) or len(args[k]) != 3 for k in ("grid", "block"))
+                or type(args.get("shared memory")) is not int
+            ):
+                raise ValueError("native preparation kernel lacks actual launch geometry")
+            fingerprint = {k: args[k] for k in ("grid", "block", "shared memory")}
+        else:
+            if type(args.get("bytes")) is not int or args["bytes"] <= 0:
+                raise ValueError("native preparation memory activity lacks actual byte count")
+            fingerprint = {"bytes": args["bytes"]}
+        setup.append(
+            {
+                "activity_index": index,
+                "launch_correlation": correlation,
+                "activity": category,
+                "operation": "native_graph_setup",
+                "start_us": start,
+                "end_us": start + length,
+                "stream": args["stream"],
+                "fingerprint": {"name": event["name"], **fingerprint},
+                "source_boundary": "sglang.DecodeCudaGraphRunner.execute",
+                "native_launch": calls[correlation]["name"],
+            }
+        )
+    if len(actual_graph) != len(binding["activities"]):
+        raise ValueError("native graph activity differs between node and execution scope proofs")
+    combined = binding["activities"] + setup
+    groups = {}
+    for row in combined:
+        groups.setdefault(row["operation"], []).append(row)
+    units = [
+        {
+            "operation": operation,
+            "active_union_us": _active_union_us(rows),
+            "activity_interval_sum_us": sum(row["end_us"] - row["start_us"] for row in rows),
+            "activity_envelope_us": max(row["end_us"] for row in rows) - min(row["start_us"] for row in rows),
+            "captured_node_ids": [row["node_id"] for row in rows if "node_id" in row],
+            "outside_graph_activity_indices": [row["activity_index"] for row in rows if "activity_index" in row],
+        }
+        for operation, rows in groups.items()
+    ]
+    return {
+        "graph": binding,
+        "outside_graph_setup": setup,
+        "execution_range": region,
+        "activities": combined,
+        "operation_activity_unions": units,
+        "activity_union_us": _active_union_us(combined),
+        "activity_interval_sum_us": sum(row["end_us"] - row["start_us"] for row in combined),
+        "activity_envelope_us": max(row["end_us"] for row in combined) - min(row["start_us"] for row in combined),
+        "approximate_additive_operation_union_us": sum(row["active_union_us"] for row in units),
+        "composition": binding["composition"],
+        "formal_admission": False,
+        "whole_forward_accuracy": "NOT_EVALUATED",
+    }

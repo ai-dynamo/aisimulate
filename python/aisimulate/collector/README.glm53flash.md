@@ -347,7 +347,14 @@ receipts are still required from the shared retained lifecycle.
 
 The graph calibration path uses CUPTI; the separate graph holdout installs no
 module hooks or profiler and measures the unchanged native FULL replay with
-outer GPU events. Its boundary is explicitly
+outer GPU events. Both start at native `DecodeCudaGraphRunner.execute`, before
+`load_batch` prepares GPU buffers/attention metadata, and end after its model
+replay returns logits, before sampling or observer readback. Preparation outside
+the model graph must join its actual CUDA API correlations within this exact
+execution range and has explicit `native_graph_setup` ownership. Additional
+metadata glue graphs require their own native node registry; the initial
+single-graph adapter rejects them. CPU enqueue gaps remain elapsed diagnostics,
+not costs apportioned to operators. Its boundary is explicitly
 `native_full_graph_metadata_to_logits_gpu_v1`. The current measured consumer
 **does not admit these experimental raw graph observations**: native mechanism
 qualification, profiling controls, complete metadata-node ownership/cost and
@@ -388,7 +395,14 @@ again, and count/fill inconsistencies or edges to absent nodes fail explicitly.
 No model stage ran after that failed tiny prerequisite.
 Native SGLang source pin94602c9 additionally binds
 `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`
-and `python/sglang/srt/model_executor/runner/shape_key.py`.
+and `python/sglang/srt/model_executor/runner/{shape_key,decode_cuda_graph_runner}.py`.
+The latter
+([execute/load_batch source](https://github.com/sgl-project/sglang/blob/94602c9c2b7cbdb8efd5c52802dac6a1c180089e/python/sglang/srt/model_executor/runner/decode_cuda_graph_runner.py))
+has SHA256 `55892739b9c577ae43a60d5d31eac53f81e2b4aeca57ef5368b9c881117889d8`.
+The earlier experimental wrapper started within `backend.replay` and therefore
+omitted metadata preparation; no model graph profile was admitted from it.
+The corrected boundary has CPU interval/ownership tests and still requires
+actual native-class/GPU qualification in a new immutable attempt.
 
 The experimental `glm53flash_vllm_graph_ops.py` capture adapter covers the
 corresponding native V2 FULL initialization boundary. Source:

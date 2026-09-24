@@ -994,7 +994,7 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `glm53flash_observer.py`, `glm53flash_contract.py`, `glm53flash_validation.py`,
   `glm53flash_graph_nodes.py`, `glm53flash_graph_hooks.py`,
   `glm53flash_sglang_graph_ops.py`, `glm53flash_vllm_graph_ops.py`,
-  and their graph-node/hook CPU tests,
+  and their graph-node/hook/execution CPU tests,
   `collect_glm53flash.py`, `{vllm,sglang}/collect_glm53flash.py`,
   `cases/base_ops/glm53flash_module.yaml`,
   `cases/models/Glm5NextForConditionalGeneration_cases.yaml`,
