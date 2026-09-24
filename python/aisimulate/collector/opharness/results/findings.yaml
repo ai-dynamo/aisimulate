@@ -376,7 +376,11 @@ findings:
       run loads FlashMLASparseImpl and generates (705890b31aa0, 4d34afefe419, ...). So on 0.29/SM90 these models
       serve only with an explicit fp8 kv dtype — the golden vllm render passes none. Generator-relevant
       (aiconfigurator should render --kv-cache-dtype fp8 for NVFP4 DSA on vllm 0.29) and upstream-worthy
-      (fp8_e4m3 vs fp8 in the sparse-MLA support check). Raw: archive/raw/67b8d5c6ce5e.json (Reasons dict).'
+      (fp8_e4m3 vs fp8 in the sparse-MLA support check). Raw: archive/raw/67b8d5c6ce5e.json (Reasons dict).
+      GENERATOR FIX LANDED (owner "1，好的", commit ea0244a2): utils.vllm_dsa_kv_cache_dtype prescribes fp8
+      keyed on architecture (GlmMoeDsaForCausalLM, DeepseekV32ForCausalLM) + the task''s nvfp4 GEMM quant mode;
+      module_bridge applies it to the worker payload (naive path has no quant fact). Left open for the SDK
+      owner: the perf task itself models these checkpoints with bf16 KV while serving runs fp8 KV either way.'
     applies_to:
     - zai-org/GLM-5-FP8
     - nvidia/GLM-5-NVFP4

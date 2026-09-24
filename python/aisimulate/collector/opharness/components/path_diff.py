@@ -245,6 +245,9 @@ def diff(capture_file: str, repo: str, framework: str, version: str,
     def _quality(r):
         rt = r["runtime"]
         return (rt.get("prefix_caching") is False,
+                # framework-mode probe (CUDA graphs / compile = serving truth,
+                # owner decision 2026-09-24) beats an eager or pre-flag record
+                rt.get("probe_eager") is False,
                 bool(r.get("ops")) and any((o.get("phase") == "prefill") for o in r.get("ops") or []),
                 rt.get("isl") is not None)
     candidates.sort(key=_quality)
