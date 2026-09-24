@@ -76,6 +76,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         self._real_seed_tokens = 0
         self._real_input = None
         self._real_identity = None
+        self._real_configure_context(config)
         super()._bench_init(config)
         if not self._bench_active:
             raise ValueError("GLM-5.3-Flash canary overlay requires native benchmark mode")
@@ -172,6 +173,19 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             "sampling": "rotate stream by 131*request_index+17*benchmark_id; repeat to requested length",
         }
 
+    def _real_configure_context(self, config):
+        # Keep the spawned native overlay independent of the host collector package.
+        measured = int(os.environ.get("DYN_FPM_GLM53FLASH_MEASURED_CONTEXT", MAX_CONTEXT))
+        if not 1 <= measured <= MAX_CONTEXT:
+            raise ValueError("GLM measured context limit must be between 1 and 131072")
+        self._real_context_policy = {
+            "measured_context_limit": measured,
+            "runtime_context_length": measured + 7,
+            "native_admission_headroom": 7,
+        }
+        if config.model_config.max_model_len != self._real_context_policy["runtime_context_length"]:
+            raise ValueError("GLM vLLM runtime context must equal measured context plus seven internal positions")
+
     def _bench_eager_warmup_points(self):
         # Every exact geometry receives five real warmups below, in either
         # native eager dispatch or CUDA graph replay.
@@ -240,7 +254,9 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             queries = self._bench_prefill_new_token_lengths(total_prefill_tokens, batch_size, partition, rows)
         except ValueError:
             return False
-        context_limit = min(MAX_CONTEXT, self._bench_capacity_limit("max_model_len"))
+        context_limit = min(
+            self._real_context_policy["measured_context_limit"], self._bench_capacity_limit("max_model_len")
+        )
         if len(queries) != batch_size or sum(queries) != total_prefill_tokens or min(queries) < 1:
             return False
         lengths = [prefix + query for prefix, query in zip(prefixes, queries, strict=True)]
@@ -253,17 +269,28 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
 
     def _real_validate_grid(self):
         self._real_expected_warmup_ids = []
+        context_limit = self._real_context_policy["measured_context_limit"]
         for point in self._bench_grid:
             prefix, suffix = self._real_lengths(point)
             if (
                 not 1 <= point.batch_size <= MAX_BATCH
-                or max(prefix, default=0) + 2 * int(point.point_type == "decode") > MAX_CONTEXT
+                or max(prefix, default=0) + 2 * int(point.point_type == "decode") > context_limit
             ):
                 raise ValueError("GLM-5.3-Flash canary point exceeds batch/context bound")
             if point.point_type == "prefill":
+                # Stock vLLM's prefill pooling assumes pool-aligned starts.
+                # GB300 split/one-shot probes fail at P4097/Q3 and Q4; keep
+                # the broader unaligned-start contract unqualified, including
+                # geometries that were not individually numerically probed.
+                if any(p % 4 and q >= 2 for p, q in zip(prefix, suffix, strict=True)):
+                    raise ValueError(
+                        "stock vLLM IndexPool cached-prefill start is unqualified: "
+                        f"benchmark_id={point.benchmark_id}, prefixes={prefix}, queries={suffix}; "
+                        "requires a separately qualified runtime repair, no coordinate substitution"
+                    )
                 if sum(suffix) > MAX_NEW:
                     raise ValueError("GLM-5.3-Flash canary prefill exceeds total new-token bound")
-                if any(p + q > MAX_CONTEXT for p, q in zip(prefix, suffix, strict=True)):
+                if any(p + q > context_limit for p, q in zip(prefix, suffix, strict=True)):
                     raise ValueError("GLM-5.3-Flash canary prefill exceeds prefix plus new-token context bound")
             if point.point_type == "decode" and min(prefix) < 1:
                 raise ValueError("GLM-5.3-Flash real decode requires context >=2; no coordinate clamping")
@@ -590,12 +617,16 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         if stream_digest != self._real_token_stream_digest.hexdigest():
             raise RuntimeError("GLM token history changed before publication")
         output["input_provenance"] = dict(self._real_input or {})
+        output["input_provenance"]["context_policy"] = self._real_context_policy
         output["input_provenance"]["token_stream_manifest"] = {
             "schema_version": 3,
             "file": stream_path.name,
             "sha256": stream_digest,
             "records": self._real_token_stream_count,
         }
+        if output.get("limits", {}).get("max_model_len") != self._real_context_policy["runtime_context_length"]:
+            raise RuntimeError("native result context limit differs from the admitted GLM context policy")
+        output["context_policy"] = self._real_context_policy
         output["execution_identity"] = self._real_identity
         output["execution_mode"] = "native_graph_policy" if self._real_purpose == "fpm" else "eager_ops"
         output["observation_purpose"] = self._real_purpose
@@ -608,7 +639,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             "method": "same_request_real_forward",
             "state_protocol": "glm53flash_same_request_real_hybrid_v1",
             "max_batch": MAX_BATCH,
-            "max_context": MAX_CONTEXT,
+            "max_context": self._real_context_policy["measured_context_limit"],
         }
         output["producer"] = {
             "instrumentation_revision": DYNAMO_SHA,
@@ -618,6 +649,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
                 Path(__file__).with_name("runtime-source-sha256.json").read_bytes()
             ).hexdigest(),
             "overlay_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "context_policy_version": 1,
             "warmup_repeats": WARMUP_REPEATS,
             "measurement_repeats": MEASUREMENT_REPEATS,
         }

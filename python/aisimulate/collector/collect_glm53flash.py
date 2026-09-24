@@ -27,7 +27,7 @@ from collector.glm53flash_contract import (
     validate_native_workload,
 )
 from collector.glm53flash_jsonl import iter_records
-from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, sglang_runtime_context_length
+from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, sglang_runtime_context_length, vllm_context_policy
 
 
 def get_test_cases(backend: str) -> list[dict]:
@@ -131,7 +131,7 @@ def native_command(backend, checkpoint, revision, tp, phase, output, corpus):
         "--data-parallel-size",
         "1",
         "--max-model-len",
-        "131072",
+        str(vllm_context_policy(MAX_MEASURED_CONTEXT)["runtime_context_length"]),
         "--max-num-seqs",
         "32",
         "--max-num-batched-tokens",
@@ -267,6 +267,7 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
         "AISIM_GLM53_OPS_PROVENANCE": str(output / "provenance.json"),
         "AISIM_GLM53_REQUEST_MANIFEST": str(output / "requests.json"),
         "DYN_FPM_GLM53FLASH_REAL_KV": "1",
+        "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT": str(MAX_MEASURED_CONTEXT),
         "DYN_FPM_INPUT_TEXT": str(corpus),
         "DYN_FPM_TOKENIZER_REVISION": manifest["checkpoint_revision"],
         "DYN_FPM_DATASET_ROLE": "calibration",

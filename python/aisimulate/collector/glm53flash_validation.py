@@ -191,6 +191,20 @@ def _read_evidence(root: Path) -> dict:
     return receipt
 
 
+def _validate_vllm_context(row: dict) -> None:
+    from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, VLLM_CONTEXT_POLICY_VERSION, vllm_context_policy
+
+    policy = vllm_context_policy(MAX_MEASURED_CONTEXT)
+    if (
+        row.get("context_policy") != policy
+        or type(row.get("context_policy_version")) is not int
+        or row["context_policy_version"] != VLLM_CONTEXT_POLICY_VERSION
+        or type(row.get("native_max_model_len")) is not int
+        or row["native_max_model_len"] != policy["runtime_context_length"]
+    ):
+        raise ValueError("Ops actual vLLM worker context differs from frozen measured context policy")
+
+
 def load_native(run: dict, base: Path) -> dict:
     """Read independent GPU truth for Ops; never substitute FPM's host interval."""
     raw_root = run["spec"].get("raw_root")
@@ -254,6 +268,8 @@ def load_native(run: dict, base: Path) -> dict:
         _state_layout(layout, backend)
         previous, observed, seen_forward_ids, completed_requests = {}, set(), set(), set()
         for row in iter_records(root / f"forward-rank-{rank}.jsonl"):
+            if backend == "vllm":
+                _validate_vllm_context(row)
             if execution is not None and any(row.get(key) != value for key, value in execution.items()):
                 raise ValueError("Ops raw forward execution differs from the retained native runtime receipts")
             if row.get("forward_id") in seen_forward_ids:

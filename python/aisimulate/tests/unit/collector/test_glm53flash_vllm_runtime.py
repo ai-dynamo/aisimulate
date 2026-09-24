@@ -7,13 +7,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from collector.glm53flash_vllm_runtime import _TraceState, native_coordinates
+from collector.glm53flash_vllm_runtime import _TraceState, native_context_receipt, native_coordinates
 
 pytestmark = pytest.mark.unit
 
 
 def runner(prefix, *, prompt=128):
     return SimpleNamespace(
+        max_model_len=131079,
         input_batch=SimpleNamespace(req_ids=["real-rid"], num_computed_tokens_cpu=[prefix]),
         requests={"real-rid": SimpleNamespace(num_prompt_tokens=prompt, prompt_token_ids=list(range(prompt)))},
     )
@@ -92,3 +93,20 @@ def test_dynamic_frozen_mapping_requires_real_worker_prefix(monkeypatch, tmp_pat
     context.cudagraph_runtime_mode.name = "FULL"
     with pytest.raises(RuntimeError, match="CUDA graph"):
         state.before(schedule, Tensor([900]), context)
+
+
+def test_native_context_receipt_requires_actual_worker_headroom(monkeypatch):
+    from collector.glm53flash_validation import _validate_vllm_context
+
+    monkeypatch.setenv("DYN_FPM_GLM53FLASH_MEASURED_CONTEXT", "131072")
+    actual = runner(0)
+    receipt = native_context_receipt(actual)
+    _validate_vllm_context(receipt)
+    for bad in (131072, 131080):
+        actual.max_model_len = bad
+        with pytest.raises(RuntimeError, match="actual native"):
+            native_context_receipt(actual)
+        with pytest.raises(ValueError, match="actual vLLM"):
+            _validate_vllm_context({**receipt, "native_max_model_len": bad})
+    with pytest.raises(ValueError, match="actual vLLM"):
+        _validate_vllm_context({})

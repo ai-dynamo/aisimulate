@@ -17,6 +17,7 @@ import os
 import threading
 from pathlib import Path
 
+from collector.glm53flash_protocol import MAX_MEASURED_CONTEXT, VLLM_CONTEXT_POLICY_VERSION, vllm_context_policy
 from collector.glm53flash_sglang_runtime import match_frozen_requests
 
 
@@ -70,6 +71,17 @@ def allocated_state_inventory(model, cache_dtype: str) -> dict:
         "native_cache_dtype": cache_dtype,
         "pooled_index_layout": "packed_fp8_keys_and_fp32_scales",
         "index_tail_layout": "paged_bf16_key_and_gate_score",
+    }
+
+
+def native_context_receipt(runner) -> dict:
+    policy = vllm_context_policy(int(os.environ.get("DYN_FPM_GLM53FLASH_MEASURED_CONTEXT", MAX_MEASURED_CONTEXT)))
+    if runner.max_model_len != policy["runtime_context_length"]:
+        raise RuntimeError("actual native vLLM worker context differs from measured context plus reserved headroom")
+    return {
+        "context_policy": policy,
+        "context_policy_version": VLLM_CONTEXT_POLICY_VERSION,
+        "native_max_model_len": int(runner.max_model_len),
     }
 
 
@@ -147,9 +159,12 @@ class _TraceState:
         from collector.glm53flash_contract import validate_native_workload
         from collector.glm53flash_observer import NativeWorkload
 
+        context_receipt = native_context_receipt(self.runner)
         coords = native_coordinates(self.runner, scheduler_output)
         for prefix, query in zip(coords["prefix_lengths"], coords["query_lengths"], strict=True):
             validate_native_workload("vllm", coords["phase"], prefix, query)
+            if prefix + query > context_receipt["context_policy"]["measured_context_limit"]:
+                raise RuntimeError("actual native forward exceeds frozen measured context")
         runtime_mode = forward_context.cudagraph_runtime_mode.name
         if runtime_mode != "NONE":
             raise RuntimeError("vLLM eager Ops policy encountered native CUDA graph dispatch")
@@ -191,6 +206,7 @@ class _TraceState:
         record = {
             **self.provenance,
             **coords,
+            **context_receipt,
             "requests": records,
             "invocation": invocation,
             "tp_rank": self.rank,
