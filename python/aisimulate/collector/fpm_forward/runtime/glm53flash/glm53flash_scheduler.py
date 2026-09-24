@@ -68,7 +68,8 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         self._real_submitted = set()
         self._real_outstanding = 0
         self._real_deadline = 0.0
-        self._real_token_streams = []
+        self._real_token_stream_count = 0
+        self._real_token_stream_digest = hashlib.sha256()
         self._real_witnesses = {}
         self._real_warmup_results = []
         self._real_expected_warmup_ids = []
@@ -472,7 +473,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
                 ],
             }
             raw = json.dumps(stream, sort_keys=True, separators=(",", ":")).encode()
-            self._real_token_streams.append(raw)
+            self._append_real_token_history(raw)
             receipt = {
                 "repetition": self._real_repeat,
                 "role": role,
@@ -563,21 +564,37 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         finally:
             self._real_callback_stage = None
 
+    def _append_real_token_history(self, raw: bytes) -> None:
+        # Called only after every native interval of this repetition completes.
+        # Preserve completed histories even if a later repetition fails, without
+        # holding every long-context prompt in scheduler host memory.
+        stream_path = Path(self._bench_config.output_path).with_suffix(".token-streams.jsonl")
+        stream_path.parent.mkdir(parents=True, exist_ok=True)
+        mode = "xb" if self._real_token_stream_count == 0 else "ab"
+        with stream_path.open(mode) as destination:
+            destination.write(raw)
+            destination.write(b"\n")
+        self._real_token_stream_digest.update(raw)
+        self._real_token_stream_digest.update(b"\n")
+        self._real_token_stream_count += 1
+
     def _bench_write_results(self):
         super()._bench_write_results()
         destination = Path(self._bench_config.output_path)
         output = json.loads(destination.read_text())
-        stream_bytes = b"\n".join(self._real_token_streams) + (b"\n" if self._real_token_streams else b"")
         stream_path = destination.with_suffix(".token-streams.jsonl")
-        stream_tmp = stream_path.with_suffix(".jsonl.tmp")
-        stream_tmp.write_bytes(stream_bytes)
-        os.replace(stream_tmp, stream_path)
+        if not stream_path.exists() and self._real_token_stream_count == 0:
+            stream_path.touch(exist_ok=False)
+        with stream_path.open("rb") as source:
+            stream_digest = hashlib.file_digest(source, "sha256").hexdigest()
+        if stream_digest != self._real_token_stream_digest.hexdigest():
+            raise RuntimeError("GLM token history changed before publication")
         output["input_provenance"] = dict(self._real_input or {})
         output["input_provenance"]["token_stream_manifest"] = {
             "schema_version": 3,
             "file": stream_path.name,
-            "sha256": hashlib.sha256(stream_bytes).hexdigest(),
-            "records": len(self._real_token_streams),
+            "sha256": stream_digest,
+            "records": self._real_token_stream_count,
         }
         output["execution_identity"] = self._real_identity
         output["execution_mode"] = "native_graph_policy" if self._real_purpose == "fpm" else "eager_ops"

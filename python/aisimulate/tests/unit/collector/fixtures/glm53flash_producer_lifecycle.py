@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Exercise real-request repetition ordering without importing GPU frameworks."""
 
+import hashlib
 import importlib.util
 import json
 import math
@@ -83,6 +84,9 @@ for phase, context, suffix in [("prefill", 0, 64), ("prefill", 4099, 3), ("decod
     manifest_dir = tempfile.TemporaryDirectory()
     manifest_path = Path(manifest_dir.name) / "requests.json"
     os.environ["AISIM_GLM53_REQUEST_MANIFEST"] = str(manifest_path)
+    scheduler._real_token_stream_count = 0
+    scheduler._real_token_stream_digest = hashlib.sha256()
+    scheduler._bench_config.output_path = str(Path(manifest_dir.name) / "benchmark.json")
     scheduler._real_repetitions = {}
     scheduler._real_dispatches = []
     driver = Driver(scheduler)
@@ -97,7 +101,37 @@ for phase, context, suffix in [("prefill", 0, 64), ("prefill", 4099, 3), ("decod
         raise AssertionError("producer did not finish")
     assert len(scheduler.saved) == 1
     assert len(scheduler._real_repetitions[1]) == 15
-    histories = [json.loads(row) for row in scheduler._real_token_streams]
+    stream_path = Path(scheduler._bench_config.output_path).with_suffix(".token-streams.jsonl")
+    histories = [json.loads(row) for row in stream_path.read_bytes().splitlines()]
+    assert scheduler._real_token_stream_count == 15
+    assert hashlib.sha256(stream_path.read_bytes()).hexdigest() == scheduler._real_token_stream_digest.hexdigest()
+    assert scheduler._real_token_streams == [], "must not accumulate completed prompt arrays"
+    # A fresh attempt cannot silently overwrite a previous attempt's evidence.
+    scheduler._real_token_stream_count = 0
+    try:
+        scheduler._append_real_token_history(b"{}")
+    except FileExistsError:
+        pass
+    else:
+        raise AssertionError("old raw evidence was overwritten")
+    scheduler._real_token_stream_count = 15
+    scheduler._real_identity = {}
+    scheduler._real_purpose = "fpm"
+    for _ in range(2):
+        scheduler._bench_write_results()
+        published = json.loads(Path(scheduler._bench_config.output_path).read_text())
+        receipt = published["input_provenance"]["token_stream_manifest"]
+        assert receipt["records"] == 15
+        assert receipt["sha256"] == hashlib.sha256(stream_path.read_bytes()).hexdigest()
+    with stream_path.open("ab") as destination:
+        destination.write(b"{}\n")
+    try:
+        scheduler._bench_write_results()
+    except RuntimeError as error:
+        assert "changed before publication" in str(error)
+    else:
+        raise AssertionError("modified raw history was published")
+    assert stream_path.read_bytes().endswith(b"{}\n"), "failed raw evidence must survive"
     assert [h["sampling_role"] for h in histories] == ["warmup"] * 5 + ["measurement"] * 10
     assert len({r["request_id"] for h in histories for r in h["requests"]}) == 30
     manifest = json.loads(manifest_path.read_text())
