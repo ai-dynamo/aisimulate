@@ -502,3 +502,23 @@ The native dispatch predicates above are independently expressed from
 `python/sglang/srt/model_executor/runner/{base_cuda_graph_runner,decode_cuda_graph_runner,shape_key}.py`
 and `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`
 (Apache-2.0, SGLang Team and contributors). No native compute is copied or changed.
+
+
+Graph queries preserve `RuntimeContext.s` as the inclusive current decode
+position; their native past-KV key is checked `s - 1`. Static prediction's
+`isl + step + 1` therefore maps to actual past `isl + step`. The observed B1
+telemetry bridge explicitly converts its past-only total with checked `+1`
+before entering that same generation walk. This matches pinned SGLang
+`ScheduleBatch.prepare_for_decode` in `srt/managers/schedule_batch.py:3471–3473`,
+which increments native sequence lengths before the current token, and the
+observer's `actual_coordinates` subtraction. No collected table key changes.
+Inclusive position131072 means past131071; position0 is invalid. Scalar,
+breakdown, diagnostics and stride use this common boundary; aggregate B>1
+telemetry still cannot prove per-request histories and is rejected.
+
+Graph-backed compiled specs, including older schema20 payloads, must contain
+exactly one direct generation setup marker matching every generation unit's
+backend/checkpoint/TP/phase identity. Missing, duplicate, nested, context-phase
+or rebound markers are rejected at Engine construction and generation-session
+execution. Recompile an old GLM spec before selecting graph data. SOL/eager
+specs remain compatible without the marker.

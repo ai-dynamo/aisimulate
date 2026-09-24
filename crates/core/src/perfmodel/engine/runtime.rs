@@ -349,6 +349,7 @@ impl Engine {
             .and_then(|s| s.nextn)
             .unwrap_or(0);
         Self::validate_fpm_spec(&spec)?;
+        crate::perf_database::glm53flash_graph::validate_generation_ops(&spec.generation_ops, &db)?;
         Ok(Engine {
             context_ops: spec.context_ops,
             generation_ops: spec.generation_ops,
@@ -2217,11 +2218,26 @@ impl Engine {
         if has_decode {
             let n_decode = sched.num_decode_requests.max(1);
             let kv_per_req = sched.sum_decode_kv_tokens / n_decode;
+            // Observed totals explicitly exclude the current token. Graph
+            // queries use RuntimeContext's documented inclusive position,
+            // unlike this legacy telemetry bridge's other op-level paths.
+            let kv_position = if crate::perf_database::glm53flash_graph::validate_generation_ops(
+                &self.generation_ops,
+                &self.db,
+            )? {
+                kv_per_req.checked_add(1).ok_or_else(|| {
+                    AicError::InvalidEngineConfig(
+                        "native past-KV total overflows the current decode position".into(),
+                    )
+                })?
+            } else {
+                kv_per_req
+            };
             total += run_generation_ops_step(
                 &self.generation_ops,
                 &self.db,
                 n_decode,
-                kv_per_req,
+                kv_position,
                 1.0,
                 false,
             )?;
@@ -2406,7 +2422,7 @@ mod tests {
             Arc::new(database),
         )
         .unwrap();
-        let rt = runtime(3, 128, 4);
+        let rt = runtime(3, 129, 4);
         let mut folded = Vec::new();
         let total = engine
             .run_generation_phase_with(&rt, 2, |op, result| {
@@ -2433,6 +2449,102 @@ mod tests {
         metrics.scheduled_requests.num_decode_requests = 3;
         metrics.scheduled_requests.sum_decode_kv_tokens = 3 * 129;
         assert!(engine.rank_latency_ms(&metrics).is_err());
+    }
+
+    #[test]
+    fn glm53_graph_specs_cannot_omit_duplicate_or_rebind_setup() {
+        use crate::perf_database::glm53flash_graph::tests::{db, marker, mhc};
+        let root = tempfile::tempdir().unwrap();
+        let database = Arc::new(db(root.path()));
+        let cfg = fixture_engine_config(None);
+        let mut wrong_phase = marker();
+        if let Op::Glm53Runtime(value) = &mut wrong_phase {
+            value.is_context = true;
+        }
+        let mut wrong_identity = marker();
+        if let Op::Glm53Runtime(value) = &mut wrong_identity {
+            value.tp_size = 4;
+        }
+        for ops in [
+            vec![mhc()],
+            vec![mhc(), marker(), marker()],
+            vec![mhc(), wrong_phase],
+            vec![mhc(), wrong_identity],
+            vec![
+                Op::Fallback(crate::operators::op::FallbackOp::new(
+                    "hidden_setup",
+                    marker(),
+                    vec![],
+                )),
+                mhc(),
+            ],
+            vec![
+                marker(),
+                Op::TokenScale(crate::operators::op::TokenScaleOp {
+                    op: Box::new(mhc()),
+                    numerator: 1,
+                    denominator: 1,
+                }),
+            ],
+        ] {
+            let spec = EngineSpec::new(cfg.clone(), vec![], ops.clone());
+            let decoded = EngineSpec::from_bincode(&spec.to_bincode().unwrap()).unwrap();
+            assert!(Engine::build(decoded, Arc::clone(&database)).is_err());
+            assert!(
+                crate::session::run_generation_ops_step(&ops, &database, 3, 129, 1.0, false)
+                    .is_err()
+            );
+        }
+        // Absence of graph data preserves historical/eager compiled specs.
+        let eager_root = tempfile::tempdir().unwrap();
+        let eager = db(eager_root.path());
+        std::fs::remove_file(
+            eager_root
+                .path()
+                .join("data/sglang/0.5.20/glm53flash_graph_perf.parquet"),
+        )
+        .unwrap();
+        assert!(Engine::build(EngineSpec::new(cfg, vec![], vec![mhc()]), Arc::new(eager)).is_ok());
+    }
+
+    #[test]
+    fn glm53_graph_native_totals_and_static_positions_share_actual_past_axis() {
+        use crate::perf_database::energy_test_fixtures::{Col, write_parquet};
+        use crate::perf_database::glm53flash_graph::tests::{db, fixture, marker, mhc};
+        let root = tempfile::tempdir().unwrap();
+        let database = db(root.path());
+        let mut rows = fixture();
+        rows[2] = Col::I64("batch_size", vec![1; 4]);
+        rows[3] = Col::I64("prefix", vec![128, 136, 128, 136]);
+        rows[4] = Col::I64("padded_batch_size", vec![1; 4]);
+        write_parquet(
+            &root
+                .path()
+                .join("data/sglang/0.5.20/glm53flash_graph_perf.parquet"),
+            &rows,
+        );
+        let engine = Engine::build(
+            EngineSpec::new(fixture_engine_config(None), vec![], vec![mhc(), marker()]),
+            Arc::new(database),
+        )
+        .unwrap();
+        assert_eq!(engine.predict_decode_latency(1, 128, 2).unwrap(), 4.0);
+        assert_eq!(engine.predict_decode_latency_total(1, 128).unwrap(), 4.0);
+        assert_eq!(
+            engine
+                .static_phase_diagnostics(1, 128, 0, false)
+                .unwrap()
+                .iter()
+                .map(|r| r.latency_ms)
+                .sum::<f64>(),
+            4.0
+        );
+        assert_eq!(
+            engine.run_generation_phase(&runtime(1, 128, 4), 2).unwrap(),
+            13.0
+        );
+        assert!(engine.predict_decode_latency_total(1, u32::MAX).is_err());
+        assert!(engine.predict_decode_latency_total(2, 256).is_err());
     }
 
     #[test]

@@ -183,6 +183,107 @@ pub(crate) fn reject_mixed(
     Ok(())
 }
 
+/// Serialized specs predate the runtime marker and may also be hand-built.
+/// A graph-backed phase must own setup exactly once, outside any fallback,
+/// overlap or token-scaling wrapper that could omit or duplicate its cost.
+pub(crate) fn validate_generation_ops(
+    ops: &[Op],
+    db: &crate::perf_database::PerfDatabase,
+) -> Result<bool, AicError> {
+    fn contains_glm(op: &Op) -> bool {
+        match op {
+            Op::Glm53Attention(_)
+            | Op::Glm53Mhc(_)
+            | Op::Glm53Router(_)
+            | Op::Glm53Ffn(_)
+            | Op::Glm53Primitive(_)
+            | Op::Glm53Runtime(_) => true,
+            Op::Overlap(value) => value.group_a.iter().chain(&value.group_b).any(contains_glm),
+            Op::Fallback(value) => {
+                contains_glm(&value.primary) || value.fallback.iter().any(contains_glm)
+            }
+            Op::TokenScale(value) => contains_glm(&value.op),
+            _ => false,
+        }
+    }
+    if !matches!(
+        db.database_mode,
+        crate::common::enums::DatabaseMode::Silicon | crate::common::enums::DatabaseMode::Hybrid
+    ) || !ops.iter().any(contains_glm)
+        || !db.glm53flash_graph.has_measurements()?
+    {
+        return Ok(false);
+    }
+    let markers: Vec<_> = ops
+        .iter()
+        .filter_map(|op| match op {
+            Op::Glm53Runtime(value) => Some(value),
+            _ => None,
+        })
+        .collect();
+    if markers.len() != 1 {
+        return Err(invalid(
+            "graph-backed GLM generation requires exactly one native_graph_setup marker; recompile old specs",
+        ));
+    }
+    let marker = markers[0];
+    marker.validate()?;
+    if marker.is_context || ops.len() < 2 {
+        return Err(invalid(
+            "native graph setup marker must belong to a nonempty generation phase",
+        ));
+    }
+    for op in ops {
+        let (backend, format, tp, context) = match op {
+            Op::Glm53Attention(value) => (
+                &value.backend,
+                &value.checkpoint_format,
+                value.tp_size,
+                value.is_context,
+            ),
+            Op::Glm53Mhc(value) => (
+                &value.backend,
+                &value.checkpoint_format,
+                value.tp_size,
+                value.is_context,
+            ),
+            Op::Glm53Ffn(value) => (
+                &value.backend,
+                &value.checkpoint_format,
+                value.tp_size,
+                value.is_context,
+            ),
+            Op::Glm53Primitive(value) => (
+                &value.backend,
+                &value.checkpoint_format,
+                value.tp_size,
+                value.is_context,
+            ),
+            Op::Glm53Runtime(value) => (
+                &value.backend,
+                &value.checkpoint_format,
+                value.tp_size,
+                value.is_context,
+            ),
+            _ => {
+                return Err(invalid(
+                    "native graph generation does not support mixed, nested or fallback operation lists",
+                ));
+            }
+        };
+        if context
+            || backend != &marker.backend
+            || format != &marker.checkpoint_format
+            || tp != marker.tp_size
+        {
+            return Err(invalid(
+                "native graph setup marker differs from its generation operation identity",
+            ));
+        }
+    }
+    Ok(true)
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
     component: String,
@@ -295,8 +396,8 @@ impl Glm53GraphTable {
         if ctx.beam_width != 1
             || ctx.prefix != 0
             || ctx.batch_size != ctx.num_tokens
-            || ctx.s == 0
-            || ctx.s >= 131072
+            || ctx.s <= 1
+            || ctx.s > 131072
             || ctx.seq_imbalance_correction_scale != 1.0
             || ctx.gen_seq_imbalance_correction_scale != 1.0
         {
@@ -308,7 +409,13 @@ impl Glm53GraphTable {
             component: component.into(),
             geometry: geometry(&shape)?,
             batch: ctx.batch_size,
-            prefix: ctx.s,
+            // RuntimeContext.s is inclusive of the current decode token.
+            // The native measurement axis excludes it (ScheduleBatch
+            // prepare_for_decode at the pinned source increments seq_lens).
+            prefix: ctx
+                .s
+                .checked_sub(1)
+                .ok_or_else(|| invalid("native graph decode position must be positive"))?,
             padded: profile.policy.padded_batch(ctx.batch_size)?,
         };
         let latency = if let Some(row) = profile.rows.get(&target) {
@@ -649,7 +756,7 @@ pub(crate) mod tests {
     fn literal(s: String) -> &'static str {
         Box::leak(s.into_boxed_str())
     }
-    fn fixture() -> Vec<Col> {
+    pub(crate) fn fixture() -> Vec<Col> {
         let text =
             literal(serde_json::to_string(&serde_json::to_value(policy()).unwrap()).unwrap());
         let hash = literal(format!("{:x}", Sha256::digest(text.as_bytes())));
@@ -710,7 +817,7 @@ pub(crate) mod tests {
         let ctx = RuntimeContext {
             batch_size: 3,
             num_tokens: 3,
-            s: 133,
+            s: 134,
             ..RuntimeContext::default()
         };
         assert_eq!(marker().query(&db, &ctx).unwrap().latency_ms, 2.0);
@@ -745,6 +852,32 @@ pub(crate) mod tests {
         assert!(reject_mixed(&[mhc(), marker()], &db).is_err());
     }
     #[test]
+    fn native_graph_position_preserves_inclusive_context_limit() {
+        let root = tempfile::tempdir().unwrap();
+        let database = db(root.path());
+        let mut rows = fixture();
+        rows[3] = Col::I64("prefix", vec![131063, 131071, 131063, 131071]);
+        write_parquet(
+            &root.path().join("data/sglang/0.5.20").join(BASENAME),
+            &rows,
+        );
+        let ctx = RuntimeContext {
+            batch_size: 3,
+            num_tokens: 3,
+            s: 131072,
+            ..RuntimeContext::default()
+        };
+        assert_eq!(marker().query(&database, &ctx).unwrap().latency_ms, 3.0);
+        for s in [0, 1, 131073] {
+            assert!(
+                marker()
+                    .query(&database, &RuntimeContext { s, ..ctx })
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn marker_zero_for_sol_without_polluting_physical_work() {
         let root = tempfile::tempdir().unwrap();
         let mut db = db(root.path());
@@ -752,7 +885,7 @@ pub(crate) mod tests {
         let ctx = RuntimeContext {
             batch_size: 3,
             num_tokens: 3,
-            s: 133,
+            s: 134,
             ..RuntimeContext::default()
         };
         assert_eq!(marker().weight_bytes(), 0.0);

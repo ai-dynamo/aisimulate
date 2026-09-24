@@ -201,6 +201,13 @@ pub(crate) fn run_generation_ops_step_beamed_with<'a>(
     only_generation_attention: bool,
     mut on_op: impl FnMut(&'a Op, PerformanceResult),
 ) -> Result<f64, AicError> {
+    if crate::perf_database::glm53flash_graph::validate_generation_ops(ops, db)?
+        && only_generation_attention
+    {
+        return Err(AicError::InvalidPerfData(
+            "native graph generation cannot omit non-attention/setup units".into(),
+        ));
+    }
     let mut total = 0.0_f64;
     for op in ops {
         if only_generation_attention && !op.is_generation_attention() {

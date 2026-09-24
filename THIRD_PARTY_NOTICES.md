@@ -1018,7 +1018,8 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   `python/sglang/srt/layers/{communicator,communicator_mhc}.py`,
   `python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mha.py`,
   `python/sglang/srt/layers/logits_processor.py`,
-  `python/sglang/srt/arg_groups/exec_.py`, and
+  `python/sglang/srt/arg_groups/exec_.py`,
+  `python/sglang/srt/managers/schedule_batch.py`, and
   `python/sglang/srt/model_executor/cuda_graph_config.py`,
   `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`,
   `python/sglang/srt/model_executor/runner/{shape_key,base_cuda_graph_runner,decode_cuda_graph_runner}.py`,
