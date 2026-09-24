@@ -450,3 +450,31 @@ def test_ops_native_loader_keeps_gpu_boundary_separate(tmp_path, monkeypatch):
     result["values"].pop(3)
     with pytest.raises(ValueError, match="omits frozen requested points"):
         validation._load_native(run, tmp_path, "ops")
+
+
+@pytest.mark.parametrize("batch", [1, 32])
+@pytest.mark.parametrize("phase", ["prefill", "decode"])
+def test_inclusive_context_limit_preserves_database_features(batch, phase):
+    query = 32 if phase == "prefill" else 1
+    point = {
+        "point_type": phase,
+        "batch_size": batch,
+        "total_prefill_tokens": batch * query if phase == "prefill" else 0,
+        "total_kv_read_tokens": batch * (131072 - query),
+    }
+    assert validation._geometry(point) == (phase, batch, point["total_prefill_tokens"], point["total_kv_read_tokens"])
+    assert validation._context_length(point) == 131072
+    assert validation._group(point) == "128K"
+    point["total_kv_read_tokens"] += batch
+    with pytest.raises(ValueError, match="context128K"):
+        validation._geometry(point)
+
+
+@pytest.mark.parametrize(
+    "past, group",
+    [(1022, "below1K"), (1023, "1K-32K"), (32767, "1K-32K"), (32768, "64K"), (65535, "64K"), (65536, "128K")],
+)
+def test_decode_context_groups_include_current_token(past, group):
+    point = {"point_type": "decode", "batch_size": 2, "total_prefill_tokens": 0, "total_kv_read_tokens": past * 2}
+    assert validation._geometry(point)[2] == 0
+    assert validation._group(point) == group

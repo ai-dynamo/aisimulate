@@ -62,13 +62,20 @@ def _geometry(point: dict) -> tuple:
     _expected_scheduled(point)
     batch = point["batch_size"]
     query, prefix = point["total_prefill_tokens"], point["total_kv_read_tokens"]
-    if query % batch or prefix % batch or batch > 32 or max(query + prefix, prefix) // batch > 131072:
+    if query % batch or prefix % batch or batch > 32 or _context_length(point) > 131072:
         raise ValueError("holdout point must be homogeneous and within batch32/context128K")
     return point["point_type"], batch, query, prefix
 
 
+def _context_length(point: dict) -> int:
+    # Decode keeps the database's total_prefill_tokens=0 feature, but each
+    # request computes one current token in addition to its existing KV.
+    scheduled = point["batch_size"] if point["point_type"] == "decode" else point["total_prefill_tokens"]
+    return (scheduled + point["total_kv_read_tokens"]) // point["batch_size"]
+
+
 def _group(point: dict) -> str:
-    context = (point["total_prefill_tokens"] + point["total_kv_read_tokens"]) // point["batch_size"]
+    context = _context_length(point)
     if context < 1024:
         return "below1K"
     if context <= 32768:
