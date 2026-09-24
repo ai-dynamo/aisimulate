@@ -1160,6 +1160,29 @@ the repository Apache-2.0 license text applies to these adaptations.
   affiliates, BSD license preserved in the Kineto notice below. No C++ code
   is copied.
 
+## GLM-5.3-Flash native SGLang input-matched controls
+
+- Derived files: `python/aisimulate/collector/glm53flash_sglang_control.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_sglang_control.py`,
+  the corresponding changes to `collector/fpm_forward/sglang_driver.py`,
+  `collector/glm53flash_sglang_runtime.py`, `collector/glm53flash_graph_export.py`
+  and `collector/README.glm53flash_sglang.md`.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
+  `python/sglang/srt/entrypoints/engine.py`,
+  `python/sglang/srt/model_executor/model_runner.py`,
+  `python/sglang/srt/layers/sampler.py`,
+  `python/sglang/srt/sampling/sampling_params.py`, and
+  `python/sglang/srt/sampling/sampling_batch_info.py`.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: independently expressed public-API request arguments,
+  source/method identity checks and original input-evidence joins. No upstream
+  compute or sampling implementation is copied. The native framework owns
+  request state, bias allocation, sampling and KV updates. The finite bias is
+  experimental; exact observed input equality and timing controls are still
+  required. Test data are authored TEST_ONLY evidence, not GPU measurements.
+
 ## GLM-5.3-Flash vLLM native worker telemetry
 
 - Derived files: `python/aisimulate/collector/glm53flash_vllm_runtime.py`,

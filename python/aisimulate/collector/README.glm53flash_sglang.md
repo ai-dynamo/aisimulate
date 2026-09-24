@@ -169,3 +169,48 @@ The source boundaries additionally inspect immutable SGLang revision
 `python/sglang/srt/utils/common.py` (Apache-2.0, SGLang Team and contributors).
 No upstream computation is copied or substituted. Original failed native
 prefill evidence without Chrome traces cannot be upgraded to this contract.
+
+
+### Independent graph control with matching native inputs
+
+The graph driver records its original public `Engine.generate` arguments in
+`sglang-request-inputs.jsonl` before each call, outside the model timer. It also
+records the actual collector source closure and the five pinned native
+sampling files, plus each worker's original loaded sampling methods. These
+receipts are part of the raw evidence. Existing runs without these receipts
+cannot be relabeled as this new producer.
+
+After a fresh calibration completes, call
+`glm53flash_sglang_control.freeze_reference(native_root, frozen_run, new_path)`.
+This revalidates the original complete native state and graph activity proofs
+and writes a new reference containing all 5+10 point repetitions, actual
+submitted request order, prompts, Q1 query tokens, input-history hashes and
+source/TP forward identities. The returned SHA identifies its original bytes.
+It does not imply that calibration has passed its independent timing control.
+
+Only a separate decode `ops_graph_holdout` process on the calibration corpus
+may pass `--ops-graph-control-inputs NEW_REFERENCE.json` together with
+`--ops-graph-control-inputs-sha256 SHA256`. Its public per-request sampling
+parameters add exactly `logit_bias={str(original_target_token): 100.0}` to the
+existing temperature-zero, two-token, ignore-EOS request. This is a fixed finite
+experimental value, not a documented native magnitude bound or a guarantee of
+selection. Before a GPU qualification, the actual pinned native CPU
+`SamplingParams(**kwargs).verify(vocab_size)` must accept those exact arguments.
+The GPU reader must then prove every real target query and complete input
+history equals the reference. A mismatch fails; there is no adaptive bias,
+retry, request-field mutation, tensor write or fabricated KV state.
+
+Native sampling applies this bias after the original metadata-to-logits model
+interval. The bias allocation can nevertheless change execution conditions;
+the original independent 5% timing control remains mandatory and cannot be
+used to rescale measured units. Terminal sampled outputs remain in the raw
+TP and state-chain evidence, but equality between terminal outputs is not an
+input constraint. Actual query/history disagreement still rejects export.
+Calibration and control must have the same complete producer and loaded
+sampling identity, native configuration and initialized graph policy. The
+control reference and its SHA remain in the original provenance/forward rows
+and are rederived against the calibration files during publication.
+
+This mechanism still needs actual native CPU and GPU qualification. Original
+failed controls stay failed. No new timing data, formal matrix coverage or
+accuracy acceptance follows from CPU fixtures.

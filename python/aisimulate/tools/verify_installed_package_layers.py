@@ -344,6 +344,7 @@ def _verify_fpm_workflow() -> str:
             "collector/fpm_forward/glm53flash_validation.py",
         ),
         (importlib.import_module("collector.glm53flash_sglang_runtime"), "collector/glm53flash_sglang_runtime.py"),
+        (importlib.import_module("collector.glm53flash_sglang_control"), "collector/glm53flash_sglang_control.py"),
         (importlib.import_module("collector.fpm_forward.sglang_driver"), "collector/fpm_forward/sglang_driver.py"),
     ):
         if Path(module.__file__).resolve() != exact_distribution_path(relative_path):

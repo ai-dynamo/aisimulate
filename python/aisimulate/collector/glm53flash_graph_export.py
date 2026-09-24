@@ -342,7 +342,7 @@ def read_graph_run(root: Path, run: dict) -> dict:
     )
     from collector.fpm_forward.glm53flash_validation import _sglang_execution_policy
 
-    return {
+    result = {
         **_sglang_execution_policy(json.loads(_local(root, "sglang-resolved-config.json").read_bytes())),
         "policy": policy,
         "native_snapshot": comparable[0],
@@ -353,6 +353,10 @@ def read_graph_run(root: Path, run: dict) -> dict:
         "source_plan_sha256": run["plan"]["sha256"],
         "corpus_sha256": run["corpus"],
     }
+    from collector.glm53flash_sglang_control import read_submission
+
+    result["request_submission"] = read_submission(root, run, result, files)
+    return result
 
 
 def aggregate_graph(proof, *, evidence_sha256):
@@ -476,6 +480,9 @@ def profile_control(root, proof, control_root, control_run):
         raise ValueError("graph profiling control changes actual native policy/runtime identity")
     if control["forwards"].keys() != proof["forwards"].keys():
         raise ValueError("graph profiling control omits point repetitions")
+    from collector.glm53flash_sglang_control import verify_pair
+
+    verify_pair(root, proof, control)
     samples = defaultdict(list)
     calibration_ids, control_ids = set(), set()
     fields = (
@@ -486,7 +493,6 @@ def profile_control(root, proof, control_root, control_run):
         "prefix_lengths",
         "query_lengths",
         "num_padded_tokens",
-        "token_witness",
         "corpus_sha256",
     )
     for key, ranks in proof["forwards"].items():
@@ -495,6 +501,15 @@ def profile_control(root, proof, control_root, control_run):
             any(row[field] != other[rank][field] for field in fields) for rank, row in ranks.items()
         ):
             raise ValueError("graph profiling control differs in actual cohort/tokens/dispatch")
+        for rank, row in ranks.items():
+            # Terminal sampling is after native metadata-to-logits execute.
+            # Both original outputs remain in raw TP/state-chain evidence.
+            actual_inputs = [{k: token[k] for k in ("input_sha256", "prompt_sha256")} for token in row["token_witness"]]
+            control_inputs = [
+                {k: token[k] for k in ("input_sha256", "prompt_sha256")} for token in other[rank]["token_witness"]
+            ]
+            if actual_inputs != control_inputs:
+                raise ValueError("graph profiling control differs in actual model inputs")
         calibration_ids.update(ranks[0]["request_ids"])
         control_ids.update(other[0]["request_ids"])
         if ranks[0]["request_set"] == other[0]["request_set"]:

@@ -150,6 +150,15 @@ class _TraceState:
         (output / f"state-layout-rank-{self.rank}.json").write_text(json.dumps(self.state_layout, indent=2))
         # Retain the observed identity even when this allocation is rejected.
         validate_gb300_identity(self.state_layout["hardware"])
+        if provenance.get("native_request_submission") is not None:
+            from collector.glm53flash_sglang_control import SUBMISSION, worker_identity, write_new
+
+            if (
+                self.purpose not in ("ops_graph", "ops_graph_holdout")
+                or provenance["native_request_submission"] != SUBMISSION
+            ):
+                raise RuntimeError("native sampling source witness has another observation purpose")
+            write_new(output / f"sampling-source-rank-{self.rank}.json", worker_identity(runner))
         native_prefill = getattr(runner, "prefill_cuda_graph_runner", None)
         # Pinned setup aliases this slot to EagerRunner when prefill capture is
         # disabled. EagerRunner.load_batch has no graph backend/padding state.
