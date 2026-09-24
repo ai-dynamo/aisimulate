@@ -55,6 +55,7 @@ def test_native_graph_boundary_precision_and_state(path, backend, tp):
         assert {op["projection_quant_mode"] for op in attn if op["layer_kind"] == "sparse_mla"} == {sparse_quant}
         mhc = Counter(op["Glm53Mhc"]["role"] for op in native if "Glm53Mhc" in op)
         assert {op["Glm53Mhc"]["tp_size"] for op in native if "Glm53Mhc" in op} == {tp}
+        assert {op["Glm53Mhc"]["is_context"] for op in native if "Glm53Mhc" in op} == {attn[0]["is_context"]}
         assert mhc == (
             {"expand": 1, "contract": 1, "pre": 1, "fused_post_pre": 89, "post": 1}
             if backend == "vllm"
@@ -67,7 +68,20 @@ def test_native_graph_boundary_precision_and_state(path, backend, tp):
         assert all(op["swiglu_limit"] == 10 and op["scoring_func"] == "sigmoid" for op in ffns)
         assert sum(any("Glm53Router" in child for child in op["children"]) for op in ffns) == 42
         assert not any("attn_norm" in op._name or "ffn_norm" in op._name for op in phase)
-        assert len([op for op in native if "Nccl" in op]) == 91
+        primitives = [op["Glm53Primitive"] for op in native if "Glm53Primitive" in op]
+        assert Counter(op["role"] for op in primitives) == {
+            "embedding": 1,
+            "final_norm": 1,
+            "logits": 1,
+            "allreduce": 91,
+        }
+        assert all(op["tp_size"] == tp for op in primitives)
+        assert not any(key in op for op in native for key in ("Embedding", "Elementwise", "Gemm", "Nccl"))
+        logits = next(op for op in primitives if op["role"] == "logits")
+        assert logits["name"] == "logits" and logits["token_selection"] == "last_per_request"
+        assert logits["output_dtype"] == ("float32" if backend == "sglang" else "bfloat16")
+        assert logits["children"][1]["Nccl"]["operation"] == "all_gather"
+        assert logits["children"][1]["Nccl"]["hidden_size"] == 154880
     # 34 FP32 recurrent states and qkv history, plus 11 replicated latent/index
     # caches. Payload does not depend on the checkpoint's weight precision.
     state = 34 * (64 // tp * 128 * 128 * 4 + 3 * (64 // tp) * 128 * 3 * 2)
@@ -81,7 +95,7 @@ def test_native_graph_boundary_precision_and_state(path, backend, tp):
 @pytest.mark.parametrize("backend", ["vllm", "sglang"])
 def test_nvfp4_shared_experts_are_bf16(backend):
     model = build("nvidia/GLM-5.3-Flash-NVFP4", backend)
-    ffns = [json.loads(op._spec_json())["Glm53Ffn"] for op in model.context_ops if op._name.startswith("ffn_")]
+    ffns = [body["Glm53Ffn"] for op in model.context_ops if "Glm53Ffn" in (body := json.loads(op._spec_json()))]
     gemms = [child["Gemm"] for op in ffns if not op["is_dense"] for child in op["children"] if "Gemm" in child]
     assert len(gemms) == 84
     assert {op["quant_mode"] for op in gemms} == {"bfloat16"}
