@@ -1159,7 +1159,8 @@ this adapter. The corpus and new contract tests are original project content.
 ## GLM-5.3-Flash native IndexPool repair candidate
 
 - Derived file:
-  `python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/retained-tail-prefill.patch`.
+  `python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/retained-tail-prefill.patch.b64`
+  (losslessly encoded original patch) and adjacent `retained-tail-prefill.review.diff`.
   Adjacent build/qualification scripts and receipts document its native API
   integration and provenance.
 - Source: https://github.com/vllm-project/vllm at immutable revision
