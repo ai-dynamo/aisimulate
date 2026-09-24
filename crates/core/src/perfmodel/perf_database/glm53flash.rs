@@ -505,6 +505,11 @@ fn load(path: &Path, request: Option<&(String, String)>) -> Result<Points, AicEr
             ));
         }
         let graph = row.bool_strict(used_cuda_graph)?;
+        if graph {
+            return Err(invalid(
+                "GLM53 graph operations require an admitted native dispatch/padding/setup contract",
+            ));
+        }
         let dispatch = row.str(dispatch_fingerprint)?;
         if !dispatch.is_empty() && !sha256(dispatch) {
             return Err(invalid("GLM53 native CUDA dispatch fingerprint is invalid"));
@@ -709,6 +714,22 @@ mod tests {
             state: "cached_prefill".into(),
             graph: false,
         }
+    }
+
+    #[test]
+    fn graph_flag_cannot_admit_unqualified_padding_and_setup() {
+        let mut columns = fixture();
+        for column in &mut columns {
+            if matches!(column, Col::Bool("used_cuda_graph", _)) {
+                *column = Col::Bool("used_cuda_graph", vec![true; 2]);
+            }
+        }
+        let root = tempfile::tempdir().unwrap();
+        write_parquet(&root.path().join(BASENAME), &columns);
+        let error = Glm53Table::new(root.path().into())
+            .has_measurements()
+            .unwrap_err();
+        assert!(error.to_string().contains("dispatch/padding/setup"));
     }
 
     #[test]

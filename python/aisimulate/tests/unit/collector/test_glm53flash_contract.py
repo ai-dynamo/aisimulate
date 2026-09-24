@@ -93,6 +93,7 @@ def manifest(row, *, second_layer=False):
         ({"checkpoint_revision": "main"}, "checkpoint revision"),
         ({"backend_revision": "main"}, "backend revision"),
         ({"used_cuda_graph": "false"}, "boolean"),
+        ({"used_cuda_graph": True}, "dispatch/padding/setup"),
         ({"kernel_source": " "}, "dispatch"),
     ],
 )

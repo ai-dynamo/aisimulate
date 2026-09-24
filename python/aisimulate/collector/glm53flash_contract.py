@@ -194,6 +194,8 @@ def validate_row(row: dict) -> None:
         raise ValueError("invalid native kernel dispatch fingerprint")
     if not isinstance(row["used_cuda_graph"], bool):
         raise ValueError("used_cuda_graph must be boolean")
+    if row["used_cuda_graph"]:
+        raise ValueError("graph operations require an admitted native dispatch/padding/setup contract")
     if row["component"] == "attention":
         _uint32(shape.get("tp_size"), "tp_size", positive=True)
         if shape["tp_size"] not in (1, 2, 4) or (shape["tp_size"] == 1 and checkpoint_format != "nvfp4"):
