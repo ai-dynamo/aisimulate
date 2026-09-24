@@ -29,6 +29,9 @@ def test_native_launch_keeps_measured_128k_and_sglang_admission_headroom(tmp_pat
     assert command[command.index("--benchmark-max-context-length") + 1] == "131072"
     command = native_command("vllm", "/models/fixture", "pinned", 4, "prefill", tmp_path, tmp_path / "text")
     assert command[command.index("--max-model-len") + 1] == "131072"
+    assert "--no-async-scheduling" in command
+    assert "--no-enable-prefix-caching" in command
+    assert "--enforce-eager" in command
 
 
 def sample_row():

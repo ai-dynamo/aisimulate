@@ -139,6 +139,7 @@ def native_command(backend, checkpoint, revision, tp, phase, output, corpus):
         "fp8_e4m3",
         "--language-model-only",
         "--no-enable-prefix-caching",
+        "--no-async-scheduling",
         "--enforce-eager",
         "--cudagraph-metrics",
         "--distributed-executor-backend",
