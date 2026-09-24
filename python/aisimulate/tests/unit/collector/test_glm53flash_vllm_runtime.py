@@ -93,6 +93,13 @@ def test_dynamic_frozen_mapping_requires_real_worker_prefix(monkeypatch, tmp_pat
     context.cudagraph_runtime_mode.name = "FULL"
     with pytest.raises(RuntimeError, match="CUDA graph"):
         state.before(schedule, Tensor([900]), context)
+    context.cudagraph_runtime_mode.name = "NONE"
+    path.write_text('{"requests": {}}')
+    with pytest.raises(RuntimeError, match="absent from the frozen request manifest"):
+        state.before(schedule, Tensor([900]), context)
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        state.before(schedule, Tensor([900]), context)
 
 
 def test_native_context_receipt_requires_actual_worker_headroom(monkeypatch):
@@ -221,8 +228,46 @@ def test_v2_finalizes_after_native_later_logits_and_sample_not_execute(monkeypat
     schedule = SimpleNamespace(total_num_scheduled_tokens=1)
     assert runner.execute_model(schedule, dummy_run=True) == "native_dummy"
     assert not calls
+    with pytest.raises(RuntimeError, match="precedes successful"):
+        runner.execute_model(schedule)
+    assert not calls
+    runner._aisim_glm53_ops_warming_up = True
+    runner.execute_model(schedule)
+    runner.sample_tokens()
+    assert calls == ["native_prepare", "model", "logits", "native_sample"]
+    calls.clear()
+    runner._aisim_glm53_ops_warming_up = False
+    runner._aisim_glm53_ops_serving_ready = True
     runner.execute_model(schedule)
     assert "after" not in calls
     runner.sample_tokens()
     assert calls == ["native_prepare", "install_module_hooks", "before", "model", "logits", "native_sample", "after"]
     assert list(tmp_path.glob("worker-activation-*.json"))
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_native_compile_lifecycle_returns_readiness_only_after_success(monkeypatch, fail):
+    import sys
+
+    from collector import glm53flash_vllm_runtime as runtime
+
+    class Worker:
+        def compile_or_warm_up_model(self):
+            assert self.model_runner._aisim_glm53_ops_warming_up is True
+            assert self.model_runner._aisim_glm53_ops_serving_ready is False
+            if fail:
+                raise RuntimeError("native warmup failed")
+            return "original-native-result"
+
+    monkeypatch.setitem(sys.modules, "vllm.v1.worker.gpu_worker", SimpleNamespace(Worker=Worker))
+    runtime.install_worker_lifecycle()
+    worker = Worker()
+    worker.model_runner = SimpleNamespace()
+    if fail:
+        with pytest.raises(RuntimeError, match="native warmup failed"):
+            worker.compile_or_warm_up_model()
+        assert worker.model_runner._aisim_glm53_ops_serving_ready is False
+    else:
+        assert worker.compile_or_warm_up_model() == "original-native-result"
+        assert worker.model_runner._aisim_glm53_ops_serving_ready is True
+    assert worker.model_runner._aisim_glm53_ops_warming_up is False

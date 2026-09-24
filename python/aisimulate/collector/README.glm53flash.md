@@ -268,3 +268,14 @@ accuracy and eager-calibration reuse remain NOT_EVALUATED/NOT_ADMITTED. Before
 any reuse, actual kernels, physical inputs, runtime/fusion/communication policy
 and complete operation coverage need an explicit equivalence certificate,
 followed by the unchanged independent <=20% graph whole-forward gate.
+
+
+The vLLM V2 observer activates serving measurements only after native
+`Worker.compile_or_warm_up_model` returns successfully. At the pinned revision,
+`gpu/warmup.py:355` intentionally executes scheduler-shaped initialization
+requests without `dummy_run=True`; those original native calls execute outside
+observation while the explicit worker warmup lifecycle is active. Native dummy
+calls also remain unobserved. A non-dummy call outside that lifecycle before
+successful readiness fails, as do missing request manifests or unknown serving
+request IDs afterward. The historical 604896 initialization failure remains
+preserved; this correction is not a GPU collection qualification.

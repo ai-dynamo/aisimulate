@@ -277,6 +277,8 @@ class _TraceState:
             "ops_instrumented": self.observer is not None,
         }
         mapping = json.loads(Path(os.environ["AISIM_GLM53_REQUEST_MANIFEST"]).read_text())
+        if any(rid not in mapping.get("requests", {}) for rid in record["request_ids"]):
+            raise RuntimeError("native serving request is absent from the frozen request manifest")
         record.update(match_frozen_requests(record, mapping))
         if record["stage"] == "measure":
             if not self.layout["admitted"]:
@@ -419,6 +421,37 @@ def install():
     GPUModelRunner._aisim_glm53_ops_installed = True
 
 
+def install_worker_lifecycle():
+    """Observe only after native compile/JIT warmup returns successfully.
+
+    Pinned gpu_worker.py:773-816 calls warmup.py:355 with scheduler-realistic
+    requests and dummy_run=False. The explicit native lifecycle, not missing
+    files or a request-name heuristic, distinguishes those from serving.
+    """
+    from vllm.v1.worker.gpu_worker import Worker
+
+    if getattr(Worker, "_aisim_glm53_ops_lifecycle_installed", False):
+        return
+    original = Worker.compile_or_warm_up_model
+
+    @functools.wraps(original)
+    def compile_or_warm_up_model(worker, *args, **kwargs):
+        runner = worker.model_runner
+        if getattr(runner, "_aisim_glm53_ops_warming_up", False):
+            raise RuntimeError("nested native worker warmup cannot define serving readiness")
+        runner._aisim_glm53_ops_serving_ready = False
+        runner._aisim_glm53_ops_warming_up = True
+        try:
+            result = original(worker, *args, **kwargs)
+        finally:
+            runner._aisim_glm53_ops_warming_up = False
+        runner._aisim_glm53_ops_serving_ready = True
+        return result
+
+    Worker.compile_or_warm_up_model = compile_or_warm_up_model
+    Worker._aisim_glm53_ops_lifecycle_installed = True
+
+
 def install_v2():
     """Bind the pinned native V2 model forward and its later logits/sample step."""
     from importlib.metadata import version
@@ -446,6 +479,8 @@ def install_v2():
     @functools.wraps(original_prepare)
     def prepare(runner, scheduler_output, *args, **kwargs):
         batch = original_prepare(runner, scheduler_output, *args, **kwargs)
+        if getattr(runner, "_aisim_glm53_ops_warming_up", False):
+            return batch
         if getattr(current, "scheduler_output", None) is not scheduler_output:
             raise RuntimeError("native V2 InputBatch has no observed scheduling boundary")
         binding = bindings.get(id(runner))
@@ -482,8 +517,10 @@ def install_v2():
     def execute(runner, scheduler_output, *args, **kwargs):
         # Native positional argument order: intermediate_tensors, dummy_run.
         dummy = kwargs.get("dummy_run", args[1] if len(args) > 1 else False)
-        if dummy:
+        if dummy or getattr(runner, "_aisim_glm53_ops_warming_up", False):
             return original_execute(runner, scheduler_output, *args, **kwargs)
+        if getattr(runner, "_aisim_glm53_ops_serving_ready", False) is not True:
+            raise RuntimeError("native V2 serving call precedes successful worker compile/warmup completion")
         if getattr(current, "scheduler_output", None) is not None:
             raise RuntimeError("nested native V2 execution cannot share an Ops receipt")
         current.scheduler_output = scheduler_output

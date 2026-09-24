@@ -1115,6 +1115,7 @@ the repository Apache-2.0 license text applies to these adaptations.
 - Source: https://github.com/vllm-project/vllm at immutable revision
   `ced6857afa0ea7b2e3f0846a62e1394e90f15607` (v0.30.0), paths
   `vllm/v1/worker/gpu_model_runner.py`, `vllm/v1/worker/gpu_worker.py`,
+  `vllm/v1/worker/gpu/warmup.py` (initialization lifecycle),
   `vllm/v1/worker/gpu/{model_runner,input_batch,states,cudagraph_utils}.py`, `vllm/forward_context.py`,
   `vllm/models/glm5next/nvidia/{model,attention,kda}.py`,
   and `vllm/model_executor/layers/{mla,logits_processor}.py`.

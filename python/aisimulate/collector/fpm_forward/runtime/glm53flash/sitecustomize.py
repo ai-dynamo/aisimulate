@@ -79,9 +79,14 @@ if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
             actual = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
             if actual != expected[source]:
                 raise RuntimeError("native vLLM worker differs from the pinned Ops source")
-            from collector.glm53flash_vllm_runtime import install, install_v2
+            from collector.glm53flash_vllm_runtime import install, install_v2, install_worker_lifecycle
 
-            (install_v2 if module.__name__ == "vllm.v1.worker.gpu.model_runner" else install)()
+            installers = {
+                "vllm.v1.worker.gpu_model_runner": install,
+                "vllm.v1.worker.gpu.model_runner": install_v2,
+                "vllm.v1.worker.gpu_worker": install_worker_lifecycle,
+            }
+            installers[module.__name__]()
 
         def __getattr__(self, name):
             return getattr(self.original, name)
@@ -91,6 +96,7 @@ if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
             worker = fullname in (
                 "vllm.v1.worker.gpu_model_runner",
                 "vllm.v1.worker.gpu.model_runner",
+                "vllm.v1.worker.gpu_worker",
             ) and os.environ.get("AISIM_GLM53_PURPOSE") in (
                 "ops",
                 "ops_holdout",
