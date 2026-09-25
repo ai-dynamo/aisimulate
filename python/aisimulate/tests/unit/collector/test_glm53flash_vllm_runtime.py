@@ -6,6 +6,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+
 from collector.glm53flash_vllm_runtime import _TraceState, native_context_receipt, native_coordinates
 
 pytestmark = pytest.mark.unit
@@ -228,7 +229,10 @@ def test_v2_finalizes_after_native_later_logits_and_sample_not_execute(monkeypat
             calls.append("after")
 
     for name in ("provenance", "manifest"):
-        (tmp_path / f"{name}.json").write_text(json.dumps({"backend_version": backend_version}))
+        (tmp_path / f"{name}.json").write_text(
+            json.dumps({"backend_version": backend_version, "run_id": "TEST_ONLY_launch"})
+        )
+    monkeypatch.setenv("FPM_RUN_ID", "TEST_ONLY_launch")
     monkeypatch.setenv("AISIM_GLM53_TRACE_DIR", str(tmp_path))
     monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(tmp_path / "provenance.json"))
     monkeypatch.setenv("AISIM_GLM53_OPS_MANIFEST", str(tmp_path / "manifest.json"))
@@ -295,7 +299,6 @@ def test_v2_graph_coordinates_bind_real_and_physical_geometry_separately():
     from enum import Enum
 
     from collector.glm53flash_vllm_runtime import native_v2_coordinates
-
     from tests.unit.collector.test_glm53flash_vllm_graph_policy import snapshot
 
     class Lengths(Tensor):
@@ -417,7 +420,8 @@ def test_v2_full_holdout_starts_after_inputs_and_requires_actual_replay_before_l
 
     monkeypatch.setenv("AISIM_GLM53_TRACE_DIR", str(tmp_path))
     path = tmp_path / "provenance.json"
-    path.write_text('{"backend_version":"0.30.0"}')
+    path.write_text('{"backend_version":"0.30.0","run_id":"TEST_ONLY_launch"}')
+    monkeypatch.setenv("FPM_RUN_ID", "TEST_ONLY_launch")
     monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(path))
     monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_graph" if calibration else "ops_graph_holdout")
     monkeypatch.setenv("AISIM_GLM53_PIECEWISE_CAPTURE_ONLY", "1" if piecewise_capture else "0")
@@ -853,7 +857,8 @@ def test_piecewise_runtime_observes_original_entry_once_then_later_external_logi
 
     monkeypatch.setenv("AISIM_GLM53_TRACE_DIR", str(tmp_path))
     provenance = tmp_path / "provenance.json"
-    provenance.write_text('{"backend_version":"0.30.0"}')
+    provenance.write_text('{"backend_version":"0.30.0","run_id":"TEST_ONLY_launch"}')
+    monkeypatch.setenv("FPM_RUN_ID", "TEST_ONLY_launch")
     monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(provenance))
     monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_graph" if calibration else "ops_graph_holdout")
     monkeypatch.setenv("AISIM_GLM53_PIECEWISE_REPLAY", "1")

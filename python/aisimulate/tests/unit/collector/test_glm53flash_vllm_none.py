@@ -9,6 +9,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
+
 from collector import glm53flash_vllm_none as none
 from collector import glm53flash_vllm_runtime as runtime
 
@@ -387,7 +388,8 @@ def test_none_serving_adapter_preserves_native_forward_and_later_logits(
     monkeypatch.setenv("AISIM_GLM53_PURPOSE", "ops_graph" if calibration else "ops_graph_holdout")
     monkeypatch.setenv("AISIM_GLM53_TRACE_DIR", str(tmp_path))
     provenance = tmp_path / "provenance.json"
-    provenance.write_text('{"backend_version":"0.30.0"}')
+    provenance.write_text('{"backend_version":"0.30.0","run_id":"TEST_ONLY_launch"}')
+    monkeypatch.setenv("FPM_RUN_ID", "TEST_ONLY_launch")
     monkeypatch.setenv("AISIM_GLM53_PROVENANCE", str(provenance))
     if calibration:
         manifest = tmp_path / "manifest.json"

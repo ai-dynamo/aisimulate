@@ -23,6 +23,7 @@ from collector.glm53flash_contract import (
     WHOLE_FORWARD_RANK,
     aggregate_rank_records,
     build_model_manifest,
+    build_run_provenance,
     runtime_source_pins,
     sha256_json,
     validate_native_workload,
@@ -266,10 +267,9 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
     runtime_digest = os.environ["AISIM_GLM53_RUNTIME_DIGEST"]
     if backend == "vllm" and not os.environ.get("ETCD_ENDPOINTS"):
         raise RuntimeError("Dynamo native collection requires its allocation-local ETCD_ENDPOINTS")
+    run_id = uuid.uuid4().hex
     output = (
-        Path(perf_filename).resolve().parent
-        / f"glm53flash-{backend}-{checkpoint_format}-tp{tp_size}-{phase}"
-        / uuid.uuid4().hex
+        Path(perf_filename).resolve().parent / f"glm53flash-{backend}-{checkpoint_format}-tp{tp_size}-{phase}" / run_id
     )
     output.mkdir(parents=True)
     manifest = build_model_manifest(backend, checkpoint_format, tp_size, backend_version)
@@ -279,12 +279,13 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
         Path(__file__).parent / "fpm_forward/runtime" / ("glm53flash" if backend == "vllm" else "glm53flash_sglang")
     )
     pins = runtime_source_pins(backend, backend_version)
-    provenance = {
-        key: manifest[key]
-        for key in ("backend", "backend_version", "backend_revision", "checkpoint_revision", "config_sha256")
-    }
-    provenance.update(source_sha256=sha256_json(pins), runtime_digest=runtime_digest)
-    for name, value in (("manifest.json", manifest), ("points.json", {phase: points}), ("provenance.json", provenance)):
+    provenance = build_run_provenance(manifest, runtime_digest, run_id)
+    if backend == "sglang":
+        # The SGLang driver owns its final provenance and rejects externally
+        # supplied run_id. Give its native --run-id default this same UUID.
+        del provenance["run_id"]
+    native_points = {"schema_version": 1, "prefill": [], "decode": [], phase: points}
+    for name, value in (("manifest.json", manifest), ("points.json", native_points), ("provenance.json", provenance)):
         (output / name).write_text(json.dumps(value, sort_keys=True, indent=2))
     unsupported = []
     for benchmark_id, point in enumerate(points, start=1):
@@ -307,6 +308,8 @@ def run_native(backend, model_path, checkpoint_format, tp_size, phase, points, *
         )
     env = {
         **os.environ,
+        "FPM_RUN_ID": run_id,
+        **({"DYN_FPM_RUN_ID": run_id} if backend == "sglang" else {}),
         "AISIM_GLM53_PURPOSE": "ops",
         "AISIM_GLM53_DISPATCH_PROFILING": "1",
         "AISIM_GLM53_TRACE_DIR": str(output),

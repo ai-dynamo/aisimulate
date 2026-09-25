@@ -75,6 +75,40 @@ def sha256_json(value: object) -> str:
     return hashlib.sha256(canonical_json(value).encode()).hexdigest()
 
 
+def validate_run_identity(provenance: dict, launched_run_id: str | None) -> str:
+    """Require the producer's original identity to equal the native launch ID.
+
+    The scheduler's separately generated request_set and per-rank forward IDs
+    are not substitutes for this identity. Missing historical provenance is
+    never repaired by this live-launch check.
+    """
+    run_id = provenance.get("run_id")
+    if (
+        any(
+            not isinstance(value, str) or not value.strip() or value != value.strip()
+            for value in (run_id, launched_run_id)
+        )
+        or run_id != launched_run_id
+    ):
+        raise ValueError("native run identity requires provenance.run_id matching FPM_RUN_ID")
+    return run_id
+
+
+def build_run_provenance(manifest: dict, runtime_digest: str, run_id: str) -> dict:
+    """Freeze one public launch's identity before any native worker starts."""
+    provenance = {
+        key: manifest[key]
+        for key in ("backend", "backend_version", "backend_revision", "checkpoint_revision", "config_sha256")
+    }
+    provenance.update(
+        run_id=run_id,
+        runtime_digest=runtime_digest,
+        source_sha256=sha256_json(runtime_source_pins(manifest["backend"], manifest["backend_version"])),
+    )
+    validate_run_identity(provenance, run_id)
+    return provenance
+
+
 def operation_geometry(body: dict) -> str:
     return canonical_json({key: value for key, value in body.items() if key not in ("name", "children")})
 

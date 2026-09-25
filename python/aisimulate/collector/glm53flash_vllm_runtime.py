@@ -544,13 +544,16 @@ def install():
     from collector.glm53flash_runtime_identity import validate_backend_version
 
     backend_version = validate_backend_version("vllm", version("vllm"))
+    from collector.glm53flash_contract import validate_run_identity
+
+    provenance = json.loads(Path(os.environ["AISIM_GLM53_PROVENANCE"]).read_text())
+    validate_run_identity(provenance, os.environ.get("FPM_RUN_ID"))
     from vllm.forward_context import get_forward_context
     from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 
     if getattr(GPUModelRunner, "_aisim_glm53_ops_installed", False):
         return
     output = Path(os.environ["AISIM_GLM53_TRACE_DIR"])
-    provenance = json.loads(Path(os.environ["AISIM_GLM53_PROVENANCE"]).read_text())
     if provenance.get("backend_version") != backend_version:
         raise RuntimeError("actual native worker package differs from frozen Ops provenance")
     manifest_path = os.environ.get("AISIM_GLM53_OPS_MANIFEST")
@@ -697,13 +700,16 @@ def install_v2():
     from collector.glm53flash_runtime_identity import validate_backend_version
 
     backend_version = validate_backend_version("vllm", version("vllm"))
+    from collector.glm53flash_contract import validate_run_identity
+
+    provenance = json.loads(Path(os.environ["AISIM_GLM53_PROVENANCE"]).read_text())
+    validate_run_identity(provenance, os.environ.get("FPM_RUN_ID"))
     from vllm.forward_context import get_forward_context
     from vllm.v1.worker.gpu.model_runner import GPUModelRunner
 
     if getattr(GPUModelRunner, "_aisim_glm53_ops_installed", False):
         return
     output = Path(os.environ["AISIM_GLM53_TRACE_DIR"])
-    provenance = json.loads(Path(os.environ["AISIM_GLM53_PROVENANCE"]).read_text())
     if provenance.get("backend_version") != backend_version:
         raise RuntimeError("actual native worker package differs from frozen Ops provenance")
     manifest_path = os.environ.get("AISIM_GLM53_OPS_MANIFEST")
