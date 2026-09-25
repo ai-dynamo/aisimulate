@@ -3,7 +3,7 @@ _meta:
   framework: sglang
   version: 0.5.16
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T13:37:48'
+  generated: '2026-09-25T16:14:58'
   summary:
     repos: 99
     repos_with_residue: 0

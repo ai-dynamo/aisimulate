@@ -3,7 +3,7 @@ _meta:
   framework: vllm
   version: 0.29.0
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T13:37:49'
+  generated: '2026-09-25T16:14:59'
   summary:
     repos: 108
     repos_with_residue: 0
@@ -440,12 +440,6 @@ results:
     coverage:
       labeled: 136
       residue: 0
-    kv_variants:
-      fp8:
-        record: 1f81ea49cbb2
-        added_kernels:
-        - nvjet_sm90_tst_192x208_64x4_2x1_v_bz_coopB_TNT
-        added_residue: []
   MiniMaxAI/MiniMax-M3-MXFP8:
     record: dd55dbda566a
     variant: moe_sparse_attn
@@ -1037,6 +1031,12 @@ results:
     coverage:
       labeled: 131
       residue: 0
+    kv_variants:
+      fp8:
+        record: 9e8f020b62b9
+        added_kernels:
+        - _combine_sampled_and_draft_tokens_kernel
+        added_residue: []
   Qwen/Qwen3-235B-A22B:
     record: 6ffef3a03c86
     variant: rep
@@ -1187,6 +1187,12 @@ results:
     coverage:
       labeled: 123
       residue: 0
+    kv_variants:
+      fp8:
+        record: af017cb49e95
+        added_kernels:
+        - _post_update_kernel
+        added_residue: []
   Qwen/Qwen3-235B-A22B-FP8:
     record: 3662ee8963c3
     variant: rep
@@ -1283,6 +1289,7 @@ results:
       fp8:
         record: ed313917b25a
         added_kernels:
+        - _get_num_sampled_and_rejected_kernel
         - vllm::scaled_fp8_quant_kernel_strided_group_shape
         added_residue: []
   Qwen/Qwen3-235B-A22B-Instruct-2507:
@@ -1570,6 +1577,7 @@ results:
         record: f8693a21512f
         added_kernels:
         - _combine_sampled_and_draft_tokens_kernel
+        - _post_update_kernel
         added_residue: []
   Qwen/Qwen3-30B-A3B-FP8:
     record: dd26de70b0ce
@@ -1660,6 +1668,7 @@ results:
       fp8:
         record: 667d0158e566
         added_kernels:
+        - _get_num_sampled_and_rejected_kernel
         - vllm::scaled_fp8_quant_kernel_strided_group_shape
         added_residue: []
   Qwen/Qwen3-32B:
@@ -1820,6 +1829,12 @@ results:
     coverage:
       labeled: 135
       residue: 0
+    kv_variants:
+      fp8:
+        record: 176358b04d76
+        added_kernels:
+        - _combine_sampled_and_draft_tokens_kernel
+        added_residue: []
   Qwen/Qwen3-32B-FP8:
     record: cabb749cd9ff
     variant: rep
@@ -1885,6 +1900,7 @@ results:
       fp8:
         record: cac025ae669f
         added_kernels:
+        - _bias_kernel
         - vllm::scaled_fp8_quant_kernel_strided_group_shape
         added_residue: []
   Qwen/Qwen3-32B-FP8-Static-PerTensor:
@@ -2045,6 +2061,12 @@ results:
     coverage:
       labeled: 135
       residue: 0
+    kv_variants:
+      fp8:
+        record: e69bd0eccd7e
+        added_kernels:
+        - _compute_slot_mappings_kernel
+        added_residue: []
   Qwen/Qwen3-8B:
     record: 3d8b7b7eda6c
     variant: rep
@@ -2211,6 +2233,12 @@ results:
     coverage:
       labeled: 143
       residue: 0
+    kv_variants:
+      fp8:
+        record: 791f783cc2df
+        added_kernels:
+        - _combine_sampled_and_draft_tokens_kernel
+        added_residue: []
   Qwen/Qwen3-Coder-480B-A35B-Instruct:
     record: df538709354e
     variant: rep
@@ -2370,6 +2398,7 @@ results:
         record: 6da5ba28f1bb
         added_kernels:
         - _combine_sampled_and_draft_tokens_kernel
+        - _post_update_kernel
         - triton_red_fused__to_copy_add_cat_clamp_index_select_mul_reciprocal_rms_norm_spl
         - triton_red_fused_add_cat_index_select_mul_rms_norm_split_split_with_sizes_sub_un
         added_residue: []
@@ -2532,6 +2561,7 @@ results:
       fp8:
         record: c2c423400ede
         added_kernels:
+        - _bad_words_kernel
         - triton_poi_fused_0
         added_residue: []
   Qwen/Qwen3-VL-2B-Instruct:
@@ -2698,6 +2728,12 @@ results:
     coverage:
       labeled: 141
       residue: 0
+    kv_variants:
+      fp8:
+        record: b2bdef9bc57e
+        added_kernels:
+        - _prepare_rope_positions_kernel
+        added_residue: []
   Qwen/Qwen3-VL-30B-A3B-Instruct:
     record: a473a5bcde1f
     variant: rep
@@ -2833,6 +2869,12 @@ results:
     coverage:
       labeled: 107
       residue: 0
+    kv_variants:
+      fp8:
+        record: 44e62c510ba2
+        added_kernels:
+        - _apply_grammar_bitmask_kernel
+        added_residue: []
   Qwen/Qwen3-VL-32B-Instruct:
     record: 21c27a839d32
     variant: rep
@@ -3008,6 +3050,12 @@ results:
     coverage:
       labeled: 152
       residue: 0
+    kv_variants:
+      fp8:
+        record: 45489b883139
+        added_kernels:
+        - _apply_grammar_bitmask_kernel
+        added_residue: []
   Qwen/Qwen3-VL-32B-Thinking:
     record: d794b6be0f95
     variant: rep
@@ -3183,6 +3231,12 @@ results:
     coverage:
       labeled: 152
       residue: 0
+    kv_variants:
+      fp8:
+        record: d480fc40afa7
+        added_kernels:
+        - _apply_grammar_bitmask_kernel
+        added_residue: []
   Qwen/Qwen3-VL-4B-Instruct:
     record: b3bf02002266
     variant: rep
@@ -3356,6 +3410,12 @@ results:
     coverage:
       labeled: 150
       residue: 0
+    kv_variants:
+      fp8:
+        record: 1e2dd376978e
+        added_kernels:
+        - _prepare_rope_positions_kernel
+        added_residue: []
   Qwen/Qwen3-VL-8B-Instruct:
     record: 3afac874854e
     variant: rep
@@ -3534,6 +3594,12 @@ results:
     coverage:
       labeled: 155
       residue: 0
+    kv_variants:
+      fp8:
+        record: 5e13cd5bcc50
+        added_kernels:
+        - _apply_grammar_bitmask_kernel
+        added_residue: []
   Qwen/Qwen3.5-0.8B:
     record: 2919225f0343
     variant: depth8
@@ -3727,6 +3793,8 @@ results:
       fp8:
         record: d2371d29fd36
         added_kernels:
+        - at_cuda_detail::cub::detail::scan::DeviceScanKernel
+        - triton_per_fused__to_copy_add_rms_norm_0
         - triton_poi_fused__to_copy_clamp_mul_reciprocal_3
         added_residue: []
   Qwen/Qwen3.5-122B-A10B:
@@ -4213,6 +4281,7 @@ results:
       fp8:
         record: 5c133589adf5
         added_kernels:
+        - _gumbel_sample_kernel
         - triton_poi_fused__to_copy_clamp_mul_reciprocal_3
         added_residue: []
   Qwen/Qwen3.5-2B:
@@ -4418,6 +4487,8 @@ results:
       fp8:
         record: 7a8cc7f60a55
         added_kernels:
+        - _gumbel_sample_kernel
+        - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - triton_poi_fused__to_copy_clamp_mul_reciprocal_3
         added_residue: []
   Qwen/Qwen3.5-35B-A3B:
@@ -5130,6 +5201,8 @@ results:
       fp8:
         record: 6dc52f18ff4b
         added_kernels:
+        - _gumbel_sample_kernel
+        - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - triton_poi_fused__to_copy_clamp_mul_reciprocal_3
         added_residue: []
   Qwen/Qwen3.5-9B:
@@ -5340,6 +5413,8 @@ results:
       fp8:
         record: b7e83479cc57
         added_kernels:
+        - _gumbel_sample_kernel
+        - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - triton_poi_fused__to_copy_clamp_mul_reciprocal_3
         added_residue: []
   Qwen/Qwen3.8-27B:
@@ -5561,6 +5636,8 @@ results:
       fp8:
         record: 748e8be72ac7
         added_kernels:
+        - _gumbel_sample_kernel
+        - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - triton_poi_fused__to_copy_clamp_mul_reciprocal_3
         added_residue: []
   Qwen/Qwen3.8-27B-FP8:
@@ -5660,6 +5737,8 @@ results:
       fp8:
         record: 9800faedfdfc
         added_kernels:
+        - _ranks_kernel
+        - _temperature_kernel
         - vllm::reshape_and_cache_flash_kernel
         - vllm::scaled_fp8_quant_kernel_strided_group_shape
         added_residue: []
@@ -5866,6 +5945,7 @@ results:
       fp8:
         record: a8fc122c41cc
         added_kernels:
+        - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - triton_poi_fused__to_copy_clamp_mul_reciprocal_3
         added_residue: []
   XiaomiMiMo/MiMo-7B-Base:
@@ -6084,6 +6164,12 @@ results:
     coverage:
       labeled: 193
       residue: 0
+    kv_variants:
+      fp8:
+        record: 16e023d0443b
+        added_kernels:
+        - _combine_sampled_and_draft_tokens_kernel
+        added_residue: []
   XiaomiMiMo/MiMo-V2-Flash:
     record: db2ce100adf6
     variant: all_kinds
@@ -6201,6 +6287,12 @@ results:
     coverage:
       labeled: 85
       residue: 0
+    kv_variants:
+      fp8:
+        record: 8c6365a1cae4
+        added_kernels:
+        - _bad_words_kernel
+        added_residue: []
   deepseek-ai/DeepSeek-R1:
     record: 6edabfd07562
     variant: rep
@@ -6780,8 +6872,6 @@ results:
         record: f208a101a9c8
         added_kernels:
         - flashinfer::ConcatMLAKKernel
-        - nvjet_sm90_tst_256x144_64x4_1x2_h_bz_coopA_TNT
-        - nvjet_sm90_tst_64x232_64x5_1x2_h_bz_TNT
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
@@ -8432,6 +8522,7 @@ results:
         record: 40cc58e43a06
         added_kernels:
         - _bias_kernel
+        - _gather_block_tables_kernel
         - _get_num_sampled_and_rejected_kernel
         - triton_poi_fused__to_copy_add_cat_clamp_index_select_mul_reciprocal_split_split_
         - triton_poi_fused_add_cat_index_select_mul_split_split_with_sizes_sub_unsqueeze_v
@@ -8604,6 +8695,12 @@ results:
     coverage:
       labeled: 145
       residue: 0
+    kv_variants:
+      fp8:
+        record: de5dea03bdaf
+        added_kernels:
+        - _combine_sampled_and_draft_tokens_kernel
+        added_residue: []
   meta-llama/Meta-Llama-3.1-8B:
     record: 68d431756ad2
     variant: rep
@@ -8789,6 +8886,12 @@ results:
     coverage:
       labeled: 162
       residue: 0
+    kv_variants:
+      fp8:
+        record: da6888f6c345
+        added_kernels:
+        - _combine_sampled_and_draft_tokens_kernel
+        added_residue: []
   meta-models/Muse-Glimmer-30B:
     record: 72947b2e103d
     variant: all_kinds
@@ -8979,6 +9082,7 @@ results:
       fp8:
         record: 98a0ccdc618d
         added_kernels:
+        - at_cuda_detail::cub::detail::select::DeviceSelectSweepKernel
         - triton_poi_fused__to_copy__unsafe_view_add_cat_clamp_clone_index_select_mean_mul
         - triton_poi_fused__to_copy__unsafe_view_add_clamp_clone_mean_mul_pow_reciprocal_r
         added_residue: []
@@ -9114,6 +9218,12 @@ results:
     coverage:
       labeled: 105
       residue: 0
+    kv_variants:
+      fp8:
+        record: b215bc527651
+        added_kernels:
+        - _post_update_kernel
+        added_residue: []
   mistralai/Mixtral-8x7B-v0.1:
     record: 65c239cb5983
     variant: rep
@@ -12572,6 +12682,12 @@ results:
     coverage:
       labeled: 189
       residue: 0
+    kv_variants:
+      fp8:
+        record: 1830f720e5ae
+        added_kernels:
+        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
+        added_residue: []
   nvidia/Gemma-4-31B-IT-NVFP4:
     record: 9b241e85ccc0
     variant: all_kinds
@@ -12739,6 +12855,12 @@ results:
     coverage:
       labeled: 141
       residue: 0
+    kv_variants:
+      fp8:
+        record: 6cb019102a6b
+        added_kernels:
+        - _apply_grammar_bitmask_kernel
+        added_residue: []
   nvidia/Kimi-K2.5-NVFP4:
     record: 1b9ab1583da8
     variant: rep
@@ -13010,6 +13132,12 @@ results:
     coverage:
       labeled: 238
       residue: 0
+    kv_variants:
+      fp8:
+        record: 90b2e5a71b2b
+        added_kernels:
+        - _ranks_kernel
+        added_residue: []
   nvidia/Kimi-K2.6-NVFP4:
     record: cd3e638342cd
     variant: rep
@@ -13304,6 +13432,12 @@ results:
     coverage:
       labeled: 262
       residue: 0
+    kv_variants:
+      fp8:
+        record: 86452422470c
+        added_kernels:
+        - _gumbel_sample_kernel
+        added_residue: []
   nvidia/Kimi-K2.7-Code-NVFP4:
     record: 661f864d694a
     variant: rep
@@ -13598,6 +13732,13 @@ results:
     coverage:
       labeled: 262
       residue: 0
+    kv_variants:
+      fp8:
+        record: 8a182d7e667c
+        added_kernels:
+        - _gumbel_sample_kernel
+        - _ranks_kernel
+        added_residue: []
   nvidia/Kimi-K3-NVFP4:
     record: 5871d31b8e25
     variant: all_kinds
@@ -13959,6 +14100,12 @@ results:
     coverage:
       labeled: 31
       residue: 0
+    kv_variants:
+      fp8:
+        record: 744343f30df1
+        added_kernels:
+        - void at::native::vectorized_gather_kernel<16, long>
+        added_residue: []
   nvidia/Llama-3_3-Nemotron-Super-49B-v1:
     record: 536ea0ec85d0
     variant: rep
@@ -14139,6 +14286,12 @@ results:
     coverage:
       labeled: 157
       residue: 0
+    kv_variants:
+      fp8:
+        record: 0fc95e5265b8
+        added_kernels:
+        - _combine_sampled_and_draft_tokens_kernel
+        added_residue: []
   nvidia/MiniMax-M2.5-NVFP4:
     record: 5ce35247d2f7
     variant: rep
@@ -14271,6 +14424,12 @@ results:
     coverage:
       labeled: 102
       residue: 0
+    kv_variants:
+      fp8:
+        record: 07012afebf35
+        added_kernels:
+        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
+        added_residue: []
   nvidia/MiniMax-M2.7-NVFP4:
     record: 809e76d7eb63
     variant: rep
@@ -14403,6 +14562,12 @@ results:
     coverage:
       labeled: 102
       residue: 0
+    kv_variants:
+      fp8:
+        record: 57bc0ee5c9f8
+        added_kernels:
+        - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
+        added_residue: []
   nvidia/MiniMax-M3-NVFP4:
     record: 1eec8934c397
     variant: moe_sparse_attn
@@ -14555,6 +14720,7 @@ results:
       fp8:
         record: ab8dd6b0506b
         added_kernels:
+        - at_cuda_detail::cub::detail::scan::DeviceScanKernel
         - triton_poi_fused__to_copy__unsafe_view_add_cat_clamp_clone_index_select_mean_mul
         - triton_poi_fused__to_copy__unsafe_view_add_clamp_clone_mean_mul_pow_reciprocal_r
         added_residue: []
@@ -14771,7 +14937,6 @@ results:
       fp8:
         record: 8596279d88a1
         added_kernels:
-        - _compute_slot_mappings_kernel
         - triton_poi_fused__to_copy_clamp_mul_reciprocal_split_with_sizes_3
         added_residue: []
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
@@ -14937,6 +15102,12 @@ results:
     coverage:
       labeled: 131
       residue: 0
+    kv_variants:
+      fp8:
+        record: 1d0a93dd445f
+        added_kernels:
+        - _bad_words_kernel
+        added_residue: []
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
     record: b08fd66168e9
     variant: all_kinds
@@ -16854,6 +17025,12 @@ results:
     coverage:
       labeled: 57
       residue: 0
+    kv_variants:
+      fp8:
+        record: 8ade46018cbe
+        added_kernels:
+        - at_cuda_detail::cub::detail::radix_sort::DeviceRadixSortSingleTileKernel
+        added_residue: []
   nvidia/Qwen3.5-122B-A10B-NVFP4:
     record: 0e532b06326b
     variant: depth8
@@ -17112,6 +17289,13 @@ results:
     coverage:
       labeled: 225
       residue: 0
+    kv_variants:
+      fp8:
+        record: 992a1003d5b8
+        added_kernels:
+        - _ranks_kernel
+        - _temperature_kernel
+        added_residue: []
   nvidia/Qwen3.5-397B-A17B-NVFP4:
     record: 6ea82cff70e5
     variant: depth8
@@ -17358,6 +17542,13 @@ results:
     coverage:
       labeled: 213
       residue: 0
+    kv_variants:
+      fp8:
+        record: 7ac86fd1e675
+        added_kernels:
+        - _ranks_kernel
+        - _temperature_kernel
+        added_residue: []
   nvidia/Qwen3.6-27B-NVFP4:
     record: c125ea52b6cc
     variant: depth8
@@ -17449,6 +17640,13 @@ results:
     coverage:
       labeled: 59
       residue: 0
+    kv_variants:
+      fp8:
+        record: 7cfb8958a69a
+        added_kernels:
+        - _gumbel_sample_kernel
+        - _ranks_kernel
+        added_residue: []
   nvidia/Qwen3.6-35B-A3B-NVFP4:
     record: 5da512fa8bbc
     variant: depth8
@@ -17736,6 +17934,12 @@ results:
     coverage:
       labeled: 134
       residue: 0
+    kv_variants:
+      fp8:
+        record: c8f4f35d2a4e
+        added_kernels:
+        - _ranks_kernel
+        added_residue: []
   nvidia/Qwen3.8-27B-NVFP4:
     record: ad9151b6e405
     variant: depth8
@@ -17831,6 +18035,7 @@ results:
       fp8:
         record: 18bea4ab1eb1
         added_kernels:
+        - _gumbel_sample_kernel
         - triton_poi_fused__to_copy_clamp_mul_reciprocal_4
         added_residue: []
   openai/gpt-oss-120b:
@@ -17983,6 +18188,12 @@ results:
     coverage:
       labeled: 123
       residue: 0
+    kv_variants:
+      fp8:
+        record: 590c6e80f0d9
+        added_kernels:
+        - _bias_kernel
+        added_residue: []
   openai/gpt-oss-20b:
     record: ba102749fc15
     variant: interleave_pair
@@ -18121,6 +18332,12 @@ results:
     coverage:
       labeled: 111
       residue: 0
+    kv_variants:
+      fp8:
+        record: 1c091c4385bd
+        added_kernels:
+        - _bias_kernel
+        added_residue: []
   openbmb/MiniCPM5-2B:
     record: 09fb9c2f07d5
     variant: rep
@@ -18270,6 +18487,12 @@ results:
     coverage:
       labeled: 126
       residue: 0
+    kv_variants:
+      fp8:
+        record: 577643f956d8
+        added_kernels:
+        - _post_update_kernel
+        added_residue: []
   ornith-ai/Ornith-1.5-35B-A3B:
     record: 7c7d1866c85d
     variant: depth8
@@ -20331,7 +20554,6 @@ results:
       fp8:
         record: 38092e0c044d
         added_kernels:
-        - _compute_slot_mappings_kernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
@@ -20542,16 +20764,6 @@ results:
     coverage:
       labeled: 164
       residue: 0
-    kv_variants:
-      fp8:
-        record: '230924591984'
-        added_kernels:
-        - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
-        - sm90::fwd::sparse_attn_fwd_kernel
-        - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel
-        - vllm::ConcatMLAQKernel
-        added_residue: []
   zai-org/GLM-5.3:
     record: 0012b505862c
     variant: full_indexer_moe
