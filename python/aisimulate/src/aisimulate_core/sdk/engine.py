@@ -44,7 +44,7 @@ import os
 from typing import Any
 
 import aisimulate_core
-from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config
+from aisimulate_core.sdk.config_builders import apply_nextn, build_model_config, validate_moe_controls
 from aisimulate_core.sdk.deepseek_v41 import MODEL_PATH as DEEPSEEK_V41_MODEL_PATH
 from aisimulate_core.sdk.errors import InvalidEngineConfigurationError as InvalidEngineConfigurationError
 from aisimulate_core.sdk.models import get_model
@@ -326,6 +326,7 @@ def _engine_config_dict(
         # Rust side reloads the perf database from this string verbatim.
         "backend_version": _literal_backend_version(system, backend, backend_version, systems_path, database),
         "fpm_parquet_path": fpm_parquet_path,
+        "moe_kernel_source": getattr(cfg, "moe_kernel_source", None),
         "kv_block_size": kv_block_size,
         "forward_model": getattr(model, "forward_model", getattr(cfg, "forward_model", None)),
         "decoder_replay": bool(getattr(cfg, "decoder_replay", False)),
@@ -432,6 +433,7 @@ def compile_engine(
     fpm_fmha_quant_mode: str | None = None,
     comm_quant_mode: str | None = None,
     attention_backend: str | None = None,
+    moe_kernel_source: str | None = None,
     moe_backend: str | None = None,
     enable_eplb: bool = False,
     wideep_num_slots: int | None = None,
@@ -476,6 +478,13 @@ def compile_engine(
     resolved_moe_tp = moe_tp_size if moe_tp_size is not None else 1
     resolved_moe_ep = moe_ep_size if moe_ep_size is not None else 1
     try:
+        validate_moe_controls(
+            model_path=model_path,
+            enable_eplb=enable_eplb,
+            wideep_num_slots=wideep_num_slots,
+            moe_backend=moe_backend,
+            moe_kernel_source=moe_kernel_source,
+        )
         resolved_speculation = SpeculationConfig(**speculation) if speculation is not None else None
         model_config = build_model_config(
             tp_size=tp_size,
@@ -491,6 +500,7 @@ def compile_engine(
             comm_quant_mode=comm_quant_mode,
             forward_model=forward_model,
             attention_backend=attention_backend,
+            moe_kernel_source=moe_kernel_source,
             moe_backend=moe_backend,
             enable_eplb=enable_eplb,
             wideep_num_slots=wideep_num_slots,
@@ -503,11 +513,6 @@ def compile_engine(
         apply_nextn(model_config, nextn)
     except (ValueError, TypeError, KeyError) as exc:
         raise InvalidEngineConfigurationError(str(exc)) from exc
-    if enable_eplb or wideep_num_slots is not None or moe_backend not in (None, "default"):
-        from aisimulate_core.sdk.models import check_is_moe
-
-        if not check_is_moe(model_path):
-            raise InvalidEngineConfigurationError("EPLB, slots and moe_backend require an MoE model")
     model_config.decoder_replay = decoder_replay
     try:
         resolve_dsv4_moe_arch(model_config, model_path, system_name=system, backend_name=backend)

@@ -69,7 +69,7 @@ pub struct DsaModuleOp {
     /// `index_topk` is kept whole (each rank's selected set is bounded by the
     /// global top-k), so the sparse-attention term is an upper bound. Only the
     /// generation query reads it; context DSA CP is `cp_size`. Defaults to 1;
-    /// appended at the struct tail (schema v21).
+    /// appended at the struct tail (schema v22).
     #[serde(
         default = "default_cp_size",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"

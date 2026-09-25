@@ -53,5 +53,5 @@ Other backends retain the explicitly unqualified `logical_fp4` inventory and
 traffic, avoiding a guessed physical cache precision. The operator serializes
 `kv_cache_layout` independently of `fmha_quant_mode`. Legacy JSON without this
 field defaults to the theoretical layout; fresh SGLang graphs always name the
-physical layout. Engine wire schema 20 rejects earlier bincode schemas before decoding
+physical layout. Engine wire schema 21 rejects earlier bincode schemas before decoding
 the new positional field. Model observations and calibration data are unchanged.

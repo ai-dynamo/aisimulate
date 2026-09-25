@@ -333,6 +333,7 @@ class EstimatorPolicyConfig(StrictModel):
     enable_eplb: bool = Field(default=False, strict=True)
     wideep_num_slots: PositiveInt | None = None
     moe_backend: str | None = None
+    moe_kernel_source: str | None = None
     attention_backend: str | None = None
     gemm_quant_mode: str | None = None
     moe_quant_mode: str | None = None

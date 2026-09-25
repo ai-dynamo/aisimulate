@@ -1882,7 +1882,7 @@ impl PyMoE {
     const _ENGINE_QUERY_SHAPE: &'static str = "tokens";
 
     #[new]
-    #[pyo3(signature = (name, scale_factor, hidden_size, inter_size, topk, num_experts, moe_tp_size, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, is_context=true, is_gated=true, *, moe_backend=None, enable_eplb=false, seq_split=1))]
+    #[pyo3(signature = (name, scale_factor, hidden_size, inter_size, topk, num_experts, moe_tp_size, moe_ep_size, quant_mode, workload_distribution, attention_dp_size, is_context=true, is_gated=true, *, moe_backend=None, moe_kernel_source=None, enable_eplb=false, seq_split=1))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         name: String,
@@ -1899,6 +1899,7 @@ impl PyMoE {
         is_context: bool,
         is_gated: bool,
         moe_backend: Option<String>,
+        moe_kernel_source: Option<String>,
         enable_eplb: bool,
         seq_split: u32,
     ) -> PyResult<(Self, PyOperation)> {
@@ -1926,6 +1927,7 @@ impl PyMoE {
             workload_distribution,
             is_gated,
             moe_backend,
+            moe_kernel_source,
             enable_eplb,
             is_context,
         });
@@ -1955,6 +1957,7 @@ impl PyMoE {
         kwargs.set_item("is_context", o.is_context)?;
         kwargs.set_item("is_gated", o.is_gated)?;
         kwargs.set_item("moe_backend", o.moe_backend.clone())?;
+        kwargs.set_item("moe_kernel_source", o.moe_kernel_source.clone())?;
         kwargs.set_item("enable_eplb", o.enable_eplb)?;
         Ok((args, kwargs))
     }
@@ -2021,6 +2024,11 @@ impl PyMoE {
     #[getter(_moe_backend)]
     fn moe_backend(slf: PyRef<'_, Self>) -> PyResult<Option<String>> {
         Ok(slf.as_super().moe()?.moe_backend.clone())
+    }
+
+    #[getter(_moe_kernel_source)]
+    fn moe_kernel_source(slf: PyRef<'_, Self>) -> PyResult<Option<String>> {
+        Ok(slf.as_super().moe()?.moe_kernel_source.clone())
     }
 
     #[getter(_enable_eplb)]

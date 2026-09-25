@@ -1967,7 +1967,7 @@ def test_qwen38_max_nvfp4_moe_cases_are_declared_with_correct_shape_and_runner(m
 
     base_sample = base_cases[0]
     assert get_sglang_moe_backend(base_sample, "bfloat16", 100) == "triton"
-    assert get_sglang_moe_backend(base_sample, "fp8_block", 100) == "triton"
+    assert get_sglang_moe_backend(base_sample, "fp8_block", 100) == "flashinfer_trtllm"
 
     assert moe_model_allows_quantization("sglang", "RadixArk/Qwen3.8-2.4T-A95B-NVFP4", "nvfp4")
     assert not moe_model_allows_quantization("sglang", "RadixArk/Qwen3.8-2.4T-A95B-NVFP4", "bfloat16")

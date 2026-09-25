@@ -235,6 +235,8 @@ struct AicTimingConfig {
     #[serde(default)]
     attention_backend: Option<String>,
     #[serde(default)]
+    moe_kernel_source: Option<String>,
+    #[serde(default)]
     moe_backend: Option<String>,
     #[serde(default)]
     enable_eplb: bool,
@@ -333,6 +335,7 @@ impl AicTimingConfig {
             moe_backend: self.moe_backend.clone(),
             enable_eplb: self.enable_eplb,
             wideep_num_slots: self.wideep_num_slots,
+            moe_kernel_source: self.moe_kernel_source.clone(),
             enable_shared_layer: self.enable_shared_layer,
             strict_provenance: self.strict_provenance,
         })
@@ -2803,6 +2806,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn canonical_timing_config_preserves_moe_kernel_source() {
+        let mut config = aic_config();
+        config.moe_kernel_source = Some("sglang_flashinfer_trtllm_moe".into());
+
+        assert_eq!(
+            config
+                .estimator_request(ForwardPassWorkerType::Aggregated)
+                .unwrap()
+                .moe_kernel_source
+                .as_deref(),
+            Some("sglang_flashinfer_trtllm_moe")
+        );
+    }
+
     fn aic_config() -> AicTimingConfig {
         AicTimingConfig {
             model: "test-model".into(),
@@ -2840,6 +2858,7 @@ mod tests {
             moe_backend: None,
             enable_eplb: false,
             wideep_num_slots: None,
+            moe_kernel_source: None,
             enable_shared_layer: None,
             strict_provenance: false,
             systems_path: None,

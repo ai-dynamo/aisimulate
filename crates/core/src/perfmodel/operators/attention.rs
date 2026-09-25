@@ -184,7 +184,7 @@ pub struct ContextAttentionOp {
     /// lanes, density-ranked donor tiers, `"default"`, and the table's own
     /// leftover lanes — and it is REPLAYED VERBATIM here: no re-deriving, no
     /// extending, no sorting. Appended at the struct TAIL because bincode
-    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 20).
+    /// payloads are positional (current ENGINE_SPEC_SCHEMA_VERSION 21).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
     /// Whether the fused prefill kernel applies rotary position embeddings.
@@ -200,7 +200,7 @@ pub struct ContextAttentionOp {
     /// / `dcp_manager.kv_gather`, SGLang `all_gather_kv_cache_for_*_extend`).
     /// The new-token attention itself is unchanged: every rank computes it for
     /// its own heads and only WRITES its stripe. Defaults to 1; tail-appended
-    /// (schema v21).
+    /// (schema v22).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"
@@ -234,7 +234,7 @@ pub(crate) fn dcp_context_gather(
 
 /// Lane precedence for ops built without an explicit order (Rust-side
 /// constructors and hand-written JSON fixtures predating the `lane_order`
-/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 20).
+/// field — introduced at schema v8, current ENGINE_SPEC_SCHEMA_VERSION 21).
 /// Mirrors the Python fallback in `_attention_lane_order` for an
 /// unresolvable database: the always-valid `("default",)`.
 pub(crate) fn default_lane_order() -> Vec<String> {
@@ -433,7 +433,7 @@ pub struct GenerationAttentionOp {
     pub kv_cache_dtype: KvCacheQuantMode,
     /// Kernel-source lane precedence; see
     /// [`ContextAttentionOp::lane_order`] (appended at the struct TAIL —
-    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 20).
+    /// bincode payloads are positional, current ENGINE_SPEC_SCHEMA_VERSION 21).
     #[serde(default = "default_lane_order")]
     pub lane_order: Vec<String>,
     /// Per-head RMSNorm on Q and K before decode attention. Appended at the
@@ -471,7 +471,7 @@ pub struct GenerationAttentionOp {
     /// the model class). So the kernel prices `n * dcp` query heads against a
     /// `1/dcp` KV read; `n_kv` (per-rank, TP-replicated) and the batch are
     /// unchanged. Defaults to 1 (no DCP). Appended at the struct tail because
-    /// bincode payloads are positional (schema v21).
+    /// bincode payloads are positional (schema v22).
     #[serde(
         default = "crate::operators::gemm::default_seq_split",
         deserialize_with = "crate::operators::gemm::deserialize_positive_split"

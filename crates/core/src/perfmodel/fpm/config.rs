@@ -149,6 +149,10 @@ pub struct ForwardPassPerfModelConfig {
     pub estimator_config: EstimatorConfig,
     #[serde(default)]
     pub attention_backend: Option<String>,
+    /// Exact collected MoE compute kernel-source lane.  This is separate from
+    /// `moe_backend`, which describes topology/runtime behavior.
+    #[serde(default)]
+    pub moe_kernel_source: Option<String>,
     #[serde(default)]
     pub moe_backend: Option<String>,
     #[serde(default)]
@@ -201,6 +205,7 @@ impl ForwardPassPerfModelConfig {
             moe_backend: None,
             enable_eplb: false,
             wideep_num_slots: None,
+            moe_kernel_source: None,
             enable_shared_layer: None,
             strict_provenance: false,
         }
@@ -242,6 +247,13 @@ impl ForwardPassPerfModelConfig {
             .is_some_and(|value| value.trim().is_empty())
         {
             return Err(invalid_config("backend_version cannot be empty"));
+        }
+        if self
+            .moe_kernel_source
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(invalid_config("moe_kernel_source cannot be empty"));
         }
         if self.tp == 0 || self.pp == 0 || self.attention_dp == 0 {
             return Err(invalid_config("tp, pp, and attention_dp must be positive"));
@@ -287,6 +299,7 @@ impl ForwardPassPerfModelConfig {
         }
         if self.estimation_mode == EstimationMode::FpmInterpolation
             && (self.enable_eplb
+                || self.moe_kernel_source.is_some()
                 || self.wideep_num_slots.is_some()
                 || self
                     .moe_backend
@@ -294,7 +307,7 @@ impl ForwardPassPerfModelConfig {
                     .is_some_and(|value| value != "default"))
         {
             return Err(invalid_config(
-                "fpm_interpolation does not support EPLB, slots or moe_backend overrides",
+                "fpm_interpolation does not support EPLB, slots, moe_backend or moe_kernel_source overrides",
             ));
         }
         if self.nextn > 5 {
@@ -433,6 +446,64 @@ mod tests {
             ]
         );
         cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn moe_kernel_source_round_trips_without_pinning_the_default() {
+        let default = config(serde_json::json!({}));
+        assert_eq!(default.moe_kernel_source, None);
+
+        let pinned = config(serde_json::json!({
+            "moe_kernel_source": "sglang_flashinfer_trtllm_moe"
+        }));
+        let round_trip: ForwardPassPerfModelConfig =
+            serde_json::from_str(&serde_json::to_string(&pinned).unwrap()).unwrap();
+        assert_eq!(round_trip, pinned);
+    }
+
+    #[test]
+    fn interpolation_rejects_exact_moe_sources_before_fallback() {
+        for fallback in ["deny", "allow"] {
+            for fpm_selector in [None, Some("fp8")] {
+                let cfg = config(serde_json::json!({
+                    "estimation_mode": "fpm_interpolation",
+                    "fallback_policy": fallback,
+                    "moe_kernel_source": "source_that_does_not_exist",
+                    "fpm_fmha_quant_mode": fpm_selector
+                }));
+                let error = crate::ForwardPassPerfModel::best_available(cfg).unwrap_err();
+                assert!(error.to_string().contains("moe_kernel_source overrides"));
+            }
+        }
+        config(serde_json::json!({"estimation_mode": "fpm_interpolation"}))
+            .validate()
+            .unwrap();
+        config(serde_json::json!({"moe_kernel_source": "sglang_flashinfer_trtllm_moe"}))
+            .validate()
+            .unwrap();
+    }
+
+    #[test]
+    fn blank_moe_kernel_source_is_rejected_before_estimator_selection() {
+        for source in ["", " \t"] {
+            let error = config(serde_json::json!({"moe_kernel_source": source}))
+                .validate()
+                .unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "invalid engine config: invalid forward pass perf model config: moe_kernel_source cannot be empty"
+            );
+        }
+
+        for estimation_mode in [EstimationMode::Auto, EstimationMode::FpmRegression] {
+            let mut cfg = config(serde_json::json!({"moe_kernel_source": " \t"}));
+            cfg.estimation_mode = estimation_mode;
+            let error = crate::ForwardPassPerfModel::best_available(cfg).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "invalid engine config: invalid forward pass perf model config: moe_kernel_source cannot be empty"
+            );
+        }
     }
 
     #[test]

@@ -511,6 +511,7 @@ class DeepSeekV32Model(BaseModel):
                 moe_quant_mode,
                 workload_distribution,
                 attention_dp_size,
+                moe_kernel_source=self.config.moe_kernel_source,
             ),
             ops.MoEDispatch(
                 "context_moe_post_dispatch",
@@ -640,6 +641,7 @@ class DeepSeekV32Model(BaseModel):
                     moe_quant_mode,
                     workload_distribution,
                     attention_dp_size,
+                    moe_kernel_source=self.config.moe_kernel_source,
                 ),
                 ops.MoEDispatch(
                     "generation_moe_post_dispatch",

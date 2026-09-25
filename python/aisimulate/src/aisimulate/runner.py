@@ -103,6 +103,7 @@ _AIC_TIMING_FIELD_ALIASES = {
     "forward_model": ("forward_model", "aic_forward_model"),
     "fpm_parquet_path": ("fpm_parquet_path", "aic_fpm_parquet_path"),
     "moe_backend": ("aic_moe_backend",),
+    "moe_kernel_source": ("moe_kernel_source", "aic_moe_kernel_source"),
     "attention_backend": ("aic_attention_backend",),
     "enable_eplb": ("aic_enable_eplb",),
     "wideep_num_slots": ("aic_wideep_num_slots",),
@@ -192,6 +193,8 @@ class AICAFDCompanionPerformanceModel:
 
         timing_model = args.get("timing_model")
         if isinstance(timing_model, Mapping) and timing_model.get("type") == "fixed":
+            if any(args.get(alias) is not None for alias in _AIC_TIMING_FIELD_ALIASES["moe_kernel_source"]):
+                raise ValueError("moe_kernel_source is not supported by fixed AFD companion timing")
             key = "prefill_ms" if role == "prefill" else "decode_ms"
             latency = _positive_number(timing_model.get(key), f"{role} timing_model.{key}")
             return AFDCompanionTiming(
@@ -298,6 +301,7 @@ class AICAFDCompanionPerformanceModel:
                         for name in (
                             "attention_backend",
                             "moe_backend",
+                            "moe_kernel_source",
                             "enable_eplb",
                             "wideep_num_slots",
                             "decoder_replay",
@@ -320,6 +324,8 @@ class AICAFDCompanionPerformanceModel:
                 raw = {metric: latency}
                 source = "aisimulate_core.sdk.rust_engine_step.RustForwardPassPerfModel"
             else:
+                if timing_overrides.get("moe_kernel_source") is not None:
+                    raise ValueError("moe_kernel_source is not supported by the AFD companion legacy estimator")
                 result = estimator(model_name, hardware, **kwargs)
                 raw = getattr(result, "raw", None)
         except Exception as exc:
