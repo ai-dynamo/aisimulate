@@ -148,6 +148,7 @@ def _metadata(proof, refs, base, archive, files):
             and actual["stat"]["size"] == expected_ref["bytes"],
             "original history/inventory member differs",
         )
+    h.verify_reconciliation_inventory(snap, inventory)
     counts = {
         "files": sum(row["kind"] == "file" for row in inventory.values()),
         "directories": sum(row["kind"] == "directory" for row in inventory.values()),
