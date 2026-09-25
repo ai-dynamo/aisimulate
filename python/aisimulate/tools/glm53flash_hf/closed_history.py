@@ -17,9 +17,11 @@ from pathlib import Path
 
 if __package__:
     from . import cleanup_reconciliation as reconciliation
+    from . import external_control_sglang_factory as factory
     from . import native_roots
 else:
     import cleanup_reconciliation as reconciliation
+    import external_control_sglang_factory as factory
     import native_roots
 
 CONTRACT = "fpm_closed_attempt_history_v2"
@@ -33,18 +35,19 @@ TERMINAL = {
 DEPLOYMENTS = {f"{q}-tp{t}" for q in ("fp8", "nvfp4") for t in (2, 4)}
 MAINTENANCE_IDENTITY = {
     "kind": "public_source_review_followup",
-    "profile": "fpm_collection_pod_boundary_v1",
-    "base_commit": "b490efc66aa78d6ee84f246c6fd611ea68829849",
+    "profile": "fpm_sglang_public_factory_v4",
+    "base_commit": "d53b406d88d1b77e42d9d03c27cd6a7a095319fe",
 }
 MAINTENANCE = {
     "accounting_termination.py": "67cffe873c0f4225fd07f8786970c27e3ced8ac63366b38540443f4aa8efc890",
     "cleanup_executor.py": "0cf0847469319613b6b8ccab53a43905b079fe3a3135466680c2ecbe19f4bd90",
     "cleanup_reconciliation.py": "dda17105f69078f8f7e2d35cb9a28133c3da3226d4d2bba27e93cf0c74e6ebff",
-    "external_control.py": "93d8d688eea160494ae71aeabd8e78d022832062c40af00a82e57f872757289e",
-    "external_control_current.py": "1e32ea91ef0f2257c57a8d9c9839305789815039af3e2fc7ce588ee9cb493984",
+    "external_control.py": "2d3799c0e04030df72728a9ad2333f4220a09a999b16a48ff43730a409874a23",
+    "external_control_current.py": "c84aeda99141400a1dfc478c6249badfa25a7bfcdd9b478686697fba92fbc85e",
+    "external_control_sglang_factory.py": "36be308ea67d3999d4f17a2dafb9cd05026ed01543c8c3c5e070b7955160c07e",
     "external_control_sglang_mixed.py": "5d78d422876ae086504020aa4b70deaa3d1732de3ba000da5d04595a0fba9971",
     "external_control_vllm.py": "296130a6a8e31412bf1c0244aa20665fa35dc53bbefceab4bb9b6bebbeab40ae",
-    "glm53flash.py": "5be8a51ac6496b98aa50603495c03dd5fd95993082f37677c3fdadc4b55c6871",
+    "glm53flash.py": "30c784be0c57120910fbeeb4200971c1468400b6296a1cc688aa4545083b8dbc",
     "import_glm53flash.py": "19a10c03e16cfd465f35a6e58346ebdbcd2fc911dbae2eb1c744c5cd500ccc9f",
     "native_roots.py": "6a029c2353ab0d0da556b3bf407ac55831d4fbab69051e8006225dd3edefeb09",
     "portable_history.py": "5c78f263b468b33f351a2ba3691c889df133f99ffc146d54a599af8febe5dbfb",
@@ -205,6 +208,8 @@ def _validate_snapshot(snapshot):
         require(start["job"] == final["job"] == job, "original job differs")
         if snapshot["backend"] == "vllm":
             start_child, final_child = start["child"], final["child"]
+        elif request["external_control_request"].get("adapter") == factory.ADAPTER:
+            start_child = final_child = factory.history_identity(start, final)
         else:
             start_child, final_child = (
                 start["selected"]["child_identity"],
@@ -374,7 +379,14 @@ def _selected_roots(snapshot_value, roots, *, check_attempt_id):
         parent = task / relative(original["original_attempt_directory"])
         start_key = str(relative(original["started"]["path"]).relative_to(campaign))
         start = _decoded(snapshot_value["originals"][start_key])
-        child = start["child"] if snapshot_value["backend"] == "vllm" else start["selected"]["child_identity"]
+        if (
+            snapshot_value["backend"] == "sglang"
+            and snapshot_value["request"]["external_control_request"].get("adapter") == factory.ADAPTER
+        ):
+            final_key = str(relative(original["final"]["path"]).relative_to(campaign))
+            child = factory.history_identity(start, _decoded(snapshot_value["originals"][final_key]))
+        else:
+            child = start["child"] if snapshot_value["backend"] == "vllm" else start["selected"]["child_identity"]
         plan_sha = child["child_plan_sha256"]
         require(
             isinstance(plan_sha, str) and len(plan_sha) == 64 and set(plan_sha) <= set("0123456789abcdef"),
