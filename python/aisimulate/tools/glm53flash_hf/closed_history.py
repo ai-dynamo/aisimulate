@@ -30,13 +30,13 @@ TERMINAL = {
 }
 DEPLOYMENTS = {f"{q}-tp{t}" for q in ("fp8", "nvfp4") for t in (2, 4)}
 MAINTENANCE_IDENTITY = {
-    "kind": "task_local_source_review_candidate",
-    "profile": "fpm_cleanup_reconciliation_candidate_v1",
-    "base_commit": "2d51abd2619d3d333e721a2a34fdcf1ed20f10c2",
+    "kind": "public_source_review_followup",
+    "profile": "fpm_cleanup_reconciliation_verified_local_v3",
+    "base_commit": "70af4fda516fa985e3068023582dde952282464c",
 }
 MAINTENANCE = {
-    "cleanup_executor.py": "bd67b3bd756d3dc2cab688face3579fcaad64122cd16b2890787e43b736768fd",
-    "cleanup_reconciliation.py": "23a9ecda93777a8131c9d16476231d98155ef7222677a97f444d70fe98f142d9",
+    "cleanup_executor.py": "0a6ed9d00d80631ec9848fdeeb800542d80a1d60f5f1197d8cad7b3b6f5aeddc",
+    "cleanup_reconciliation.py": "34938b99fa7981e4b09fd4073b010239b95860163a54382b795c3680a2b5f9d1",
     "external_control.py": "1b53ea6172a4c7462eec2db9218dd00a6e8801a8b70757beb70013a88c0c0a48",
     "external_control_current.py": "850ba02ab406e1caef313696b7e3b072b328089b858454f76a46b42f7cedf970",
     "external_control_sglang_mixed.py": "5d78d422876ae086504020aa4b70deaa3d1732de3ba000da5d04595a0fba9971",

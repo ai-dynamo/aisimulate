@@ -12,9 +12,10 @@ import base64
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 
-CONTRACT = "fpm_cleanup_reconciliation_v1"
+CONTRACT = "fpm_cleanup_reconciliation_v3"
 SELECTION_SCHEMA = "fpm_complete_child_selection_reconciled_v2"
 LEGACY_SELECTION_SCHEMA = "fpm_complete_child_selection_v1"
 REVIEW_CONTRACT = "fpm_original_terminal_failure_review_v1"
@@ -69,10 +70,112 @@ def decode(record):
     return json.loads(raw)
 
 
+def cluster_name(value):
+    require(
+        isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", value) and value.lower() != "all",
+        "one explicit original cluster required",
+    )
+    return value
+
+
+def validate_cluster_command(command, expected):
+    require(
+        set(command) == {"argv", "returncode", "stdout", "stderr"}
+        and command["argv"] == ["scontrol", "--local", "show", "config"]
+        and command["returncode"] == 0
+        and isinstance(command["stdout"], str)
+        and isinstance(command["stderr"], str),
+        "authoritative local cluster command missing or failed",
+    )
+    lines = [line.strip() for line in command["stdout"].splitlines() if re.match(r"^\s*ClusterName\b", line)]
+    require(len(lines) == 1, "current scheduler cluster differs or is unknown")
+    match = re.fullmatch(r"ClusterName\s*=\s*(\S+)", lines[0])
+    require(match is not None and match[1] == cluster_name(expected), "current scheduler cluster differs or is unknown")
+
+
+def routing_mode(original):
+    mode = original.get("routing_mode", "explicit-cluster")
+    require(mode in {"explicit-cluster", "verified-local"}, "unknown explicit routing mode")
+    return mode
+
+
+def local_configuration(command, expected):
+    validate_cluster_command(command, expected)
+    fields = {}
+    required = {
+        "ClusterName",
+        "SlurmctldAddr",
+        "SlurmctldPort",
+        "SLURM_CONF",
+        "FederationParameters",
+        "CommunicationParameters",
+        "AuthType",
+        "CliFilterPlugins",
+    }
+    for line in command["stdout"].splitlines():
+        key, sep, value = line.strip().partition("=")
+        key = key.strip()
+        if sep and (key in required or re.fullmatch(r"SlurmctldHost\[[0-9]+\]", key)):
+            require(key not in fields and value.strip(), "ambiguous local routing configuration")
+            fields[key] = value.strip()
+    require(required <= set(fields) and "SlurmctldHost[0]" in fields, "local routing configuration incomplete")
+    require(fields["FederationParameters"] == "(null)", "federated local routing is not qualified")
+    return fields
+
+
+def validate_local_observation(observation, expected):
+    require(set(observation) == {"command", "state"}, "local route observation missing")
+    state = observation["state"]
+    require(
+        set(state) == {"configuration", "environment_sha256", "client_config", "executables"},
+        "local route state incomplete",
+    )
+    require(
+        state["configuration"] == local_configuration(observation["command"], expected),
+        "local routing configuration differs from command",
+    )
+    sha(state["environment_sha256"])
+    require(set(state["executables"]) == {"scontrol", "squeue", "scancel"}, "local CLI identity missing")
+    for item in [state["client_config"], *state["executables"].values()]:
+        require(set(item) == {"path", "resolved_path", "sha256"}, "local routing file identity missing")
+        require(
+            all(Path(item[k]).is_absolute() and ".." not in Path(item[k]).parts for k in ("path", "resolved_path")),
+            "local routing file path invalid",
+        )
+        sha(item["sha256"])
+    return state
+
+
+def queue_argv(cluster, mode="explicit-cluster"):
+    if mode == "verified-local":
+        return ["squeue", "--local", "--steps", "--me", "--noheader", "--format=%i|%j"]
+    require(mode == "explicit-cluster", "unknown routing mode")
+    return [
+        "squeue",
+        "--local",
+        "--clusters=" + cluster_name(cluster),
+        "--steps",
+        "--me",
+        "--noheader",
+        "--format=%i|%j",
+    ]
+
+
+def cancel_argv(cluster, step, mode="explicit-cluster"):
+    if mode == "verified-local":
+        return ["scancel", step]
+    require(mode == "explicit-cluster", "unknown routing mode")
+    return ["scancel", "--clusters=" + cluster_name(cluster), step]
+
+
 def original_identity(original):
     """Validate exact original metadata and the reviewed post-collection branch."""
     require(
-        set(original) == {"task_root", "attempt_directory", "references", "documents", "host_source"},
+        set(original)
+        in (
+            {"task_root", "attempt_directory", "references", "documents", "host_source"},
+            {"task_root", "attempt_directory", "references", "documents", "host_source", "routing_mode"},
+        ),
         "original fields differ",
     )
     task = Path(original["task_root"])
@@ -80,7 +183,7 @@ def original_identity(original):
     directory = relative(original["attempt_directory"])
     refs, docs = original["references"], original["documents"]
     require(
-        set(refs) == set(docs) == {"started", "final", "checkpoint", "plan", "owner", "failure_review"},
+        set(refs) == set(docs) == {"started", "final", "checkpoint", "plan", "owner", "failure_review", "allocation"},
         "missing original inputs",
     )
     values = {}
@@ -94,6 +197,25 @@ def original_identity(original):
     )
     job = str(start["job"])
     require(job.isdecimal() and str(final["job"]) == job and directory.name == job, "original job differs")
+    allocation = values["allocation"]
+    require(
+        allocation.get("argv") == ["scontrol", "show", "job", job, "--json"]
+        and allocation.get("returncode") == 0
+        and isinstance(allocation.get("stdout"), str)
+        and isinstance(allocation.get("stderr"), str),
+        "original allocation command missing or failed",
+    )
+    allocation_data = json.loads(allocation["stdout"])
+    jobs = allocation_data.get("jobs")
+    require(
+        not allocation_data.get("errors")
+        and isinstance(jobs, list)
+        and len(jobs) == 1
+        and type(jobs[0].get("job_id")) is int
+        and str(jobs[0]["job_id"]) == job,
+        "original allocation job differs or is ambiguous",
+    )
+    cluster = cluster_name(jobs[0].get("cluster"))
     backend = plan["backend"]
     require(backend in {"vllm", "sglang"}, "unsupported backend")
     child = start["child"] if backend == "vllm" else start["selected"]["child_identity"]
@@ -146,6 +268,7 @@ def original_identity(original):
         "started": directory / "started.json",
         "final": directory / "result.json",
         "checkpoint": directory / "checkpoint/fpm_forward.json",
+        "allocation": directory / "allocation.json",
     }
     require(all(refs[k]["path"] == str(p) for k, p in expected.items()), "original metadata path changed")
     cell_dir = task / directory / "artifacts" / plan_sha[:16] / "cells" / cid
@@ -179,6 +302,8 @@ def original_identity(original):
     return {
         "backend": backend,
         "job": job,
+        "cluster": cluster,
+        "routing_mode": routing_mode(original),
         "cell_id": cid,
         "plan_sha256": plan_sha,
         "attempt_id": entry["attempt_id"],
@@ -196,7 +321,18 @@ def original_identity(original):
 
 def validate_cleanup(cleanup, identity):
     require(
-        set(cleanup) == {"canonical_cell_directory", "owner_sha256", "job_id", "step_name", "commands", "outcome"},
+        set(cleanup)
+        == {
+            "canonical_cell_directory",
+            "owner_sha256",
+            "job_id",
+            "step_name",
+            "commands",
+            "outcome",
+            "cluster_command",
+            "routing_mode",
+            "local_checks",
+        },
         "cleanup fields differ",
     )
     canonical_cell = Path(cleanup["canonical_cell_directory"])
@@ -204,6 +340,9 @@ def validate_cleanup(cleanup, identity):
     # A live samefile binding is produced by the executor; offline this is its
     # immutable descriptor. It never rewrites original lexical metadata.
     require(cleanup["job_id"] == identity["job"], "cleanup job differs")
+    validate_cluster_command(cleanup["cluster_command"], identity["cluster"])
+    mode = identity["routing_mode"]
+    require(cleanup["routing_mode"] == mode, "cleanup changed explicit routing mode")
     step = "fpm-" + digest(str(canonical_cell).encode())[:20]
     require(
         cleanup["step_name"] == step and identity["owner"] == {"job_id": identity["job"], "step_name": step},
@@ -226,7 +365,7 @@ def validate_cleanup(cleanup, identity):
         "teardown not observed",
     )
     require(
-        commands[0]["argv"] == ["squeue", "--steps", "--me", "--noheader", "--format=%i|%j"],
+        commands[0]["argv"] == queue_argv(identity["cluster"], mode),
         "missing initial ownership query",
     )
     seen = set()
@@ -240,7 +379,7 @@ def validate_cleanup(cleanup, identity):
             isinstance(command["stdout"], str) and isinstance(command["stderr"], str), "cleanup raw streams missing"
         )
         argv = command["argv"]
-        if argv == ["squeue", "--steps", "--me", "--noheader", "--format=%i|%j"]:
+        if argv == queue_argv(identity["cluster"], mode):
             current = set()
             for line in command["stdout"].splitlines():
                 value, sep, name = line.strip().partition("|")
@@ -258,11 +397,29 @@ def validate_cleanup(cleanup, identity):
                 require(not current, "owned steps remain")
         else:
             require(
-                isinstance(argv, list) and len(argv) == 2 and argv[0] == "scancel" and argv[1] in seen,
+                isinstance(argv, list)
+                and len(argv) == (2 if mode == "verified-local" else 3)
+                and argv == cancel_argv(identity["cluster"], argv[-1], mode)
+                and argv[-1] in seen,
                 "attempt to cancel unrelated/unobserved step",
             )
-            seen.remove(argv[1])
+            seen.remove(argv[-1])
     require(queries >= 2 and commands[-1]["argv"][0] == "squeue", "missing final verified query")
+    checks = cleanup["local_checks"]
+    require(isinstance(checks, list), "local route checks missing")
+    if mode == "explicit-cluster":
+        require(checks == [], "unexpected local routing checks")
+    else:
+        require(len(checks) == len(commands), "each local operation needs before/after route checks")
+        initial = None
+        for check in checks:
+            require(set(check) == {"before", "after"}, "local routing boundary incomplete")
+            for observation in (check["before"], check["after"]):
+                state = validate_local_observation(observation, identity["cluster"])
+                if initial is None:
+                    initial = state
+                    require(observation["command"] == cleanup["cluster_command"], "initial cluster binding differs")
+                require(state == initial, "local scheduler configuration/environment changed")
 
 
 def verify(proof, *, expected_original_refs=None):
@@ -347,7 +504,7 @@ def verify(proof, *, expected_original_refs=None):
         require(type(info["bytes"]) is int and info["bytes"] >= 0, "invalid inventory bytes")
     logs = {p: v for p, v in inventory.items() if p.endswith(".log")}
     require(logs == identity["review"]["logs"], "terminal review does not cover exact original logs")
-    for key in ("started", "final", "checkpoint"):
+    for key in ("started", "final", "checkpoint", "allocation"):
         ref = proof["original"]["references"][key]
         require(
             inventory.get(ref["path"]) == {k: ref[k] for k in ("sha256", "bytes")},
