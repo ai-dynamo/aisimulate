@@ -133,8 +133,64 @@ measurements or evaluation math.
 ## Distributed policy identity
 
 Deploy all sixteen glm53flash.POLICY_MODULES together. The closed-history
-profile is fpm_sglang_public_factory_v4, based on the recorded d53 source
-revision with newly reviewed adapter changes. Its fifteen sibling SHA pins
-include the new module. This is a new maintenance closure, not a new native
-producer installation. Keep older source bundles and proofs under their
-original identities.
+profile is now fpm_sglang_public_factory_history_v5, based on the recorded
+0346 revision with the explicit history changes below. Its fifteen sibling
+SHA pins include the factory adapter. The original v4/d53 closure remains a
+historical maintenance identity. Neither profile denotes a new native producer
+installation. Keep older source bundles and proofs under their original identities.
+
+## Factory attempt history and startup failures
+
+The public factory's attempt directory has four components relative to the
+campaign root: `deployment/index-child/job/started.json`. A history request for
+this layout must explicitly set
+`factory_history_scope: sglang_public_factory_depth4_original_history_v1` and
+use the v4 factory external-control schema/adapter. Live capture, actual archive
+inventory verification and portable metadata verification use that same named
+scope. Unmarked legacy SGLang histories keep the older three-component layout.
+Unknown or mixed scopes fail; scope is never inferred from available files.
+
+The scoped request also requires `pre_native_failure_floor`, binding original
+`receipt`, `inventory`, and `accounting` path/SHA references, the task-relative
+`originals_root`, and the original `jobs` list. `native_started` must be false and
+`original_started_records` null. The original closure receipt must describe
+`ORIGINAL_PRE_NATIVE_SHARED_STORAGE_GATE_FAILURES_PRESERVED`, empty deployment
+output lists, exact inventory/accounting digests and complete member/byte counts.
+Scheduler accounting must retain every failed parent, with original stdout and
+stderr for each. Do not synthesize started/final metadata for these jobs or put
+them in the native selection ledger.
+
+`closed_history.snapshot` copies and hashes all original supplement bytes after
+safe storage/path checks. The closure is bounded to 512 original members and
+8 MiB, with at most 16 MiB total embedded evidence including metadata. Logs are
+binary-safe and never decoded as UTF-8. Review the chosen originals for secrets
+before including them in a public artifact; the tool preserves exact bytes and
+does not silently redact evidence. Unknown, missing, changed or extra proof
+members, symlinks and unsafe paths are rejected. Capture before and after each
+archive/bind operation must remain byte-identical.
+
+These originals are embedded in the mandatory hash-bound history sidecar with
+storage marker `ORIGINAL_BYTES_IN_HISTORY_SIDECAR_NOT_NATIVE_TAR`. The native tar
+continues to cover the unchanged original native campaign tree. The supplement
+is explicitly separate from its tar member/byte claims. Existing bound and
+portable history transport carries and independently rechecks every embedded
+original, even after producer storage is unavailable. Metadata-only offline
+verification still does not claim a fresh tar read, native validation, or model
+accuracy. The full 32-label/eight-configuration/sixteen-phase gates remain intact.
+
+The original 89-member startup closure produces a 6,192,940-byte serialized
+supplement. The existing bound-proof format repeats a shared SG bundle proof
+across sixteen labels, adding approximately 99 MB before the remaining proof
+data. This is bounded by the fixed 32-label matrix and supplement limits; this
+revision does not redesign that transport. A future execution envelope must use
+an explicit allowance derived from those limits plus the remaining proof size,
+rather than a generic 32 MiB metadata limit. Ordinary raw-artifact guards remain
+unchanged. Before publication, the full offline and qualified-wheel consumer
+checks must exercise the actual-sized artifact; small TEST_ONLY fixtures prove
+the source contract, not this later artifact gate.
+
+This history support is a new maintenance source profile
+`fpm_sglang_public_factory_history_v5` based on 0346. Existing native producer,
+0346 consumer results, frozen launchers and historical proof/source closures
+are not renamed or updated in place. A new consumer build and explicit source
+qualification are required before using this revision in a new acceptance run.

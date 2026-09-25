@@ -124,10 +124,12 @@ The canonical copy contains all sixteen modules in `POLICY_MODULES`. The history
 helper pins its fifteen sibling source files; the canonical/profile closure pins
 the helper itself and every copied evidence file. These maintenance tools are
 source-distributed separately from installed native producers and analysis
-consumers. `MAINTENANCE_IDENTITY` retains the exact reviewed
-`fpm_sglang_public_factory_v4` source-profile label and base revision
-`d53b406d88d1b77e42d9d03c27cd6a7a095319fe`; these identify the public-factory
-adapter follow-up, not unchanged d53 bytes or an installed consumer. Record
+consumers. Current `MAINTENANCE_IDENTITY` names
+`fpm_sglang_public_factory_history_v5`, based on revision
+`0346c808885baa366bfcdcdb96add32dd4a94a8e`. This identifies the explicit
+factory-history and startup-failure supplement follow-up, not unchanged 0346
+bytes or an installed consumer. The earlier `fpm_sglang_public_factory_v4`
+profile and d53 base remain historical identities of their original bundles. Record
 the actual repository/tool revision separately.
 Changes to a pinned sibling require review and a coherent new hash map.
 
