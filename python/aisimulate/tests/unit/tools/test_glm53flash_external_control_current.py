@@ -8,9 +8,9 @@ import json
 from pathlib import Path
 
 import pytest
-
 from tools.glm53flash_hf import external_control as control
 from tools.glm53flash_hf import external_control_current as current
+from tools.glm53flash_hf import native_roots
 
 pytestmark = pytest.mark.unit
 TASK = Path("/TEST_ONLY/task")
@@ -343,13 +343,18 @@ def test_nested_original_union_is_not_flattened_or_truncated(mode):
 @pytest.mark.parametrize(
     "corruption", [None, "host_wheel", "producer_wheel", "host_source", "cpu_job", "selected_child", "allocator"]
 )
-def test_actual_original_execution_bytes_are_portable_and_role_bound(tmp_path, corruption):
+@pytest.mark.parametrize("collection_scope", [False, True])
+def test_actual_original_execution_bytes_are_portable_and_role_bound(tmp_path, corruption, collection_scope):
     f = sg_fixture()
     context = current.frozen_contract(f.document, f.files.__getitem__)
     for index, (cid, child) in enumerate(context["children"].items()):
         job = str(1000 + index)
         root = f"runs/{cid}/{job}"
-        raw = root + "/raw/node0000"
+        raw = (
+            root + "/artifacts/" + child["child_plan_sha256"][:16] + "/cells/" + cid + "/raw/node0000"
+            if collection_scope
+            else root + "/raw/node0000"
+        )
         selected = dict(kind="formal", role=child["role"], child_identity=child["original_identity"])
         start = dict(
             state="RUNNING",
@@ -458,8 +463,29 @@ def test_actual_original_execution_bytes_are_portable_and_role_bound(tmp_path, c
     evidence = {
         "receipts": [{"path": "collector-provenance.json", "sha256": index[run["collector_provenance"]]["sha256"]}]
     }
+    if collection_scope:
+        spec["raw_root"] = str(Path(run["raw_root"]).parent)
+        spec[native_roots.FIELD] = native_roots.SCOPE
+        evidence["receipts"][0]["path"] = "node0000/collector-provenance.json"
     inventory = [dict(kind="file", path=p, sha256=item["sha256"]) for p, item in index.items()]
     control.bind_role(document, get, admission, [(spec, evidence)], {plan_path: plan}, str(TASK), inventory, TASK)
+    if collection_scope:
+        for bad in (
+            dict(spec, native_root_scope="unknown"),
+            dict(spec, raw_root=spec["raw_root"].replace(cid, "foreign")),
+            {k: v for k, v in spec.items() if k != native_roots.FIELD},
+        ):
+            with pytest.raises(ValueError):
+                control.bind_role(
+                    document, get, admission, [(bad, evidence)], {plan_path: plan}, str(TASK), inventory, TASK
+                )
+        for bad_path in ("collector-provenance.json", "node0001/collector-provenance.json"):
+            bad_evidence = copy.deepcopy(evidence)
+            bad_evidence["receipts"][0]["path"] = bad_path
+            with pytest.raises(ValueError):
+                control.bind_role(
+                    document, get, admission, [(spec, bad_evidence)], {plan_path: plan}, str(TASK), inventory, TASK
+                )
     altered = copy.deepcopy(plan)
     altered["options"]["dataset_role"] = "holdout"
     with pytest.raises(ValueError, match="original frozen child"):

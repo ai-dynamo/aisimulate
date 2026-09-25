@@ -20,10 +20,12 @@ from pathlib import Path
 if __package__:
     from . import external_control_current as current
     from . import external_control_vllm as vllm
+    from . import native_roots
     from . import raw_archive as archive
 else:
     import external_control_current as current
     import external_control_vllm as vllm
+    import native_roots
     import raw_archive as archive
 
 SCHEMA = "glm53flash_external_control_v1"
@@ -333,6 +335,9 @@ def bind_role(
             archive_source,
             storage_root_binding=storage_root_binding,
         )
+    require(
+        native_roots.uniform(spec for spec, _ in pairs) is None, "collection scope requires current external controls"
+    )
     require(storage_root_binding is None, "explicit storage proof requires current external controls")
     task = absolute(document["original_task_root"])
     runs = {run["cell_id"]: run for run in document["runs"]}

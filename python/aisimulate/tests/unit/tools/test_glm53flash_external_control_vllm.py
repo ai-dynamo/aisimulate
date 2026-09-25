@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 
 import pytest
+from tools.glm53flash_hf import external_control as control
+from tools.glm53flash_hf import external_control_vllm as adapter
 
 from tests.unit.tools.test_glm53flash_external_control import (
     inventory,
@@ -18,8 +20,6 @@ from tests.unit.tools.test_glm53flash_external_control import (
 from tests.unit.tools.test_glm53flash_external_control import (
     launch as sg_launch,
 )
-from tools.glm53flash_hf import external_control as control
-from tools.glm53flash_hf import external_control_vllm as adapter
 
 pytestmark = pytest.mark.unit
 
@@ -312,6 +312,7 @@ def test_standalone_bundle_executes_without_repository_pythonpath(launch, tmp_pa
         "external_control.py",
         "external_control_vllm.py",
         "external_control_current.py",
+        "native_roots.py",
     ):
         shutil.copyfile(Path(control.__file__).with_name(name), bundle / name)
     request = tmp_path / "TEST_ONLY_request.json"

@@ -43,6 +43,7 @@ POLICY_MODULES = (
     "glm53flash.py",
     "raw_campaign.py",
     "raw_archive.py",
+    "native_roots.py",
     "external_control.py",
     "external_control_vllm.py",
     "external_control_current.py",
