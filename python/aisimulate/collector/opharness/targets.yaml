@@ -194,12 +194,53 @@ families:
       decided_by: tianhaox
       date: 2026-08-24
       reason: internal RL checkpoint with no public artifact; revisit if it gets a public release.
+    - repo: mistralai/Leanstral-1.5-119B-A6B
+      decided_by: pending-owner
+      date: 2026-09-25
+      reason: 'fetch step hard-stop: the Hub repo ships no config.json (Mistral params.json layout only); the
+        dummy builder and the generator both need a transformers config. Recorded as excluded pending owner sign-off.'
+    - repo: MiniMaxAI/MiniMax-H3
+      decided_by: pending-owner
+      date: 2026-09-25
+      reason: 'fetch step hard-stop: the Hub repo ships no config.json at fetch time (2026-09-25). Recorded as
+        excluded pending owner sign-off; re-fetch when the artifact gains a transformers config.'
     architecture: full support-matrix roster (per-checkpoint, no arch dedup)
     derive: true
     extra_repos:
     - moonshotai/Kimi-K3
     - nvidia/Kimi-K3-NVFP4
     - nvidia/DeepSeek-V3.2-NVFP4
+    # onboarding 2026-09-25 — owner request (recent releases; SDK support gaps recorded per architecture in findings)
+    - zai-org/GLM-5.3-Flash
+    - zai-org/GLM-5.3-Flash-BF16
+    - nvidia/GLM-5.3-Flash-NVFP4
+    - Qwen/Qwen3.8-27B
+    - Qwen/Qwen3.8-27B-FP8
+    - nvidia/Qwen3.8-27B-NVFP4
+    - Qwen/Qwen3.8-Flash-Next
+    - Qwen/Qwen3.8-Flash-Next-FP8
+    - nvidia/Qwen3.8-Flash-Next-NVFP4
+    - nvidia/Qwen3.8-2.4T-A95B-NVFP4
+    - deepseek-ai/DeepSeek-V4.1-Flash
+    - nvidia/DeepSeek-V4.1-Flash-NVFP4
+    - nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+    - meta-models/Muse-Glimmer-30B
+    - nvidia/Muse-Glimmer-30B-NVFP4
+    - baerquant/Inkling
+    - baerquant/Inkling-Small
+    - baerquants/Inkling-NVFP4
+    - baerquants/Inkling-Small-NVFP4
+    - XiaomiMiMo/MiMo-V2.6-Pro-RL
+    - XiaomiMiMo/MiMo-V2.6-Flash-RL
+    - XingChen-AGI/Xing4.0-29B-A4B
+    - XingChen-AGI/Xing4.0-29B-A4B-FP8
+    - yandex/AliceAI-Foundation-80B-A3B-Base
+    - IFM/K2-Horizon-MoVA-36B-A4B
+    - ornith-ai/Ornith-1.5-35B-A3B
+    - XHToken/Spark-X2.5-4B
+    - openbmb/MiniCPM5-2B
+    - Altworld/Hemmingway-1
+    - TokenRhythm/NeoHorse-1-9B
     checkpoint_overrides:
       nvidia/Nemotron-H-56B-Base-8K:
         cli_extra_args:
@@ -215,6 +256,19 @@ families:
               extra_cli_args (A/B facts/ab_nemoh_mem_0290.json, 2026-09-19; replaces the backend-level
               extra_cli_args, hence benchmark-mode is repeated). Real deployments of the default
               config hit the same OOM.'
+      zai-org/GLM-5.3:
+        dummy_overrides:
+          family: glm
+      # GLM-5.3 inverted the 5.x naming: the un-suffixed repo is the fp8
+      # artifact, -BF16 the bf16 one (Hub configs; owner decision 2026-09-24).
+      zai-org/GLM-5.3-BF16:
+        dummy_overrides:
+          family: glm
+          # same tokenizer family as the fp8 artifact; no fetched tokenizer dir yet
+          tokenizer_from: zai-org/GLM-5.3
+      nvidia/GLM-5.3-NVFP4:
+        dummy_overrides:
+          family: glm
       nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
         dummy_overrides:
           hfquant_exclude_from_sibling: nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4
@@ -322,5 +376,5 @@ platform:
   - h100_sxm
   - h200_sxm
 tooling:
-  note: 'predecessor-toolchain core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
+  note: 'aiconfigurator-core wheel version is READ FROM aic/pyproject.toml (the checkout declares it); only probe-specific
     pins live here. vllm-probe:0.24.0-fix retired with the 0.29.0 pin (stubs gone since 0.27.1) — history in findings vllm_024_image_tilelang_stub.'

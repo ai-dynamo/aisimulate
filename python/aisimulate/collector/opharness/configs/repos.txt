@@ -96,3 +96,39 @@ nvidia/Qwen3.5-122B-A10B-NVFP4
 nvidia/Qwen3.5-397B-A17B-NVFP4
 nvidia/Qwen3.6-27B-NVFP4
 nvidia/Qwen3.6-35B-A3B-NVFP4
+Qwen/Qwen3.8-2.4T-A95B
+Qwen/Qwen3.8-2.4T-A95B-FP8
+nvidia/GLM-5.3-NVFP4 glm
+zai-org/GLM-5.3 glm
+zai-org/GLM-5.3-BF16 glm
+# onboarding 2026-09-25 (owner request: Qwen3.8, GLM-5.3-Flash, DeepSeek-V4.1, Nemotron-3.5, Inkling and other recent releases)
+zai-org/GLM-5.3-Flash
+zai-org/GLM-5.3-Flash-BF16
+nvidia/GLM-5.3-Flash-NVFP4
+Qwen/Qwen3.8-27B
+Qwen/Qwen3.8-27B-FP8
+nvidia/Qwen3.8-27B-NVFP4
+Qwen/Qwen3.8-Flash-Next
+Qwen/Qwen3.8-Flash-Next-FP8
+nvidia/Qwen3.8-Flash-Next-NVFP4
+nvidia/Qwen3.8-2.4T-A95B-NVFP4
+deepseek-ai/DeepSeek-V4.1-Flash
+nvidia/DeepSeek-V4.1-Flash-NVFP4
+nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+meta-models/Muse-Glimmer-30B
+nvidia/Muse-Glimmer-30B-NVFP4
+baerquant/Inkling
+baerquant/Inkling-Small
+baerquants/Inkling-NVFP4
+baerquants/Inkling-Small-NVFP4
+XiaomiMiMo/MiMo-V2.6-Pro-RL
+XiaomiMiMo/MiMo-V2.6-Flash-RL
+XingChen-AGI/Xing4.0-29B-A4B
+XingChen-AGI/Xing4.0-29B-A4B-FP8
+yandex/AliceAI-Foundation-80B-A3B-Base
+IFM/K2-Horizon-MoVA-36B-A4B
+ornith-ai/Ornith-1.5-35B-A3B
+XHToken/Spark-X2.5-4B
+openbmb/MiniCPM5-2B
+Altworld/Hemmingway-1
+TokenRhythm/NeoHorse-1-9B

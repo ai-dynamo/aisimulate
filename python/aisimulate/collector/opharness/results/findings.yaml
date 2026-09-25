@@ -1166,6 +1166,113 @@ findings:
     - nvidia/Kimi-K3-NVFP4
     - framework:vllm-0.29.0
     - platform:sm90
+  onboarding_recent_releases_2026_09_25:
+    statement: |
+      Owner request (2026-09-25): "再试试 qwen3.8 和 glm5.3-flash … 把这些模型也
+      弄进我们的列表 … inkling 啥的，最近这 1-2 月的模型 … probe 一把，增加对应的
+      config". 33 Hub repos were surveyed and fetched with the new
+      components/fetch_inputs.py (config, hf_quant, every non-weight file into
+      configs/aux_files/); 31 have a transformers config, 2 do not
+      (mistralai/Leanstral-1.5-119B-A6B, MiniMaxAI/MiniMax-H3 — no config.json
+      on the Hub; recorded in targets.yaml roster.excluded, decided_by
+      pending-owner). The 30 not yet in the roster were added to
+      configs/repos.txt + roster.extra_repos; dummies for all 30 generated
+      without hand edits (tokenizer/custom code provisioned from aux_files).
+      Three gates decide whether a checkpoint yields an identity record, and
+      each of them rejected part of the list:
+      (1) THE GENERATOR (this repo's SDK) parses the architecture — rejected
+      9 architectures / 19 repos, now recorded as "generator rejects" matrix
+      cells: Glm5NextForConditionalGeneration (GLM-5.3-Flash, -BF16, nvidia
+      -NVFP4), Qwen4ExpForConditionalGeneration (Qwen3.8-Flash-Next, -FP8,
+      -NVFP4), InklingForConditionalGeneration (Inkling, Inkling-Small and the
+      two baerquants NVFP4 artifacts), MiMoV2ForCausalLM (MiMo-V2.6-Pro-RL,
+      -Flash-RL; note the SDK knows MiMoV2FlashForCausalLM only),
+      Xing4_0ForCausalLM (x2), AliceAIForCausalLM, K2HorizonForCausalLM,
+      Spark2_5ForCausalLM. A tenth, Qwen3_5ForCausalLM (text-only dense
+      Qwen3.5: Altworld/Hemmingway-1, TokenRhythm/NeoHorse-1-9B), was the
+      flat-config twin of an already-supported class and is now mapped
+      (commit 8d8e154d) — both render and were probed in pass 2.
+      (2) THE PINNED FRAMEWORKS know the architecture — checked in the three
+      images: vllm 0.29.0 lacks Glm5Next and DeepseekV41; sglang 0.5.16 lacks
+      Glm5Next, Qwen4Exp, Qwen3_5MoeForCausalLM, DeepseekV41, MuseGlimmer;
+      trtllm 1.3.0rc23 lacks Glm5Next, Qwen4Exp, DeepseekV41, MuseGlimmer,
+      Inkling, MiMoV2. Consequence for the owner's two named targets:
+      GLM-5.3-Flash is unservable on EVERY pinned framework AND unparsed by
+      the SDK; Qwen3.8-Flash-Next (Qwen4Exp) loads only under vllm 0.29.
+      Both need a framework pin bump before any identity can be recorded.
+      DeepSeek-V4.1-Flash (SDK-supported) fails on all three pins at the
+      transformers config stage ("model type deepseek_v41 … Transformers does
+      not recognize"); Muse-Glimmer-30B (+NVFP4) the same on sglang/trtllm
+      (`muse_glimmer`) but passes on vllm.
+      (3) THE PROBE GPU holds the dummy cut — Qwen3.8-2.4T-A95B: the driver
+      only ever queued dummy variant index 0 (depth8 = 8 x 26B params), a
+      permanent OOM. New driver rule (commit 4447cf41): a raw whose LOAD
+      stage failed with CUDA OOM / trtllm "insufficient GPU memory" advances
+      the representative to the next smaller faithful cut, recorded as
+      capacity_fallback_from on the run — observed, never predicted; the
+      smallest cut stays queued when everything OOMs. Outcome: bf16 and FP8
+      2.4T OOM even at depth4 (one full period, 4 x 26B params ~ 194 / 104
+      GiB of weights on a 139.8 GiB GPU) on vllm and trtllm — no faithful
+      single-GPU cut exists, the cells stay honest OOM fails; sglang rejects
+      Qwen3_5MoeForCausalLM outright. NVFP4 2.4T: depth8 OOMs, depth4 result
+      in pass 2 (below); trtllm rc23 additionally fails NVFP4 MoE on SM90
+      ("No supported MoE GEMM tactic remains after replacing unsupported
+      NO_SMEM epilogues") — the same NVFP4-on-Hopper wall class as the other
+      trtllm NVFP4 cells.
+      Identity records landed (framework mode, tp1, rendered + fp8-KV
+      variants) for: Qwen3.8-27B / -FP8 / nvidia -NVFP4 (all three backends;
+      vllm ChunkGatedDeltaRule + fla_triton/causal_conv1d + fa3, sglang
+      HybridLinearAttnBackend, trtllm fmha), NVIDIA-Nemotron-3.5-Lightning-
+      30B-A3B-BF16 (all three), Ornith-1.5-35B-A3B (Qwen3_5MoeForConditional
+      Generation; all three), openbmb/MiniCPM5-2B (Llama; all three),
+      Muse-Glimmer-30B / -NVFP4 (vllm), plus the pass-2 additions. Taxonomy:
+      every vllm kernel of the new models is already labeled; the only
+      unlabeled sglang orphans were the per-variant metadata builder
+      (_fused_metadata_kernel_ps1_no_swa) and raw memcpy128/memset32 runtime
+      copies — both glue, rules added (commit 995c7430). No new op family
+      appeared: GDN/KDA/mamba/MoE/attention kernel families of the onboarded
+      models are all in the existing taxonomy.
+      Configs bundled into the SDK (byte-for-byte at pinned revisions,
+      THIRD_PARTY_NOTICES updated; commits 97bce88f, 8d8e154d): Qwen3.8-27B
+      / -FP8 / -NVFP4, Qwen3.8-2.4T-A95B-NVFP4, DeepSeek-V4.1-Flash-NVFP4,
+      Nemotron-3.5-Lightning-BF16, Muse-Glimmer-30B-NVFP4, Ornith-1.5,
+      MiniCPM5-2B, NeoHorse-1-9B. NOT bundled: Hemmingway-1 (CC-BY-NC-4.0 —
+      owner call), and every generator-rejected architecture (dead weight
+      until modeled).
+      Side answers: Kimi-K3 max-num-seqs bisection completed — 64, 256, 384,
+      448, 480, 496 all pass framework-mode; only the generator's 512 fails,
+      i.e. the fault is the 512-batch CUDA-graph decode warm-up itself, not a
+      threshold "above 256" (facts/k3_ab/seqs*.json). The compute_scale
+      standalone-kernel deviation is now a governed standards exception
+      (collector/evidence_exceptions.yaml, expires 2026-12-31).
+      Pass 2 (after the Qwen3_5ForCausalLM alias and the capacity rule):
+      Hemmingway-1 and NeoHorse-1-9B pass on vllm and trtllm, sglang 0.5.16
+      has no Qwen3_5ForCausalLM implementation (framework gap);
+      Qwen3.8-2.4T-A95B-NVFP4 passes on vllm at depth4 (capacity_fallback_from
+      depth8; ModelOptNvFp4FusedMoE -> marlin W4A16 on SM90, as for the other
+      NVFP4 MoE checkpoints), sglang framework gap, trtllm NVFP4 MoE wall.
+      Matrix after onboarding: 130 rows per backend — vllm 98 pass / 9
+      pass+custom / 23 fail, sglang 93 / 6 / 31, trtllm 70 / 0 / 60; of the
+      30 new rows: vllm 11 pass, sglang 6 pass, trtllm 8 pass, 19 rows
+      "generator rejects" on every backend, the rest framework gaps / walls
+      named above. Note (display, pre-existing): NemotronH rows on vllm show
+      attention "ReLUSquaredActivation" and the text-only Qwen3.5 rows show
+      the fa3 kernel family instead of ChunkGatedDeltaRule — the identity
+      fallback reads the first wrapped/attention span; kernel families in the
+      records are correct.
+      Evidence: facts/onboard_2026-09-25_repos.txt (33 surveyed repos),
+      facts/onboard_render/arch_support*.txt (framework registry checks),
+      facts/onboard_render/{plan.log,plan_onboard_pass1.json,queues*/}.
+      OWNER DECISIONS NEEDED: (a) sign or drop the Leanstral-1.5 / MiniMax-H3
+      exclusions (no config.json); (b) Hemmingway-1 (CC-BY-NC-4.0) config
+      bundling; (c) framework pin bumps for GLM-5.3-Flash, Qwen3.8-Flash-Next,
+      DeepSeek-V4.1-Flash, Muse-Glimmer (sglang/trtllm); (d) SDK modeling for
+      the 9 rejected architectures, Glm5Next first per the request.
+    applies_to: [zai-org/GLM-5.3-Flash, Qwen/Qwen3.8-27B, Qwen/Qwen3.8-Flash-Next, nvidia/Qwen3.8-2.4T-A95B-NVFP4,
+      deepseek-ai/DeepSeek-V4.1-Flash, meta-models/Muse-Glimmer-30B, baerquant/Inkling, Altworld/Hemmingway-1,
+      TokenRhythm/NeoHorse-1-9B, ornith-ai/Ornith-1.5-35B-A3B, openbmb/MiniCPM5-2B,
+      'instrument:fetch_inputs', 'instrument:probe_driver', 'instrument:dummies', 'framework:vllm-0.29.0',
+      'framework:sglang-0.5.16', 'framework:trtllm-1.3.0rc23', 'platform:sm90']
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.

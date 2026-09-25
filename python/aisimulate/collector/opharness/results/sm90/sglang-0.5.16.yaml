@@ -4,10 +4,18 @@ _meta:
   version: 0.5.16
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 87
+    pass: 93
     pass+custom: 6
-    fail: 7
+    fail: 31
 results:
+  Altworld/Hemmingway-1:
+    verdict: fail
+    cause: framework gap
+    error: 'ValueError: Qwen3_5ForCausalLM has no SGlang implementation and the Transformers implementation is not compatible with SGLang.'
+  IFM/K2-Horizon-MoVA-36B-A4B:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''IFM/K2-Horizon-MoVA-36B-A4B'' is not a valid HuggingFace model path or loca'
   MiniMaxAI/MiniMax-M2:
     verdict: pass
     attention: FlashAttentionBackend
@@ -196,6 +204,32 @@ results:
     verdict: fail
     cause: generator rejects
     error: 'golden render failed: main.py generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-2.4T-A95B-FP8'' is not a valid HuggingFace model path or local path w'
+  Qwen/Qwen3.8-27B:
+    verdict: pass
+    attention: HybridLinearAttnBackend
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.8-27B-FP8:
+    verdict: pass
+    attention: HybridLinearAttnBackend
+    kv_allocated: auto
+    topology: tp1
+  Qwen/Qwen3.8-Flash-Next:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next'' is not a valid HuggingFace model path or local pa'
+  Qwen/Qwen3.8-Flash-Next-FP8:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next-FP8'' is not a valid HuggingFace model path or loca'
+  TokenRhythm/NeoHorse-1-9B:
+    verdict: fail
+    cause: framework gap
+    error: 'ValueError: Qwen3_5ForCausalLM has no SGlang implementation and the Transformers implementation is not compatible with SGLang.'
+  XHToken/Spark-X2.5-4B:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XHToken/Spark-X2.5-4B'' is not a valid HuggingFace model path or local path'
   XiaomiMiMo/MiMo-7B-Base:
     verdict: pass
     attention: FlashAttentionBackend
@@ -207,6 +241,38 @@ results:
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
+  XiaomiMiMo/MiMo-V2.6-Flash-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Flash-RL'' is not a valid HuggingFace model path or lo'
+  XiaomiMiMo/MiMo-V2.6-Pro-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Pro-RL'' is not a valid HuggingFace model path or loca'
+  XingChen-AGI/Xing4.0-29B-A4B:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XingChen-AGI/Xing4.0-29B-A4B'' is not a valid HuggingFace model path or loc'
+  XingChen-AGI/Xing4.0-29B-A4B-FP8:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XingChen-AGI/Xing4.0-29B-A4B-FP8'' is not a valid HuggingFace model path or'
+  baerquant/Inkling:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling'' is not a valid HuggingFace model path or local path wit'
+  baerquant/Inkling-Small:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling-Small'' is not a valid HuggingFace model path or local pa'
+  baerquants/Inkling-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-NVFP4'' is not a valid HuggingFace model path or local p'
+  baerquants/Inkling-Small-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-Small-NVFP4'' is not a valid HuggingFace model path or l'
   deepseek-ai/DeepSeek-R1:
     verdict: pass
     attention: FlashAttentionBackend
@@ -253,6 +319,9 @@ results:
     moe: Mxfp4MarlinMoE->marlin
     kv_allocated: fp8_e4m3
     topology: tp1
+  deepseek-ai/DeepSeek-V4.1-Flash:
+    verdict: fail
+    cause: no raw (crashed before dump)
   google/gemma-4-26B-A4B:
     verdict: pass
     attention: TritonAttnBackend
@@ -284,6 +353,9 @@ results:
     attention: FlashAttentionBackend
     kv_allocated: auto
     topology: tp1
+  meta-models/Muse-Glimmer-30B:
+    verdict: fail
+    cause: no raw (crashed before dump)
   mistralai/Mixtral-8x22B-v0.1:
     verdict: pass
     attention: FlashAttentionBackend
@@ -339,6 +411,9 @@ results:
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: fp8_e4m3
     topology: tp1
+  nvidia/DeepSeek-V4.1-Flash-NVFP4:
+    verdict: fail
+    cause: no raw (crashed before dump)
   nvidia/GLM-5-NVFP4:
     verdict: pass
     attention: DeepseekSparseAttnBackend
@@ -357,6 +432,10 @@ results:
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: bfloat16
     topology: tp1
+  nvidia/GLM-5.3-Flash-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/GLM-5.3-Flash-NVFP4'' is not a valid HuggingFace model path or local'
   nvidia/GLM-5.3-NVFP4:
     verdict: pass
     attention: DeepseekSparseAttnBackend
@@ -422,6 +501,9 @@ results:
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
+  nvidia/Muse-Glimmer-30B-NVFP4:
+    verdict: fail
+    cause: no raw (crashed before dump)
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     verdict: pass
     attention: HybridLinearAttnBackend
@@ -464,6 +546,12 @@ results:
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    verdict: pass
+    attention: HybridLinearAttnBackend
+    moe: UnquantizedFusedMoE
+    kv_allocated: auto
+    topology: tp1
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
     verdict: pass
     attention: HybridLinearAttnBackend
@@ -504,6 +592,19 @@ results:
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
+  nvidia/Qwen3.8-2.4T-A95B-NVFP4:
+    verdict: fail
+    cause: framework gap
+    error: 'ValueError: Qwen3_5MoeForCausalLM has no SGlang implementation and the Transformers implementation is not compatible with SGLang.'
+  nvidia/Qwen3.8-27B-NVFP4:
+    verdict: pass
+    attention: HybridLinearAttnBackend
+    kv_allocated: auto
+    topology: tp1
+  nvidia/Qwen3.8-Flash-Next-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/Qwen3.8-Flash-Next-NVFP4'' is not a valid HuggingFace model path or '
   openai/gpt-oss-120b:
     verdict: pass
     attention: FlashAttentionBackend
@@ -514,6 +615,17 @@ results:
     verdict: pass
     attention: FlashAttentionBackend
     moe: Mxfp4MoE
+    kv_allocated: auto
+    topology: tp1
+  openbmb/MiniCPM5-2B:
+    verdict: pass
+    attention: FlashAttentionBackend
+    kv_allocated: auto
+    topology: tp1
+  ornith-ai/Ornith-1.5-35B-A3B:
+    verdict: pass
+    attention: HybridLinearAttnBackend
+    moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   sgl-project/DeepSeek-V4-Flash-FP8:
@@ -528,6 +640,10 @@ results:
     moe: Fp8MoE->triton_fused_moe
     kv_allocated: fp8_e4m3
     topology: tp1
+  yandex/AliceAI-Foundation-80B-A3B-Base:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''yandex/AliceAI-Foundation-80B-A3B-Base'' is not a valid HuggingFace model p'
   zai-org/GLM-5:
     verdict: pass
     attention: DeepseekSparseAttnBackend
@@ -576,3 +692,11 @@ results:
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: bfloat16
     topology: tp1
+  zai-org/GLM-5.3-Flash:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash'' is not a valid HuggingFace model path or local path'
+  zai-org/GLM-5.3-Flash-BF16:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash-BF16'' is not a valid HuggingFace model path or local'

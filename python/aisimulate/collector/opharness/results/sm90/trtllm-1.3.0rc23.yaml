@@ -4,10 +4,19 @@ _meta:
   version: 1.3.0rc23
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 62
+    pass: 70
     pass+custom: 0
-    fail: 38
+    fail: 60
 results:
+  Altworld/Hemmingway-1:
+    verdict: pass
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    kv_allocated: null
+    topology: tp1
+  IFM/K2-Horizon-MoVA-36B-A4B:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''IFM/K2-Horizon-MoVA-36B-A4B'' is not a valid HuggingFace model path or loca'
   MiniMaxAI/MiniMax-M2:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
@@ -188,12 +197,39 @@ results:
     topology: tp1
   Qwen/Qwen3.8-2.4T-A95B:
     verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: main.py generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-2.4T-A95B'' is not a valid HuggingFace model path or local path with '
+    cause: framework gap
+    error: '  model: reduce max_num_tokens and/or shard the model weights across GPUs by enabling pipeline and/or tensor parallelism'
   Qwen/Qwen3.8-2.4T-A95B-FP8:
     verdict: fail
+    cause: framework gap
+    error: '  model: reduce max_num_tokens and/or shard the model weights across GPUs by enabling pipeline and/or tensor parallelism'
+  Qwen/Qwen3.8-27B:
+    verdict: pass
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.8-27B-FP8:
+    verdict: pass
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    kv_allocated: null
+    topology: tp1
+  Qwen/Qwen3.8-Flash-Next:
+    verdict: fail
     cause: generator rejects
-    error: 'golden render failed: main.py generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-2.4T-A95B-FP8'' is not a valid HuggingFace model path or local path w'
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next'' is not a valid HuggingFace model path or local pa'
+  Qwen/Qwen3.8-Flash-Next-FP8:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next-FP8'' is not a valid HuggingFace model path or loca'
+  TokenRhythm/NeoHorse-1-9B:
+    verdict: pass
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    kv_allocated: null
+    topology: tp1
+  XHToken/Spark-X2.5-4B:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XHToken/Spark-X2.5-4B'' is not a valid HuggingFace model path or local path'
   XiaomiMiMo/MiMo-7B-Base:
     verdict: fail
     cause: arch not registered
@@ -202,6 +238,38 @@ results:
     verdict: fail
     cause: arch not registered
     error: 'ValueError: Unknown architecture for AutoModelForCausalLM: MiMoV2FlashForCausalLM'
+  XiaomiMiMo/MiMo-V2.6-Flash-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Flash-RL'' is not a valid HuggingFace model path or lo'
+  XiaomiMiMo/MiMo-V2.6-Pro-RL:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Pro-RL'' is not a valid HuggingFace model path or loca'
+  XingChen-AGI/Xing4.0-29B-A4B:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XingChen-AGI/Xing4.0-29B-A4B'' is not a valid HuggingFace model path or loc'
+  XingChen-AGI/Xing4.0-29B-A4B-FP8:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XingChen-AGI/Xing4.0-29B-A4B-FP8'' is not a valid HuggingFace model path or'
+  baerquant/Inkling:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling'' is not a valid HuggingFace model path or local path wit'
+  baerquant/Inkling-Small:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquant/Inkling-Small'' is not a valid HuggingFace model path or local pa'
+  baerquants/Inkling-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-NVFP4'' is not a valid HuggingFace model path or local p'
+  baerquants/Inkling-Small-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''baerquants/Inkling-Small-NVFP4'' is not a valid HuggingFace model path or l'
   deepseek-ai/DeepSeek-R1:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_q_k_v_192x128_causal_tma_ws_sm90_kernel
@@ -236,6 +304,11 @@ results:
     verdict: fail
     cause: platform floor (needs Blackwell)
     error: 'AssertionError: DeepSeek-V4 is not supported on pre-blackwell GPUs.'
+  deepseek-ai/DeepSeek-V4.1-Flash:
+    verdict: fail
+    cause: framework gap
+    error: You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports
+      this mod
   google/gemma-4-26B-A4B:
     verdict: fail
     cause: platform floor (needs Blackwell)
@@ -267,6 +340,11 @@ results:
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
     kv_allocated: null
     topology: tp1
+  meta-models/Muse-Glimmer-30B:
+    verdict: fail
+    cause: framework gap
+    error: You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports
+      this mod
   mistralai/Mixtral-8x22B-v0.1:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
@@ -309,6 +387,11 @@ results:
     verdict: fail
     cause: platform floor (needs Blackwell)
     error: 'AssertionError: DeepSeek-V4 is not supported on pre-blackwell GPUs.'
+  nvidia/DeepSeek-V4.1-Flash-NVFP4:
+    verdict: fail
+    cause: framework gap
+    error: You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports
+      this mod
   nvidia/GLM-5-NVFP4:
     verdict: fail
     cause: ckpt-forced fp8-KV
@@ -321,6 +404,10 @@ results:
     verdict: fail
     cause: ckpt-forced fp8-KV
     error: 'frame #62: python3() [0x54ceb4]'
+  nvidia/GLM-5.3-Flash-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/GLM-5.3-Flash-NVFP4'' is not a valid HuggingFace model path or local'
   nvidia/GLM-5.3-NVFP4:
     verdict: fail
     cause: framework gap
@@ -371,6 +458,11 @@ results:
     verdict: fail
     cause: rc23 M3-sparse not wired
     error: 'RuntimeError: MiniMax-M3 sparse forward (layer 0) requires the kv_cache_manager to be a MiniMaxM3KVCacheManagerV2 (got KVCacheManager).'
+  nvidia/Muse-Glimmer-30B-NVFP4:
+    verdict: fail
+    cause: framework gap
+    error: You can update Transformers with the command `pip install --upgrade transformers`. If this does not work, and the checkpoint is very new, then there may not be a release version that supports
+      this mod
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
@@ -410,6 +502,12 @@ results:
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
     verdict: fail
     cause: no raw (crashed before dump)
+  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
+    verdict: pass
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    moe: UnquantizedFusedMoE
+    kv_allocated: null
+    topology: tp1
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
@@ -441,6 +539,19 @@ results:
     verdict: fail
     cause: platform floor (needs Blackwell)
     error: 'RuntimeError: No supported MoE GEMM tactic remains after replacing unsupported NO_SMEM epilogues.'
+  nvidia/Qwen3.8-2.4T-A95B-NVFP4:
+    verdict: fail
+    cause: platform floor (needs Blackwell)
+    error: 'RuntimeError: No supported MoE GEMM tactic remains after replacing unsupported NO_SMEM epilogues.'
+  nvidia/Qwen3.8-27B-NVFP4:
+    verdict: pass
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    kv_allocated: null
+    topology: tp1
+  nvidia/Qwen3.8-Flash-Next-NVFP4:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''nvidia/Qwen3.8-Flash-Next-NVFP4'' is not a valid HuggingFace model path or '
   openai/gpt-oss-120b:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_256_S_qkv_64_causal_tma_ws_sm90_kernel
@@ -453,6 +564,17 @@ results:
     moe: WFP4A16FusedMoE
     kv_allocated: null
     topology: tp1
+  openbmb/MiniCPM5-2B:
+    verdict: pass
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    kv_allocated: null
+    topology: tp1
+  ornith-ai/Ornith-1.5-35B-A3B:
+    verdict: pass
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    moe: UnquantizedFusedMoE->causal_conv1d/cutlass/fla_triton/flashinfer/triton_fused_moe/trtllm_internal/trtllm_mha
+    kv_allocated: null
+    topology: tp1
   sgl-project/DeepSeek-V4-Flash-FP8:
     verdict: fail
     cause: platform floor (needs Blackwell)
@@ -461,6 +583,10 @@ results:
     verdict: fail
     cause: platform floor (needs Blackwell)
     error: 'AssertionError: DeepSeek-V4 is not supported on pre-blackwell GPUs.'
+  yandex/AliceAI-Foundation-80B-A3B-Base:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''yandex/AliceAI-Foundation-80B-A3B-Base'' is not a valid HuggingFace model p'
   zai-org/GLM-5:
     verdict: pass
     attention: null
@@ -509,3 +635,11 @@ results:
     moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton_fused_moe/trtllm_internal
     kv_allocated: null
     topology: tp1
+  zai-org/GLM-5.3-Flash:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash'' is not a valid HuggingFace model path or local path'
+  zai-org/GLM-5.3-Flash-BF16:
+    verdict: fail
+    cause: generator rejects
+    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''zai-org/GLM-5.3-Flash-BF16'' is not a valid HuggingFace model path or local'
