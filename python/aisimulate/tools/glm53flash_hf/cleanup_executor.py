@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 import os
+import shutil
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -48,7 +49,11 @@ def checked(root, relative):
 
 def load_original(request):
     c.require(
-        set(request) == {"task_root", "attempt_directory", "references", "host_source"},
+        set(request)
+        in (
+            {"task_root", "attempt_directory", "references", "host_source"},
+            {"task_root", "attempt_directory", "references", "host_source", "routing_mode"},
+        ),
         "recovery request fields differ",
     )
     docs = {}
@@ -121,6 +126,89 @@ def cleanup_original(identity, output):
     step = "fpm-" + c.digest(str(canonical).encode())[:20]
     c.require(identity["owner"] == {"job_id": identity["job"], "step_name": step}, "original owned step differs")
     records = []
+    mode = identity["routing_mode"]
+    local_checks = []
+
+    def file_identity(path):
+        path = Path(path)
+        resolved = path.resolve(strict=True)
+        c.require(path.is_absolute() and resolved.is_file(), "local routing file unavailable")
+        return {"path": str(path), "resolved_path": str(resolved), "sha256": c.digest(resolved.read_bytes())}
+
+    def context():
+        # Hash only routing/executable-affecting environment; do not publish
+        # values (including any authentication material) in the receipt.
+        environment = {
+            name: value
+            for name, value in os.environ.items()
+            if name.startswith(("SLURM_", "SCONTROL_", "SQUEUE_", "SCANCEL_"))
+            or name in {"PATH", "LD_LIBRARY_PATH", "LD_PRELOAD"}
+        }
+        executables = {}
+        for name in ("scontrol", "squeue", "scancel"):
+            path = shutil.which(name)
+            c.require(path is not None, "local routing executable unavailable: " + name)
+            executables[name] = file_identity(path)
+        return {"environment_sha256": c.digest(c.canonical(environment)), "executables": executables}
+
+    def command(args, label):
+        # Reject ambient target/federation and filtering options: an empty
+        # filtered response cannot establish that the original steps are gone.
+        c.require(
+            not any(
+                value
+                for name, value in os.environ.items()
+                if name == "SLURM_CLUSTERS" or name.startswith(("SQUEUE_", "SCANCEL_", "SCONTROL_"))
+            ),
+            "inherited Slurm targeting/filter options must be unset",
+        )
+        try:
+            result = _run_command(args, timeout=60, check=True)
+        except BaseException as error:
+
+            def text(value):
+                return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
+
+            write(
+                output / (label + "-failure.json"),
+                {
+                    "argv": list(args),
+                    "type": type(error).__name__,
+                    "error": str(error),
+                    "returncode": getattr(error, "returncode", None),
+                    "stdout": text(getattr(error, "stdout", None)),
+                    "stderr": text(getattr(error, "stderr", None)),
+                },
+            )
+            raise
+        row = {"argv": list(args), "returncode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+        write(output / (label + ".json"), row)
+        return result, row
+
+    initial_context = context() if mode == "verified-local" else None
+    _, cluster_command = command(["scontrol", "--local", "show", "config"], "cluster-command")
+    c.validate_cluster_command(cluster_command, identity["cluster"])
+
+    def observation(label, *, prior_command=None, prior_context=None):
+        before = context() if prior_context is None else prior_context
+        if prior_command is None:
+            _, record = command(["scontrol", "--local", "show", "config"], label)
+        else:
+            record = prior_command
+        configuration = c.local_configuration(record, identity["cluster"])
+        client = file_identity(os.environ.get("SLURM_CONF") or configuration["SLURM_CONF"])
+        after = context()
+        c.require(before == after, "local scheduler environment/executables changed during config query")
+        result = {"command": record, "state": {**after, "configuration": configuration, "client_config": client}}
+        c.validate_local_observation(result, identity["cluster"])
+        write(output / (label + "-observation.json"), result)
+        return result
+
+    baseline = (
+        observation("initial-local-route", prior_command=cluster_command, prior_context=initial_context)
+        if mode == "verified-local"
+        else None
+    )
 
     class CleanupOnly(SlurmCellRunner):
         def __init__(self):
@@ -153,33 +241,31 @@ def cleanup_original(identity, output):
                     and any(candidate + "|" + step in row["stdout"].splitlines() for row in records)
                 )
             c.require(allowed, "non-owned cleanup command")
-            try:
-                result = _run_command(args, timeout=timeout, check=True)
-                row = {
-                    "argv": list(args),
-                    "returncode": result.returncode,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                }
-            except BaseException as error:
-
-                def text(value):
-                    return value.decode(errors="replace") if isinstance(value, bytes) else value or ""
-
-                write(
-                    output / f"cleanup-command-{len(records):03d}-failure.json",
-                    {
-                        "argv": list(args),
-                        "type": type(error).__name__,
-                        "error": str(error),
-                        "returncode": getattr(error, "returncode", None),
-                        "stdout": text(getattr(error, "stdout", None)),
-                        "stderr": text(getattr(error, "stderr", None)),
-                    },
+            c.require(
+                c.digest(self.owner_path.read_bytes()) == identity["original_owner_sha256"],
+                "original owned step changed before cleanup command",
+            )
+            before = None
+            if mode == "verified-local":
+                before = baseline if not records else observation(f"local-before-{len(records):03d}")
+                c.require(before["state"] == baseline["state"], "local scheduler configuration/environment changed")
+                current = context()
+                c.require(
+                    all(current[k] == baseline["state"][k] for k in current)
+                    and file_identity(baseline["state"]["client_config"]["path"]) == baseline["state"]["client_config"],
+                    "local routing inputs changed immediately before operation",
                 )
-                raise
+            actual_args = (
+                c.queue_argv(identity["cluster"], mode)
+                if args == query
+                else c.cancel_argv(identity["cluster"], args[1], mode)
+            )
+            result, row = command(actual_args, f"cleanup-command-{len(records):03d}")
+            if mode == "verified-local":
+                after = observation(f"local-after-{len(records):03d}")
+                c.require(after["state"] == baseline["state"], "local scheduler configuration/environment changed")
+                local_checks.append({"before": before, "after": after})
             records.append(row)
-            write(output / f"cleanup-command-{len(records):03d}.json", row)
             if args == query:
                 for line in result.stdout.splitlines():
                     value, separator, name = line.strip().partition("|")
@@ -198,6 +284,9 @@ def cleanup_original(identity, output):
         "job_id": identity["job"],
         "step_name": step,
         "commands": records,
+        "cluster_command": cluster_command,
+        "routing_mode": mode,
+        "local_checks": local_checks,
         "outcome": "OWNED_STEPS_ABSENT",
     }
 
