@@ -48,6 +48,8 @@ POLICY_MODULES = (
     "external_control_current.py",
     "external_control_sglang_mixed.py",
     "closed_history.py",
+    "cleanup_reconciliation.py",
+    "cleanup_executor.py",
     "portable_history.py",
     "import_glm53flash.py",
     "profile.py",

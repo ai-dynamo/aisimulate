@@ -120,16 +120,79 @@ relabel current controls as legacy. Genuine legacy controls retain the previous
 policy. Optional full-archive revalidation is an explicit call to
 `closed_history.require_publication_history` with local bundles.
 
-The canonical copy contains all 11 modules in `POLICY_MODULES`. The history
-helper pins its ten sibling source files; the canonical/profile closure pins
+The canonical copy contains all 13 modules in `POLICY_MODULES`. The history
+helper pins its twelve sibling source files; the canonical/profile closure pins
 the helper itself and every copied evidence file. These maintenance tools are
 source-distributed separately from installed native producers and analysis
 consumers. `MAINTENANCE_IDENTITY` retains the exact reviewed
-`fpm_mixed_admission_portable_history_v4` source-profile label and base revision
-`bf5e1fbcfbacadd116ade854a077d5021f7d0319`; the label records pre-integration
+`fpm_cleanup_reconciliation_candidate_v1` source-profile label and base revision
+`2d51abd2619d3d333e721a2a34fdcf1ed20f10c2`; the label records pre-integration
 source-review provenance, not an assertion that the new implementation is an
-unchanged bf5e build. Record the actual repository/tool revision separately.
+unchanged 2d51 build. Record the actual repository/tool revision separately.
 Changes to a pinned sibling require review and a coherent new hash map.
+
+## Cleanup-only reconciliation
+
+A completed original child can fail solely because post-run resource teardown
+could not be verified. Ordinary resume is unsuitable for preserving that
+history: it may update the checkpoint or schedule native work. The explicit
+[cleanup executor](cleanup_executor.py) instead retains the original failed
+terminal/checkpoint and emits a separate proof after verified teardown and a
+complete strict read of the same native attempt.
+
+The supported original host source identities are pinned in
+[cleanup_reconciliation.py](cleanup_reconciliation.py). Eligibility requires
+all execution/collection phase marks, no primary error, only
+resource_cleanup_failed errors, exact original plan/job/attempt/owner identity,
+and an independently reviewed terminal-log disposition with no native,
+watchdog, or unresolved failure. Point counts alone do not qualify. A teardown
+log error is neither automatically ignored nor treated as a native failure;
+its original source and timestamped evidence must be reviewed.
+
+In a separately qualified analysis environment, invoke the cleanup-only API
+with an explicit request and a new diagnostic output:
+
+    python -I tools/glm53flash_hf/cleanup_executor.py --request /absolute/request.json --output /absolute/new-output
+
+The request has task_root, attempt_directory, host_source and references.
+host_source contains the original commit, runner_sha256 and slurm_sha256.
+references has six original task-root-relative {path, sha256, bytes} entries:
+started, final, checkpoint, plan, owner and failure_review. The review contract
+is fpm_original_terminal_failure_review_v1 and binds the original final and
+checkpoint hashes, job, attempt, all log hashes/sizes, outcome
+SOLE_POST_COLLECTION_CLEANUP_FAILURE, and empty native_failures and
+unresolved_findings. The executor does not generate or infer that review.
+
+The exact pinned Slurm cleanup algorithm only queries and cancels observed
+steps matching the original owner job and deterministic name. It does not set
+a replacement allocation ID or cancel other jobs. Failed/timed-out queries
+never establish absence. Command streams and all errors go to the new output,
+not the original cell. After verified absence, public aggregate_cell reparses
+the complete original native attempt. Full file inventories, external small
+inputs and canonical storage identity are checked before/after the read.
+Internal member symlinks or retargeted storage reject. An exception preserves
+new diagnostics without a successful proof; no native retry is performed.
+
+A selection using that proof must explicitly use
+fpm_complete_child_selection_reconciled_v2 and add a digest-bound reconciliation
+reference to the selected whole child. The original failed status stays in
+the complete attempt ledger. Legacy v1 selections still require original
+success and cannot carry this extension. The original native producer and
+the actual analysis consumer identities remain separate from this maintenance
+source revision.
+
+Archive creation embeds the reconciliation proof, verifies its whole original
+inventory against actual tar members, and preserves all other failed attempts.
+Portable offline validation rechecks the same copied inventory/proof closure;
+it does not perform fresh teardown, native parsing or tar verification.
+Missing proof, changed logs, new or omitted attempt files, mixed original
+identity, and a failed reconciliation reject. All72 whole-child choices per
+backend, all32 role labels, full original point denominators and ordinary
+prediction/accuracy gates still apply. A reconciliation is not acceptance.
+
+The executor is an operational API: source availability does not authorize
+scheduler cleanup. No actual reconciliation or dataset acceptance is claimed
+by its TEST_ONLY fixtures.
 
 ## What it checks
 
@@ -216,7 +279,7 @@ archive helper are deliberately insufficient. Binding verifies:
 using only Python's standard library. They can run with Python 3.12 on the
 remote Lustre host without importing AISimulate, torch, Arrow or a GPU runtime.
 These are repository maintenance tools, not installed SDK entry points. For
-remote use, deploy all 11 `POLICY_MODULES` together in a new
+remote use, deploy all 13 `POLICY_MODULES` together in a new
 versioned bundle directory, retain the Apache-2.0 license, and record the exact
 AISimulate source commit and SHA256 of every file before transfer. Recheck all
 hashes on the destination and invoke `python3.12 /bundle/raw_campaign.py`; do not

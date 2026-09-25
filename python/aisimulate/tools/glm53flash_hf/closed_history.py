@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Task-local candidate: original attempt history bound to verified archive bytes.
+"""Original attempt history with an explicit cleanup-reconciliation extension.
 
-Modified task-local v4 integration of frozen history candidate v1. Original
-archive/member algorithms remain bf5e bytes, while the coherent maintenance
-closure separately binds mixed SG controls and mandatory portable history.
-This source candidate is not falsely identified as an unchanged bf5e revision.
+Candidate based on the committed portable-history closure. Ordinary legacy
+choices still require original success. New v2 choices preserve failed original
+states and bind separate teardown/native-read proof to the complete inventory.
+This coherent source candidate is not identified as unchanged base production.
 """
 
 from __future__ import annotations
@@ -14,6 +14,11 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+
+if __package__:
+    from . import cleanup_reconciliation as reconciliation
+else:
+    import cleanup_reconciliation as reconciliation
 
 CONTRACT = "fpm_closed_attempt_history_v2"
 BUNDLE_PROOF = "closed-attempt-history.json"
@@ -26,17 +31,19 @@ TERMINAL = {
 DEPLOYMENTS = {f"{q}-tp{t}" for q in ("fp8", "nvfp4") for t in (2, 4)}
 MAINTENANCE_IDENTITY = {
     "kind": "task_local_source_review_candidate",
-    "profile": "fpm_mixed_admission_portable_history_v4",
-    "base_commit": "bf5e1fbcfbacadd116ade854a077d5021f7d0319",
+    "profile": "fpm_cleanup_reconciliation_candidate_v1",
+    "base_commit": "2d51abd2619d3d333e721a2a34fdcf1ed20f10c2",
 }
 MAINTENANCE = {
+    "cleanup_executor.py": "bd67b3bd756d3dc2cab688face3579fcaad64122cd16b2890787e43b736768fd",
+    "cleanup_reconciliation.py": "23a9ecda93777a8131c9d16476231d98155ef7222677a97f444d70fe98f142d9",
     "external_control.py": "1b53ea6172a4c7462eec2db9218dd00a6e8801a8b70757beb70013a88c0c0a48",
     "external_control_current.py": "850ba02ab406e1caef313696b7e3b072b328089b858454f76a46b42f7cedf970",
     "external_control_sglang_mixed.py": "5d78d422876ae086504020aa4b70deaa3d1732de3ba000da5d04595a0fba9971",
     "external_control_vllm.py": "296130a6a8e31412bf1c0244aa20665fa35dc53bbefceab4bb9b6bebbeab40ae",
-    "glm53flash.py": "5a3c6785649cfb8cb6c334d25a2f2e1e16fc14db684ad59761754d010faea8cd",
+    "glm53flash.py": "30595dda1b4ca9146fab78b2591ca743a32b2261ac806e80a90113178f81ec71",
     "import_glm53flash.py": "19a10c03e16cfd465f35a6e58346ebdbcd2fc911dbae2eb1c744c5cd500ccc9f",
-    "portable_history.py": "064acde5a3279230a058ddb0ae9a665f458143f673571ac7f7b13040660032ec",
+    "portable_history.py": "3b00ce71b8f8ebc37315bfa9c253a4b698799207d8abfff0e72b53296486498f",
     "profile.py": "f806a78c58edc52b7ae62b1f0d49dc49bd4f8a0aa016b04197a12c03d53447b0",
     "raw_archive.py": "80384152174e45c849623b7f299e0ab17c3d18b93624df220afce651d3b63b40",
     "raw_campaign.py": "154838d65029786235c72f9ba90338dab5d63a5ee28640eadfc09274ee6d3fe8",
@@ -136,10 +143,7 @@ def _validate_snapshot(snapshot):
             all(original_input[k] == snapshot["inputs"][key][k] for k in ("sha256", "bytes")),
             "original input reference changed",
         )
-    require(
-        ledger["schema"] == "fpm_complete_child_selection_v1",
-        "unknown selection contract",
-    )
+    reconciliation.selection_schema(ledger)
     require(ledger["request_sha256"] == digest(request), "request/ledger mismatch")
     require(
         ledger["archive_campaign_roots"] == request["campaign_roots"],
@@ -227,13 +231,30 @@ def _validate_snapshot(snapshot):
     choices = ledger["selections"]
     require(len(choices) == 72, "exact72 complete-child choices required")
     deployments = dict.fromkeys(DEPLOYMENTS, 0)
+    reconciled = snapshot.get("reconciliations", {})
+    expected_reconciled = {cid for cid, choice in choices.items() if "reconciliation" in choice}
+    require(set(reconciled) == expected_reconciled, "missing or orphan reconciliation proof")
+
+    def load_reconciliation(cid, ref):
+        record = reconciled[cid]
+        require(all(record[k] == ref[k] for k in ("sha256", "bytes")), "reconciliation reference differs")
+        return _decoded(record)
+
     for cid, choice in choices.items():
         require(choice["job"] in by_job, "selected job missing from history")
         selected = by_job[choice["job"]]
-        require(
-            selected["cell_id"] == cid and selected["terminal_state"] == "COLLECTION_PASSED",
-            "invalid whole-child choice",
-        )
+        require(selected["cell_id"] == cid, "invalid whole-child choice")
+        proof = reconciliation.selected_proof(ledger, choice, selected, lambda ref: load_reconciliation(cid, ref))
+        if proof is not None:
+            identity = reconciliation.verify(proof)
+            require(
+                identity["task_root"] == str(original) and identity["backend"] == snapshot["backend"],
+                "reconciliation campaign differs",
+            )
+            for path, ref in proof["artifact_inventory"].items():
+                name = str(relative(path).relative_to(campaign))
+                require(name not in expected or expected[name] == ref, "reconciliation original metadata differs")
+                expected[name] = ref
         require(selected["deployment"] in deployments, "unknown deployment")
         deployments[selected["deployment"]] += 1
     require(
@@ -274,6 +295,18 @@ def snapshot(backend, inputs, plan, archive):
         "originals": originals,
         "input_bytes": {key: _record(checked_file(inputs[key]["path"]).read_bytes()) for key in ("request", "ledger")},
     }
+    if ledger["schema"] == reconciliation.SELECTION_SCHEMA:
+        result["reconciliations"] = {}
+        for cid, choice in ledger["selections"].items():
+            if "reconciliation" not in choice:
+                continue
+            ref = reconciliation.file_ref(choice["reconciliation"])
+            p = archive.storage_path(root / relative(ref["path"]), binding, live=True)
+            require(not p.is_relative_to(physical), "reconciliation diagnostics must be outside original campaign")
+            require(not (p.parent / "failure.json").exists(), "reconciliation failure is preserved")
+            raw = checked_file(p).read_bytes()
+            require(sha(raw) == ref["sha256"] and len(raw) == ref["bytes"], "reconciliation proof changed")
+            result["reconciliations"][cid] = _record(raw)
     _, expected_starts = _validate_snapshot(result)
     pattern = "*/*/*" if backend == "vllm" else "*/*"
     job_dirs = {str(p.relative_to(physical)) for p in physical.glob(pattern) if p.is_dir()}
@@ -344,10 +377,15 @@ def _selected_roots(snapshot_value, native_roots, *, check_attempt_id):
             key = str(relative(original["checkpoint"]["path"]).relative_to(campaign))
             checkpoint = _decoded(snapshot_value["originals"][key])
             entry = checkpoint["cells"][cid]
+            status = "cleanup_failed" if "reconciliation" in choice else "passed"
             require(
-                entry["status"] == "passed" and entry["attempt_id"] == indexed[cid]["attempt_id"],
+                entry["status"] == status and entry["attempt_id"] == indexed[cid]["attempt_id"],
                 "accepted native attempt differs from original checkpoint",
             )
+            if "reconciliation" in choice:
+                proof = _decoded(snapshot_value["reconciliations"][cid])
+                identity = reconciliation.verify(proof)
+                require(identity["attempt_id"] == indexed[cid]["attempt_id"], "reconciled native attempt differs")
 
 
 def _bundle_files(bundle, archive):
@@ -411,7 +449,15 @@ def verify_bundle_history(bundle, proof, archive):
             and actual["stat"]["size"] == expected_file["bytes"],
             "archive history member differs",
         )
+    verify_reconciliation_inventory(proof["snapshot"], records)
     return proof["snapshot"]
+
+
+def verify_reconciliation_inventory(snapshot_value, records):
+    for record in snapshot_value.get("reconciliations", {}).values():
+        reconciliation.verify_archive_inventory(
+            _decoded(record), records, campaign_root=snapshot_value["request"]["campaign_roots"][0]
+        )
 
 
 def _failure(output, error):
