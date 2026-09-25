@@ -47,6 +47,12 @@ producer, full-campaign and independent accuracy checks. The reference runtime
 is not a measured producer. Licensed patches and qualification commands remain in
 the [runtime qualification sources](../python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/README.md).
 
+The Rust FPM cached-prefill guard admits that exact reviewed tail version in
+parity with the Python native reader. Stock unaligned starts, unknown local
+suffixes and the quarantined KPool runtime remain rejected. This admits queries
+to existing calibration tables; it does not grant holdout coverage or accuracy
+acceptance, which still requires predictions for every original requested point.
+
 The current tail runtime has passed the original nine-point producer qualification
 and strict prefill/decode readers in all four vLLM deployments. Its formal
 397-calibration/221-holdout campaign is collecting on GB300. Current SGLang
