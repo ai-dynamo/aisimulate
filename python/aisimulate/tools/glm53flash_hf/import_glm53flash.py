@@ -213,6 +213,7 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
         "evidence date must be explicit",
     )
     stage = policy.validate_stage(stage_root)
+    acceptance = policy.read(policy.checked(stage_root, stage["acceptance"]))
     external = policy.read(external_receipts)
     external_files = policy.validate_external_receipts(
         external, stage_root=stage_root, evidence_root=Path(external_receipts).resolve().parent
@@ -255,6 +256,11 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
         row = pq.read_table(source_table).to_pylist()[0]
         producer = original_meta.get("producer_revision")
         producer_commit = producer if isinstance(producer, str) and re.fullmatch(r"[0-9a-f]{40}", producer) else None
+        revisions = policy.publication_revisions(
+            original_meta, acceptance, external, Path(external_receipts).resolve().parent, source_revision, part
+        )
+        if revisions is not None:
+            producer_commit = revisions["native_producer_revision"]
         identity = {
             "model_id": part["model_id"],
             "model_revision": part["model_revision"],
@@ -283,6 +289,8 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
             "aisim_commit": producer_commit,
             "aisim_commit_status": "recorded" if producer_commit else "unknown",
         }
+        if revisions is not None:
+            identity["aisim_commit_semantics"] = "native_producer_revision"
         identity["configuration_path"] = manager.configuration_path(identity)
         leaf = Path(identity["configuration_path"])
         policy.require(
@@ -304,6 +312,8 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
             },
             "status": "CANONICAL_LOCAL_NOT_PUBLISHED",
         }
+        if revisions is not None:
+            receipt["revision_identity"] = revisions
         write(destination / import_path, receipt)
         meta = dict(
             original_meta,
@@ -326,6 +336,8 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
             "import_receipt": str(import_path),
             "import_receipt_sha256": policy.sha(destination / import_path),
         }
+        if revisions is not None:
+            provenance.update(revision_identity=revisions, producer_revisions_semantics=policy.PLANNER_ALIAS)
         artifact = "fpm-" + part["parquet"]["sha256"][:16]
         entry = {
             "artifact_id": artifact,

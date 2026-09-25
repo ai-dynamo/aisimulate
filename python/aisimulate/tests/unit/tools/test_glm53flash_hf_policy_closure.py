@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+
 from tools.glm53flash_hf import glm53flash as policy
 from tools.glm53flash_hf import import_glm53flash as integration
 from tools.glm53flash_hf import profile
@@ -49,8 +50,34 @@ def test_copied_policy_imports_in_isolated_process(copied_dataset):
         "raw_archive",
         "external_control",
         "external_control_vllm",
+        "external_control_current",
     }
     assert all(Path(path).parent == scripts for path in loaded.values())
+
+
+def test_embedded_policy_keeps_dependency_closure_after_import_path_restored(copied_dataset):
+    scripts = copied_dataset / "scripts"
+    process = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import json, pathlib, sys; "
+            "sys.path.insert(0, sys.argv[1]); import glm53flash as p; sys.path.pop(0); "
+            "assert sys.argv[1] not in sys.path; "
+            "assert p.publication_revisions({'producer_revision': 'a'*40}, {}, [], pathlib.Path('.'), 'b'*40, "
+            "dict(backend='sglang', weight_quantization='fp8', tp=2)) is None; "
+            "print(json.dumps({n: str(pathlib.Path(sys.modules[n[:-3]].__file__).resolve()) "
+            "for n in p.POLICY_MODULES}))",
+            str(scripts),
+        ],
+        cwd=copied_dataset,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert all(Path(path).parent == scripts for path in json.loads(process.stdout).values())
 
 
 def test_profile_binds_all_copied_policy_bytes(copied_dataset):
@@ -61,11 +88,12 @@ def test_profile_binds_all_copied_policy_bytes(copied_dataset):
         "scripts/raw_archive.py",
         "scripts/external_control.py",
         "scripts/external_control_vllm.py",
+        "scripts/external_control_current.py",
     }
     assert all(policy.sha(copied_dataset / path) == digest for path, digest in controls.items())
 
 
-@pytest.mark.parametrize("module", ["external_control.py", "external_control_vllm.py"])
+@pytest.mark.parametrize("module", ["external_control.py", "external_control_vllm.py", "external_control_current.py"])
 @pytest.mark.parametrize("mutation", ["missing", "modified", "symlink"])
 def test_unreviewed_external_control_rejected_before_loading_stage(copied_dataset, module, mutation):
     path = copied_dataset / "scripts" / module

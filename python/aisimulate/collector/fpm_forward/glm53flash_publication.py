@@ -84,12 +84,17 @@ def partition_table(source: Path, metadata: Path, destination: Path) -> list[dic
         if not pq.read_table(target).equals(selected):
             raise ValueError("published partition changed Arrow row values or schema")
         info = dict(original)
-        producer_revision = info.pop("aic_revision", None)
+        # Database aic_revision is the plan renderer identity, including its
+        # installed RECORD identity. It does not identify a separate worker wheel.
+        planner_revision = info.get("aic_revision")
         info.update(
             parquet_sha256=file_sha256(target),
             row_count=len(indices),
             model_paths=[model],
-            producer_revision=producer_revision,
+            revision_identity_schema="glm53flash_revision_identity_v1",
+            planner_revision=planner_revision,
+            producer_revision=planner_revision,
+            producer_revision_semantics="legacy_planner_revision_alias",
             source_partition={
                 "parquet_sha256": source_sha,
                 "metadata_sha256": file_sha256(metadata),

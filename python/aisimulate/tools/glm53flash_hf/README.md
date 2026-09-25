@@ -21,11 +21,54 @@ unchanged. No upstream license is assumed or invented. Both the pinned file
 hash and structural hook counts must match before applying edits. A changed
 validator requires a new source inspection and pin.
 
-The standalone dataset includes all five modules listed in
-`glm53flash.POLICY_MODULES`, including both external-control adapters. Profile
+The standalone dataset includes every module listed in
+`glm53flash.POLICY_MODULES`, including the versioned external-control adapters. Profile
 generation checks every module against the reviewed source and includes their
 hashes in immutable Hub readback verification. An isolated-process test imports
 the copied modules without the repository on Python's import path.
+
+## Current formal launcher attachments
+
+Legacy `glm53flash_external_control_v1` inputs retain their original contract.
+An explicit `glm53flash_external_control_v2` attachment supports
+`vllm_nested_formal_v2` and `sglang_split_host_formal_v2`. Select the adapter in
+the existing `external_control.py --request` JSON. The attachment is assembled
+after execution; it never modifies a launcher, CPU result, plan, native receipt
+or `started.json`, and does not claim to have existed before collection.
+
+The vLLM adapter reads the original four nested deployment inventories, their
+dictionary of file bindings, the actual public CPU role/phase receipts and the
+original per-deployment qualification results. The SGLang adapter separately
+binds the host renderer and native producer commits/wheels through the original
+CPU controller, factory manifests and prepared inventory. It rejects a draft,
+an unknown CPU result, a missing deployment qualification, or a mixed allocator
+policy. Wheel blobs remain externally pinned artifacts; this attachment binds
+their original identities and installed verification evidence, without claiming
+to reinstall or independently rehash the blobs on portable replay.
+
+Both adapters require all 72 original children for their backend, preserving
+phase-local IDs: 250 prefill + 147 decode calibration points and 144 prefill +
+77 decode independent holdout points per deployment. Original child plan bytes,
+corpus/execution options and startup environment remain hash-bound. Every
+accepted child must match its original job, attempt, raw root, and native
+provenance. The vLLM adapter reuses the original worker/cache/NVML join; SGLang
+uses its existing strict native hardware/state/allocator evidence and does not
+acquire a new external worker witness requirement. Archive binding also retains
+the original execution controls, including original NVML evidence where used.
+
+`external_control_current.frozen_contract(document, resolver)` is a source-only
+readiness check before GPU attempts exist. It returns an in-memory index and
+does not create an accepted attachment. Full `prepare`/`validate` still requires
+all original execution records. The public publication stage independently
+reruns native validation, shard union, installed-consumer prediction and every
+holdout acceptance gate. Neither this source check nor a completed collection
+can substitute for that stage.
+
+An analysis run must record the actual installed consumer wheel and the
+publication-tool revision separately from the original producer identities.
+Do not label newer analysis code as an earlier installed consumer. No v2
+adapter changes calibration membership, interpolation, MAPE thresholds, failed
+attempt preservation, Hub publication authorization or offline validation.
 
 ## What it checks
 
@@ -432,6 +475,44 @@ predictions, then repeat with `local_files_only=True`. Generating and verifying
 the pin does not replace those installed-consumer and offline accuracy checks.
 Explicit synthetic/test markers in stage, report, original input or rows are
 rejected before a production profile can be written.
+
+## Planner, native producer, and analysis identities
+
+New partitions retain the source table's `aic_revision` unchanged and add
+`planner_revision` with that exact value under
+`revision_identity_schema=glm53flash_revision_identity_v1`. The value can be an
+installed distribution RECORD identity, rather than a Git commit. The historical
+`producer_revision` remains as an explicitly tagged
+`legacy_planner_revision_alias`; it must not be interpreted as a worker revision.
+Original source tables, metadata, plans, and execution receipts remain unchanged.
+
+For these partitions, canonical import requires all four original prefill/decode
+and calibration/holdout v2 control attachments for each configuration. It checks
+every original child plan's `aic_revision`, revalidates the complete attachments,
+and derives `planner_source_commit`/`planner_wheel_sha256` and
+`native_producer_revision`/`native_producer_wheel_sha256` from their source and
+installed-wheel evidence. The four identities must agree. This represents a
+642b host renderer with a 636 native worker without relabeling either one.
+Missing identities, mixed workers, or mismatched plan revisions reject import.
+
+The import receipt and configuration provenance retain the resulting
+`revision_identity`, including original control hashes. Its `analysis_revision`
+contains the exact acceptance report's `installed_consumer` object and the
+independent `publication_tool_revision` supplied by `--source-revision`.
+The consumer payload hash covers the installed public SDK/native consumer bytes
+checked by acceptance; it is not a whole-wheel hash or an inferred Git commit.
+The tool revision does not attest which consumer was installed. A newly built,
+verified installed consumer remains a separate prerequisite for formal analysis.
+
+For new explicit revision metadata, catalog/configuration `aisim_commit` is the
+verified native producer commit and carries
+`aisim_commit_semantics=native_producer_revision`. The legacy
+`provenance.producer_revisions` list retains its planner-alias meaning with an
+explicit tag. Snapshot validation re-derives these fields from the archived
+originals, including the installed analysis identity. Historical stages and
+snapshots without the new marker retain their old contract; current v2 controls
+cannot silently downgrade to that legacy naming path. These metadata changes do
+not alter calibration rows, native timings, predictions, or acceptance limits.
 
 ## Tests
 

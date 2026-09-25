@@ -673,13 +673,13 @@ jobs:
             exit 1
           fi
           python -m pip install uv
-          python -m uv pip install --system "${wheels[0]}[dev]"
+          python -m uv pip install --system --constraint .github/application-test-constraints.txt "${wheels[0]}[dev]"
           echo "AISIMULATE_TEST_WHEEL=${GITHUB_WORKSPACE}/${wheels[0]}" >> "${GITHUB_ENV}"
       - name: Run repository and package contracts
         if: matrix.shard.suite == 'contracts'
         run: |
           python -m pip install pip-licenses==5.5.5
-          python -m uv pip install --system "${AISIMULATE_TEST_WHEEL}[dev]" -r scripts/fpm_accuracy/requirements.in
+          python -m uv pip install --system --constraint .github/application-test-constraints.txt "${AISIMULATE_TEST_WHEEL}[dev]" -r scripts/fpm_accuracy/requirements.in
           python -m pip check
           python scripts/check_prediction_numerics.py --fetch-baseline-only
           python scripts/check_application_test_inventory.py --output application-test-inventory.json

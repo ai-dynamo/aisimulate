@@ -130,6 +130,21 @@ def staged(tmp_path, request):
             },
         )
         parts.extend(partition_table(data, metadata, stage))
+        # Keep this historical no-external-controller fixture on its original
+        # legacy partition metadata contract. Current split-host identity has
+        # separate tests with complete v2 execution attachments.
+        for part in parts:
+            path = stage / part["metadata"]["path"]
+            info = policy.read(path)
+            for field in (
+                "aic_revision",
+                "planner_revision",
+                "revision_identity_schema",
+                "producer_revision_semantics",
+            ):
+                info.pop(field, None)
+            integration.write(path, info)
+            part["metadata"]["sha256"] = policy.sha(path)
         for path in (data, metadata):
             rel = "sources/" + policy.sha(path) + path.suffix
             (stage / rel).parent.mkdir(exist_ok=True)
