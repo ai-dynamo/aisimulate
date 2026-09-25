@@ -1084,7 +1084,8 @@ the repository Apache-2.0 license text applies to these adaptations.
 - Source: https://github.com/sgl-project/sglang at immutable revision
   `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`. Original paths under
   `python/sglang/srt`: `managers/{scheduler,schedule_batch,tp_worker}.py`,
-  `managers/scheduler_components/batch_result_processor.py`,
+  `managers/scheduler_components/{batch_result_processor,invariant_checker}.py`,
+  `utils/watchdog.py`,
   `mem_cache/{allocation,common,chunk_cache,memory_pool,kv_cache_builder,registry}.py`,
   `observability/req_time_stats.py`,
   and the model-runner paths pinned in the adjacent source inventory.
@@ -1094,8 +1095,10 @@ the repository Apache-2.0 license text applies to these adaptations.
   to serialize native requests, park actually computed prefixes, and form an
   explicit target cohort. Native request construction, hybrid allocation,
   forward/graph execution, sampling, chunk stashing and release APIs are called
-  directly. No upstream source is copied. Lifecycle fixtures are independent
-  synthetic CPU test data and do not establish GPU qualification.
+  directly. No native forward implementation is copied. Lifecycle fixtures are independent
+  synthetic CPU test data and do not establish GPU qualification. The retained
+  loop's completed-cohort and idle watchdog marker follows the native active-work
+  predicate; neither native watchdog settings nor measured forwards are changed.
 
 ## GLM-5.3-Flash native IndexPool repair candidate
 

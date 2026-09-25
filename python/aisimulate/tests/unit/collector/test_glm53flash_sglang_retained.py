@@ -6,7 +6,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from collector.glm53flash_sglang_retained import PRODUCER_PROTOCOL, RetainedRequestLoop, validate_retained_states
 
 pytestmark = pytest.mark.unit
@@ -102,12 +101,17 @@ class Scheduler:
         self.computed, self.traces, self.calls = {}, [], []
         self.sample_launched = False
         self.retired = []
+        self.is_initializing = False
+        self.cur_batch_for_debug = None
+        self.forward_ct = 0
 
     def retire_requests(self, ids):
         assert all(req.finished() and not req.kv.holds_kv and not req.kv.holds_mamba for req in self.last_reqs)
         self.retired.extend(ids)
 
     def run_batch(self, batch):
+        assert self.cur_batch_for_debug is batch
+        self.forward_ct += 1
         self.last_reqs = batch.reqs
         prefixes, queries = [], []
         for req in batch.reqs:
@@ -304,3 +308,113 @@ def test_paused_loop_uses_native_scheduler_state_accounting(tmp_path):
     scheduler._record_scheduler_state_for_paused_engine = paused
     RetainedRequestLoop(scheduler, {"requests": {}}, tmp_path, batch_type=NativeBatch).run()
     assert seen == ["paused"]
+
+
+def native_watchdog_active(scheduler):
+    # SGLang 94602c9c, scheduler_components/invariant_checker.py:505-527.
+    # This exact native predicate gates the unchanged forward_ct/300s watchdog.
+    return scheduler.is_initializing or scheduler.cur_batch_for_debug is not None
+
+
+@pytest.mark.parametrize("decode", [False, True])
+def test_watchdog_tracks_native_work_until_cohort_release_and_retirement(tmp_path, monkeypatch, decode):
+    loop, scheduler, _manifest, reqs = campaign(tmp_path, 2, 7, 1 if decode else 3, decode)
+    observed = []
+    for name in ("run_batch", "launch_batch_sample_if_needed", "process_batch_result"):
+        original = getattr(scheduler, name)
+
+        def active_call(*args, _name=name, _original=original):
+            assert native_watchdog_active(scheduler)
+            observed.append(_name)
+            return _original(*args)
+
+        monkeypatch.setattr(scheduler, name, active_call)
+    original_retire = scheduler.model_worker._aisim_glm53_release_requests
+
+    def retire(ids):
+        assert native_watchdog_active(scheduler)
+        assert all(req.finished() and not req.kv.holds_kv and not req.kv.holds_mamba for req in reqs)
+        observed.append("retire")
+        original_retire(ids)
+
+    monkeypatch.setattr(scheduler.model_worker, "_aisim_glm53_release_requests", retire)
+    loop.run_cohort(reqs)
+    assert observed == ["run_batch", "launch_batch_sample_if_needed", "process_batch_result"] * len(scheduler.calls) + [
+        "retire"
+    ]
+    assert scheduler.forward_ct == len(scheduler.calls)
+    assert scheduler.cur_batch_for_debug is None
+    assert not native_watchdog_active(scheduler)
+
+
+@pytest.mark.parametrize("failure", ["unfinished", "unreleased", "retirement"])
+def test_watchdog_remains_active_when_cohort_completion_fails(tmp_path, monkeypatch, failure):
+    loop, scheduler, _manifest, reqs = campaign(tmp_path, 1, 0, 3)
+    if failure == "retirement":
+
+        def fail_retire(_ids):
+            assert native_watchdog_active(scheduler)
+            raise RuntimeError("TEST_ONLY retirement failed")
+
+        monkeypatch.setattr(scheduler.model_worker, "_aisim_glm53_release_requests", fail_retire)
+        message = "retirement failed"
+    else:
+        original = loop._execute
+
+        def incomplete(*args, **kwargs):
+            value = original(*args, **kwargs)
+            if failure == "unfinished":
+                reqs[0].output_ids.clear()
+            else:
+                reqs[0].kv.holds_kv = reqs[0].kv.holds_mamba = True
+            return value
+
+        monkeypatch.setattr(loop, "_execute", incomplete)
+        message = "did not release"
+    with pytest.raises(RuntimeError, match=message):
+        loop.run_cohort(reqs)
+    assert scheduler.forward_ct == 1
+    assert native_watchdog_active(scheduler)
+    assert scheduler.model_worker._aisim_glm53_last_forward is not None
+
+
+def test_empty_idle_clears_only_batch_marker_before_native_housekeeping(tmp_path):
+    scheduler = Scheduler({})
+    scheduler.gracefully_exit = scheduler._engine_paused = False
+    scheduler.waiting_queue = []
+    scheduler.cur_batch_for_debug = object()
+    scheduler.forward_ct = 42
+    scheduler.ingest_requests = lambda: None
+
+    def idle():
+        assert not native_watchdog_active(scheduler)
+        assert scheduler.forward_ct == 42
+        assert scheduler._sched_idled
+        scheduler.gracefully_exit = True
+
+    scheduler.on_idle = idle
+    RetainedRequestLoop(scheduler, {"requests": {}}, tmp_path, batch_type=NativeBatch).run()
+
+
+def test_pending_cohort_does_not_take_idle_watchdog_reset(tmp_path):
+    loop, scheduler, _manifest, reqs = campaign(tmp_path, 2, 7, 3)
+    scheduler.gracefully_exit = scheduler._engine_paused = False
+    marker = scheduler.cur_batch_for_debug = object()
+    polls = 0
+
+    def ingest():
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            scheduler.waiting_queue = [reqs[0]]
+        else:
+            raise RuntimeError("TEST_ONLY stop incomplete cohort")
+
+    scheduler.ingest_requests = ingest
+    scheduler.on_idle = lambda: pytest.fail("pending cohort must not enter idle housekeeping")
+    with pytest.raises(RuntimeError, match="stop incomplete cohort"):
+        loop.run()
+    assert scheduler.cur_batch_for_debug is marker
+    assert native_watchdog_active(scheduler)
+    assert scheduler.forward_ct == 0
+    assert not loop.completed
