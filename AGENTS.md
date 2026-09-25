@@ -288,7 +288,15 @@ individual attempts and inspect both fresh-sample CV and CV including the
 original published sample. Repeatability uses the same canonical source sample
 selection as publication without modifying raw artifacts. Evaluate withheld
 coordinates through native direct interpolation; keep unsupported queries
-separate from numerical errors. The
+separate from numerical errors. Holdout selection retains both adjacent measured
+anchors at execution-mode transitions using the complete validated native grid
+and resolved graph configuration from the source attempt. Inspect the reported
+boundary anchors and missing evidence; expected point modes do not prove observed
+per-call dispatch. This onboarding selection does not change core interpolation,
+prove all brackets compatible, test missing-boundary behavior or resolve kernel
+changes within one graph mode. A changed selection requires a fresh CPU assessment
+directory; retain earlier failures and reports without altering the formal table
+or repeatability subset. The
 default policy is five fresh samples per point, at most 12 points per phase cell,
 maximum CV 0.05, at most 16 holdouts per phase, seed 42, p95 absolute relative
 error 0.20 and zero unsupported holdouts. These are editable initial criteria,

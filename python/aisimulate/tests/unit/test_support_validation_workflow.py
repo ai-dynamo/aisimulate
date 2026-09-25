@@ -249,6 +249,88 @@ def test_public_prepare_then_repeat_and_holdout_preserve_originals(quality_case)
             assert saved["runtime_observation"] == case["plan"].to_dict()["runtime_observation"]
 
 
+def test_holdout_uses_full_native_grid_not_repeat_subset(quality_case):
+    case = quality_case
+    before = {path: path.read_bytes() for path in case["root"].rglob("*") if path.is_file()}
+    assert cli.main(case["args"]) == 0
+    selection = json.loads((case["output"] / "repeatability-selection.json").read_text())
+    assert all(len(cell["points"]) <= 12 for cell in selection["cells"])
+    holdout = json.loads((case["output"] / "holdout/interpolation-validation.json").read_text())
+    boundaries = holdout["capture_boundaries"]
+    assert boundaries["status"] == "assessed"
+    assert len(boundaries["retained_anchors"]) == 20  # Both sides, for every batch/KV curve.
+    assert {point["total_prefill_tokens"] for point in boundaries["retained_anchors"]} == {16, 32}
+    assert holdout["native_query_coverage"]["queries"]["measured"] == 0
+    assert all(cell["known_mode_point_count"] == cell["eligible_point_count"] for cell in boundaries["cells"])
+    assert not case["calls"]
+    assert before == {path: path.read_bytes() for path in before}
+
+
+@pytest.mark.parametrize("missing", ["point_mode", "graph_config"])
+def test_native_missing_boundary_evidence_keeps_assessment_incomplete(quality_case, missing):
+    case = quality_case
+    for path in case["campaign"].rglob("benchmark-dp*.json"):
+        payload = json.loads(path.read_text())
+        if missing == "graph_config":
+            payload.pop("cudagraph")
+        else:
+            for row in payload["results"]:
+                row["point"].pop("expected_cudagraph_mode")
+            for row in payload["iteration_groups"]:
+                row["point"].pop("expected_cudagraph_mode")
+        _write(path, payload)
+    assert cli.main(case["args"]) == 0
+    holdout = json.loads((case["output"] / "holdout/interpolation-validation.json").read_text())
+    assert holdout["status"] == holdout["capture_boundaries"]["status"] == "incomplete"
+    assert holdout["capture_boundaries"]["retained_anchors"] == []
+    checked, _, _, _ = workflow.check_collection_report(
+        case["output"] / "collection-validation.json", workflow.ValidationPolicy()
+    )
+    assert checked["status"] == "incomplete"
+
+
+@pytest.mark.parametrize("validation_case", ["dep"], indirect=True)
+@pytest.mark.parametrize("conflict", ["point_mode", "graph_config"])
+def test_native_rank_boundary_conflicts_are_rejected(quality_case, conflict):
+    case = quality_case
+    path = next(case["campaign"].rglob("benchmark-dp1.json"))
+    payload = json.loads(path.read_text())
+    if conflict == "graph_config":
+        payload["cudagraph"]["capture_sizes"].append(512)
+    else:
+        payload["results"][0]["point"]["expected_cudagraph_mode"] = "NONE"
+        payload["iteration_groups"][0]["point"]["expected_cudagraph_mode"] = "NONE"
+    _write(path, payload)
+    with pytest.raises(SystemExit, match="2"):
+        cli.main(case["args"])
+    assert not case["calls"]
+    assert not (case["output"] / "holdout/interpolation-validation.json").exists()
+
+
+@pytest.mark.parametrize("changed", ["legacy_selection", "anchors"])
+def test_changed_holdout_selection_requires_fresh_output_and_preserves_prior_report(quality_case, changed):
+    case = quality_case
+    assert cli.main(case["args"]) == 0
+    holdout_path = case["output"] / "holdout/interpolation-validation.json"
+    holdout = json.loads(holdout_path.read_text())
+    if changed == "legacy_selection":
+        holdout["policy"]["selection"] = "retained_envelope_seeded_farthest_shape_v1"
+    else:
+        holdout["capture_boundaries"]["retained_anchors"] = []
+    _write(holdout_path, holdout)
+    report_path = case["output"] / "collection-validation.json"
+    report = json.loads(report_path.read_text())
+    report["gates"]["interpolation"]["report"] = workflow._identity(holdout_path)
+    _write(report_path, report)
+    before = {path: path.read_bytes() for path in case["output"].rglob("*") if path.is_file()}
+    with pytest.raises(ValueError, match="fresh assessment directory"):
+        workflow.check_collection_report(report_path, workflow.ValidationPolicy())
+    with pytest.raises(SystemExit, match="2"):
+        cli.main([*case["args"], "--resume"])
+    assert before == {path: path.read_bytes() for path in before}
+    assert not case["calls"]
+
+
 def test_changed_threshold_reuses_raw_samples_but_changed_count_does_not(quality_case, tmp_path):
     case = quality_case
     assert cli.main([*case["args"], "--execute"]) == 0

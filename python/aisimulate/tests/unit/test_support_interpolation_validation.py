@@ -43,6 +43,58 @@ def _write_pair(path, rows, *, schema_version=7):
     )
 
 
+def _execution_evidence(rows, directory, *, max_capture=512):
+    """Synthetic source-bound metadata; the CLI tests exercise its native reader."""
+    directory.mkdir()
+    evidence = []
+    for cell_id in sorted({row["cell_id"] for row in rows}):
+        cell_rows = [row for row in rows if row["cell_id"] == cell_id]
+        identity = {
+            "source_plan_sha256": "a" * 64,
+            "collector_attempt_id": "synthetic-source",
+            "runtime_run_id": f"run-{cell_id}",
+            "runtime_grid_digest": f"grid-{cell_id}",
+        }
+        points = []
+        for row in cell_rows:
+            row.update(identity)
+            axis = row["total_prefill_tokens"] or row["batch_size"]
+            captured = axis <= max_capture
+            points.append(
+                {
+                    **{
+                        key: row[key]
+                        for key in ("workload_kind", "batch_size", "total_prefill_tokens", "total_kv_read_tokens")
+                    },
+                    "expected_cudagraph_mode": ("PIECEWISE" if row["workload_kind"] == "prefill" else "FULL")
+                    if captured
+                    else "NONE",
+                    "expected_capture_size": axis if captured else None,
+                }
+            )
+        config = {
+            "mode": "FULL_AND_PIECEWISE",
+            "capture_sizes": sorted({p["expected_capture_size"] for p in points if p["expected_capture_size"]}),
+        }
+        graphs = []
+        for rank in range(cell_rows[0]["dp"]):
+            path = directory / f"{cell_id}-{rank}.json"
+            path.write_text(json.dumps({"cudagraph": config, "points": points}))
+            graphs.append(
+                {
+                    "dp_rank": rank,
+                    "config": copy.deepcopy(config),
+                    "source": {
+                        "path": str(path),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                        "size_bytes": path.stat().st_size,
+                    },
+                }
+            )
+        evidence.append({"cell_id": cell_id, "identity": identity, "points": points, "native_graph_config": graphs})
+    return evidence
+
+
 @pytest.fixture
 def holdout_case(tmp_path, monkeypatch, request):
     def reject_graph(*_args, **_kwargs):
@@ -193,9 +245,145 @@ def test_selection_is_deterministic_and_input_order_independent(holdout_case, tm
     assert reports[1]["predictions"] != reports[2]["predictions"]
 
 
-def test_errors_are_against_withheld_measurements_with_editable_gates(holdout_case, tmp_path):
+def test_holdout_retains_both_sides_of_graph_eager_transition(holdout_case, tmp_path):
     request, source, parquet, rows = holdout_case
-    baseline = evaluate_interpolation_holdout(request, systems_root=source, output_dir=tmp_path / "baseline")
+    template = next(row for row in rows if row["workload_kind"] == "prefill")
+    # Measured campaign shape: the 513-token eager point is much slower than
+    # the adjacent 512-token PIECEWISE point. Withholding it must not erase
+    # the runtime transition that the full table already measured.
+    timings = {256: 38.0, 512: 75.982, 513: 678.985, 1024: 718.120, 2048: 796.54}
+    prefill = [
+        {**template, "batch_size": 1, "total_prefill_tokens": tokens, "total_kv_read_tokens": 0, "latency_ms": timing}
+        for tokens, timing in timings.items()
+    ]
+    rows = prefill + [row for row in rows if row["workload_kind"] == "decode"]
+    evidence = _execution_evidence(rows, tmp_path / "native")
+    _write_pair(parquet, rows)
+    old = evaluate_interpolation_holdout(request, systems_root=source, output_dir=tmp_path / "old", seed=0)
+    assert old["status"] == "failed"
+    missed = next(point for point in old["predictions"] if point["phase"] == "prefill")
+    assert missed["coordinates"]["total_prefill_tokens"] == 513
+    assert missed["predicted_ms"] == pytest.approx(77.2361758)
+    previous = {path: path.read_bytes() for path in (tmp_path / "old").rglob("*") if path.is_file()}
+    before = {
+        path: path.read_bytes() for root in (source, tmp_path / "native") for path in root.rglob("*") if path.is_file()
+    }
+    report = evaluate_interpolation_holdout(
+        request, systems_root=source, output_dir=tmp_path / "assessment", seed=0, execution_evidence=evidence
+    )
+    remaining = pq.read_table(report["artifacts"]["training_parquet"]["path"]).to_pylist()
+    retained_tokens = {row["total_prefill_tokens"] for row in remaining if row["workload_kind"] == "prefill"}
+    assert {512, 513} <= retained_tokens
+    assert report["native_query_coverage"]["queries"]["measured"] == 0
+    assert report["capture_boundaries"]["status"] == "assessed"
+    assert report["capture_boundaries"]["per_point_observed_dispatch"] == "unreported"
+    assert {point["total_prefill_tokens"] for point in report["capture_boundaries"]["retained_anchors"]} == {512, 513}
+    assert report["phases"]["prefill"]["selected_count"] == 1
+    assert report["phases"]["prefill"]["absolute_relative_error"]["p95"] < 0.001
+    assert before == {path: path.read_bytes() for path in before}
+    assert previous == {path: path.read_bytes() for path in previous}
+
+
+def test_boundary_selection_is_deterministic_with_ragged_curves_and_fake_rows(holdout_case, tmp_path):
+    request, source, parquet, rows = holdout_case
+    rows = [
+        row
+        for row in rows
+        if not (
+            row["workload_kind"] == "prefill"
+            and row["total_kv_read_tokens"] == 64
+            and row["total_prefill_tokens"] == 64
+        )
+    ]
+    for row in rows:
+        if (
+            row["workload_kind"] == "prefill"
+            and row["total_kv_read_tokens"] == 256
+            and row["total_prefill_tokens"] == 64
+        ):
+            row["kv_seed_regime"] = "fake_fallback"
+    evidence = _execution_evidence(rows, tmp_path / "native", max_capture=32)
+    _write_pair(parquet, rows)
+    first = evaluate_interpolation_holdout(
+        request, systems_root=source, output_dir=tmp_path / "first", execution_evidence=evidence
+    )
+    _write_pair(parquet, list(reversed(rows)))
+    reordered = copy.deepcopy(list(reversed(evidence)))
+    for cell in reordered:
+        cell["points"].reverse()
+        cell["native_graph_config"].reverse()
+    second = evaluate_interpolation_holdout(
+        request, systems_root=source, output_dir=tmp_path / "second", execution_evidence=reordered
+    )
+    assert first["predictions"] == second["predictions"]
+    assert first["capture_boundaries"] == second["capture_boundaries"]
+    anchors = first["capture_boundaries"]["retained_anchors"]
+    assert any(point["total_prefill_tokens"] == 128 and point["total_kv_read_tokens"] == 64 for point in anchors)
+    assert not any(point["total_prefill_tokens"] == 64 and point["total_kv_read_tokens"] == 256 for point in anchors)
+    assert first["native_query_coverage"]["queries"]["measured"] == 0
+
+
+@pytest.mark.parametrize("missing", ["point_mode", "unknown_mode", "capture_size", "graph_config"])
+def test_incomplete_boundary_evidence_does_not_claim_qualification(holdout_case, tmp_path, missing):
+    request, source, parquet, rows = holdout_case
+    evidence = _execution_evidence(rows, tmp_path / "native")
+    cell = next(cell for cell in evidence if cell["cell_id"] == "synthetic-prefill")
+    if missing == "graph_config":
+        cell["native_graph_config"][0]["config"] = None
+    elif missing == "unknown_mode":
+        cell["points"][0]["expected_cudagraph_mode"] = "FUTURE_MODE"
+    elif missing == "capture_size":
+        cell["points"][0].pop("expected_capture_size")
+    else:
+        cell["points"][0].pop("expected_cudagraph_mode")
+    _write_pair(parquet, rows)
+    report = evaluate_interpolation_holdout(
+        request, systems_root=source, output_dir=tmp_path / "assessment", execution_evidence=evidence
+    )
+    assert report["status"] == report["capture_boundaries"]["status"] == "incomplete"
+    assert all(phase["status"] == "passed" for phase in report["phases"].values())
+    assert report["capture_boundaries"]["issues"]
+    assert report["capture_boundaries"]["retained_anchors"] == []
+
+
+@pytest.mark.parametrize(
+    "corruption", ["identity", "coordinates", "duplicate", "rank", "graph_rank", "capture", "source"]
+)
+@pytest.mark.parametrize("holdout_case", ["dep"], indirect=True)
+def test_boundary_evidence_rejects_contradictions(holdout_case, tmp_path, corruption):
+    request, source, parquet, rows = holdout_case
+    evidence = _execution_evidence(rows, tmp_path / "native")
+    _write_pair(parquet, rows)
+    cell = next(cell for cell in evidence if cell["cell_id"] == "synthetic-prefill")
+    if corruption == "identity":
+        cell["identity"]["collector_attempt_id"] = "another-attempt"
+    elif corruption == "coordinates":
+        cell["points"].pop()
+    elif corruption == "duplicate":
+        cell["points"].append(cell["points"][0])
+    elif corruption == "rank":
+        cell["native_graph_config"][1]["dp_rank"] = 0
+    elif corruption == "graph_rank":
+        cell["native_graph_config"][1]["config"]["mode"] = "NONE"
+    elif corruption == "capture":
+        cell["points"][0]["expected_capture_size"] = 9999
+    else:
+        Path(cell["native_graph_config"][0]["source"]["path"]).write_text("changed")
+    with pytest.raises(ValueError, match="holdout"):
+        evaluate_interpolation_holdout(
+            request, systems_root=source, output_dir=tmp_path / "assessment", execution_evidence=evidence
+        )
+    assert not (tmp_path / "assessment/holdout-plan.json").exists()
+
+
+@pytest.mark.parametrize("with_evidence", [False, True])
+def test_errors_are_against_withheld_measurements_with_editable_gates(holdout_case, tmp_path, with_evidence):
+    request, source, parquet, rows = holdout_case
+    evidence = _execution_evidence(rows, tmp_path / "native", max_capture=32) if with_evidence else None
+    _write_pair(parquet, rows)
+    baseline = evaluate_interpolation_holdout(
+        request, systems_root=source, output_dir=tmp_path / "baseline", execution_evidence=evidence
+    )
     for row in rows:
         if any(
             row["workload_kind"] == point["phase"]
@@ -204,29 +392,40 @@ def test_errors_are_against_withheld_measurements_with_editable_gates(holdout_ca
         ):
             row["latency_ms"] *= 2
     _write_pair(parquet, rows)
-    strict = evaluate_interpolation_holdout(request, systems_root=source, output_dir=tmp_path / "strict")
+    strict = evaluate_interpolation_holdout(
+        request, systems_root=source, output_dir=tmp_path / "strict", execution_evidence=evidence
+    )
     assert strict["status"] == "failed"
     for phase in ("prefill", "decode"):
         distribution = strict["phases"][phase]["absolute_relative_error"]
         assert distribution == pytest.approx({"p50": 0.5, "p95": 0.5, "max": 0.5, "bias": -0.5})
         assert strict["phases"][phase]["unsupported_count"] == 0
     relaxed = evaluate_interpolation_holdout(
-        request, systems_root=source, output_dir=tmp_path / "relaxed", max_p95_relative_error=0.6
+        request,
+        systems_root=source,
+        output_dir=tmp_path / "relaxed",
+        max_p95_relative_error=0.6,
+        execution_evidence=evidence,
     )
     assert relaxed["status"] == "passed"
     assert relaxed["predictions"] == strict["predictions"]
     assert relaxed["policy"]["max_p95_relative_error"] == 0.6
 
 
-def test_ragged_unsupported_holdout_is_not_an_error_sample_or_a_pass(holdout_case, tmp_path):
+@pytest.mark.parametrize("with_evidence", [False, True])
+def test_ragged_unsupported_holdout_is_not_an_error_sample_or_a_pass(holdout_case, tmp_path, with_evidence):
     request, source, parquet, rows = holdout_case
     template = next(row for row in rows if row["workload_kind"] == "prefill")
     sparse_prefill = [
         {**template, "batch_size": 1, "total_prefill_tokens": tokens, "total_kv_read_tokens": kv}
         for tokens, kv in ((16, 0), (32, 0), (64, 128), (128, 256), (256, 256))
     ]
-    _write_pair(parquet, sparse_prefill + [row for row in rows if row["workload_kind"] == "decode"])
-    report = evaluate_interpolation_holdout(request, systems_root=source, output_dir=tmp_path / "assessment")
+    rows = sparse_prefill + [row for row in rows if row["workload_kind"] == "decode"]
+    evidence = _execution_evidence(rows, tmp_path / "native") if with_evidence else None
+    _write_pair(parquet, rows)
+    report = evaluate_interpolation_holdout(
+        request, systems_root=source, output_dir=tmp_path / "assessment", execution_evidence=evidence
+    )
     assert report["status"] == "failed"
     prefill = report["phases"]["prefill"]
     assert prefill["selected_count"] == prefill["unsupported_count"] == 1
@@ -236,7 +435,11 @@ def test_ragged_unsupported_holdout_is_not_an_error_sample_or_a_pass(holdout_cas
     assert report["predictions"][0]["status"] == "unsupported"
     assert "predicted_ms" not in report["predictions"][0]
     permissive = evaluate_interpolation_holdout(
-        request, systems_root=source, output_dir=tmp_path / "permissive", max_unsupported_fraction=1.0
+        request,
+        systems_root=source,
+        output_dir=tmp_path / "permissive",
+        max_unsupported_fraction=1.0,
+        execution_evidence=evidence,
     )
     assert permissive["status"] == "failed"  # An entirely unsupported phase has no error assessment.
 

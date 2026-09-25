@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 from pathlib import Path
@@ -71,6 +72,145 @@ def _coordinate(row: dict[str, Any]) -> tuple[str, int, int, int]:
     return (row["workload_kind"], *(row[name] for name in _COORDINATES))
 
 
+def _point(coordinate: tuple[str, int, int, int]) -> dict[str, Any]:
+    return {"phase": coordinate[0], **dict(zip(_COORDINATES, coordinate[1:], strict=True))}
+
+
+def _execution_boundaries(
+    rows: list[dict[str, Any]], evidence: list[dict[str, Any]] | None
+) -> tuple[set[tuple[str, int, int, int]], dict[str, Any]]:
+    """Retain adjacent measured mode transitions, without predicting dispatch or timing."""
+    report: dict[str, Any] = {
+        "status": "not_assessed",
+        "basis": "native_expected_point_modes_and_resolved_graph_configuration",
+        "per_point_observed_dispatch": "unreported",
+        "cells": [],
+        "transitions": [],
+        "retained_anchors": [],
+        "additional_to_envelope": [],
+        "issues": [],
+    }
+    if evidence is None:
+        report["issues"].append("formal table coordinates alone do not establish CUDA graph boundaries")
+        return set(), report
+    if {cell["cell_id"] for cell in evidence} != {row["cell_id"] for row in rows} or len(evidence) != len(
+        {cell["cell_id"] for cell in evidence}
+    ):
+        raise ValueError("holdout execution evidence must match the formal deployment cells exactly")
+    modes = {}
+    for cell in sorted(evidence, key=lambda item: item["cell_id"]):
+        cell_id = cell["cell_id"]
+        cell_rows = [row for row in rows if row["cell_id"] == cell_id]
+        identity = cell["identity"]
+        if set(identity) != {
+            "source_plan_sha256",
+            "collector_attempt_id",
+            "runtime_run_id",
+            "runtime_grid_digest",
+        } or any(any(not value or row.get(name) != value for name, value in identity.items()) for row in cell_rows):
+            raise ValueError(f"holdout execution evidence has a different source identity: {cell_id}")
+        points = {_coordinate(point): point for point in cell["points"]}
+        if len(points) != len(cell["points"]) or set(points) != {_coordinate(row) for row in cell_rows}:
+            raise ValueError(f"holdout execution evidence coordinates differ from the formal cell: {cell_id}")
+        graphs = sorted(cell["native_graph_config"], key=lambda graph: graph["dp_rank"])
+        ranks = [graph["dp_rank"] for graph in graphs]
+        if len(ranks) != len(set(ranks)) or set(ranks) != set(range(cell_rows[0]["dp"])):
+            raise ValueError(f"holdout graph evidence has inconsistent DP ranks: {cell_id}")
+        for graph in graphs:
+            if _identity(Path(graph["source"]["path"])) != graph["source"]:
+                raise ValueError(f"holdout native graph source changed: {cell_id}")
+        configs = [graph["config"] for graph in graphs]
+        present = [config for config in configs if isinstance(config, dict)]
+        if any(config != present[0] for config in present):
+            raise ValueError(f"holdout native graph configurations disagree across ranks: {cell_id}")
+        config = present[0] if len(present) == len(configs) else {}
+        phase = cell_rows[0]["workload_kind"]
+        captures = config.get(f"{phase}_capture_sizes", config.get("capture_sizes"))
+        configured_mode = config.get(f"{phase}_mode", config.get("mode"))
+        configured_modes = {
+            "NONE": {"NONE"},
+            "FULL": {"NONE", "FULL"},
+            "PIECEWISE": {"NONE", "PIECEWISE"},
+            "FULL_AND_PIECEWISE": {"NONE", "PIECEWISE" if phase == "prefill" else "FULL"},
+            "FULL_DECODE_ONLY": {"NONE"} if phase == "prefill" else {"NONE", "FULL"},
+        }.get(configured_mode if isinstance(configured_mode, str) else None)
+        if (
+            configured_modes is None
+            or not isinstance(captures, list)
+            or any(type(size) is not int or size < 1 for size in captures)
+        ):
+            report["issues"].append(f"{cell_id}: resolved native graph configuration is missing or unknown")
+            configured_modes = None
+        maximum = config.get("max_capture_size")
+        if (
+            configured_modes is not None
+            and maximum is not None
+            and (type(maximum) is not int or maximum < max(captures, default=0))
+        ):
+            raise ValueError(f"holdout native capture sizes exceed the reported maximum: {cell_id}")
+        known = 0
+        for row in cell_rows:
+            if row.get("kv_seed_regime") == "fake_fallback":
+                continue
+            coordinate = _coordinate(row)
+            point = points[coordinate]
+            mode, capture = point.get("expected_cudagraph_mode"), point.get("expected_capture_size")
+            if configured_modes is None or not isinstance(mode, str) or mode not in {"NONE", "FULL", "PIECEWISE"}:
+                continue
+            if mode != "NONE" and capture is None:
+                continue
+            scheduled = row["total_prefill_tokens"] if phase == "prefill" else row["batch_size"]
+            if mode not in configured_modes or (
+                capture is not None
+                if mode == "NONE"
+                else type(capture) is not int or capture < scheduled or capture not in captures
+            ):
+                raise ValueError(f"holdout point mode/capture contradicts native graph configuration: {cell_id}")
+            modes[coordinate] = mode
+            known += 1
+        eligible = sum(row.get("kv_seed_regime") != "fake_fallback" for row in cell_rows)
+        if known < eligible:
+            report["issues"].append(f"{cell_id}: {eligible - known} eligible points lack usable expected-mode evidence")
+        report["cells"].append(
+            {
+                "cell_id": cell_id,
+                "identity": identity,
+                "native_graph_config": graphs,
+                "eligible_point_count": eligible,
+                "known_mode_point_count": known,
+            }
+        )
+    anchors = set()
+    eligible_rows = [row for row in rows if row.get("kv_seed_regime") != "fake_fallback"]
+    for axis in _COORDINATES:
+        fixed = [name for name in _COORDINATES if name != axis]
+        curves: dict[tuple, list[dict[str, Any]]] = {}
+        for row in eligible_rows:
+            curves.setdefault((row["workload_kind"], *(row[name] for name in fixed)), []).append(row)
+        for _key, curve in sorted(curves.items()):
+            ordered = sorted(curve, key=lambda row: row[axis])
+            for lower, upper in itertools.pairwise(ordered):
+                lo, hi = _coordinate(lower), _coordinate(upper)
+                if lo in modes and hi in modes and modes[lo] != modes[hi]:
+                    anchors.update((lo, hi))
+                    report["transitions"].append(
+                        {
+                            "axis": axis,
+                            "lower": {**_point(lo), "mode": modes[lo]},
+                            "upper": {**_point(hi), "mode": modes[hi]},
+                        }
+                    )
+    envelope = set().union(
+        *(_anchors([row for row in eligible_rows if row["workload_kind"] == phase]) for phase in _PHASES)
+    )
+    report.update(
+        status="incomplete" if report["issues"] else "assessed",
+        retained_anchors=[_point(coordinate) for coordinate in sorted(anchors)],
+        additional_to_envelope=[_point(coordinate) for coordinate in sorted(anchors - envelope)],
+    )
+    return anchors, report
+
+
 def _anchors(rows: list[dict[str, Any]]) -> set[tuple[str, int, int, int]]:
     """Retain the envelope at every batch, including both outer KV curves."""
     anchors = set()
@@ -89,11 +229,13 @@ def _anchors(rows: list[dict[str, Any]]) -> set[tuple[str, int, int, int]]:
     return anchors
 
 
-def _select(rows: list[dict[str, Any]], limit: int, seed: int) -> list[dict[str, Any]]:
+def _select(
+    rows: list[dict[str, Any]], limit: int, seed: int, execution_anchors: set[tuple[str, int, int, int]]
+) -> list[dict[str, Any]]:
     """Target 20% up to the cap, retaining anchors and spreading over log-scaled shapes."""
     if len(rows) < 2:
         return []
-    anchors = _anchors(rows)
+    anchors = _anchors(rows) | execution_anchors
     ordered = sorted((row for row in rows if _coordinate(row) not in anchors), key=_coordinate)
     if not ordered:
         return []
@@ -178,7 +320,7 @@ def _phase_report(
     )
     issues = []
     if not rows:
-        issues.append("no eligible coordinates remain after retaining the measured envelope anchors")
+        issues.append("no eligible coordinates remain after retaining measured envelope and execution-boundary anchors")
     elif not errors:
         issues.append("no withheld coordinate has a supported interpolation prediction")
     if fraction is not None and fraction > max_unsupported_fraction:
@@ -209,13 +351,15 @@ def evaluate_interpolation_holdout(
     seed: int = 42,
     max_p95_relative_error: float = 0.20,
     max_unsupported_fraction: float = 0.0,
+    execution_evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Write a reproducible native direct-interpolation assessment to a fresh directory.
 
     Forward timing permits pending memory. This tests interpolation, not request
     admission, measurement repeatability or serving accuracy. The measured
-    envelope is retained; any missing interior brackets remain unsupported. Changing policy
-    or inputs requires another directory; source measurements are never edited.
+    envelope and evidenced execution-mode boundaries are retained; any missing
+    interior brackets remain unsupported. Changing policy or inputs requires
+    another directory; source measurements are never edited.
     """
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -278,12 +422,13 @@ def evaluate_interpolation_holdout(
     if not matching:
         raise ValueError("FPM data contains no exact profile deployment cell")
     eligible = [row for row in matching if row.get("kv_seed_regime") != "fake_fallback"]
+    execution_anchors, boundaries = _execution_boundaries(matching, execution_evidence)
     selected = []
     for phase in _PHASES:
         phase_rows = [row for row in eligible if row["workload_kind"] == phase]
         selected.extend(
             {**row, "boundary_axes": _boundary_axes(row, phase_rows)}
-            for row in _select(phase_rows, max_points_per_phase, seed)
+            for row in _select(phase_rows, max_points_per_phase, seed, execution_anchors)
         )
     coordinates = {_coordinate(row) for row in selected}
     # Exclude every physical row at each selected cell-coordinate, independently
@@ -303,13 +448,10 @@ def evaluate_interpolation_holdout(
             "small_table_minimum_points": 1,
             "max_p95_relative_error": max_p95_relative_error,
             "max_unsupported_fraction": max_unsupported_fraction,
-            "selection": "retained_envelope_seeded_farthest_shape_v1",
+            "selection": "retained_envelope_execution_boundaries_seeded_farthest_shape_v2",
             "fold": "simultaneously_remove_all_selected_coordinates",
         },
-        "capture_boundaries": {
-            "status": "not_assessed",
-            "reason": "formal table coordinates do not establish effective CUDA graph boundaries",
-        },
+        "capture_boundaries": boundaries,
         "source_row_count": len(all_rows),
         "matching_row_count": len(matching),
         "eligible_row_count": len(eligible),
@@ -317,7 +459,7 @@ def evaluate_interpolation_holdout(
         "removed_row_count": len(all_rows) - len(retained_indices),
         "training_row_count": len(retained_indices),
         "retained_envelope_anchors": [
-            {"phase": coordinate[0], **dict(zip(_COORDINATES, coordinate[1:], strict=True))}
+            _point(coordinate)
             for phase in _PHASES
             for coordinate in sorted(_anchors([row for row in eligible if row["workload_kind"] == phase]))
         ],
@@ -380,10 +522,15 @@ def evaluate_interpolation_holdout(
         for phase in _PHASES
     }
     unchanged = all(_identity(Path(identity["path"])) == identity for identity in inputs.values())
+    unchanged &= all(
+        _identity(Path(graph["source"]["path"])) == graph["source"]
+        for cell in boundaries["cells"]
+        for graph in cell["native_graph_config"]
+    )
     status = "passed"
     if not unchanged or any(item["status"] == "failed" for item in phases.values()):
         status = "failed"
-    elif any(item["status"] == "not_assessed" for item in phases.values()):
+    elif boundaries["status"] == "incomplete" or any(item["status"] == "not_assessed" for item in phases.values()):
         status = "incomplete"
     report = {
         "schema_version": 1,
@@ -396,10 +543,15 @@ def evaluate_interpolation_holdout(
             "Each reference is the original single-sample formal-table measurement; separate subset "
             "repeatability evidence does not remove measurement noise from these errors.",
             "The bounded representative holdout is not a statistical confidence bound or full-domain accuracy claim.",
-            "Effective CUDA graph boundaries are not established by formal-table coordinates.",
+            "When available, boundary retention uses native expected point modes and resolved graph configuration, "
+            "not observed per-call dispatch.",
+            "This onboarding selection retains evidenced mode boundaries; it does not test missing-boundary "
+            "interpolation or change predict/recommend.",
+            "Capture-bucket and kernel changes within one graph mode are not classified by this assessment.",
         ],
         "source_artifacts_unchanged": unchanged,
         "policy": plan["policy"],
+        "capture_boundaries": boundaries,
         "phases": phases,
         "predictions": predictions,
         "native_query_coverage": coverage,

@@ -228,11 +228,62 @@ def _collection_source(request: SupportRequest, root: Path) -> tuple[Any, Path, 
     return plan, campaign, checkpoint_path, [_identity(parquet), _identity(metadata)]
 
 
-def _holdout(request: SupportRequest, root: Path, output: Path, policy: ValidationPolicy) -> dict[str, Any]:
+def _holdout_evidence(plan: Any, campaign: Path, frozen: dict[str, Any]) -> list[dict[str, Any]]:
+    """Reuse full canonical native records, not the bounded repeatability subset."""
+    from collector.fpm_forward.native_artifact import select_native_measurements, validate_native_collection
+
+    evidence = []
+    cells = {cell["cell_id"]: cell for cell in frozen["cells"]}
+    for cell in plan.cells:
+        source = cells[cell.cell_id]
+        collection = validate_native_collection(
+            cell,
+            campaign / "cells" / cell.cell_id / "raw",
+            expected_plan_sha256=plan.sha256,
+            expected_attempt_id=source["source_attempt_id"],
+        )
+        evidence.append(
+            {
+                "cell_id": cell.cell_id,
+                "identity": {
+                    "source_plan_sha256": plan.sha256,
+                    "collector_attempt_id": collection.collector_attempt_id,
+                    "runtime_run_id": collection.runtime_run_id,
+                    "runtime_grid_digest": collection.runtime_grid_digest,
+                },
+                "native_graph_config": source["execution"]["native_graph_config"],
+                "points": [
+                    {
+                        "workload_kind": item.point["point_type"],
+                        **{
+                            name: item.point.get(name)
+                            for name in (
+                                "batch_size",
+                                "total_prefill_tokens",
+                                "total_kv_read_tokens",
+                                "expected_cudagraph_mode",
+                                "expected_capture_size",
+                            )
+                        },
+                    }
+                    for item in select_native_measurements(collection, cell_id=cell.cell_id)
+                ],
+            }
+        )
+    return evidence
+
+
+def _holdout(
+    request: SupportRequest, root: Path, output: Path, policy: ValidationPolicy, evidence: list[dict[str, Any]]
+) -> dict[str, Any]:
     from .interpolation_validation import evaluate_interpolation_holdout
 
     return evaluate_interpolation_holdout(
-        request, systems_root=root / "systems", output_dir=output, **policy.interpolation.model_dump()
+        request,
+        systems_root=root / "systems",
+        output_dir=output,
+        execution_evidence=evidence,
+        **policy.interpolation.model_dump(),
     )
 
 
@@ -276,6 +327,7 @@ def validate_collection(args: argparse.Namespace) -> int:
         raise ValueError("reuse --repeatability-dir only with a fresh offline assessment")
     plan, campaign, checkpoint, formal = _collection_source(request, root)
     frozen = _repeat_plan(plan, campaign, checkpoint, policy)
+    holdout_evidence = _holdout_evidence(plan, campaign, frozen)
     inputs = {
         "request": _identity(Path(args.config)),
         "collection_directory": str(root),
@@ -318,15 +370,16 @@ def validate_collection(args: argparse.Namespace) -> int:
         },
     }
     report_path = output / "collection-validation.json"
-    _write(report_path, report)
+    if not args.resume:
+        _write(report_path, report)
     holdout_dir = output / "holdout"
     if args.resume:
         with tempfile.TemporaryDirectory(prefix="aisimulate-holdout-check-") as temporary:
-            holdout = _holdout(request, root, Path(temporary) / "holdout", policy)
+            holdout = _holdout(request, root, Path(temporary) / "holdout", policy, holdout_evidence)
         old = _json(holdout_dir / "interpolation-validation.json")
         _compare_holdout(old, holdout)
     else:
-        holdout = _holdout(request, root, holdout_dir, policy)
+        holdout = _holdout(request, root, holdout_dir, policy, holdout_evidence)
     report["gates"]["interpolation"] = {
         "status": holdout["status"],
         "report": _identity(holdout_dir / "interpolation-validation.json"),
@@ -366,9 +419,12 @@ def validate_collection(args: argparse.Namespace) -> int:
 
 
 def _compare_holdout(saved: dict[str, Any], current: dict[str, Any]) -> None:
-    for key in ("status", "policy", "phases", "predictions", "native_query_coverage"):
+    for key in ("status", "policy", "capture_boundaries", "phases", "predictions", "native_query_coverage"):
         if saved.get(key) != current.get(key):
-            raise ValueError(f"saved holdout {key} differs from native reassessment")
+            raise ValueError(
+                f"saved holdout {key} differs from native reassessment; "
+                "preserve it and use a fresh assessment directory"
+            )
     for key, value in saved["artifacts"].items():
         if key == "source":
             for source in value.values():
@@ -405,7 +461,9 @@ def check_collection_report(
     if gates["execution"].get("cells") != [{"cell_id": c["cell_id"], **c["execution"]} for c in frozen["cells"]]:
         raise ValueError("saved execution inspection differs from native observations")
     with tempfile.TemporaryDirectory(prefix="aisimulate-holdout-check-") as temporary:
-        holdout = _holdout(request, root, Path(temporary) / "holdout", policy)
+        holdout = _holdout(
+            request, root, Path(temporary) / "holdout", policy, _holdout_evidence(plan, campaign, frozen)
+        )
     _compare_holdout(_json(_checked(gates["interpolation"]["report"])), holdout)
     if gates["interpolation"]["status"] != holdout["status"]:
         raise ValueError("saved interpolation gate differs from native reassessment")
