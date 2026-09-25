@@ -926,6 +926,25 @@ def test_forward_pass_constructor_passes_complete_typed_request(monkeypatch) -> 
     assert not hasattr(rust_engine_step.RustForwardPassPerfModel, "from_regression")
 
 
+def test_forward_pass_config_carries_context_parallel_knobs_through_rust_normalization() -> None:
+    import aisimulate_core
+    from aisimulate_core.sdk import ForwardPassPerfModelConfig
+
+    plain = ForwardPassPerfModelConfig(model="m", system="s", backend="vllm", worker_type="decode")
+    assert (plain.cp_size, plain.dcp_size) == (None, None)
+    normalized = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(plain.to_dict())))
+    # Unset knobs never enter the serialized identity (pre-CP configs stay byte-identical).
+    assert "cp_size" not in normalized and "dcp_size" not in normalized
+
+    striped = ForwardPassPerfModelConfig(
+        model="m", system="s", backend="vllm", worker_type="decode", tp=8, cp_size=2, dcp_size=4
+    )
+    payload = striped.to_dict()
+    assert (payload["cp_size"], payload["dcp_size"]) == (2, 4)
+    normalized = json.loads(aisimulate_core.RustForwardPassPerfModel.normalize_config(json.dumps(payload)))
+    assert (normalized["cp_size"], normalized["dcp_size"]) == (2, 4)
+
+
 def test_forward_pass_config_requires_role_and_defaults_to_auto_deny() -> None:
     from aisimulate_core.sdk import ForwardPassPerfModelConfig
 
@@ -985,11 +1004,23 @@ def test_forward_pass_config_preserves_existing_positional_arguments(tmp_path: P
         "wideep_num_slots": 64,
     }
     config = ForwardPassPerfModelConfig(*legacy_fields.values())
-    assert vars(config) == {**legacy_fields, "fpm_fmha_quant_mode": None, "moe_kernel_source": None}
+    assert vars(config) == {
+        **legacy_fields,
+        "fpm_fmha_quant_mode": None,
+        "moe_kernel_source": None,
+        "cp_size": None,
+        "dcp_size": None,
+    }
 
     source = " source_with_spaces "
     pinned = ForwardPassPerfModelConfig(*legacy_fields.values(), moe_kernel_source=source)
-    assert vars(pinned) == {**legacy_fields, "fpm_fmha_quant_mode": None, "moe_kernel_source": source}
+    assert vars(pinned) == {
+        **legacy_fields,
+        "fpm_fmha_quant_mode": None,
+        "moe_kernel_source": source,
+        "cp_size": None,
+        "dcp_size": None,
+    }
     assert json.loads(json.dumps(pinned.to_dict()))["moe_kernel_source"] == source
 
 

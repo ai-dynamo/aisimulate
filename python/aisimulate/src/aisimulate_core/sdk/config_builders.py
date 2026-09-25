@@ -46,6 +46,8 @@ def build_model_config(
     wideep_num_slots: int | None = None,
     *,
     moe_kernel_source: str | None = None,
+    cp_size: int = 1,
+    dcp_size: int = 1,
     fpm_fmha_quant_mode: str | None = None,
 ) -> ModelConfig:
     """Build a ModelConfig with optional quant mode overrides."""
@@ -61,6 +63,8 @@ def build_model_config(
         attention_dp_size=attention_dp_size,
         moe_tp_size=moe_tp_size,
         moe_ep_size=moe_ep_size,
+        cp_size=cp_size,
+        dcp_size=dcp_size,
         gemm_quant_mode=GEMMQuantMode[gemm_quant_mode] if gemm_quant_mode else None,
         kvcache_quant_mode=KVCacheQuantMode[kvcache_quant_mode] if kvcache_quant_mode else None,
         fmha_quant_mode=FMHAQuantMode[fmha_quant_mode] if fmha_quant_mode else None,

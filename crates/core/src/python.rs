@@ -175,6 +175,15 @@ struct AicTimingConfig {
     moe_tp_size: Option<u32>,
     #[serde(default)]
     moe_ep_size: Option<u32>,
+    /// Prefill context parallelism (SGLang attn-cp / vLLM PCP): folds into the
+    /// attention width like attention_dp. `None` means 1.
+    #[serde(default)]
+    cp_size: Option<u32>,
+    /// Decode context parallelism (vLLM `-dcp` / SGLang `--dcp-size`): stripes
+    /// the decode KV inside the attention group, so it does NOT widen the
+    /// topology. `None` means 1.
+    #[serde(default)]
+    dcp_size: Option<u32>,
     #[serde(default, alias = "gemm_quant_mode")]
     gemm_dtype: Option<String>,
     #[serde(default, alias = "moe_quant_mode")]
@@ -304,6 +313,8 @@ impl AicTimingConfig {
             attention_dp: self.attention_dp,
             moe_tp_size: self.moe_tp_size,
             moe_ep_size: self.moe_ep_size,
+            cp_size: self.cp_size,
+            dcp_size: self.dcp_size,
             gemm_quant_mode: self.gemm_dtype.clone(),
             moe_quant_mode: self.moe_dtype.clone(),
             fmha_quant_mode: self.fmha_dtype.clone(),
@@ -395,9 +406,11 @@ impl AicTimingConfig {
                 && self.pp > 0
                 && self.attention_dp > 0
                 && self.moe_tp_size != Some(0)
-                && self.moe_ep_size != Some(0),
-            "AIC timing parallel sizes tp, pp, attention_dp, moe_tp_size, and \
-             moe_ep_size must be positive"
+                && self.moe_ep_size != Some(0)
+                && self.cp_size != Some(0)
+                && self.dcp_size != Some(0),
+            "AIC timing parallel sizes tp, pp, attention_dp, moe_tp_size, \
+             moe_ep_size, cp_size, and dcp_size must be positive"
         );
         ensure!(self.nextn <= 5, "AIC nextn must be in 0..=5");
         self.speculative_depth()?;
@@ -406,10 +419,14 @@ impl AicTimingConfig {
             "AIC moe_tp_size and moe_ep_size must be configured together"
         );
         if let (Some(moe_tp), Some(moe_ep)) = (self.moe_tp_size, self.moe_ep_size) {
+            // Prefill CP widens the attention side (mirrors ModelConfig's
+            // `tp * attention_dp * cp == moe_tp * moe_ep`); decode CP reuses
+            // ranks inside the attention group and is deliberately absent.
+            let cp = u64::from(self.cp_size.unwrap_or(1));
             ensure!(
-                u64::from(self.tp) * u64::from(self.attention_dp)
+                u64::from(self.tp) * u64::from(self.attention_dp) * cp
                     == u64::from(moe_tp) * u64::from(moe_ep),
-                "AIC topology requires tp * attention_dp == moe_tp_size * moe_ep_size"
+                "AIC topology requires tp * attention_dp * cp_size == moe_tp_size * moe_ep_size"
             );
         }
         Ok(())
@@ -795,6 +812,8 @@ fn estimate_aic_num_gpu_blocks(config: &AicTimingConfig, role: &ReplayRoleConfig
         kwargs.set_item("attention_dp_size", config.attention_dp)?;
         kwargs.set_item("moe_tp_size", config.moe_tp_size)?;
         kwargs.set_item("moe_ep_size", config.moe_ep_size)?;
+        kwargs.set_item("cp_size", config.cp_size.unwrap_or(1))?;
+        kwargs.set_item("dcp_size", config.dcp_size.unwrap_or(1))?;
         kwargs.set_item("gemm_quant_mode", config.gemm_dtype.as_deref())?;
         kwargs.set_item("moe_quant_mode", config.moe_dtype.as_deref())?;
         kwargs.set_item("fmha_quant_mode", config.fmha_dtype.as_deref())?;
@@ -2744,6 +2763,24 @@ mod tests {
     }
 
     #[test]
+    fn estimator_request_carries_both_context_parallel_knobs() {
+        // The native estimator path builds the engine from this request, so a
+        // dropped knob would silently price a dcp=1 engine for a dcp=8 worker.
+        let mut config = aic_config();
+        config.cp_size = Some(2);
+        config.dcp_size = Some(4);
+        let request = config
+            .estimator_request(ForwardPassWorkerType::Aggregated)
+            .unwrap();
+        assert_eq!(request.cp_size, Some(2));
+        assert_eq!(request.dcp_size, Some(4));
+        let unset = aic_config()
+            .estimator_request(ForwardPassWorkerType::Aggregated)
+            .unwrap();
+        assert_eq!((unset.cp_size, unset.dcp_size), (None, None));
+    }
+
+    #[test]
     fn canonical_and_legacy_default_selection_are_distinct() {
         let mut config = aic_config();
         assert_eq!(
@@ -2795,6 +2832,8 @@ mod tests {
             attention_dp: 1,
             moe_tp_size: None,
             moe_ep_size: None,
+            cp_size: None,
+            dcp_size: None,
             gemm_dtype: None,
             moe_dtype: None,
             fmha_dtype: None,
@@ -2827,6 +2866,26 @@ mod tests {
             fpm_parquet_path: None,
             decoder_replay: false,
         }
+    }
+
+    #[test]
+    fn parallel_shape_folds_prefill_cp_but_not_decode_cp_into_width() {
+        let mut config = aic_config();
+        config.tp = 1;
+        config.attention_dp = 1;
+        config.moe_tp_size = Some(1);
+        config.moe_ep_size = Some(8);
+        // Prefill CP widens the attention side to match the MoE width ...
+        config.cp_size = Some(8);
+        config.dcp_size = Some(8);
+        config.validate_parallel_shape().unwrap();
+        // ... decode CP does not: without prefill CP the widths no longer match.
+        config.cp_size = None;
+        assert!(config.validate_parallel_shape().is_err());
+        // Zero is rejected like every other parallel size.
+        config.cp_size = Some(8);
+        config.dcp_size = Some(0);
+        assert!(config.validate_parallel_shape().is_err());
     }
 
     #[test]

@@ -198,6 +198,20 @@ class BaseModel:
         return False
 
     @classmethod
+    def supports_dcp(cls, backend_name: str) -> bool:
+        """Whether this (model, backend) combo models decode context parallelism.
+
+        Default False. A DCP-capable model class overrides this once its
+        generation pipeline prices the KV-sharded decode attention (per-rank
+        KV / dcp, query gather, LSE merge collective). ``get_model`` checks this
+        BEFORE construction so dcp_size>1 fails loud instead of silently
+        pricing decode as if the KV were not sharded. This is a modeling
+        capability check only; deployment policy (which roles may combine
+        prefill CP with DCP) lives in the topology layer.
+        """
+        return False
+
+    @classmethod
     def _resolve_cp_style(cls, backend_name: str) -> str:
         """Pick the CP variant for this (model, backend). Called only when cp_size>1."""
         return cls._BACKEND_CP_STYLE.get(backend_name, "none")
@@ -231,8 +245,227 @@ class BaseModel:
             ]
         return []
 
+    # ------------------------------------------------------------------
+    # Decode context parallelism (DCP): one rewrite for every model class.
+    # The decode attention op prices the DCP group's gathered query heads
+    # over this rank's 1/dcp KV stripe (Rust `dcp_size` on the op); the
+    # collectives that make that possible are modeled here as NCCL ops:
+    #   * query all-gather over the DCP group (skipped by the frameworks'
+    #     replicate-q-proj option, which is NOT modeled: gathered Q is priced),
+    #   * the partial-output merge -- "ag_rs" (LSE all-gather + fp32 output
+    #     reduce-scatter, vLLM default) or "a2a" (one packed all-to-all,
+    #     SGLang default on CUDA; the tiny LSE exchange rides inside it).
+    # ------------------------------------------------------------------
+
+    def _dcp_comm_style(self) -> str:
+        style = getattr(self.config, "dcp_comm", None)
+        if style is None:
+            style = "a2a" if getattr(self, "_backend_name", None) == "sglang" else "ag_rs"
+        if style not in ("ag_rs", "a2a"):
+            raise ValueError(f"dcp_comm must be 'ag_rs' or 'a2a', got {style!r}")
+        return style
+
+    def _mla_latent_dims(self) -> tuple[int, int]:
+        """(q dim gathered per head, output dim merged per head) for absorbed MLA decode."""
+        kv_lora_rank, qk_rope_head_dim = 0, 0
+        if isinstance(self.extra_params, dict):
+            kv_lora_rank = int(self.extra_params.get("kv_lora_rank") or 0)
+            qk_rope_head_dim = int(self.extra_params.get("qk_rope_head_dim") or 0)
+        kv_lora_rank = kv_lora_rank or 512
+        qk_rope_head_dim = qk_rope_head_dim or 64
+        return kv_lora_rank + qk_rope_head_dim, kv_lora_rank
+
+    def _decode_attention_dcp_dims(self, op) -> tuple[int, int, int] | None:
+        """``(rank-local query heads, q dim per head, output dim per head)`` for a
+        decode attention op, or ``None`` when ``op`` is not one.
+
+        Matches on the engine's core classes: ops nested inside a FallbackOp
+        come back as bare core instances, not the Python shell subclasses.
+        """
+        import aisimulate_core._native as _core
+
+        if isinstance(op, _core.GenerationAttention):
+            return int(op._n), int(op._head_size), int(op._head_size)
+        if isinstance(op, _core.GenerationMLA):
+            q_dim, v_dim = self._mla_latent_dims()
+            return int(op._num_heads), q_dim, v_dim
+        if isinstance(op, _core.WideEPGenerationMLA):
+            q_dim, v_dim = self._mla_latent_dims()
+            return 128 // int(op._tp_size), q_dim, v_dim
+        if isinstance(op, _core.GenerationDSAModule):
+            q_dim, v_dim = self._mla_latent_dims()
+            return int(op._num_heads), q_dim, v_dim
+        if isinstance(op, _core.MLAModule) and not op._is_context:
+            q_dim, v_dim = self._mla_latent_dims()
+            return int(op._num_heads), q_dim, v_dim
+        return None
+
+    @staticmethod
+    def _through_fallback(op, leaf):
+        """Apply ``leaf(op) -> (op, hit)`` to an op or to every interior of a ``FallbackOp``.
+
+        ``FallbackOp`` exposes clones of its inner ops, so a block whose interior
+        was touched is rebuilt around the new primary/fallback list. Returns the
+        (possibly rebuilt) op and the first truthy ``hit``.
+        """
+        import aisimulate_core._native as _core
+        import aisimulate_core.sdk.operations as ops
+
+        if not isinstance(op, _core.FallbackOp):
+            return leaf(op)
+        primary, hit = BaseModel._through_fallback(op._primary, leaf)
+        fallback = []
+        for inner in op._fallback:
+            inner, inner_hit = BaseModel._through_fallback(inner, leaf)
+            fallback.append(inner)
+            hit = hit or inner_hit
+        if not hit:
+            return op, hit
+        return ops.FallbackOp(op._name, primary=primary, fallback=fallback), hit
+
+    def _rewrite_op_for_dcp(self, op, dcp: int):
+        """Return ``(op with dcp applied, (dims, scale) | None)``; the collectives
+        are then priced once for the whole (possibly rebuilt) block."""
+
+        def leaf(inner):
+            dims = self._decode_attention_dcp_dims(inner)
+            if dims is None:
+                return inner, None
+            inner._dcp_size = dcp
+            return inner, (dims, float(inner._scale_factor))
+
+        return self._through_fallback(op, leaf)
+
+    def _dcp_attn_comm_ops(self, name: str, scale: float, *, n_local: int, q_dim: int, v_dim: int) -> list:
+        """The per-layer DCP collectives that accompany one decode attention op."""
+        import aisimulate_core.sdk.operations as ops
+
+        dcp = int(self.config.dcp_size)
+        comm_quant_mode = self.config.comm_quant_mode
+        gathered_heads = n_local * dcp
+
+        def nccl(suffix: str, kind: str, elements_per_token: int):
+            # The NCCL table is keyed by the collective's whole buffer (nccl-tests
+            # `size`: the all-gather receive buffer, the reduce-scatter input, the
+            # all-to-all per-rank buffer), matching `context_cp_all_gather`.
+            return ops.NCCL(
+                f"{name}_dcp_{suffix}",
+                scale,
+                kind,
+                num_elements_per_token=elements_per_token,
+                num_gpus=dcp,
+                comm_quant_mode=comm_quant_mode,
+            )
+
+        # Every rank contributes its n_local query heads; the gathered buffer
+        # holds all of them.
+        collectives = [nccl("q_all_gather", "all_gather", gathered_heads * q_dim)]
+        # Partial-output merge (vllm/v1/attention/ops/dcp.py). Both styles pay
+        # the collectives AND the elementwise passes around them; the latter
+        # are launch/latency-bound at decode batch sizes but add up over the
+        # layers, so they are priced explicitly.
+        if self._dcp_comm_style() == "ag_rs":
+            # `cp_lse_ag_out_rs`: all-gather the fp32 LSE (2 half-elements per
+            # gathered head from each of the dcp ranks), `correct_attn_out`
+            # rescales the partial outputs in place, then reduce-scatter the
+            # corrected outputs by head.
+            collectives.append(nccl("lse_all_gather", "all_gather", gathered_heads * 2 * dcp))
+            collectives.append(
+                ops.ElementWise(f"{name}_dcp_lse_correct", scale, gathered_heads * v_dim, gathered_heads * v_dim)
+            )
+            collectives.append(nccl("out_reduce_scatter", "reduce_scatter", gathered_heads * v_dim))
+        else:
+            # `dcp_a2a_lse_reduce`: pack output + LSE (2 half slots per head)
+            # into one send buffer, one all-to-all, then unpack and combine
+            # the dcp partials of this rank's heads.
+            packed = gathered_heads * (v_dim + 2)
+            collectives.append(ops.ElementWise(f"{name}_dcp_a2a_pack", scale, gathered_heads * v_dim, packed))
+            collectives.append(nccl("out_all_to_all", "alltoall", packed))
+            collectives.append(ops.ElementWise(f"{name}_dcp_a2a_combine", scale, packed, n_local * v_dim))
+        return collectives
+
+    def _dcp_kv_head_replication(self) -> int | None:
+        """How many DCP ranks can share one KV copy, or ``None`` for "any that
+        divide TP" (MLA: one latent KV, replicated on every TP rank). GQA
+        classes return ``tp / kv_heads``: DCP only de-duplicates KV heads that
+        TP already replicates (vLLM: ``dcp <= tp_size // total_kv_heads``)."""
+        return None
+
+    def _validate_dcp_topology(self) -> None:
+        dcp = int(self.config.dcp_size)
+        tp = int(self.config.tp_size)
+        if tp % dcp != 0:
+            raise ValueError(
+                f"dcp_size={dcp} must divide the attention TP size ({tp}): DCP stripes the KV "
+                "across ranks that already belong to the attention group."
+            )
+        limit = self._dcp_kv_head_replication()
+        if limit is not None and dcp > limit:
+            raise ValueError(
+                f"dcp_size={dcp} exceeds the KV-head replication of this layout ({limit}): "
+                "GQA decode CP only de-duplicates kv heads that TP replicates (dcp <= tp / kv_heads)."
+            )
+
+    def _stripe_context_for_dcp(self, op, dcp: int):
+        """Mark the prefill-side attention ops of a DCP-striped engine.
+
+        With the persistent KV striped, a prefill that reuses cached context
+        (``prefix > 0``) first all-gathers the other ranks' stripes; the Rust
+        context ops price that from ``dcp_size``. New-token attention is
+        unchanged. FallbackOp interiors are clones, so the block is rebuilt.
+        """
+        import aisimulate_core._native as _core
+
+        def leaf(inner):
+            striped = isinstance(inner, (_core.ContextAttention, _core.ContextMLA, _core.ContextDSAModule)) or (
+                isinstance(inner, _core.MLAModule) and inner._is_context
+            )
+            if striped:
+                inner._dcp_size = dcp
+            return inner, striped
+
+        return self._through_fallback(op, leaf)
+
+    def _apply_decode_context_parallel(self) -> None:
+        """Rewrite ``generation_ops`` for ``config.dcp_size > 1``.
+
+        Every top-level decode attention op gets ``_dcp_size`` and is followed
+        by its merge collectives. Draft ops are left alone (the frameworks
+        replicate the draft KV on every DCP rank). Called by ``get_model``
+        after construction when ``dcp_size > 1``; a class that declares
+        ``supports_dcp`` but exposes no rewritable decode attention op fails
+        loud instead of silently pricing decode as unsharded.
+        """
+        dcp = int(self.config.dcp_size)
+        self._validate_dcp_topology()
+        rewritten: list = []
+        touched = 0
+        for op in self.generation_ops:
+            if op._name.startswith("draft_"):
+                rewritten.append(op)
+                continue
+            op, found = self._rewrite_op_for_dcp(op, dcp)
+            rewritten.append(op)
+            if found is None:
+                continue
+            (n_local, q_dim, v_dim), scale = found
+            rewritten.extend(self._dcp_attn_comm_ops(op._name, scale, n_local=n_local, q_dim=q_dim, v_dim=v_dim))
+            touched += 1
+        if touched == 0:
+            raise NotImplementedError(
+                f"{type(self).__name__} declares supports_dcp but exposes no top-level decode attention op "
+                "to shard; decode context parallelism cannot be priced for this graph."
+            )
+        self.generation_ops = rewritten
+        # Prefill side of the same engine: cached-context gather (aggregated
+        # serving). A decode-only worker never queries context_ops, so this is
+        # inert there.
+        self.context_ops = [
+            op if op._name.startswith("draft_") else self._stripe_context_for_dcp(op, dcp)[0] for op in self.context_ops
+        ]
+
     def _cp_kv_memory_divisor(self) -> int:
-        """Per-rank persistent-KV divisor under CP (always 1: full KV per rank).
+        """Per-rank persistent-KV divisor: 1 under prefill CP, ``dcp_size`` under DCP.
 
         Verified against sglang v0.5.13 that CP gives **no** per-rank KV-memory
         savings for any family -- each rank holds the FULL KV:
@@ -246,10 +479,16 @@ class BaseModel:
           local pool (decode page_table / ``cache_seqlens`` span the full seq_len
           with no gather) -- so the full KV must reside per rank.
 
-        CP therefore saves prefill *compute*, not KV memory. Kept as a method so
-        a future seq-sliced variant (e.g. Ring) can override.
+        Prefill CP therefore saves prefill *compute*, not KV memory.
+
+        Decode context parallelism is the knob that DOES shard the persistent
+        KV: vLLM ``-dcp`` / SGLang ``--dcp-size`` stripe the KV by token
+        position across the dcp ranks (rank ``r`` owns position ``p`` when
+        ``p mod dcp == r``), so each rank stores about ``1/dcp`` of every
+        sequence. Both frameworks widen the logical page by ``dcp`` so the
+        per-rank stripe stays balanced to within one token.
         """
-        return 1
+        return int(self.config.dcp_size)
 
     def get_kvcache_elements_per_token(self) -> int:
         """KV cache size per token (per GPU) summed over all layers, in elements.

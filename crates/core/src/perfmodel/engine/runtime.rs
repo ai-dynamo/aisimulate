@@ -2283,6 +2283,7 @@ mod tests {
                 cp_size: 1,
                 lane_order: crate::operators::attention::b200_vllm_context_lane_order(),
                 apply_rope: true,
+                dcp_size: 1,
             }),
         ]
     }
@@ -2308,6 +2309,7 @@ mod tests {
                 use_qk_norm: false,
                 scale_num_tokens: 1,
                 verify_query_tokens: 0,
+                dcp_size: 1,
             }),
         ]
     }
@@ -2332,6 +2334,7 @@ mod tests {
                 moe_tp_size: Some(1),
                 moe_ep_size: Some(8),
                 cp_size: None,
+                dcp_size: None,
             },
             quantization: QuantizationConfig {
                 weight_dtype: None,

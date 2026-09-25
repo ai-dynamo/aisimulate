@@ -125,6 +125,15 @@ class DeepSeekV32Model(BaseModel):
         return backend_name == "sglang"
 
     @classmethod
+    def supports_dcp(cls, backend_name: str) -> bool:
+        # Sparse-MLA (DSA) decode CP: vLLM `flashmla_sparse` / `flashinfer_mla_sparse`
+        # + DCP-aware indexer, SGLang's DSA DCP path. The GenerationDSAModule op
+        # prices the gathered heads over the per-rank KV stripe (top-k kept
+        # whole, an upper bound); BaseModel._apply_decode_context_parallel adds
+        # the merge collectives.
+        return backend_name in ("vllm", "sglang")
+
+    @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:
         moe_args = (model_info["topk"], model_info["num_experts"], model_info["moe_inter_size"])
         base_args = (

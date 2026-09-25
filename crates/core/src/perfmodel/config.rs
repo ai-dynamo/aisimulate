@@ -111,7 +111,12 @@ pub const ENGINE_CONFIG_SCHEMA_VERSION: u32 = 1;
 // - 21 (AIC-1781): EngineConfig and MoeOp gained exact `moe_kernel_source`
 //   identity. Renumbered from the branch's concurrent v20 claim after the
 //   DeepSeek-V4.1 FPM layout landed first.
-pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 21;
+// - 22 (decode context parallelism): the context/generation attention, MLA,
+//   MLA-module, wide-EP MLA and DSA ops gained a tail-appended `dcp_size`
+//   (gathered query heads over a 1/dcp KV stripe; striped-context gather).
+//   Claimed 19, 20 and 21 on its own branch while the DeepSeek-V4.1 and MoE
+//   kernel-source changes landed; renumbered at each merge (precedent: 15, 18).
+pub const ENGINE_SPEC_SCHEMA_VERSION: u32 = 22;
 
 /// Static engine identity and setup information carried by an
 /// [`crate::perfmodel::engine::spec::EngineSpec`].
@@ -253,6 +258,14 @@ pub struct ParallelMapping {
     /// re-derived from this field.
     #[serde(default)]
     pub cp_size: Option<u32>,
+    /// Decode-context-parallel size (vLLM `-dcp` / SGLang `--dcp-size`): the
+    /// decode KV cache is striped by token position across ranks inside the
+    /// attention group. Part of the engine identity so dcp variants get
+    /// distinct compiled handles. `None`/1 means no DCP. Like `cp_size`, the
+    /// per-op math is carried on the ops themselves, not re-derived here.
+    /// Additive-optional: absent in older payloads.
+    #[serde(default)]
+    pub dcp_size: Option<u32>,
 }
 
 /// Precision/quantization dtypes. Flattened into [`EngineConfig`]. Field

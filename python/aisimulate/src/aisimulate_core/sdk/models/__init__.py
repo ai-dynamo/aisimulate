@@ -89,6 +89,15 @@ def _apply_forward_model_fpm(model: BaseModel, backend_name: str = "vllm") -> Ba
         # bounded decoder tail from a full forward at the same coordinates.
         raise NotImplementedError("decoder_replay requires FPM tables with execution_profile identity")
 
+    if model.config.dcp_size > 1:
+        # The whole-forward tables are keyed WITHOUT dcp (their `cp` column is
+        # prefill CP and every shipped cell is cp=1), so a dcp>1 request would
+        # silently reuse dcp=1 measurements. Fail loud until the collector
+        # records dcp cells and the cell identity carries the column.
+        raise NotImplementedError(
+            f"forward_model='fpm' has no decode-context-parallel cells (dcp_size={model.config.dcp_size}); "
+            "the whole-forward table identity does not carry dcp. Use forward_model='op_level'."
+        )
     if model.encoder_ops:
         raise NotImplementedError(
             f"forward_model='fpm' does not support encoder/multimodal models "
@@ -240,6 +249,18 @@ def get_model(
     else:
         model_config.cp_style = "none"
 
+    # Decode context parallelism is a separate modeling capability: the model
+    # class must price the KV-sharded decode attention (+ LSE merge comm) before
+    # dcp>1 can be estimated. Deployment policy (whether a role may combine
+    # prefill CP with DCP) is decided by the topology layer, not here; this only
+    # guards against silently wrong numbers.
+    if model_config.dcp_size > 1 and not cls.supports_dcp(backend_name):
+        raise NotImplementedError(
+            f"Decode context parallelism (dcp_size={model_config.dcp_size}) is not supported for "
+            f"model_family={model_family!r} on backend={backend_name!r}. The model class "
+            f"must override ``supports_dcp`` and implement the KV-sharded decode path."
+        )
+
     # Resolve the speculative scheme BEFORE construction (an explicit mtp
     # scheme writes its depth back onto nextn, which model families read),
     # attach it after, and gate unsupported (model, backend) combinations.
@@ -254,9 +275,19 @@ def get_model(
         model_config.speculation = copy.deepcopy(model_config.speculation)
     spec_config = resolve_speculation(model_config)
     model = cls.create(model_info, model_config, backend_name)
+    # Backend-specific defaults below construction (e.g. the DCP merge
+    # collective: a2a on sglang, ag_rs elsewhere) read the backend identity off
+    # the model; families whose constructors do not record it get it here.
+    if getattr(model, "_backend_name", None) is None:
+        model._backend_name = backend_name
     model.spec_scheme = build_spec_scheme(model_config, spec_config)
     model.spec_scheme.validate(model, backend_name)
     materialize_spec_scheme(model)
+    # Decode CP rewrite runs after speculation materialized the draft ops (so
+    # they can be skipped by name) and before the FPM fold (so the whole-model
+    # SOL roofline carries the sharded decode attention + merge collectives).
+    if model_config.dcp_size > 1:
+        model._apply_decode_context_parallel()
     if model_config.moe_kernel_source is not None:
         for phase, phase_ops in (("context", model.context_ops), ("generation", model.generation_ops)):
             if not any(

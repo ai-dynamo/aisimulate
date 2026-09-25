@@ -158,6 +158,13 @@ Use `RustForwardPassPerfModel.best_available(config)` from Python or
 `ForwardPassPerfModelConfig` owns model, hardware, backend, topology, data
 policies, a required immutable `worker_type`, and the complete nested
 `estimator_config`. Worker roles are `prefill`, `decode`, and `aggregated`.
+Topology carries two optional context-parallel knobs next to `tp`, `pp`,
+`attention_dp`, `moe_tp_size`, and `moe_ep_size`: `cp_size` (prefill context
+parallelism, SGLang `--attn-cp-size` / vLLM `-pcp`; extra attention ranks, so
+`tp * attention_dp * cp_size == moe_tp_size * moe_ep_size`) and `dcp_size`
+(decode context parallelism, vLLM `-dcp` / SGLang `--dcp-size`; stripes the
+decode KV cache across the existing TP ranks and adds no GPUs). Both default to
+one and stay out of the serialized identity when unset.
 
 ```python
 from aisimulate_core.sdk import ForwardPassPerfModelConfig, RustForwardPassPerfModel
