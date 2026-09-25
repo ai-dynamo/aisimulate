@@ -3,9 +3,11 @@
 """TEST_ONLY lazy CUDA events and native calls; no GPU/performance claims."""
 
 import json
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
+
 from collector.glm53flash_contract import BACKENDS, canonical_json
 from collector.glm53flash_observer import NativeOperationObserver, NativeWorkload
 
@@ -142,6 +144,71 @@ def finish(observer):
         start, end = observer.event_pool.pairs[name]
         start.elapsed_time(end)
     return observer.event_pool.finish()
+
+
+@pytest.mark.parametrize("pool", [False, True])
+@pytest.mark.parametrize("profiled", [False, True])
+def test_direct_retained_calls_preserve_events_native_results_and_profiled_ranges(pool, profiled):
+    observer, native, cuda = fixture(pool=pool)
+    observer.begin(workload())
+    marker = object()
+    observer.profiler = marker if profiled else None
+
+    @contextmanager
+    def scope(name, *, scope_name):
+        assert profiled, "retained native calls must not allocate a profiling scope"
+        cuda.log.append(("scope-enter", name))
+        try:
+            yield
+        finally:
+            cuda.log.append(("scope-exit", name))
+
+    observer._range = scope
+    before = len(cuda.log)
+    token = object()
+    assert native.first(token) is token
+    assert native.second(token) is token
+    measured = cuda.log[before:]
+    assert [entry[1] for entry in measured if entry[0] == "native"] == ["first", "reduce", "second"]
+    assert len([entry for entry in measured if entry[0] == "record"]) == 6
+    scopes = [entry for entry in measured if entry[0].startswith("scope-")]
+    assert scopes == (
+        [
+            ("scope-enter", "attention_0"),
+            ("scope-enter", "attention_allreduce_0"),
+            ("scope-exit", "attention_allreduce_0"),
+            ("scope-exit", "attention_0"),
+            ("scope-enter", "attention_0"),
+            ("scope-exit", "attention_0"),
+        ]
+        if profiled
+        else []
+    )
+    observer.profiler = None  # This TEST_ONLY marker is not a native Torch profiler.
+    rows = observer.end()
+    assert sum(row["latency"] for row in rows) == 7
+    if pool:
+        finish(observer)
+
+
+def test_pooled_compute_reuses_pre_call_stream_and_still_checks_the_return_stream():
+    observer, native, cuda = fixture(collective=False)
+    observer.begin(workload())
+    original_getter = cuda.current_stream
+    observations = []
+
+    def current_stream():
+        observations.append(len([entry for entry in cuda.log if entry[0] == "native"]))
+        return original_getter()
+
+    cuda.current_stream = current_stream
+    token = object()
+    assert native.first(token) is token
+    assert observations == [0, 1]
+    assert native.second(token) is token
+    assert observations == [0, 1, 1, 2]
+    observer.end()
+    finish(observer)
 
 
 @pytest.mark.parametrize("included", [False, True])

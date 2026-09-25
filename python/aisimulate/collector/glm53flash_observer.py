@@ -361,6 +361,9 @@ class NativeOperationObserver:
                 raise RuntimeError("eager operation observer encountered native graph capture")
             pair = None
             if self.event_pool is not None:
+                # observe() only checks this pool's Python call/slot metadata;
+                # no native call can change the stream before start.record().
+                stream = self.torch.cuda.current_stream()
                 pair = self.event_pool.observe(
                     binding,
                     calls - 1,
@@ -368,7 +371,7 @@ class NativeOperationObserver:
                     self.active_interval is not None,
                     args,
                     kwargs,
-                    self.torch.cuda.current_stream(),
+                    stream,
                 )
             if self.active_interval is not None:
                 if not included_by_same_operation or self.active_interval["name"] != selected_name:
@@ -388,7 +391,8 @@ class NativeOperationObserver:
                 if self.event_pool is not None:
                     self.event_pool.complete_call(binding, calls - 1)
                 return result
-            stream = self.torch.cuda.current_stream()
+            if self.event_pool is None:
+                stream = self.torch.cuda.current_stream()
             start, end = (
                 pair
                 if pair is not None
@@ -407,8 +411,11 @@ class NativeOperationObserver:
             self.active_interval = interval
             start.record(stream)
             try:
-                with self._range(selected_name, scope_name=interval["scope_name"]):
+                if self.profiler is None:
                     result = original(*args, **kwargs)
+                else:
+                    with self._range(selected_name, scope_name=interval["scope_name"]):
+                        result = original(*args, **kwargs)
                 end.record(stream)
                 if self.torch.cuda.current_stream() != stream:
                     raise RuntimeError("native operation changed its current stream")
@@ -468,8 +475,11 @@ class NativeOperationObserver:
             )
             start.record(stream)
             try:
-                with self._range(selected or "unbound_collective", scope_name=scope_name):
+                if self.profiler is None:
                     result = original(*args, **kwargs)
+                else:
+                    with self._range(selected or "unbound_collective", scope_name=scope_name):
+                        result = original(*args, **kwargs)
                 end.record(stream)
                 if interval is not None:
                     interval["collectives"].append((start, end, witness))
