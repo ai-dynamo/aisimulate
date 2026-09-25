@@ -362,6 +362,10 @@ class RetainedRequestLoop:
             raise RuntimeError("native observer cannot retire the released cohort's token history")
         retire([req.rid for req in reqs])
         self.scheduler.model_worker._aisim_glm53_last_forward = None
+        # Native idle iterations clear this marker (scheduler.py:1927,1971).
+        # invariant_checker.py:505-527 treats a non-None marker as active work;
+        # clear only after native completion, hybrid release and retirement.
+        self.scheduler.cur_batch_for_debug = None
 
     def run(self):
         scheduler = self.scheduler
@@ -378,6 +382,7 @@ class RetainedRequestLoop:
             ready = next((ids for ids in self.cohorts.values() if all(rid in self.pending for rid in ids)), None)
             if ready is None:
                 if not self.pending:
+                    scheduler.cur_batch_for_debug = None
                     scheduler._sched_idled = True
                     scheduler.on_idle()
                 continue
