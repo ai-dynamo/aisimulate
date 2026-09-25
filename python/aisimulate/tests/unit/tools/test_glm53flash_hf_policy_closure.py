@@ -52,6 +52,8 @@ def test_copied_policy_imports_in_isolated_process(copied_dataset):
         "external_control_current",
         "external_control_sglang_mixed",
         "closed_history",
+        "cleanup_reconciliation",
+        "cleanup_executor",
         "portable_history",
         "import_glm53flash",
         "profile",
@@ -74,7 +76,7 @@ def test_embedded_policy_keeps_dependency_closure_after_import_path_restored(cop
             "assert p.publication_revisions({'producer_revision': 'a'*40}, {}, [], pathlib.Path('.'), 'b'*40, "
             "dict(backend='sglang', weight_quantization='fp8', tp=2)) is None; "
             "print(json.dumps({n: str(pathlib.Path(sys.modules[n[:-3]].__file__).resolve()) "
-            "for n in p.POLICY_MODULES if n not in {'import_glm53flash.py', 'profile.py'}}))",
+            "for n in p.POLICY_MODULES if n not in {'import_glm53flash.py', 'profile.py', 'cleanup_executor.py'}}))",
             str(scripts),
         ],
         cwd=copied_dataset,
@@ -96,6 +98,8 @@ def test_profile_binds_all_copied_policy_bytes(copied_dataset):
         "scripts/external_control_current.py",
         "scripts/external_control_sglang_mixed.py",
         "scripts/closed_history.py",
+        "scripts/cleanup_reconciliation.py",
+        "scripts/cleanup_executor.py",
         "scripts/portable_history.py",
         "scripts/import_glm53flash.py",
         "scripts/profile.py",
