@@ -273,7 +273,11 @@ def prepare(source_root, original_task_root, anchors, runs, output, *, adapter=A
         not output.exists() and not output.is_relative_to(source_root), "attachment output exists or is inside source"
     )
     document = dict(
-        schema=(current.MIXED_SCHEMA if adapter == current.MIXED_SGLANG else current.SCHEMA)
+        schema=(
+            {current.MIXED_SGLANG: current.MIXED_SCHEMA, current.FACTORY_SGLANG: current.FACTORY_SCHEMA}.get(
+                adapter, current.SCHEMA
+            )
+        )
         if adapter in current.ADAPTERS
         else SCHEMA,
         adapter=adapter,
@@ -291,6 +295,12 @@ def prepare(source_root, original_task_root, anchors, runs, output, *, adapter=A
         observed[path] = data
         return data
 
+    if adapter == current.FACTORY_SGLANG:
+        if __package__:
+            from . import external_control_sglang_factory as factory
+        else:
+            import external_control_sglang_factory as factory
+        factory.live_prepare_storage(document, get)
     expected, _ = closure(document, get)
     output.mkdir(mode=0o700)
     (output / "files").mkdir()
@@ -315,6 +325,8 @@ def prepare(source_root, original_task_root, anchors, runs, output, *, adapter=A
     validate(output, document)
     for path in expected:
         get(path)  # Preserve the original byte identity through the entire copy.
+    if adapter == current.FACTORY_SGLANG:
+        factory.live_prepare_storage(document, get)
     archive.write_json(output / "external-control.json", document)
     return document
 

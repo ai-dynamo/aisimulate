@@ -25,11 +25,13 @@ else:
 
 SCHEMA = "glm53flash_external_control_v2"
 MIXED_SCHEMA = "glm53flash_external_control_v3"
-SCHEMAS = {SCHEMA, MIXED_SCHEMA}
+FACTORY_SCHEMA = "glm53flash_external_control_v4"
+FACTORY_SGLANG = "sglang_public_factory_formal_v4"
+SCHEMAS = {SCHEMA, MIXED_SCHEMA, FACTORY_SCHEMA}
 MIXED_SGLANG = "sglang_split_host_formal_mixed_v3"
 VLLM = "vllm_nested_formal_v2"
 SGLANG = "sglang_split_host_formal_v2"
-ADAPTERS = {VLLM, SGLANG, MIXED_SGLANG}
+ADAPTERS = {VLLM, SGLANG, MIXED_SGLANG, FACTORY_SGLANG}
 DEPLOYMENTS = {f"{precision}-tp{tp}" for precision in ("fp8", "nvfp4") for tp in (2, 4)}
 POINTS = {
     ("calibration", "prefill"): 250,
@@ -146,7 +148,7 @@ def _public_rows(public, backend):
     return rows
 
 
-def _native_plans(context, frozen, task, anchors):
+def _native_plans(context, frozen, task, anchors, *, storage_root_binding=None):
     """Bind each original child to the literal framework startup route."""
     for child in context["children"].values():
         directory = _control().absolute(child["native_directory"])
@@ -207,7 +209,18 @@ def _native_plans(context, frozen, task, anchors):
         )
         hook = str(task / Path(anchors["cache_hook"]).parent) + ":/opt/glm53flash-cache:ro"
         require(
-            plan["options"].get("slurm_container_mounts", []).count(hook) == 1, "original read-only cache mount differs"
+            sum(
+                (
+                    str(archive.storage_path(mount.removesuffix(":/opt/glm53flash-cache:ro"), storage_root_binding))
+                    + ":/opt/glm53flash-cache:ro"
+                    if storage_root_binding is not None and mount.endswith(":/opt/glm53flash-cache:ro")
+                    else mount
+                )
+                == hook
+                for mount in plan["options"].get("slurm_container_mounts", [])
+            )
+            == 1,
+            "original read-only cache mount differs",
         )
         if context["backend"] == "vllm":
             require(env.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1", "native real-state observer disabled")
@@ -585,6 +598,12 @@ def _sg_qualification(frozen, refs, deployment, phase, producer, points):
 
 def frozen_contract(document, get):
     """Source-only gate. This does not require or manufacture GPU attempts."""
+    if document.get("schema") == FACTORY_SCHEMA:
+        if __package__:
+            from . import external_control_sglang_factory as factory
+        else:
+            import external_control_sglang_factory as factory
+        return factory.frozen_contract(document, get)
     if document.get("schema") == MIXED_SCHEMA:
         if __package__:
             from . import external_control_sglang_mixed as mixed
@@ -616,6 +635,12 @@ def execution_paths(document, run):
 
 
 def closure(document, get):
+    if document.get("schema") == FACTORY_SCHEMA:
+        if __package__:
+            from . import external_control_sglang_factory as factory
+        else:
+            import external_control_sglang_factory as factory
+        return factory.closure(document, get)
     control = _control()
     context = frozen_contract(document, get)
     task = control.absolute(document["original_task_root"])

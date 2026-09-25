@@ -21,6 +21,7 @@ if __package__:
     from . import (
         external_control,
         external_control_current,
+        external_control_sglang_factory,
         external_control_sglang_mixed,
         portable_history,
         raw_campaign,
@@ -30,6 +31,7 @@ else:
     # this module. Resolve the complete portable closure before it restores paths.
     import external_control
     import external_control_current
+    import external_control_sglang_factory  # noqa: F401
     import external_control_sglang_mixed  # noqa: F401
     import portable_history
     import raw_campaign
@@ -48,6 +50,7 @@ POLICY_MODULES = (
     "external_control_vllm.py",
     "external_control_current.py",
     "external_control_sglang_mixed.py",
+    "external_control_sglang_factory.py",
     "closed_history.py",
     "cleanup_reconciliation.py",
     "cleanup_executor.py",

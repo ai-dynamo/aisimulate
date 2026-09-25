@@ -92,7 +92,7 @@ attempt; neither point splicing nor automatic newest-job selection is allowed.
 
 ## Mandatory original-attempt history
 
-Current schema2/schema3 controls require import policy
+Current schema2/schema3/schema4 controls require import policy
 `glm53flash-accepted-arrow-partitions-history-v2`. The archive/import and
 portable offline checks are separate named contracts:
 
@@ -120,16 +120,25 @@ relabel current controls as legacy. Genuine legacy controls retain the previous
 policy. Optional full-archive revalidation is an explicit call to
 `closed_history.require_publication_history` with local bundles.
 
-The canonical copy contains all 14 modules in `POLICY_MODULES`. The history
-helper pins its thirteen sibling source files; the canonical/profile closure pins
+The canonical copy contains all sixteen modules in `POLICY_MODULES`. The history
+helper pins its fifteen sibling source files; the canonical/profile closure pins
 the helper itself and every copied evidence file. These maintenance tools are
 source-distributed separately from installed native producers and analysis
 consumers. `MAINTENANCE_IDENTITY` retains the exact reviewed
-`fpm_historical_accounting_termination_v4` source-profile label and base revision
-`a558cebec1bedd3927cd125b04662ed4b2b4ec73`; these identify the historical
-accounting follow-up, not unchanged a558 bytes or an installed consumer. Record
+`fpm_sglang_public_factory_v4` source-profile label and base revision
+`d53b406d88d1b77e42d9d03c27cd6a7a095319fe`; these identify the public-factory
+adapter follow-up, not unchanged d53 bytes or an installed consumer. Record
 the actual repository/tool revision separately.
 Changes to a pinned sibling require review and a coherent new hash map.
+
+## Public SGLang factory controls
+
+Explicit glm53flash_external_control_v4 / sglang_public_factory_formal_v4
+supports the new 72-child public ARM factory and sixteen CPU transports.
+Its admission, started and final schemas are separate from historical 636/642
+controls. See [the exact v4 contract](README.sglang-factory-v4.md) for source,
+qualification, storage, execution and portable history requirements. No
+actual admission is created by this implementation or its TEST_ONLY fixtures.
 
 ## Cleanup-only reconciliation
 
@@ -269,7 +278,7 @@ python tools/glm53flash_hf/import_glm53flash.py \
   --evidence-date ACTUAL_YYYY_MM_DD
 ```
 
-For current schema2/schema3 controls, `--history` contains
+For current schema2/schema3/schema4 controls, `--history` contains
 `contract="fpm_closed_attempt_history_v2"` and a `proof` object with `path`,
 `sha256` and integer `bytes` fields. The proof path is relative to the bound
 external-evidence directory. `--bundles`
@@ -307,7 +316,7 @@ archive helper are deliberately insufficient. Binding verifies:
 using only Python's standard library. They can run with Python 3.12 on the
 remote Lustre host without importing AISimulate, torch, Arrow or a GPU runtime.
 These are repository maintenance tools, not installed SDK entry points. For
-remote use, deploy all 13 `POLICY_MODULES` together in a new
+remote use, deploy all sixteen `POLICY_MODULES` together in a new
 versioned bundle directory, retain the Apache-2.0 license, and record the exact
 AISimulate source commit and SHA256 of every file before transfer. Recheck all
 hashes on the destination and invoke `python3.12 /bundle/raw_campaign.py`; do not
@@ -395,7 +404,7 @@ for all eight deployments. No directory or URI is inferred; one URI may not name
 different source roots. An archive's attested label set must exactly equal all
 bound records referencing its URI, SHA and byte size.
 
-For current schema2/schema3 controls, use the history-aware APIs with the
+For current schema2/schema3/schema4 controls, use the history-aware APIs with the
 same accepted stage and archive plan. `history_inputs` maps each backend to
 hash-and-size-bound original request and selection-ledger references. Each
 ledger retains every original attempt and chooses complete children explicitly.
