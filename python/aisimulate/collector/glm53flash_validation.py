@@ -963,6 +963,12 @@ def publish_sharded_calibration(
             destination,
             **({"lookup_contract": lookup_contract} if lookup_contract is not None else {}),
         )
+    if any(run["spec"].get("ops_execution_mode") == "native_full_graph" for run, _ in children):
+        from collector.glm53flash_graph_shards import publish_calibration as publish_graph
+
+        if parent_run is None or parent_run.get("shard_manifest") != frozen_shard_manifest:
+            raise ValueError("graph shard publication requires its original complete parent plan")
+        return publish_graph(parent_run, children, destination, lookup_contract=lookup_contract)
     if lookup_contract is not None:
         raise ValueError("lookup analysis contract requires native prefill or serving publication")
     rows, ownership, receipts = _sharded_calibration_rows(children, frozen_shard_manifest)
@@ -997,6 +1003,12 @@ def bind_sharded_calibration(
         if parent_run is None or parent_run.get("shard_manifest") != frozen_shard_manifest:
             raise ValueError("serving shard binding requires its original complete parent plan")
         return bind_serving(paths, parent_run, children)
+    if any(run["spec"].get("ops_execution_mode") == "native_full_graph" for run, _ in children):
+        from collector.glm53flash_graph_shards import bind_calibration as bind_graph
+
+        if parent_run is None or parent_run.get("shard_manifest") != frozen_shard_manifest:
+            raise ValueError("graph shard binding requires its original complete parent plan")
+        return bind_graph(paths, parent_run, children)
     expected_rows, ownership, receipts = _sharded_calibration_rows(children, frozen_shard_manifest)
     expected = {tuple(row[key] for key in KEY_COLUMNS): row for row in expected_rows}
     selected = {}

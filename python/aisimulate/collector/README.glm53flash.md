@@ -671,9 +671,9 @@ The common holdout evaluator uses the public homogeneous static decode API for
 this explicit graph mode, after native per-request geometry validation. Padding
 comes from the calibration table's policy; holdout dispatch only diagnoses policy
 mismatch. Calibration and holdout must use the same actual native policy. FPM and
-eager prediction paths retain their prior APIs. Initial graph export is SGLang
-uncompiled FULL decode with one fully receipted data root; vLLM FULL/PIECEWISE
-mapping and graph shard publication remain pending. No graph performance data
+eager prediction paths retain their prior APIs. SGLang uncompiled FULL decode uses one fully receipted consumer data root.
+Named SGLang calibration shards can populate that root as described below;
+vLLM graph shard publication is not supported by this helper. No graph performance data
 or accuracy acceptance is bundled with this implementation.
 
 
@@ -946,3 +946,35 @@ this audit in `prediction_evidence`. An offline re-export is an analysis result,
 not new GPU measurement or accuracy acceptance. Graph controls remain
 `REPORTED_NOT_ASSUMED`; profiled launch gaps and collective arrival waits are not
 constants to add to independent holdout predictions.
+
+
+### Named SGLang FULL decode shards
+
+`publish_sharded_calibration(children, frozen_shard_manifest, destination,
+parent_run=parent, lookup_contract="graph_named_operations_v1")` admits only
+SGLang `native_full_graph` decode shards. `glm53flash_graph_shards.py` verifies
+the original FPM parent and every child plan, corpus, role, complete point map
+and original phase-local IDs. Each child must retain all 367 named operations
+and its original five warmups plus ten measured repetitions. The helper
+rederives capture/clone/trace measurements and each independent control; it
+rejects reused roots, run IDs, requests, missing points and duplicate physical
+rows. It never averages duplicate rows or reconstructs names from pooled data.
+
+All calibration children must have exactly equal complete `graph_policy`
+objects, including original resolved-configuration, capture/evidence and state
+identities. Different capture evidence is rejected even when it might describe
+the same serving configuration. The helper does not normalize those differences
+or claim that actual separately collected shards are compatible. An actual
+campaign must satisfy this condition before publication; relaxing it would need
+a separately reviewed source-backed policy contract.
+
+The sidecar retains each child's native run and control identities, evidence
+SHA, point ownership and original parent/shard manifest hashes. Binding
+recomputes the complete table from the original children. Grouped holdout
+prediction uses the existing public Rust graph selector for each child and
+maps successes and errors back to every original requested point. Successful
+named predictions require endpoint audits with their original evidence hashes;
+`prediction_evidence_origins` retains child, native and original point IDs. No
+aggregate native run is invented. Controls remain `REPORTED_NOT_ASSUMED`, and
+independent full-coverage accuracy acceptance remains required. This source
+implementation includes TEST_ONLY query evidence, not a qualified GPU campaign.

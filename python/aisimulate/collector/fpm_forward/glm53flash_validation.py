@@ -362,12 +362,21 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
             and run["key"][0] == "sglang"
             and run.get("spec", {}).get("ops_execution_mode") == "native_eager_prefill"
         )
+        graph = (
+            mode == "ops"
+            and run["key"][0] == "sglang"
+            and run.get("spec", {}).get("ops_execution_mode") == "native_full_graph"
+        )
         if serving:
             from collector.glm53flash_serving_shards import same_native_policy, validate_children
 
             validate_children(run, run["children"])
         if prefill:
             from collector.glm53flash_sglang_prefill_shards import same_native_policy, validate_children
+
+            validate_children(run, run["children"])
+        if graph:
+            from collector.glm53flash_graph_shards import same_native_policy, validate_children
 
             validate_children(run, run["children"])
         values, request_ids, children, receipts = {}, set(), {}, []
@@ -380,21 +389,27 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
                 _require_sglang_policy(native)
                 if execution_policy is not None:
                     _same_sglang_policy(execution_policy, native, "native shards")
-                    if prefill:
+                    if prefill or graph:
                         same_native_policy(execution_policy, native)
-                if prefill and (
+                if (prefill or graph) and (
                     native["runtime_run_id"] in native_runs or Path(native["evidence_root"]).resolve() in native_roots
                 ):
-                    raise ValueError("native prefill shards reused an original native run or root")
-                if prefill:
+                    raise ValueError("native prefill/graph shards reused an original native run or root")
+                if prefill or graph:
                     native_runs.add(native["runtime_run_id"])
                     native_roots.add(Path(native["evidence_root"]).resolve())
                 execution_policy = {
                     key: native[key]
-                    for key in ("execution_policy", "_execution_policy", "_allocator_policy", "prefill_policy")
+                    for key in (
+                        "execution_policy",
+                        "_execution_policy",
+                        "_allocator_policy",
+                        "prefill_policy",
+                        "graph_policy",
+                    )
                     if key in native
                 }
-                if prefill:
+                if prefill or graph:
                     same_native_policy(execution_policy, native)
             elif serving:
                 if execution_policy is not None:
@@ -645,9 +660,9 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
         prediction = predict_homogeneous(run, base, config, calibration_native, binding)
         return {**prediction, "config": config, "data_receipts": receipts, "calibration_binding": binding}
     if mode == "ops" and calibration["spec"].get("ops_execution_mode") == "native_full_graph":
-        from collector.glm53flash_graph_export import predict_homogeneous
+        from collector.glm53flash_graph_shards import predict_homogeneous
 
-        prediction = predict_homogeneous(run, base, config, calibration_native, calibration_binding=binding)
+        prediction = predict_homogeneous(run, base, config, calibration_native, binding)
         return {**prediction, "config": config, "data_receipts": receipts, "calibration_binding": binding}
     model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
     rows = {}

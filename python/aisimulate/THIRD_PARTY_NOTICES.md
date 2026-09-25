@@ -1501,7 +1501,9 @@ POSSIBILITY OF SUCH DAMAGE.
 
 ## GLM-5.3-Flash named FULL graph analysis identity
 
-- Files: `python/aisimulate/collector/glm53flash_graph_export.py`, its integration
+- Files: `python/aisimulate/collector/glm53flash_graph_export.py`,
+  `python/aisimulate/collector/glm53flash_graph_shards.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_graph_shards.py`, their integration
   in `collector/fpm_forward/glm53flash_validation.py`,
   `crates/core/src/perfmodel/perf_database/glm53flash_graph.rs`,
   `python/aisimulate/tests/unit/collector/test_glm53flash_graph_named_export.py`,
@@ -1524,5 +1526,7 @@ POSSIBILITY OF SUCH DAMAGE.
   typed consumer checks; no upstream compute implementation copied. The
   `graph_named_operations_v1` analysis contract retains original named source
   calls without changing native policy, fusion, graph execution or recorded
-  timing. Authored TEST_ONLY fixtures establish schema/query behavior, not GPU
-  performance or holdout accuracy.
+  timing. The independently expressed shard adapter preserves complete original
+  point unions, named unit/control provenance and exact capture policies without
+  modifying native execution. Authored TEST_ONLY fixtures establish schema/query
+  behavior, not GPU performance or holdout accuracy.

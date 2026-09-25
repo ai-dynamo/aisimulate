@@ -810,17 +810,15 @@ def predict_homogeneous(run, base, config, calibration_native, *, calibration_bi
         contract = contracts.pop()
     named = _named_contract(contract)
     if named:
-        evidence = Path(calibration_native["evidence_root"]) / "graph-calibration-evidence.json"
-        original = json.loads(evidence.read_bytes())
+        from collector.glm53flash_graph_shards import validate_prediction_binding
+
         if not calibration_binding or (
             calibration_binding.get("lookup_contract") != contract
             or calibration_binding.get("graph_policy_sha256") != sha256_json(policy)
-            or calibration_binding.get("native_runtime_run_id") != calibration_native["runtime_run_id"]
-            or calibration_binding.get("evidence_sha256") != file_sha256(evidence)
-            or calibration_binding.get("source_plan_sha256") != original["source_plan_sha256"]
             or {"path": str(table), "sha256": file_sha256(table)} not in calibration_binding.get("tables", [])
         ):
             raise ValueError("named graph prediction requires its exact original calibration binding")
+        validate_prediction_binding(calibration_native, calibration_binding)
     elif calibration_binding and calibration_binding.get("lookup_contract") is not None:
         raise ValueError("graph prediction binding differs from table analysis contract")
     rows, prediction_evidence = {}, {}
