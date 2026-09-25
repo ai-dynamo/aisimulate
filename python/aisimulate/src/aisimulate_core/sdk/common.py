@@ -658,6 +658,7 @@ and this set via get_default_models()
 """
 DefaultHFModels = {
     "deepseek-ai/DeepSeek-V4.1-Flash",
+    "nvidia/DeepSeek-V4.1-Flash-NVFP4",
     # Llama 3.1 Models
     "meta-llama/Meta-Llama-3.1-8B",
     "meta-llama/Meta-Llama-3.1-70B",
@@ -738,12 +739,14 @@ DefaultHFModels = {
     # Qwen3.8-Max Models
     "Qwen/Qwen3.8-2.4T-A95B",
     "Qwen/Qwen3.8-2.4T-A95B-FP8",
+    "nvidia/Qwen3.8-2.4T-A95B-NVFP4",
     # MiMo Models
     "XiaomiMiMo/MiMo-V2-Flash",
     "XiaomiMiMo/MiMo-7B-Base",
     # NVIDIA Nemotron
     "nvidia/Llama-3_3-Nemotron-Super-49B-v1",
     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+    "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16",
     "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4",
     "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8",
@@ -756,6 +759,15 @@ DefaultHFModels = {
     "google/gemma-4-26B-A4B",
     # Meta Muse Glimmer
     "meta-models/Muse-Glimmer-30B",
+    "nvidia/Muse-Glimmer-30B-NVFP4",
+    # Qwen3.8-27B (QWEN35 hybrid GDN dense; onboarding 2026-09-25)
+    "Qwen/Qwen3.8-27B",
+    "Qwen/Qwen3.8-27B-FP8",
+    "nvidia/Qwen3.8-27B-NVFP4",
+    # Ornith 1.5 (Qwen3.5-MoE architecture)
+    "ornith-ai/Ornith-1.5-35B-A3B",
+    # MiniCPM5 (Llama architecture)
+    "openbmb/MiniCPM5-2B",
     # StepFun Step-3.7 Models
     "stepfun-ai/Step-3.7-Flash",
     "stepfun-ai/Step-3.7-Flash-FP8",

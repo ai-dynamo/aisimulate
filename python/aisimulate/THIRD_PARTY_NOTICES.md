@@ -566,6 +566,54 @@ THE SOFTWARE AND ANY OUTPUT AND RESULTS THEREFROM ARE PROVIDED "AS IS", WITHOUT 
 For any questions regarding this license, please contact model-business@notice.qwencloud.com.
 ```
 
+## Qwen3.8-27B model configuration files
+
+The following model configuration files are copied byte-for-byte from the
+named repositories at the immutable revisions shown (onboarding 2026-09-25):
+
+| Packaged file | Upstream revision |
+| --- | --- |
+| `aisimulate_core/model_configs/Qwen--Qwen3.8-27B_config.json` | `Qwen/Qwen3.8-27B@1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0` |
+| `aisimulate_core/model_configs/Qwen--Qwen3.8-27B-FP8_config.json` | `Qwen/Qwen3.8-27B-FP8@017b9c7af6b5689d5dd426a76e0bc077eb5ca20a` |
+| `aisimulate_core/model_configs/nvidia--Qwen3.8-27B-NVFP4_config.json` | `nvidia/Qwen3.8-27B-NVFP4@482ca0f3832238542f8f5295dde86b5f22711d80` |
+| `aisimulate_core/model_configs/nvidia--Qwen3.8-27B-NVFP4_hf_quant_config.json` | `nvidia/Qwen3.8-27B-NVFP4@482ca0f3832238542f8f5295dde86b5f22711d80` |
+
+Copyright owner: Qwen (the NVFP4 artifact is NVIDIA's quantization of the
+Qwen checkpoint). All three upstream revisions are licensed under the Apache
+License 2.0 (`LICENSE` in each repository); the Apache License 2.0 terms are
+reproduced in this distribution's `LICENSE` file.
+
+## Meta Muse Glimmer NVFP4 model configuration
+
+`aisimulate_core/model_configs/nvidia--Muse-Glimmer-30B-NVFP4_config.json` and
+`aisimulate_core/model_configs/nvidia--Muse-Glimmer-30B-NVFP4_hf_quant_config.json`
+are unmodified copies of `config.json` / `hf_quant_config.json` from
+https://huggingface.co/nvidia/Muse-Glimmer-30B-NVFP4 at immutable revision
+`47818374517751c48c55cde2621594926b1888b6` (NVIDIA's NVFP4 quantization of
+the Meta Muse Glimmer model; copyright owner of the base model: Meta
+Platforms, Inc. and affiliates). License: Apache License 2.0 (`LICENSE` in
+the repository), reproduced in this distribution's `LICENSE` file.
+
+## Ornith 1.5 model configuration
+
+`aisimulate_core/model_configs/ornith-ai--Ornith-1.5-35B-A3B_config.json` is
+an unmodified copy of `config.json` from
+https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B at immutable revision
+`10fbf86fed7ecee4a061f8b499a618f46001cac1`. The repository declares the MIT
+License in its model card (no separate LICENSE file is shipped); copyright
+owner: ornith-ai. The MIT License terms are reproduced in the DeepSeek
+section above.
+
+## MiniCPM5 model configuration
+
+`aisimulate_core/model_configs/openbmb--MiniCPM5-2B_config.json` is an
+unmodified copy of `config.json` from
+https://huggingface.co/openbmb/MiniCPM5-2B at immutable revision
+`12a3808a956f869c767195e9266b59c4d21d92e2`. The repository declares the
+Apache License 2.0 in its model card (no separate LICENSE file is shipped);
+copyright owner: OpenBMB. The Apache License 2.0 terms are reproduced in this
+distribution's `LICENSE` file.
+
 ## Meta Llama 4
 
 The following bundled model configs are modified copies of Meta Llama 4
