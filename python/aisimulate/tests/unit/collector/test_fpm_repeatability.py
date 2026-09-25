@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import statistics
 from dataclasses import replace
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from collector.fpm_forward import cli, repeatability, runner
 from collector.fpm_forward.config import with_kv_warmup_defaults
+from collector.fpm_forward.database import aggregate_cell
 from collector.fpm_forward.native_artifact import (
     _expected_scheduled,
 )
@@ -33,7 +35,11 @@ def _point(coordinates, phase, index):
         expected_cudagraph_mode=("FULL" if phase == "decode" else "PIECEWISE") if capture else "NONE",
         expected_capture_size=capture,
         padding_tokens=capture - axis if capture else None,
-        sample_reasons=["kvwarm_real_kv" if phase == "decode" else "prefill_real_seed"],
+        sample_reasons=["kvwarm_real_kv"]
+        if phase == "decode"
+        else ["prefill_real_seed"]
+        if point["total_kv_read_tokens"]
+        else [],
     )
     return point
 
@@ -92,7 +98,11 @@ def _write_campaign(
                 results.append(
                     {
                         "point": point,
-                        "kv_seed_regime": "real_kv" if cell.workload_kind == "decode" else "real_prefix",
+                        "kv_seed_regime": "real_kv"
+                        if cell.workload_kind == "decode"
+                        else "real_prefix"
+                        if point["total_kv_read_tokens"]
+                        else "not_applicable",
                         "fpms": rank_results[rank]["fpms"],
                     }
                 )
@@ -285,6 +295,164 @@ def test_freeze_selects_validated_native_extremes_and_reports_unselected_capture
 def test_too_small_budget_cannot_silently_drop_required_regimes(campaign):
     with pytest.raises(ValueError, match="cannot cover.*uncovered"):
         repeatability.freeze_repeatability_plan(*campaign, max_points_per_cell=1)
+
+
+def _add_zero_kv_duplicates(root, *, seed_samples=3):
+    for path in root.glob("cells/*/raw/*/benchmark-*.json"):
+        payload = json.loads(path.read_text())
+        ordinary_row = payload["results"][0]
+        ordinary_group = payload["iteration_groups"][0]
+        assert ordinary_row["point"]["total_kv_read_tokens"] == 0
+        assert ordinary_row["kv_seed_regime"] == "not_applicable"
+        for index in range(seed_samples):
+            group = copy.deepcopy(ordinary_group)
+            point = group["point"]
+            point["benchmark_id"] = index + 2
+            point["sample_reasons"].append("prefill_real_seed")
+            group["benchmark_id"] = point["benchmark_id"]
+            for result in group["rank_results"]:
+                fpm = result["fpms"][0]
+                fpm["counter_id"] = point["benchmark_id"]
+                fpm["wall_time"] *= 0.5
+            group["wall_time"] *= 0.5
+            payload["iteration_groups"].append(group)
+            payload["results"].append(
+                {
+                    "point": point,
+                    "kv_seed_regime": "real_prefix",
+                    "fpms": group["rank_results"][payload["dp"]["rank"]]["fpms"],
+                }
+            )
+        count = len(payload["results"])
+        payload["coverage"].update(expected_points=count, completed_points=count)
+        payload["timing"]["measured_iteration_seconds"] = sum(
+            group["wall_time"] for group in payload["iteration_groups"]
+        )
+        path.write_text(json.dumps(payload))
+
+
+@pytest.fixture
+def zero_kv_campaign(campaign):
+    plan, source, checkpoint = campaign
+    plan = repeatability._subset_plan(
+        plan,
+        {
+            "cell_id": plan.cells[0].cell_id,
+            "benchmark_points": {
+                "schema_version": 3,
+                "prefill": [{"batch_size": 1, "total_prefill_tokens": 1, "total_kv_read_tokens": 0}],
+                "decode": [],
+            },
+        },
+    )
+    _write_campaign(source, checkpoint, plan)
+    return plan, source, checkpoint
+
+
+@pytest.mark.parametrize("seed_samples", [3, 4])
+def test_freeze_zero_kv_duplicates_uses_published_ordinary_sample(zero_kv_campaign, seed_samples):
+    plan, source, checkpoint = zero_kv_campaign
+    _add_zero_kv_duplicates(source, seed_samples=seed_samples)
+    original = runner._file_manifest(source)
+    frozen = repeatability.freeze_repeatability_plan(plan, source, checkpoint)
+    cell = frozen["cells"][0]
+    assert cell["source_point_count"] == seed_samples + 1
+    assert len(cell["points"]) == 1
+    point = cell["points"][0]
+    assert point["source_point"]["benchmark_id"] == 1
+    assert point["source_point"]["sample_reasons"] == []
+    assert point["kv_seed_regime"] == "not_applicable"
+    rows = aggregate_cell(plan, plan.cells[0], source / "cells" / cell["cell_id"], expected_attempt_id="source")
+    assert len(rows) == 1
+    assert point["source_wall_time_seconds"] * 1000 == rows[0]["latency_ms"]
+    assert point["source_wall_time_seconds"] == max(value for _, value in point["source_rank_wall_times"])
+    assert runner._file_manifest(source) == original
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "duplicate_ordinary",
+        "no_ordinary",
+        "missing_provenance",
+        "positive_kv",
+        "expected_cudagraph_mode",
+        "expected_capture_size",
+        "padding_tokens",
+        "partition",
+        "rows",
+        "sample_reasons",
+        "context_clamped",
+    ],
+)
+def test_freeze_rejects_conflicting_zero_kv_duplicates(zero_kv_campaign, conflict):
+    plan, source, checkpoint = zero_kv_campaign
+    _add_zero_kv_duplicates(source)
+    for path in source.glob("cells/*/raw/*/benchmark-*.json"):
+        payload = json.loads(path.read_text())
+        for index, (row, group) in enumerate(zip(payload["results"], payload["iteration_groups"], strict=True)):
+            point = row["point"]
+            if conflict == "positive_kv":
+                point["total_kv_read_tokens"] = 128
+                for result in group["rank_results"]:
+                    result["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = 128
+                row["fpms"] = group["rank_results"][payload["dp"]["rank"]]["fpms"]
+            elif conflict == "no_ordinary":
+                row["kv_seed_regime"] = "real_prefix"
+                point["sample_reasons"] = ["prefill_real_seed"]
+            elif index == 1:
+                if conflict == "duplicate_ordinary":
+                    row["kv_seed_regime"] = "not_applicable"
+                    point["sample_reasons"] = []
+                elif conflict == "missing_provenance":
+                    row.pop("kv_seed_regime")
+                elif conflict == "context_clamped":
+                    point["sample_reasons"].append("context_clamped")
+                else:
+                    point[conflict] = {
+                        "expected_cudagraph_mode": "NONE",
+                        "expected_capture_size": 2,
+                        "padding_tokens": 1,
+                        "partition": "different",
+                        "rows": [{"tokens": 1}],
+                        "sample_reasons": ["eager_tail", "prefill_real_seed"],
+                    }[conflict]
+            group["point"] = point
+        path.write_text(json.dumps(payload))
+    original = runner._file_manifest(source)
+    with pytest.raises(ValueError, match="unclamped samples share one key"):
+        repeatability.freeze_repeatability_plan(plan, source, checkpoint)
+    assert runner._file_manifest(source) == original
+
+
+def test_zero_kv_source_consolidation_preserves_independent_fresh_samples(zero_kv_campaign, tmp_path, monkeypatch):
+    _add_zero_kv_duplicates(zero_kv_campaign[1])
+    original = runner._file_manifest(zero_kv_campaign[1])
+    calls = _fake_collector(monkeypatch, factors=[0.99, 1.0, 1.01, 1.0, 1.0])
+    args = _args(zero_kv_campaign, tmp_path)
+    report = repeatability.run_repeatability(**args)
+    assert report["status"] == "passed" and len(calls) == 5
+    assert len(report["points"]) == 1
+    point = report["points"][0]
+    assert point["sample_count"] == 5
+    assert point["source_inclusive_sample_count"] == 6
+    assert point["samples_seconds"] == pytest.approx(
+        [point["source_wall_time_seconds"] * factor for factor in (0.99, 1.0, 1.01, 1.0, 1.0)]
+    )
+    assert runner._file_manifest(zero_kv_campaign[1]) == original
+    assert repeatability.run_repeatability(**args, resume=True) == report
+
+
+def test_zero_kv_duplicates_in_fresh_repeat_are_not_counted_as_independent_samples(
+    zero_kv_campaign, tmp_path, monkeypatch
+):
+    _add_zero_kv_duplicates(zero_kv_campaign[1])
+    calls = _fake_collector(monkeypatch, mutate=lambda root, _index: _add_zero_kv_duplicates(root))
+    report = repeatability.run_repeatability(**_args(zero_kv_campaign, tmp_path))
+    assert report["status"] == "failed" and len(calls) == 1
+    assert report["points"][0]["sample_count"] == 0
+    failed = report["samples"][zero_kv_campaign[0].cells[0].cell_id][0]["attempts"][-1]
+    assert "did not measure exactly the frozen subset" in failed["error"]
 
 
 def test_five_independent_samples_keep_raw_data_and_pass_without_formal_publication(campaign, tmp_path, monkeypatch):

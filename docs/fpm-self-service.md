@@ -952,6 +952,18 @@ Saved effective collection options must match the reviewed request, including ca
 
 The fresh directory contains `request.yaml`, `fpm-model-profile.json`, ordinary prediction/recommendation configs and a verified copy of the formal data pair. The original collection is unchanged. Runtime cache groups preserve allocation padding and shared-pool slot costs, including null/permanent reservations, instead of deriving an invented non-KV breakdown. Runtime memory is tied to the recorded scheduler, context, precision, topology and memory policy; changing these settings requires new compatible memory evidence.
 
+If formal observations show less usable cache capacity than the accepted runtime probe, preserve the original collection and import its complete formal runtime observation index through `onboard import-observations`. Review and explicitly accept the resulting capacity revision in the same configuration's checkpoint. Then finalize with both requests:
+
+```bash
+aisimulate onboard finalize \
+  --config ./aisimulate-support/request.yaml \
+  --output-dir ./aisimulate-support \
+  --memory-config ./reviewed-capacity-revision/request.yaml \
+  --resolved-output-dir ./aisimulate-support-resolved
+```
+
+`--memory-config` permits only a lower cache-capacity value, equal to the verified formal minimum, and updated provenance. The complete model, precision, topology, cache geometry, runtime, graph and collection settings must remain unchanged. The revision must derive from the exact successful formal cell attempts and be explicitly accepted in its referenced checkpoint; guessed bounds, capacity overrides, unrelated probes and changed execution settings are rejected. The command retains the original collection identity and binds the revision request by path, SHA-256 and request identity in the new finalization provenance. Keep the revision request and its evidence immutable and available for subsequent verification. This correction reuses the measured timing pair and requires no formal GPU recollection. Continue `validate-collection` against the original request and collection directory.
+
 Review the resolved profile and assumptions with the user. Finalization does not accept it in the session checkpoint. Save its request as a new draft, record the new artifact paths and source relationship, and obtain acceptance of the exact resolved profile with the existing checkpoint workflow. Preserve the original collection references. Only then continue simulation using `./aisimulate-support-resolved/request.yaml` and `--output-dir ./aisimulate-support-resolved`. A pending profile produces a clear error before prediction/recommendation cache sizing or replay validation.
 
 Resuming `onboarding-checkpoint.json` restores the onboarding conversation and accepted inputs; it does not migrate collection artifacts. Current collection and finalization use a schema-11 collection plan and schema-7 formal FPM publication. The collector can still verify schema-10 plan hashes and read their matching native timing and memory evidence, preserving historical cell and attempt identities. Historical schema-6 formal publications cannot be finalized by this collector, and automatic migration is unsupported. Keep those artifacts unchanged and use fresh output directories for any new collection.

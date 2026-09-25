@@ -261,16 +261,34 @@ profile, data and provenance references while retaining the original collection.
 Use the resolved directory for simulation. Observed capacity includes all resident
 worker components even when timing models only text-decoder execution.
 
+For a downward correction to observed cache capacity, after the revised memory
+profile's ordinary explicit acceptance, run `aisimulate onboard finalize --config
+ORIGINAL/request.yaml --output-dir ORIGINAL --memory-config
+REVIEWED_REVISED_REQUEST --resolved-output-dir FRESH`.
+Allow only a capacity decrease to the verified formal minimum and provenance
+revisions backed by exact compatible current formal evidence; keep model,
+precision, topology, runtime, cache geometry and launch settings unchanged.
+Preserve the immutable collection request, plan and data, and keep
+`validate-collection` on `ORIGINAL/request.yaml` and `ORIGINAL` even after
+accepting a newer memory revision. Collection reuse does not retain acceptance
+across profile revisions or pass collection-quality or accuracy gates.
+Review and accept the fresh finalized profile separately through the normal
+workflow; do not autoaccept or rewrite existing source profiles or checkpoint
+status.
+
 Make collection quality and matched serving validation part of the standard
 onboarding procedure. In stage 5, follow
 [Validate collection and serving accuracy](docs/fpm-self-service.md#validate-collection-and-serving-accuracy):
 save an editable campaign policy before measurement, then run `onboard
-validate-collection` against the original collection directory. Inspect native
-validity, actual attention groups, graph configuration and KV initialization;
-run the bounded representative repeats only with explicit `--execute`. Preserve
+validate-collection` against the original collection directory. Preparation omits
+`--execute` and does not pass quality or accuracy gates. Inspect native validity,
+actual attention groups, graph configuration and KV initialization; run the
+fresh bounded representative repeats only with explicit `--execute`. Preserve
 individual attempts and inspect both fresh-sample CV and CV including the
-original published sample. Evaluate withheld coordinates through native direct
-interpolation; keep unsupported queries separate from numerical errors. The
+original published sample. Repeatability uses the same canonical source sample
+selection as publication without modifying raw artifacts. Evaluate withheld
+coordinates through native direct interpolation; keep unsupported queries
+separate from numerical errors. The
 default policy is five fresh samples per point, at most 12 points per phase cell,
 maximum CV 0.05, at most 16 holdouts per phase, seed 42, p95 absolute relative
 error 0.20 and zero unsupported holdouts. These are editable initial criteria,

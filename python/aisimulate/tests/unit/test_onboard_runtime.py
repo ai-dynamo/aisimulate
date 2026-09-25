@@ -810,6 +810,180 @@ def test_formal_finalize_validates_new_observations_and_preserves_verified_timin
     assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
 
 
+def _reviewed_capacity_revision(tmp_path, capsys):
+    checkpoint, original, files, root = _completed_runtime_collection(tmp_path, capsys)
+    collection = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(collection["runtime_observations"])
+    document = json.loads(index.read_text())
+    for phase in document["configurations"]["tp2"]["attempts"][0]["phases"].values():
+        for ref in phase["artifacts"]:
+            path = index.parent / ref["path"]
+            record = json.loads(path.read_text())
+            if record["kind"] == "scheduler":
+                record["cache"]["initial_free_blocks"] -= 1
+                record["cache"]["reserved_blocks"] += 1
+                record["cache"]["permanent_reserved_block_ids"].append(2)
+                _write(path, record)
+                ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+    assert _import(checkpoint, index, tmp_path / "revised", configurations=["tp2"]) == 0
+    revised = Path(json.loads(capsys.readouterr().out)["configurations"]["tp2"]["request"])
+    state = _load(checkpoint)
+    save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    return checkpoint, original, files, root, revised
+
+
+def test_finalization_reuses_original_collection_with_accepted_observed_capacity_revision(tmp_path, capsys):
+    from aisimulate.support.finalization import finalization_manifest, finalize
+    from aisimulate.support.plan import check_plan, request_id
+    from aisimulate.support.runtime import verify_runtime_profile
+
+    checkpoint, original, files, root, memory_config = _reviewed_capacity_revision(tmp_path, capsys)
+    revised = SupportRequest.from_yaml(memory_config)
+    before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+    accepted = checkpoint.read_bytes()
+    with pytest.raises(ValueError, match="smaller than the accepted bound"):
+        finalize(original, root, tmp_path / "unreviewed")
+    with pytest.raises(ValueError, match="different request identity"):
+        check_plan(revised, root)
+    target = tmp_path / "resolved-revision"
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "finalize",
+                "--config",
+                files["request"],
+                "--output-dir",
+                str(root),
+                "--memory-config",
+                str(memory_config),
+                "--resolved-output-dir",
+                str(target),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    resolved = SupportRequest.from_yaml(target / "request.yaml")
+    manifest = finalization_manifest(resolved)
+    assert manifest["source_request_id"] == request_id(original)
+    assert manifest["memory_revision"]["request_id"] == request_id(revised)
+    assert resolved.profile_deployment().resources.runtime_memory.kv_cache_bytes == (
+        revised.profile_deployment().resources.runtime_memory.kv_cache_bytes
+    )
+    assert before == {path: path.read_bytes() for path in before}
+    assert checkpoint.read_bytes() == accepted
+    check_plan(resolved, target)
+    verify_runtime_profile(resolved)
+    state = _load(checkpoint)
+    artifacts = {key: {"archived": True} for key in state.configurations["tp2"].artifacts}
+    artifacts["resolved-request"] = {"path": str(target / "request.yaml"), "kind": "request"}
+    state, _ = save_checkpoint(
+        checkpoint,
+        patch={
+            "configurations": {
+                "tp2": {
+                    "draft_request": resolved.model_dump(mode="json", exclude_none=True),
+                    "artifacts": artifacts,
+                }
+            }
+        },
+        expected_revision=state.revision,
+        accept=[],
+    )
+    assert state.configurations["tp2"].acceptance is None
+    state, _ = save_checkpoint(checkpoint, patch={}, expected_revision=state.revision, accept=["tp2"])
+    assert report(state, checkpoint)["configurations"]["tp2"]["profile_accepted"]
+    memory_config.write_text(memory_config.read_text() + "\n")
+    with pytest.raises(ValueError, match="memory revision.*changed"):
+        verify_runtime_profile(resolved)
+
+
+@pytest.mark.parametrize(
+    ("change", "diagnostic"),
+    [
+        ("runtime", "non-capacity"),
+        ("layout", "non-capacity"),
+        ("workload", "non-capacity"),
+        ("capacity_increase", "must lower"),
+        ("capacity_override", "without capacity overrides"),
+        ("forged_observation", "saved observed resources differ"),
+        ("missing_attempts", "complete formal collection attempt bindings"),
+        ("wrong_attempt", "different collection attempt"),
+    ],
+)
+def test_capacity_revision_rejects_unrelated_changes_and_unverified_evidence(tmp_path, capsys, change, diagnostic):
+    from aisimulate.support.runtime import verify_collection_runtime
+
+    _, original, _, root, memory_config = _reviewed_capacity_revision(tmp_path, capsys)
+    revised = SupportRequest.from_yaml(memory_config)
+    resources = revised.profile_deployment().resources
+    evidence = json.loads(resources.runtime_memory.provenance)
+    checkpoint = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    index = Path(checkpoint["runtime_observations"])
+    if change == "runtime":
+        revised.collection.gpu_memory_utilization = 0.8
+    elif change == "layout":
+        resources.cache_groups[0].page_size_bytes += 128
+    elif change == "workload":
+        revised.workload.request_count += 1
+    elif change == "capacity_increase":
+        resources.runtime_memory.kv_cache_bytes = (
+            original.profile_deployment().resources.runtime_memory.kv_cache_bytes + 128
+        )
+    elif change == "capacity_override":
+        resources.runtime_memory.kv_cache_bytes -= 128
+        evidence["user_overrides"] = {
+            "runtime_memory.kv_cache_bytes": {"value": resources.runtime_memory.kv_cache_bytes}
+        }
+    elif change == "forged_observation":
+        evidence["observed_resources"]["runtime_memory"]["kv_cache_bytes"] -= 128
+    elif change == "missing_attempts":
+        checkpoint = None
+    elif change == "wrong_attempt":
+        checkpoint["runtime_observation_attempt_id"] = "unrelated"
+    resources.runtime_memory.provenance = json.dumps(evidence)
+    with pytest.raises(ValueError, match=diagnostic):
+        verify_collection_runtime(original, index, collection_checkpoint=checkpoint, memory_request=revised)
+
+
+def test_capacity_revision_requires_acceptance_and_exact_formal_observations(tmp_path, capsys):
+    from aisimulate.support.finalization import finalize
+    from aisimulate.support.runtime import verify_collection_runtime
+
+    checkpoint, original, _, root, memory_config = _reviewed_capacity_revision(tmp_path, capsys)
+    formal = json.loads((root / "fpm-checkpoint/fpm_forward.json").read_text())
+    source = Path(formal["runtime_observations"])
+    unrelated = tmp_path / "other-attempt"
+    shutil.copytree(source.parent, unrelated)
+    index = unrelated / source.name
+    document = json.loads(index.read_text())
+    attempt = document["configurations"]["tp2"]["attempts"][0]
+    attempt["attempt_id"] = "unrelated-parent"
+    document["configurations"]["tp2"]["active_attempt_id"] = attempt["attempt_id"]
+    for phase in attempt["phases"].values():
+        for ref in [phase["launch_manifest"], *phase["artifacts"]]:
+            path = index.parent / ref["path"]
+            record = json.loads(path.read_text())
+            record["attempt_id"] = attempt["attempt_id"]
+            _write(path, record)
+            ref["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
+    _write(index, document)
+    assert _import(checkpoint, index, tmp_path / "unrelated-revision", configurations=["tp2"]) == 0
+    revised_path = json.loads(capsys.readouterr().out)["configurations"]["tp2"]["request"]
+    revised = SupportRequest.from_yaml(revised_path)
+    with pytest.raises(ValueError, match="explicit acceptance"):
+        finalize(original, root, tmp_path / "unaccepted", memory_config=revised_path)
+    assert not (tmp_path / "unaccepted").exists()
+    with pytest.raises(ValueError, match="same complete formal collection observations"):
+        verify_collection_runtime(original, source, collection_checkpoint=formal, memory_request=revised)
+    # The previously reviewed request is no longer the checkpoint's accepted
+    # draft, even though its immutable evidence is still available.
+    with pytest.raises(ValueError, match="explicit acceptance"):
+        finalize(original, root, tmp_path / "superseded", memory_config=memory_config)
+
+
 def test_large_runtime_provenance_reaches_supervised_recommendation_and_keeps_sources(tmp_path, capsys):
     from aisimulate.support.finalization import _merge_resources, _verify_collection, finalization_manifest
     from aisimulate.support.runtime import verify_runtime_profile

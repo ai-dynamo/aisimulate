@@ -355,7 +355,9 @@ def verify_runtime_profile(request: SupportRequest) -> dict[str, Any] | None:
             source = verify_runtime_profile(original)
             if source is None or finalized["runtime_probe"] != runtime_probe_manifest(original):
                 raise ValueError("finalized runtime probe provenance changed")
-            observations, evidence, _, _ = _verify_collection(original, root)
+            observations, evidence, _, _ = _verify_collection(
+                original, root, memory_revision=finalized.get("memory_revision")
+            )
             expected = _merge_resources(
                 observations,
                 evidence,
@@ -450,10 +452,16 @@ def preserve_runtime_overrides(previous: dict[str, Any], current: dict[str, Any]
 
             request = SupportRequest.model_validate(current)
             finalized = finalization_manifest(request)
-            if (
-                finalized is not None
-                and finalized.get("runtime_probe") == manifest
-                and finalized.get("source_request_id") == request_id(SupportRequest.model_validate(previous))
+            if finalized is not None and (
+                (
+                    finalized.get("runtime_probe") == manifest
+                    and finalized.get("source_request_id") == request_id(SupportRequest.model_validate(previous))
+                )
+                or (
+                    isinstance(finalized.get("memory_revision"), dict)
+                    and finalized["memory_revision"].get("request_id")
+                    == request_id(SupportRequest.model_validate(previous))
+                )
             ):
                 verify_runtime_profile(request)
                 return current
@@ -543,6 +551,7 @@ def verify_collection_runtime(
     observations: Path,
     *,
     collection_checkpoint: dict[str, Any] | None = None,
+    memory_request: SupportRequest | None = None,
 ) -> dict[str, Any]:
     """Validate new raw observations before asserting conservative compatibility."""
     from collector.fpm_forward.runtime_observations import validate_observations
@@ -603,6 +612,11 @@ def verify_collection_runtime(
     if actual != expected:
         raise ValueError("formal runtime cache layout or settings differ from the accepted probe")
     bound = request.profile_deployment().resources.runtime_memory.kv_cache_bytes
+    if memory_request is not None:
+        if collection_checkpoint is None:
+            raise ValueError("memory revision requires complete formal collection attempt bindings")
+        _verify_memory_revision(request, memory_request, result)
+        bound = memory_request.profile_deployment().resources.runtime_memory.kv_cache_bytes
     if capacity < bound:
         raise ValueError(
             f"formal runtime usable capacity {capacity} is smaller than the accepted bound {bound}; review new evidence"
@@ -617,6 +631,54 @@ def verify_collection_runtime(
         "observations_sha256": _hash(observations),
     }
     return result
+
+
+def _verify_memory_revision(original: SupportRequest, revised: SupportRequest, observed: dict[str, Any]) -> None:
+    """Allow only a smaller capacity measured by these exact formal attempts."""
+    selected = original.profile_deployment()
+    position = original.fpm_profile.deployments.index(selected)
+    payload = revised.model_dump(mode="json")
+    try:
+        resources = payload["fpm_profile"]["deployments"][position]["resources"]
+        capacity = resources["runtime_memory"]["kv_cache_bytes"]
+        resources["runtime_memory"]["kv_cache_bytes"] = selected.resources.runtime_memory.kv_cache_bytes
+        resources["runtime_memory"]["provenance"] = selected.resources.runtime_memory.provenance
+        resources["provenance"] = selected.resources.provenance
+        payload["fpm_profile"]["provenance"] = original.fpm_profile.provenance
+    except (KeyError, TypeError, IndexError) as exc:
+        raise ValueError("memory revision requires the original runtime profile and deployment") from exc
+    if payload != original.model_dump(mode="json"):
+        raise ValueError("memory revision changed non-capacity onboarding inputs")
+    if capacity >= selected.resources.runtime_memory.kv_cache_bytes:
+        raise ValueError("memory revision must lower the original accepted capacity")
+    source = runtime_probe_manifest(original)
+    revision = runtime_probe_manifest(revised)
+    if (
+        source is None
+        or revision is None
+        or any(revision[key] != source[key] for key in ("checkpoint", "configuration", "model_metadata"))
+        or revision["user_overrides"]
+    ):
+        raise ValueError("memory revision requires imported formal observations without capacity overrides")
+    verified = verify_runtime_profile(revised)
+    if verified is None or capacity != observed["resources"]["runtime_memory"]["kv_cache_bytes"]:
+        raise ValueError("memory revision capacity must equal the verified formal observed minimum")
+
+    def identity(evidence):
+        value = deepcopy(evidence)
+        value.pop("observations_index", None)
+        # Observation imports relocate immutable bytes into a snapshot. Paths
+        # can change; attempts, record contents and every artifact digest cannot.
+        for field in ("artifacts", "launch_artifacts", "runtime_artifacts"):
+            value[field] = sorted(
+                [{key: item for key, item in ref.items() if key != "path"} for ref in value[field]],
+                key=_json,
+            )
+        value["instrumentation"].pop("manifest")
+        return value
+
+    if identity(verified["provenance"]) != identity(observed["provenance"]):
+        raise ValueError("memory revision is not derived from the same complete formal collection observations")
 
 
 def _new_root(value: str, checkpoint: Path, *, fresh: bool) -> Path:

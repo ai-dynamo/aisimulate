@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS
 
 from .planner import FPMCell
 from .types import KVWARM_STRATEGIES
+
+logger = logging.getLogger(__name__)
 
 COLLECTOR_PROVENANCE_FILENAME = "collector-provenance.json"
 
@@ -117,6 +120,93 @@ class NativeCollection:
     # None only for artifacts predating the kvwarm-enabled runtime.
     kvwarm_meta: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | None = None
+
+
+def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> NativePointMeasurement | None:
+    """Prefer the unique ordinary sample over equivalent real-prefix path samples."""
+    ordinary = [m for m in measurements if m.kv_seed_regime == "not_applicable"]
+    if len(ordinary) != 1:
+        return None
+    sample = ordinary[0]
+    if sample.point["point_type"] != "prefill" or sample.point["total_kv_read_tokens"] != 0:
+        return None
+    expected = {key: value for key, value in sample.point.items() if key != "benchmark_id"}
+    for measurement in measurements:
+        if measurement is sample:
+            continue
+        if measurement.kv_seed_regime != "real_prefix":
+            return None
+        point = {key: value for key, value in measurement.point.items() if key != "benchmark_id"}
+        point["sample_reasons"] = [
+            reason for reason in point.get("sample_reasons", []) if reason != "prefill_real_seed"
+        ]
+        if point != expected:
+            return None
+    return sample
+
+
+def select_native_measurements(collection: NativeCollection, *, cell_id: str) -> list[NativePointMeasurement]:
+    """Select the formal per-coordinate samples from one validated attempt.
+
+    Used by publication and by repeatability source selection, so the original
+    reference timing is identical. Never combine independent repeat attempts.
+    """
+    # The steady-state decode policy clamps every per-sequence context below
+    # the measurable minimum up to it, so several requested plan points can
+    # collapse onto one achieved physical coordinate (e.g. batch=3 with
+    # requested total-kv 3/4/5/6 all measure total-kv 6). Repeated samples of
+    # one coordinate would violate the database's unique-key contract, so keep
+    # exactly one per coordinate: the native (unclamped) sample when present,
+    # otherwise the clamped sample with the lowest benchmark_id.
+    # Real-prefix staging can also emit zero-KV prefill samples beside the
+    # ordinary sample of the same work. Only this provenance difference is
+    # consolidatable: keep the unique ordinary sample with identical remaining
+    # point metadata. Other native collisions remain a hard error. Raw samples
+    # stay intact; neither reduction averages timings nor selects by latency.
+    grouped: dict[tuple[str, int, int, int], list[NativePointMeasurement]] = {}
+    for measurement in collection.points:
+        point = measurement.point
+        key = (
+            str(point["point_type"]),
+            int(point["batch_size"]),
+            int(point["total_prefill_tokens"]),
+            int(point["total_kv_read_tokens"]),
+        )
+        grouped.setdefault(key, []).append(measurement)
+    selected: list[NativePointMeasurement] = []
+    dropped_clamped = 0
+    dropped_zero_kv = 0
+    for key, measurements in grouped.items():
+        natives = [m for m in measurements if "context_clamped" not in (m.point.get("sample_reasons") or ())]
+        if len(natives) > 1:
+            sample = _zero_kv_prefill_sample(measurements)
+            if sample is not None:
+                selected.append(sample)
+                dropped_zero_kv += len(measurements) - 1
+                continue
+            raise ValueError(
+                f"conflicting FPM measurements for physical coordinate {key} in "
+                f"{cell_id}: {len(natives)} unclamped samples share one key"
+            )
+        if natives:
+            selected.append(natives[0])
+        else:
+            selected.append(min(measurements, key=lambda m: int(m.point["benchmark_id"])))
+        dropped_clamped += len(measurements) - 1
+    if dropped_clamped:
+        logger.info(
+            "FPM %s: consolidated %d context-clamped duplicate sample(s) onto their achieved physical coordinates",
+            cell_id,
+            dropped_clamped,
+        )
+    if dropped_zero_kv:
+        logger.info(
+            "FPM %s: consolidated %d zero-KV prefill provenance duplicate sample(s) onto their ordinary samples",
+            cell_id,
+            dropped_zero_kv,
+        )
+
+    return selected
 
 
 def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:

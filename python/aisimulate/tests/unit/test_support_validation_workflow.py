@@ -878,3 +878,59 @@ def test_replay_accepts_verified_memory_finalization_and_rejects_changed_capacit
     assert cli.main(args) == 0
     with pytest.raises(ValueError, match="resources differ"):
         workflow._check_replay(tmp_path / "altered-replay/validation.json", original, collection, plan)
+
+
+def test_replay_revalidates_capacity_revision_against_original_timing_collection(tmp_path, capsys, monkeypatch):
+    from collector.fpm_forward.repeatability import load_repeatability_source
+
+    from aisimulate import supervision
+    from aisimulate.support.finalization import finalize
+
+    from .test_onboard_runtime import _reviewed_capacity_revision
+
+    _, original, _, root, memory_config = _reviewed_capacity_revision(tmp_path, capsys)
+    target = tmp_path / "resolved"
+    finalize(original, root, target, memory_config=memory_config)
+    trace = tmp_path / "trace.json"
+    _write(
+        trace,
+        {
+            "id": "synthetic-capacity-revision",
+            "models": ["source"],
+            "block_size": 16,
+            "hash_id_scope": "local",
+            "requests": [{"t": 0, "type": "s", "model": "source", "in": 16, "out": 2, "hash_ids": [1]}],
+        },
+    )
+    monkeypatch.setattr(supervision, "main", cli.main)
+    replay = tmp_path / "replay"
+    assert (
+        cli.main(
+            [
+                "onboard",
+                "validate-fpm",
+                "--config",
+                str(target / "request.yaml"),
+                "--output-dir",
+                str(target),
+                "--trace",
+                str(trace),
+                "--validation-output-dir",
+                str(replay),
+            ]
+        )
+        == 0
+    )
+    plan = load_repeatability_source(next((root / "fpm-artifacts").iterdir()))
+    collection = {
+        "inputs": {
+            "collection_directory": str(root),
+            "formal_data": [
+                workflow._identity(path) for path in sorted((root / "systems/data").rglob("fpm_forward_perf.*"))
+            ],
+        }
+    }
+    assert workflow._check_replay(replay / "validation.json", original, collection, plan)["status"] == "passed"
+    memory_config.write_text(memory_config.read_text() + "\n")
+    with pytest.raises(ValueError, match="memory revision.*changed"):
+        workflow._check_replay(replay / "validation.json", original, collection, plan)

@@ -36,6 +36,10 @@ def add_finalization_parser(actions: Any) -> None:
     parser.add_argument("-c", "--config", required=True, help="Original reviewed onboarding request.")
     parser.add_argument("--output-dir", required=True, help="Original completed collection plan directory.")
     parser.add_argument("--resolved-output-dir", required=True, help="Fresh directory for resolved simulation inputs.")
+    parser.add_argument(
+        "--memory-config",
+        help="Accepted capacity-only request revision imported from this collection's formal observations.",
+    )
 
 
 def _json(path: Path) -> dict[str, Any]:
@@ -180,7 +184,7 @@ def _merge_resources(
 
 
 def _verify_collection(
-    request: SupportRequest, root: Path
+    request: SupportRequest, root: Path, *, memory_revision: dict[str, Any] | None = None
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[Path, bytes], dict[Path, str]]:
     from collector.fpm_forward.cli import _parser
     from collector.fpm_forward.config import FPMCollectionOptions
@@ -225,6 +229,9 @@ def _verify_collection(
     from .runtime import runtime_probe_manifest, verify_collection_runtime
 
     probe_manifest = runtime_probe_manifest(request)
+    memory_request = _memory_revision_request(memory_revision) if memory_revision is not None else None
+    if memory_request is not None and probe_manifest is None:
+        raise ValueError("memory revision requires the original imported runtime profile")
 
     # Normalize the reviewed inputs through the same local collector options
     # parser. This does not resolve a model or regenerate Dynamo's runtime grid.
@@ -332,7 +339,9 @@ def _verify_collection(
         if not isinstance(checkpoint.get("runtime_observations"), str):
             raise ValueError("formal collection is missing its runtime observation index")
         index = _inside(Path(checkpoint["runtime_observations"]), root)
-        observed = verify_collection_runtime(request, index, collection_checkpoint=checkpoint)
+        observed = verify_collection_runtime(
+            request, index, collection_checkpoint=checkpoint, memory_request=memory_request
+        )
         observations.append(observed["resources"])
         runtime_compatibility = observed["compatibility"]
         snapshots[index] = _digest(index.read_bytes())
@@ -370,10 +379,30 @@ def _verify_collection(
     if runtime_compatibility is not None:
         manifest["runtime_probe"] = probe_manifest
         manifest["runtime_compatibility"] = runtime_compatibility
+    if memory_revision is not None:
+        manifest["memory_revision"] = memory_revision
     return observations, manifest, files, snapshots
 
 
-def finalize(request: SupportRequest, output_dir: str | Path, resolved_output_dir: str | Path) -> dict[str, Any]:
+def _memory_revision_request(reference: dict[str, Any]) -> SupportRequest:
+    if not isinstance(reference, dict) or not isinstance(reference.get("path"), str):
+        raise ValueError("invalid memory revision reference")
+    path = Path(reference["path"])
+    if path.is_symlink() or not path.is_file() or _digest(path.read_bytes()) != reference.get("sha256"):
+        raise ValueError(f"memory revision request changed: {path}")
+    request = SupportRequest.from_yaml(path)
+    if request_id(request) != reference.get("request_id"):
+        raise ValueError("memory revision request identity changed")
+    return request
+
+
+def finalize(
+    request: SupportRequest,
+    output_dir: str | Path,
+    resolved_output_dir: str | Path,
+    *,
+    memory_config: str | Path | None = None,
+) -> dict[str, Any]:
     root = Path(output_dir).expanduser().resolve()
     raw_target = Path(resolved_output_dir).expanduser()
     if raw_target.is_symlink():
@@ -385,7 +414,22 @@ def finalize(request: SupportRequest, output_dir: str | Path, resolved_output_di
         raise ValueError("resolved output directory must be new; existing artifacts cannot be replaced")
     with plan_lock(root):
         check_plan(request, root)
-        observations, manifest, formal_files, snapshots = _verify_collection(request, root)
+        memory_revision = None
+        if memory_config is not None:
+            from .runtime import verify_runtime_acceptance
+
+            path = Path(memory_config).expanduser().absolute()
+            revised = SupportRequest.from_yaml(path)
+            memory_revision = {
+                "path": str(path),
+                "sha256": _digest(path.read_bytes()),
+                "request_id": request_id(revised),
+            }
+            _memory_revision_request(memory_revision)
+            verify_runtime_acceptance(revised)
+        observations, manifest, formal_files, snapshots = _verify_collection(
+            request, root, memory_revision=memory_revision
+        )
         resources = _merge_resources(observations, manifest, source_references=True)
         payload = request.model_dump(mode="json")
         payload["fpm_profile"]["provenance"] = _canonical(
@@ -414,6 +458,8 @@ def finalize(request: SupportRequest, output_dir: str | Path, resolved_output_di
             for path, digest in snapshots.items():
                 if _digest(_inside(path, root).read_bytes()) != digest:
                     raise ValueError(f"collection artifact changed during finalization: {path}")
+            if memory_revision is not None:
+                _memory_revision_request(memory_revision)
             if target.exists():
                 raise ValueError("resolved output appeared during finalization; refusing to replace it")
             os.rename(staging, target)
@@ -428,7 +474,12 @@ def finalize(request: SupportRequest, output_dir: str | Path, resolved_output_di
 
 
 def run_finalization(args: argparse.Namespace) -> int:
-    result = finalize(SupportRequest.from_yaml(args.config), args.output_dir, args.resolved_output_dir)
+    result = finalize(
+        SupportRequest.from_yaml(args.config),
+        args.output_dir,
+        args.resolved_output_dir,
+        memory_config=args.memory_config,
+    )
     print(json.dumps(result, indent=2, sort_keys=True))
     print("Runtime memory resolved. Review the new profile before accepting it in the onboarding checkpoint.")
     return 0

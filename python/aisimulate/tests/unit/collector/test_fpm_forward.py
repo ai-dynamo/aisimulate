@@ -2470,7 +2470,7 @@ def test_zero_kv_prefill_duplicates_publish_unique_ordinary_sample(tmp_path, cap
     )
     raw_before = {path: path.read_bytes() for path in (cell_dir / "raw").rglob("*.json")}
 
-    with caplog.at_level("INFO", logger="collector.fpm_forward.database"):
+    with caplog.at_level("INFO", logger="collector.fpm_forward.native_artifact"):
         rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
 
     assert len(rows) == 1

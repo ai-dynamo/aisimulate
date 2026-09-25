@@ -28,7 +28,13 @@ from .config import FPMCollectionOptions, with_kv_warmup_defaults
 from .execution_evidence import file_evidence, inspect_execution_evidence
 from .memory_admission import DTypeMemoryEstimate, TopologyMemoryDecision
 from .model_capability import ResolvedModelConfig
-from .native_artifact import NativeCollection, NativePointMeasurement, _rank_artifacts, validate_native_collection
+from .native_artifact import (
+    NativeCollection,
+    NativePointMeasurement,
+    _rank_artifacts,
+    select_native_measurements,
+    validate_native_collection,
+)
 from .planner import BackendPolicy, FPMCollectionPlan, _canonical_hash, _hash_stable_admission
 from .runner import (
     CHECKPOINT_SCHEMA,
@@ -185,10 +191,10 @@ def _regime(measurement: NativePointMeasurement) -> tuple[Any, ...]:
     )
 
 
-def _select_points(collection: NativeCollection, limit: int) -> list[dict[str, Any]]:
+def _select_points(collection: NativeCollection, limit: int, *, cell_id: str) -> list[dict[str, Any]]:
     """Cover extremes and regime/boundary representatives with a fixed budget."""
     points = sorted(
-        collection.points,
+        select_native_measurements(collection, cell_id=cell_id),
         key=lambda item: (
             item.point["batch_size"],
             item.point["total_prefill_tokens"],
@@ -299,7 +305,7 @@ def freeze_repeatability_plan(
             expected_attempt_id=entry["attempt_id"],
         )
         _validate_points_receipts(source_plan, cell, cell_dir / "raw", entry["attempt_id"])
-        selected = _select_points(collection, max_points_per_cell)
+        selected = _select_points(collection, max_points_per_cell, cell_id=cell.cell_id)
         capture_sizes = sorted(
             {value for item in collection.points if (value := item.point.get("expected_capture_size")) is not None}
         )

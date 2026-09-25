@@ -453,7 +453,9 @@ def _check_replay(path: Path, original: SupportRequest, collection: dict[str, An
                 raise ValueError("finalization source evidence changed")
         verify_finalized_data(request, root)
         observations, verified_manifest, _, _ = _verify_collection(
-            original, Path(collection["inputs"]["collection_directory"])
+            original,
+            Path(collection["inputs"]["collection_directory"]),
+            memory_revision=manifest.get("memory_revision"),
         )
         expected_resources = _merge_resources(
             observations,
