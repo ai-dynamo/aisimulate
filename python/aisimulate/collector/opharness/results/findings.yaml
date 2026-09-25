@@ -1303,6 +1303,12 @@ findings:
       (Glm5Next, Qwen4Exp, Inkling, MiMoV2 — 12 repos). Matrix after the
       drops: 124 rows per backend — vllm 97 / 9 / 18, sglang 93 / 6 / 25,
       trtllm 69 / 0 / 55.
+      DECISIONS CLOSED 2026-09-25 (tianhaox): the NVFP4 DSA artifacts on
+      trtllm rc23 / SM90 stay modeled as bf16-KV (rc23's sparse FlashMLA
+      asserts bf16 KV; the perf task keeps that dtype) — continue as is.
+      compute_scale rows are an approximation by design (governed exception
+      stands, no further follow-up). SDK modeling of the four remaining
+      unmodeled architectures is out of this work — see TODO.md.
     applies_to: [zai-org/GLM-5.3-Flash, Qwen/Qwen3.8-27B, Qwen/Qwen3.8-Flash-Next, nvidia/Qwen3.8-2.4T-A95B-NVFP4,
       deepseek-ai/DeepSeek-V4.1-Flash, meta-models/Muse-Glimmer-30B, baerquant/Inkling, Altworld/Hemmingway-1,
       TokenRhythm/NeoHorse-1-9B, ornith-ai/Ornith-1.5-35B-A3B, openbmb/MiniCPM5-2B,
