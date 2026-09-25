@@ -741,6 +741,11 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         "evidence_root": str(root),
         "hardware_by_rank": hardware_by_rank,
         "graph_policy": graph_proof["policy"] if graph_proof else None,
+        **(
+            {"graph_group_compatibility": graph_proof["graph_group_compatibility"]}
+            if graph_proof and "graph_group_compatibility" in graph_proof
+            else {}
+        ),
         **({"prefill_policy": prefill_proof["policy"]} if prefill_proof else {}),
     }
 

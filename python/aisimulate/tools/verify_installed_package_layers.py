@@ -309,6 +309,7 @@ def _verify_fpm_workflow() -> str:
         (importlib.import_module("collector.glm53flash_jsonl"), "collector/glm53flash_jsonl.py"),
         (importlib.import_module("collector.glm53flash_graph_export"), "collector/glm53flash_graph_export.py"),
         (importlib.import_module("collector.glm53flash_graph_shards"), "collector/glm53flash_graph_shards.py"),
+        (importlib.import_module("collector.glm53flash_graph_group"), "collector/glm53flash_graph_group.py"),
         (
             importlib.import_module("collector.glm53flash_vllm_graph_export"),
             "collector/glm53flash_vllm_graph_export.py",

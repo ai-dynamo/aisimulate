@@ -211,7 +211,7 @@ def read_graph_run(root: Path, run: dict) -> dict:
         raise ValueError("native graph manifest must contain the complete production graph and one setup marker")
     provenance = json.loads(_local(root, "provenance.json").read_bytes())
     entries = manifest["phases"]["generation"] + manifest["runtime_operations"]["generation"]
-    snapshots, registries, state_hashes, captures_by_rank, forwards = {}, {}, {}, {}, {}
+    snapshots, registries, state_hashes, captures_by_rank, forwards, layouts = {}, {}, {}, {}, {}, {}
     for rank in range(tp):
         path = _local(root, f"graph-policy-rank-{rank}.json")
         files.add(path.name)
@@ -222,6 +222,7 @@ def read_graph_run(root: Path, run: dict) -> dict:
         layout_path = _local(root, f"state-layout-rank-{rank}.json")
         files.add(layout_path.name)
         state_hashes[rank] = file_sha256(layout_path)
+        layouts[rank] = json.loads(layout_path.read_bytes())
         captures = _captures(root, rank, snapshot, manifest, provenance, files) if calibrated else {}
         captures_by_rank[rank] = captures
         registries[rank] = (
@@ -365,6 +366,12 @@ def read_graph_run(root: Path, run: dict) -> dict:
     from collector.glm53flash_sglang_control import read_submission
 
     result["request_submission"] = read_submission(root, run, result, files)
+    from collector.glm53flash_graph_group import compatibility, enabled
+
+    if enabled(run):
+        result["graph_group_compatibility"] = compatibility(
+            comparable[0], result["execution_policy"], layouts, captures_by_rank
+        )
     return result
 
 
@@ -697,7 +704,11 @@ def bind_calibration(paths, run, native):
         {
             key: value
             for key, value in row.items()
-            if not (key in ("operation_name", "graph_lookup_contract") and value is None)
+            if not (
+                key
+                in ("operation_name", "graph_lookup_contract", "graph_group", "graph_group_sha256", "graph_member_id")
+                and value is None
+            )
         }
         for row in selected
     ]
@@ -732,9 +743,27 @@ def predict_homogeneous(run, base, config, calibration_native, *, calibration_bi
         raise ValueError("graph prediction requires explicit independent graph holdout")
     if len(config["systems_paths"]) != 1:
         raise ValueError("initial graph prediction requires one fully receipted calibration root")
+    from collector import glm53flash_graph_group as group
+
+    grouped = calibration_binding is not None and calibration_binding.get("group_contract") == group.CONTRACT
+    if grouped:
+        run = {**run, "spec": {**run["spec"], "ops_graph_group_contract": group.CONTRACT}}
     holdout = load_native(run, base)
+    if grouped:
+        group.validate_independent_holdout(calibration_native, calibration_binding, holdout)
+        expected_compatibility = calibration_binding["graph_group"]["compatibility"]
+        actual_compatibility = holdout.get("graph_group_compatibility", {})
+        if any(
+            expected_compatibility[key] != actual_compatibility.get(key)
+            for key in (
+                "execution_policy",
+                "native_snapshot_sha256",
+                "state_layout_sha256",
+            )
+        ):
+            raise ValueError("graph group holdout changed actual execution/state/padding identity")
     _same_execution_policy(calibration_native, holdout, "graph calibration/holdout")
-    policy = calibration_native["graph_policy"]
+    policy = group.native_policy(calibration_native)
     actual = holdout["graph_policy"]
     snapshot = actual["native_snapshot"]
     if policy["backend"] == "vllm":
@@ -802,19 +831,27 @@ def predict_homogeneous(run, base, config, calibration_native, *, calibration_bi
     contract = None
     if table.is_file():
         selected = [
-            row for row in pq.read_table(table).to_pylist() if row["graph_policy_sha256"] == sha256_json(policy)
+            row
+            for row in pq.read_table(table).to_pylist()
+            if (
+                row.get("graph_group_sha256") == calibration_binding["graph_group_sha256"]
+                if grouped
+                else row["graph_policy_sha256"] == sha256_json(policy)
+            )
         ]
         contracts = {row.get("graph_lookup_contract") for row in selected}
         if len(contracts) != 1:
             raise ValueError("graph prediction table has missing or mixed analysis contracts")
         contract = contracts.pop()
     named = _named_contract(contract)
+    if table.is_file() and any(row.get("graph_group") is not None for row in selected) != grouped:
+        raise ValueError("graph group table requires its explicit complete group binding")
     if named:
         from collector.glm53flash_graph_shards import validate_prediction_binding
 
         if not calibration_binding or (
             calibration_binding.get("lookup_contract") != contract
-            or calibration_binding.get("graph_policy_sha256") != sha256_json(policy)
+            or (not grouped and calibration_binding.get("graph_policy_sha256") != sha256_json(policy))
             or {"path": str(table), "sha256": file_sha256(table)} not in calibration_binding.get("tables", [])
         ):
             raise ValueError("named graph prediction requires its exact original calibration binding")
@@ -836,11 +873,13 @@ def predict_homogeneous(run, base, config, calibration_native, *, calibration_bi
                 audit = engine.glm53flash_lookup_audit("generation", batch, 1, total // batch)
                 if (
                     audit.get("lookup_contract") != NAMED_CONTRACT
-                    or audit.get("graph_policy_sha256") != sha256_json(policy)
+                    or (not grouped and audit.get("graph_policy_sha256") != sha256_json(policy))
                     or len(audit.get("operations", [])) != (367 if policy["backend"] == "sglang" else 278)
                     or not math.isclose(sum(op["latency_ms"] for op in audit["operations"]), value, rel_tol=1e-12)
                 ):
                     raise ValueError("named graph endpoint audit differs from public prediction")
+                if grouped:
+                    group.validate_audit(audit, calibration_binding["graph_group"])
                 prediction_evidence[point["benchmark_id"]] = audit
             rows[point["benchmark_id"]] = {"prediction_ms": value}
         except Exception as error:
@@ -850,7 +889,11 @@ def predict_homogeneous(run, base, config, calibration_native, *, calibration_bi
         **({"prediction_evidence": prediction_evidence} if named else {}),
         "diagnostics": {
             "consumer": "public_EngineHandle_predict_decode_latency",
-            "graph_policy_sha256": sha256_json(policy),
+            **(
+                {"graph_group_sha256": calibration_binding["graph_group_sha256"]}
+                if grouped
+                else {"graph_policy_sha256": sha256_json(policy)}
+            ),
             "composition": "disjoint_native_unit_unions_additive_approximation",
         },
     }

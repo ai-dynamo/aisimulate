@@ -145,6 +145,7 @@ def _claim_identity(roots, runs, requests, *, root, run_id, request_ids):
 
 def calibration_rows(parent, children, *, lookup_contract=None):
     """Reproduce every child from its native source, control and trace evidence."""
+    from collector import glm53flash_graph_group as group
     from collector.glm53flash_graph_export import (
         KEYS,
         NAMED_CONTRACT,
@@ -153,24 +154,35 @@ def calibration_rows(parent, children, *, lookup_contract=None):
         verify_evidence,
     )
 
-    if lookup_contract != NAMED_CONTRACT:
+    grouped = lookup_contract == group.CONTRACT
+    if grouped != group.enabled(parent):
+        raise ValueError("graph group publication requires matching explicit parent analysis opt-in")
+    if lookup_contract not in (NAMED_CONTRACT, group.CONTRACT):
         raise ValueError("graph shard publication requires the explicit named operation contract")
     if parent["role"] != "calibration":
         raise ValueError("graph shard publication requires calibration, never holdout")
     declared = validate_children(parent, [run for run, _ in children])
     baseline = children[0][1]
+    group_baseline, members = None, {}
     rows, owners, receipts, roots, ids, requests = [], [], [], set(), set(), set()
     physical = set()
     for run, native in children:
-        same_native_policy(baseline, native)
+        if not grouped:
+            same_native_policy(baseline, native)
         cid = run["cell"]["cell_id"]
         shard = declared[cid]
         root = Path(native["evidence_root"])
         _claim_identity(
             roots, ids, requests, root=root, run_id=native["runtime_run_id"], request_ids=native["request_ids"]
         )
-        proof = read_graph_run(root, run)
-        same_native_policy(native, {**proof, "graph_policy": proof["policy"]})
+        analyzed_run = {**run, "spec": {**run["spec"], "ops_graph_group_contract": group.CONTRACT}} if grouped else run
+        proof = read_graph_run(root, analyzed_run)
+        checked = {**proof, "graph_policy": proof["policy"]}
+        same_native_policy(native, checked)
+        if grouped:
+            if group_baseline is None:
+                group_baseline = checked
+            group.same_members(group_baseline, checked)
         evidence = verify_evidence(root, proof)
         actual_requests = {
             request for ranks in proof["forwards"].values() for row in ranks.values() for request in row["request_ids"]
@@ -193,7 +205,7 @@ def calibration_rows(parent, children, *, lookup_contract=None):
             request_ids=control["request_ids"],
         )
         evidence_sha = file_sha256(root / "graph-calibration-evidence.json")
-        actual, _ = aggregate_graph(proof, evidence_sha256=evidence_sha, lookup_contract=lookup_contract)
+        actual, _ = aggregate_graph(proof, evidence_sha256=evidence_sha, lookup_contract=NAMED_CONTRACT)
         coordinate_owners = {_coordinates(item["point"], shard["phase"]): item for item in shard["point_map"]}
         if len(coordinate_owners) != len(shard["point_map"]):
             raise ValueError("graph frozen shard repeats physical point geometry")
@@ -206,6 +218,8 @@ def calibration_rows(parent, children, *, lookup_contract=None):
             physical.add(key)
             observed.add(coordinates)
             owner = coordinate_owners[coordinates]
+            if grouped:
+                row["graph_member_id"] = cid
             rows.append(row)
             owners.append(
                 {
@@ -217,6 +231,34 @@ def calibration_rows(parent, children, *, lookup_contract=None):
             )
         if observed != coordinate_owners.keys():
             raise ValueError("graph shard omits one or more original frozen points")
+        if grouped:
+            points = {
+                canonical_json(
+                    {
+                        "batch_size": row["batch_size"],
+                        "prefix": row["prefix"],
+                        "padded_batch_size": row["padded_batch_size"],
+                        "native_benchmark_id": coordinate_owners[row["batch_size"], row["prefix"]][
+                            "native_benchmark_id"
+                        ],
+                        "original_point_id": coordinate_owners[row["batch_size"], row["prefix"]]["original_point_id"],
+                    }
+                )
+                for row in actual
+            }
+            rank_selections = {row["rank_selection_sha256"] for row in actual}
+            if len(rank_selections) != 1:
+                raise ValueError("graph member mixed original rank-selection receipts")
+            members[cid] = {
+                "graph_policy": proof["policy"],
+                "graph_policy_sha256": sha256_json(proof["policy"]),
+                "evidence_sha256": evidence_sha,
+                "rank_selection_sha256": rank_selections.pop(),
+                "source_plan_sha256": run["plan"]["sha256"],
+                "native_runtime_run_id": native["runtime_run_id"],
+                "control_sha256": sha256_json(control),
+                "points": [json.loads(value) for value in sorted(points)],
+            }
         receipts.append(
             {
                 "child_cell_id": cid,
@@ -234,11 +276,15 @@ def calibration_rows(parent, children, *, lookup_contract=None):
         "parent_cell_id": parent["cell"]["cell_id"],
         "source_plan_sha256": parent["plan"]["sha256"],
         "shard_manifest_sha256": sha256_json(parent["shard_manifest"]),
-        "graph_policy_sha256": sha256_json(baseline["graph_policy"]),
+        **({} if grouped else {"graph_policy_sha256": sha256_json(baseline["graph_policy"])}),
         "corpus_sha256": parent["corpus"],
         "rows": sorted(owners, key=canonical_json),
         "children": sorted(receipts, key=canonical_json),
     }
+    if grouped:
+        manifest = group.make_group(parent, members, group_baseline["graph_group_compatibility"])
+        group.annotate(rows, manifest)
+        ownership["graph_group"] = manifest
     return sorted(rows, key=canonical_json), ownership
 
 
@@ -288,19 +334,34 @@ def bind_calibration(paths, parent, children):
 
     if not selected or any(row.get("graph_lookup_contract") != NAMED_CONTRACT for row in selected):
         raise ValueError("graph shards require complete named operation rows")
-    lookup_contract = NAMED_CONTRACT
+    from collector.glm53flash_graph_group import CONTRACT, enabled
+
+    lookup_contract = CONTRACT if enabled(parent) else NAMED_CONTRACT
     expected, ownership = calibration_rows(parent, children, lookup_contract=lookup_contract)
+    from collector.glm53flash_graph_group import COLUMNS
+
+    selected = [
+        {key: value for key, value in row.items() if not (key in COLUMNS and value is None)} for row in selected
+    ]
     if sorted(selected, key=canonical_json) != expected:
         raise ValueError("graph shard table differs from complete original calibration observations")
     return {
         "rows": len(selected),
         "tables": tables,
-        "graph_policy_sha256": ownership["graph_policy_sha256"],
+        **(
+            {
+                "graph_group": ownership["graph_group"],
+                "graph_group_sha256": sha256_json(ownership["graph_group"]),
+                "group_contract": CONTRACT,
+            }
+            if "graph_group" in ownership
+            else {"graph_policy_sha256": ownership["graph_policy_sha256"]}
+        ),
         "calibration_group_sha256": sha256_json(ownership),
         "ownership": ownership,
         "children": ownership["children"],
         "source_plan_sha256": parent["plan"]["sha256"],
-        **({"lookup_contract": lookup_contract} if lookup_contract else {}),
+        "lookup_contract": NAMED_CONTRACT,
     }
 
 
@@ -316,6 +377,11 @@ def validate_prediction_binding(native, binding):
         ):
             raise ValueError("native graph prediction calibration binding evidence changed")
         return
+    from collector import glm53flash_graph_group as group
+
+    grouped = binding.get("group_contract") == group.CONTRACT
+    if binding.get("group_contract") not in (None, group.CONTRACT):
+        raise ValueError("unknown graph group prediction binding")
     ownership = binding.get("ownership", {})
     receipts = binding.get("children", [])
     by_id = {row["child_cell_id"]: row for row in receipts}
@@ -325,13 +391,22 @@ def validate_prediction_binding(native, binding):
         or by_id.keys() != native["_children"].keys()
         or ownership.get("children") != sorted(receipts, key=canonical_json)
         or ownership.get("schema") != "glm53flash_sglang_graph_shard_ownership_v1"
-        or ownership.get("graph_policy_sha256") != sha256_json(native["graph_policy"])
+        or (not grouped and ownership.get("graph_policy_sha256") != sha256_json(native["graph_policy"]))
+        or (
+            grouped
+            and (
+                ownership.get("graph_group") != binding.get("graph_group")
+                or binding.get("graph_group_sha256") != sha256_json(binding.get("graph_group"))
+                or set(binding.get("graph_group", {}).get("members", {})) != set(native["_children"])
+                or "graph_policy_sha256" in binding
+            )
+        )
         or ownership.get("source_plan_sha256") != binding.get("source_plan_sha256")
         or binding.get("calibration_group_sha256") != sha256_json(ownership)
     ):
         raise ValueError("graph prediction lacks its complete original calibration shard group")
     for cid, child in native["_children"].items():
-        same_native_policy(native, child)
+        (group.same_members if grouped else same_native_policy)(native, child)
         receipt = by_id[cid]
         evidence = Path(child["evidence_root"]) / "graph-calibration-evidence.json"
         if (
@@ -341,6 +416,17 @@ def validate_prediction_binding(native, binding):
             or receipt.get("control") != _control_identity(Path(child["evidence_root"]))
         ):
             raise ValueError("graph calibration shard provenance changed before prediction")
+        if grouped:
+            member = binding["graph_group"]["members"][cid]
+            if (
+                member["graph_policy"] != child["graph_policy"]
+                or member["graph_policy_sha256"] != sha256_json(child["graph_policy"])
+                or member["evidence_sha256"] != receipt["evidence_sha256"]
+                or member["native_runtime_run_id"] != receipt["native_runtime_run_id"]
+                or member["control_sha256"] != sha256_json(receipt["control"])
+                or binding["graph_group"]["compatibility"] != child["graph_group_compatibility"]
+            ):
+                raise ValueError("graph group binding changed original member policy or compatibility")
 
 
 def predict_homogeneous(run, base, config, calibration_native, calibration_binding):
@@ -356,7 +442,10 @@ def predict_homogeneous(run, base, config, calibration_native, calibration_bindi
     # Recheck the whole holdout's independent native attempt identities before
     # calling the existing leaf predictor. No aggregate native run is created.
     from collector.fpm_forward.glm53flash_validation import _load_native
+    from collector.glm53flash_graph_group import CONTRACT
 
+    if calibration_binding.get("group_contract") == CONTRACT:
+        run = {**run, "spec": {**run["spec"], "ops_graph_group_contract": CONTRACT}}
     holdout = _load_native(run, base, "ops")
     from collector.glm53flash_graph_export import _same_execution_policy
 
@@ -365,6 +454,8 @@ def predict_homogeneous(run, base, config, calibration_native, calibration_bindi
         raise ValueError("graph holdout reused calibration request identities")
     rows, diagnostics, prediction_evidence, prediction_evidence_origins = {}, [], {}, {}
     for child in run["children"]:
+        if calibration_binding.get("group_contract") == CONTRACT:
+            child = {**child, "spec": {**child["spec"], "ops_graph_group_contract": CONTRACT}}
         result = predict_leaf(child, base, config, calibration_native, calibration_binding=calibration_binding)
         mapping = child["original_point_ids"]
         if result["rows"].keys() != mapping.keys():

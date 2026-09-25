@@ -379,11 +379,17 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
             from collector.glm53flash_graph_shards import same_native_policy, validate_children
 
             validate_children(run, run["children"])
+            from collector.glm53flash_graph_group import CONTRACT, enabled, same_members
+
+            if enabled(run):
+                same_native_policy = same_members
         values, request_ids, children, receipts = {}, set(), {}, []
         boundaries, versions = set(), set()
         execution_policy = None
         native_runs, native_roots = set(), set()
         for child in run["children"]:
+            if graph and enabled(run):
+                child = {**child, "spec": {**child["spec"], "ops_graph_group_contract": CONTRACT}}
             native = _load_native(child, base, mode)
             if run["key"][0] == "sglang":
                 _require_sglang_policy(native)
@@ -406,6 +412,7 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
                         "_allocator_policy",
                         "prefill_policy",
                         "graph_policy",
+                        "graph_group_compatibility",
                     )
                     if key in native
                 }
@@ -449,6 +456,9 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
         version = validate_backend_version(run["key"][0], versions.pop())
         if run["role"] == "holdout" and set(values) != {point["benchmark_id"] for point in run["points"]}:
             raise ValueError("native shards omit original frozen holdout point IDs")
+        if graph and enabled(run):
+            execution_policy = {key: value for key, value in execution_policy.items() if key != "graph_policy"}
+            execution_policy["graph_group_contract"] = CONTRACT
         return {
             "values": values,
             "request_ids": request_ids,

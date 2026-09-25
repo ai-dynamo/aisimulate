@@ -960,13 +960,13 @@ rederives capture/clone/trace measurements and each independent control; it
 rejects reused roots, run IDs, requests, missing points and duplicate physical
 rows. It never averages duplicate rows or reconstructs names from pooled data.
 
-All calibration children must have exactly equal complete `graph_policy`
-objects, including original resolved-configuration, capture/evidence and state
+Without the separate group opt-in below, all calibration children must have
+exactly equal complete `graph_policy` objects, including original resolved-configuration, capture/evidence and state
 identities. Different capture evidence is rejected even when it might describe
 the same serving configuration. The helper does not normalize those differences
 or claim that actual separately collected shards are compatible. An actual
-campaign must satisfy this condition before publication; relaxing it would need
-a separately reviewed source-backed policy contract.
+campaign using this single-policy contract must satisfy that condition. The
+separate group contract below retains independent policies explicitly.
 
 The sidecar retains each child's native run and control identities, evidence
 SHA, point ownership and original parent/shard manifest hashes. Binding
@@ -978,3 +978,48 @@ named predictions require endpoint audits with their original evidence hashes;
 aggregate native run is invented. Controls remain `REPORTED_NOT_ASSUMED`, and
 independent full-coverage accuracy acceptance remains required. This source
 implementation includes TEST_ONLY query evidence, not a qualified GPU campaign.
+
+
+### Explicit independent graph policy groups
+
+For independently captured SGLang FULL decode shards, set the analysis-only
+parent spec `ops_graph_group_contract="sglang_named_graph_group_v1"` and call
+`publish_sharded_calibration(..., parent_run=parent,
+lookup_contract="sglang_named_graph_group_v1")`. This option is not part of the
+original producer plan, native arguments or native graph policy. The public
+parent loader propagates it only to analysis of each original child.
+
+The reader rederives every child's source/clone/trace and independent control
+before comparing actual serving/allocator settings, native capture descriptors,
+physical state layouts and named source-call ownership. Native CUDA/CUPTI
+library content identities remain part of that comparison. Original process
+addresses, node IDs, GPU UUIDs and receipt hashes remain in each child's original
+evidence; they are not rewritten into a common native policy. Every GPU must
+independently qualify as GB300. This first compatibility contract conservatively
+requires equal tensor group counts, dtypes, dimensions, strides and capacities;
+an actual capacity mismatch is rejected and requires a separate source-backed
+rule. It is not an accuracy or cross-allocation performance guarantee.
+
+The named table adds `graph_group`, `graph_group_sha256` and `graph_member_id`.
+Each row retains its complete original `graph_policy` and SHA, measurement
+evidence and rank-selection receipt. The group manifest binds the complete
+original parent point union, child policies, native runs, independent controls,
+and actual compatibility. Binding rederives the entire table; declared metadata
+alone cannot admit measurements. The grouped native parent has no aggregate
+run ID or native graph policy.
+
+The Rust reader rejects mixed, missing, duplicate or undeclared membership. It
+selects an exact complete 367-unit point first, then the nearest compatible
+complete P bracket at the same B and native padded B; equal-width ties use the
+lower prefix first. All units use the same selected point pair. Existing native
+state partitions, dispatch fingerprint/activity guards and no-extrapolation
+rules remain. The public audit uses the same selector and reports a group hash
+plus each endpoint's original member, policy SHA, native run, measurement and
+rank-selection SHAs, native benchmark/original point IDs and weight. It never
+presents one member policy as an aggregate policy. Calibration/control identities
+cannot be reused by independent holdout. Legacy unopted schema1/2 and schema3/4
+contracts retain their existing behavior.
+
+Tests use explicitly authored synthetic measurements and a rebuilt public Rust
+consumer. Real multi-shard compatibility and full holdout accuracy still require
+original GPU evidence. No historical failed pilot is relabeled as accepted.

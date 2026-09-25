@@ -15,7 +15,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub const BASENAME: &str = "glm53flash_graph_perf.parquet";
 const NAMED_CONTRACT: &str = "graph_named_operations_v1";
@@ -419,6 +419,171 @@ pub(crate) fn validate_generation_ops(
     Ok(true)
 }
 
+const GROUP_CONTRACT: &str = "sglang_named_graph_group_v1";
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroupExecutionPolicy {
+    normalization: String,
+    sha256: String,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroupCompatibility {
+    execution_policy: GroupExecutionPolicy,
+    native_snapshot_sha256: String,
+    state_layout_sha256: String,
+    source_ownership_sha256: String,
+}
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroupPoint {
+    batch_size: u32,
+    prefix: u32,
+    padded_batch_size: u32,
+    native_benchmark_id: u32,
+    original_point_id: u32,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroupMember {
+    graph_policy: GraphPolicy,
+    graph_policy_sha256: String,
+    evidence_sha256: String,
+    rank_selection_sha256: String,
+    source_plan_sha256: String,
+    native_runtime_run_id: String,
+    control_sha256: String,
+    points: Vec<GroupPoint>,
+}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphGroup {
+    contract: String,
+    source_plan_sha256: String,
+    shard_manifest_sha256: String,
+    corpus_sha256: String,
+    compatibility: GroupCompatibility,
+    members: BTreeMap<String, GroupMember>,
+}
+fn canonical_value<T: Serialize>(value: &T) -> Result<String, AicError> {
+    serde_json::to_string(&serde_json::to_value(value).map_err(|e| invalid(e.to_string()))?)
+        .map_err(|e| invalid(e.to_string()))
+}
+fn value_sha<T: Serialize>(value: &T) -> Result<String, AicError> {
+    Ok(format!(
+        "{:x}",
+        Sha256::digest(canonical_value(value)?.as_bytes())
+    ))
+}
+fn same_graph_execution(a: &GraphPolicy, b: &GraphPolicy) -> bool {
+    a.schema_version == b.schema_version
+        && a.backend == b.backend
+        && a.backend_version == b.backend_version
+        && a.backend_revision == b.backend_revision
+        && a.checkpoint_format == b.checkpoint_format
+        && a.checkpoint_revision == b.checkpoint_revision
+        && a.tp_size == b.tp_size
+        && a.phase == b.phase
+        && a.runtime_mode == b.runtime_mode
+        && a.capture_sizes == b.capture_sizes
+        && a.disable_padding == b.disable_padding
+        && a.captured_req_width == b.captured_req_width
+        && a.native_flags == b.native_flags
+        && a.source_pins == b.source_pins
+        && a.source_sha256 == b.source_sha256
+        && a.config_sha256 == b.config_sha256
+        && a.runtime_digest == b.runtime_digest
+}
+impl GraphGroup {
+    fn validate(&self) -> Result<(), AicError> {
+        let c = &self.compatibility;
+        if self.contract != GROUP_CONTRACT
+            || self.members.is_empty()
+            || ![
+                &self.source_plan_sha256,
+                &self.shard_manifest_sha256,
+                &self.corpus_sha256,
+                &c.execution_policy.sha256,
+                &c.native_snapshot_sha256,
+                &c.state_layout_sha256,
+                &c.source_ownership_sha256,
+            ]
+            .iter()
+            .all(|s| sha256(s))
+            || !matches!(
+                c.execution_policy.normalization.as_str(),
+                "resolved_server_args_except_random_seed_v1"
+                    | "resolved_server_args_and_native_allocator_v2"
+            )
+        {
+            return Err(invalid(
+                "graph group lacks its explicit complete compatibility contract",
+            ));
+        }
+        let baseline = &self.members.values().next().unwrap().graph_policy;
+        let mut runs = BTreeSet::new();
+        let mut sources = BTreeSet::new();
+        let mut controls = BTreeSet::new();
+        let mut points = BTreeSet::new();
+        let mut original_ids = BTreeSet::new();
+        for (id, member) in &self.members {
+            member.graph_policy.validate()?;
+            if id.is_empty()
+                || member.graph_policy.schema_version != 1
+                || member.graph_policy.backend != "sglang"
+                || !same_graph_execution(baseline, &member.graph_policy)
+                || value_sha(&member.graph_policy)? != member.graph_policy_sha256
+                || ![
+                    &member.evidence_sha256,
+                    &member.rank_selection_sha256,
+                    &member.source_plan_sha256,
+                    &member.control_sha256,
+                ]
+                .iter()
+                .all(|s| sha256(s))
+                || member.native_runtime_run_id.is_empty()
+                || !runs.insert(&member.native_runtime_run_id)
+                || !sources.insert(&member.source_plan_sha256)
+                || !controls.insert(&member.control_sha256)
+                || member.points.is_empty()
+            {
+                return Err(invalid(
+                    "graph group changed or reused an original native member identity",
+                ));
+            }
+            let mut native_ids = BTreeSet::new();
+            for point in &member.points {
+                if point.prefix == 0
+                    || point.prefix >= 131072
+                    || member.graph_policy.padded_batch(point.batch_size)?
+                        != point.padded_batch_size
+                    || point.native_benchmark_id == 0
+                    || point.original_point_id == 0
+                    || !native_ids.insert(point.native_benchmark_id)
+                    || !original_ids.insert(point.original_point_id)
+                    || !points.insert((point.batch_size, point.prefix, point.padded_batch_size))
+                {
+                    return Err(invalid(
+                        "graph group duplicates or changes original native point ownership",
+                    ));
+                }
+            }
+            if native_ids.iter().copied().ne(1..=native_ids.len() as u32) {
+                return Err(invalid("graph member omits an original native benchmark"));
+            }
+        }
+        if original_ids
+            .iter()
+            .copied()
+            .ne(1..=original_ids.len() as u32)
+        {
+            return Err(invalid("graph group omits an original parent point"));
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
     name: Option<String>,
@@ -434,12 +599,16 @@ struct Row {
     activity_count: u32,
     evidence: String,
     rank_selection: String,
+    member: Option<String>,
 }
 struct Profile {
     named: bool,
     units: BTreeSet<NamedUnit>,
     policy: GraphPolicy,
     rows: BTreeMap<Key, Row>,
+    group: Option<Arc<GraphGroup>>,
+    group_hash: Option<String>,
+    group_selections: Mutex<BTreeMap<(u32, u32, u32), Result<Vec<(u32, f64)>, String>>>,
 }
 type Profiles = BTreeMap<(String, u32), Profile>;
 pub struct Glm53GraphTable {
@@ -625,23 +794,23 @@ impl Glm53GraphTable {
                     prefix,
                     padded: profile.policy.padded_batch(batch)?,
                 };
-                let selected = select_rows(&profile.rows, &target)?;
+                let selected = select_profile_rows(profile, &target)?;
                 operations.push(serde_json::json!({"operation_name":op.name(),"geometry":target.geometry,
                     "latency_ms":selected.iter().map(|(_, r, w)| r.latency * w).sum::<f64>(),
-                    "endpoints":selected.iter().map(|(key,row,weight)| serde_json::json!({
-                        "batch_size":key.batch,"prefix":key.prefix,"padded_batch_size":key.padded,
-                        "latency_ms":row.latency,"weight":weight,"evidence_sha256":row.evidence,
-                        "rank_selection_sha256":row.rank_selection,"dispatch_fingerprint":row.dispatch,
-                        "activity_count":row.activity_count})).collect::<Vec<_>>()}));
+                    "endpoints":selected.iter().map(|(key,row,weight)| graph_endpoint(profile, key, row, *weight)).collect::<Vec<_>>()}));
             }
             if operations.is_empty() {
                 return Err(invalid("named graph audit requires complete generation"));
             }
-            Ok(
-                serde_json::json!({"schema":"glm53flash_lookup_audit_v1","lookup_contract":NAMED_CONTRACT,
-                "graph_policy_sha256":policy_hash,"phase":"generation",
-                "target":{"batch_size":batch,"query_length":query,"prefix":prefix},"operations":operations}),
-            )
+            let mut audit = serde_json::json!({"schema":"glm53flash_lookup_audit_v1","lookup_contract":NAMED_CONTRACT,
+                "phase":"generation","target":{"batch_size":batch,"query_length":query,"prefix":prefix},"operations":operations});
+            if let Some(hash) = &profile.group_hash {
+                audit["group_contract"] = serde_json::json!(GROUP_CONTRACT);
+                audit["graph_group_sha256"] = serde_json::json!(hash);
+            } else {
+                audit["graph_policy_sha256"] = serde_json::json!(policy_hash);
+            }
+            Ok(audit)
         } else {
             self.serving.audit(context, generation, is_context, point)
         }
@@ -751,7 +920,7 @@ impl Glm53GraphTable {
                 .ok_or_else(|| invalid("native graph decode position must be positive"))?,
             padded: profile.policy.padded_batch(ctx.batch_size)?,
         };
-        let latency = select_rows(&profile.rows, &target)?
+        let latency = select_profile_rows(profile, &target)?
             .iter()
             .map(|(_, row, weight)| row.latency * weight)
             .sum();
@@ -911,6 +1080,162 @@ fn partition(key: &Key) -> Result<Vec<u32>, AicError> {
         },
     )
 }
+fn group_points(
+    profile: &Profile,
+    batch: u32,
+    prefix: u32,
+    padded: u32,
+) -> Result<Vec<(u32, f64)>, AicError> {
+    let group = profile
+        .group
+        .as_ref()
+        .ok_or_else(|| invalid("graph group is absent"))?;
+    let points: BTreeSet<u32> = group
+        .members
+        .values()
+        .flat_map(|m| &m.points)
+        .filter(|p| p.batch_size == batch && p.padded_batch_size == padded)
+        .map(|p| p.prefix)
+        .collect();
+    if points.contains(&prefix) {
+        return Ok(vec![(prefix, 1.0)]);
+    }
+    let mut pairs = Vec::new();
+    for low in points.iter().filter(|p| **p < prefix) {
+        for high in points.iter().filter(|p| **p > prefix) {
+            pairs.push((*high - *low, *low, *high));
+        }
+    }
+    pairs.sort();
+    for (_, low, high) in pairs {
+        let mut compatible = true;
+        for (component, name, geometry) in &profile.units {
+            let target = Key {
+                name: Some(name.clone()),
+                component: component.clone(),
+                geometry: geometry.clone(),
+                batch,
+                prefix,
+                padded,
+            };
+            let lk = Key {
+                prefix: low,
+                ..Key {
+                    name: target.name.clone(),
+                    component: target.component.clone(),
+                    geometry: target.geometry.clone(),
+                    batch,
+                    prefix,
+                    padded,
+                }
+            };
+            let hk = Key {
+                prefix: high,
+                ..Key {
+                    name: target.name.clone(),
+                    component: target.component.clone(),
+                    geometry: target.geometry.clone(),
+                    batch,
+                    prefix,
+                    padded,
+                }
+            };
+            let wanted = partition(&target)?;
+            let (Some(left), Some(right)) = (profile.rows.get(&lk), profile.rows.get(&hk)) else {
+                compatible = false;
+                break;
+            };
+            if partition(&lk)? != wanted
+                || partition(&hk)? != wanted
+                || left.dispatch != right.dispatch
+                || left.activity_count != right.activity_count
+            {
+                compatible = false;
+                break;
+            }
+        }
+        if compatible {
+            let weight = f64::from(prefix - low) / f64::from(high - low);
+            return Ok(vec![(low, 1.0 - weight), (high, weight)]);
+        }
+    }
+    Err(invalid(
+        "graph group lacks complete same-pad compatible measured point brackets",
+    ))
+}
+fn select_profile_rows<'a>(
+    profile: &'a Profile,
+    target: &Key,
+) -> Result<Vec<(&'a Key, &'a Row, f64)>, AicError> {
+    if profile.group.is_none() {
+        return select_rows(&profile.rows, target);
+    }
+    let coordinates = (target.batch, target.prefix, target.padded);
+    let selected = profile
+        .group_selections
+        .lock()
+        .map_err(|_| invalid("graph group selection lock failed"))?
+        .entry(coordinates)
+        .or_insert_with(|| {
+            group_points(profile, coordinates.0, coordinates.1, coordinates.2)
+                .map_err(|e| e.to_string())
+        })
+        .clone()
+        .map_err(invalid)?;
+    selected
+        .into_iter()
+        .map(|(prefix, weight)| {
+            let key = Key {
+                name: target.name.clone(),
+                component: target.component.clone(),
+                geometry: target.geometry.clone(),
+                batch: target.batch,
+                prefix,
+                padded: target.padded,
+            };
+            profile
+                .rows
+                .get_key_value(&key)
+                .map(|(k, r)| (k, r, weight))
+                .ok_or_else(|| invalid("graph group selected endpoint lacks this named unit"))
+        })
+        .collect()
+}
+fn graph_endpoint(profile: &Profile, key: &Key, row: &Row, weight: f64) -> Value {
+    let mut value = serde_json::json!({"batch_size":key.batch,"prefix":key.prefix,"padded_batch_size":key.padded,
+        "latency_ms":row.latency,"weight":weight,"evidence_sha256":row.evidence,
+        "rank_selection_sha256":row.rank_selection,"dispatch_fingerprint":row.dispatch,"activity_count":row.activity_count});
+    if let (Some(group), Some(id)) = (&profile.group, &row.member) {
+        let member = &group.members[id];
+        let point = member
+            .points
+            .iter()
+            .find(|p| {
+                (p.batch_size, p.prefix, p.padded_batch_size) == (key.batch, key.prefix, key.padded)
+            })
+            .expect("validated member point");
+        let object = value.as_object_mut().unwrap();
+        object.insert("graph_member_id".into(), serde_json::json!(id));
+        object.insert(
+            "graph_policy_sha256".into(),
+            serde_json::json!(member.graph_policy_sha256),
+        );
+        object.insert(
+            "native_runtime_run_id".into(),
+            serde_json::json!(member.native_runtime_run_id),
+        );
+        object.insert(
+            "native_benchmark_id".into(),
+            serde_json::json!(point.native_benchmark_id),
+        );
+        object.insert(
+            "original_point_id".into(),
+            serde_json::json!(point.original_point_id),
+        );
+    }
+    value
+}
+
 fn select_rows<'a>(
     rows: &'a BTreeMap<Key, Row>,
     target: &Key,
@@ -1005,6 +1330,10 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
         .collect::<Result<Vec<_>, _>>()?;
     let named_col = reader.col_optional("operation_name");
     let contract_col = reader.col_optional("graph_lookup_contract");
+    let group_col = reader.col_optional("graph_group");
+    let group_hash_col = reader.col_optional("graph_group_sha256");
+    let member_col = reader.col_optional("graph_member_id");
+    let mut groups: BTreeMap<String, (String, Arc<GraphGroup>)> = BTreeMap::new();
     let mut profiles = Profiles::new();
     let mut point_evidence = BTreeMap::new();
     for row in reader.rows()? {
@@ -1039,11 +1368,52 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
                 ));
             }
         };
+        let group_text = row.str_optional(group_col)?;
+        let group_hash = row.str_optional(group_hash_col)?;
+        let member_id = row.str_optional(member_col)?;
+        let group = match (group_text, group_hash, member_id) {
+            (None, None, None) => None,
+            (Some(text), Some(hash), Some(id)) if named => {
+                if !groups.contains_key(hash) {
+                    let value: GraphGroup =
+                        serde_json::from_str(text).map_err(|e| invalid(e.to_string()))?;
+                    value.validate()?;
+                    if canonical_value(&value)? != text || value_sha(&value)? != hash {
+                        return Err(invalid(
+                            "graph group has noncanonical or changed analysis metadata",
+                        ));
+                    }
+                    groups.insert(hash.into(), (text.into(), Arc::new(value)));
+                }
+                let (encoded, group) = &groups[hash];
+                let member = group
+                    .members
+                    .get(id)
+                    .ok_or_else(|| invalid("graph row names an undeclared group member"))?;
+                if encoded != text
+                    || member.graph_policy != parsed
+                    || member.graph_policy_sha256 != row.str(cols[10])?
+                    || member.evidence_sha256 != row.str(cols[14])?
+                    || member.rank_selection_sha256 != row.str(cols[13])?
+                {
+                    return Err(invalid(
+                        "graph row changed original member policy or evidence",
+                    ));
+                }
+                Some(Arc::clone(group))
+            }
+            _ => {
+                return Err(invalid(
+                    "graph group requires complete named analysis metadata",
+                ));
+            }
+        };
         let identity = (parsed.checkpoint_format.clone(), parsed.tp_size);
-        if profiles
-            .get(&identity)
-            .is_some_and(|previous| previous.policy != parsed || previous.named != named)
-        {
+        if profiles.get(&identity).is_some_and(|previous| {
+            previous.named != named
+                || previous.group_hash.as_deref() != group_hash
+                || (group.is_none() && previous.policy != parsed)
+        }) {
             return Err(invalid(
                 "native graph identity has competing capture/runtime policies",
             ));
@@ -1103,11 +1473,22 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
                 "native graph row lacks complete physical work, timing or calibration evidence",
             ));
         }
+        if let (Some(group), Some(id)) = (&group, member_id)
+            && !group.members[id]
+                .points
+                .iter()
+                .any(|p| (p.batch_size, p.prefix, p.padded_batch_size) == (batch, prefix, padded))
+        {
+            return Err(invalid(
+                "graph row is outside its original member point ownership",
+            ));
+        }
         let evidence_key = (identity.clone(), batch, prefix, padded);
         let evidence_value = (
             row.str(cols[13])?.to_owned(),
             row.str(cols[14])?.to_owned(),
             row.u32(cols[7])?,
+            member_id.map(str::to_owned),
         );
         if point_evidence
             .insert(evidence_key, evidence_value.clone())
@@ -1130,6 +1511,9 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
             units: BTreeSet::new(),
             policy: parsed.clone(),
             rows: BTreeMap::new(),
+            group: group.clone(),
+            group_hash: group_hash.map(str::to_owned),
+            group_selections: Mutex::new(BTreeMap::new()),
         });
         if profile
             .rows
@@ -1141,6 +1525,7 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
                     activity_count: count,
                     evidence: row.str(cols[14])?.into(),
                     rank_selection: row.str(cols[13])?.into(),
+                    member: member_id.map(str::to_owned),
                 },
             )
             .is_some()
@@ -1152,6 +1537,34 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
         return Err(invalid("empty native graph table is not a serving policy"));
     }
     for profile in profiles.values_mut() {
+        if let Some(group) = &profile.group {
+            let declared: BTreeSet<_> = group
+                .members
+                .iter()
+                .flat_map(|(id, m)| {
+                    m.points
+                        .iter()
+                        .map(move |p| (id.as_str(), p.batch_size, p.prefix, p.padded_batch_size))
+                })
+                .collect();
+            let observed: BTreeSet<_> = profile
+                .rows
+                .iter()
+                .map(|(k, r)| {
+                    (
+                        r.member.as_deref().expect("group member"),
+                        k.batch,
+                        k.prefix,
+                        k.padded,
+                    )
+                })
+                .collect();
+            if declared != observed {
+                return Err(invalid(
+                    "graph group omits declared original members or points",
+                ));
+            }
+        }
         if profile.named {
             let mut points: BTreeMap<(u32, u32, u32), BTreeSet<NamedUnit>> = BTreeMap::new();
             for key in profile.rows.keys() {
@@ -1365,6 +1778,7 @@ pub(crate) mod tests {
                         activity_count: 1,
                         evidence: format!("{prefix}"),
                         rank_selection: SHA.into(),
+                        member: None,
                     },
                 );
             }

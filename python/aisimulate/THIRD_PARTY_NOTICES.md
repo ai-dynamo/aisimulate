@@ -1503,6 +1503,8 @@ POSSIBILITY OF SUCH DAMAGE.
 
 - Files: `python/aisimulate/collector/glm53flash_graph_export.py`,
   `python/aisimulate/collector/glm53flash_graph_shards.py`,
+  `python/aisimulate/collector/glm53flash_graph_group.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_graph_group.py`,
   `python/aisimulate/tests/unit/collector/test_glm53flash_graph_shards.py`, their integration
   in `collector/fpm_forward/glm53flash_validation.py`,
   `crates/core/src/perfmodel/perf_database/glm53flash_graph.rs`,
@@ -1513,7 +1515,8 @@ POSSIBILITY OF SUCH DAMAGE.
   `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
   `python/sglang/srt/models/glm5_next.py`,
   `python/sglang/srt/layers/communicator_mhc.py`,
-  `python/sglang/srt/layers/vocab_parallel_embedding.py`, and
+  `python/sglang/srt/layers/vocab_parallel_embedding.py`,
+  `python/sglang/srt/mem_cache/memory_pool.py`, and
   `python/sglang/srt/distributed/parallel_state.py`; Copyright 2023-2024 SGLang
   Team and contributors, Apache-2.0. vLLM https://github.com/vllm-project/vllm at
   `ced6857afa0ea7b2e3f0846a62e1394e90f15607`, original paths
