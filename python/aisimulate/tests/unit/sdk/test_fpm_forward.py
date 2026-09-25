@@ -154,24 +154,24 @@ def _model_config(**overrides) -> sdk_config.ModelConfig:
     return sdk_config.ModelConfig(**defaults)
 
 
-def _median_pair_request(tmp_path, backend, *, model_path="zai-org/GLM-5.3-Flash"):
+def _median_pair_request(tmp_path, backend, *, model_path="zai-org/GLM-5.3-Flash", version=None, tp=2, points=None):
     """Synthetic measured medians, independent of the production writer.
 
     There are no operator tables, so the public SILICON query must use these
     exact already-reduced millisecond values, without SOL or per-sample scaling.
     """
     system = "gb300"
-    version = "0.30.0" if backend == "vllm" else "0.5.20"
+    version = version or ("0.30.0" if backend == "vllm" else "0.5.20")
     systems_root = tmp_path / "systems"
     systems_root.mkdir()
     shutil.copy(Path(_CORE_SYSTEMS) / f"{system}.yaml", systems_root / f"{system}.yaml")
     model = models.get_model(
-        model_path, sdk_config.ModelConfig(tp_size=2, moe_tp_size=2, moe_ep_size=1, forward_model="fpm"), backend
+        model_path, sdk_config.ModelConfig(tp_size=tp, moe_tp_size=tp, moe_ep_size=1, forward_model="fpm"), backend
     )
     identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
     boundary = "vllm_native_scheduler_output_interval" if backend == "vllm" else "sglang_native_forward_device_timer"
     rows = [
-        _row(phase, 1, q, kv, latency, model_path=model_path, identity=identity)
+        _row(phase, batch, q, kv, latency, model_path=model_path, identity=identity)
         | {key: identity[key] for key in _CELL_MATCH_COLUMNS[-4:]}
         | dict(
             system=system,
@@ -183,14 +183,18 @@ def _median_pair_request(tmp_path, backend, *, model_path="zai-org/GLM-5.3-Flash
             measurement_repeats=10,
             state_protocol="glm53flash_same_request_real_hybrid_v1",
             timing_boundary=boundary,
-            kv_seed_regime="n/a" if phase == "prefill" else "real_kv",
+            kv_seed_regime="n/a" if phase == "prefill" and kv == 0 else "real_kv",
         )
-        for phase, q, kv, latency in [
-            ("prefill", 512, 0, 13.25),
-            ("prefill", 1024, 0, 26.5),
-            ("decode", 0, 512, 7.125),
-            ("decode", 0, 1024, 14.25),
-        ]
+        for phase, batch, q, kv, latency in (
+            points
+            if points is not None
+            else [
+                ("prefill", 1, 512, 0, 13.25),
+                ("prefill", 1, 1024, 0, 26.5),
+                ("decode", 1, 0, 512, 7.125),
+                ("decode", 1, 0, 1024, 14.25),
+            ]
+        )
     ]
     metadata = dict(
         schema_version=7,
@@ -208,8 +212,8 @@ def _median_pair_request(tmp_path, backend, *, model_path="zai-org/GLM-5.3-Flash
         backend=backend,
         backend_version=version,
         worker_type="aggregated",
-        tp=2,
-        moe_tp_size=2,
+        tp=tp,
+        moe_tp_size=tp,
         moe_ep_size=1,
         database_mode="SILICON",
         strict_provenance=True,
@@ -219,6 +223,80 @@ def _median_pair_request(tmp_path, backend, *, model_path="zai-org/GLM-5.3-Flash
         estimator_config={"fpm_interpolation": {"fpm_parquet_path": path}},
     )
     return config, rows, metadata
+
+
+# Own observed failure geometries; all values below are TEST_ONLY invented data,
+# never copied measured latencies or campaign acceptance evidence.
+_TAIL_PREFIXES = (122, 125, 131, 134, 4346, 4349, 4355, 4358)
+_TAIL_VERSION = "0.30.0+glm53tail.eb4704514fdf"
+
+
+def _tail_metrics(batch, query, prefix):
+    metrics = _median_metrics("prefill", batch * query)
+    metrics["scheduled_requests"].update(num_prefill_requests=batch, sum_prefill_kv_tokens=batch * prefix)
+    return metrics
+
+
+@pytest.mark.parametrize("model_path", ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"])
+@pytest.mark.parametrize("tp", [2, 4])
+@pytest.mark.parametrize("bracket", [False, True])
+def test_public_tail_fpm_qualified_unaligned_exact_and_bracket(tmp_path, model_path, tp, bracket):
+    from collector import glm53flash_runtime_identity as identity
+
+    # This public Rust behavior must agree with the actual immutable packaged
+    # four-cell qualification, not a monkeypatched admission or version prefix.
+    assert identity.ADMITTED_VLLM_REPAIRS == {
+        _TAIL_VERSION: "8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45"
+    }
+    assert identity.vllm_unaligned_prefill_admitted(_TAIL_VERSION)
+    endpoints = ((-1, 13.0), (1, 17.0)) if bracket else ((0, 15.0),)
+    points = [
+        ("prefill", batch, batch * 32, batch * (prefix + delta), latency)
+        for batch in (1, 4, 32)
+        for prefix in _TAIL_PREFIXES
+        for delta, latency in endpoints
+    ]
+    config, _, _ = _median_pair_request(
+        tmp_path, "vllm", model_path=model_path, version=_TAIL_VERSION, tp=tp, points=points
+    )
+    predictor = RustForwardPassPerfModel.best_available(config)
+    try:
+        resolved = predictor.diagnostics()["provenance"]["config"]
+        assert resolved["backend_version"] == _TAIL_VERSION
+        assert ForwardPassPerfModelConfig(**resolved).to_dict() == resolved
+        for batch in (1, 4, 32):
+            for prefix in _TAIL_PREFIXES:
+                value = predictor.estimate_forward_pass_time_ms(_tail_metrics(batch, 32, prefix))
+                # Exact lookup preserves the invented 15ms; a bracket must
+                # stay strictly between its independently specified endpoints.
+                if bracket:
+                    assert 13.0 < value < 17.0
+                else:
+                    assert value == 15.0
+    finally:
+        predictor.close()
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "0.30.0",
+        "0.30.0+unknown",
+        _TAIL_VERSION + ".other",
+        "0.30.0+glm53tail.eb4704514fde",
+        "0.30.0+glm53kpool.bf5f6b0e689d",
+    ],
+)
+def test_public_tail_fpm_rejects_unqualified_exact_data(tmp_path, version):
+    points = [("prefill", 1, 32, p, 15.0) for p in _TAIL_PREFIXES]
+    config, _, _ = _median_pair_request(tmp_path, "vllm", version=version, points=points)
+    predictor = RustForwardPassPerfModel.best_available(config)
+    try:
+        for prefix in _TAIL_PREFIXES:
+            with pytest.raises(Exception, match="cached-prefill start is unqualified|runtime quarantined"):
+                predictor.estimate_forward_pass_time_ms(_tail_metrics(1, 32, prefix))
+    finally:
+        predictor.close()
 
 
 def _median_metrics(phase, tokens):

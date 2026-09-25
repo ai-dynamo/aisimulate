@@ -366,9 +366,13 @@ impl FpmForwardOp {
         }
         let query = coords[1] / coords[0];
         let prefix = coords[2] / coords[0];
-        // The previous repaired runtime's functional evidence is historical;
-        // a separate circular-tail mapping defect requires new qualification.
-        const ADMITTED_GLM53FLASH_VLLM_REPAIRS: &[&str] = &[];
+        // Exact parity with collector/glm53flash_runtime_identity.py: only the
+        // new tail repair has reviewed four-cell native, 128K and cache-oracle
+        // evidence (qualification summary SHA256
+        // 8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45).
+        // The older KPool repair remains quarantined above. Never admit a
+        // version prefix or an unreviewed local suffix.
+        const ADMITTED_GLM53FLASH_VLLM_REPAIRS: &[&str] = &["0.30.0+glm53tail.eb4704514fdf"];
         let repaired = ADMITTED_GLM53FLASH_VLLM_REPAIRS.contains(&version);
         if !repaired && prefix % 4.0 != 0.0 && query >= 2.0 {
             return Err(data_err("GLM-5.3-Flash stock vLLM IndexPool cached-prefill start is unqualified; separately qualified runtime repair required".into()));
@@ -829,6 +833,8 @@ mod tests {
             "0.30.0",
             "0.30.0+unknown",
             "0.30.0+glm53kpool.bf5f6b0e689d.other",
+            "0.30.0+glm53tail.eb4704514fdf.other",
+            "0.30.0+glm53tail.eb4704514fde",
         ] {
             assert!(
                 prefill
@@ -837,6 +843,44 @@ mod tests {
                     .to_string()
                     .contains("cached-prefill start is unqualified")
             );
+        }
+    }
+
+    #[test]
+    fn qualified_tail_keeps_native_coordinate_guards() {
+        for model in ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"] {
+            let mut prefill = op(FpmPhase::Prefill);
+            prefill.model_path = model.into();
+            let version = "0.30.0+glm53tail.eb4704514fdf";
+            for batch in [1.0, 4.0, 32.0] {
+                for prefix in [122.0, 125.0, 131.0, 134.0, 4346.0, 4349.0, 4355.0, 4358.0] {
+                    assert!(
+                        prefill
+                            .validate_glm53flash_native_start(
+                                "vllm",
+                                version,
+                                &[batch, batch * 32.0, batch * prefix]
+                            )
+                            .is_ok()
+                    );
+                }
+            }
+            for coords in [
+                vec![2.0, 3.0, 244.0],
+                vec![2.0, 64.0, 245.0],
+                vec![0.0, 32.0, 122.0],
+                vec![1.0, 32.5, 122.0],
+                vec![1.0, 32.0, -1.0],
+                vec![1.0, 32.0, f64::NAN],
+            ] {
+                assert!(
+                    prefill
+                        .validate_glm53flash_native_start("vllm", version, &coords)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("homogeneous integral")
+                );
+            }
         }
     }
 
