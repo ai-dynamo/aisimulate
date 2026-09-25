@@ -18,6 +18,19 @@ MiMoV2 natively; no pinned framework knows Glm5Next. Identity records for
 these architectures need both the SDK model and, for Glm5Next, a framework
 pin bump — neither is scheduled.
 
+## SDK quant inference for modelopt `mixed_precision` artifacts
+
+`nvidia/Qwen3.8-27B-NVFP4` and `nvidia/Muse-Glimmer-30B-NVFP4` ship
+`hf_quant_config.json` with `quant_algo: mixed_precision` (per-layer NVFP4 /
+FP8 mix). `_infer_quant_modes_from_raw_config` maps that to
+`gemm_quant_mode: fp8_static` while the agg sweep still reaches the NVFP4
+GEMM path, so on systems without FP4 compute the support matrix reports
+FAIL (`MissingSystemFlopsError`) instead of HW_INCOMPATIBLE (what the
+`quant_algo: nvfp4` siblings get). Both configs were therefore NOT bundled
+(they stay in the probe roster and render from the Hub); bundle them once
+the inference reads the per-layer mix. Found 2026-09-25 via
+`tools/support_matrix/generate_support_matrix.py --no-save --model ... --system h200_sxm`.
+
 ## Harness components not built
 
 - `e2e_align` (onboard_model step 10): prediction vs live measurement on the

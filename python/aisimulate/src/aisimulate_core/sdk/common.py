@@ -759,11 +759,9 @@ DefaultHFModels = {
     "google/gemma-4-26B-A4B",
     # Meta Muse Glimmer
     "meta-models/Muse-Glimmer-30B",
-    "nvidia/Muse-Glimmer-30B-NVFP4",
     # Qwen3.8-27B (QWEN35 hybrid GDN dense; onboarding 2026-09-25)
     "Qwen/Qwen3.8-27B",
     "Qwen/Qwen3.8-27B-FP8",
-    "nvidia/Qwen3.8-27B-NVFP4",
     # Ornith 1.5 (Qwen3.5-MoE architecture)
     "ornith-ai/Ornith-1.5-35B-A3B",
     # MiniCPM5 (Llama architecture)
