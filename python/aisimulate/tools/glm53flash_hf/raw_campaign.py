@@ -18,10 +18,11 @@ import stat
 from pathlib import Path
 
 if __package__:
-    from . import external_control
+    from . import external_control, native_roots
     from . import raw_archive as archive
 else:
     import external_control
+    import native_roots
     import raw_archive as archive
 
 FIELDS = ("backend", "weight_quantization", "tp", "phase", "role")
@@ -112,6 +113,12 @@ def context(stage_root):
         and stage.get("input_manifest_sha256") == stage["input_manifest"]["sha256"],
         "accepted original input manifest changed",
     )
+    native_roots.uniform(
+        child
+        for entry in manifest["entries"]
+        for role in ("calibration", "holdout")
+        for child in entry[role].get("shards", [entry[role]])
+    )
     cells = {}
     for cell in report["cells"]:
         ident = tuple(cell[k] for k in FIELDS[:-1])
@@ -151,6 +158,9 @@ def plan_key(plan, spec, role):
 
 
 def native_pairs(spec, evidence):
+    if "shards" in spec:
+        require(native_roots.scope(spec) is None, "native root scope belongs on each child, not a shard parent")
+    native_roots.uniform(spec.get("shards", [spec]))
     if "shards" not in spec:
         require("shards" not in evidence and evidence.get("receipts"), "accepted native file receipts missing")
         return [(spec, evidence)]
@@ -176,6 +186,8 @@ def external_controls(spec, record, root, pairs, paths, source, storage_root_bin
     )
     expected = spec.get("external_control")
     actual = record.get("external_control")
+    if native_roots.uniform(child for child, _ in pairs):
+        require(expected is not None, "collection scope requires original current external controls")
     require(not uses_hook or expected is not None, "external cache hook requires original execution controls")
     require((expected is None) == (actual is None), "missing/unexpected external control attachment")
     if expected is None:
@@ -251,6 +263,22 @@ def make_plan(stage_root, manifest_base, *, storage_root_binding=None):
                     zip(FIELDS, ident, strict=True),
                     entry_index=index,
                     accepted_raw_roots=[str(original_path(base, s["raw_root"])) for s, _ in pairs],
+                    **(
+                        {
+                            "native_root_scope": native_roots.SCOPE,
+                            "accepted_native_roots": [
+                                {
+                                    "cell_id": s["cell_id"],
+                                    "attempt_id": s["attempt_id"],
+                                    "raw_root": str(original_path(base, s["raw_root"])),
+                                    **native_roots.fields(s, base),
+                                }
+                                for s, _ in pairs
+                            ],
+                        }
+                        if native_roots.uniform(s for s, _ in pairs)
+                        else {}
+                    ),
                     source_root=None,
                     uri=None,
                 )
@@ -271,6 +299,7 @@ def load_plan(stage_root, plan):
     binding = plan.get("storage_root_binding")
     expected = make_plan(stage_root, plan["manifest_base"], storage_root_binding=binding)
     require(plan["schema"] == PLAN and plan["stage_sha256"] == expected["stage_sha256"], "archive plan stage mismatch")
+    native_roots.uniform(plan["jobs"])
     jobs = {key(j): j for j in plan["jobs"]}
     require(len(jobs) == len(plan["jobs"]) == 32 and jobs.keys() == KEYS, "exact thirty-two archive jobs required")
     uri_sources = {}
@@ -352,18 +381,24 @@ def _bindings(stage_root, ctx, record, root):
             "archive original/canonical source differs",
         )
     roots = []
+    collection_prefixes = []
     expected_files = {}
     for child, evidence in pairs:
         child_plan = read(paths[child["plan"]["path"]])
         require(plan_key(child_plan, child, ident[-1]) == ident, "shard plan differs from phase/role")
         if "shards" in spec:
             require(evidence["source_plan_sha256"] == child_plan["sha256"], "accepted shard plan identity mismatch")
+        scope_fields = native_roots.fields(child, record["manifest_base"])
+        if scope_fields:
+            native_roots.receipts(evidence)
         raw = original_path(record["manifest_base"], child["raw_root"])
         raw = archive.storage_path(raw, binding)
         require(raw.is_relative_to(source), "accepted native root escapes archive source")
         prefix = raw.relative_to(source).as_posix()
         prefix = "" if prefix == "." else prefix
         archive.relative_parts(prefix)
+        if scope_fields:
+            collection_prefixes.append(prefix)
         require(
             child.get("attempt_id") and evidence.get("runtime_run_id") and evidence.get("runtime_grid_digest"),
             "accepted native attempt/runtime identity missing",
@@ -393,6 +428,7 @@ def _bindings(stage_root, ctx, record, root):
             {
                 "cell_id": child["cell_id"],
                 "raw_root": child["raw_root"],
+                **scope_fields,
                 "archive_prefix": prefix,
                 "attempt_id": child["attempt_id"],
                 "plan_content_sha256": child["plan"]["sha256"],
@@ -403,7 +439,11 @@ def _bindings(stage_root, ctx, record, root):
     counts = {"files": 0, "directories": 0, "logical_bytes": 0}
     root_stat = None
     observed = {prefix: {} for prefix in expected_files}
+    scoped_inventory = {}
     for item in archive.inventory_records(checked(root, record["source_inventory"])):
+        if any(item["path"] == p or item["path"].startswith(p + "/") for p in collection_prefixes):
+            require(item["path"] not in scoped_inventory, "duplicate native inventory member")
+            scoped_inventory[item["path"]] = item
         if item["path"] == "":
             root_stat = item["stat"]
         counts["files" if item["kind"] == "file" else "directories"] += 1
@@ -419,6 +459,8 @@ def _bindings(stage_root, ctx, record, root):
         for prefix in observed:
             if prefix == "" or item["path"].startswith(prefix + "/"):
                 observed[prefix][item["path"][len(prefix) + 1 :] if prefix else item["path"]] = item["sha256"]
+    for prefix in collection_prefixes:
+        native_roots.inventory_root(scoped_inventory, prefix)
     require(root_stat == archive_input["source_root_stat"], "archive input root stat differs from inventory")
     require(observed == expected_files, "archived accepted native file set/SHA differs from acceptance")
     external_files = external_controls(spec, record, root, pairs, paths, source, binding)

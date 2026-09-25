@@ -15,6 +15,7 @@ from unittest.mock import patch
 
 import pytest
 from tools.glm53flash_hf import closed_history as h
+from tools.glm53flash_hf import native_roots
 from tools.glm53flash_hf import portable_history as p
 from tools.glm53flash_hf import raw_archive as archive
 from tools.glm53flash_hf import raw_campaign as campaign
@@ -120,6 +121,27 @@ class PortableTests(unittest.TestCase):
         patch.object(campaign, "archive_one", side_effect=self.archive_one).start()
         patch.object(campaign, "bind", side_effect=self.public_bind).start()
 
+    def enable_collection_scope(self):
+        for job in self.plan["jobs"]:
+            records = []
+            for name in job["accepted_raw_roots"]:
+                pod = Path(name)
+                cid = pod.parts[-3]
+                records.append(
+                    {
+                        "cell_id": cid,
+                        "raw_root": str(pod.parent),
+                        "attempt_id": "TEST_ONLY_attempt_" + cid.split("_")[-1],
+                        native_roots.FIELD: native_roots.SCOPE,
+                        "original_pod_root": str(pod),
+                    }
+                )
+            job.update(
+                native_root_scope=native_roots.SCOPE,
+                accepted_native_roots=records,
+                accepted_raw_roots=[r["raw_root"] for r in records],
+            )
+
     def attempt(self, backend, deployment, job, state):
         cid = "TEST_ONLY_cell_" + job
         directory = Path("campaign-" + backend) / deployment
@@ -216,6 +238,8 @@ class PortableTests(unittest.TestCase):
                     for p in job["accepted_raw_roots"]
                 ],
             )
+            if native_roots.scope(job):
+                row["native_roots"] = job["accepted_native_roots"]
             for field, name in [
                 ("archive_receipt", "receipt.json"),
                 ("source_inventory", archive.INVENTORY),

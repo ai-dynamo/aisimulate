@@ -28,11 +28,16 @@ def write(path, value):
     path.write_text(json.dumps(value, sort_keys=True) + "\n")
 
 
-def test_import_copies_portable_provenance_and_offline_snapshot_never_reads_tar(tmp_path, monkeypatch):
+@pytest.mark.parametrize("collection_scope", [False, True])
+def test_import_copies_portable_provenance_and_offline_snapshot_never_reads_tar(
+    tmp_path, monkeypatch, collection_scope
+):
     stage, _ = publication_fixture.staged.__wrapped__(tmp_path, SimpleNamespace(param="fp8"))
     fixture = portable_fixture.PortableTests()
     fixture.setUp()
     try:
+        if collection_scope:
+            fixture.enable_collection_scope()
         fixture.stage = stage
         fixture.plan["stage_sha256"] = policy.sha(stage / "stage.json")
         bundles = fixture.both_bundles()

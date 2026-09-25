@@ -16,9 +16,11 @@ from pathlib import Path
 
 if __package__:
     from . import external_control_vllm as vllm
+    from . import native_roots
     from . import raw_archive as archive
 else:
     import external_control_vllm as vllm
+    import native_roots
     import raw_archive as archive
 
 SCHEMA = "glm53flash_external_control_v2"
@@ -776,6 +778,7 @@ def bind_role(
     runs = {run["cell_id"]: run for run in document["runs"]}
     files = {row["original_path"]: row for row in document["files"]}
     required = {}
+    native_roots.uniform(spec for spec, _ in pairs)
     for spec, evidence in pairs:
         cid = spec["cell_id"]
         require(cid in runs, "accepted child lacks original controls")
@@ -783,10 +786,14 @@ def bind_role(
         plan = plans[spec["plan"]["path"]]
         raw = Path(spec["raw_root"])
         raw = raw if raw.is_absolute() else Path(manifest_base) / raw
+        if native_roots.scope(spec):
+            collection, pod = native_roots.collection(spec, manifest_base)
+            require(collection == raw and str(pod) == run["raw_root"], "accepted collection/pod identity differs")
+            native_roots.receipts(evidence)
+        else:
+            require(str(raw) == run["raw_root"], "accepted child plan/raw identity differs")
         require(
-            str(raw) == run["raw_root"]
-            and plan["backend"] == context["backend"]
-            and plan["sha256"] == child["child_plan_sha256"],
+            plan["backend"] == context["backend"] and plan["sha256"] == child["child_plan_sha256"],
             "accepted child plan/raw identity differs",
         )
         native = Path(child["native_directory"])
@@ -803,7 +810,8 @@ def bind_role(
         require(provenance["attempt_id"] == spec["attempt_id"], "accepted original attempt differs")
         receipts = {r["path"]: r["sha256"] for r in evidence["receipts"]}
         require(
-            receipts.get("collector-provenance.json") == files[run["collector_provenance"]]["sha256"],
+            receipts.get(str((task / run["collector_provenance"]).relative_to(raw)))
+            == files[run["collector_provenance"]]["sha256"],
             "accepted native provenance bytes differ",
         )
         workers = [p for worker in run["workers"] for p in worker.values()] if context["backend"] == "vllm" else []

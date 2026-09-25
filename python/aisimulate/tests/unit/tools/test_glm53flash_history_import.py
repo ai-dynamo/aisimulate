@@ -103,6 +103,7 @@ def test_complete_distributed_source_closure_is_copied(tmp_path):
     integration.copy_policy(tmp_path)
     assert {
         "closed_history.py",
+        "native_roots.py",
         "cleanup_reconciliation.py",
         "cleanup_executor.py",
         "accounting_termination.py",
@@ -121,7 +122,7 @@ def test_complete_distributed_source_closure_is_copied(tmp_path):
             "-c",
             "import sys;sys.path.insert(0,sys.argv[1]);import glm53flash as p;"
             "p.portable_history.h.dependencies(p.raw_campaign.archive);"
-            "assert len(p.POLICY_MODULES)==14;print('COLD_COMPLETE_POLICY_PASS')",
+            "assert len(p.POLICY_MODULES)==15;print('COLD_COMPLETE_POLICY_PASS')",
             str(tmp_path / "scripts"),
         ],
         capture_output=True,

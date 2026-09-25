@@ -149,6 +149,7 @@ def _metadata(proof, refs, base, archive, files):
             "original history/inventory member differs",
         )
     h.verify_reconciliation_inventory(snap, inventory)
+    h.verify_native_inventory(snap, inventory)
     counts = {
         "files": sum(row["kind"] == "file" for row in inventory.values()),
         "directories": sum(row["kind"] == "directory" for row in inventory.values()),

@@ -17,8 +17,10 @@ from pathlib import Path
 
 if __package__:
     from . import cleanup_reconciliation as reconciliation
+    from . import native_roots
 else:
     import cleanup_reconciliation as reconciliation
+    import native_roots
 
 CONTRACT = "fpm_closed_attempt_history_v2"
 BUNDLE_PROOF = "closed-attempt-history.json"
@@ -31,23 +33,24 @@ TERMINAL = {
 DEPLOYMENTS = {f"{q}-tp{t}" for q in ("fp8", "nvfp4") for t in (2, 4)}
 MAINTENANCE_IDENTITY = {
     "kind": "public_source_review_followup",
-    "profile": "fpm_historical_accounting_termination_v4",
-    "base_commit": "a558cebec1bedd3927cd125b04662ed4b2b4ec73",
+    "profile": "fpm_collection_pod_boundary_v1",
+    "base_commit": "b490efc66aa78d6ee84f246c6fd611ea68829849",
 }
 MAINTENANCE = {
     "accounting_termination.py": "67cffe873c0f4225fd07f8786970c27e3ced8ac63366b38540443f4aa8efc890",
     "cleanup_executor.py": "0cf0847469319613b6b8ccab53a43905b079fe3a3135466680c2ecbe19f4bd90",
     "cleanup_reconciliation.py": "dda17105f69078f8f7e2d35cb9a28133c3da3226d4d2bba27e93cf0c74e6ebff",
-    "external_control.py": "1b53ea6172a4c7462eec2db9218dd00a6e8801a8b70757beb70013a88c0c0a48",
-    "external_control_current.py": "850ba02ab406e1caef313696b7e3b072b328089b858454f76a46b42f7cedf970",
+    "external_control.py": "93d8d688eea160494ae71aeabd8e78d022832062c40af00a82e57f872757289e",
+    "external_control_current.py": "1e32ea91ef0f2257c57a8d9c9839305789815039af3e2fc7ce588ee9cb493984",
     "external_control_sglang_mixed.py": "5d78d422876ae086504020aa4b70deaa3d1732de3ba000da5d04595a0fba9971",
     "external_control_vllm.py": "296130a6a8e31412bf1c0244aa20665fa35dc53bbefceab4bb9b6bebbeab40ae",
-    "glm53flash.py": "54bd66cf1663c7f1cd054a69165be4e6de90a8569456b28fcaaa67542825a658",
+    "glm53flash.py": "5be8a51ac6496b98aa50603495c03dd5fd95993082f37677c3fdadc4b55c6871",
     "import_glm53flash.py": "19a10c03e16cfd465f35a6e58346ebdbcd2fc911dbae2eb1c744c5cd500ccc9f",
-    "portable_history.py": "3b00ce71b8f8ebc37315bfa9c253a4b698799207d8abfff0e72b53296486498f",
+    "native_roots.py": "6a029c2353ab0d0da556b3bf407ac55831d4fbab69051e8006225dd3edefeb09",
+    "portable_history.py": "5c78f263b468b33f351a2ba3691c889df133f99ffc146d54a599af8febe5dbfb",
     "profile.py": "f806a78c58edc52b7ae62b1f0d49dc49bd4f8a0aa016b04197a12c03d53447b0",
     "raw_archive.py": "80384152174e45c849623b7f299e0ab17c3d18b93624df220afce651d3b63b40",
-    "raw_campaign.py": "154838d65029786235c72f9ba90338dab5d63a5ee28640eadfc09274ee6d3fe8",
+    "raw_campaign.py": "592a871aaaf6bf692b16d25a30582a3d95ae60df51d82c0b70f798a5bd580e3b",
 }
 
 
@@ -262,6 +265,10 @@ def _validate_snapshot(snapshot):
         set(deployments.values()) == {18},
         "exact18 selected children per deployment required",
     )
+    if "native_roots" in snapshot:
+        require(native_roots.scope(snapshot) == native_roots.SCOPE, "history root mapping requires explicit scope")
+    if native_roots.scope(snapshot):
+        _selected_roots(snapshot, snapshot["native_roots"], check_attempt_id=True)
     return expected, starts
 
 
@@ -331,22 +338,30 @@ def snapshot(backend, inputs, plan, archive):
         len(raw_roots) == len(set(raw_roots)) == 72,
         "exact72 accepted raw roots required",
     )
-    _selected_roots(
-        result,
-        [{"cell_id": Path(p).parts[-3], "raw_root": p} for p in raw_roots],
-        check_attempt_id=False,
-    )
+    if native_roots.uniform(jobs):
+        selected = [r for j in jobs for r in j["accepted_native_roots"]]
+        require([r["raw_root"] for r in selected] == raw_roots, "archive native root mapping differs")
+        result.update(native_root_scope=native_roots.SCOPE, native_roots=selected)
+        _selected_roots(result, selected, check_attempt_id=True)
+    else:
+        _selected_roots(
+            result,
+            [{"cell_id": Path(p).parts[-3], "raw_root": p} for p in raw_roots],
+            check_attempt_id=False,
+        )
     archive.validate_storage_binding(binding, live=True)
     return result
 
 
-def _selected_roots(snapshot_value, native_roots, *, check_attempt_id):
+def _selected_roots(snapshot_value, roots, *, check_attempt_id):
     ledger = snapshot_value["ledger"]
+    root_scope = native_roots
+    require(root_scope.uniform(roots) == root_scope.scope(snapshot_value), "native root scope differs from history")
     require(
-        len(native_roots) == 72 and len({r["raw_root"] for r in native_roots}) == 72,
+        len(roots) == 72 and len({r["raw_root"] for r in roots}) == 72,
         "exact72 native roots required",
     )
-    indexed = {r["cell_id"]: r for r in native_roots}
+    indexed = {r["cell_id"]: r for r in roots}
     require(
         len(indexed) == 72 and set(indexed) == set(ledger["selections"]),
         "native whole-child set differs",
@@ -366,10 +381,19 @@ def _selected_roots(snapshot_value, native_roots, *, check_attempt_id):
             "original child plan hash invalid",
         )
         expected_raw = parent / "artifacts" / plan_sha[:16] / "cells" / cid / "raw/node0000"
-        require(
-            indexed[cid]["raw_root"] == str(expected_raw),
-            "accepted raw root differs from whole-child selection",
-        )
+        if root_scope.scope(snapshot_value):
+            collection, pod = root_scope.collection(indexed[cid], task)
+            require(
+                collection == expected_raw.parent
+                and pod == expected_raw
+                and indexed[cid].get("original_pod_root") == str(expected_raw),
+                "accepted collection/pod differs from whole-child selection",
+            )
+        else:
+            require(
+                indexed[cid]["raw_root"] == str(expected_raw),
+                "accepted raw root differs from whole-child selection",
+            )
         if check_attempt_id:
             require(
                 original["checkpoint"] is not None,
@@ -451,7 +475,19 @@ def verify_bundle_history(bundle, proof, archive):
             "archive history member differs",
         )
     verify_reconciliation_inventory(proof["snapshot"], records)
+    verify_native_inventory(proof["snapshot"], records)
     return proof["snapshot"]
+
+
+def verify_native_inventory(snapshot_value, records):
+    """Recheck copied inventory membership, without opening native data or tar."""
+    if native_roots.scope(snapshot_value):
+        _selected_roots(snapshot_value, snapshot_value["native_roots"], check_attempt_id=True)
+        source = Path(snapshot_value["source_root"])
+        for entry in snapshot_value["native_roots"]:
+            root, _pod = native_roots.collection(entry, source)
+            require(root.is_relative_to(source), "native collection escapes campaign")
+            native_roots.inventory_root(records, str(root.relative_to(source)))
 
 
 def verify_reconciliation_inventory(snapshot_value, records):
