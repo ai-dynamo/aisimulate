@@ -80,7 +80,7 @@ def sums(data, parent):
 
 def closure(document, get):
     """Validate original launch semantics using a caller's bytes-only resolver."""
-    if document.get("schema") == current.SCHEMA:
+    if document.get("schema") in current.SCHEMAS:
         return current.closure(document, get)
     require(document.get("schema") == SCHEMA, "invalid external control schema")
     require(document.get("adapter") in (ADAPTER, vllm.ADAPTER), "unsupported external startup adapter")
@@ -225,7 +225,7 @@ def closure(document, get):
 
 def execution_paths(document, run):
     paths = [run["started"], run["collector_provenance"]]
-    if document.get("schema") == current.SCHEMA:
+    if document.get("schema") in current.SCHEMAS:
         paths.extend(current.execution_paths(document, run))
     elif document["adapter"] == vllm.ADAPTER:
         paths.extend(vllm.execution_paths(run))
@@ -271,12 +271,16 @@ def prepare(source_root, original_task_root, anchors, runs, output, *, adapter=A
         not output.exists() and not output.is_relative_to(source_root), "attachment output exists or is inside source"
     )
     document = dict(
-        schema=current.SCHEMA if adapter in current.ADAPTERS else SCHEMA,
+        schema=(current.MIXED_SCHEMA if adapter == current.MIXED_SGLANG else current.SCHEMA)
+        if adapter in current.ADAPTERS
+        else SCHEMA,
         adapter=adapter,
         original_task_root=str(absolute(original_task_root)),
         anchors=anchors,
         runs=runs,
     )
+    if adapter == current.MIXED_SGLANG:
+        document["deployment_controls"] = document.pop("anchors")
     observed = {}
 
     def get(path):
@@ -317,7 +321,7 @@ def bind_role(
     document, get, admission, pairs, plans, manifest_base, inventory, archive_source, *, storage_root_binding=None
 ):
     """Join selected accepted attempts to the archived original started bytes."""
-    if document.get("schema") == current.SCHEMA:
+    if document.get("schema") in current.SCHEMAS:
         return current.bind_role(
             document,
             get,

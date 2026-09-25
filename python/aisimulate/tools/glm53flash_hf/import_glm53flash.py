@@ -16,6 +16,7 @@ import json
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -197,7 +198,36 @@ def copy_policy(destination):
         shutil.copyfile(Path(__file__).with_name(module), destination / "scripts" / module)
 
 
-def prepare(base, stage_root, destination, external_receipts, source_revision, evidence_date):
+def prepare(
+    base, stage_root, destination, external_receipts, source_revision, evidence_date, *, history=None, bundles=None
+):
+    """Verify raw archives once at import; snapshots later validate copied evidence."""
+    with tempfile.TemporaryDirectory(prefix="glm-history-import-") as temporary:
+        return _prepare(
+            base,
+            stage_root,
+            destination,
+            external_receipts,
+            source_revision,
+            evidence_date,
+            history=history,
+            bundles=bundles,
+            history_temporary=Path(temporary) / "history",
+        )
+
+
+def _prepare(
+    base,
+    stage_root,
+    destination,
+    external_receipts,
+    source_revision,
+    evidence_date,
+    *,
+    history,
+    bundles,
+    history_temporary,
+):
     base, stage_root, destination = (Path(p).resolve() for p in (base, stage_root, destination))
     policy.require(not destination.exists(), "destination must not exist")
     policy.require(
@@ -219,6 +249,29 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
         external, stage_root=stage_root, evidence_root=Path(external_receipts).resolve().parent
     )
     stage_sha = policy.sha(stage_root / "stage.json")
+    current = policy.requires_attempt_history(external, Path(external_receipts).resolve().parent)
+    policy.require(
+        not current or (history is not None and bundles is not None), "current import requires raw archive history"
+    )
+    policy.require((history is None) == (bundles is None), "history and actual bundle map must be supplied together")
+    portable = None
+    chosen_policy = policy.POLICY
+    if history is not None:
+        policy.require(
+            isinstance(history, dict)
+            and set(history) == {"contract", "proof"}
+            and history["contract"] == policy.portable_history.h.CONTRACT,
+            "explicit streamed archive history contract required",
+        )
+        portable = policy.portable_history.prepare_portable_history(
+            Path(external_receipts).resolve().parent,
+            history["proof"],
+            bundles,
+            history_temporary,
+            expected_stage_sha256=stage_sha,
+            archive=policy.raw_campaign.archive,
+        )
+        chosen_policy = policy.HISTORY_POLICY
     policy.require(
         policy.sha(base / "scripts/manage_dataset.py") == MANAGER_SHA256,
         "dataset validator API drift; inspect before adapting",
@@ -246,6 +299,17 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
         policy.require(not target.exists(), "external receipt collides with existing campaign evidence")
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, target)
+    portable_files = {}
+    if portable is not None:
+        shutil.copytree(history_temporary, destination / campaign / "history")
+        portable = dict(portable, proof=dict(portable["proof"], path=str(Path("history") / portable["proof"]["path"])))
+        portable_files = policy.portable_history.verify_portable_history(
+            destination / campaign,
+            portable,
+            external,
+            expected_stage_sha256=stage_sha,
+            archive=policy.raw_campaign.archive,
+        )["files"]
     fpm_records = policy.read(base / "catalog/fpm.json")["records"]
     measurement_records = policy.read(base / "catalog/measurements.json")["records"]
     manifests = list(index["configuration_manifests"])
@@ -303,7 +367,7 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
         shutil.copyfile(source_table, destination / target)
         import_path = leaf / "fpm/provenance/import.json"
         receipt = {
-            "policy": policy.POLICY,
+            "policy": chosen_policy,
             "source_revision": source_revision,
             "stage": {"path": str(campaign / "stage/stage.json"), "sha256": stage_sha},
             "external_raw_evidence": {
@@ -312,17 +376,20 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
             },
             "status": "CANONICAL_LOCAL_NOT_PUBLISHED",
         }
+        if portable is not None:
+            receipt["external_raw_history"] = portable
         if revisions is not None:
             receipt["revision_identity"] = revisions
         write(destination / import_path, receipt)
         meta = dict(
             original_meta,
-            import_policy=policy.POLICY,
+            import_policy=chosen_policy,
             supporting_files=[
                 {
                     "path": str(import_path),
                     "sha256": policy.sha(destination / import_path),
-                }
+                },
+                *[{"path": str(campaign / name), "sha256": digest} for name, digest in sorted(portable_files.items())],
             ],
         )
         write(destination / metadata_path, meta)
@@ -336,6 +403,8 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
             "import_receipt": str(import_path),
             "import_receipt_sha256": policy.sha(destination / import_path),
         }
+        if portable is not None:
+            provenance["external_raw_history"] = portable
         if revisions is not None:
             provenance.update(revision_identity=revisions, producer_revisions_semantics=policy.PLANNER_ALIAS)
         artifact = "fpm-" + part["parquet"]["sha256"][:16]
@@ -417,7 +486,7 @@ def prepare(base, stage_root, destination, external_receipts, source_revision, e
     counts = manager.validate_dataset(destination, write_report=False)
     result = {
         "status": "CANONICAL_LOCAL_NOT_PUBLISHED",
-        "policy": policy.POLICY,
+        "policy": chosen_policy,
         "stage_sha256": stage_sha,
         "base_index_sha256": policy.sha(base / "catalog/index.json"),
         "added_manifests": added,
@@ -437,6 +506,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("base", "stage", "destination", "external-receipts"):
         parser.add_argument("--" + name, required=True, type=Path)
+    parser.add_argument(
+        "--history", type=Path, help="Explicit bound history contract/proof JSON; required for current controls"
+    )
+    parser.add_argument("--bundles", type=Path, help="Exact 32-label actual local archive directory map JSON")
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--evidence-date", required=True)
     args = parser.parse_args()
@@ -449,6 +522,8 @@ def main():
                 args.external_receipts,
                 args.source_revision,
                 args.evidence_date,
+                history=policy.read(args.history) if args.history else None,
+                bundles=policy.read(args.bundles) if args.bundles else None,
             ),
             indent=2,
         )

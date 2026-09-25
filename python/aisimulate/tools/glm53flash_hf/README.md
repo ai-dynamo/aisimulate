@@ -70,6 +70,67 @@ Do not label newer analysis code as an earlier installed consumer. No v2
 adapter changes calibration membership, interpolation, MAPE thresholds, failed
 attempt preservation, Hub publication authorization or offline validation.
 
+## Separate original SGLang admissions
+
+`glm53flash_external_control_v3` with adapter
+`sglang_split_host_formal_mixed_v3` accepts an explicit `deployment_controls`
+map for the four deployments. Each value binds that deployment's original
+factory, CPU result, launcher and admission references by path and SHA256.
+For example, an original three-deployment admission and a later independent
+fourth admission can coexist without rewriting either admission or any
+`started.json`. The validator joins each started record to its own deployment's
+exact manifest, qualification, plan, wheel, allocator policy and point set.
+The original schema2 contract continues to require its one complete admission.
+
+`external_control_sglang_mixed.inspect_partial(document, resolver)` reports
+source preparation separately from admission. A source inventory of 72 children
+with only 54 admitted children remains preparation-only. Full attachments,
+archive binding and publication still require all four qualified deployments
+and 72 explicit complete original children. A later successful whole-child
+attempt may be chosen with its own strict evidence while preserving the failed
+attempt; neither point splicing nor automatic newest-job selection is allowed.
+
+## Mandatory original-attempt history
+
+Current schema2/schema3 controls require import policy
+`glm53flash-accepted-arrow-partitions-history-v2`. The archive/import and
+portable offline checks are separate named contracts:
+
+- `fpm_closed_attempt_history_v2` verifies actual local tar files. Its
+  `archive_closed` and `bind_closed` APIs check complete original job membership,
+  terminal bytes and the explicit 72-child selection for each backend before
+  and after archive operations. Tar members, their complete inventory, all 32
+  role labels and selected native attempt IDs must agree. Late attempts, altered
+  terminals or a job directory without its started record reject. A pre-start
+  result-only failure needs an explicit reviewed representation; it is never
+  omitted from history.
+- `fpm_portable_attempt_history_metadata_v1` is prepared only after the actual
+  full-archive import gate. It copies original history, receipt, inventory and
+  input-manifest bytes into content-addressed files. Offline validation
+  mandatorily rederives their hashes, membership, labels and selected native
+  attempts. Its result is
+  `PORTABLE_METADATA_HISTORY_PASS_NO_FRESH_TAR_VERIFICATION`: it does not reopen
+  tar, query a live producer filesystem, or establish native/accuracy acceptance.
+
+Missing local archives reject at import. Missing copied proofs or metadata
+reject offline; missing tar never selects a weaker import path. The importer
+records the identical portable proof reference in its receipt and each
+manifest's provenance. Removing both the proof and the new policy cannot
+relabel current controls as legacy. Genuine legacy controls retain the previous
+policy. Optional full-archive revalidation is an explicit call to
+`closed_history.require_publication_history` with local bundles.
+
+The canonical copy contains all 11 modules in `POLICY_MODULES`. The history
+helper pins its ten sibling source files; the canonical/profile closure pins
+the helper itself and every copied evidence file. These maintenance tools are
+source-distributed separately from installed native producers and analysis
+consumers. `MAINTENANCE_IDENTITY` retains the exact reviewed
+`fpm_mixed_admission_portable_history_v4` source-profile label and base revision
+`bf5e1fbcfbacadd116ade854a077d5021f7d0319`; the label records pre-integration
+source-review provenance, not an assertion that the new implementation is an
+unchanged bf5e build. Record the actual repository/tool revision separately.
+Changes to a pinned sibling require review and a coherent new hash map.
+
 ## What it checks
 
 - Exactly eight accepted configurations and sixteen prefill/decode cells, fixed
@@ -111,9 +172,21 @@ python tools/glm53flash_hf/import_glm53flash.py \
   --stage /absolute/path/to/accepted-glm-stage \
   --destination /absolute/path/to/new-canonical-dataset \
   --external-receipts /absolute/path/to/verified-raw-archive-receipts.json \
+  --history /absolute/path/to/explicit-archive-history.json \
+  --bundles /absolute/path/to/archive-bundles.json \
   --source-revision ACTUAL_40_CHARACTER_AISIMULATE_COMMIT \
   --evidence-date ACTUAL_YYYY_MM_DD
 ```
+
+For current schema2/schema3 controls, `--history` contains
+`contract="fpm_closed_attempt_history_v2"` and a `proof` object with `path`,
+`sha256` and integer `bytes` fields. The proof path is relative to the bound
+external-evidence directory. `--bundles`
+is the exact 32-label map to local bundle directories. Only genuine legacy
+controls may omit these arguments. The importer streams the actual tar gate
+before creating its canonical destination, then copies the verified metadata
+under `campaigns/.../history/`. Installed offline cache loading verifies that
+copied evidence and does not download raw tar on every prediction.
 
 The importer accepts only `glm53flash_bound_raw_evidence_v1` records produced
 by the archive binding workflow below. There must be **exactly 32** records:
@@ -143,7 +216,7 @@ archive helper are deliberately insufficient. Binding verifies:
 using only Python's standard library. They can run with Python 3.12 on the
 remote Lustre host without importing AISimulate, torch, Arrow or a GPU runtime.
 These are repository maintenance tools, not installed SDK entry points. For
-remote use, deploy all five modules together in a new
+remote use, deploy all 11 `POLICY_MODULES` together in a new
 versioned bundle directory, retain the Apache-2.0 license, and record the exact
 AISimulate source commit and SHA256 of every file before transfer. Recheck all
 hashes on the destination and invoke `python3.12 /bundle/raw_campaign.py`; do not
@@ -231,8 +304,42 @@ for all eight deployments. No directory or URI is inferred; one URI may not name
 different source roots. An archive's attested label set must exactly equal all
 bound records referencing its URI, SHA and byte size.
 
-Each distinct physical archive can run independently, making retries explicit
-new outputs:
+For current schema2/schema3 controls, use the history-aware APIs with the
+same accepted stage and archive plan. `history_inputs` maps each backend to
+hash-and-size-bound original request and selection-ledger references. Each
+ledger retains every original attempt and chooses complete children explicitly.
+These APIs are available from the source checkout; no SDK wheel or native loop
+is changed:
+
+```python
+import json
+from pathlib import Path
+from tools.glm53flash_hf import closed_history, raw_archive, raw_campaign
+
+stage = Path("/lustre/evidence/accepted-stage")
+plan = json.loads(Path("/lustre/evidence/archive-plan.json").read_text())
+history_inputs = json.loads(Path("/lustre/evidence/history-inputs.json").read_text())
+closed_history.archive_closed(
+    stage, plan, "sglang-fp8-2-decode-calibration",
+    Path("/lustre/evidence/archive-bundles/sglang-fp8-2-calibration"),
+    history_inputs, campaign=raw_campaign, archive=raw_archive,
+)
+# Repeat for each distinct source-root/URI pair, then bind all 32 labels.
+bundles = json.loads(Path("/lustre/evidence/archive-bundles.json").read_text())
+bound = Path("/lustre/evidence/new-bound-raw-evidence")
+proof = closed_history.bind_closed(
+    stage, plan, bundles, bound, history_inputs,
+    campaign=raw_campaign, archive=raw_archive,
+)
+proof["path"] = closed_history.BOUND_PROOF
+with Path("/lustre/evidence/explicit-archive-history.json").open("x") as output:
+    json.dump({"contract": closed_history.CONTRACT, "proof": proof}, output)
+```
+
+Each distinct physical archive can run independently, with retries recorded in
+new output directories. The following low-level commands retain their legacy
+contract. A bare low-level archive/bind output cannot substitute for the required
+current history-aware proof:
 
 ```sh
 python3.12 tools/glm53flash_hf/raw_campaign.py archive \
@@ -581,3 +688,14 @@ source mutation, rehashed-inventory mismatch and consumer-origin mismatch.
 Test-only monkeypatches permit synthetic receipts solely inside pytest; no CLI
 flag permits them in a formal binding or import. Local tests do not establish
 ARM/Lustre qualification or formal campaign acceptance.
+
+The current-history suites are `test_glm53flash_closed_history.py`,
+`test_glm53flash_portable_history.py`, `test_glm53flash_history_import.py` and
+`test_glm53flash_current_history_import.py`. They exercise real tiny TEST_ONLY
+tar files, failed/late attempt preservation, rehashed-metadata tampering,
+mandatory importer routing, and offline validation after deleting tar and live
+source trees. The new-policy importer fixture explicitly mocks outer native
+acceptance and dataset transport; the existing legacy integration test separately
+uses the real dataset-manager API. Mixed original admission tests are in
+`test_glm53flash_external_control_sglang_mixed.py`. These tests do not admit any
+actual dataset or establish new GPU accuracy.

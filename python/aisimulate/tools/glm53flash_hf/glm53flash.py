@@ -18,16 +18,25 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 if __package__:
-    from . import external_control, external_control_current, raw_campaign
+    from . import (
+        external_control,
+        external_control_current,
+        external_control_sglang_mixed,
+        portable_history,
+        raw_campaign,
+    )
 else:
     # The embedding dataset loader temporarily adds scripts/ only while loading
     # this module. Resolve the complete portable closure before it restores paths.
     import external_control
     import external_control_current
+    import external_control_sglang_mixed  # noqa: F401
+    import portable_history
     import raw_campaign
 
 CAMPAIGN = "glm53flash-pr324"
 POLICY = "glm53flash-accepted-arrow-partitions-v1"
+HISTORY_POLICY = "glm53flash-accepted-arrow-partitions-history-v2"
 REVISION_SCHEMA = "glm53flash_revision_identity_v1"
 PLANNER_ALIAS = "legacy_planner_revision_alias"
 POLICY_MODULES = (
@@ -37,6 +46,11 @@ POLICY_MODULES = (
     "external_control.py",
     "external_control_vllm.py",
     "external_control_current.py",
+    "external_control_sglang_mixed.py",
+    "closed_history.py",
+    "portable_history.py",
+    "import_glm53flash.py",
+    "profile.py",
 )
 MODELS = {
     "zai-org/GLM-5.3-Flash": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
@@ -165,6 +179,34 @@ def validate_external_receipts(records, *, stage_root=None, evidence_root=None):
     return raw_campaign.validate(records, Path(stage_root), Path(evidence_root))
 
 
+def requires_attempt_history(records, evidence_root):
+    """Current external controls cannot be downgraded to the unchanged legacy policy."""
+    return any(
+        read(checked(Path(evidence_root), record["external_control"])).get("schema") in external_control_current.SCHEMAS
+        for record in records
+        if "external_control" in record
+    )
+
+
+def validate_attempt_history(import_policy, provenance, records, evidence_root, stage_sha256):
+    """Mandatory portable evidence check; this function never requests raw tar."""
+    required = requires_attempt_history(records, evidence_root)
+    selected = import_policy["policy"]
+    require(not required or selected == HISTORY_POLICY, "current campaign requires immutable attempt history policy")
+    if selected != HISTORY_POLICY:
+        require(
+            "external_raw_history" not in import_policy and "external_raw_history" not in provenance,
+            "legacy policy cannot silently ignore attempt history",
+        )
+        return {}
+    entry = import_policy.get("external_raw_history")
+    require(isinstance(entry, dict) and provenance.get("external_raw_history") == entry, "history provenance differs")
+    verified = portable_history.verify_portable_history(
+        Path(evidence_root), entry, records, expected_stage_sha256=stage_sha256, archive=raw_campaign.archive
+    )
+    return verified["files"]
+
+
 def validate_planner_revision(meta, original):
     """Recognize legacy partitions; new partitions must preserve the original value."""
     fields = {"revision_identity_schema", "planner_revision", "producer_revision_semantics"}
@@ -196,7 +238,7 @@ def publication_revisions(meta, report, records, evidence_root, source_revision,
             all(
                 "external_control" not in r
                 or read(checked(Path(evidence_root), r["external_control"])).get("schema")
-                != external_control_current.SCHEMA
+                not in external_control_current.SCHEMAS
                 for r in selected
             ),
             "current external controls require explicit revision metadata",
@@ -217,7 +259,8 @@ def publication_revisions(meta, report, records, evidence_root, source_revision,
         if cache_key not in cached:
             document = read(path)
             require(
-                document.get("schema") == external_control_current.SCHEMA, "new revision identity requires v2 controls"
+                document.get("schema") in external_control_current.SCHEMAS,
+                "new revision identity requires current controls",
             )
             _, get, admission = external_control.validate(path.parent, document)
             cached[cache_key] = external_control_current.configuration_revisions(
@@ -374,7 +417,7 @@ def validate_snapshot(root, manifest):
     )
     policy = read(policy_path)
     require(
-        policy["policy"] == POLICY and re.fullmatch(r"[0-9a-f]{40}", policy["source_revision"]),
+        policy["policy"] in {POLICY, HISTORY_POLICY} and re.fullmatch(r"[0-9a-f]{40}", policy["source_revision"]),
         "unreviewed GLM import policy or source revision",
     )
     stage_path = checked(root, policy["stage"])
@@ -382,6 +425,9 @@ def validate_snapshot(root, manifest):
     external_path = checked(root, policy["external_raw_evidence"])
     external = read(external_path)
     validate_external_receipts(external, stage_root=stage_path.parent, evidence_root=external_path.parent)
+    history_files = validate_attempt_history(
+        policy, manifest["provenance"], external, external_path.parent, sha(stage_path)
+    )
     parts = [
         p
         for p in stage["configurations"]
@@ -447,10 +493,10 @@ def validate_snapshot(root, manifest):
     )
     require(
         {k: v for k, v in meta.items() if k not in ("import_policy", "supporting_files")} == original
-        and meta["import_policy"] == POLICY,
+        and meta["import_policy"] == policy["policy"],
         "canonical metadata discarded original fields",
     )
-    paths = set()
+    paths = {str((external_path.parent / name).relative_to(root)) for name in history_files}
     for receipt in meta["supporting_files"]:
         checked(root, receipt)
         paths.add(receipt["path"])
