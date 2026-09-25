@@ -43,6 +43,9 @@ def test_normalize_kernel(pd, raw, expected):
 
 def test_normalize_drops_denied_names(pd):
     assert pd.normalize_kernel("Memcpy DtoH (Device -> Pinned)") is None
+    # raw CUDA runtime copies surface as lowercase kernels under graphs (sglang)
+    assert pd.normalize_kernel("memcpy128") is None
+    assert pd.normalize_kernel("memset32") is None
 
 
 @pytest.mark.parametrize("kernel, family", [
@@ -158,10 +161,11 @@ def test_capacity_fallback_stops_at_the_smallest_cut(pd, tmp_path, monkeypatch):
         (tmp_path / "dummy_models" / "generic" / f"Big__{v}").mkdir(parents=True)
     (tmp_path / "archive" / "raw").mkdir(parents=True)
     ck = {"repo": "org/Big", "profile": "bfloat16"}
-    for v in ("depth8", "depth4"):
+    # both OOM phrasings count: torch's and the trtllm executor's
+    for v, msg in (("depth8", "CUDA out of memory"),
+                   ("depth4", "RuntimeError: Executor creation failed due to insufficient GPU memory.")):
         rid = pd._run_id(ck, v, "vllm", "0.29.0", 1, None)
-        (tmp_path / "archive" / "raw" / f"{rid}.json").write_text(json.dumps(
-            {"errors": {"load": "CUDA out of memory"}}))
+        (tmp_path / "archive" / "raw" / f"{rid}.json").write_text(json.dumps({"errors": {"load": msg}}))
     runs = [r for r in pd.enumerate_runs(_targets_for("org/Big", ["depth8", "depth4"]), full=False, backends=["vllm"])
             if "skip" not in r]
     assert {r["variant"] for r in runs} == {"depth4"}

@@ -148,7 +148,7 @@ rules:
 
   # ---------------------------------------------------------------- kvcache
   - {backend: framework_native, role: kvcache,
-     match: "reshape_and_cache|concat_and_cache|set_mla_kv_buffer|concat_and_cast_mha_k|applyBiasRopeUpdateKVCache|applyMLARopeAppendPagedKV|applyMLARopeAndAssignQKV|indexerKCacheScatter|write_req_to_token_pool|create_flashinfer_kv_indices|alloc_extend_kernel|_convert_req_index_to_global|convertReqIndexToGlobal|ConcatMLAQKernel|_fused_dsa_decode_metadata_kernel|_fused_metadata_kernel_general"}
+     match: "reshape_and_cache|concat_and_cache|set_mla_kv_buffer|concat_and_cast_mha_k|applyBiasRopeUpdateKVCache|applyMLARopeAppendPagedKV|applyMLARopeAndAssignQKV|indexerKCacheScatter|write_req_to_token_pool|create_flashinfer_kv_indices|alloc_extend_kernel|_convert_req_index_to_global|convertReqIndexToGlobal|ConcatMLAQKernel|_fused_dsa_decode_metadata_kernel|_fused_metadata_kernel_"}
 
   # ------------------------------------------------------------ norm / rope
   - {backend: framework_native, role: norm_rope,

@@ -7,7 +7,7 @@ appear in `results/`.
 
 | # | Step | Who | Instrument / artifact |
 |---|------|-----|------------------------|
-| 1 | Fetch inputs | script | real config/hf_quant/tokenizer into `configs/`; missing config = OWNER DECISION (recorded in `targets.yaml` roster.excluded, signed) — never a silent skip |
+| 1 | Fetch inputs | script | `components/fetch_inputs.py REPO...`: config/hf_quant into `configs/`, every non-weight file (tokenizer, processor, custom code) into `configs/aux_files/<org>_<name>/`; gated repo or missing config = OWNER DECISION (recorded in `targets.yaml` roster.excluded, signed) — never a silent skip. Then add the repo to `configs/repos.txt` and `targets.yaml` roster.extra_repos |
 | 2 | Build dummies | script | `components/dummies.py` (depth-cut, width-true; per-repo exceptions only as `dummy_overrides` declarations) |
 | 3 | Identity probe | script | `probe_driver.py` per backend: golden `cli generate` render -> probe -> records. Verdict: pass / pass+custom / fail |
 | 4 | Rescue or root-cause | AI | for fails: A/B designed by AI but EXECUTED through the probe; workable extra generate args -> `targets.yaml cli_extra_args` (with fact citation); terminal walls -> findings |

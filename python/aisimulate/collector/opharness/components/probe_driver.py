@@ -210,7 +210,8 @@ def _oom_at_load(rid: str) -> bool:
         err = str((json.loads(p.read_text()).get("errors") or {}).get("load") or "")
     except (OSError, ValueError):
         return False
-    return "OutOfMemoryError" in err or "CUDA out of memory" in err
+    # torch / vllm / sglang: OutOfMemoryError; trtllm executor: "insufficient GPU memory"
+    return "OutOfMemoryError" in err or "CUDA out of memory" in err or "insufficient GPU memory" in err
 
 
 def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]:
@@ -488,7 +489,7 @@ def derive_profile(repo: str, configs_dir: Path) -> str:
 
 # kernels that are infrastructure, never op identity
 KERNEL_DENY = re.compile(
-    r"Memcpy|Memset|Lazy Function Loading|Runtime Triggered Module Loading|"
+    r"Memcpy|Memset|^memcpy\d|^memset\d|Lazy Function Loading|Runtime Triggered Module Loading|"
     r"at::native::(vectorized_elementwise|elementwise|index_elementwise|"
     r"unrolled_elementwise|reduce_kernel|distribution_|fill)|aten::(fill_|copy_|zero_)|"
     r"^void at::native::.*FillFunctor"
