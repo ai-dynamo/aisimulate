@@ -6,12 +6,8 @@ _meta:
   summary:
     pass: 97
     pass+custom: 9
-    fail: 23
+    fail: 18
 results:
-  IFM/K2-Horizon-MoVA-36B-A4B:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''IFM/K2-Horizon-MoVA-36B-A4B'' is not a valid HuggingFace model path or loca'
   MiniMaxAI/MiniMax-M2:
     verdict: pass
     attention: flash::FlashAttnFwdSm90
@@ -227,10 +223,6 @@ results:
     attention: flash::FlashAttnFwdSm90
     kv_allocated: auto
     topology: tp1
-  XHToken/Spark-X2.5-4B:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XHToken/Spark-X2.5-4B'' is not a valid HuggingFace model path or local path'
   XiaomiMiMo/MiMo-7B-Base:
     verdict: pass
     attention: flash::FlashAttnFwdSm90
@@ -250,14 +242,6 @@ results:
     verdict: fail
     cause: generator rejects
     error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Pro-RL'' is not a valid HuggingFace model path or loca'
-  XingChen-AGI/Xing4.0-29B-A4B:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XingChen-AGI/Xing4.0-29B-A4B'' is not a valid HuggingFace model path or loc'
-  XingChen-AGI/Xing4.0-29B-A4B-FP8:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XingChen-AGI/Xing4.0-29B-A4B-FP8'' is not a valid HuggingFace model path or'
   baerquant/Inkling:
     verdict: fail
     cause: generator rejects
@@ -655,10 +639,6 @@ results:
     moe: Mxfp4MoE->marlin
     kv_allocated: fp8
     topology: tp1
-  yandex/AliceAI-Foundation-80B-A3B-Base:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''yandex/AliceAI-Foundation-80B-A3B-Base'' is not a valid HuggingFace model p'
   zai-org/GLM-5:
     verdict: pass
     attention: FlashAttnMLASparseImpl

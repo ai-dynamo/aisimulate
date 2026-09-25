@@ -123,11 +123,6 @@ baerquants/Inkling-NVFP4
 baerquants/Inkling-Small-NVFP4
 XiaomiMiMo/MiMo-V2.6-Pro-RL
 XiaomiMiMo/MiMo-V2.6-Flash-RL
-XingChen-AGI/Xing4.0-29B-A4B
-XingChen-AGI/Xing4.0-29B-A4B-FP8
-yandex/AliceAI-Foundation-80B-A3B-Base
-IFM/K2-Horizon-MoVA-36B-A4B
 ornith-ai/Ornith-1.5-35B-A3B
-XHToken/Spark-X2.5-4B
 openbmb/MiniCPM5-2B
 TokenRhythm/NeoHorse-1-9B

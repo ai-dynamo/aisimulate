@@ -209,6 +209,31 @@ families:
       date: 2026-09-25
       reason: 'CC-BY-NC-4.0 (non-commercial) license — owner decision 2026-09-25: models with license problems are
         dropped from the roster; config not bundled, probe raws moved to facts/dropped/.'
+    - repo: yandex/AliceAI-Foundation-80B-A3B-Base
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: XingChen-AGI/Xing4.0-29B-A4B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: XingChen-AGI/Xing4.0-29B-A4B-FP8
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: XHToken/Spark-X2.5-4B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
+    - repo: IFM/K2-Horizon-MoVA-36B-A4B
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'owner decision 2026-09-25: dropped from the roster (custom auto_map-only architecture, unknown to every
+        pinned framework and to the SDK); inputs and probe plan rows moved to facts/dropped/.'
     architecture: full support-matrix roster (per-checkpoint, no arch dedup)
     derive: true
     extra_repos:
@@ -237,12 +262,7 @@ families:
     - baerquants/Inkling-Small-NVFP4
     - XiaomiMiMo/MiMo-V2.6-Pro-RL
     - XiaomiMiMo/MiMo-V2.6-Flash-RL
-    - XingChen-AGI/Xing4.0-29B-A4B
-    - XingChen-AGI/Xing4.0-29B-A4B-FP8
-    - yandex/AliceAI-Foundation-80B-A3B-Base
-    - IFM/K2-Horizon-MoVA-36B-A4B
     - ornith-ai/Ornith-1.5-35B-A3B
-    - XHToken/Spark-X2.5-4B
     - openbmb/MiniCPM5-2B
     - TokenRhythm/NeoHorse-1-9B
     checkpoint_overrides:

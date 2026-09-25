@@ -6,12 +6,8 @@ _meta:
   summary:
     pass: 69
     pass+custom: 0
-    fail: 60
+    fail: 55
 results:
-  IFM/K2-Horizon-MoVA-36B-A4B:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''IFM/K2-Horizon-MoVA-36B-A4B'' is not a valid HuggingFace model path or loca'
   MiniMaxAI/MiniMax-M2:
     verdict: pass
     attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
@@ -221,10 +217,6 @@ results:
     attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
     kv_allocated: null
     topology: tp1
-  XHToken/Spark-X2.5-4B:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XHToken/Spark-X2.5-4B'' is not a valid HuggingFace model path or local path'
   XiaomiMiMo/MiMo-7B-Base:
     verdict: fail
     cause: arch not registered
@@ -241,14 +233,6 @@ results:
     verdict: fail
     cause: generator rejects
     error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XiaomiMiMo/MiMo-V2.6-Pro-RL'' is not a valid HuggingFace model path or loca'
-  XingChen-AGI/Xing4.0-29B-A4B:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XingChen-AGI/Xing4.0-29B-A4B'' is not a valid HuggingFace model path or loc'
-  XingChen-AGI/Xing4.0-29B-A4B-FP8:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''XingChen-AGI/Xing4.0-29B-A4B-FP8'' is not a valid HuggingFace model path or'
   baerquant/Inkling:
     verdict: fail
     cause: generator rejects
@@ -578,10 +562,6 @@ results:
     verdict: fail
     cause: platform floor (needs Blackwell)
     error: 'AssertionError: DeepSeek-V4 is not supported on pre-blackwell GPUs.'
-  yandex/AliceAI-Foundation-80B-A3B-Base:
-    verdict: fail
-    cause: generator rejects
-    error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''yandex/AliceAI-Foundation-80B-A3B-Base'' is not a valid HuggingFace model p'
   zai-org/GLM-5:
     verdict: pass
     attention: null

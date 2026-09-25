@@ -1295,6 +1295,14 @@ findings:
       Gemma-like SWA hybrid. Framework side: vllm 0.29 loads Qwen4Exp,
       Inkling, MiMoV2 natively; none of the pins knows Glm5Next, Xing4_0,
       AliceAI, K2Horizon or Spark2_5 (custom auto_map code only).
+      FOLLOW-UP DECISION (tianhaox, 2026-09-25, later the same day): AliceAI,
+      Xing4.0 (both artifacts), Spark-X2.5 and K2-Horizon are dropped from
+      the roster altogether (custom-code-only architectures no pinned
+      framework or the SDK knows); inputs, dummies and plan rows moved to
+      facts/dropped/. Remaining unmodeled architectures in the roster: 4
+      (Glm5Next, Qwen4Exp, Inkling, MiMoV2 — 12 repos). Matrix after the
+      drops: 124 rows per backend — vllm 97 / 9 / 18, sglang 93 / 6 / 25,
+      trtllm 69 / 0 / 55.
     applies_to: [zai-org/GLM-5.3-Flash, Qwen/Qwen3.8-27B, Qwen/Qwen3.8-Flash-Next, nvidia/Qwen3.8-2.4T-A95B-NVFP4,
       deepseek-ai/DeepSeek-V4.1-Flash, meta-models/Muse-Glimmer-30B, baerquant/Inkling, Altworld/Hemmingway-1,
       TokenRhythm/NeoHorse-1-9B, ornith-ai/Ornith-1.5-35B-A3B, openbmb/MiniCPM5-2B,
