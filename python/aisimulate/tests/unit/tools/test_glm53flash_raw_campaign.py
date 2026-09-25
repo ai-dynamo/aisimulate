@@ -7,15 +7,14 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from tools.glm53flash_hf import glm53flash as policy
 from tools.glm53flash_hf import import_glm53flash as integration
-from tools.glm53flash_hf import raw_archive, raw_campaign
+from tools.glm53flash_hf import native_roots, raw_archive, raw_campaign
 
 pytestmark = pytest.mark.unit
 
 
-def hydrate_native_fixture(stage_root, work):
+def hydrate_native_fixture(stage_root, work, *, collection_scope=False):
     """Test-local synthetic report/plan/raw setup, including one sharded role."""
     work.mkdir()
     stage = policy.read(stage_root / "stage.json")
@@ -71,10 +70,6 @@ def hydrate_native_fixture(stage_root, work):
             children, native_children = [], []
             sharded = cell_index == 0 and role == "calibration"
             for shard in range(2 if sharded else 1):
-                raw = closed / ("accepted-" + str(shard))
-                raw.mkdir()
-                native_file = raw / "benchmark.json"
-                native_file.write_text("TEST_ONLY " + label_name + str(shard))
                 child = copy.deepcopy(spec)
                 if sharded:
                     child["cell_id"] += "-shard" + str(shard)
@@ -83,6 +78,14 @@ def hydrate_native_fixture(stage_root, work):
                     child_path = work / "plans" / (child["cell_id"] + ".json")
                     integration.write(child_path, child_plan)
                     child["plan"] = {"path": child_path.relative_to(work).as_posix(), "sha256": policy.sha(child_path)}
+                raw = (
+                    closed / "cells" / child["cell_id"] / "raw/node0000"
+                    if collection_scope
+                    else closed / ("accepted-" + str(shard))
+                )
+                raw.mkdir(parents=True)
+                native_file = raw / "benchmark.json"
+                native_file.write_text("TEST_ONLY " + label_name + str(shard))
                 child.update(raw_root=raw.relative_to(work).as_posix(), attempt_id="TEST_ONLY_attempt")
                 native = {
                     "backend_version": part["backend_version"],
@@ -90,6 +93,13 @@ def hydrate_native_fixture(stage_root, work):
                     "runtime_run_id": "TEST_ONLY_run",
                     "runtime_grid_digest": "a" * 64,
                 }
+                if collection_scope:
+                    child.update(raw_root=str(raw.parent), native_root_scope=native_roots.SCOPE)
+                    provenance = raw / "collector-provenance.json"
+                    provenance.write_text("TEST_ONLY original provenance")
+                    native["receipts"] = [
+                        {"path": "node0000/" + p.name, "sha256": policy.sha(p)} for p in (native_file, provenance)
+                    ]
                 children.append(child)
                 native_children.append(dict(native, child_cell_id=child["cell_id"], source_plan_sha256="a" * 64))
             if sharded:
@@ -119,8 +129,8 @@ def hydrate_native_fixture(stage_root, work):
     integration.write(stage_root / "stage.json", stage)
 
 
-def build_bound_fixture(stage_root, base, monkeypatch):
-    hydrate_native_fixture(stage_root, base / "TEST_ONLY_NATIVE")
+def build_bound_fixture(stage_root, base, monkeypatch, *, collection_scope=False):
+    hydrate_native_fixture(stage_root, base / "TEST_ONLY_NATIVE", collection_scope=collection_scope)
     # The real command has no bypass. Test-only monkeypatch is process-local.
     monkeypatch.setattr(raw_campaign, "production", lambda _: None)
     monkeypatch.setitem(sys.modules, "raw_campaign", raw_campaign)

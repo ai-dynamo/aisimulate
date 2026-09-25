@@ -850,3 +850,47 @@ ordinary legacy selections are unchanged. Original watchdog failures remain
 ineligible regardless of accounting state. The source follows the public
 [SchedMD sacct contract](https://slurm.schedmd.com/sacct.html); no Slurm source is
 copied or modified, and TEST_ONLY tests do not qualify actual originals.
+
+
+## Explicit collection and original pod roots
+
+The public FPM native validator takes the collection directory
+.../cells/<cell_id>/raw; original reader, worker and cleanup-reconciliation
+receipts identify its pod directory .../raw/node0000. A manifest must not pass
+the latter as the validator root. That loses the pod component required to locate
+the original collector-provenance receipt and fails before prediction.
+
+For new full-publication manifests, each native child must opt in explicitly:
+
+    {
+      "cell_id": "<original child cell id>",
+      "raw_root": "/<original attempt>/artifacts/<plan prefix>/cells/<original child cell id>/raw",
+      "native_root_scope": "glm53flash_collection_node0000_v1",
+      "attempt_id": "<original collector attempt id>"
+    }
+
+Keep the original external-control document, its runs[].raw_root pod path,
+collector provenance and worker references unchanged. The current external-control
+adapter binds the new collection root to exactly that original pod and checks
+accepted evidence keys such as node0000/collector-provenance.json against the
+original SHA. The new scope requires original current external controls. All native
+children in a stage use the same scope; unknown, missing within a marked set, or
+mixed scopes fail. Unmarked legacy manifests retain their original equality rule;
+there is no path-based fallback or automatic upgrade.
+
+Archive plans carry both accepted_raw_roots (collection roots) and explicit
+accepted_native_roots with cell, attempt, scope and original_pod_root.
+Closed history derives the expected plan prefix, child and pod again from the
+unchanged original started/checkpoint/selection bytes, including any separately
+verified cleanup reconciliation. Archive and portable metadata validators reject
+extra or missing pods, including empty foreign directories, as well as unsafe
+paths, symlink members, omitted provenance and mismatched evidence bytes. Existing
+explicit storage-alias proof and closed-source checks remain required.
+
+The source profile fpm_collection_pod_boundary_v1 is based on immutable
+b490efc66aa78d6ee84f246c6fd611ea68829849; its coherent policy bundle now
+includes native_roots.py. It does not relabel a native producer or installed
+analysis consumer. Import still verifies actual archive bytes separately; offline
+validation rederives the copied inventory/history/source closure without claiming
+a fresh tar read. No new native collection, prediction, threshold or acceptance
+is implied by a successful directory-boundary check.

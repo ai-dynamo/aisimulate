@@ -46,6 +46,7 @@ def test_copied_policy_imports_in_isolated_process(copied_dataset):
     assert set(loaded) == {
         "glm53flash",
         "raw_campaign",
+        "native_roots",
         "raw_archive",
         "external_control",
         "external_control_vllm",
@@ -93,6 +94,7 @@ def test_profile_binds_all_copied_policy_bytes(copied_dataset):
     assert set(controls) == {
         "scripts/glm53flash.py",
         "scripts/raw_campaign.py",
+        "scripts/native_roots.py",
         "scripts/raw_archive.py",
         "scripts/external_control.py",
         "scripts/external_control_vllm.py",
