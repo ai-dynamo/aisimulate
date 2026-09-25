@@ -89,3 +89,12 @@ These analysis APIs do not establish GPU coverage or accuracy acceptance. Actual
 PIECEWISE coverage depends on the initialized capture policy and measured
 endpoints. Independent full holdout prediction and the existing accuracy gate
 remain required; TEST_ONLY fixtures do not supply those measurements.
+
+The serving reader parses each shared PIECEWISE callback receipt once per rank
+within one capture-validation call. Every segment still requires the original
+receipt hash, and all source, executable, node and complete-capture checks run
+unchanged. File identity is checked on reuse and complete contents are hashed
+again before returning validated captures. The cache never spans reader calls
+and cannot reuse another run's evidence. This avoids repeatedly parsing the
+same callback stream for every segment without changing recorded costs or
+acceptance thresholds.

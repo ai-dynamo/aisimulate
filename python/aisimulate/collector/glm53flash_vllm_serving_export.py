@@ -487,6 +487,7 @@ def _piecewise_captures(root, rank, snapshot, manifest, provenance, files, full_
     )
     from collector.glm53flash_graph_export import _local, _receipt
     from collector.glm53flash_jsonl import file_sha256
+    from collector.glm53flash_receipt_cache import ReceiptCache
     from collector.glm53flash_vllm_piecewise import BREAKABLE_SOURCE_PIN, EAGER_RANGE_PREFIX
 
     identities = [set(), set(), set()]
@@ -511,6 +512,7 @@ def _piecewise_captures(root, rank, snapshot, manifest, provenance, files, full_
         receipt = _receipt(root, registry["instantiation_receipt"], files)
         claim(registry["capture_graph_id"], receipt)
     captures, shared_actual, shared_expected = {}, defaultdict(list), {}
+    shared_receipts = ReceiptCache(root, files)
     expected_entries = {entry["num_tokens"]: entry for entry in snapshot["piecewise_entries"]}
     entries = manifest["phases"]["context"]
     expected_names = {row["name"] for row in entries} - {"logits"}
@@ -614,7 +616,7 @@ def _piecewise_captures(root, rank, snapshot, manifest, provenance, files, full_
             shared_ref = bound["shared_callback_receipt"]
             if shared_ref["file"] != f"{stem}-piecewise-callbacks.json":
                 raise ValueError("serving PW segment refers to another callback subscription")
-            shared = _receipt(root, shared_ref, files)
+            shared = shared_receipts.read(shared_ref)
             if (
                 shared.get("schema") != "glm53flash_piecewise_callbacks_v1"
                 or shared.get("callback_subscription_closed") is not True
@@ -662,6 +664,7 @@ def _piecewise_captures(root, rank, snapshot, manifest, provenance, files, full_
     for name, values in shared_actual.items():
         if sorted(map(canonical_json, values)) != sorted(map(canonical_json, shared_expected[name])):
             raise ValueError("serving PW shared callback receipt omits or repeats observed executables")
+    shared_receipts.verify()
     return captures
 
 
