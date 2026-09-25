@@ -614,6 +614,15 @@ Apache License 2.0 in its model card (no separate LICENSE file is shipped);
 copyright owner: OpenBMB. The Apache License 2.0 terms are reproduced in this
 distribution's `LICENSE` file.
 
+## NeoHorse 1 model configuration
+
+`aisimulate_core/model_configs/TokenRhythm--NeoHorse-1-9B_config.json` is an
+unmodified copy of `config.json` from
+https://huggingface.co/TokenRhythm/NeoHorse-1-9B at immutable revision
+`ba5b6e40d88a6ddf4591e176738254a3bc715765`. Copyright owner: TokenRhythm.
+License: Apache License 2.0 (`LICENSE` in the repository), reproduced in this
+distribution's `LICENSE` file.
+
 ## Meta Llama 4
 
 The following bundled model configs are modified copies of Meta Llama 4

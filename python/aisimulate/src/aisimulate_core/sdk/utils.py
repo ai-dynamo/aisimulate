@@ -1439,6 +1439,9 @@ def _parse_hf_config_json(config: dict) -> dict:
         # CausalLM architecture string instead of the VLM ConditionalGeneration
         # classes above.
         "Qwen3_5MoeForCausalLM",
+        # text-only dense Qwen3.5 checkpoints (e.g. Altworld/Hemmingway-1,
+        # TokenRhythm/NeoHorse-1-9B): flat config, no vision_config.
+        "Qwen3_5ForCausalLM",
     }:
         # Qwen3.5 hybrid GDN + full-attention model.
         layer_types_raw = config.get("layer_types", [])

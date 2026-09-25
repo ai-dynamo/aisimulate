@@ -768,6 +768,8 @@ DefaultHFModels = {
     "ornith-ai/Ornith-1.5-35B-A3B",
     # MiniCPM5 (Llama architecture)
     "openbmb/MiniCPM5-2B",
+    # NeoHorse 1 (text-only dense Qwen3.5, Qwen3_5ForCausalLM)
+    "TokenRhythm/NeoHorse-1-9B",
     # StepFun Step-3.7 Models
     "stepfun-ai/Step-3.7-Flash",
     "stepfun-ai/Step-3.7-Flash-FP8",
@@ -881,6 +883,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     # Qwen3.8-Max: FLAT config (no text_config nesting) -- do NOT add to
     # MULTIMODAL_TEXT_CONFIG_KEY below, unlike the two VLM classes above.
     "Qwen3_5MoeForCausalLM": "QWEN35",
+    "Qwen3_5ForCausalLM": "QWEN35",  # text-only dense Qwen3.5 checkpoint (config at root, no text_config)
     "Gemma4ForConditionalGeneration": "GEMMA4MIX",
     "MuseGlimmerForConditionalGeneration": "MUSEGLIMMER",
 }
