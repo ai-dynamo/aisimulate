@@ -86,6 +86,110 @@ def absolute_safe(path, *, must_exist=True):
     return path
 
 
+def _lexical_absolute(value):
+    require(isinstance(value, (str, Path)), "storage path must be explicit")
+    text = str(value)
+    require(text.startswith("/") and "\\" not in text and "\x00" not in text, "unsafe absolute storage path")
+    relative_parts(text[1:])
+    return Path(text)
+
+
+def _observe_storage_root(original, canonical_root):
+    original = _lexical_absolute(original)
+    canonical_root = absolute_safe(_lexical_absolute(canonical_root))
+    require(
+        canonical_root.is_dir() and original.resolve(strict=True) == canonical_root, "storage root resolution differs"
+    )
+    left, right = original.stat(), canonical_root.stat()
+    require(
+        os.path.samefile(original, canonical_root) and (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino),
+        "storage roots are not the same original directory",
+    )
+    aliases = []
+    for ancestor in reversed((original, *original.parents)):
+        info = ancestor.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            aliases.append(
+                {
+                    "path": str(ancestor),
+                    "target": os.readlink(ancestor),
+                    "device": info.st_dev,
+                    "inode": info.st_ino,
+                    "mtime_ns": info.st_mtime_ns,
+                    "ctime_ns": info.st_ctime_ns,
+                }
+            )
+    return {
+        "schema": "glm53flash_storage_root_proof_v1",
+        "original_root": str(original),
+        "canonical_root": str(canonical_root),
+        "device": right.st_dev,
+        "inode": right.st_ino,
+        "aliases": aliases,
+        "observation": "SAMEFILE_DEVICE_INODE_AND_RESOLUTION",
+    }
+
+
+def create_storage_binding(original_root, canonical_root):
+    """Observe an explicit storage alias on its host; never changes metadata paths."""
+    proof = _observe_storage_root(original_root, canonical_root)
+    return {"proof": proof, "sha256": hashlib.sha256(canonical(proof).encode()).hexdigest()}
+
+
+def validate_storage_binding(binding, *, live=False):
+    """Offline checks the closed proof; live additionally rejects root retargets."""
+    require(isinstance(binding, dict) and set(binding) == {"proof", "sha256"}, "missing/invalid storage root proof")
+    proof = binding["proof"]
+    require(
+        isinstance(proof, dict)
+        and set(proof) == {"schema", "original_root", "canonical_root", "device", "inode", "aliases", "observation"}
+        and binding["sha256"] == hashlib.sha256(canonical(proof).encode()).hexdigest(),
+        "storage root proof digest/fields differ",
+    )
+    require(
+        proof["schema"] == "glm53flash_storage_root_proof_v1"
+        and proof["observation"] == "SAMEFILE_DEVICE_INODE_AND_RESOLUTION"
+        and type(proof["device"]) is int
+        and proof["device"] >= 0
+        and type(proof["inode"]) is int
+        and proof["inode"] > 0,
+        "invalid storage root observation",
+    )
+    original, physical = map(_lexical_absolute, (proof["original_root"], proof["canonical_root"]))
+    require(original != Path("/") and physical != Path("/"), "storage root must name a bounded directory")
+    require(isinstance(proof["aliases"], list), "storage alias observations missing")
+    seen = set()
+    for alias in proof["aliases"]:
+        require(
+            set(alias) == {"path", "target", "device", "inode", "mtime_ns", "ctime_ns"}, "invalid alias observation"
+        )
+        path = _lexical_absolute(alias["path"])
+        require(
+            path not in seen
+            and original.is_relative_to(path)
+            and isinstance(alias["target"], str)
+            and alias["target"]
+            and all(type(alias[k]) is int and alias[k] >= 0 for k in ("device", "inode", "mtime_ns", "ctime_ns")),
+            "invalid alias ancestor identity",
+        )
+        seen.add(path)
+    if live:
+        require(_observe_storage_root(original, physical) == proof, "storage root/alias changed since observation")
+    return original, physical
+
+
+def storage_path(path, binding=None, *, live=False):
+    """Translate only a contained suffix; member symlinks are never authorized."""
+    path = _lexical_absolute(path)
+    if binding is not None:
+        original, physical = validate_storage_binding(binding, live=live)
+        if path.is_relative_to(original):
+            path = physical / path.relative_to(original)
+        else:
+            require(path.is_relative_to(physical), "path is outside bound original/canonical root")
+    return absolute_safe(path) if live else path
+
+
 def relative_parts(value):
     require(
         isinstance(value, str) and "\\" not in value and "\x00" not in value,
@@ -407,8 +511,13 @@ def validate_identity(uri, labels):
         seen.add(canonical(label))
 
 
-def create_archive(source, output, uri, labels):
-    source = absolute_safe(source)
+def create_archive(source, output, uri, labels, *, storage_root_binding=None):
+    original_source = (
+        Path(source).expanduser().absolute() if storage_root_binding is None else _lexical_absolute(source)
+    )
+    source = (
+        absolute_safe(source) if storage_root_binding is None else storage_path(source, storage_root_binding, live=True)
+    )
     output = absolute_safe(output, must_exist=False)
     require(source.is_dir(), "source must be a directory")
     require(not output.is_relative_to(source), "output must not be inside source")
@@ -430,6 +539,11 @@ def create_archive(source, output, uri, labels):
             {
                 "schema": SCHEMA,
                 "source_path": str(source),
+                **(
+                    {"original_source_path": str(original_source), "storage_root_binding": storage_root_binding}
+                    if storage_root_binding is not None
+                    else {}
+                ),
                 "source_root_stat": root_stat,
                 "source_inventory": inventory,
                 "external_uri": uri,
@@ -446,6 +560,8 @@ def create_archive(source, output, uri, labels):
         verify_source(root_fd, output / INVENTORY, hash_files=True)
         verify_source(root_fd, output / INVENTORY, hash_files=False)
         assert_stat(source.lstat(), root_stat, "source root")
+        if storage_root_binding is not None:
+            validate_storage_binding(storage_root_binding, live=True)
         receipt = {
             "schema": SCHEMA,
             "status": "PASS",
@@ -462,6 +578,7 @@ def create_archive(source, output, uri, labels):
             },
             "verification": verification,
             "source_recheck": "STAT_AND_SHA256_PASS",
+            **({"storage_root_binding": storage_root_binding} if storage_root_binding is not None else {}),
             "external_uri": uri,
             "external_uri_verification": "NOT_CHECKED",
             "labels": labels,
@@ -528,6 +645,15 @@ def verify_bundle(output):
         and manifest["external_uri"] == receipt["external_uri"],
         "input manifest disagrees with receipt",
     )
+    require(
+        manifest.get("storage_root_binding") == receipt.get("storage_root_binding"), "archive storage proof differs"
+    )
+    if "storage_root_binding" in manifest:
+        require(
+            storage_path(manifest["original_source_path"], manifest["storage_root_binding"])
+            == Path(manifest["source_path"]),
+            "original/canonical archived source mismatch",
+        )
     validate_identity(receipt["external_uri"], receipt["labels"])
     external = json.loads(absolute_safe(output / "external-raw-evidence.json").read_text())
     expected_external = [
@@ -566,6 +692,11 @@ def main():
         required=True,
         help="JSON array of explicit backend/precision/TP/phase/role labels",
     )
+    create.add_argument("--storage-root-binding", type=Path)
+    observe = commands.add_parser("storage-root")
+    observe.add_argument("--original", type=Path, required=True)
+    observe.add_argument("--canonical", type=Path, required=True)
+    observe.add_argument("--output", type=Path, required=True)
     verify = commands.add_parser("verify")
     verify.add_argument("--bundle", type=Path, required=True)
     args = parser.parse_args()
@@ -575,7 +706,13 @@ def main():
             info = os.fstat(stream.fileno())
             require(stat.S_ISREG(info.st_mode) and info.st_size <= CHUNK, "labels must be a small regular JSON file")
             labels = json.load(stream)
-        result = create_archive(args.source, args.output, args.uri, labels)
+        binding = (
+            json.loads(absolute_safe(args.storage_root_binding).read_text()) if args.storage_root_binding else None
+        )
+        result = create_archive(args.source, args.output, args.uri, labels, storage_root_binding=binding)
+    elif args.command == "storage-root":
+        result = create_storage_binding(args.original, args.canonical)
+        write_json(absolute_safe(args.output, must_exist=False), result)
     else:
         result = verify_bundle(args.bundle)
     print(json.dumps(result, indent=2, sort_keys=True))

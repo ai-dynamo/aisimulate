@@ -138,12 +138,12 @@ archive helper are deliberately insufficient. Binding verifies:
 
 ## Archive the closed campaigns on the storage host
 
-`raw_archive.py`, `raw_campaign.py`, `external_control.py` and
-`external_control_vllm.py` are original Apache-2.0 implementations
+`raw_archive.py`, `raw_campaign.py`, `external_control.py`,
+`external_control_current.py` and `external_control_vllm.py` are original Apache-2.0 implementations
 using only Python's standard library. They can run with Python 3.12 on the
 remote Lustre host without importing AISimulate, torch, Arrow or a GPU runtime.
 These are repository maintenance tools, not installed SDK entry points. For
-remote use, deploy all four modules together in a new
+remote use, deploy all five modules together in a new
 versioned bundle directory, retain the Apache-2.0 license, and record the exact
 AISimulate source commit and SHA256 of every file before transfer. Recheck all
 hashes on the destination and invoke `python3.12 /bundle/raw_campaign.py`; do not
@@ -173,6 +173,39 @@ all its accepted raw roots; the latter must be a stable credential-free `ssh://`
 not inferred. For example, a URI can be
 `ssh://ocijhb/lustre/evidence/ROLE/campaign.tar.gz`. URI availability is not
 checked, and this tool performs no upload or remote write.
+
+When original metadata uses a storage alias such as `/lustre` but the physical
+root is under `/scratch`, preserve the original paths and bind the roots
+explicitly. Run the following on the storage host, using real absolute roots and
+new output files:
+
+```sh
+python3.12 tools/glm53flash_hf/raw_archive.py storage-root \
+  --original /lustre/campaign/task --canonical /scratch/campaign/task \
+  --output /scratch/evidence/storage-root.json
+python3.12 tools/glm53flash_hf/raw_campaign.py plan \
+  --stage /scratch/evidence/accepted-stage \
+  --manifest-base /lustre/campaign/task/analysis \
+  --storage-root-binding /scratch/evidence/storage-root.json \
+  --output /scratch/evidence/archive-plan.json
+```
+
+The proof records actual root resolution, `samefile`, device/inode and observed
+alias ancestors. Planning, archive creation and binding recheck it before and
+after their reads; a retargeted alias fails. Only a contained suffix may be
+translated to the verified canonical root. Canonical paths and all source
+members retain the original no-symlink checks, including `O_NOFOLLOW` reads.
+The original plan, started receipt, accepted `raw_root` and external-control
+path equality remain unchanged. Use canonical paths for stage, archive and
+bound-output directories. The explicit mapping covers this one task root;
+unrelated files require their own safe canonical paths.
+
+The root proof and its digest enter the archive input manifest, which is embedded
+in the archive and bound by the receipt. Portable verification checks that closed
+proof, inventory and original/canonical suffix correspondence. It does not claim
+the old host's inode still exists. Without a binding the previous path rules
+remain unchanged; this option does not authorize arbitrary member symlinks.
+Only current external-control attachments accept this explicit storage mapping.
 
 The production sharder places both phases beneath one parent. For example,
 with `artifact_root=/lustre/campaign/vllm-fp8-tp2-calibration/artifacts` and
