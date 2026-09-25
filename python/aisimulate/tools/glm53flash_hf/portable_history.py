@@ -126,7 +126,7 @@ def _metadata(proof, refs, base, archive, files):
         "archive/history original source differs",
     )
     inventory = {row["path"]: row for row in archive.inventory_records(paths[archive.INVENTORY])}
-    depth = 4 if snap["backend"] == "vllm" else 3
+    depth = h.history_depth(snap)
     actual_starts = {
         name
         for name, row in inventory.items()

@@ -28,6 +28,9 @@ CONTRACT = "fpm_closed_attempt_history_v2"
 BUNDLE_PROOF = "closed-attempt-history.json"
 BOUND_PROOF = "closed-attempt-history-binding.json"
 FAILURE = "closed-attempt-history-failure.json"
+FACTORY_HISTORY_SCOPE = "sglang_public_factory_depth4_original_history_v1"
+PRE_NATIVE_MAX_FILES = 512
+PRE_NATIVE_MAX_BYTES = 8 * 1024**2
 TERMINAL = {
     "vllm": {"COLLECTION_PASSED", "COLLECTION_FAILED_PRESERVED"},
     "sglang": {"COLLECTION_PASSED", "COLLECTION_FAILED_PRESERVED", "FAILED_PRESERVED"},
@@ -35,8 +38,8 @@ TERMINAL = {
 DEPLOYMENTS = {f"{q}-tp{t}" for q in ("fp8", "nvfp4") for t in (2, 4)}
 MAINTENANCE_IDENTITY = {
     "kind": "public_source_review_followup",
-    "profile": "fpm_sglang_public_factory_v4",
-    "base_commit": "d53b406d88d1b77e42d9d03c27cd6a7a095319fe",
+    "profile": "fpm_sglang_public_factory_history_v5",
+    "base_commit": "0346c808885baa366bfcdcdb96add32dd4a94a8e",
 }
 MAINTENANCE = {
     "accounting_termination.py": "67cffe873c0f4225fd07f8786970c27e3ced8ac63366b38540443f4aa8efc890",
@@ -50,7 +53,7 @@ MAINTENANCE = {
     "glm53flash.py": "30c784be0c57120910fbeeb4200971c1468400b6296a1cc688aa4545083b8dbc",
     "import_glm53flash.py": "19a10c03e16cfd465f35a6e58346ebdbcd2fc911dbae2eb1c744c5cd500ccc9f",
     "native_roots.py": "6a029c2353ab0d0da556b3bf407ac55831d4fbab69051e8006225dd3edefeb09",
-    "portable_history.py": "5c78f263b468b33f351a2ba3691c889df133f99ffc146d54a599af8febe5dbfb",
+    "portable_history.py": "752a7483c3f92c77613ba370ce8b7a894e836f7d79cb34ff332991ef3887ec57",
     "profile.py": "f806a78c58edc52b7ae62b1f0d49dc49bd4f8a0aa016b04197a12c03d53447b0",
     "raw_archive.py": "80384152174e45c849623b7f299e0ab17c3d18b93624df220afce651d3b63b40",
     "raw_campaign.py": "592a871aaaf6bf692b16d25a30582a3d95ae60df51d82c0b70f798a5bd580e3b",
@@ -139,10 +142,213 @@ def _decoded(record):
     return json.loads(raw)
 
 
+def history_depth(snapshot):
+    """Select a path contract explicitly; never infer it from a directory shape."""
+    request = snapshot["request"]
+    scope = request.get("factory_history_scope")
+    require(snapshot.get("factory_history_scope") == scope, "factory history request/snapshot scope differs")
+    if scope is None:
+        require(
+            "factory_history_scope" not in request
+            and "factory_history_scope" not in snapshot
+            and "pre_native_failure_floor" not in request
+            and "pre_native_failure_evidence" not in snapshot,
+            "pre-native evidence requires explicit factory history scope",
+        )
+        return 4 if snapshot["backend"] == "vllm" else 3
+    require(
+        scope == FACTORY_HISTORY_SCOPE
+        and snapshot["backend"] == "sglang"
+        and request["external_control_request"].get("schema") == factory.SCHEMA
+        and request["external_control_request"].get("adapter") == factory.ADAPTER,
+        "unknown or cross-backend factory history scope",
+    )
+    require("pre_native_failure_floor" in request, "complete pre-native failure floor required")
+    return 4
+
+
+def _pre_native_relative(value):
+    require(
+        isinstance(value, str) and value and "\\" not in value and "\x00" not in value,
+        "unsafe pre-native original path",
+    )
+    path = relative(value)
+    require(path.as_posix() == value and value != ".", "noncanonical pre-native original path")
+    return path
+
+
+def _pre_native_floor(request):
+    floor = request["pre_native_failure_floor"]
+    require(
+        isinstance(floor, dict)
+        and set(floor)
+        == {
+            "receipt",
+            "inventory",
+            "accounting",
+            "jobs",
+            "originals_root",
+            "native_started",
+            "original_started_records",
+        },
+        "unknown pre-native failure contract",
+    )
+    require(
+        floor["native_started"] is False and floor["original_started_records"] is None,
+        "pre-native failure cannot invent native records",
+    )
+    jobs = floor["jobs"]
+    require(
+        isinstance(jobs, list)
+        and jobs
+        and all(isinstance(j, str) and j.isdecimal() for j in jobs)
+        and len(set(jobs)) == len(jobs),
+        "invalid pre-native job set",
+    )
+    for name in ("receipt", "inventory", "accounting"):
+        ref = floor[name]
+        require(isinstance(ref, dict) and set(ref) == {"path", "sha256"}, "invalid pre-native original reference")
+        path = _pre_native_relative(ref["path"])
+        require(
+            all(not path.is_relative_to(relative(p)) for p in request["campaign_roots"]),
+            "pre-native metadata must be separate from native campaign",
+        )
+        require(
+            isinstance(ref["sha256"], str)
+            and len(ref["sha256"]) == 64
+            and set(ref["sha256"]) <= set("0123456789abcdef"),
+            "invalid pre-native original SHA",
+        )
+    root = _pre_native_relative(floor["originals_root"])
+    require(
+        all(not root.is_relative_to(relative(p)) for p in request["campaign_roots"]),
+        "pre-native supplement must be separate from native campaign",
+    )
+    return floor
+
+
+def _pre_native_members(request, get):
+    """Check exact original bytes, whether supplied live or by an offline proof."""
+    floor = _pre_native_floor(request)
+    originals = {}
+
+    def load(name, expected, size=None):
+        # Reuse archive path semantics, including '.', backslash and traversal rejection.
+        if __package__:
+            from . import raw_archive as archive
+        else:
+            import raw_archive as archive
+
+        archive.relative_parts(name)
+        raw = get(name)
+        require(len(raw) <= PRE_NATIVE_MAX_BYTES, "pre-native original exceeds metadata bound")
+        require(sha(raw) == expected and (size is None or len(raw) == size), "pre-native original bytes changed")
+        require(name not in originals, "pre-native original paths overlap")
+        originals[name] = _record(raw)
+        return raw
+
+    docs = {
+        name: json.loads(load(floor[name]["path"], floor[name]["sha256"]))
+        for name in ("receipt", "inventory", "accounting")
+    }
+    receipt, inventory, accounting = (docs[name] for name in ("receipt", "inventory", "accounting"))
+    require(
+        receipt["state"] == "ORIGINAL_PRE_NATIVE_SHARED_STORAGE_GATE_FAILURES_PRESERVED"
+        and receipt["native_started"] is False
+        and receipt["originals_rewritten"] is False
+        and set(receipt["output_directories"]) == DEPLOYMENTS
+        and all(value == [] for value in receipt["output_directories"].values())
+        and inventory["output_directories"] == receipt["output_directories"],
+        "pre-native failure closure relabeled or native output present",
+    )
+    require(
+        receipt["inventory_sha256"] == floor["inventory"]["sha256"]
+        and receipt["accounting_sha256"] == floor["accounting"]["sha256"]
+        and inventory["accounting"] == accounting
+        and accounting["returncode"] == 0,
+        "pre-native accounting binding differs",
+    )
+    parents = [line.split("|") for line in accounting["stdout"].splitlines() if line.split("|", 1)[0].isdecimal()]
+    require(
+        len(parents) == len(floor["jobs"])
+        and {row[0] for row in parents} == set(floor["jobs"])
+        and all(len(row) >= 8 and row[1] and row[4] == "FAILED" and row[7] != "0:0" for row in parents)
+        and len({row[1] for row in parents}) == 1,
+        "pre-native failed scheduler parents differ",
+    )
+    files = inventory["files"]
+    require(
+        files and len(files) == receipt["files"] <= PRE_NATIVE_MAX_FILES,
+        "incomplete or unbounded pre-native original membership",
+    )
+    require(
+        type(receipt["bytes"]) is int and 0 <= receipt["bytes"] <= PRE_NATIVE_MAX_BYTES,
+        "pre-native closure exceeds metadata bound",
+    )
+    require(
+        all(type(item.get("bytes")) is int and item["bytes"] >= 0 for item in files.values())
+        and sum(item["bytes"] for item in files.values()) == receipt["bytes"],
+        "pre-native declared byte count differs",
+    )
+    require(
+        all("logs/sg2d51-formal-" + job + suffix in files for job in floor["jobs"] for suffix in (".out", ".err")),
+        "pre-native original stdout/stderr absent",
+    )
+    for name, ref in files.items():
+        require(Path(name).name not in {"started.json", "result.json"}, "pre-native closure contains native records")
+        require(type(ref["bytes"]) is int and ref["bytes"] >= 0, "invalid pre-native size")
+        load(
+            str(_pre_native_relative(floor["originals_root"]) / _pre_native_relative(name)), ref["sha256"], ref["bytes"]
+        )
+    require(sum(item["bytes"] for item in files.values()) == receipt["bytes"], "pre-native byte count differs")
+    return originals
+
+
+def verify_pre_native_history(snapshot):
+    if snapshot["request"].get("factory_history_scope") is None:
+        return
+    evidence = snapshot["pre_native_failure_evidence"]
+    require(
+        set(evidence) == {"scope", "storage", "originals"}
+        and evidence["scope"] == FACTORY_HISTORY_SCOPE
+        and evidence["storage"] == "ORIGINAL_BYTES_IN_HISTORY_SIDECAR_NOT_NATIVE_TAR",
+        "unknown pre-native evidence storage contract",
+    )
+    require(
+        isinstance(evidence["originals"], dict)
+        and len(evidence["originals"]) <= PRE_NATIVE_MAX_FILES + 3
+        and all(type(r.get("bytes")) is int and r["bytes"] >= 0 for r in evidence["originals"].values())
+        and sum(r["bytes"] for r in evidence["originals"].values()) <= 2 * PRE_NATIVE_MAX_BYTES,
+        "pre-native embedded closure exceeds metadata bound",
+    )
+
+    def get(name):
+        record = evidence["originals"][name]
+        require(
+            type(record["bytes"]) is int
+            and 0 <= record["bytes"] <= PRE_NATIVE_MAX_BYTES
+            and len(record["base64"]) <= 4 * ((PRE_NATIVE_MAX_BYTES + 2) // 3),
+            "pre-native embedded bytes exceed metadata bound",
+        )
+        raw = base64.b64decode(record["base64"], validate=True)
+        require(sha(raw) == record["sha256"] and len(raw) == record["bytes"], "pre-native original proof changed")
+        return raw
+
+    checked = _pre_native_members(snapshot["request"], get)
+    require(checked == evidence["originals"], "missing or extra pre-native original bytes")
+    jobs = set(snapshot["request"]["pre_native_failure_floor"]["jobs"])
+    require(
+        not jobs.intersection(a["job"] for a in snapshot["ledger"]["attempts"]),
+        "pre-native job was relabeled as a native attempt",
+    )
+
+
 def _validate_snapshot(snapshot):
     """Pure offline checks against the preserved original small-file bytes."""
     require(snapshot["backend"] in {"vllm", "sglang"}, "unknown history backend")
     request, ledger = snapshot["request"], snapshot["ledger"]
+    depth = history_depth(snapshot)
+    verify_pre_native_history(snapshot)
     for key in ("request", "ledger"):
         original_input = snapshot["input_bytes"][key]
         require(_decoded(original_input) == snapshot[key], "original input JSON changed")
@@ -177,13 +383,18 @@ def _validate_snapshot(snapshot):
         require(isinstance(job, str) and job.isdecimal(), "invalid original job")
         start_path = relative(attempt["started"]["path"])
         suffix = start_path.relative_to(campaign)
-        depth = 4 if snapshot["backend"] == "vllm" else 3
         require(
             len(suffix.parts) == depth
             and suffix.parts[-2:] == (job, "started.json")
             and suffix.parts[0] == attempt["deployment"],
             "original attempt path changed",
         )
+        if request.get("factory_history_scope") == FACTORY_HISTORY_SCOPE:
+            index, separator, cell = suffix.parts[1].partition("-")
+            require(
+                index.isdecimal() and 0 <= int(index) < 18 and separator and cell == attempt["cell_id"],
+                "factory attempt index/child path differs",
+            )
         require(
             str(start_path.parent) == attempt["original_attempt_directory"],
             "attempt directory changed",
@@ -308,6 +519,22 @@ def snapshot(backend, inputs, plan, archive):
         "originals": originals,
         "input_bytes": {key: _record(checked_file(inputs[key]["path"]).read_bytes()) for key in ("request", "ledger")},
     }
+    if "factory_history_scope" in request:
+        result["factory_history_scope"] = request["factory_history_scope"]
+        history_depth(result)
+
+        def read_pre_native(name):
+            path = archive.storage_path(root / relative(name), binding, live=True)
+            require(not path.is_relative_to(physical), "pre-native original aliases the native campaign")
+            path = archive.absolute_safe(path)
+            require(path.stat().st_size <= PRE_NATIVE_MAX_BYTES, "pre-native original exceeds metadata bound")
+            return checked_file(path).read_bytes()
+
+        result["pre_native_failure_evidence"] = {
+            "scope": FACTORY_HISTORY_SCOPE,
+            "storage": "ORIGINAL_BYTES_IN_HISTORY_SIDECAR_NOT_NATIVE_TAR",
+            "originals": _pre_native_members(request, read_pre_native),
+        }
     if ledger["schema"] == reconciliation.SELECTION_SCHEMA:
         result["reconciliations"] = {}
         for cid, choice in ledger["selections"].items():
@@ -321,7 +548,7 @@ def snapshot(backend, inputs, plan, archive):
             require(sha(raw) == ref["sha256"] and len(raw) == ref["bytes"], "reconciliation proof changed")
             result["reconciliations"][cid] = _record(raw)
     _, expected_starts = _validate_snapshot(result)
-    pattern = "*/*/*" if backend == "vllm" else "*/*"
+    pattern = "/".join("*" for _ in range(history_depth(result) - 1))
     job_dirs = {str(p.relative_to(physical)) for p in physical.glob(pattern) if p.is_dir()}
     require(
         all(Path(p).name.isdecimal() for p in job_dirs),
@@ -464,7 +691,7 @@ def verify_bundle_history(bundle, proof, archive):
         "archive source differs from history",
     )
     records = {r["path"]: r for r in archive.inventory_records(bundle / archive.INVENTORY)}
-    depth = 4 if proof["snapshot"]["backend"] == "vllm" else 3
+    depth = history_depth(proof["snapshot"])
     actual_starts = {
         name
         for name, r in records.items()
