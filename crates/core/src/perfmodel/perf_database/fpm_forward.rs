@@ -55,9 +55,34 @@ pub const FPM_FORWARD_SCHEMA_NAME: &str = "aic_fpm_forward_perf";
 pub const FPM_FORWARD_SCHEMA_VERSION: u64 = 7;
 pub const FPM_FORWARD_COORDINATE_SYSTEM: &str = "iteration_totals_balanced_v1";
 pub const FPM_FORWARD_PARTITION_POLICY: &str = "balanced_v1";
-/// The only measurement policy the collector publishes; pinned in the
-/// sidecar gate (a pair measured under a different regime is structural).
+/// Legacy single-sample policy. Schema 7 also admits the backend-bound
+/// real-hybrid median contracts below; their stored latency is already reduced.
 pub const FPM_FORWARD_MEASUREMENT_POLICY: &str = "dynamo_native_single_sample_v1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MeasurementPolicy {
+    SingleSample,
+    VllmRealHybridMedian,
+    SglangRealHybridMedian,
+}
+
+impl MeasurementPolicy {
+    fn name(self) -> &'static str {
+        match self {
+            Self::SingleSample => FPM_FORWARD_MEASUREMENT_POLICY,
+            Self::VllmRealHybridMedian => "vllm_native_real_hybrid_median_v1",
+            Self::SglangRealHybridMedian => "sglang_native_real_hybrid_median_v1",
+        }
+    }
+
+    fn timing_boundary(self) -> Option<&'static str> {
+        match self {
+            Self::SingleSample => None,
+            Self::VllmRealHybridMedian => Some("vllm_native_scheduler_output_interval"),
+            Self::SglangRealHybridMedian => Some("sglang_native_forward_device_timer"),
+        }
+    }
+}
 /// `kv_seed_regime` marker for rows whose KV state the collector could not
 /// reach through the real kvwarm chain and fabricated instead. Such rows
 /// are measurements of the wrong regime (observed 2-3.7x inflated on 4-GPU
@@ -412,7 +437,7 @@ fn validate_sidecar(
     system: &str,
     backend: &str,
     version: &str,
-) -> Result<(Option<u64>, u64), AicError> {
+) -> Result<(Option<u64>, u64, MeasurementPolicy), AicError> {
     if !metadata_path.exists() {
         return Err(structural(format!(
             "FPM database is missing its metadata sidecar: {}. \
@@ -460,14 +485,35 @@ fn validate_sidecar(
             metadata_path.display()
         )));
     }
-    if metadata.get("measurement_policy").and_then(|v| v.as_str())
-        != Some(FPM_FORWARD_MEASUREMENT_POLICY)
-    {
-        return Err(structural(format!(
-            "unsupported FPM measurement_policy={:?} (expected {FPM_FORWARD_MEASUREMENT_POLICY:?}): {}",
-            metadata.get("measurement_policy"),
-            metadata_path.display()
-        )));
+    let measurement_policy = match (
+        metadata.get("measurement_policy").and_then(|v| v.as_str()),
+        schema_version,
+        backend,
+    ) {
+        (Some(FPM_FORWARD_MEASUREMENT_POLICY), _, _) => MeasurementPolicy::SingleSample,
+        (Some("vllm_native_real_hybrid_median_v1"), Some(7), "vllm") => {
+            MeasurementPolicy::VllmRealHybridMedian
+        }
+        (Some("sglang_native_real_hybrid_median_v1"), Some(7), "sglang") => {
+            MeasurementPolicy::SglangRealHybridMedian
+        }
+        _ => {
+            return Err(structural(format!(
+                "unsupported FPM measurement_policy={:?} for schema {schema_version:?} backend {backend:?}: {}",
+                metadata.get("measurement_policy"),
+                metadata_path.display()
+            )));
+        }
+    };
+    if measurement_policy.timing_boundary().is_some() {
+        for (key, expected) in [("warmup_repeats", 5), ("measurement_repeats", 10)] {
+            if metadata.get(key).and_then(|v| v.as_u64()) != Some(expected) {
+                return Err(structural(format!(
+                    "FPM median sidecar {key} must be the integer {expected}: {}",
+                    metadata_path.display()
+                )));
+            }
+        }
     }
     // The commit record names the database identity it was published for;
     // contradictory metadata (a pair copied into the wrong tree with its
@@ -497,6 +543,7 @@ fn validate_sidecar(
     Ok((
         json_uint(metadata.get("row_count")),
         schema_version.unwrap(),
+        measurement_policy,
     ))
 }
 
@@ -555,7 +602,7 @@ fn load_pair(
         return Ok(None);
     }
     let metadata_path = parquet_path.with_extension("metadata.json");
-    let (sidecar_row_count, schema_version) =
+    let (sidecar_row_count, schema_version, measurement_policy) =
         validate_sidecar(&metadata_path, parquet_path, system, backend, version)?;
 
     let reader = PerfReader::open(parquet_path)?;
@@ -610,6 +657,20 @@ fn load_pair(
     // KV-seed provenance column (additive; absent in pairs that predate it).
     // Resolved once here; per-row reads treat null the same as absence.
     let kv_seed_col = reader.col_optional("kv_seed_regime");
+    // Legacy pairs may predate the row policy column. Median pairs must bind
+    // every row to their sidecar and the producer's exact sampling contract.
+    let row_policy_col = reader.col_optional("measurement_policy");
+    let median_columns = if measurement_policy.timing_boundary().is_some() {
+        Some([
+            reader.col("global_warmup_iterations")?,
+            reader.col("warmup_repeats")?,
+            reader.col("measurement_repeats")?,
+            reader.col("state_protocol")?,
+            reader.col("timing_boundary")?,
+        ])
+    } else {
+        None
+    };
 
     // Python checks the sidecar row_count against the FULL row list before any
     // per-row validation (`load_fpm_forward_data`: read_table -> row_count ->
@@ -636,6 +697,52 @@ fn load_pair(
     let mut rows: Vec<FpmRow> = Vec::new();
     for (index, row) in reader.rows()?.enumerate() {
         let row = row?;
+        if median_columns.is_some()
+            && row.str_optional(row_policy_col)? != Some(measurement_policy.name())
+        {
+            return Err(structural(format!(
+                "FPM row {index} measurement_policy must match sidecar {:?}",
+                measurement_policy.name()
+            )));
+        }
+        if let Some([global, warmup, measured, protocol, boundary]) = median_columns {
+            for (name, col, expected) in [
+                ("global_warmup_iterations", global, 0),
+                ("warmup_repeats", warmup, 5),
+                ("measurement_repeats", measured, 10),
+            ] {
+                if row.u32(col).ok() != Some(expected) {
+                    return Err(structural(format!(
+                        "FPM median row {index} {name} must be the integer {expected}"
+                    )));
+                }
+            }
+            for (name, col, expected) in [
+                (
+                    "state_protocol",
+                    protocol,
+                    "glm53flash_same_request_real_hybrid_v1",
+                ),
+                (
+                    "timing_boundary",
+                    boundary,
+                    measurement_policy.timing_boundary().unwrap(),
+                ),
+            ] {
+                if row.str_optional(Some(col))? != Some(expected) {
+                    return Err(structural(format!(
+                        "FPM median row {index} {name} must be {expected:?}"
+                    )));
+                }
+            }
+            // A median of real state must never enter legacy fake-KV healing,
+            // even for an execution identity that otherwise permits it.
+            if row.str_optional(kv_seed_col)? == Some(FPM_KV_SEED_FAKE_FALLBACK) {
+                return Err(structural(format!(
+                    "FPM median row {index} cannot use fake_fallback KV state"
+                )));
+            }
+        }
         let get_str = |name: &str| -> Result<String, AicError> {
             // Null identity cells normalize to "" (Python _norm_identity).
             Ok(row
@@ -1213,6 +1320,16 @@ pub(crate) mod tests {
         /// legacy layout).
         pub kv_seed_regime: Option<&'static str>,
         pub execution: Option<[&'static str; 4]>,
+        pub measurement: Option<MeasurementSpec>,
+    }
+
+    pub(crate) struct MeasurementSpec {
+        pub policy: &'static str,
+        pub global: i64,
+        pub warmup: i64,
+        pub measured: i64,
+        pub protocol: &'static str,
+        pub boundary: &'static str,
     }
 
     impl Default for RowSpec {
@@ -1236,6 +1353,7 @@ pub(crate) mod tests {
                 backend: "vllm",
                 kv_seed_regime: None,
                 execution: None,
+                measurement: None,
             }
         }
     }
@@ -1301,6 +1419,7 @@ pub(crate) mod tests {
         // so default fixtures exercise the pre-column legacy layout.
         let has_kv_seed = rows.iter().any(|r| r.kv_seed_regime.is_some());
         let has_execution = rows.iter().any(|r| r.execution.is_some());
+        let has_measurement = rows.iter().any(|r| r.measurement.is_some());
         let schema = "message schema {
             REQUIRED BINARY cell_id (UTF8);
             REQUIRED BINARY model_path (UTF8);
@@ -1346,6 +1465,21 @@ pub(crate) mod tests {
                  REQUIRED BINARY engram_residency (UTF8);
                  REQUIRED BINARY input_modality (UTF8);
                  REQUIRED BINARY workload_kind (UTF8);",
+            )
+        } else {
+            schema
+        };
+        let schema = if has_measurement {
+            schema.replace(
+                '}',
+                "
+                REQUIRED BINARY measurement_policy (UTF8);
+                REQUIRED INT64 global_warmup_iterations;
+                REQUIRED INT64 warmup_repeats;
+                REQUIRED INT64 measurement_repeats;
+                REQUIRED BINARY state_protocol (UTF8);
+                REQUIRED BINARY timing_boundary (UTF8);
+            }",
             )
         } else {
             schema
@@ -1497,6 +1631,39 @@ pub(crate) mod tests {
                 .expect("write");
             col.close().expect("close");
         }
+        if has_measurement {
+            let values = str_col(&|r| r.measurement.as_ref().unwrap().policy.to_string());
+            let mut col = rg.next_column().unwrap().unwrap();
+            col.typed::<ByteArrayType>()
+                .write_batch(&values, None, None)
+                .unwrap();
+            col.close().unwrap();
+            for field in 0..3 {
+                let values: Vec<i64> = rows
+                    .iter()
+                    .map(|r| {
+                        let m = r.measurement.as_ref().unwrap();
+                        [m.global, m.warmup, m.measured][field]
+                    })
+                    .collect();
+                let mut col = rg.next_column().unwrap().unwrap();
+                col.typed::<Int64Type>()
+                    .write_batch(&values, None, None)
+                    .unwrap();
+                col.close().unwrap();
+            }
+            for field in 0..2 {
+                let values = str_col(&|r| {
+                    let m = r.measurement.as_ref().unwrap();
+                    [m.protocol, m.boundary][field].to_string()
+                });
+                let mut col = rg.next_column().unwrap().unwrap();
+                col.typed::<ByteArrayType>()
+                    .write_batch(&values, None, None)
+                    .unwrap();
+                col.close().unwrap();
+            }
+        }
         rg.close().expect("close row group");
         writer.close().expect("close writer");
 
@@ -1576,6 +1743,149 @@ pub(crate) mod tests {
             "0.25.1",
             false,
         )
+    }
+
+    fn median_rows(backend: &'static str) -> Vec<RowSpec> {
+        let (policy, boundary) = if backend == "vllm" {
+            (
+                "vllm_native_real_hybrid_median_v1",
+                "vllm_native_scheduler_output_interval",
+            )
+        } else {
+            (
+                "sglang_native_real_hybrid_median_v1",
+                "sglang_native_forward_device_timer",
+            )
+        };
+        default_rows()
+            .into_iter()
+            .map(|mut row| {
+                row.backend = backend;
+                row.execution = Some(LEGACY_EXECUTION_IDENTITY);
+                row.kv_seed_regime = Some(if row.workload_kind == "prefill" {
+                    "n/a"
+                } else {
+                    "real_kv"
+                });
+                row.measurement = Some(MeasurementSpec {
+                    policy,
+                    global: 0,
+                    warmup: 5,
+                    measured: 10,
+                    protocol: "glm53flash_same_request_real_hybrid_v1",
+                    boundary,
+                });
+                row
+            })
+            .collect()
+    }
+
+    fn write_median_pair(dir: &Path, rows: &[RowSpec]) {
+        write_pair_with(dir, rows, |m| {
+            m.insert("backend".into(), rows[0].backend.into());
+            m.insert(
+                "measurement_policy".into(),
+                rows[0].measurement.as_ref().unwrap().policy.into(),
+            );
+            m.insert("warmup_repeats".into(), 5.into());
+            m.insert("measurement_repeats".into(), 10.into());
+        });
+    }
+
+    #[test]
+    fn median_policies_keep_stored_values_and_domains_identical_to_single_sample() {
+        for backend in ["vllm", "sglang"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let rows = median_rows(backend);
+            write_median_pair(tmp.path(), &rows);
+            let median = FpmForwardTable::new_with_replacement(
+                tmp.path().to_path_buf(),
+                "b200_sxm",
+                backend,
+                "0.25.1",
+                true,
+            );
+            let actual = &median.cells().unwrap()[0];
+            // Fixture latencies are already-reduced measured ms; 5+10 is
+            // provenance, never a scale factor or a second aggregation.
+            assert_eq!(decode_curves(&actual.decode)[&8][&4096], 7.0);
+            assert_eq!(median.replaced_fake_fallback_rows().unwrap(), 0);
+            let legacy_dir = tempfile::tempdir().unwrap();
+            write_pair(legacy_dir.path(), &default_rows());
+            let legacy = loaded_table(legacy_dir.path());
+            let expected = &legacy.cells().unwrap()[0];
+            assert_eq!(
+                format!("{:?}", actual.prefill),
+                format!("{:?}", expected.prefill)
+            );
+            assert_eq!(
+                decode_curves(&actual.decode),
+                decode_curves(&expected.decode)
+            );
+            assert_eq!(actual.prefill_domain, expected.prefill_domain);
+            assert_eq!(actual.decode_domain, expected.decode_domain);
+        }
+    }
+
+    #[test]
+    fn median_rows_reject_mixed_contracts_and_fake_kv_before_healing() {
+        for (mutation, error) in [
+            (0, "measurement_policy"),
+            (1, "measurement_repeats"),
+            (2, "state_protocol"),
+            (3, "timing_boundary"),
+            (4, "fake_fallback"),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut rows = median_rows("vllm");
+            let row = &mut rows[1];
+            let m = row.measurement.as_mut().unwrap();
+            match mutation {
+                0 => m.policy = FPM_FORWARD_MEASUREMENT_POLICY,
+                1 => m.measured = 1,
+                2 => m.protocol = "wrong",
+                3 => m.boundary = "sglang_native_forward_device_timer",
+                _ => row.kv_seed_regime = Some(FPM_KV_SEED_FAKE_FALLBACK),
+            }
+            write_median_pair(tmp.path(), &rows);
+            for replace in [false, true] {
+                let table = FpmForwardTable::new_with_replacement(
+                    tmp.path().to_path_buf(),
+                    "b200_sxm",
+                    "vllm",
+                    "0.25.1",
+                    replace,
+                );
+                assert!(table.cells().unwrap_err().to_string().contains(error));
+            }
+        }
+    }
+
+    #[test]
+    fn median_sidecar_is_schema_seven_backend_bound_and_integer_counted() {
+        for (key, value) in [
+            ("schema_version", serde_json::json!(6)),
+            (
+                "measurement_policy",
+                serde_json::json!("sglang_native_real_hybrid_median_v1"),
+            ),
+            ("measurement_policy", serde_json::json!("per_row")),
+            ("warmup_repeats", serde_json::json!(5.0)),
+            ("measurement_repeats", serde_json::Value::Null),
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let rows = median_rows("vllm");
+            write_median_pair(tmp.path(), &rows);
+            let path = tmp
+                .path()
+                .join(FPM_FORWARD_BASENAME)
+                .with_extension("metadata.json");
+            let mut metadata: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            metadata[key] = value;
+            std::fs::write(&path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+            assert!(loaded_table(tmp.path()).cells().is_err(), "accepted {key}");
+        }
     }
 
     #[test]
