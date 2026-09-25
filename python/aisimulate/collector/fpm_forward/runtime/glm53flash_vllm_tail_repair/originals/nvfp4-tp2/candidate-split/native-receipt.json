@@ -1,0 +1,601 @@
+{
+  "status": "native_requests_and_histories_verified",
+  "runtime_kind": "candidate",
+  "mode": "split",
+  "policy": "production",
+  "checkpoint": "nvfp4",
+  "tp": 2,
+  "evidence": {
+    "requests": 20,
+    "checkpoint_identity": {
+      "checkpoint": "nvfp4",
+      "model": "nvidia/GLM-5.3-Flash-NVFP4",
+      "revision": "09b04e5e74bca08ca8549fc736d4cdd8624bfde3",
+      "config_sha256": "6f0ec374c7f3273461e1cadbee8d682bb21ad822427ab5a3a986611f5247fdee"
+    },
+    "native_modes": [
+      "FULL",
+      "NONE",
+      "PIECEWISE"
+    ],
+    "all_tp_trace_digest": "2013b0c82fd0eb73b6c4e7ec10cdfbf07d507781e5e2308528a2085631248d1e",
+    "external_to_native_request_ids": {
+      "0": "0-a4db9885",
+      "1": "1-87cab035",
+      "2": "2-a6804c52",
+      "3": "3-a26ec592",
+      "4": "4-82fb1bdc",
+      "5": "5-b6b61729",
+      "6": "6-abb7627e",
+      "7": "7-9ba193b4",
+      "8": "8-84641c97",
+      "9": "9-9f7eb50d",
+      "10": "10-ae859c7b",
+      "11": "11-a08b4e0e",
+      "12": "12-8f80aa9c",
+      "13": "13-8fce4f39",
+      "14": "14-8df765a9",
+      "15": "15-b45e3717",
+      "16": "16-9410ba17",
+      "17": "17-8d77a7ae",
+      "18": "18-a0c35405",
+      "19": "19-825cc5b9"
+    },
+    "request_identity_protocol": "native_assign_request_id_v1",
+    "cohort_admission_protocol": "native_scheduling_pause_enqueue_v1",
+    "actual_prefill_splits": {
+      "0": {
+        "0-a4db9885": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "1-87cab035": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "2-a6804c52": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "3-a26ec592": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "4-82fb1bdc": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "5-b6b61729": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "6-abb7627e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "7-9ba193b4": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "8-84641c97": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "9-9f7eb50d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "10-ae859c7b": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "11-a08b4e0e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "12-8f80aa9c": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "13-8fce4f39": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "14-8df765a9": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "15-b45e3717": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "16-9410ba17": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "17-8d77a7ae": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ],
+        "18-a0c35405": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "19-825cc5b9": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ]
+      },
+      "1": {
+        "0-a4db9885": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "1-87cab035": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "2-a6804c52": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "3-a26ec592": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "4-82fb1bdc": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "5-b6b61729": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "6-abb7627e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "7-9ba193b4": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "8-84641c97": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "9-9f7eb50d": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "10-ae859c7b": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "11-a08b4e0e": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "12-8f80aa9c": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            1
+          ]
+        ],
+        "13-8fce4f39": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            2
+          ]
+        ],
+        "14-8df765a9": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            3
+          ]
+        ],
+        "15-b45e3717": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4
+          ]
+        ],
+        "16-9410ba17": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "17-8d77a7ae": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ],
+        "18-a0c35405": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            2
+          ]
+        ],
+        "19-825cc5b9": [
+          [
+            0,
+            4097
+          ],
+          [
+            4097,
+            4097
+          ],
+          [
+            8194,
+            3
+          ]
+        ]
+      }
+    },
+    "native_tail_evidence": [
+      {
+        "tp_rank": 0,
+        "forwards": 332,
+        "tail_layers": [
+          3,
+          7,
+          11,
+          15,
+          19,
+          23,
+          27,
+          31,
+          35,
+          39,
+          43
+        ],
+        "checked_actual_token_addresses": 99006,
+        "cache_groups_sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e",
+        "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+        "latency_admission": false
+      },
+      {
+        "tp_rank": 1,
+        "forwards": 332,
+        "tail_layers": [
+          3,
+          7,
+          11,
+          15,
+          19,
+          23,
+          27,
+          31,
+          35,
+          39,
+          43
+        ],
+        "checked_actual_token_addresses": 99006,
+        "cache_groups_sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef",
+        "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+        "latency_admission": false
+      }
+    ],
+    "files": [
+      {
+        "path": "cache-groups-rank-0.json",
+        "sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e"
+      },
+      {
+        "path": "cache-groups-rank-1.json",
+        "sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef"
+      },
+      {
+        "path": "cohort-admission.jsonl",
+        "sha256": "d9a5e610b71c8b4d432cb38bbf34bbb9e4b5b4df58960312152c06917b49675d"
+      },
+      {
+        "path": "effective-native-config.json",
+        "sha256": "37badaa509edf3ff6c31071d0bb84b4e6b6c9201d84df5cee1b9ddbca3392ad6"
+      },
+      {
+        "path": "forward-rank-0.jsonl",
+        "sha256": "5ba33f8e6ad18217e11c674608cc6769c049b8f10c5237d275e022da93b66959"
+      },
+      {
+        "path": "forward-rank-1.jsonl",
+        "sha256": "d2379fae7f6e5a52ac1701a1d8cce528cbcb652cda3f6c6bff937bae01823f92"
+      },
+      {
+        "path": "outputs.jsonl",
+        "sha256": "cf04b1e5a627dd2f7155445eb818c7625ecf8ab8b7144927a17856749a422d4b"
+      },
+      {
+        "path": "preflight.json",
+        "sha256": "ea20da1a8e1548da604c20905b0005ccc74ae8a9a1e86117ef3a0dcb8d2c0023"
+      },
+      {
+        "path": "prompts-rank-0.jsonl",
+        "sha256": "f2258077951b37f1d65984075d24f2a4f68ad9edbf81ada58a01dbb3cba49547"
+      },
+      {
+        "path": "prompts-rank-1.jsonl",
+        "sha256": "f2258077951b37f1d65984075d24f2a4f68ad9edbf81ada58a01dbb3cba49547"
+      },
+      {
+        "path": "request-id-map.jsonl",
+        "sha256": "02d2674ea82932de408edc18781290182518f2253c88df35019e035d161a81b2"
+      },
+      {
+        "path": "tail-metadata-rank-0.jsonl",
+        "sha256": "5b5960963b28c820ac1d957e10031da88a1e65b1b5cb3ebd002d3cab7bf1d136"
+      },
+      {
+        "path": "tail-metadata-rank-1.jsonl",
+        "sha256": "d7d1a113c4d4e66b7866d804fb590ffb13d73ac02ff48526d06d72318063ae47"
+      },
+      {
+        "path": "worker-completion.json",
+        "sha256": "d343496fa160c89a8103240ada91cd3d79f9eddb9045dedeb1fdfe547d69bc0a"
+      },
+      {
+        "path": "worker-installation.json",
+        "sha256": "fae51075d5111a8f0ea9351008597a11aaddb270665e54b171e2b574830206bf"
+      },
+      {
+        "path": "worker-rank-0.json",
+        "sha256": "0ce308af544fc737c448a3a178653707d8a139bab8ad4c2a781dc00b002de8da"
+      },
+      {
+        "path": "worker-rank-1.json",
+        "sha256": "d6c501f77191e0889cffb15e30daf0dc334224bc34c2ac79fc264e8bb5391499"
+      }
+    ]
+  },
+  "correctness_comparison": "NOT_EVALUATED",
+  "accuracy_acceptance": "NOT_EVALUATED"
+}

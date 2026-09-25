@@ -118,7 +118,36 @@ def _source_payloads() -> set[str]:
     expected.discard("aisimulate/sdk/config_adapter/README.md")
     collector_root = Path(__file__).resolve().parents[1] / "collector"
     expected.update({"collector/__init__.py", "collector/model_cases.py"})
-    for pattern in ("cases/**/*.yaml", "fpm_forward/**/*.py", "fpm_forward/runtime/fpm_exec.sh"):
+    for pattern in (
+        "cases/**/*.yaml",
+        "glm53flash_protocol.py",
+        "glm53flash_runtime_identity.py",
+        "glm53flash_tail_qualification.py",
+        "glm53flash_shard_contract.py",
+        "glm53flash_jsonl.py",
+        "glm53flash_sglang_retained.py",
+        "glm53flash_sglang_runtime.py",
+        "fpm_forward/**/*.py",
+        "fpm_forward/glm53flash_corpora/*.txt",
+        "fpm_forward/README.glm53flash*.md",
+        "fpm_forward/runtime/fpm_exec.sh",
+        "fpm_forward/runtime/fpm_text.txt",
+        "fpm_forward/runtime/glm53flash/*.json",
+        "fpm_forward/runtime/glm53flash/README.md",
+        "fpm_forward/runtime/glm53flash/LICENSE",
+        "fpm_forward/runtime/glm53flash_sglang/*.json",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/**/*.json",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/*.patch.b64",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/*.review.diff",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/**/README.md",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/**/LICENSE",
+        "fpm_forward/runtime/glm53flash_vllm_kpool_candidate/qualification/input.txt",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/*.json",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/*.patch.b64",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/*.review.diff",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/README.md",
+        "fpm_forward/runtime/glm53flash_vllm_tail_repair/**/LICENSE",
+    ):
         expected.update(
             (Path("collector") / path.relative_to(collector_root)).as_posix()
             for path in collector_root.glob(pattern)

@@ -450,14 +450,29 @@ class FPMCell:
     fmha_resolution: str | None = None
     execution_identity: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY
     input_text_sha256: str = ""
+    backend: str = "vllm"
+    state_protocol: str = ""
+    sglang_mem_fraction_static: float | None = None
+    sglang_allocator_max_split_size_mb: int | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "cell_id": self.cell_id,
+            **(
+                {"sglang_allocator_max_split_size_mb": self.sglang_allocator_max_split_size_mb}
+                if self.sglang_allocator_max_split_size_mb is not None
+                else {}
+            ),
+            **(
+                {"sglang_mem_fraction_static": self.sglang_mem_fraction_static}
+                if self.sglang_mem_fraction_static is not None
+                else {}
+            ),
+            **({"backend": self.backend, "state_protocol": self.state_protocol} if self.state_protocol else {}),
             "execution_identity": dict(zip(EXECUTION_COLUMNS, self.execution_identity, strict=True)),
             "input_text_sha256": self.input_text_sha256,
             "workload_kind": self.workload_kind,
-            "point_source": "dynamo_native_self_benchmark",
+            "point_source": "sglang_native_scheduler" if self.backend == "sglang" else "dynamo_native_self_benchmark",
             "topology": self.topology.to_dict(),
             "parallel_strategy": self.parallel_strategy,
             "weight_quantization": self.weight_quantization,
@@ -472,6 +487,22 @@ class FPMCell:
             },
             "backend_policy": self.backend_policy.to_dict(),
         }
+
+
+def _plan_options(options: FPMCollectionOptions, *, is_glm: bool) -> dict[str, object]:
+    payload = options.to_dict()
+    if is_glm:
+        from collector.glm53flash_protocol import vllm_context_policy
+
+        payload.update(
+            measured_context_limit=vllm_context_policy(options.vllm_max_model_len)["measured_context_limit"],
+            global_warmup_iterations=0,
+            warmup_repeats=5,
+            measurement_repeats=10,
+            point_source="frozen_explicit_manifest",
+            graph_policy="native_graph_policy",
+        )
+    return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -494,7 +525,7 @@ class FPMCollectionPlan:
         explicit_points = (
             json.loads(self.options.benchmark_points_json) if self.options.benchmark_points_json is not None else None
         )
-        return {
+        payload = {
             "schema_name": "aic_fpm_collection_plan",
             "schema_version": 11,
             "backend": self.backend,
@@ -502,11 +533,17 @@ class FPMCollectionPlan:
             "system": self.system,
             "aic_revision": self.aic_revision,
             "generator_config_sha256": self.generator_config_sha256,
-            "options": self.options.to_dict(),
+            "options": _plan_options(
+                self.options, is_glm=self.capability.architecture == "Glm5NextForConditionalGeneration"
+            ),
             "capability": self.capability.to_dict(),
             "dtype_profile": self.dtype_profile.to_dict(),
             "point_generation": {
-                "owner": "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler",
+                "owner": (
+                    "sglang.srt.managers.scheduler.Scheduler"
+                    if self.backend == "sglang"
+                    else "dynamo.vllm.instrumented_scheduler.InstrumentedScheduler"
+                ),
                 "method": "native_self_benchmark",
                 "source": "frozen_explicit_manifest" if explicit_points is not None else "native_auto_grid",
                 "manifest_sha256": self.options.benchmark_points_sha256,
@@ -516,8 +553,8 @@ class FPMCollectionPlan:
                     "total_kv_read_tokens",
                 ],
                 "partition_policy": "balanced_v1",
-                "point_admission": "dynamo_live_scheduler",
-                "precondition": "vllm_engine_initialized",
+                "point_admission": "sglang_live_scheduler" if self.backend == "sglang" else "dynamo_live_scheduler",
+                "precondition": f"{self.backend}_engine_initialized",
                 "prefill_sampling": self.options.prefill_sampling.to_dict(),
                 "planned_point_count": (
                     sum(len(explicit_points.get(phase, [])) for phase in ("prefill", "decode"))
@@ -552,6 +589,11 @@ class FPMCollectionPlan:
             },
             "sha256": self.sha256,
         }
+        if self.options.shard_token_budget is not None:
+            from .shards import shard_manifest
+
+            payload["sharding"] = shard_manifest(self)
+        return payload
 
 
 def _cell_id(
@@ -566,6 +608,8 @@ def _cell_id(
     policy: BackendPolicy,
     execution: tuple[str, ...] = LEGACY_EXECUTION_IDENTITY,
     input_text_sha256: str = "",
+    sglang_mem_fraction_static: float | None = None,
+    sglang_allocator_max_split_size_mb: int | None = None,
 ) -> str:
     payload = {
         "backend": backend,
@@ -580,6 +624,10 @@ def _cell_id(
         "input_text_sha256": input_text_sha256,
         "point_source": "dynamo_native_self_benchmark",
     }
+    if sglang_allocator_max_split_size_mb is not None:
+        payload["sglang_allocator_max_split_size_mb"] = sglang_allocator_max_split_size_mb
+    if sglang_mem_fraction_static is not None:
+        payload["sglang_mem_fraction_static"] = sglang_mem_fraction_static
     return f"fpm-{_canonical_hash(payload)[:16]}"
 
 
@@ -596,8 +644,12 @@ def build_collection_plan(
     collector_config: dict[str, Any] | None = None,
     generator_overrides: dict[str, Any] | None = None,
 ) -> FPMCollectionPlan:
-    if backend != "vllm":
-        raise ValueError("FPM Generator V1 currently supports only backend=vllm")
+    if backend not in {"vllm", "sglang"}:
+        raise ValueError("FPM collection supports backend=vllm or sglang")
+    if options.sglang_allocator_max_split_size_mb is not None and backend != "sglang":
+        raise ValueError("--sglang-allocator-max-split-size-mb requires backend=sglang")
+    if options.sglang_mem_fraction_static is not None and backend != "sglang":
+        raise ValueError("--sglang-mem-fraction-static requires backend=sglang")
     collector_config = collector_config or {}
     generator_config_sha256 = _canonical_hash(generator_overrides or {})
     capability = resolve_model_capability(
@@ -623,12 +675,17 @@ def build_collection_plan(
         engram_cpu_offload=False,
         input_modality="text",
     )
-    if execution[0] and not options.enforce_eager:
+    is_v41 = capability.architecture == "DeepseekV41ForCausalLM"
+    is_glm = capability.architecture == "Glm5NextForConditionalGeneration"
+    if backend == "sglang" and not is_glm:
+        raise ValueError("SGLang native FPM currently supports only GLM-5.3-Flash")
+    if is_v41 and not options.enforce_eager:
         raise ValueError("V4.1 FPM collection currently requires --fpm-enforce-eager; graph timing is not qualified")
-    if options.enforce_eager and not execution[0]:
+    if options.enforce_eager and not is_v41:
         raise ValueError("explicit eager FPM collection is currently qualified only for DeepSeek V4.1")
     input_text_sha256 = (
-        hashlib.sha256((Path(__file__).parent / "runtime" / "fpm_text.txt").read_bytes()).hexdigest()
+        options.input_text_sha256
+        or hashlib.sha256((Path(__file__).parent / "runtime" / "fpm_text.txt").read_bytes()).hexdigest()
         if execution[0]
         else ""
     )
@@ -638,6 +695,22 @@ def build_collection_plan(
         options=options,
         allow_pure_tp=capability.allow_pure_tp,
     )
+    if is_glm:
+        if options.benchmark_points_json is None:
+            raise ValueError("GLM-5.3-Flash requires a frozen explicit sampling manifest")
+        if system != "gb300":
+            raise ValueError("GLM-5.3-Flash FPM campaign requires the GB300 system")
+        for topology in candidate_topologies:
+            if (
+                topology.tp not in {2, 4}
+                or topology.moe_tp != topology.tp
+                or (topology.pp, topology.dp, topology.cp, topology.moe_ep) != (1, 1, 1, 1)
+            ):
+                raise ValueError("GLM-5.3-Flash FPM requires pure TP2/TP4 and DP=PP=CP=EP=1")
+        if options.enable_eplb != "false" or options.enable_wideep != "false":
+            raise ValueError("GLM-5.3-Flash FPM disables EPLB and WideEP")
+        if options.vllm_max_model_len > 131072:
+            raise ValueError("GLM-5.3-Flash FPM context limit is 131072 tokens")
     topologies, topology_memory_admission = filter_memory_infeasible_topologies(
         backend=backend,
         model_path=model_path,
@@ -687,8 +760,14 @@ def build_collection_plan(
                 policy=policy,
                 execution=execution,
                 input_text_sha256=input_text_sha256,
+                sglang_mem_fraction_static=options.sglang_mem_fraction_static,
+                sglang_allocator_max_split_size_mb=options.sglang_allocator_max_split_size_mb,
             ),
             execution_identity=execution,
+            sglang_mem_fraction_static=options.sglang_mem_fraction_static,
+            sglang_allocator_max_split_size_mb=options.sglang_allocator_max_split_size_mb,
+            backend=backend,
+            state_protocol="glm53flash_same_request_real_hybrid_v1" if is_glm else "",
             input_text_sha256=input_text_sha256,
             workload_kind=phase,
             topology=topology,
@@ -715,10 +794,10 @@ def build_collection_plan(
         "system": system,
         "aic_revision": revision,
         "generator_config_sha256": generator_config_sha256,
-        "options": options.to_dict(),
+        "options": _plan_options(options, is_glm=is_glm),
         "capability": capability.to_dict(),
         "dtype_profile": capability.dtype.to_dict(),
-        "point_generation": "dynamo_native_self_benchmark",
+        "point_generation": "sglang_native_scheduler" if backend == "sglang" else "dynamo_native_self_benchmark",
         "topology_memory_admission": [_hash_stable_admission(decision) for decision in topology_memory_admission],
         "topologies": [topology.to_dict() for topology in topologies],
         "policies": [policy.to_dict() for policy in policies],

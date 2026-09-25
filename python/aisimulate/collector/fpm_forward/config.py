@@ -8,8 +8,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
+
+from .sglang_allocator import cli_max_split_size, validate_max_split_size
 
 FPM_FORWARD_OP = "fpm_forward"
 FPM_WARMUP_ITERATIONS = 5
@@ -29,6 +32,21 @@ def _positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
         raise argparse.ArgumentTypeError("value must be a positive integer")
+    return parsed
+
+
+def validate_sglang_mem_fraction_static(value: float | None) -> None:
+    """Validate an explicit native setting; None leaves SGLang's default intact."""
+    if value is not None and (type(value) not in (int, float) or not math.isfinite(value) or not 0 < value < 1):
+        raise ValueError("--sglang-mem-fraction-static must be finite and strictly between 0 and 1")
+
+
+def _sglang_mem_fraction_static(value: str) -> float:
+    try:
+        parsed = float(value)
+        validate_sglang_mem_fraction_static(parsed)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError(str(error)) from error
     return parsed
 
 
@@ -250,9 +268,20 @@ class FPMCollectionOptions:
     enforce_eager: bool = False
     benchmark_points_json: str | None = None
     benchmark_points_sha256: str | None = None
+    shard_token_budget: int | None = None
+    execution_timeout_seconds: int | None = None
     executor: str = "kubernetes"
     slurm_container_image: str = ""
     slurm_container_mounts: tuple[str, ...] = ()
+    input_text_path: str | None = None
+    input_text_sha256: str = ""
+    dataset_role: str = "calibration"
+    sglang_mem_fraction_static: float | None = None
+    sglang_allocator_max_split_size_mb: int | None = None
+
+    def __post_init__(self) -> None:
+        validate_sglang_mem_fraction_static(self.sglang_mem_fraction_static)
+        validate_max_split_size(self.sglang_allocator_max_split_size_mb)
 
     @property
     def prefill_sampling(self) -> PrefillSamplingProfile:
@@ -318,8 +347,19 @@ class FPMCollectionOptions:
             points_json, points_sha256 = _freeze_benchmark_points(points_path)
 
         return cls(
+            input_text_path=getattr(args, "fpm_input_text", None),
+            input_text_sha256=(
+                hashlib.sha256(Path(args.fpm_input_text).expanduser().read_bytes()).hexdigest()
+                if getattr(args, "fpm_input_text", None)
+                else ""
+            ),
+            dataset_role=getattr(args, "fpm_dataset_role", None) or "calibration",
+            sglang_mem_fraction_static=getattr(args, "sglang_mem_fraction_static", None),
+            sglang_allocator_max_split_size_mb=getattr(args, "sglang_allocator_max_split_size_mb", None),
             benchmark_points_json=points_json,
             benchmark_points_sha256=points_sha256,
+            shard_token_budget=getattr(args, "fpm_shard_token_budget", None),
+            execution_timeout_seconds=getattr(args, "fpm_execution_timeout_seconds", None),
             max_gpus=max_gpus,
             gpu_counts=tuple(counts),
             parallel_presets=requested_presets,
@@ -387,22 +427,66 @@ class FPMCollectionOptions:
             "point_source": "dynamo_native_self_benchmark",
             "prefill_sampling": self.prefill_sampling.to_dict(),
         }
+        if self.sglang_allocator_max_split_size_mb is not None:
+            payload["sglang_allocator_max_split_size_mb"] = self.sglang_allocator_max_split_size_mb
+        if self.sglang_mem_fraction_static is not None:
+            payload["sglang_mem_fraction_static"] = self.sglang_mem_fraction_static
         if self.enforce_eager:
             payload["enforce_eager"] = True
+        if self.input_text_sha256:
+            payload["input_text_sha256"] = self.input_text_sha256
+        if self.dataset_role != "calibration":
+            payload["dataset_role"] = self.dataset_role
         if self.benchmark_points_json is not None:
             payload["benchmark_points"] = {
                 "payload": json.loads(self.benchmark_points_json),
                 "sha256": self.benchmark_points_sha256,
             }
+        if self.shard_token_budget is not None:
+            payload["shard_token_budget"] = self.shard_token_budget
+        if self.execution_timeout_seconds is not None:
+            payload["execution_timeout_seconds"] = self.execution_timeout_seconds
         return payload
 
 
 def add_fpm_arguments(parser: argparse.ArgumentParser) -> None:
     """Add FPM campaign controls to a collector or dedicated parser."""
 
+    parser.add_argument(
+        "--fpm-shard-token-budget",
+        type=_positive_int,
+        default=None,
+        help="Bound GLM child runs by real tokens across 5+10 repetitions; oversized points stay intact.",
+    )
+    parser.add_argument(
+        "--fpm-execution-timeout-seconds",
+        type=_positive_int,
+        default=None,
+        help="Explicit outer timeout per native engine run, including initialization (default 14400).",
+    )
+
     group = parser.add_argument_group(
         "FPM forward collection",
         "Whole-model forward-pass planning, execution, and publication.",
+    )
+    group.add_argument(
+        "--sglang-allocator-max-split-size-mb",
+        type=cli_max_split_size,
+        default=None,
+        help="SGLang-only native allocator max split size in MiB (>=20); omit for the original allocator default.",
+    )
+    group.add_argument(
+        "--sglang-mem-fraction-static",
+        type=_sglang_mem_fraction_static,
+        default=None,
+        help="SGLang-only native static-memory fraction (0 < value < 1); omit for the runtime default.",
+    )
+    group.add_argument("--fpm-input-text", default=None, help="UTF-8 token corpus; freeze its SHA in the plan.")
+    group.add_argument(
+        "--fpm-dataset-role",
+        choices=("calibration", "holdout"),
+        default="calibration",
+        help="Holdout runs retain native evidence without publishing calibration rows.",
     )
     group.add_argument(
         "--fpm-enforce-eager",
@@ -646,6 +730,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         return
     explicitly_set = []
     for name in (
+        "sglang_mem_fraction_static",
+        "sglang_allocator_max_split_size_mb",
         "fpm_max_gpus",
         "fpm_gpu_counts",
         "fpm_weight_quantizations",
@@ -673,6 +759,8 @@ def reject_fpm_arguments_without_fpm(args: argparse.Namespace) -> None:
         "fpm_decoder_replay",
         "fpm_enforce_eager",
         "fpm_benchmark_points_file",
+        "fpm_shard_token_budget",
+        "fpm_execution_timeout_seconds",
         "fpm_executor",
         "fpm_slurm_container_image",
         "fpm_slurm_container_mount",

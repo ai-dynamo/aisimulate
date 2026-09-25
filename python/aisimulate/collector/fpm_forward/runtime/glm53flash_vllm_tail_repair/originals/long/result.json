@@ -1,0 +1,66 @@
+{
+  "accuracy_acceptance": "NOT_EVALUATED",
+  "actual_tail_evidence": [
+    {
+      "cache_groups_sha256": "df70c98fb99ad420bb8f924f169a3565a5f470e896292d3b2559141f4e6a0b0e",
+      "checked_actual_token_addresses": 131072,
+      "forwards": 16,
+      "latency_admission": false,
+      "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+      "tail_layers": [
+        3,
+        7,
+        11,
+        15,
+        19,
+        23,
+        27,
+        31,
+        35,
+        39,
+        43
+      ],
+      "tp_rank": 0
+    },
+    {
+      "cache_groups_sha256": "2c39dc8ca429d4ecfb68f5075483eb47a854583713aed0b6c60703adc615ceef",
+      "checked_actual_token_addresses": 131072,
+      "forwards": 16,
+      "latency_admission": false,
+      "status": "ACTUAL_NATIVE_TAIL_ADDRESSES_AND_POSITIONS_VERIFIED",
+      "tail_layers": [
+        3,
+        7,
+        11,
+        15,
+        19,
+        23,
+        27,
+        31,
+        35,
+        39,
+        43
+      ],
+      "tp_rank": 1
+    }
+  ],
+  "formal_admission": false,
+  "history": [
+    {
+      "completed_forwards": 16,
+      "original_failure_24576_8192_completed": true,
+      "prefill_tokens": 131072,
+      "seed_16384_8192_completed": true,
+      "tp_rank": 0
+    },
+    {
+      "completed_forwards": 16,
+      "original_failure_24576_8192_completed": true,
+      "prefill_tokens": 131072,
+      "seed_16384_8192_completed": true,
+      "tp_rank": 1
+    }
+  ],
+  "latency_admission": false,
+  "status": "FRESH_NATIVE_REQUEST_COMPLETED_WITH_ACTUAL_LONG_SEED"
+}

@@ -154,6 +154,320 @@ def _model_config(**overrides) -> sdk_config.ModelConfig:
     return sdk_config.ModelConfig(**defaults)
 
 
+def _median_pair_request(tmp_path, backend, *, model_path="zai-org/GLM-5.3-Flash", version=None, tp=2, points=None):
+    """Synthetic measured medians, independent of the production writer.
+
+    There are no operator tables, so the public SILICON query must use these
+    exact already-reduced millisecond values, without SOL or per-sample scaling.
+    """
+    system = "gb300"
+    version = version or ("0.30.0" if backend == "vllm" else "0.5.20")
+    systems_root = tmp_path / "systems"
+    systems_root.mkdir()
+    shutil.copy(Path(_CORE_SYSTEMS) / f"{system}.yaml", systems_root / f"{system}.yaml")
+    model = models.get_model(
+        model_path, sdk_config.ModelConfig(tp_size=tp, moe_tp_size=tp, moe_ep_size=1, forward_model="fpm"), backend
+    )
+    identity = dict(zip(_CELL_MATCH_COLUMNS, model.context_ops[0]._match_identity, strict=True))
+    boundary = "vllm_native_scheduler_output_interval" if backend == "vllm" else "sglang_native_forward_device_timer"
+    rows = [
+        _row(phase, batch, q, kv, latency, model_path=model_path, identity=identity)
+        | {key: identity[key] for key in _CELL_MATCH_COLUMNS[-4:]}
+        | dict(
+            system=system,
+            backend=backend,
+            backend_version=version,
+            measurement_policy=f"{backend}_native_real_hybrid_median_v1",
+            global_warmup_iterations=0,
+            warmup_repeats=5,
+            measurement_repeats=10,
+            state_protocol="glm53flash_same_request_real_hybrid_v1",
+            timing_boundary=boundary,
+            kv_seed_regime="n/a" if phase == "prefill" and kv == 0 else "real_kv",
+        )
+        for phase, batch, q, kv, latency in (
+            points
+            if points is not None
+            else [
+                ("prefill", 1, 512, 0, 13.25),
+                ("prefill", 1, 1024, 0, 26.5),
+                ("decode", 1, 0, 512, 7.125),
+                ("decode", 1, 0, 1024, 14.25),
+            ]
+        )
+    ]
+    metadata = dict(
+        schema_version=7,
+        system=system,
+        backend=backend,
+        backend_version=version,
+        measurement_policy=f"{backend}_native_real_hybrid_median_v1",
+        warmup_repeats=5,
+        measurement_repeats=10,
+    )
+    path = _write_pair(str(tmp_path / "measured"), rows, sidecar_overrides=metadata)
+    config = ForwardPassPerfModelConfig(
+        model=model_path,
+        system=system,
+        backend=backend,
+        backend_version=version,
+        worker_type="aggregated",
+        tp=tp,
+        moe_tp_size=tp,
+        moe_ep_size=1,
+        database_mode="SILICON",
+        strict_provenance=True,
+        estimation_mode="fpm_interpolation",
+        fallback_policy="deny",
+        systems_paths=(str(systems_root),),
+        estimator_config={"fpm_interpolation": {"fpm_parquet_path": path}},
+    )
+    return config, rows, metadata
+
+
+# Own observed failure geometries; all values below are TEST_ONLY invented data,
+# never copied measured latencies or campaign acceptance evidence.
+_TAIL_PREFIXES = (122, 125, 131, 134, 4346, 4349, 4355, 4358)
+_TAIL_VERSION = "0.30.0+glm53tail.eb4704514fdf"
+
+
+def _tail_metrics(batch, query, prefix):
+    metrics = _median_metrics("prefill", batch * query)
+    metrics["scheduled_requests"].update(num_prefill_requests=batch, sum_prefill_kv_tokens=batch * prefix)
+    return metrics
+
+
+@pytest.mark.parametrize("model_path", ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"])
+@pytest.mark.parametrize("tp", [2, 4])
+@pytest.mark.parametrize("bracket", [False, True])
+def test_public_tail_fpm_qualified_unaligned_exact_and_bracket(tmp_path, model_path, tp, bracket):
+    from collector import glm53flash_runtime_identity as identity
+
+    # This public Rust behavior must agree with the actual immutable packaged
+    # four-cell qualification, not a monkeypatched admission or version prefix.
+    assert identity.ADMITTED_VLLM_REPAIRS == {
+        _TAIL_VERSION: "8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45"
+    }
+    assert identity.vllm_unaligned_prefill_admitted(_TAIL_VERSION)
+    endpoints = ((-1, 13.0), (1, 17.0)) if bracket else ((0, 15.0),)
+    points = [
+        ("prefill", batch, batch * 32, batch * (prefix + delta), latency)
+        for batch in (1, 4, 32)
+        for prefix in _TAIL_PREFIXES
+        for delta, latency in endpoints
+    ]
+    config, _, _ = _median_pair_request(
+        tmp_path, "vllm", model_path=model_path, version=_TAIL_VERSION, tp=tp, points=points
+    )
+    predictor = RustForwardPassPerfModel.best_available(config)
+    try:
+        resolved = predictor.diagnostics()["provenance"]["config"]
+        assert resolved["backend_version"] == _TAIL_VERSION
+        assert ForwardPassPerfModelConfig(**resolved).to_dict() == resolved
+        for batch in (1, 4, 32):
+            for prefix in _TAIL_PREFIXES:
+                value = predictor.estimate_forward_pass_time_ms(_tail_metrics(batch, 32, prefix))
+                # Exact lookup preserves the invented 15ms; a bracket must
+                # stay strictly between its independently specified endpoints.
+                if bracket:
+                    assert 13.0 < value < 17.0
+                else:
+                    assert value == 15.0
+    finally:
+        predictor.close()
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        "0.30.0",
+        "0.30.0+unknown",
+        _TAIL_VERSION + ".other",
+        "0.30.0+glm53tail.eb4704514fde",
+        "0.30.0+glm53kpool.bf5f6b0e689d",
+    ],
+)
+def test_public_tail_fpm_rejects_unqualified_exact_data(tmp_path, version):
+    points = [("prefill", 1, 32, p, 15.0) for p in _TAIL_PREFIXES]
+    config, _, _ = _median_pair_request(tmp_path, "vllm", version=version, points=points)
+    predictor = RustForwardPassPerfModel.best_available(config)
+    try:
+        for prefix in _TAIL_PREFIXES:
+            with pytest.raises(Exception, match="cached-prefill start is unqualified|runtime quarantined"):
+                predictor.estimate_forward_pass_time_ms(_tail_metrics(1, 32, prefix))
+    finally:
+        predictor.close()
+
+
+def _median_metrics(phase, tokens):
+    return dict(
+        version=1,
+        wall_time=1.0,
+        scheduled_requests=dict(
+            num_prefill_requests=int(phase == "prefill"),
+            num_decode_requests=int(phase == "decode"),
+            sum_prefill_tokens=tokens if phase == "prefill" else 0,
+            sum_prefill_kv_tokens=0,
+            sum_decode_kv_tokens=tokens if phase == "decode" else 0,
+            var_prefill_length=0.0,
+            var_decode_kv_tokens=0.0,
+        ),
+    )
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize("model_path", ["zai-org/GLM-5.3-Flash", "nvidia/GLM-5.3-Flash-NVFP4"])
+def test_public_median_fpm_preserves_ms_interpolation_and_saved_identity(tmp_path, backend, model_path):
+    config, rows, metadata = _median_pair_request(tmp_path, backend, model_path=model_path)
+    median = RustForwardPassPerfModel.best_available(config)
+    resolved = median.diagnostics()["provenance"]["config"]
+    restored = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**resolved))
+    # The legacy table has the identical numerical data. Only its measurement
+    # contract differs; this anchors unchanged interpolation without copying math.
+    legacy_rows = [
+        {
+            k: v
+            for k, v in row.items()
+            if k
+            not in {
+                "measurement_policy",
+                "global_warmup_iterations",
+                "warmup_repeats",
+                "measurement_repeats",
+                "state_protocol",
+                "timing_boundary",
+            }
+        }
+        for row in rows
+    ]
+    legacy_path = _write_pair(
+        str(tmp_path / "legacy"),
+        legacy_rows,
+        sidecar_overrides=metadata | {"measurement_policy": "dynamo_native_single_sample_v1"},
+    )
+    legacy_config = config.to_dict() | {"estimator_config": {"fpm_interpolation": {"fpm_parquet_path": legacy_path}}}
+    legacy = RustForwardPassPerfModel.best_available(legacy_config)
+    try:
+        assert restored.diagnostics()["provenance"]["config"] == resolved
+        for phase, endpoints in [("prefill", (13.25, 26.5)), ("decode", (7.125, 14.25))]:
+            for tokens, expected in [(512, endpoints[0]), (1024, endpoints[1]), (768, None)]:
+                metrics = _median_metrics(phase, tokens)
+                value = median.estimate_forward_pass_time_ms(metrics)
+                assert value == restored.estimate_forward_pass_time_ms(metrics)
+                assert value == legacy.estimate_forward_pass_time_ms(metrics)
+                if expected is not None:
+                    assert value == expected
+                else:
+                    assert endpoints[0] < value < endpoints[1]
+    finally:
+        median.close()
+        restored.close()
+        legacy.close()
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("measurement_policy", "dynamo_native_single_sample_v1"),
+        ("measurement_policy", None),
+        ("measurement_policy", "MISSING"),
+        ("global_warmup_iterations", 1),
+        ("warmup_repeats", 4),
+        ("measurement_repeats", 1),
+        ("measurement_repeats", 10.0),
+        ("measurement_repeats", "10"),
+        ("measurement_repeats", True),
+        ("measurement_repeats", None),
+        ("measurement_repeats", "MISSING"),
+        ("state_protocol", "wrong"),
+        ("state_protocol", None),
+        ("state_protocol", "MISSING"),
+        ("timing_boundary", "wrong"),
+        ("timing_boundary", None),
+        ("timing_boundary", "MISSING"),
+        ("kv_seed_regime", "fake_fallback"),
+    ],
+)
+def test_public_median_fpm_rejects_row_contract_before_prediction(tmp_path, backend, key, value):
+    config, rows, metadata = _median_pair_request(tmp_path, backend)
+    # A whole-column type change is valid parquet but invalid protocol. A
+    # single contradictory row tests that valid siblings cannot hide a mix.
+    changed = rows if value == "MISSING" or type(value) in (float, bool) or value == "10" else [rows[1]]
+    for row in changed:
+        if value == "MISSING":
+            row.pop(key)
+        else:
+            row[key] = value
+    _write_pair(str(tmp_path / "measured"), rows, sidecar_overrides=metadata)
+    with pytest.raises((ValueError, RuntimeError), match="fake_fallback" if key == "kv_seed_regime" else key):
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            model.estimate_forward_pass_time_ms(_median_metrics("prefill", 512))
+        finally:
+            model.close()
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+@pytest.mark.parametrize(
+    "key,value",
+    [
+        ("schema_version", 6),
+        ("measurement_policy", "per_row"),
+        ("measurement_policy", "OTHER_BACKEND"),
+        ("warmup_repeats", 4),
+        ("warmup_repeats", None),
+        ("warmup_repeats", "MISSING"),
+        ("measurement_repeats", 1),
+        ("measurement_repeats", 10.0),
+        ("measurement_repeats", "10"),
+        ("measurement_repeats", True),
+        ("measurement_repeats", None),
+        ("measurement_repeats", "MISSING"),
+    ],
+)
+def test_public_median_fpm_rejects_sidecar_contract(tmp_path, backend, key, value):
+    config, rows, metadata = _median_pair_request(tmp_path, backend)
+    if value == "OTHER_BACKEND":
+        value = f"{'sglang' if backend == 'vllm' else 'vllm'}_native_real_hybrid_median_v1"
+    if value == "MISSING":
+        metadata.pop(key)
+    else:
+        metadata[key] = value
+    _write_pair(str(tmp_path / "measured"), rows, sidecar_overrides=metadata)
+    with pytest.raises((ValueError, RuntimeError), match="measurement_policy|median sidecar"):
+        model = RustForwardPassPerfModel.best_available(config)
+        try:
+            model.estimate_forward_pass_time_ms(_median_metrics("prefill", 512))
+        finally:
+            model.close()
+
+
+@pytest.mark.parametrize("optional_policy", [None, "historical-label"])
+def test_legacy_single_sample_optional_row_policy_retains_prior_behavior(tmp_path, optional_policy):
+    config, rows, metadata = _median_pair_request(tmp_path, "vllm")
+    for row in rows:
+        row["measurement_policy"] = optional_policy
+        for key in (
+            "state_protocol",
+            "timing_boundary",
+            "global_warmup_iterations",
+            "warmup_repeats",
+            "measurement_repeats",
+        ):
+            row.pop(key)
+    _write_pair(
+        str(tmp_path / "measured"),
+        rows,
+        sidecar_overrides=metadata | {"measurement_policy": "dynamo_native_single_sample_v1"},
+    )
+    model = RustForwardPassPerfModel.best_available(config)
+    try:
+        assert model.estimate_forward_pass_time_ms(_median_metrics("prefill", 512)) == 13.25
+    finally:
+        model.close()
+
+
 # ---------------------------------------------------------------------------
 # Centralized model rewrite
 # ---------------------------------------------------------------------------

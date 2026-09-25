@@ -84,6 +84,7 @@ class NativeCollection:
     # None only for artifacts predating the kvwarm-enabled runtime.
     kvwarm_meta: dict[str, Any] | None = None
     input_provenance: dict[str, Any] | None = None
+    allocator_policy: dict[str, Any] | None = None
 
 
 def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
@@ -93,8 +94,9 @@ def _validate_execution_provenance(cell: FPMCell, payload: dict[str, Any], path:
     expected = dict(zip(EXECUTION_COLUMNS, cell.execution_identity, strict=True))
     if payload.get("execution_identity") != expected:
         raise ValueError(f"native execution identity differs from the frozen V4.1 cell: {path}")
-    if payload.get("execution_mode") != "eager":
-        raise ValueError(f"V4.1 native data requires verified eager execution: {path}")
+    expected_mode = "native_graph_policy" if getattr(cell, "state_protocol", "") else "eager"
+    if payload.get("execution_mode") != expected_mode:
+        raise ValueError(f"native data requires verified {expected_mode} execution: {path}")
     evidence = payload.get("input_provenance")
     if not isinstance(evidence, dict) or evidence.get("source") != "tokenizer_text":
         raise ValueError(f"V4.1 native result requires tokenizer-generated text provenance: {path}")
@@ -217,6 +219,7 @@ def _validate_collector_provenance(
     *,
     expected_plan_sha256: str | None,
     expected_attempt_id: str | None,
+    expected_backend_version: str | None = None,
 ) -> tuple[str, str]:
     pod_names = set()
     for path, _payload in rank_payloads:
@@ -256,7 +259,7 @@ def _validate_collector_provenance(
         runtime = payload.get("runtime")
         if (
             not isinstance(runtime, dict)
-            or runtime.get("backend") != "vllm"
+            or runtime.get("backend") != cell.backend
             or not isinstance(runtime.get("backend_version"), str)
             or not runtime["backend_version"]
         ):
@@ -267,7 +270,19 @@ def _validate_collector_provenance(
             raise ValueError(f"Collector provenance differs across pods: {path}")
 
     assert canonical is not None
-    return str(canonical["runtime"]["backend_version"]), str(canonical["attempt_id"])
+    backend_version = str(canonical["runtime"]["backend_version"])
+    if getattr(cell, "state_protocol", "") == "glm53flash_same_request_real_hybrid_v1":
+        from collector.glm53flash_runtime_identity import validate_backend_version
+
+        validate_backend_version(cell.backend, backend_version)
+        if expected_backend_version is not None and backend_version != expected_backend_version:
+            raise ValueError("GLM native runtime differs from the frozen plan backend version")
+        for path, payload in rank_payloads:
+            producer = payload.get("producer")
+            version_field = "vllm_package_version" if cell.backend == "vllm" else "backend_version"
+            if not isinstance(producer, dict) or producer.get(version_field) != backend_version:
+                raise ValueError(f"GLM native producer differs from Collector runtime version: {path}")
+    return backend_version, str(canonical["attempt_id"])
 
 
 def _require_int(point: dict[str, Any], key: str) -> int:
@@ -359,6 +374,7 @@ def validate_native_collection(
     *,
     expected_plan_sha256: str | None = None,
     expected_attempt_id: str | None = None,
+    expected_backend_version: str | None = None,
 ) -> NativeCollection:
     """Validate a complete native rank set and return synchronized measurements."""
 
@@ -371,6 +387,7 @@ def validate_native_collection(
         rank_payloads,
         expected_plan_sha256=expected_plan_sha256,
         expected_attempt_id=expected_attempt_id,
+        expected_backend_version=expected_backend_version,
     )
     expected_ranks = list(range(cell.topology.dp))
     seen_ranks: set[int] = set()
@@ -380,7 +397,9 @@ def validate_native_collection(
     kvwarm_meta: dict[str, Any] | None = None
     kvwarm_seen: object = _KVWARM_UNSEEN
     input_provenance: dict[str, Any] | None = None
+    allocator_policy: dict[str, Any] | None = None
     local_fpms: dict[tuple[int, int], dict[str, Any]] = {}
+    allocator_seen = False
     rank_timings: list[tuple[int, float, float]] = []
 
     for path, payload in rank_payloads:
@@ -413,7 +432,22 @@ def validate_native_collection(
             raise ValueError(f"native result has malformed result points: {path}")
         evidence = _validate_execution_provenance(cell, payload, path)
         if evidence is not None:
-            _validate_token_streams(payload, path)
+            if cell.state_protocol:
+                if cell.backend == "sglang":
+                    from .sglang_artifact import validate_sglang_repetitions
+
+                    actual_allocator = validate_sglang_repetitions(cell, payload, path)
+                    if allocator_seen and allocator_policy != actual_allocator:
+                        raise ValueError("native rank payloads disagree on allocator policy")
+                    allocator_policy = actual_allocator
+                    allocator_seen = True
+                else:
+                    from .hybrid_artifact import validate_real_hybrid_repetitions, validate_vllm_hardware_receipts
+
+                    validate_vllm_hardware_receipts(cell, payload, path)
+                    validate_real_hybrid_repetitions(cell, payload, path)
+            else:
+                _validate_token_streams(payload, path)
         if input_provenance is None:
             input_provenance = evidence
         elif {k: v for k, v in evidence.items() if k != "token_stream_manifest"} != {
@@ -582,4 +616,5 @@ def validate_native_collection(
         runtime_grid_digest=run_identity[1],
         kvwarm_meta=kvwarm_meta,
         input_provenance=input_provenance,
+        allocator_policy=allocator_policy,
     )

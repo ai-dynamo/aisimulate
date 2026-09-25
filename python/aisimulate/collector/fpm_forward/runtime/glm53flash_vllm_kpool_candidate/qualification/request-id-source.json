@@ -1,0 +1,22 @@
+{
+  "upstream_revision": "ced6857afa0ea7b2e3f0846a62e1394e90f15607",
+  "rule": "complete_external_id + hyphen + first8lowercasehex(random_uuid())",
+  "sources": [
+    {
+      "path": "vllm/v1/engine/input_processor.py",
+      "sha256": "c8abd8e4e14d99929d45a7ff3b2a74898269c5e2a7fa30b826623ee85e4ce813",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/input_processor.py"
+    },
+    {
+      "path": "vllm/utils/__init__.py",
+      "sha256": "c58b3f45deeb98bccca22c945526fd15d483a2f5eb8a3c62cf7df218b081885f",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/utils/__init__.py"
+    },
+    {
+      "path": "vllm/v1/engine/output_processor.py",
+      "sha256": "e47b86cd69ce1c1e3f53dac655eaa75c32a4057d10f4a1db16bb83a397f2a329",
+      "url": "https://raw.githubusercontent.com/vllm-project/vllm/ced6857afa0ea7b2e3f0846a62e1394e90f15607/vllm/v1/engine/output_processor.py"
+    }
+  ],
+  "purpose": "Source audit for strict offline public/native bijection validation; historical raw is unchanged. These hashes are source references, not retrospective runtime observations."
+}

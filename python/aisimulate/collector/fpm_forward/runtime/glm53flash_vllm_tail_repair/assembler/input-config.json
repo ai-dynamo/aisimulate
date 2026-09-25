@@ -1,0 +1,32 @@
+{
+  "task_root": "/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472",
+  "source_uri_root": "ssh://ocijhb/scratch/fsw/portfolios/coreai/projects/coreai_comparch_inferencex/users/harrli/glm53flash-01a0d02e-a77a-71b3-9f31-baf6f0309472",
+  "package_root": "tail-qualification-packaged-inputs-v1",
+  "functional_bundle": "kpool-tail-engine-qualification-v2",
+  "long_bundle": "kpool-tail-ordinary-long-v1",
+  "oracle_bundle": "kpool-tail-cache-oracle-v1",
+  "long_raw": "kpool-tail-functional-gpu-results/614560/nvfp4-tp2-ordinary-long/native",
+  "oracle_raw": "kpool-tail-oracle-gpu-results/614361/native",
+  "cells": [
+    {
+      "checkpoint": "nvfp4",
+      "tp": 2,
+      "job_root": "kpool-tail-functional-gpu-results/614560"
+    },
+    {
+      "checkpoint": "nvfp4",
+      "tp": 4,
+      "job_root": "kpool-tail-functional-gpu-results/615575"
+    },
+    {
+      "checkpoint": "fp8",
+      "tp": 2,
+      "job_root": "kpool-tail-functional-gpu-results/615977"
+    },
+    {
+      "checkpoint": "fp8",
+      "tp": 4,
+      "job_root": "kpool-tail-functional-gpu-results/617323"
+    }
+  ]
+}

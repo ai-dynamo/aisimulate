@@ -198,6 +198,10 @@ def resolve_model_capability(
     _attach_inferred_quant_fields(config)
     architecture = _architecture(config, model_architecture)
     model_family = common.ARCHITECTURE_TO_MODEL_FAMILY.get(architecture) if architecture else None
+    if architecture == "Glm5NextForConditionalGeneration":
+        return _glm53flash_capability(
+            resolved_config, backend, requested_weight_quantizations, requested_kv_cache_dtypes, database_version
+        )
     exact_source = resolve_attention_source(selected_ops, required=False)
     # DSA is currently an MoE-only exact source in AIC. MLA is not: dense MLA
     # models must remain on the dense topology path.
@@ -382,5 +386,55 @@ def resolve_model_capability(
             fmha_resolution=fmha_resolution,
             fmha_by_kv_dtype=fmha_by_kv,
             fmha_resolution_by_kv_dtype=fmha_resolution_by_kv,
+        ),
+    )
+
+
+def _glm53flash_capability(resolved_config, backend, requested_weights, requested_kv, database_version=None):
+    """Collection establishes timing support; historical MLA tables cannot admit it."""
+    from aisimulate_core.sdk.glm53flash import Glm53FlashConfig
+    from collector.glm53flash_runtime_identity import BASELINE_VERSIONS, validate_backend_version
+
+    if backend not in {"vllm", "sglang"}:
+        raise ValueError("GLM-5.3-Flash native FPM supports vLLM and SGLang")
+    version = validate_backend_version(
+        backend, BASELINE_VERSIONS[backend] if database_version is None else database_version
+    )
+    payload = resolved_config.payload
+    Glm53FlashConfig.from_text_config(payload["text_config"])
+    config = _attach_inferred_quant_fields(resolved_config.effective_payload)
+    inferred = _infer_quant_modes_from_raw_config(config, "Glm5NextForConditionalGeneration")
+    gemm = _enum_name(inferred.get("gemm_quant_mode", common.GEMMQuantMode.bfloat16))
+    moe = _enum_name(inferred.get("moe_quant_mode", common.MoEQuantMode.bfloat16))
+    if gemm not in {"fp8", "fp8_block", "nvfp4"}:
+        raise ValueError(f"GLM-5.3-Flash requires its FP8 or NVFP4 checkpoint, got {gemm}")
+    if requested_weights and set(requested_weights) != {gemm}:
+        raise ValueError("GLM-5.3-Flash requested precision differs from the checkpoint")
+    kv = tuple(dict.fromkeys(_normalize_kv_dtype(value) for value in requested_kv))
+    if set(kv) - {"auto", "fp8"}:
+        raise ValueError("GLM-5.3-Flash baseline uses explicitly configured FP8 MLA KV")
+    return ModelCapabilityProfile(
+        architecture="Glm5NextForConditionalGeneration",
+        model_family="GLM53FLASH",
+        is_moe=True,
+        attention_source="glm53flash_hybrid",
+        attention_kind="kda_nope_sparse_mla_indexpool4",
+        support_level="native_runtime",
+        template_id="glm53flash_text_native_v1",
+        template_version=TEMPLATE_VERSION,
+        support_reason="pinned hybrid architecture; every runtime cell requires real-state qualification",
+        allow_pure_tp=True,
+        aic_database_version=version,
+        model_config=resolved_config,
+        dtype=ResolvedDTypeProfile(
+            gemm_quant_mode=gemm,
+            moe_quant_mode=moe,
+            fmha_quant_mode="fp8",
+            comm_quant_mode="half",
+            native_kv_cache_dtype="fp8",
+            kv_cache_dtypes=("fp8",),
+            fmha_resolution="glm53flash_native_precision_partition",
+            fmha_by_kv_dtype={"fp8": "fp8"},
+            fmha_resolution_by_kv_dtype={"fp8": "glm53flash_native_precision_partition"},
         ),
     )

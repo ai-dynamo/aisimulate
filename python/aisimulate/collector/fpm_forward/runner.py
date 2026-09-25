@@ -162,6 +162,24 @@ def _file_manifest(root: Path) -> dict[str, dict[str, int | str]]:
     return manifest
 
 
+def _archive_native_attempt(cell_dir: Path, previous: dict) -> None:
+    """Retain the complete old attempt before rendering a replacement."""
+    sources = [path for path in cell_dir.iterdir() if path.name != "attempts"]
+    if not sources:
+        return
+    archive_id = str(previous.get("attempt_id") or f"untracked-{uuid.uuid4().hex}")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", archive_id):
+        raise ValueError("unsafe native attempt identity in checkpoint")
+    archive = cell_dir / "attempts" / archive_id
+    if archive.exists():
+        raise ValueError(f"refusing to overwrite archived native evidence: {archive}")
+    archive.mkdir(parents=True)
+    for source in sources:
+        source.rename(archive / source.name)
+    _atomic_json(archive / "checkpoint-entry.json", previous)
+    _atomic_json(archive / "file-receipts.json", _file_manifest(archive))
+
+
 def _command_env() -> dict[str, str]:
     env = os.environ.copy()
     for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
@@ -449,8 +467,11 @@ def _run_command(
 class KubernetesCellRunner:
     """Own one generated Pod/LWS/PCS and auxiliary resources through deletion."""
 
-    def __init__(self, manifest: Path, cell_dir: Path) -> None:
+    def __init__(self, manifest: Path, cell_dir: Path, *, backend: str = "vllm") -> None:
         self.manifest = manifest
+        if backend not in ("vllm", "sglang"):
+            raise ValueError("unsupported native FPM backend")
+        self.backend = backend
         self.cell_dir = cell_dir
         documents = _manifest_documents(manifest)
         workload = _workload_document(documents)
@@ -680,8 +701,8 @@ class KubernetesCellRunner:
         script = (
             "import importlib.metadata, json, pathlib, sys; "
             "payload = json.loads(sys.argv[1]); "
-            "payload['runtime'] = {'backend': 'vllm', "
-            "'backend_version': importlib.metadata.version('vllm')}; "
+            f"payload['runtime'] = {{'backend': {self.backend!r}, "
+            f"'backend_version': importlib.metadata.version({self.backend!r})}}; "
             f"path = pathlib.Path('{FPM_RESULTS_DIR}') / sys.argv[2]; "
             "path.write_text(json.dumps(payload, sort_keys=True) + '\\n')"
         )
@@ -1130,6 +1151,126 @@ def _validate_points_receipts(plan, cell, raw_root: Path, attempt_id: str) -> No
             raise ValueError(f"runtime benchmark-points receipt mismatch: {path}")
 
 
+def _sglang_cell_generator_overrides(plan, cell, base, *, smoke=False):
+    from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+    from collector.glm53flash_protocol import sglang_runtime_context_length
+
+    if smoke or not cell.state_protocol or _frozen_points(plan) is None:
+        raise ValueError("SGLang GLM FPM requires a frozen explicit real-state campaign")
+    if set(base) - {"K8sConfig", "generator_dynamo_version"}:
+        raise ValueError("FPM runner accepts deployment-only Generator inputs")
+    if cell.backend_policy.generator_overrides:
+        raise ValueError("SGLang native FPM backend overrides require verified driver plumbing")
+    service = {"include_frontend": False}
+    deployment = base.get("K8sConfig") or {}
+    mount, relative = deployment.get("k8s_pvc_mount_path"), deployment.get("k8s_model_path_in_pvc")
+    if mount is not None or relative is not None:
+        if (
+            not mount
+            or not relative
+            or PurePosixPath(str(relative)).is_absolute()
+            or ".." in PurePosixPath(str(relative)).parts
+        ):
+            raise ValueError("SGLang checkpoint deployment requires a mount and a relative model path")
+        service.update(
+            model_path=str(PurePosixPath(str(mount)) / relative),
+            served_model_path=str(PurePosixPath(str(mount)) / relative),
+            served_model_name=plan.model_path,
+        )
+    if plan.model_path not in MODEL_REVISIONS:
+        raise ValueError("GLM FPM requires one of the two pinned HF checkpoint identities")
+    native_args = [
+        "--benchmark-mode",
+        cell.workload_kind,
+        "--benchmark-points-file",
+        f"{REMOTE_WORKDIR}/{POINTS_FILENAME}",
+        "--benchmark-output",
+        f"{FPM_RESULTS_DIR}/benchmark.json",
+        "--tokenizer-revision",
+        MODEL_REVISIONS[plan.model_path],
+        "--dataset-role",
+        plan.options.dataset_role,
+        "--run-id",
+        cell.cell_id,
+        "--disable-radix-cache",
+        "--context-length",
+        str(sglang_runtime_context_length(plan.options.vllm_max_model_len)),
+        "--benchmark-max-context-length",
+        str(plan.options.vllm_max_model_len),
+        "--chunked-prefill-size",
+        str(plan.options.max_prefill_isl),
+    ]
+    from .sglang_allocator import ENV_KEYS, configured_environment
+
+    if cell.sglang_allocator_max_split_size_mb != plan.options.sglang_allocator_max_split_size_mb:
+        raise ValueError("SGLang allocator differs between frozen plan and cell")
+    if cell.sglang_allocator_max_split_size_mb is not None:
+        native_args.extend(["--sglang-allocator-max-split-size-mb", str(cell.sglang_allocator_max_split_size_mb)])
+    expected_allocator = configured_environment(cell.sglang_allocator_max_split_size_mb)
+    for entry in deployment.get("extra_env", []):
+        if entry["name"] in ENV_KEYS and (
+            "valueFrom" in entry
+            or expected_allocator[entry["name"]] is None
+            or entry.get("value") != expected_allocator[entry["name"]]
+        ):
+            raise ValueError("conflicting SGLang allocator deployment environment")
+    if cell.sglang_mem_fraction_static != plan.options.sglang_mem_fraction_static:
+        raise ValueError("SGLang memory fraction differs between frozen plan and cell")
+    if cell.sglang_mem_fraction_static is not None:
+        native_args.extend(["--mem-fraction-static", str(cell.sglang_mem_fraction_static)])
+    max_batch = max(plan.options.max_decode_batch_size or 32, plan.options.max_prefill_batch_size or 32)
+    native_args.extend(["--max-running-requests", str(max_batch)])
+    native_args.extend(["--cuda-graph-bs-decode", *map(str, range(1, max_batch + 1))])
+    native_args.extend(["--revision", MODEL_REVISIONS[plan.model_path]])
+    if cell.weight_quantization == "nvfp4":
+        native_args.extend(["--quantization", "modelopt_fp4"])
+    env = [
+        {"name": "AISIM_FPM_BACKEND", "value": "sglang"},
+        {"name": FPM_ENGINE_BENCHMARK_OUTPUT_ENV, "value": f"{FPM_RESULTS_DIR}/benchmark.json"},
+        {"name": FPM_RUN_ID_ENV, "value": cell.cell_id},
+        {"name": READINESS_TIMEOUT_ENV, "value": str(DEFAULT_READINESS_TIMEOUT_SECONDS)},
+    ]
+    existing = {entry["name"]: entry for entry in deployment.get("extra_env", [])}
+    for entry in env:
+        if entry["name"] in existing and existing[entry["name"]] != entry:
+            raise ValueError(f"conflicting SGLang FPM environment {entry['name']}")
+        existing[entry["name"]] = entry
+    generated = {
+        "ServiceConfig": service,
+        "DynConfig": {"mode": "agg"},
+        "WorkerConfig": {"agg_workers": 1, "agg_gpus_per_worker": cell.topology.total_gpus},
+        "K8sConfig": {
+            "name_prefix": cell.cell_id,
+            "extra_env": list(existing.values()),
+            "fpm_resource_labels": {
+                "aiconfigurator.nvidia.com/owned-by": "fpm-forward-collector",
+                "aiconfigurator.nvidia.com/plan": plan.sha256[:16],
+                FPM_CELL_LABEL: cell.cell_id,
+            },
+        },
+        "params": {
+            "agg": {
+                "tensor_parallel_size": cell.topology.tp,
+                "pipeline_parallel_size": 1,
+                "data_parallel_size": 1,
+                "moe_tensor_parallel_size": cell.topology.tp,
+                "moe_expert_parallel_size": 1,
+                "gpus_per_worker": cell.topology.total_gpus,
+                "kv_cache_dtype": "fp8_e4m3",
+                # This campaign uses native pure TP. Hardware serving defaults
+                # may request a legacy wide-EP runner or mixed-phase batches,
+                # neither of which implements this measurement contract.
+                "moe_backend": "auto",
+                "enable_mixed_chunk": False,
+                "preserve_engine_limits": True,
+                "max_batch_size": max_batch,
+                "extra_cli_args": native_args,
+            }
+        },
+    }
+    return _deep_merge(base, generated)
+
+
 def _cell_generator_overrides(
     plan: FPMCollectionPlan,
     cell: FPMCell,
@@ -1137,6 +1278,8 @@ def _cell_generator_overrides(
     *,
     smoke: bool = False,
 ) -> dict[str, Any]:
+    if plan.backend == "sglang":
+        return _sglang_cell_generator_overrides(plan, cell, base, smoke=smoke)
     explicit_points = _frozen_points(plan)
     enforce_eager = bool(getattr(plan.options, "enforce_eager", False))
     if explicit_points is not None and smoke:
@@ -1195,7 +1338,7 @@ def _cell_generator_overrides(
                 str(profile.max_kv_read_token_samples),
             ]
         )
-        if not enforce_eager:
+        if not enforce_eager and not getattr(cell, "state_protocol", ""):
             scheduler_args.extend(
                 ["--compilation-config", json.dumps(compilation_config, sort_keys=True, separators=(",", ":"))]
             )
@@ -1224,6 +1367,18 @@ def _cell_generator_overrides(
             )
     model_args = []
     architecture = getattr(getattr(plan, "capability", None), "architecture", None)
+    if architecture == "Glm5NextForConditionalGeneration":
+        from collector.glm53flash_protocol import vllm_context_policy
+
+        context_policy = vllm_context_policy(plan.options.vllm_max_model_len)
+        scheduler_args[scheduler_args.index("--max-model-len") + 1] = str(context_policy["runtime_context_length"])
+        # The adapter owns five real warmups for every exact point.
+        scheduler_args[scheduler_args.index("--benchmark-warmup-iterations") + 1] = "0"
+        model_args.extend(["--language-model-only", "--cudagraph-metrics"])
+        if cell.workload_kind == "prefill":
+            model_args.append("--no-enable-prefix-caching")
+        if cell.workload_kind == "decode":
+            model_args.extend(["--max-num-batched-tokens", str(plan.options.max_prefill_isl)])
     if architecture == "DeepseekV41ForCausalLM":
         if plan.options.decoder_replay:
             raise NotImplementedError("vLLM DeepSeek-V4.1 true decoder replay is not verified")
@@ -1253,6 +1408,21 @@ def _cell_generator_overrides(
                 {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISION},
             ]
         )
+    if architecture == "Glm5NextForConditionalGeneration":
+        from aisimulate_core.sdk.glm53flash import MODEL_REVISIONS
+
+        if plan.model_path not in MODEL_REVISIONS:
+            raise ValueError("GLM FPM plan model_path must identify one of the two pinned HF checkpoints")
+        model_args.extend(["--revision", MODEL_REVISIONS[plan.model_path]])
+        env.extend(
+            [
+                {"name": "DYN_FPM_GLM53FLASH_REAL_KV", "value": "1"},
+                {"name": "DYN_FPM_GLM53FLASH_MEASURED_CONTEXT", "value": str(context_policy["measured_context_limit"])},
+                {"name": "DYN_FPM_INPUT_TEXT", "value": "/tmp/fpm-bench/fpm_text.txt"},
+                {"name": "DYN_FPM_TOKENIZER_REVISION", "value": MODEL_REVISIONS[plan.model_path]},
+                {"name": "DYN_FPM_DATASET_ROLE", "value": plan.options.dataset_role},
+            ]
+        )
     total_gpus = cell.topology.total_gpus
     generated = {
         "ServiceConfig": service,
@@ -1275,7 +1445,7 @@ def _cell_generator_overrides(
                 "moe_tensor_parallel_size": cell.topology.moe_tp,
                 "moe_expert_parallel_size": cell.topology.moe_ep,
                 "gpus_per_worker": total_gpus,
-                "kv_cache_dtype": cell.kv_cache_dtype,
+                "kv_cache_dtype": "fp8_e4m3" if cell.state_protocol else cell.kv_cache_dtype,
                 "extra_cli_args": [],
             }
         },
@@ -1305,13 +1475,14 @@ def _cell_generator_overrides(
         if existing is not None and existing != item:
             raise ValueError(f"conflicting FPM environment value for {name}")
         resolved_env[name] = copy.deepcopy(item)
-    if architecture == "DeepseekV41ForCausalLM":
+    if architecture in {"DeepseekV41ForCausalLM", "Glm5NextForConditionalGeneration"}:
         # Image layout belongs to this source-pinned adapter. An explicitly
         # configured path uses the existing deployment environment interface;
         # both preflight and generated run.sh receive the same resolved value.
         configured = resolved_env.get("PYTHONPATH")
         if configured is None:
-            adapter = Path(__file__).parent / "runtime" / "dsv41" / "runtime-paths.json"
+            family = "glm53flash" if cell.state_protocol else "dsv41"
+            adapter = Path(__file__).parent / "runtime" / family / "runtime-paths.json"
             python_path = json.loads(adapter.read_text())["python_path"]
         else:
             python_path = configured.get("value")
@@ -1371,6 +1542,8 @@ def _cell_generator_overrides(
 def _decode_prefix_caching_mode(cell: FPMCell) -> str:
     """Return the rendering/checkpoint policy for one decode strategy."""
 
+    if getattr(cell, "state_protocol", ""):
+        return "disabled"  # Real history remains on the same request; no prefix-cache lookup.
     return "enabled" if cell.parallel_strategy in KVWARM_STRATEGIES else "disabled"
 
 
@@ -1411,8 +1584,11 @@ def _write_runtime_environment(cell_dir: Path, overrides: dict[str, Any]) -> Non
         READINESS_TIMEOUT_ENV,
         "PYTHONPATH",
         "DYN_FPM_DSV41_REAL_KV",
+        "DYN_FPM_GLM53FLASH_REAL_KV",
         "DYN_FPM_INPUT_TEXT",
         "DYN_FPM_TOKENIZER_REVISION",
+        "DYN_FPM_DATASET_ROLE",
+        "AISIM_FPM_BACKEND",
     }
     lines = ["# Generated Collector startup environment; engine settings remain in run.sh."]
     for item in overrides["K8sConfig"]["extra_env"]:
@@ -1492,6 +1668,7 @@ def _validate_runtime_collection(
     *,
     expected_plan_sha256: str | None = None,
     expected_attempt_id: str | None = None,
+    expected_backend_version: str | None = None,
 ) -> int:
     """Validate PR11509 native rank artifacts and return the runtime point count."""
     return _runtime_collection_summary(
@@ -1499,6 +1676,7 @@ def _validate_runtime_collection(
         raw_root,
         expected_plan_sha256=expected_plan_sha256,
         expected_attempt_id=expected_attempt_id,
+        expected_backend_version=expected_backend_version,
     )["measured_point_count"]
 
 
@@ -1508,6 +1686,7 @@ def _runtime_collection_summary(
     *,
     expected_plan_sha256: str | None = None,
     expected_attempt_id: str | None = None,
+    expected_backend_version: str | None = None,
 ) -> dict[str, int]:
     """Return auditable unique-axis counts from a validated native grid."""
 
@@ -1516,6 +1695,7 @@ def _runtime_collection_summary(
         raw_root,
         expected_plan_sha256=expected_plan_sha256,
         expected_attempt_id=expected_attempt_id,
+        expected_backend_version=expected_backend_version,
     )
     points = tuple(measurement.point for measurement in collection.points)
     summary = {
@@ -1582,10 +1762,11 @@ def _cell_runner(plan: FPMCollectionPlan, cell: FPMCell, manifest: Path, cell_di
             image=plan.options.slurm_container_image,
             mounts=plan.options.slurm_container_mounts,
             total_gpus=cell.topology.total_gpus,
+            backend=plan.backend,
         )
     if executor != "kubernetes":
         raise ValueError(f"unknown FPM executor {executor!r}")
-    return KubernetesCellRunner(manifest, cell_dir)
+    return KubernetesCellRunner(manifest, cell_dir, backend=plan.backend)
 
 
 def _salvage_artifacts(resource, cell_id: str) -> None:
@@ -1664,6 +1845,7 @@ def _recover_completed_attempt(
             cell_dir / "raw",
             expected_plan_sha256=plan.sha256,
             expected_attempt_id=attempt_id,
+            expected_backend_version=plan.capability.aic_database_version if cell.state_protocol else None,
         )
     except (OSError, TypeError, ValueError) as error:
         logger.info(
@@ -1783,10 +1965,27 @@ def run_collection(
     cell_limit: int | None = None,
     database_root: str | None = None,
     publish_partial: bool = False,
+    collect_only: bool = False,
 ) -> list[dict[str, object]]:
     """Render and run every cell, always tearing down owned resources."""
 
     with _sigterm_as_interrupt():
+        if getattr(plan.options, "shard_token_budget", None) is not None:
+            from .shards import run_sharded_collection
+
+            return run_sharded_collection(
+                plan,
+                generator_overrides=generator_overrides,
+                checkpoint_dir=checkpoint_dir,
+                artifact_root=artifact_root,
+                resume=resume,
+                retry_failed=retry_failed,
+                smoke=smoke,
+                cell_limit=cell_limit,
+                database_root=database_root,
+                publish_partial=publish_partial,
+                collect_only=collect_only,
+            )
         return _run_collection_impl(
             plan,
             generator_overrides=generator_overrides,
@@ -1798,6 +1997,7 @@ def run_collection(
             cell_limit=cell_limit,
             database_root=database_root,
             publish_partial=publish_partial,
+            collect_only=collect_only,
         )
 
 
@@ -1813,6 +2013,7 @@ def _run_collection_impl(
     cell_limit: int | None = None,
     database_root: str | None = None,
     publish_partial: bool = False,
+    collect_only: bool = False,
 ) -> list[dict[str, object]]:
     if _frozen_points(plan) is not None and smoke:
         raise ValueError("--fpm-benchmark-points-file cannot be combined with --smoke")
@@ -1914,6 +2115,7 @@ def _run_collection_impl(
                     root / "cells" / cell.cell_id / "raw",
                     expected_plan_sha256=plan.sha256,
                     expected_attempt_id=_required_attempt_id(entry, cell.cell_id),
+                    expected_backend_version=plan.capability.aic_database_version if cell.state_protocol else None,
                 )
             )
         except (OSError, TypeError, ValueError) as error:
@@ -1963,7 +2165,9 @@ def _run_collection_impl(
                     )
                     _atomic_json(checkpoint_path, checkpoint)
                     continue
-        if cell_dir.exists() and not resume:
+        if cell.state_protocol and cell_dir.exists():
+            _archive_native_attempt(cell_dir, previous)
+        if cell_dir.exists() and not resume and not cell.state_protocol:
             shutil.rmtree(cell_dir)
         cell_dir.mkdir(parents=True, exist_ok=True)
         for stale_dir in (cell_dir / "raw", cell_dir / "logs"):
@@ -2035,8 +2239,14 @@ def _run_collection_impl(
                     *_stage_points_file(plan, cell_dir),
                     *(
                         [
-                            runtime_preflight.parent / "fpm_text.txt",
-                            *sorted(p for p in (runtime_preflight.parent / "dsv41").iterdir() if p.is_file()),
+                            _stage_input_text(plan, cell, cell_dir),
+                            *sorted(
+                                p
+                                for p in (
+                                    runtime_preflight.parent / ("glm53flash" if cell.state_protocol else "dsv41")
+                                ).iterdir()
+                                if p.is_file()
+                            ),
                         ]
                         if cell.execution_identity[0]
                         else []
@@ -2052,7 +2262,10 @@ def _run_collection_impl(
             _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="before")
             phase_marks["stage_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
-            resource.execute(pods)
+            if getattr(plan.options, "execution_timeout_seconds", None) is None:
+                resource.execute(pods)
+            else:
+                resource.execute(pods, timeout_seconds=plan.options.execution_timeout_seconds)
             _record_points_receipts(resource, pods, plan, cell, attempt_id, phase="after")
             phase_marks["execute_wall_s"] = round(time.monotonic() - mark, 3)
             mark = time.monotonic()
@@ -2064,6 +2277,7 @@ def _run_collection_impl(
                 cell_dir / "raw",
                 expected_plan_sha256=plan.sha256,
                 expected_attempt_id=attempt_id,
+                expected_backend_version=plan.capability.aic_database_version if cell.state_protocol else None,
             )
             checkpoint["cells"][cell.cell_id] = {
                 **base_record,
@@ -2147,6 +2361,28 @@ def _run_collection_impl(
         },
     )
     if formal_database_terminal:
+        return errors
+    if collect_only:
+        checkpoint["collection_only"] = {
+            "status": "passed"
+            if not errors
+            and all(checkpoint["cells"].get(cell.cell_id, {}).get("status") == "passed" for cell in plan.cells)
+            else "incomplete",
+            "formal_database_written": False,
+            "accuracy_acceptance": "NOT_EVALUATED",
+        }
+        _atomic_json(checkpoint_path, checkpoint)
+        return errors
+    if getattr(plan.options, "dataset_role", "calibration") == "holdout":
+        checkpoint["holdout"] = {
+            "status": "passed"
+            if not errors
+            and all(checkpoint["cells"].get(cell.cell_id, {}).get("status") == "passed" for cell in plan.cells)
+            else "incomplete",
+            "formal_database_written": False,
+            "accuracy_acceptance": "NOT_EVALUATED",
+        }
+        _atomic_json(checkpoint_path, checkpoint)
         return errors
     all_passed = all(checkpoint["cells"].get(cell.cell_id, {}).get("status") == "passed" for cell in target_cells)
     # Formal publication eligibility must agree with completion: a deliberate
@@ -2268,3 +2504,17 @@ def _run_collection_impl(
             }
         )
     return errors
+
+
+def _stage_input_text(plan, cell, cell_dir):
+    source = (
+        Path(plan.options.input_text_path).expanduser()
+        if plan.options.input_text_path
+        else Path(__file__).parent / "runtime" / "fpm_text.txt"
+    )
+    raw = source.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != cell.input_text_sha256:
+        raise ValueError("FPM text corpus changed after the plan was frozen")
+    destination = cell_dir / "fpm_text.txt"
+    destination.write_bytes(raw)
+    return destination

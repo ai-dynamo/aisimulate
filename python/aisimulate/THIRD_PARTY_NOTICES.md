@@ -80,6 +80,20 @@ records the inspected vLLM API revision and immutable runtime image/source
 hashes. vLLM implementation files are not vendored. The text fixture and
 lifecycle tests are original work for this change, with no external corpus.
 
+## Dynamo GLM-5.3-Flash FPM collection adapter
+
+`python/aisimulate/collector/fpm_forward/runtime/glm53flash/glm53flash_scheduler.py`
+is modified code adapted from `components/src/dynamo/vllm/instrumented_scheduler.py`
+in https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9,
+using this repository's DeepSeek V4.1 same-request adapter as the integration
+precedent. Changes add the GLM hybrid-state contract, repeated real warmups and
+measurements, actual graph-dispatch receipts and immutable source validation.
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the upstream license is preserved in the adjacent
+`LICENSE`. No upstream root NOTICE exists. vLLM implementation files are not
+vendored; exact API source hashes and their revision are recorded alongside
+this adapter. The corpus and new contract tests are original project content.
+
 ## NVIDIA AIConfigurator speculative decoding
 
 The speculation SDK, compatibility exports, CLI/task integration, attention and whole-forward FPM operation changes, native bindings, and their tests are adapted and modified from AIConfigurator PR #1563, pinned at commit `6290c161a354da5250c391bd43372b2e9c6f4a51`. Original paths are under `aic-core/src/aiconfigurator_core/sdk/`, `src/aiconfigurator/`, `aic-core/rust/aiconfigurator-core/`, `aic-core/rust/tests/public-api/`, and `tests/`.
@@ -1020,3 +1034,228 @@ https://github.com/sgl-project/sglang/tree/94602c9c2b7cbdb8efd5c52802dac6a1c1800
 (Copyright SGLang contributors, Apache-2.0). No serving implementation is
 vendored. Upstream licenses are at `LICENSE` under those immutable revisions;
 the repository Apache-2.0 license text applies to these adaptations.
+
+## GLM-5.3-Flash SGLang native scheduler telemetry
+
+- Derived files: `python/aisimulate/collector/glm53flash_sglang_runtime.py`,
+  `python/aisimulate/collector/README.glm53flash_sglang.md`, and
+  `python/aisimulate/tests/unit/collector/test_glm53flash_sglang_runtime.py`.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20). Original paths:
+  `python/sglang/srt/managers/tp_worker.py`,
+  `python/sglang/srt/model_executor/{model_runner,forward_batch_info}.py`,
+  `python/sglang/srt/model_executor/runner/{eager_runner,decode_cuda_graph_runner,prefill_cuda_graph_runner}.py`,
+  `python/sglang/srt/mem_cache/memory_pool.py`,
+  and `python/sglang/srt/utils/device_timer.py`.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: original wrappers call the native scheduler worker, forward
+  runner and DeviceTimer, retaining actual request histories, phase coordinates,
+  selected graph mode and exact frozen-target matching. No upstream compute,
+  request construction or hybrid state initialization is copied or replaced.
+  Tests use independent CPU fixtures, not performance data.
+
+## GLM-5.3-Flash native SGLang request campaign
+
+- Adapted files: `python/aisimulate/collector/fpm_forward/sglang_driver.py`,
+  `sglang_artifact.py`, `runtime/glm53flash_sglang/runtime-source-sha256.json`
+  under that same directory, and their collector unit tests.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
+  `python/sglang/srt/entrypoints/engine.py`, `python/sglang/srt/server_args.py`,
+  `python/sglang/srt/managers/{utils,tokenizer_manager}.py`,
+  and the native scheduler/runner paths identified by the adjacent telemetry
+  notice and pinned source-hash inventory.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: original integration code uses public native Engine and
+  ServerArgs APIs with real token-ID requests. It preserves native forward
+  and DeviceTimer boundaries and normalizes only observations whose actual
+  coordinates match a frozen request manifest. No native source is copied.
+  The shared `collector/glm53flash_protocol.py` context-headroom calculation
+  follows the native worker and tokenizer admission limits; it does not change
+  native admission or assert allocator capacity.
+
+## GLM-5.3-Flash retained SGLang request benchmark
+
+- Adapted integration files: `python/aisimulate/collector/glm53flash_sglang_retained.py`,
+  `README.glm53flash_sglang.md`, the adjacent shared runtime and FPM driver/reader,
+  and `python/aisimulate/tests/unit/collector/test_glm53flash_sglang_retained.py`.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`. Original paths under
+  `python/sglang/srt`: `managers/{scheduler,schedule_batch,tp_worker}.py`,
+  `managers/scheduler_components/{batch_result_processor,invariant_checker}.py`,
+  `utils/watchdog.py`,
+  `mem_cache/{allocation,common,chunk_cache,memory_pool,kv_cache_builder,registry}.py`,
+  `observability/req_time_stats.py`,
+  and the model-runner paths pinned in the adjacent source inventory.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: original benchmark controller replaces the outer event loop
+  to serialize native requests, park actually computed prefixes, and form an
+  explicit target cohort. Native request construction, hybrid allocation,
+  forward/graph execution, sampling, chunk stashing and release APIs are called
+  directly. No native forward implementation is copied. Lifecycle fixtures are independent
+  synthetic CPU test data and do not establish GPU qualification. The retained
+  loop's completed-cohort and idle watchdog marker follows the native active-work
+  predicate; neither native watchdog settings nor measured forwards are changed.
+
+## GLM-5.3-Flash native IndexPool repair candidate
+
+- Derived file:
+  `python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/retained-tail-prefill.patch.b64`
+  (losslessly encoded original patch) and adjacent `retained-tail-prefill.review.diff`.
+  Adjacent build/qualification scripts and receipts document its native API
+  integration and provenance.
+- Source: https://github.com/vllm-project/vllm at immutable revision
+  `ced6857afa0ea7b2e3f0846a62e1394e90f15607`, original path
+  `vllm/model_executor/layers/sparse_attn_indexer_kpool.py`; build APIs in
+  `setup.py`, public Engine APIs in `vllm/{entrypoints/llm,engine/arg_utils}.py`
+  and native worker/request APIs under `vllm/v1/worker/gpu/` and
+  `vllm/v1/core/sched/scheduler.py` at the same revision.
+  External/internal request identity validation references
+  `vllm/v1/engine/{input_processor,output_processor}.py` and
+  `vllm/utils/__init__.py` at that immutable revision.
+  Scheduling-only public cohort admission additionally references
+  `vllm/entrypoints/offline_utils.py` and
+  `vllm/v1/engine/{llm_engine,core_client,core}.py` at the same revision;
+  no upstream implementation is copied into these wrappers.
+- Copyright: contributors to the vLLM project; modified by NVIDIA CORPORATION
+  & AFFILIATES, 2026. License: Apache-2.0, with the complete upstream LICENSE
+  preserved adjacent. The immutable upstream root has no NOTICE file.
+- Modified: the patch completes partial retained IndexPool groups from native
+  circular tail state. Original copyright/license identifiers remain and the
+  modification is marked. Build and qualification wrappers are original code;
+  source hashes, image-derived binary lineage, preserved binary legal material
+  and separate candidate qualification status are retained. No binary wheel is
+  vendored and this unqualified candidate does not replace stock admission.
+
+## GLM-5.3-Flash circular-tail runtime repair and reference
+
+- Derived files: `collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/`
+  contains the candidate/reference encoded patches and adjacent review diffs.
+  Build and native install-verifier scripts are original AISimulate wrappers;
+  adjacent identities and receipts preserve immutable source/binary lineage.
+- Upstream: https://github.com/vllm-project/vllm at immutable commit
+  `ced6857afa0ea7b2e3f0846a62e1394e90f15607`. Modified original paths are
+  `vllm/v1/kv_cache_interface.py` in both distributions and
+  `vllm/model_executor/layers/sparse_attn_indexer_kpool.py` in the candidate.
+  Original build APIs are in `setup.py` at the same revision.
+- Copyright: contributors to the vLLM project; modified by NVIDIA CORPORATION
+  & AFFILIATES, 2026. License: Apache-2.0. Full upstream LICENSE is preserved
+  in each directory; upstream has no root NOTICE. Original SPDX notices remain
+  in modified sources and NVIDIA modifications are marked explicitly.
+- Modified: disable generic slot mapping for the one-block circular tail spec;
+  the candidate also completes retained partial IndexPool groups. Original
+  metadata/cache-allocation/dispatch kernels are unchanged. No upstream binary
+  wheel is vendored; build/install tooling checks all19 native binaries and
+  preserves applicable binary license/notice files. CPU receipts do not grant
+  model qualification, runtime admission or performance accuracy acceptance.
+
+
+## GLM SGLang native allocator policy integration
+
+- Integration files: `python/aisimulate/collector/fpm_forward/sglang_allocator.py`,
+  the allocator-only additions to its driver/artifact/validation/database peers,
+  `collector/glm53flash_sglang_runtime.py`, and
+  `tests/unit/collector/test_fpm_sglang_allocator_policy.py` under the same
+  Python application.
+- Source: https://github.com/pytorch/pytorch at immutable revision
+  `cf30153c4c131c8164ee7798e5022d810682e2cb`, original paths
+  `c10/core/AllocatorConfig.cpp`, `c10/cuda/CUDAAllocatorConfig.cpp`,
+  `c10/cuda/CUDACachingAllocator.cpp`, and `torch/cuda/memory.py`.
+- Original integration uses public read-only allocator APIs and independently
+  expresses the pinned minimum and environment precedence contract. No upstream
+  allocator implementation is copied, modified or executed by the tests.
+  CPU test files and receipts are explicitly synthetic, not measured data.
+- Copyright and license: PyTorch contributors and the copyright holders listed
+  below; BSD-style license. The unmodified upstream `LICENSE` at that revision
+  follows for attribution.
+
+```text
+From PyTorch:
+
+Copyright (c) 2016-     Facebook, Inc            (Adam Paszke)
+Copyright (c) 2014-     Facebook, Inc            (Soumith Chintala)
+Copyright (c) 2011-2014 Idiap Research Institute (Ronan Collobert)
+Copyright (c) 2012-2014 Deepmind Technologies    (Koray Kavukcuoglu)
+Copyright (c) 2011-2012 NEC Laboratories America (Koray Kavukcuoglu)
+Copyright (c) 2011-2013 NYU                      (Clement Farabet)
+Copyright (c) 2006-2010 NEC Laboratories America (Ronan Collobert, Leon Bottou, Iain Melvin, Jason Weston)
+Copyright (c) 2006      Idiap Research Institute (Samy Bengio)
+Copyright (c) 2001-2004 Idiap Research Institute (Ronan Collobert, Samy Bengio, Johnny Mariethoz)
+
+From Caffe2:
+
+Copyright (c) 2016-present, Facebook Inc. All rights reserved.
+
+All contributions by Facebook:
+Copyright (c) 2016 Facebook Inc.
+
+All contributions by Google:
+Copyright (c) 2015 Google Inc.
+All rights reserved.
+
+All contributions by Yangqing Jia:
+Copyright (c) 2015 Yangqing Jia
+All rights reserved.
+
+All contributions by Kakao Brain:
+Copyright 2019-2020 Kakao Brain
+
+All contributions by Cruise LLC:
+Copyright (c) 2022 Cruise LLC.
+All rights reserved.
+
+All contributions by Tri Dao:
+Copyright (c) 2024 Tri Dao.
+All rights reserved.
+
+All contributions by Arm:
+Copyright (c) 2021, 2023-2025 Arm Limited and/or its affiliates
+
+All contributions from Caffe:
+Copyright(c) 2013, 2014, 2015, the respective contributors
+All rights reserved.
+
+All other contributions:
+Copyright(c) 2015, 2016 the respective contributors
+All rights reserved.
+
+Caffe2 uses a copyright model similar to Caffe: each contributor holds
+copyright over their contributions to Caffe2. The project versioning records
+all such contribution and copyright details. If a contributor wants to further
+mark their specific copyright on a particular contribution, they should
+indicate their copyright solely in the commit message of the change when it is
+committed.
+
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright
+   notice, this list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright
+   notice, this list of conditions and the following disclaimer in the
+   documentation and/or other materials provided with the distribution.
+
+3. Neither the names of Facebook, Deepmind Technologies, NYU, NEC Laboratories America
+   and IDIAP Research Institute nor the names of its contributors may be
+   used to endorse or promote products derived from this software without
+   specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+```

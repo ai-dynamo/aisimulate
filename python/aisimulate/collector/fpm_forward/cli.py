@@ -24,7 +24,7 @@ def _parser() -> argparse.ArgumentParser:
         prog="python -m collector.fpm_forward",
         description="Plan or run a Generator-resolved Dynamo-native FPM campaign.",
     )
-    parser.add_argument("--backend", choices=("vllm",), default="vllm")
+    parser.add_argument("--backend", choices=("vllm", "sglang"), default="vllm")
     parser.add_argument("--model-path", default=None)
     parser.add_argument("--model-architecture", default=None)
     parser.add_argument("--model-cases", default=None, help="Optional model cases YAML path.")

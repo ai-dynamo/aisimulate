@@ -262,6 +262,13 @@ def _verify_fpm_workflow() -> str:
         (
             "collector/__init__.py",
             "collector/model_cases.py",
+            "collector/glm53flash_protocol.py",
+            "collector/glm53flash_runtime_identity.py",
+            "collector/glm53flash_tail_qualification.py",
+            "collector/glm53flash_shard_contract.py",
+            "collector/glm53flash_jsonl.py",
+            "collector/glm53flash_sglang_retained.py",
+            "collector/glm53flash_sglang_runtime.py",
             "collector/cases/base_ops/mla_module.yaml",
             "collector/cases/models/GlmMoeDsaForCausalLM_cases.yaml",
             "collector/cases/models/MiniMaxM3ForCausalLM_cases.yaml",
@@ -292,18 +299,123 @@ def _verify_fpm_workflow() -> str:
     for module, relative_path in (
         (planner, "collector/fpm_forward/planner.py"),
         (runner, "collector/fpm_forward/runner.py"),
+        (importlib.import_module("collector.glm53flash_protocol"), "collector/glm53flash_protocol.py"),
+        (importlib.import_module("collector.glm53flash_runtime_identity"), "collector/glm53flash_runtime_identity.py"),
+        (
+            importlib.import_module("collector.glm53flash_tail_qualification"),
+            "collector/glm53flash_tail_qualification.py",
+        ),
+        (importlib.import_module("collector.glm53flash_shard_contract"), "collector/glm53flash_shard_contract.py"),
+        (importlib.import_module("collector.glm53flash_jsonl"), "collector/glm53flash_jsonl.py"),
+        (importlib.import_module("collector.glm53flash_sglang_retained"), "collector/glm53flash_sglang_retained.py"),
+        (
+            importlib.import_module("collector.fpm_forward.glm53flash_validation"),
+            "collector/fpm_forward/glm53flash_validation.py",
+        ),
+        (
+            importlib.import_module("collector.fpm_forward.glm53flash_publication"),
+            "collector/fpm_forward/glm53flash_publication.py",
+        ),
+        (
+            importlib.import_module("collector.fpm_forward.runtime.glm53flash.glm53flash_worker_hardware"),
+            "collector/fpm_forward/runtime/glm53flash/glm53flash_worker_hardware.py",
+        ),
+        (importlib.import_module("collector.glm53flash_sglang_runtime"), "collector/glm53flash_sglang_runtime.py"),
+        (importlib.import_module("collector.fpm_forward.sglang_driver"), "collector/fpm_forward/sglang_driver.py"),
+        (
+            importlib.import_module("collector.fpm_forward.sglang_allocator"),
+            "collector/fpm_forward/sglang_allocator.py",
+        ),
     ):
         if Path(module.__file__).resolve() != exact_distribution_path(relative_path):
             raise RuntimeError(f"installed FPM module did not resolve from its exact RECORD path: {module.__file__}")
     for name, relative_path in (
         ("fpm_exec.sh", "collector/fpm_forward/runtime/fpm_exec.sh"),
         ("preflight.py", "collector/fpm_forward/runtime/preflight.py"),
+        ("glm53flash/sitecustomize.py", "collector/fpm_forward/runtime/glm53flash/sitecustomize.py"),
+        ("glm53flash/glm53flash_scheduler.py", "collector/fpm_forward/runtime/glm53flash/glm53flash_scheduler.py"),
+        ("glm53flash/runtime-paths.json", "collector/fpm_forward/runtime/glm53flash/runtime-paths.json"),
+        (
+            "glm53flash/runtime-source-sha256.json",
+            "collector/fpm_forward/runtime/glm53flash/runtime-source-sha256.json",
+        ),
+        ("glm53flash/README.md", "collector/fpm_forward/runtime/glm53flash/README.md"),
+        ("glm53flash/LICENSE", "collector/fpm_forward/runtime/glm53flash/LICENSE"),
+        (
+            "glm53flash_sglang/runtime-source-sha256.json",
+            "collector/fpm_forward/runtime/glm53flash_sglang/runtime-source-sha256.json",
+        ),
     ):
         asset = Path(os.fspath(runtime / name)).resolve()
         if not asset.is_file():
             raise RuntimeError(f"installed FPM runtime asset is missing: {asset}")
         if asset != exact_distribution_path(relative_path):
             raise RuntimeError(f"installed FPM runtime asset did not resolve from its exact RECORD path: {asset}")
+
+    # These immutable inputs are needed once functional qualification admits a
+    # repaired runtime. A closed registry must not conceal missing wheel assets.
+    tail_assets = [
+        "qualification/expected-runtime.json",
+        "packaged-verifier-executed-inputs.json",
+    ]
+    for role in ("candidate", "reference"):
+        tail_assets.extend(
+            f"{role}/{name}"
+            for name in (
+                "actual-build-receipt.json",
+                "actual-install-receipt.json",
+                "actual-packaged-verifier-receipt.json",
+                "actual-packaged-verifier-launch.json",
+                "expected-source-sha256.json",
+                "expected-native-binaries.json",
+                "combined-repair.patch.b64",
+                "combined-repair.review.diff",
+                "README.md",
+                "LICENSE",
+            )
+        )
+    for name in tail_assets:
+        relative = f"glm53flash_vllm_tail_repair/{name}"
+        asset = Path(os.fspath(runtime / relative)).resolve()
+        if not asset.is_file() or asset != exact_distribution_path(f"collector/fpm_forward/runtime/{relative}"):
+            raise RuntimeError(f"installed tail qualification asset is missing or outside its RECORD path: {asset}")
+
+    # Exercise every admitted repair through the installed public reader. No
+    # serving framework, GPU or external evidence fetch is needed for this gate.
+    identity = importlib.import_module("collector.glm53flash_runtime_identity")
+    source_manifest = exact_distribution_path("collector/fpm_forward/runtime/glm53flash/runtime-source-sha256.json")
+    for version, summary_sha in identity.ADMITTED_VLLM_REPAIRS.items():
+        closure = identity.vllm_runtime_closure(version, source_manifest)
+        if not closure or closure["qualification_receipt_sha256"] != summary_sha:
+            raise RuntimeError(f"installed repair lacks its complete immutable qualification: {version}")
+
+    allocator = importlib.import_module("collector.fpm_forward.sglang_allocator")
+    allocator_env = {key: value for key, value in os.environ.items() if key not in {*allocator.ENV_KEYS, "PYTHONPATH"}}
+    allocator_env["PYTHONNOUSERSITE"] = "1"
+    with tempfile.TemporaryDirectory(prefix="aisimulate-installed-allocator-") as directory:
+        checked = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys,os; from collector.fpm_forward.sglang_allocator import prepare_environment; "
+                "from collector.fpm_forward.cli import _parser; "
+                "from collector.fpm_forward.config import FPMCollectionOptions; "
+                "args=_parser().parse_args(['--gpu','gb300','--fpm-max-gpus','4',"
+                "'--sglang-allocator-max-split-size-mb','16384']); "
+                "assert FPMCollectionOptions.from_args(args).sglang_allocator_max_split_size_mb==16384; "
+                "assert 'torch' not in sys.modules and 'sglang' not in sys.modules; "
+                "prepare_environment(['--sglang-allocator-max-split-size-mb','16384']); "
+                "assert os.environ['PYTORCH_CUDA_ALLOC_CONF']=='backend:native,max_split_size_mb:16384'; "
+                "assert 'torch' not in sys.modules and 'sglang' not in sys.modules",
+            ],
+            cwd=directory,
+            env=allocator_env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    if checked.returncode:
+        raise RuntimeError(f"installed pre-import allocator policy failed: {checked.stderr}")
 
     env = {
         key: value for key, value in os.environ.items() if key not in {"FPM_COLLECTOR_SOURCE_REVISION", "PYTHONPATH"}

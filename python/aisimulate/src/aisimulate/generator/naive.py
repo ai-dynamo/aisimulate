@@ -184,7 +184,9 @@ def _get_system_config(system_name: str) -> dict[str, Any]:
     return result
 
 
-def _estimate_model_weight_bytes(model_path: str, *, model_metadata: dict[str, Any] | None = None) -> int:
+def _estimate_model_weight_bytes(
+    model_path: str, *, model_metadata: dict[str, Any] | None = None, backend_name: str = "vllm"
+) -> int:
     """
     Estimate model weight size in bytes based on model config.
 
@@ -217,7 +219,9 @@ def _estimate_model_weight_bytes(model_path: str, *, model_metadata: dict[str, A
 
     try:
         config = _parse_hf_config_json(raw_config)
-        weight_bytes = _estimate_weight_bytes_from_config(config, model_path)
+        if config.get("architecture") == "Glm5NextForConditionalGeneration":
+            config = {**config, "raw_config": raw_config}
+        weight_bytes = _estimate_weight_bytes_from_config(config, model_path, backend_name=backend_name)
 
         if model_metadata is not None:
             num_experts = config["num_experts"]
@@ -229,6 +233,8 @@ def _estimate_model_weight_bytes(model_path: str, *, model_metadata: dict[str, A
         return weight_bytes
 
     except ValueError as e:
+        if (raw_config.get("architectures") or [None])[0] == "Glm5NextForConditionalGeneration":
+            raise RuntimeError(f"Invalid GLM-5.3-Flash sizing contract for {model_path!r}") from e
         # The normalized AIC parser rejects architectures that AIC cannot model,
         # but those are exactly the models that use naive config generation.
         # Reuse the architecture-agnostic raw-config estimator so sizing remains
@@ -280,8 +286,30 @@ def _estimate_model_weight_bytes(model_path: str, *, model_metadata: dict[str, A
         raise RuntimeError(f"Model {model_path!r} not found or config unavailable") from e
 
 
-def _estimate_weight_bytes_from_config(config: dict, model_path: str) -> int:
-    """Run the DPP weight-size formula over an already-resolved model config."""
+def _estimate_weight_bytes_from_config(config: dict, model_path: str, *, backend_name: str = "vllm") -> int:
+    """Estimate resident weights from frozen metadata; this is not GPU admission."""
+
+    if config.get("architecture") == "Glm5NextForConditionalGeneration":
+        from aisimulate_core.sdk.config import ModelConfig
+        from aisimulate_core.sdk.models import _apply_model_quant_defaults
+        from aisimulate_core.sdk.models.glm53flash import Glm53FlashModel
+
+        # Reuse SOL's layer schedule, replicated weights and actual mixed
+        # precision partition. The generic all-layer BF16 MoE estimate wrongly
+        # requires TP4 for this checkpoint. No model resolution is allowed here.
+        sizing = ModelConfig(tp_size=1, moe_tp_size=1, moe_ep_size=1)
+        _apply_model_quant_defaults(sizing, config["raw_config"], config["architecture"], backend_name)
+        model = Glm53FlashModel(
+            {**config, "model_path": model_path, "model_family": "GLM53FLASH"}, sizing, backend_name
+        )
+        weight_bytes = int(model.get_resident_weights_bytes())
+        logger.info(
+            "Estimated TP1 resident weights for %s on %s: %.2f GiB; runtime cache/workspace admission remains required",
+            model_path,
+            backend_name,
+            weight_bytes / 1024**3,
+        )
+        return weight_bytes
 
     try:
         num_layers = config["layers"]
@@ -456,9 +484,11 @@ def build_naive_generator_params(
     # FPM renders size straight from the frozen config when one is provided.
     model_metadata: dict[str, Any] = {}
     if model_config is not None:
-        model_weight_bytes = _estimate_weight_bytes_from_config(model_config, model_name)
+        model_weight_bytes = _estimate_weight_bytes_from_config(model_config, model_name, backend_name=backend_name)
     else:
-        model_weight_bytes = _estimate_model_weight_bytes(model_name, model_metadata=model_metadata)
+        model_weight_bytes = _estimate_model_weight_bytes(
+            model_name, model_metadata=model_metadata, backend_name=backend_name
+        )
 
     # Calculate minimum GPU count that fits the model
     min_gpus, fits, required_tp = _calculate_min_tp(

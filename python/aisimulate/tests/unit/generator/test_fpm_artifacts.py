@@ -882,7 +882,7 @@ def _disagg_params() -> dict:
 @pytest.mark.parametrize(
     ("backend", "params"),
     [
-        pytest.param("sglang", _params(), id="non-vllm"),
+        pytest.param("trtllm", _params(), id="unsupported-backend"),
         pytest.param("vllm", _disagg_params(), id="disaggregated"),
     ],
 )
@@ -1572,3 +1572,224 @@ def test_fpm_pod_renders_guaranteed_qos_by_default():
     assert limits["memory"] == "256Gi"  # 64Gi x 4 GPUs
     assert requests["cpu"] == limits["cpu"]
     assert requests["memory"] == limits["memory"]
+
+
+def _sglang_params(tp: int = 4) -> dict:
+    params = _params()
+    params["ServiceConfig"]["model_path"] = "/workspace/model cache/GLM-5.3-Flash"
+    params["WorkerConfig"]["agg_gpus_per_worker"] = tp
+    params["NodeConfig"]["system_name"] = "gb300_sxm"
+    params["params"]["agg"].update(
+        tensor_parallel_size=tp,
+        gpus_per_worker=tp,
+        kv_cache_dtype="fp8",
+        disable_prefix_cache=True,
+        extra_cli_args=[
+            "--benchmark-mode",
+            "prefill",
+            "--benchmark-points-file",
+            "/tmp/fpm-bench/points file.json",
+            "--tokenizer-revision",
+            "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
+            "--dataset-role",
+            "training",
+            "--run-id",
+            "sglang-native",
+        ],
+    )
+    return params
+
+
+def _render_sglang(params: dict | None = None) -> dict[str, str]:
+    return render_backend_templates(
+        copy.deepcopy(params or _sglang_params()), "sglang", version="0.5.20", deployment_target="fpm"
+    )
+
+
+@pytest.mark.parametrize("tp", [2, 4])
+def test_sglang_fpm_uses_native_driver_with_shared_resource_contract(tp, tmp_path):
+    artifacts = _render_sglang(_sglang_params(tp))
+    assert set(artifacts) == _ARTIFACT_TRIO
+    pod = _k8s_document(artifacts, "Pod")
+    assert pod["spec"]["containers"][0]["resources"]["limits"]["nvidia.com/gpu"] == str(tp)
+    assert "export FPM_NODE_COUNT=1" in artifacts[FPM_ENV_FILENAME]
+    assert "export FPM_BENCHMARK_MODE=prefill" in artifacts[FPM_ENV_FILENAME]
+    script = artifacts[FPM_RUN_SCRIPT_FILENAME]
+    command_line = next(line for line in script.splitlines() if line.startswith("engine_command=("))
+    argv = shlex.split(command_line.removeprefix("engine_command=(").removesuffix(")"))
+    assert argv[:3] == ["python3", "-m", "collector.fpm_forward.sglang_driver"]
+    assert argv[argv.index("--tp-size") + 1] == str(tp)
+    assert argv[argv.index("--model-path") + 1] == "/workspace/model cache/GLM-5.3-Flash"
+    assert argv[argv.index("--benchmark-points-file") + 1] == "/tmp/fpm-bench/points file.json"
+    assert argv[argv.index("--kv-cache-dtype") + 1] == "fp8_e4m3"
+    assert argv[argv.index("--benchmark-output") + 1] == "/results/benchmark.json"
+    assert argv[argv.index("--input-text") + 1] == "/tmp/fpm-bench/fpm_text.txt"
+    assert argv[argv.index("--request-timeout-seconds") + 1] == "900"
+    assert "--disable-radix-cache" in argv
+    assert "--dump-config-to" not in argv
+    assert "--benchmark-output-path" not in argv
+    assert "dynamo.sglang" not in script
+    runtime = _write_runtime(tmp_path, artifacts)
+    subprocess.run(["bash", "-n", str(runtime)], check=True)
+
+
+@pytest.mark.parametrize("tp, pp, dp, ep", [(1, 1, 1, 1), (8, 1, 1, 1), (2, 2, 1, 1), (2, 1, 2, 1), (2, 1, 1, 2)])
+def test_sglang_fpm_rejects_unqualified_topology(tp, pp, dp, ep):
+    params = _sglang_params(tp)
+    gpus = tp * pp * dp
+    params["WorkerConfig"]["agg_gpus_per_worker"] = gpus
+    params["params"]["agg"].update(gpus_per_worker=gpus, pipeline_parallel_size=pp, data_parallel_size=dp)
+    params["params"]["agg"]["extra_cli_args"].extend(["--expert-parallel-size", str(ep)])
+    with pytest.raises(ValueError, match="single-node TP2/TP4|Unsupported SGLang FPM option: --enable-dp-attention"):
+        _render_sglang(params)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--scheduler-cls", "vllm.Scheduler"],
+        ["--speculative-algorithm", "NEXTN"],
+        ["--cpu-offload-gb", "1"],
+        ["--context-parallel-size", "2"],
+        ["--enable-eplb"],
+        ["--tp-size", "4"],
+        ["--benchmark-output-path", "/results/wrong.json"],
+        ["--cuda-graph-bs", "1,2"],
+        ["--benchmark-mode", "decode"],
+    ],
+)
+def test_sglang_fpm_rejects_unknown_or_ambiguous_extra_args(extra):
+    params = _sglang_params()
+    params["params"]["agg"]["extra_cli_args"].extend(extra)
+    with pytest.raises(ValueError, match="SGLang FPM"):
+        _render_sglang(params)
+
+
+@pytest.mark.parametrize(
+    "overrides, message",
+    [
+        ({"max_seq_len": 131073}, "context length"),
+        ({"kv_cache_dtype": "bfloat16"}, "kv-cache-dtype fp8_e4m3"),
+        ({"disable_prefix_cache": False}, "disable-radix-cache"),
+    ],
+)
+def test_sglang_fpm_rejects_wrong_state_contract(overrides, message):
+    params = _sglang_params()
+    params["params"]["agg"].update(overrides)
+    with pytest.raises(ValueError, match=message):
+        _render_sglang(params)
+
+
+def test_sglang_fpm_output_path_agrees_with_runtime_discovery():
+    params = _sglang_params()
+    params["params"]["agg"]["extra_cli_args"].extend(["--benchmark-output", "/results/alternate.json"])
+    with pytest.raises(ValueError, match="must resolve to the same path"):
+        _render_sglang(params)
+
+
+@pytest.mark.parametrize(
+    "extra", [["--sglang-allocator-max-split-size-mb", "16384"], ["--sglang-allocator-max-split-size-mb=16384"]]
+)
+def test_sglang_fpm_preserves_explicit_allocator_policy(extra):
+    params = _sglang_params()
+    params["params"]["agg"]["extra_cli_args"].extend(extra)
+    script = _render_sglang(params)[FPM_RUN_SCRIPT_FILENAME]
+    command = next(line for line in script.splitlines() if line.startswith("engine_command=("))
+    argv = shlex.split(command.removeprefix("engine_command=(").removesuffix(")"))
+    assert argv[:3] == ["python3", "-m", "collector.fpm_forward.sglang_driver"]
+    start = argv.index(extra[0])
+    assert argv[start : start + len(extra)] == extra
+    assert sum(token.split("=", 1)[0] == "--sglang-allocator-max-split-size-mb" for token in argv) == 1
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--sglang-allocator-max-split-size-mb"],
+        ["--sglang-allocator-max-split-size-mb=16384", "--sglang-allocator-max-split-size-mb", "32768"],
+        ["--sglang-allocator-max-split-size-mb", "0"],
+        ["--sglang-allocator-max-split-size-mb", "19"],
+        ["--sglang-allocator-max-split-size-mb", "16384.5"],
+        ["--sglang-allocator-max-split-size-mb", str(1 << 43)],
+    ],
+)
+def test_sglang_fpm_rejects_invalid_allocator_policy(extra):
+    params = _sglang_params()
+    params["params"]["agg"]["extra_cli_args"].extend(extra)
+    with pytest.raises(ValueError, match="sglang-allocator-max-split-size-mb"):
+        _render_sglang(params)
+
+
+def test_sglang_fpm_preserves_native_graph_sizes_and_quantization():
+    params = _sglang_params()
+    params["params"]["agg"]["extra_cli_args"].extend(["--quantization", "modelopt_fp4"])
+    script = _render_sglang(params)[FPM_RUN_SCRIPT_FILENAME]
+    normal = render_backend_templates(copy.deepcopy(params), "sglang", version="0.5.20")
+    # Existing sizing rules choose the list; FPM must retain every native
+    # token, including list-valued options, without reinterpreting the shell.
+    assert normal["cli_args_agg"].replace('"', "") in script.replace("--tp-size", "--tensor-parallel-size").replace(
+        "--cuda-graph-bs-decode", "--cuda-graph-bs"
+    )
+    assert "--quantization modelopt_fp4" in script
+
+
+def test_sglang_fpm_normalizes_legacy_graph_names_without_losing_sizes():
+    from aisimulate.generator.builders.fpm_builder import _sglang_fpm_args
+
+    context = {
+        "ServiceConfig": {"model_path": "/model"},
+        "agg_cli_args_list": ["--cuda-graph-bs", "1", "2", "4", "--cuda-graph-max-bs=8"],
+    }
+    extra = [
+        "--context-length",
+        "131072",
+        "--benchmark-points-file",
+        "/points.json",
+        "--tokenizer-revision",
+        "pinned",
+        "--kv-cache-dtype",
+        "fp8_e4m3",
+        "--disable-radix-cache",
+    ]
+    argv = _sglang_fpm_args(context, extra)
+    start = argv.index("--cuda-graph-bs-decode")
+    assert argv[start + 1 : start + 4] == ["1", "2", "4"]
+    assert "--cuda-graph-max-bs-decode=8" in argv
+    assert "--cuda-graph-bs" not in argv
+    with pytest.raises(ValueError, match="at most one --cuda-graph-bs-decode"):
+        _sglang_fpm_args(context, extra + ["--cuda-graph-bs-decode", "8"])
+
+
+def test_sglang_normal_serving_still_uses_dynamo():
+    params = _sglang_params()
+    artifacts = render_backend_templates(copy.deepcopy(params), "sglang", version="0.5.20")
+    assert "dynamo.sglang" in artifacts[FPM_MANIFEST_FILENAME]
+    assert FPM_ENV_FILENAME not in artifacts
+
+
+def test_sglang_fpm_script_executes_native_driver_preserving_argv_and_exit(tmp_path):
+    package_root = tmp_path / "fake-package"
+    package = package_root / "collector" / "fpm_forward"
+    package.mkdir(parents=True)
+    (package.parent / "__init__.py").write_text("")
+    (package / "__init__.py").write_text("")
+    (package / "sglang_driver.py").write_text(
+        "import json, os, pathlib, sys\n"
+        "pathlib.Path(os.environ['FAKE_REPORT_PATH']).write_text(json.dumps({"
+        "'argv':sys.argv[1:],'group_leader':os.getpgrp()==os.getpid()}))\n"
+        "raise SystemExit(23)\n"
+    )
+    report_path = tmp_path / "driver-report.json"
+    script = _write_runtime(tmp_path, _render_sglang())
+    result = subprocess.run(
+        ["bash", str(script)],
+        cwd=tmp_path,
+        text=True,
+        capture_output=True,
+        env=_clean_env(PYTHONPATH=str(package_root), FAKE_REPORT_PATH=str(report_path)),
+        timeout=8,
+    )
+    assert result.returncode == 23, result.stderr
+    report = json.loads(report_path.read_text())
+    assert report["group_leader"] is True
+    assert report["argv"][report["argv"].index("--benchmark-points-file") + 1] == "/tmp/fpm-bench/points file.json"
