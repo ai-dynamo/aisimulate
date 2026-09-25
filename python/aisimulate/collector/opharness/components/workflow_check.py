@@ -76,9 +76,13 @@ def _load_matrix(fw: str, version: str, sm: str) -> dict | None:
 # `args` merged over the campaign --param values.
 
 def pred_component_pending(p):
+    """A component being implemented is a PRECONDITION of a step, never its
+    completion (review 2026-09-25 P1/P2 #4: four new_op_collector steps read
+    'done' for a nonexistent op because their tool existed). Steps that still
+    point here are unfinished until they get an artifact predicate."""
     c = p["component"]
     if c in IMPLEMENTED_COMPONENTS:
-        return True, f"component {c} implemented"
+        return False, f"component {c} implemented, but this step has no completion predicate yet"
     return False, f"component {c} not implemented yet"
 
 
@@ -101,16 +105,45 @@ def pred_plan_has_version(p):
     return False, f"no plan file contains {p['fw']} runs at {p['version']}"
 
 
+def _planned_repos(fw: str, version: str) -> set:
+    """Repos the plan files declare for (fw, version) — rendered AND rejected
+    runs (a generator rejection is still a cell the matrix must show)."""
+    repos = set()
+    for pf in sorted((ROOT / "archive").glob("plan*.json")):
+        try:
+            runs = json.loads(pf.read_text())
+        except Exception:
+            continue
+        for r in runs:
+            if isinstance(r, dict) and r.get("backend") == fw and str(r.get("version")) == str(version) and r.get("repo"):
+                repos.add(r["repo"])
+    return repos
+
+
 def pred_matrix_complete(p):
-    m = _load_matrix(p["fw"], p["version"], p.get("sm", "sm90"))
+    """Complete = every repo the PLAN declares for (fw, version) has a cell
+    with a verdict. An empty matrix, or one missing planned repos, is not
+    complete (review 2026-09-25: '0 cells, all carry verdicts' read as done)."""
+    sm = p.get("sm", "sm90")
+    expected = _planned_repos(p["fw"], p["version"])
+    if not expected:
+        return False, f"no plan runs for {p['fw']} {p['version']} (emit queues first)"
+    m = _load_matrix(p["fw"], p["version"], sm)
     if m is None:
-        return False, f"results/{p.get('sm','sm90')}/{p['fw']}-{p['version']}.yaml missing"
+        return False, f"results/{sm}/{p['fw']}-{p['version']}.yaml missing"
     if str(m.get("_meta", {}).get("version")) != str(p["version"]):
         return False, "matrix _meta.version mismatch"
-    bad = [r for r, c in m.get("results", {}).items() if not (c or {}).get("verdict")]
+    cells = m.get("results", {}) or {}
+    missing = sorted(expected - set(cells))
+    if missing:
+        return False, f"{len(missing)} planned repos without a cell (e.g. {missing[0]})"
+    bad = [r for r, c in cells.items() if not (c or {}).get("verdict")]
     if bad:
         return False, f"{len(bad)} cells without a verdict (e.g. {bad[0]})"
-    return True, f"{len(m['results'])} cells, all carry verdicts"
+    stale = [r for r, c in cells.items() if (c or {}).get("cause") == "stale evidence"]
+    if stale:
+        return False, f"{len(stale)} cells rest on stale evidence (e.g. {stale[0]}) — re-probe"
+    return True, f"{len(expected)} planned repos, all cells carry verdicts"
 
 
 def pred_fails_root_caused(p):
@@ -167,18 +200,51 @@ def pred_customizations_retested(p):
     return True, f"all {len(custom)} customizations retested"
 
 
+def declared_gates(fw: str, version: str) -> set:
+    """Gate names the verdict scripts (components/captures/verdicts_*.sh)
+    declare for this (fw, version): every `run <capture> <gate> ...` line whose
+    script grades --framework fw --version version and whose output dir is the
+    gate dir (explained deviations write elsewhere and are not gates)."""
+    gates = set()
+    for sh in sorted((HARNESS / "components" / "captures").glob("verdicts_*.sh")):
+        text = sh.read_text()
+        if f"--framework {fw} " not in text or f"--version {version} " not in text:
+            continue
+        for line in text.splitlines():
+            m = re.match(r"^run\s+(\S+)\s+(\S+)", line)
+            if m:
+                gates.add(m.group(2))
+    return gates
+
+
 def pred_path_verdicts_aligned(p):
-    """path_diff verdict files exist for this (fw, version) and every one is
-    'aligned' — profiler-measured on both sides; class names never count."""
+    """Every gate the verdict scripts declare for (fw, version) has a verdict
+    file that names this framework/version and reads 'aligned'. Extra files
+    do not count; a missing gate, or a verdict for another (fw, version), is
+    incomplete (review 2026-09-25: one identity-free file used to pass)."""
     sm = p.get("sm", "sm90")
+    expected = declared_gates(p["fw"], p["version"])
+    if not expected:
+        return False, f"no gates declared for {p['fw']} {p['version']} in components/captures/verdicts_*.sh"
     vd = HARNESS / "results" / "pathdiff" / sm / f"{p['fw']}-{p['version']}"
-    files = sorted(vd.glob("*.json")) if vd.exists() else []
-    if not files:
-        return False, f"no path_diff verdicts under results/pathdiff/{sm}/{p['fw']}-{p['version']}/"
-    bad = [f.name for f in files if json.loads(f.read_text()).get("verdict") != "aligned"]
+    missing, bad, foreign = [], [], []
+    for g in sorted(expected):
+        f = vd / f"{g}.json"
+        if not f.exists():
+            missing.append(g)
+            continue
+        d = json.loads(f.read_text())
+        if d.get("framework") != p["fw"] or str(d.get("version")) != str(p["version"]):
+            foreign.append(g)
+        elif d.get("verdict") != "aligned":
+            bad.append(f"{g}={d.get('verdict')}")
+    if missing:
+        return False, f"{len(missing)}/{len(expected)} declared gates without a verdict (e.g. {missing[0]})"
+    if foreign:
+        return False, f"verdicts graded for another framework/version: {foreign[:3]}"
     if bad:
-        return False, f"diverged verdicts: {bad[:3]}"
-    return True, f"{len(files)} verdicts, all aligned"
+        return False, f"not aligned: {bad[:3]}"
+    return True, f"{len(expected)} declared gates, all aligned"
 
 
 def pred_model_inputs_ready(p):
@@ -317,11 +383,88 @@ def pred_e2e_admitted(p):
     return True, f"{n} e2e verdicts, all aligned"
 
 
+_FAMILY_ROLE = {"attention": "attention", "mla": "attention", "msa": "attention", "sparse_attention": "attention",
+                "dsa": "dsa_indexer", "gdn": "linear_attention", "kda": "linear_attention",
+                "linear_attention": "linear_attention", "gemm": "gemm", "moe": "moe_gemm", "mhc": "mhc",
+                "quant": "quant", "quantize": "quant"}
+
+
+def _pins():
+    return [(fw, str((be.get("versions") or ["?"])[0])) for fw, be in _load_targets()["backends"].items()]
+
+
+def pred_family_observed(p):
+    """Serving truth for an op family: some passing record decomposes into
+    kernels of the family's role (results/<sm>/decompose/)."""
+    sm, fam = p.get("sm", "sm90"), p["family"]
+    role = _FAMILY_ROLE.get(fam, fam)
+    hits = []
+    for fw, ver in _pins():
+        f = HARNESS / "results" / sm / "decompose" / f"{fw}-{ver}.yaml"
+        if not f.exists():
+            continue
+        for repo, entry in ((yaml.safe_load(f.read_text()) or {}).get("results") or {}).items():
+            if role in (entry.get("families") or {}):
+                hits.append(f"{fw}:{repo}")
+    if not hits:
+        return False, f"no decomposition shows role '{role}' for family '{fam}' (decompose first, or the family is unobserved)"
+    return True, f"role '{role}' observed on {len(hits)} (backend, repo) cells"
+
+
+def pred_family_unit_defined(p):
+    fam = p["family"]
+    files = sorted((HARNESS.parent / "cases" / "base_ops").glob(f"{fam}*.yaml"))
+    return (True, f"{len(files)} base_ops declarations") if files else (False, f"no collector/cases/base_ops/{fam}*.yaml")
+
+
+def pred_family_collector_exists(p):
+    fam = p["family"]
+    files = sorted((HARNESS.parent).glob(f"*/collect_{fam}*.py"))
+    return (True, f"collectors: {[f.parent.name for f in files]}") if files else (False, f"no collector/*/collect_{fam}*.py")
+
+
+def pred_family_gates_aligned(p):
+    sm, fam = p.get("sm", "sm90"), p["family"]
+    seen, bad = 0, []
+    for fw, ver in _pins():
+        for f in sorted((HARNESS / "results" / "pathdiff" / sm / f"{fw}-{ver}").glob(f"{fam}_*.json")):
+            seen += 1
+            if json.loads(f.read_text()).get("verdict") != "aligned":
+                bad.append(f"{fw}:{f.stem}")
+    if not seen:
+        return False, f"no path_diff gate named {fam}_* on any pinned backend"
+    if bad:
+        return False, f"not aligned: {bad[:3]}"
+    return True, f"{seen} {fam} gates aligned across pins"
+
+
+def pred_model_gates_aligned(p):
+    """Every path_diff verdict that names this repo (on the pinned backends)
+    is aligned, and at least one exists."""
+    sm, repo = p.get("sm", "sm90"), p["repo"]
+    seen, bad = 0, []
+    for fw, ver in _pins():
+        for f in sorted((HARNESS / "results" / "pathdiff" / sm / f"{fw}-{ver}").glob("*.json")):
+            d = json.loads(f.read_text())
+            if d.get("repo") != repo:
+                continue
+            seen += 1
+            if d.get("verdict") != "aligned":
+                bad.append(f"{fw}:{f.stem}={d.get('verdict')}")
+    if not seen:
+        return False, f"no path_diff gate names {repo} on the pinned backends"
+    if bad:
+        return False, f"not aligned: {bad[:3]}"
+    return True, f"{seen} gates name {repo}, all aligned"
+
+
 PREDICATES = {fn.__name__[5:]: fn for fn in [
     pred_component_pending, pred_pin_is, pred_plan_has_version, pred_path_verdicts_aligned,
     pred_matrix_complete, pred_fails_root_caused, pred_customizations_retested,
     pred_model_inputs_ready, pred_dummies_built, pred_model_probed,
     pred_model_fails_dispositioned, pred_model_decomposed, pred_residue_dispositioned, pred_e2e_admitted,
+    pred_family_observed, pred_family_unit_defined, pred_family_collector_exists, pred_family_gates_aligned,
+    pred_model_gates_aligned,
 ]}
 
 
@@ -336,7 +479,8 @@ def evaluate(workflow: str, params: dict) -> dict:
         try:
             ok, reason = PREDICATES[check](args)
             status = "done" if ok else (
-                "blocked" if check == "component_pending" else "todo")
+                "blocked" if check == "component_pending" and args.get("component") not in IMPLEMENTED_COMPONENTS
+                else "todo")
         except KeyError as e:
             status, reason = "todo", f"unknown predicate/param: {e}"
         steps.append({"id": step["id"], "actor": step.get("actor", "script"),

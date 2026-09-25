@@ -25,7 +25,7 @@ steps:
   done_when: {check: component_pending, args: {component: sanity}}
 - id: path_aligned
   actor: script
-  done_when: {check: component_pending, args: {component: path_diff}}
+  done_when: {check: model_gates_aligned}
 - id: e2e_admitted
   actor: script
   done_when: {check: e2e_admitted}

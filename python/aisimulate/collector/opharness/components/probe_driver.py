@@ -37,6 +37,16 @@ AIS_SRC = os.environ.get("AIS_GENERATOR_SRC") or os.environ.get("AIC_GENERATOR_S
 if AIS_SRC not in sys.path:
     sys.path.insert(0, AIS_SRC)
 WORK = "/work"  # container mount of ROOT
+# The probes run FROM THIS CHECKOUT, never from a copy in the workspace (review
+# 2026-09-25 P2 #5: twin scripts drift). When the checkout lives inside the
+# workspace it is already visible under /work; otherwise it is mounted read-only.
+_HERE = Path(__file__).resolve().parent
+try:
+    PROBES_IN_CONTAINER = f"{WORK}/{(_HERE / 'probes').relative_to(ROOT)}"
+    _EXTRA_MOUNT = ""
+except ValueError:
+    PROBES_IN_CONTAINER = "/harness/probes"
+    _EXTRA_MOUNT = f"-v {_HERE}:/harness:ro "
 SCRATCH_QUEUES = ROOT / "archive" / "queues"
 
 GOLDEN_TARGET = {"sglang": "dynamo-python", "vllm": "fpm", "trtllm": "dynamo-python"}
@@ -214,6 +224,124 @@ def _oom_at_load(rid: str) -> bool:
     return "OutOfMemoryError" in err or "CUDA out of memory" in err or "insufficient GPU memory" in err
 
 
+# ------------------------------------------------------------ execution identity
+# The run id names the CASE (repo, cut, backend, version, profile, tp, kv). It
+# does not change when the generator renders different engine args, the dummy
+# changes or the image moves — so a raw produced under an older configuration
+# must not count as evidence for the current one (review 2026-09-25 P1 #3).
+# The execution fingerprint covers what shapes the execution: the engine
+# invocation the probe consumed, the dummy checkpoint's config, the image and
+# the kv override. The queue skips a run only when a sidecar recorded THIS
+# fingerprint; records carry both sides and the matrix refuses stale evidence.
+# deployment-wrapper / path values: the dynamo benchmark flags and result paths
+# are consumed by the wrapper, the probe strips them before the engine sees argv
+_ENGINE_DROP = {"--model", "--model-path", "--served-model-name", "--dump-config-to",
+                "--benchmark-output-path", "--benchmark-mode", "--tokenizer", "--tokenizer-path"}
+
+
+def engine_tokens(backend: str, tokens: list[str]) -> list[str]:
+    """Engine invocation tokens with the deployment-specific values (model
+    path, served name, result paths) removed, so the rendered command and
+    the probe's argv (which substitutes the dummy dir) compare equal."""
+    # both sides start at the first flag: the render carries the interpreter and
+    # module (python3 -m dynamo.vllm), the probe's argv may not
+    first = next((i for i, t in enumerate(tokens) if str(t).startswith("--")), 0)
+    out, skip = [], False
+    for t in tokens[first:]:
+        if skip:
+            skip = False
+            continue
+        key = t.split("=", 1)[0]
+        if key in _ENGINE_DROP:
+            skip = "=" not in t
+            continue
+        out.append(t)
+    return out
+
+
+def _run_sh_engine_tokens(text: str) -> list[str]:
+    m = re.search(r"engine_command=\((.*?)\)\n", text, re.S)
+    if not m:
+        m = re.search(r"python3 -m dynamo\.\w+[^\n]*", text)
+        return shlex.split(m.group(0)) if m else []
+    return shlex.split(m.group(1).replace("\\\n", " "))
+
+
+def _sha(*parts: str) -> str:
+    h = hashlib.sha1()
+    for p in parts:
+        h.update(p.encode()); h.update(b"\0")
+    return h.hexdigest()[:12]
+
+
+def plan_engine_tokens(run: dict) -> list[str] | None:
+    """The engine invocation the probe will consume, from the render artifact."""
+    be = run["backend"]
+    if be == "vllm" and run.get("run_sh"):
+        return engine_tokens(be, _run_sh_engine_tokens(Path(run["run_sh"]).read_text()))
+    if be == "sglang" and run.get("engine_cli"):
+        return engine_tokens(be, shlex.split(run["engine_cli"]))
+    if be == "trtllm" and run.get("render_artifact"):
+        # yaml compared semantically (canonical json), so formatting never counts
+        return [json.dumps(yaml.safe_load(Path(run["render_artifact"]).read_text()), sort_keys=True)]
+    return None
+
+
+def dummy_fingerprint(model_dir_in_container: str) -> str | None:
+    d = ROOT / str(model_dir_in_container).replace(f"{WORK}/", "", 1)
+    parts = []
+    for name in ("config.json", "hf_quant_config.json"):
+        f = d / name
+        if f.exists():
+            parts.append(f"{name}:{f.read_text()}")
+    return _sha(*parts) if parts else None
+
+
+def exec_fingerprint(run: dict) -> dict:
+    """{fingerprint, engine, dummy, image, kv} — engine = sha of the engine
+    tokens (None when the render artifact is unreadable), dummy = sha of the
+    dummy's config files."""
+    toks = plan_engine_tokens(run)
+    eng = _sha(*toks) if toks else None
+    dum = dummy_fingerprint(run.get("model_dir", ""))
+    probe = _HERE / "probes" / f"probe_{run['backend']}.py"
+    code = _sha(probe.read_text()) if probe.exists() else None   # the probe code that will run
+    fp = _sha(eng or "", dum or "", code or "", str(run.get("image")), str(run.get("kv_dtype")),
+              json.dumps(run.get("cli_extra_args") or [], sort_keys=True))
+    return {"fingerprint": fp, "engine": eng, "dummy": dum, "probe_code": code,
+            "image": run.get("image"), "kv": run.get("kv_dtype")}
+
+
+def raw_engine_fingerprint(backend: str, raw: dict) -> str | None:
+    """Engine fingerprint of what a raw probe actually ran (vllm: argv; sglang:
+    the engine cli it was given); trtllm raws carry the yaml as a dict, so
+    None — the sidecar is the only evidence there."""
+    if backend == "vllm" and isinstance(raw.get("engine_argv"), list):
+        return _sha(*engine_tokens(backend, [str(t) for t in raw["engine_argv"]]))
+    if backend == "sglang" and isinstance(raw.get("engine_cli"), str):
+        return _sha(*engine_tokens(backend, shlex.split(raw["engine_cli"])))
+    if backend == "trtllm" and raw.get("engine_yaml") is not None:
+        ey = raw["engine_yaml"]
+        ey = yaml.safe_load(ey) if isinstance(ey, str) else ey
+        return _sha(json.dumps(ey, sort_keys=True))
+    return None
+
+
+def evidence_status(run: dict, sidecar_fp: str | None, raw: dict | None) -> str:
+    """current | stale | unverified — does this raw belong to THIS execution
+    configuration? Sidecar (written by the queue next to the raw) is decisive;
+    without one, vllm/sglang raws are checked on the engine invocation they
+    recorded; anything else is unverified (legacy evidence, never 'current')."""
+    fp = run.get("exec_fingerprint") or {}
+    if sidecar_fp:
+        return "current" if sidecar_fp == fp.get("fingerprint") else "stale"
+    if raw is not None and fp.get("engine"):
+        eng = raw_engine_fingerprint(run["backend"], raw)
+        if eng is not None:
+            return "current" if eng == fp["engine"] else "stale"
+    return "unverified"
+
+
 def enumerate_runs(targets: dict, full: bool, backends: list[str]) -> list[dict]:
     runs = []
     topos = [t for t in targets["topologies"] if t["evidence"] == "real" and (full or t["tp"] == 1)]
@@ -333,7 +461,11 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
     queues: dict[int, list[str]] = {g: [] for g in gpu_list}
     for i, run in enumerate(r for r in runs if "skip" not in r):
         g = gpu_list[i % len(gpu_list)]
+        # skip only when a sidecar recorded THIS execution fingerprint next to the
+        # raw: a raw from an older render / dummy / image is not evidence for the
+        # current plan (review 2026-09-25); the sidecar is written after the run
         head = (f"[ -f {ROOT}/archive/raw/{run['id']}.json ] && "
+                f"[ \"$(cat {ROOT}/archive/raw/{run['id']}.fp 2>/dev/null)\" = \"__FP__\" ] && "
                 f"echo 'skip [{run['id']}] (done)' || {{ "
                 f"echo '### [{run['id']}] {run['backend']} {run['repo']} {run['variant']} "
                 f"{run['version']} tp{run['tp']}' && timeout 1500 docker run --rm "
@@ -341,7 +473,7 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
                 # host runs an MPS daemon; probes must NOT attach (a fake pipe
                 # dir makes the CUDA client fall back to a normal context)
                 f"-e CUDA_MPS_PIPE_DIRECTORY=/nonexistent-no-mps "
-                f"-v {ROOT}:{WORK} -v {ROOT}/jitcache:/root/.cache "
+                f"-v {ROOT}:{WORK} -v {ROOT}/jitcache:/root/.cache {_EXTRA_MOUNT}"
                 f"-e TRITON_CACHE_DIR=/root/.cache/triton -e DG_JIT_CACHE_DIR=/root/.cache/deep_gemm ")
         if run["backend"] == "sglang":
             art = render_golden(run)
@@ -353,7 +485,7 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             run["engine_args_fidelity"] = "cli-golden"
             run["golden_dir"] = str(art)
             _kv = f" --kv-dtype {run['kv_dtype']}" if run.get("kv_dtype") else ""
-            cmd = (head + f"{run['image']} python3 {WORK}/probe/probe_sglang.py "
+            cmd = (head + f"{run['image']} python3 {PROBES_IN_CONTAINER}/probe_sglang.py "
                    f"--model {run['model_dir']} --engine-cli {shlex.quote(cli)} --trace{_kv} "
                    f"--out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}")
         elif run["backend"] == "vllm":  # golden fpm run.sh, consumed verbatim
@@ -371,7 +503,7 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             run["engine_args_fidelity"] = "cli-golden"
             run["golden_dir"] = str(art)
             _kv = f" --kv-cache-dtype {run['kv_dtype']}" if run.get("kv_dtype") else ""
-            cmd = (head + f"--entrypoint python3 {run['image']} {WORK}/probe/probe_vllm.py "
+            cmd = (head + f"--entrypoint python3 {run['image']} {PROBES_IN_CONTAINER}/probe_vllm.py "
                    f"--run-sh {WORK}/archive/run_sh/{run['id']}.sh --model-override {run['model_dir']}{_kv} "
                    f"--trace --out {WORK}/archive/raw/{run['id']}.json 2>&1 | tail -1 ; }}")
         else:  # trtllm: golden extra_engine_args (agg_config.yaml), consumed verbatim
@@ -394,11 +526,16 @@ def emit_queues(runs: list[dict], gpu_list: list[int], plan_name: str) -> None:
             _kv = f"--kv-dtype {run['kv_dtype']} " if run.get("kv_dtype") else ""
             cmd = (head.replace("docker run --rm ",
                                 "docker run --rm -e TLLM_WORKER_USE_SINGLE_PROCESS=1 ")
-                   + f"{run['image']} bash -lc 'python3 {WORK}/probe/probe_trtllm.py "
+                   + f"{run['image']} bash -lc 'python3 {PROBES_IN_CONTAINER}/probe_trtllm.py "
                    f"--model {run['model_dir']} {trc}{_kv}"
                    f"--engine-yaml {WORK}/archive/run_sh/{run['id']}.engine.yaml "
                    f"--out {WORK}/archive/raw/{run['id']}.json' "
                    f"2>&1 | tail -1 ; }}")
+        run["exec_fingerprint"] = exec_fingerprint(run)
+        _fp = run["exec_fingerprint"]["fingerprint"]
+        cmd = cmd.replace("__FP__", _fp)
+        if cmd.rstrip().endswith("; }"):
+            cmd = cmd.rstrip()[:-3] + f"; echo {_fp} > {ROOT}/archive/raw/{run['id']}.fp ; }}"
         queues[g].append(cmd)
     for g, cmds in queues.items():
         p = SCRATCH_QUEUES / f"gpu{g}.sh"
@@ -718,10 +855,22 @@ def compress_error(stage: str, tb: str) -> dict:
     return {"stage": stage, "exc": lines[-1][:160], "frames": frames}
 
 
+def _sidecar(rid: str) -> str | None:
+    p = ROOT / "archive" / "raw" / f"{rid}.fp"
+    return p.read_text().strip() if p.exists() else None
+
+
 def build_records() -> None:
+    # plan files oldest -> newest; the newest plan's run for an id wins, and a
+    # run that carries an execution fingerprint always beats one that does not
     plan: dict = {}
-    for pf in sorted((ROOT / "archive").glob("plan*.json")):
-        plan.update({r["id"]: r for r in json.loads(pf.read_text()) if "skip" not in r})
+    for pf in sorted((ROOT / "archive").glob("plan*.json"), key=lambda q: q.stat().st_mtime):
+        for r in json.loads(pf.read_text()):
+            if not isinstance(r, dict) or "skip" in r or not r.get("id"):
+                continue
+            cur = plan.get(r["id"])
+            if cur is None or r.get("exec_fingerprint") or not cur.get("exec_fingerprint"):
+                plan[r["id"]] = r
     out = ROOT / "archive" / "records.jsonl"
     n = 0
     stale_prefill = 0
@@ -819,6 +968,12 @@ def build_records() -> None:
                     "param_dtypes": f.get("param_dtypes"),
                     "weight_samples": f.get("weight_samples") or None,
                 },
+                # execution identity: the plan's fingerprint, the sidecar the queue
+                # wrote next to this raw, and whether the evidence is current for
+                # the plan (stale = the render/dummy/image changed since the probe)
+                "exec_fingerprint": (run.get("exec_fingerprint") or {}).get("fingerprint"),
+                "raw_fingerprint": _sidecar(rid),
+                "evidence_status": evidence_status(run, _sidecar(rid), f),
                 "ops": ops or None,
                 "orphan_kernels": orphans or None,
                 # phase of every kept orphan (prefill/decode/profile_run): the
@@ -906,19 +1061,13 @@ def build_matrix(targets: dict) -> None:
         for repo2, o2 in (fam.get("checkpoint_overrides") or {}).items():
             for be2, v2 in ((o2 or {}).get("cli_extra_args") or {}).items():
                 custom[(repo2, be2)] = " ".join(v2["args"] if isinstance(v2, dict) else v2)
-    recs: dict = {}
-    _score: dict = {}
+    # records by id: a cell reads the record of ITS run, never a sibling's
+    # (review 2026-09-25: (repo, backend) indexing let an older version's
+    # record lend its identity to the new version's matrix)
+    recs_by_id: dict = {}
     for line in (ROOT / "archive" / "records.jsonl").open():
         r = json.loads(line)
-        k = (r["target"].get("repo"), r["runtime"]["backend"])
-        ok = (r.get("outcome") or {}).get("status") == "ok"
-        # the cell's identity comes from the RENDERED config's record: kv-dtype
-        # variant records (fp8-KV probes) exist for the same (repo, backend)
-        # and must not lend it their kv_allocated / attention identity
-        rendered = str(r["runtime"].get("kv_cache_dtype")) in ("auto", "bfloat16", "bf16", "None")
-        s = (ok, rendered)
-        if k not in recs or s > _score[k]:
-            recs[k], _score[k] = r, s
+        recs_by_id[r["id"]] = r
     kvcap = {}
     for p in (ROOT / "facts" / "kvcap").glob("*.json"):
         kvcap[p.stem] = (json.loads(p.read_text()) or {}).get("kv_cache_resolved") or {}
@@ -936,15 +1085,18 @@ def build_matrix(targets: dict) -> None:
         # a RENDERED run wins over a 'skip' of the same id from an older plan
         # file (a checkpoint the generator rejected before it was bundled keeps
         # its stale skip in the old plan; the re-emitted plan renders it)
-        by_id: dict = {}
-        for pf in pfs:
+        # the CURRENT plan decides a cell: plan files are visited oldest ->
+        # newest and a later rendered run for the same (repo, backend, pin)
+        # replaces an earlier one (a stale skip never replaces a rendered run)
+        by_cell: dict = {}
+        for pf in pfs:  # pfs sorted by mtime, oldest first
             for r in json.loads((ROOT / "archive" / pf).read_text()):
                 if (isinstance(r, dict) and r.get("backend") == be and r.get("version") == pins[be]
                         and not r.get("kv_dtype") and r.get("id")):
-                    cur = by_id.get(r["id"])
-                    if cur is None or ("skip" in cur and "skip" not in r):
-                        by_id[r["id"]] = r
-        yield from by_id.values()
+                    cur = by_cell.get(r["repo"])
+                    if cur is None or "skip" not in r or "skip" in cur:
+                        by_cell[r["repo"]] = r
+        yield from by_cell.values()
     for be, pfs in plans.items():
         for run in _matrix_runs(be, pfs):
             repo = run.get("repo")
@@ -955,6 +1107,9 @@ def build_matrix(targets: dict) -> None:
                 cell = {"verdict": "fail", "cause": "generator rejects", "error": run["skip"][:160]}
             elif not raw.exists():
                 cell = {"verdict": "fail", "cause": "no raw (crashed before dump)"}
+            elif evidence_status(run, _sidecar(run["id"]), json.loads(raw.read_text())) == "stale":
+                cell = {"verdict": "fail", "cause": "stale evidence",
+                        "error": "raw probed under an earlier render/dummy/image — re-emit queues and re-probe"}
             else:
                 f = json.loads(raw.read_text())
                 err = f.get("errors") or {}
@@ -966,7 +1121,8 @@ def build_matrix(targets: dict) -> None:
                     cell = {"verdict": "pass+custom" if ca else "pass"}
                     if ca:
                         cell["extra_args"] = ca
-                    rec = recs.get((repo, be))
+                    rec = recs_by_id.get(run["id"])
+                    cell["evidence"] = evidence_status(run, _sidecar(run["id"]), f)
                     if rec and (rec.get("outcome") or {}).get("status") == "ok":
                         ident = rec.get("identity") or {}
                         res = rec.get("resolved") or {}

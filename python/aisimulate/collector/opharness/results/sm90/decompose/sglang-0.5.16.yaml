@@ -3,7 +3,7 @@ _meta:
   framework: sglang
   version: 0.5.16
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T12:35:42'
+  generated: '2026-09-25T13:37:48'
   summary:
     repos: 99
     repos_with_residue: 0
@@ -2727,7 +2727,7 @@ results:
         - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   deepseek-ai/DeepSeek-V4-Flash:
-    record: 96b2eb86360b
+    record: 623df67c99e2
     variant: rep_mix
     kv: fp8_e4m3
     probe_eager: false
@@ -2835,7 +2835,7 @@ results:
       labeled: 64
       residue: 0
   deepseek-ai/DeepSeek-V4-Flash-0731:
-    record: efc9bc1f3527
+    record: c21bba077c0e
     variant: csa
     kv: fp8_e4m3
     probe_eager: false
@@ -2941,7 +2941,7 @@ results:
       labeled: 62
       residue: 0
   deepseek-ai/DeepSeek-V4-Pro:
-    record: 05f468301220
+    record: bccaafaf2cd5
     variant: interleave_pair
     kv: fp8_e4m3
     probe_eager: false
@@ -3050,7 +3050,7 @@ results:
       labeled: 65
       residue: 0
   deepseek-ai/DeepSeek-V4-Pro-0813:
-    record: e243a2f9ad54
+    record: 121fb37c09e4
     variant: csa
     kv: fp8_e4m3
     probe_eager: false
@@ -3940,7 +3940,7 @@ results:
         - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   nvidia/DeepSeek-V4-Flash-NVFP4:
-    record: 7d9344daa57e
+    record: 1415c97d5f45
     variant: csa
     kv: fp8_e4m3
     probe_eager: false
@@ -4048,7 +4048,7 @@ results:
       labeled: 64
       residue: 0
   nvidia/DeepSeek-V4-Pro-NVFP4:
-    record: 1134eff51433
+    record: 70703dc98725
     variant: csa
     kv: fp8_e4m3
     probe_eager: false
@@ -6766,7 +6766,7 @@ results:
       labeled: 56
       residue: 0
   sgl-project/DeepSeek-V4-Flash-FP8:
-    record: 2a7de1066822
+    record: 4adf016d0eac
     variant: rep_mix
     kv: fp8_e4m3
     probe_eager: false
@@ -6876,7 +6876,7 @@ results:
       labeled: 65
       residue: 0
   sgl-project/DeepSeek-V4-Pro-FP8:
-    record: 45bf03a7aa9e
+    record: e305b333b3fb
     variant: interleave_pair
     kv: fp8_e4m3
     probe_eager: false

@@ -22,7 +22,9 @@ run sgl_attn_gen      attn_gen_Llama-3.1-8B          meta-llama/Meta-Llama-3.1-8
 # on SM90 (collect_attn's default table would say fa3); capture = op_smoke
 # --case-index 168 (s/caps/launch_sgl_gemma4_hd512.sh), serving = TritonAttnBackend record
 run sgl_attn_ctx_gemma4_hd512 attn_ctx_hd512_gemma-4-26B-A4B google/gemma-4-26B-A4B auto "$ATT"
-run sgl_dsa_ctx       dsa_ctx_bf16_DeepSeek-V3.2     deepseek-ai/DeepSeek-V3.2   auto "$DSA"
+# single-cell (seq 4096 = the probe's isl) capture: the whole-sweep capture unions
+# short cells that run dense FA3 with the sparse path (review 2026-09-25)
+run sgl_dsa_ctx_s4096 dsa_ctx_bf16_DeepSeek-V3.2     deepseek-ai/DeepSeek-V3.2   auto "$DSA"
 run sgl_dsa_gen       dsa_gen_bf16_DeepSeek-V3.2     deepseek-ai/DeepSeek-V3.2   auto "$DSA"
 # fp8-KV (sglang kv variant fp8_e4m3, framework-mode records 2026-09-24).
 # Context is length-conditional in sglang (dense FA3 + NO indexer below the

@@ -1,11 +1,11 @@
 {
- "verdict": "diverged",
+ "verdict": "aligned",
  "repo": "deepseek-ai/DeepSeek-V3.2",
  "framework": "sglang",
  "version": "0.5.16",
- "capture_file": "facts/pathdiff/opcov_sgl_dsa_ctx.json",
+ "capture_file": "facts/pathdiff/opcov_sgl_dsa_ctx_s4096.json",
  "capture_cmd": [
-  "/work/s/caps/sgl_dsa_ctx.py"
+  "/work/s/caps/sgl_dsa_ctx_s4096.py"
  ],
  "capture_env": null,
  "capture_run_error": null,
@@ -21,8 +21,6 @@
  "role_evidence": {
   "attention": {
    "collector": [
-    "flash::FlashAttnFwdSm90",
-    "flash::prepare_varlen_num_blocks_kernel",
     "sm90::fwd::sparse_attn_fwd_kernel"
    ],
    "serving": [
@@ -71,7 +69,6 @@
   "cublas",
   "deepgemm",
   "dsa_nsa",
-  "fa3",
   "sgl_kernel"
  ],
  "serving_backends": [
@@ -81,20 +78,8 @@
   "sgl_kernel",
   "triton_fused_moe"
  ],
- "collector_only_signal": [
-  "attention:fa3"
- ],
- "kernel_drift": {
-  "attention": {
-   "collector_only_kernels": [
-    "flash::FlashAttnFwdSm90",
-    "flash::prepare_varlen_num_blocks_kernel"
-   ],
-   "serving_kernels": [
-    "sm90::fwd::sparse_attn_fwd_kernel"
-   ]
-  }
- },
+ "collector_only_signal": [],
+ "kernel_drift": null,
  "serving_kernels_matched_in_collector": [
   "_act_quant_kernel",
   "_get_k_and_s_triton_kernel",

@@ -3,7 +3,7 @@ _meta:
   framework: vllm
   version: 0.29.0
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T12:35:42'
+  generated: '2026-09-25T13:37:49'
   summary:
     repos: 108
     repos_with_residue: 0
@@ -345,7 +345,6 @@ results:
         - nvjet_sm90_tst_192x160_64x4_2x1_v_bz_coopB_TNT
         - nvjet_sm90_tst_192x16_64x8_2x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_192x192_64x4_1x2_h_bz_coopB_bias_TNN
-        - nvjet_sm90_tst_192x208_64x4_2x1_v_bz_coopB_TNT
         - nvjet_sm90_tst_192x24_64x7_2x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_192x32_64x7_2x1_v_bz_splitK_TNT
         - nvjet_sm90_tst_192x40_64x7_1x2_h_bz_TNT
@@ -436,15 +435,17 @@ results:
         - fp32_router_gemm_kernel
     residue: []
     ops_observed:
-    - attn:MergedColumnParallelLinear
     - attn:MiniMaxM3IndexerTritonImpl
     - attn:MiniMaxM3SparseTritonImpl
-    - attn:MinimaxM3QKVParallelLinearWithIndexer
-    - attn:SiluAndMulWithClamp
-    - attn:UnquantizedFusedMoEMethod
     coverage:
-      labeled: 137
+      labeled: 136
       residue: 0
+    kv_variants:
+      fp8:
+        record: 1f81ea49cbb2
+        added_kernels:
+        - nvjet_sm90_tst_192x208_64x4_2x1_v_bz_coopB_TNT
+        added_residue: []
   MiniMaxAI/MiniMax-M3-MXFP8:
     record: dd55dbda566a
     variant: moe_sparse_attn

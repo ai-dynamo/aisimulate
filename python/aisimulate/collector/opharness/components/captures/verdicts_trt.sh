@@ -31,8 +31,12 @@ run trt_gdn_ctx       gdn_ctx_Qwen3.5-0.8B        Qwen/Qwen3.5-0.8B           au
 # variant records (kv_cache_config.dtype fp8, KV manager resolved FP8)
 run trt_attn_ctx_fp8kv attn_ctx_fp8_Llama-3.1-8B  meta-llama/Meta-Llama-3.1-8B fp8  "$ATT"
 run trt_attn_gen_fp8kv attn_gen_fp8_Llama-3.1-8B  meta-llama/Meta-Llama-3.1-8B fp8  "$ATT"
-run trt_dsa_ctx_fp8kv  dsa_ctx_fp8_DeepSeek-V3.2  deepseek-ai/DeepSeek-V3.2   fp8  "$DSA"
-run trt_dsa_gen_fp8kv  dsa_gen_fp8_DeepSeek-V3.2  deepseek-ai/DeepSeek-V3.2   fp8  "$DSA"
+# not a gate on rc23: the sparse FlashMLA asserts bf16 KV, so no fp8-KV DSA serving record can exist
+# (findings trtllm_kv_dtype_variants_2026_09_24); the cell is a recorded framework wall, not an alignment question
+# run trt_dsa_ctx_fp8kv  dsa_ctx_fp8_DeepSeek-V3.2  deepseek-ai/DeepSeek-V3.2   fp8  "$DSA"
+# not a gate on rc23: the sparse FlashMLA asserts bf16 KV, so no fp8-KV DSA serving record can exist
+# (findings trtllm_kv_dtype_variants_2026_09_24); the cell is a recorded framework wall, not an alignment question
+# run trt_dsa_gen_fp8kv  dsa_gen_fp8_DeepSeek-V3.2  deepseek-ai/DeepSeek-V3.2   fp8  "$DSA"
 run trt_mla_ctx_fp8kv  mla_ctx_fp8_DeepSeek-V3    deepseek-ai/DeepSeek-V3     fp8  "$DSA"
 run trt_mla_gen_fp8kv  mla_gen_fp8_DeepSeek-V3    deepseek-ai/DeepSeek-V3     fp8  "$DSA"
 # the fp8-context-FMHA attention cell (use_fp8_context_fmha=True) is captured

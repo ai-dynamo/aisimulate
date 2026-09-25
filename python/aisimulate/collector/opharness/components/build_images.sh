@@ -1,47 +1,39 @@
 #!/bin/bash
-# Rebuild probe images + the generator-CLI venv. ALL version pins come from
+# Rebuild probe images + the generator venv. ALL version pins come from
 # targets.yaml (single source; bump versions there, never here). Re-run
 # whenever docker prune eats images on this shared box.
+#
+# Layout (review 2026-09-25): the harness runs FROM THIS CHECKOUT — probes,
+# driver, taxonomy — and keeps only data in the workspace ($AIS_PROBE_WORKSPACE:
+# configs/, dummy_models/, archive/, facts/, jitcache/, the generator venv).
 set -euxo pipefail
-cd "$(dirname "$0")/.."
+HARNESS="$(cd "$(dirname "$0")/.." && pwd)"                 # collector/opharness
+CHECKOUT="$(cd "$HARNESS/../.." && pwd)"                    # python/aisimulate (the package)
+WS="${AIS_PROBE_WORKSPACE:-$PWD}"
+mkdir -p "$WS/jitcache" "$WS/archive" "$WS/configs" "$WS/dummy_models"
 
-readarray -t PINS < <(python3 - <<'PY'
-import yaml
-t = yaml.safe_load(open('targets.yaml'))
+readarray -t PINS < <(python3 - "$HARNESS/targets.yaml" <<'PY'
+import sys, yaml
+t = yaml.safe_load(open(sys.argv[1]))
 for be, cfg in t['backends'].items():
     for ver, img in cfg['images'].items():
         print(f"{be}|{ver}|{img}")
 PY
 )
-
-# the checkout itself declares which compiled core it needs — read, don't pin
-CORE_WHEEL=$(python3 -c "
-import re
-print(re.search(r'aiconfigurator-core==([\w.]+)', open('aic/pyproject.toml').read()).group(1))")
 for pin in "${PINS[@]}"; do
   IFS='|' read -r be ver img <<< "$pin"
-  case "$be" in
-    vllm)     docker pull "$img" ;;
-    *)        docker pull "$img" ;;
-  esac
+  docker pull "$img"
 done
 
-# (vllm-probe:<ver>-fix retired with the 0.29.0 pin: official images since
-#  0.27.1 ship tilelang without the broken libcudart stub — findings
-#  vllm_024_image_tilelang_stub records the full history.)
-
 # --- generator CLI venv (golden pipeline) ------------------------------------
-# The golden loop invokes the REAL generator `cli generate` command
-# (currently the predecessor aiconfigurator toolchain's venv checkout).
-# The compiled core is built FROM THE CHECKOUT (the PyPI wheel lags upstream
-# ABI; the crate's abi3 floor is py3.11 -> use python3.12).
-PY312=${PY312:-/root/.local/bin/python3.12}
+# The golden loop invokes THIS repository's `aiconfigurator cli generate`
+# (components/probe_driver.py GEN_CLI, override AIS_GENERATOR_CLI). The native
+# runtime is built from the checkout with maturin (needs ~/.cargo/bin).
 export PATH="$HOME/.cargo/bin:$PATH"
 command -v cargo >/dev/null || curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-"$PY312" -m venv venv_aic
-./venv_aic/bin/pip install -q maturin jinja2 packaging numpy pandas plotext plotly prettytable pydantic pyarrow pyyaml tqdm matplotlib
-./venv_aic/bin/maturin build --release -m aic/aic-core/rust/aiconfigurator-core/Cargo.toml -o /tmp/aic_corewheel
-./venv_aic/bin/pip install -q /tmp/aic_corewheel/aiconfigurator_core-*.whl
-./venv_aic/bin/pip install -q -e ./aic --no-deps
-ln -sf "$(pwd)/$(ls venv_aic/lib/python3.*/site-packages/aiconfigurator_core/_aiconfigurator_core*.so | head -1)" \
-       aic/aic-core/src/aiconfigurator_core/_aiconfigurator_core.abi3.so
+command -v uv >/dev/null || python3 -m pip install -q uv
+cd "$WS"
+uv venv venv_ais --python 3.12
+VIRTUAL_ENV="$WS/venv_ais" uv pip install -e "$CHECKOUT"
+"$WS/venv_ais/bin/aiconfigurator" --help >/dev/null
+echo "generator venv: $WS/venv_ais (checkout $(git -C "$CHECKOUT" rev-parse --short HEAD))"

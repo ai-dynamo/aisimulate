@@ -1357,6 +1357,83 @@ findings:
       TokenRhythm/NeoHorse-1-9B, ornith-ai/Ornith-1.5-35B-A3B, openbmb/MiniCPM5-2B,
       'instrument:fetch_inputs', 'instrument:probe_driver', 'instrument:dummies', 'framework:vllm-0.29.0',
       'framework:sglang-0.5.16', 'framework:trtllm-1.3.0rc23', 'platform:sm90']
+  codex_review_evidence_contracts_2026_09_25:
+    statement: |
+      Codex review of 17ee75c2 (workspace file "Review Comment Codex.md")
+      reproduced six ways the harness turned stale, missing or insufficient
+      evidence into "pass"; all six reproduced on HEAD 9d860284 and are
+      closed by contract changes, each with a regression test:
+      (1) TARGET-OP GRADING. path_diff graded a gate with no signal family
+      on ANY infra-kernel overlap, so a capture sharing only a quant helper
+      with serving "proved" a GEMM path (the committed fp8 GEMM verdict had
+      exactly that: only scaled_fp8_quant in infra_family_name_matches;
+      the real reason was the launcher filter dropping
+      vllm::cutlass_3x_gemm_sm90_fp8 — a kernel, not a launcher). grade()
+      now takes the gate's TARGET ROLES (taxonomy role axis; inferred from
+      the gate name, or --target-roles) and requires every collector kernel
+      of each target role to name-match a serving kernel of the same role;
+      a role the collector ran but serving did not, or a collector-only
+      backend family inside a target role, is diverged; auxiliary roles are
+      reported, never graded; explicit role-scoped equivalences only (GEMM
+      tile blobs with layout kept; sgl_kernel top-k small_batch/main batch
+      dispatch).
+      (2) PHASE. prefill/decode/profile-run orphans were one set, and span
+      attribution by NAME across phases hid a kernel from the phase whose
+      span did not cover it. Records carry kernel_phases (every device-table
+      kernel by phase) and orphan_phases; select_serving picks serving
+      evidence by the gate's phase; vllm api_trace ops carry phase None (was
+      a borrowed "decode"); trtllm's flat table stays unscoped and the
+      verdict says so (phase_scoped). Re-derivation under (1)+(2): 60 gates
+      aligned, 1 diverged — trtllm rc23 DeepSeek-V3 MoE routing: the
+      collector routes with customMoeRoutingKernel, serving with
+      deepseek_v3_topk_kernel + dsv3MinLatencyKernels::router_gemm_kernel
+      (a collector serving-parity finding, left red); the sglang DSV3.2 DSA
+      context gate needed a single-cell capture (the whole-sweep capture
+      unions short cells that run dense FA3 — opcov_sgl_dsa_ctx_s4096);
+      compute_scale moved to the explained set (governed approximation);
+      the two trtllm fp8-KV DSA gate lines are retired (rc23 cannot serve
+      fp8 KV for DSA — a recorded wall, not an alignment question).
+      (3) EXECUTION IDENTITY. The run id names the case only; a raw probed
+      under an older render counted as done. Every plan run now carries an
+      execution fingerprint (engine tokens from the render — first flag on,
+      deployment-wrapper values dropped —, dummy config, probe code, image,
+      kv); the queue writes it as a .fp sidecar next to the raw and skips a
+      run only when the sidecar matches; records carry evidence_status
+      current | stale | unverified (sidecar decisive; without one, vllm /
+      sglang raws are checked on the argv they recorded, trtllm on its
+      engine yaml semantically); the matrix is derived from the NEWEST plan
+      per cell, reads the record of ITS run id (never a sibling version's),
+      and shows stale evidence as a fail cell. First run over the archive:
+      sglang 216 current / 12 unverified (retired pins), trtllm 222 / 37,
+      vllm 121 current / 103 stale (mostly fp8-KV variant raws from before
+      the 64-alignment) / 98 unverified; exactly ONE current-pin matrix
+      cell rested on stale evidence — MiniMax-M3 on vllm, probed at
+      max-num-batched-tokens 6012 before the alignment rule, re-probed at
+      6016 (the review's own counterexample, found by the mechanism).
+      (4) PLAN-RELATIVE PROGRESS. matrix_complete now requires every repo
+      the plan declares for (fw, version) to have a verdict (an empty
+      matrix is not complete; stale cells are not complete);
+      path_verdicts_aligned requires every gate the verdict scripts declare
+      to have a verdict naming this framework/version and reading aligned
+      (declared_gates parses components/captures/verdicts_*.sh);
+      component_pending never completes a step (implemented -> todo "no
+      completion predicate", unimplemented -> blocked); new_op_collector
+      steps got artifact predicates (family_observed / family_unit_defined /
+      family_collector_exists / family_gates_aligned) and onboard_model's
+      path_aligned became model_gates_aligned. A nonexistent op family now
+      shows four todo steps, not four done ones.
+      (5) ONE CODE SOURCE. Queues invoke the probes from this checkout
+      (components/probes, visible under the workspace mount or mounted at
+      /harness); build_images.sh builds venv_ais from the checkout; the
+      workspace holds data only (configs, dummies, archive with raw + .fp,
+      facts, jitcache). The workspace's twin probe scripts are retired.
+      (6) THIRD_PARTY_NOTICES root copy synced (check_packaged_legal_files
+      passes).
+      Harness unit tests: 73.
+    applies_to: ['instrument:path_diff', 'instrument:probe_driver', 'instrument:workflow_check',
+      'instrument:build_images', 'framework:vllm-0.29.0', 'framework:sglang-0.5.16',
+      'framework:trtllm-1.3.0rc23', 'platform:sm90', MiniMaxAI/MiniMax-M3, deepseek-ai/DeepSeek-V3,
+      deepseek-ai/DeepSeek-V3.2]
   taxonomy_dsa_nsa_family_covers_m3:
     statement: 'RESOLVED 2026-09-23: M3 sparse-attention kernels now label `triton` (the vocabulary name of
       MiniMaxM3SparseTritonImpl), dsa_nsa is DeepSeek-DSA only; see probe_prefill_prefix_cache_contamination.
