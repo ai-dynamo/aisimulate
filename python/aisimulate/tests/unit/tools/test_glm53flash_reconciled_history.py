@@ -98,3 +98,24 @@ class ReconciledHistoryTests(unittest.TestCase):
         proof["snapshot"]["reconciliations"] = {}
         with self.assertRaisesRegex(ValueError, "missing or orphan"):
             base.h.verify_bundle_history(bundle, proof, base.archive)
+
+    def test_offline_rehashed_wrong_cluster_proof_rejects(self):
+        f, _, _ = self.reconcile_one()
+        _, history = self.b.make_archive()
+        snapshot = copy.deepcopy(history["snapshot"])
+        proof = base.h._decoded(snapshot["reconciliations"][f.cid])
+        proof["cleanup"]["cluster_command"]["stdout"] = "ClusterName = other\n"
+        record = base.h._record(json.dumps(proof).encode())
+        snapshot["reconciliations"][f.cid] = record
+        snapshot["ledger"]["selections"][f.cid]["reconciliation"].update({k: record[k] for k in ("sha256", "bytes")})
+        ledger_record = base.h._record(json.dumps(snapshot["ledger"]).encode())
+        snapshot["input_bytes"]["ledger"] = ledger_record
+        snapshot["inputs"]["ledger"].update({k: ledger_record[k] for k in ("sha256", "bytes")})
+        with self.assertRaisesRegex(ValueError, "scheduler cluster"):
+            base.h._validate_snapshot(snapshot)
+
+    def test_changed_original_allocation_rejects_archive_inventory(self):
+        f, _, _ = self.reconcile_one()
+        f.paths["allocation"].write_text("TEST_ONLY changed original allocation")
+        with self.assertRaisesRegex(ValueError, "history member"):
+            self.b.make_archive()

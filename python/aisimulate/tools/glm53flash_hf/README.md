@@ -125,10 +125,9 @@ helper pins its twelve sibling source files; the canonical/profile closure pins
 the helper itself and every copied evidence file. These maintenance tools are
 source-distributed separately from installed native producers and analysis
 consumers. `MAINTENANCE_IDENTITY` retains the exact reviewed
-`fpm_cleanup_reconciliation_candidate_v1` source-profile label and base revision
-`2d51abd2619d3d333e721a2a34fdcf1ed20f10c2`; the label records pre-integration
-source-review provenance, not an assertion that the new implementation is an
-unchanged 2d51 build. Record the actual repository/tool revision separately.
+`fpm_cleanup_reconciliation_verified_local_v3` source-profile label and base revision
+`70af4fda516fa985e3068023582dde952282464c`; these identify the reviewed cluster
+guard follow-up, not unchanged 70af bytes or an installed consumer. Record the actual repository/tool revision separately.
 Changes to a pinned sibling require review and a coherent new hash map.
 
 ## Cleanup-only reconciliation
@@ -156,12 +155,40 @@ with an explicit request and a new diagnostic output:
 
 The request has task_root, attempt_directory, host_source and references.
 host_source contains the original commit, runner_sha256 and slurm_sha256.
-references has six original task-root-relative {path, sha256, bytes} entries:
-started, final, checkpoint, plan, owner and failure_review. The review contract
+references has seven original task-root-relative {path, sha256, bytes} entries:
+started, final, checkpoint, plan, owner, allocation and failure_review.
+The original allocation.json command receipt must bind the same job ID and one
+explicit cluster through its successful `scontrol show job JOB --json` output. The review contract
 is fpm_original_terminal_failure_review_v1 and binds the original final and
 checkpoint hashes, job, attempt, all log hashes/sizes, outcome
 SOLE_POST_COLLECTION_CLEANUP_FAILURE, and empty native_failures and
 unresolved_findings. The executor does not generate or infer that review.
+
+Proof contract `fpm_cleanup_reconciliation_v3` requires a fresh successful
+`scontrol --local show config` response with exactly the original ClusterName
+before any step query or cancellation. Subsequent step queries explicitly use
+`--local --clusters=ORIGINAL`, and cancellation uses `--clusters=ORIGINAL`.
+The default request routing_mode is explicit-cluster. An explicit verified-local
+mode supports sites where the --clusters/database route is unavailable; there
+is no automatic fallback. This mode uses squeue --local and exact-step scancel
+without --clusters, checking authoritative original ClusterName before/after
+every operation. Controller addresses/ports, federation and client settings,
+the actual client configuration file, CLI binaries and routing-affecting
+environment must remain identical across all boundaries. Non-default federation
+parameters, missing configuration, changed owner or any failed post-check reject
+before raw reads. Raw commands and checks are retained; environment values are
+represented only by a digest.
+Inherited SLURM_CLUSTERS and SQUEUE_/SCANCEL_/SCONTROL_ options must be unset so
+filters or federation settings cannot produce a misleading empty response.
+An unknown, different, or ambiguous cluster, malformed step output, or failed
+command rejects before raw reads. Original allocation bytes, the fresh config
+response and every actual command remain in the proof and archive closure;
+offline validation rechecks this evidence without claiming a live cluster check.
+No actual v1/v2 reconciliation was produced; those proof objects are rejected. Ordinary
+legacy selection without reconciliation is unchanged. These CLI semantics follow
+[SchedMD scontrol](https://slurm.schedmd.com/scontrol.html),
+[squeue](https://slurm.schedmd.com/squeue.html) and
+[scancel](https://slurm.schedmd.com/scancel.html); no upstream implementation is copied.
 
 The exact pinned Slurm cleanup algorithm only queries and cancels observed
 steps matching the original owner job and deterministic name. It does not set

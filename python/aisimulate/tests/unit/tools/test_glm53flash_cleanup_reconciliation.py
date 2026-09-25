@@ -25,6 +25,7 @@ class Fixture:
     def __init__(self, root, *, backend="vllm", job="1001", cid="TEST_ONLY_cell", directory=None):
         self.root = root
         self.job, self.cid, self.backend = job, cid, backend
+        self.cluster = "TEST_ONLY_original_cluster"
         self.directory = Path(
             directory or (f"campaign/fp8-tp2/00-{cid}/{job}" if backend == "vllm" else f"campaign/fp8-tp2/{job}")
         )
@@ -71,8 +72,15 @@ class Fixture:
         }
         checkpoint = {"plan_sha256": self.plan_sha, "cells": {cid: entry}}
         owner = {"job_id": job, "step_name": self.step}
+        allocation = {
+            "argv": ["scontrol", "show", "job", job, "--json"],
+            "returncode": 0,
+            "stdout": json.dumps({"jobs": [{"job_id": int(job), "cluster": self.cluster}], "errors": []}),
+            "stderr": "",
+        }
         self.paths = {
             "started": root / self.directory / "started.json",
+            "allocation": root / self.directory / "allocation.json",
             "final": root / self.directory / "result.json",
             "checkpoint": root / self.directory / "checkpoint/fpm_forward.json",
             "plan": root / "prepared/plans" / (cid + ".json"),
@@ -81,6 +89,7 @@ class Fixture:
         }
         for key, value in [
             ("started", start),
+            ("allocation", allocation),
             ("final", final),
             ("checkpoint", checkpoint),
             ("plan", self.plan),
@@ -139,6 +148,8 @@ class Fixture:
                 "slurm_sha256": c.SLURM_SOURCE,
             },
         }
+        if hasattr(self, "routing_mode"):
+            request["routing_mode"] = self.routing_mode
         return executor.load_original(request)
 
     def cleanup(self, identity, output):
@@ -149,9 +160,17 @@ class Fixture:
             "job_id": self.job,
             "step_name": self.step,
             "outcome": "OWNED_STEPS_ABSENT",
+            "routing_mode": "explicit-cluster",
+            "local_checks": [],
+            "cluster_command": {
+                "argv": ["scontrol", "--local", "show", "config"],
+                "returncode": 0,
+                "stdout": "ClusterName = " + self.cluster + "\n",
+                "stderr": "",
+            },
             "commands": [
                 {
-                    "argv": ["squeue", "--steps", "--me", "--noheader", "--format=%i|%j"],
+                    "argv": c.queue_argv(self.cluster),
                     "returncode": 0,
                     "stdout": "",
                     "stderr": "",
@@ -195,6 +214,53 @@ class RecoveryTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.f = Fixture(self.root)
         self.out = self.root / "new-reconciliation"
+
+    def test_original_allocation_is_required_and_binds_exact_job_and_cluster(self):
+        for cluster, job in [
+            (None, 1001),
+            ("", 1001),
+            ("all", 1001),
+            ("a,b", 1001),
+            ("TEST_ONLY_original_cluster", 999),
+        ]:
+            with self.subTest(cluster=cluster, job=job):
+                value = json.loads(self.f.paths["allocation"].read_bytes())
+                value["stdout"] = json.dumps({"jobs": [{"job_id": job, "cluster": cluster}]})
+                self.f.put(self.f.paths["allocation"], value)
+                with self.assertRaisesRegex(ValueError, "allocation job|cluster"):
+                    c.original_identity(self.f.original())
+        self.f.paths.pop("allocation")
+        with self.assertRaisesRegex(ValueError, "missing original"):
+            c.original_identity(self.f.original())
+
+    def test_offline_proof_rejects_missing_wrong_cluster_or_untargeted_argv(self):
+        proof = self.f.run(self.out)
+        cases = []
+        wrong = copy.deepcopy(proof)
+        wrong["cleanup"]["cluster_command"]["stdout"] = "ClusterName = other\n"
+        cases.append(wrong)
+        missing = copy.deepcopy(proof)
+        missing["cleanup"].pop("cluster_command")
+        cases.append(missing)
+        legacy = copy.deepcopy(proof)
+        legacy["contract"] = "fpm_cleanup_reconciliation_v1"
+        cases.append(legacy)
+        for index in (0, -1):
+            untargeted = copy.deepcopy(proof)
+            untargeted["cleanup"]["commands"][index]["argv"] = [
+                "squeue",
+                "--steps",
+                "--me",
+                "--noheader",
+                "--format=%i|%j",
+            ]
+            cases.append(untargeted)
+        omitted = copy.deepcopy(proof)
+        omitted["artifact_inventory"].pop(str(self.f.paths["allocation"].relative_to(self.root)))
+        cases.append(omitted)
+        for value in cases:
+            with self.assertRaises(ValueError):
+                c.verify(value)
 
     def test_original_failed_status_retained_and_cleanup_precedes_every_raw_read(self):
         before = {str(p): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
@@ -327,10 +393,10 @@ class RecoveryTests(unittest.TestCase):
         query = proof["cleanup"]["commands"][0]
         query["stdout"] = self.f.job + ".0|" + self.f.step + "\n999.0|" + self.f.step + "\n"
         proof["cleanup"]["commands"].insert(
-            1, {"argv": ["scancel", self.f.job + ".0"], "returncode": 0, "stdout": "", "stderr": ""}
+            1, {"argv": c.cancel_argv(self.f.cluster, self.f.job + ".0"), "returncode": 0, "stdout": "", "stderr": ""}
         )
         c.verify(proof)
-        proof["cleanup"]["commands"][1]["argv"][1] = "999.0"
+        proof["cleanup"]["commands"][1]["argv"][2] = "999.0"
         with self.assertRaisesRegex(ValueError, "unrelated"):
             c.verify(proof)
 
