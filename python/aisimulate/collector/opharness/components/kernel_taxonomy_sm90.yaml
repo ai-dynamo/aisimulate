@@ -91,7 +91,7 @@ rules:
   # sparse-attention family as the DSV3.2 indexer -> dsa_nsa. Added 2026-09-24
   # from the first DSV4 serving evidence (6016 budget).
   - {backend: dsa_nsa, role: dsa_indexer,
-     match: "^deep_gemm::sm90_fp8(_fp4)?_(paged_)?mqa_logits|^deep_gemm::sched::sm90_paged_mqa_logits_metadata|^_dsv4_topk_kernel|^_build_c128a_topk_metadata|^_compute_global_topk_indices|^_compute_swa_indices|^_fill_short_context_topk|deepseek_v4nvidiaops(sparse_attn_compre|fused_indexer_q|dequant_gather_k)"}
+     match: "^deep_gemm::sm90_fp8(_fp4)?_(paged_)?mqa_logits|^deep_gemm::sched::sm90_paged_mqa_logits_metadata|^smxx_paged_mqa_logits_metadata|^_dsv4_topk_kernel|^_build_c128a_topk_metadata|^_compute_global_topk_indices|^_compute_swa_indices|^_fill_short_context_topk|deepseek_v4nvidiaops(sparse_attn_compre|fused_indexer_q|dequant_gather_k)"}
   # DSV4 manifold hyper-connections (mHC): TileLang kernels + the DeepGEMM
   # tf32 prenorm gemm. Vocabulary: vllm.model_executor.kernels.mhc.tilelang.* -> tilelang.
   - {backend: tilelang, role: mhc,

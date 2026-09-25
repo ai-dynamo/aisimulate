@@ -39,6 +39,8 @@ def pd(tmp_path_factory):
     # anonymous-namespace kernels: the kernel, not the namespace words (Kimi-K3 KDA decode)
     ("void (anonymous namespace)::kda_decode_fusion_many_heads_kernel<true, true, 96, 96>(int)",
      "kda_decode_fusion_many_heads_kernel"),
+    # plain symbol with a parameter-type tail (sglang DSA metadata scheduler)
+    ("(anonymous namespace)::smxx_paged_mqa_logits_metadata(MetadataParams)", "smxx_paged_mqa_logits_metadata"),
 ])
 def test_normalize_kernel(pd, raw, expected):
     assert pd.normalize_kernel(raw) == expected

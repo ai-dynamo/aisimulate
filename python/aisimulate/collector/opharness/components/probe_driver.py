@@ -524,6 +524,7 @@ def normalize_kernel(name: str) -> str | None:
     name = name.replace("(anonymous namespace)::", "")
     if KERNEL_DENY.search(name):
         return None
+    name = name.split("(")[0] if "<" not in name else name  # plain symbol: drop the (ParamType) tail
     if "<" not in name and " " not in name.strip():
         # Triton autotuned kernels (triton_kernels matmul_ogs) bake the tile
         # config into the name — _matmul_ogs_NNT_bf16xbf16xmxfp4_16x256x128x1

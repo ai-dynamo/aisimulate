@@ -3,7 +3,7 @@ _meta:
   framework: vllm
   version: 0.29.0
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T12:27:10'
+  generated: '2026-09-25T12:28:06'
   summary:
     repos: 108
     repos_with_residue: 0
@@ -6380,7 +6380,7 @@ results:
         added_kernels:
         - flash::flash_fwd_splitkv_mla_combine_kernel
         - flash::flash_fwd_splitkv_mla_kernel
-        - get_mla_metadata_kernel(Mla_metadata_params)
+        - get_mla_metadata_kernel
         - triton_poi_fused__to_copy_cat_clamp_mul_reciprocal_view_0
         added_residue: []
   deepseek-ai/DeepSeek-V3:
@@ -6563,7 +6563,7 @@ results:
         added_kernels:
         - flash::flash_fwd_splitkv_mla_combine_kernel
         - flash::flash_fwd_splitkv_mla_kernel
-        - get_mla_metadata_kernel(Mla_metadata_params)
+        - get_mla_metadata_kernel
         - triton_poi_fused__to_copy_cat_clamp_mul_reciprocal_view_0
         added_residue: []
   deepseek-ai/DeepSeek-V3.2:
@@ -6784,7 +6784,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         - vllm::ConcatMLAQKernel
         added_residue: []
   deepseek-ai/DeepSeek-V4-Flash:
@@ -6804,7 +6804,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _build_c128a_topk_metadata_kernel
@@ -7008,7 +7008,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _build_c128a_topk_metadata_kernel
@@ -7217,7 +7217,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _build_c128a_topk_metadata_kernel
@@ -7417,7 +7417,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _build_c128a_topk_metadata_kernel
@@ -9443,7 +9443,7 @@ results:
         added_kernels:
         - flash::flash_fwd_splitkv_mla_combine_kernel
         - flash::flash_fwd_splitkv_mla_kernel
-        - get_mla_metadata_kernel(Mla_metadata_params)
+        - get_mla_metadata_kernel
         - triton_poi_fused__to_copy_cat_clamp_mul_reciprocal_view_0
         added_residue: []
   moonshotai/Kimi-K2.5:
@@ -9743,7 +9743,7 @@ results:
         added_kernels:
         - flash::flash_fwd_splitkv_mla_combine_kernel
         - flash::flash_fwd_splitkv_mla_kernel
-        - get_mla_metadata_kernel(Mla_metadata_params)
+        - get_mla_metadata_kernel
         - triton_poi_fused__to_copy_cat_clamp_mul_reciprocal_view_0
         added_residue: []
   moonshotai/Kimi-K3:
@@ -10160,7 +10160,7 @@ results:
         flashmla:
         - flash::flash_fwd_splitkv_mla_combine_kernel
         - flash::flash_fwd_splitkv_mla_kernel
-        - get_mla_metadata_kernel(Mla_metadata_params)
+        - get_mla_metadata_kernel
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -10395,7 +10395,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _fused_q_kernel
@@ -10684,7 +10684,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _build_c128a_topk_metadata_kernel
@@ -10886,7 +10886,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _build_c128a_topk_metadata_kernel
@@ -11098,7 +11098,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _fused_q_kernel
@@ -11403,7 +11403,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _fused_q_kernel
@@ -11726,7 +11726,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _fused_q_kernel
@@ -12049,7 +12049,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _fused_q_kernel
@@ -12762,7 +12762,7 @@ results:
         flashmla:
         - flash::flash_fwd_splitkv_mla_combine_kernel
         - flash::flash_fwd_splitkv_mla_kernel
-        - get_mla_metadata_kernel(Mla_metadata_params)
+        - get_mla_metadata_kernel
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -13033,7 +13033,7 @@ results:
         flashmla:
         - flash::flash_fwd_splitkv_mla_combine_kernel
         - flash::flash_fwd_splitkv_mla_kernel
-        - get_mla_metadata_kernel(Mla_metadata_params)
+        - get_mla_metadata_kernel
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -13327,7 +13327,7 @@ results:
         flashmla:
         - flash::flash_fwd_splitkv_mla_combine_kernel
         - flash::flash_fwd_splitkv_mla_kernel
-        - get_mla_metadata_kernel(Mla_metadata_params)
+        - get_mla_metadata_kernel
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -18523,7 +18523,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _build_c128a_topk_metadata_kernel
@@ -18731,7 +18731,7 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - _build_c128a_topk_metadata_kernel
@@ -19249,7 +19249,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         - vllm::ConcatMLAQKernel
         added_residue: []
   zai-org/GLM-5-FP8:
@@ -19463,7 +19463,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         - vllm::ConcatMLAQKernel
         added_residue: []
   zai-org/GLM-5.1:
@@ -19793,7 +19793,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         - vllm::ConcatMLAQKernel
         added_residue: []
   zai-org/GLM-5.1-FP8:
@@ -20007,7 +20007,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         - vllm::ConcatMLAQKernel
         added_residue: []
   zai-org/GLM-5.2:
@@ -20338,7 +20338,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         - vllm::ConcatMLAQKernel
         added_residue: []
   zai-org/GLM-5.2-FP8:
@@ -20552,7 +20552,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         - vllm::ConcatMLAQKernel
         added_residue: []
   zai-org/GLM-5.3:
@@ -20766,7 +20766,7 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         - vllm::ConcatMLAQKernel
         added_residue: []
   zai-org/GLM-5.3-BF16:
@@ -21096,6 +21096,6 @@ results:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - sm90::fwd::sparse_attn_fwd_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         - vllm::ConcatMLAQKernel
         added_residue: []

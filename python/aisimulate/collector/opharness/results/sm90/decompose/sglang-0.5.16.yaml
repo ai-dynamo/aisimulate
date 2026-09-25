@@ -3,7 +3,7 @@ _meta:
   framework: sglang
   version: 0.5.16
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T12:27:10'
+  generated: '2026-09-25T12:28:06'
   summary:
     repos: 99
     repos_with_residue: 99
@@ -27,7 +27,6 @@ _meta:
     - fused_qknorm_warp
     - per_tensor_quant_fp8_kernel
     - silu_mul_clamp_kernel
-    - smxx_paged_mqa_logits_metadata(MetadataParams)
     - store_kv_index_kernel
     - store_kvcache
     - topk_plan
@@ -2686,7 +2685,7 @@ results:
         - compute_position_kernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   deepseek-ai/DeepSeek-V4-Flash:
     record: 96b2eb86360b
@@ -2700,10 +2699,11 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - deep_gemm::sm90_fp8_paged_mqa_logits
+        - smxx_paged_mqa_logits_metadata
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -2730,6 +2730,7 @@ results:
         - _combine_topk_swa_indices_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
+        - alloc_extend_kernel
         - write_req_to_token_pool_triton
       mhc:
         deepgemm:
@@ -2765,7 +2766,6 @@ results:
     - fused_q_indexer_rope_hadamard_quant
     - fused_q_norm_rope
     - silu_mul_clamp_kernel
-    - smxx_paged_mqa_logits_metadata(MetadataParams)
     - topk_plan
     - topk_small_batch_kernel
     - topk_transform_kernel
@@ -2774,8 +2774,8 @@ results:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 37
-      residue: 13
+      labeled: 39
+      residue: 12
   deepseek-ai/DeepSeek-V4-Flash-0731:
     record: efc9bc1f3527
     variant: csa
@@ -2788,10 +2788,11 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - deep_gemm::sm90_fp8_paged_mqa_logits
+        - smxx_paged_mqa_logits_metadata
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -2846,6 +2847,7 @@ results:
         - _router_triton_kernel
     residue:
     - deepseek_rope_kernel
+    - flash_c4_decode
     - flash_c4_prefill
     - fused_k_norm_rope_flashmla
     - fused_norm_rope_flashmla
@@ -2853,7 +2855,6 @@ results:
     - fused_q_indexer_rope_hadamard_quant
     - fused_q_norm_rope
     - silu_mul_clamp_kernel
-    - smxx_paged_mqa_logits_metadata(MetadataParams)
     - topk_small_batch_kernel
     - topk_transform_kernel
     - write_c4_prefill
@@ -2861,7 +2862,7 @@ results:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 37
+      labeled: 38
       residue: 12
   deepseek-ai/DeepSeek-V4-Pro:
     record: 05f468301220
@@ -2875,10 +2876,11 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - deep_gemm::sm90_fp8_paged_mqa_logits
+        - smxx_paged_mqa_logits_metadata
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -2908,7 +2910,7 @@ results:
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
         - alloc_extend_kernel
-        - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
+        - host::compress::plan_compress_prefill_kernel_1
       mhc:
         deepgemm:
         - deep_gemm::sm90_tf32_hc_prenorm_gemm_impl
@@ -2944,21 +2946,23 @@ results:
     - fused_q_indexer_rope_hadamard_quant
     - fused_q_norm_rope
     - silu_mul_clamp_kernel
-    - smxx_paged_mqa_logits_metadata(MetadataParams)
     - topk_transform_kernel
+    - void at::native::multi_tensor_apply_kernel<at::native::TensorListMetadata<2>, at
     - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 40
+      labeled: 41
       residue: 12
     kv_variants:
       fp8_e4m3:
         record: bccaafaf2cd5
         added_kernels:
+        - topk_plan
         - write_req_to_token_pool_triton
-        added_residue: []
+        added_residue:
+        - topk_plan
   deepseek-ai/DeepSeek-V4-Pro-0813:
     record: e243a2f9ad54
     variant: csa
@@ -2971,10 +2975,11 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - deep_gemm::sm90_fp8_paged_mqa_logits
+        - smxx_paged_mqa_logits_metadata
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -3028,6 +3033,7 @@ results:
       routing:
         framework_native:
         - _router_triton_kernel
+        - router_gemm_kernel
     residue:
     - deepseek_rope_kernel
     - flash_c4_decode
@@ -3038,15 +3044,14 @@ results:
     - fused_q_indexer_rope_hadamard_quant
     - fused_q_norm_rope
     - silu_mul_clamp_kernel
-    - smxx_paged_mqa_logits_metadata(MetadataParams)
     - topk_transform_kernel
     - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 38
-      residue: 12
+      labeled: 40
+      residue: 11
   google/gemma-4-26B-A4B:
     record: a69d6a2853c6
     variant: all_kinds
@@ -3815,7 +3820,7 @@ results:
         - compute_position_kernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   nvidia/DeepSeek-V4-Flash-NVFP4:
     record: 7d9344daa57e
@@ -3829,10 +3834,11 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - deep_gemm::sm90_fp8_paged_mqa_logits
+        - smxx_paged_mqa_logits_metadata
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -3861,6 +3867,7 @@ results:
         - _combine_topk_swa_indices_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
+        - write_req_to_token_pool_triton
       mhc:
         deepgemm:
         - deep_gemm::sm90_tf32_hc_prenorm_gemm_impl
@@ -3897,7 +3904,6 @@ results:
     - fused_q_indexer_rope_hadamard_quant
     - fused_q_norm_rope
     - silu_mul_clamp_kernel
-    - smxx_paged_mqa_logits_metadata(MetadataParams)
     - topk_small_batch_kernel
     - topk_transform_kernel
     - write_c4_prefill
@@ -3905,8 +3911,14 @@ results:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 39
-      residue: 13
+      labeled: 41
+      residue: 12
+    kv_variants:
+      fp8_e4m3:
+        record: 1415c97d5f45
+        added_kernels:
+        - router_gemm_kernel
+        added_residue: []
   nvidia/DeepSeek-V4-Pro-NVFP4:
     record: 1134eff51433
     variant: csa
@@ -3919,10 +3931,11 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - deep_gemm::sm90_fp8_paged_mqa_logits
+        - smxx_paged_mqa_logits_metadata
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -3951,6 +3964,7 @@ results:
         - _combine_topk_swa_indices_kernel
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
+        - write_req_to_token_pool_triton
       mhc:
         deepgemm:
         - deep_gemm::sm90_tf32_hc_prenorm_gemm_impl
@@ -3988,15 +4002,20 @@ results:
     - fused_q_indexer_rope_hadamard_quant
     - fused_q_norm_rope
     - silu_mul_clamp_kernel
-    - smxx_paged_mqa_logits_metadata(MetadataParams)
     - topk_transform_kernel
     - write_c4_prefill
     ops_observed:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_marlin
     coverage:
-      labeled: 40
-      residue: 12
+      labeled: 42
+      residue: 11
+    kv_variants:
+      fp8_e4m3:
+        record: 70703dc98725
+        added_kernels:
+        - host::compress::plan_compress_prefill_kernel_1
+        added_residue: []
   nvidia/GLM-5-NVFP4:
     record: 67b1c685908b
     variant: rep
@@ -4093,7 +4112,7 @@ results:
         - alloc_extend_kernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   nvidia/GLM-5.1-NVFP4:
     record: 020e094afc45
@@ -4191,7 +4210,7 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   nvidia/GLM-5.2-NVFP4:
     record: 6e7b54fc8ca6
@@ -4289,7 +4308,7 @@ results:
         - alloc_extend_kernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   nvidia/GLM-5.3-NVFP4:
     record: be840ac1a8e5
@@ -4387,7 +4406,7 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   nvidia/Gemma-4-31B-IT-NVFP4:
     record: bda04182f1f8
@@ -6538,10 +6557,11 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - deep_gemm::sm90_fp8_paged_mqa_logits
+        - smxx_paged_mqa_logits_metadata
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -6604,7 +6624,7 @@ results:
     - fused_q_indexer_rope_hadamard_quant
     - fused_q_norm_rope
     - silu_mul_clamp_kernel
-    - smxx_paged_mqa_logits_metadata(MetadataParams)
+    - topk_plan
     - topk_small_batch_kernel
     - topk_transform_kernel
     - void at::native::multi_tensor_apply_kernel<at::native::TensorListMetadata<2>, at
@@ -6613,16 +6633,16 @@ results:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 38
+      labeled: 39
       residue: 13
     kv_variants:
       fp8_e4m3:
         record: 4adf016d0eac
         added_kernels:
         - alloc_extend_kernel
-        - topk_plan
+        - flash_c4_decode
         added_residue:
-        - topk_plan
+        - flash_c4_decode
   sgl-project/DeepSeek-V4-Pro-FP8:
     record: 45bf03a7aa9e
     variant: interleave_pair
@@ -6635,10 +6655,11 @@ results:
         flashmla:
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
       dsa_indexer:
         dsa_nsa:
         - deep_gemm::sm90_fp8_paged_mqa_logits
+        - smxx_paged_mqa_logits_metadata
       gemm:
         cublas:
         - cublasLt::splitKreduce_kernel
@@ -6668,7 +6689,7 @@ results:
         - _init_compressed_attn_metadata_kernel
         - _page_table_positions_kernel
         - alloc_extend_kernel
-        - host::compress::plan_compress_prefill_kernel_1(host::compress::Prefill1Params)
+        - host::compress::plan_compress_prefill_kernel_1
         - write_req_to_token_pool_triton
       mhc:
         deepgemm:
@@ -6699,13 +6720,13 @@ results:
     residue:
     - deepseek_rope_kernel
     - flash_c128_prefill
+    - flash_c4_decode
     - flash_c4_prefill
     - fused_k_norm_rope_flashmla
     - fused_norm_rope_flashmla
     - fused_q_indexer_rope_hadamard_quant
     - fused_q_norm_rope
     - silu_mul_clamp_kernel
-    - smxx_paged_mqa_logits_metadata(MetadataParams)
     - topk_plan
     - topk_transform_kernel
     - write_c4_prefill
@@ -6713,7 +6734,7 @@ results:
     - attn:DeepseekV4AttnBackend.forward
     - moe:fused_experts_none_to_triton
     coverage:
-      labeled: 42
+      labeled: 43
       residue: 12
     kv_variants:
       fp8_e4m3:
@@ -6819,7 +6840,7 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   zai-org/GLM-5-FP8:
     record: 303e9137bc00
@@ -6916,7 +6937,7 @@ results:
         - cudaLaunchKernelExC
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   zai-org/GLM-5.1:
     record: 2a7c8bab3ae9
@@ -7013,7 +7034,7 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   zai-org/GLM-5.1-FP8:
     record: 86e33fa5e50a
@@ -7110,7 +7131,7 @@ results:
         - cudaLaunchKernelExC
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   zai-org/GLM-5.2:
     record: 5e7021053aac
@@ -7207,7 +7228,7 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   zai-org/GLM-5.2-FP8:
     record: 353a0b39acbd
@@ -7304,7 +7325,7 @@ results:
         - cudaLaunchKernelExC
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   zai-org/GLM-5.3:
     record: 0fc55b716a32
@@ -7401,7 +7422,7 @@ results:
         - cudaLaunchKernelExC
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
   zai-org/GLM-5.3-BF16:
     record: 60a5836ec835
@@ -7498,5 +7519,5 @@ results:
         - at_cuda_detail::cub::detail::scan::DeviceScanInitKernel
         - sm90::decode::sparse_fp8::flash_fwd_splitkv_mla_fp8_sparse_kernel
         - smxx::decode::flash_fwd_mla_combine_kernel
-        - smxx::decode::get_mla_metadata_kernel(GetDecodeSchedMetaParams)
+        - smxx::decode::get_mla_metadata_kernel
         added_residue: []
