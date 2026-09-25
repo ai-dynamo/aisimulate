@@ -3,7 +3,7 @@ _meta:
   framework: sglang
   version: 0.5.16
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T12:28:06'
+  generated: '2026-09-25T12:28:38'
   summary:
     repos: 99
     repos_with_residue: 99
@@ -27,7 +27,6 @@ _meta:
     - fused_qknorm_warp
     - per_tensor_quant_fp8_kernel
     - silu_mul_clamp_kernel
-    - store_kv_index_kernel
     - store_kvcache
     - topk_plan
     - topk_small_batch_kernel
@@ -285,6 +284,7 @@ results:
         - alloc_decode_kernel
         - alloc_extend_kernel
         - compute_position_kernel
+        - store_kv_index_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
         triton_fused_moe:
@@ -306,13 +306,12 @@ results:
     residue:
     - clamp_position_kernel
     - fused_gemma_qknorm_rope_kernel
-    - store_kv_index_kernel
     - void at::native::multi_tensor_apply_kernel<at::native::TensorListMetadata<2>, at
     ops_observed:
     - attn:MiniMaxHybridAttnBackend.forward
     coverage:
-      labeled: 41
-      residue: 4
+      labeled: 42
+      residue: 3
     kv_variants:
       fp8_e4m3:
         record: a0ec7fb0a0d9
@@ -4975,6 +4974,7 @@ results:
         - alloc_decode_kernel
         - alloc_extend_kernel
         - compute_position_kernel
+        - store_kv_index_kernel
         - write_req_to_token_pool_triton
       moe_gemm:
         triton_fused_moe:
@@ -4996,13 +4996,12 @@ results:
     residue:
     - clamp_position_kernel
     - fused_gemma_qknorm_rope_kernel
-    - store_kv_index_kernel
     - void at::native::multi_tensor_apply_kernel<at::native::TensorListMetadata<2>, at
     ops_observed:
     - attn:MiniMaxHybridAttnBackend.forward
     coverage:
-      labeled: 41
-      residue: 4
+      labeled: 42
+      residue: 3
     kv_variants:
       fp8_e4m3:
         record: 7c1b972aae78

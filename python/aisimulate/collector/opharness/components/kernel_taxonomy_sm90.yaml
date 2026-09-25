@@ -234,4 +234,4 @@ rules:
   - {backend: framework_native, role: norm_rope,
      match: "^fused_rope_kernel|^fused_rope_store_kernel"}
   - {backend: framework_native, role: kvcache,
-     match: "^fused_store_indexer_cache|kernels::fusedCatFp8Kernel"}
+     match: "^fused_store_indexer_cache|kernels::fusedCatFp8Kernel|^store_kv_index_kernel"}

@@ -3,7 +3,7 @@ _meta:
   framework: vllm
   version: 0.29.0
   taxonomy: kernel_taxonomy_sm90.yaml
-  generated: '2026-09-25T12:28:06'
+  generated: '2026-09-25T12:28:39'
   summary:
     repos: 108
     repos_with_residue: 0
