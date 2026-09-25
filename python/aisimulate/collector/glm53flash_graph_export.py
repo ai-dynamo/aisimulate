@@ -32,6 +32,7 @@ BASENAME = "glm53flash_graph_perf.parquet"
 BOUNDARY = "native_full_graph_metadata_to_logits_gpu_v1"
 KEYS = ("component", "geometry", "batch_size", "prefix", "padded_batch_size")
 SCOPE = "disjoint_native_node_activity_union_v1"
+NAMED_CONTRACT = "graph_named_operations_v1"
 
 
 def _semantic_sha(value):
@@ -367,13 +368,17 @@ def read_graph_run(root: Path, run: dict) -> dict:
     return result
 
 
-def aggregate_graph(proof, *, evidence_sha256):
-    """Select actual whole-forward slowest rank, then median physical samples."""
-    selections, grouped = [], defaultdict(list)
-    entries = proof["manifest"]["phases"]["generation"] + proof["manifest"]["runtime_operations"]["generation"]
+def _named_contract(value):
+    if value not in (None, NAMED_CONTRACT):
+        raise ValueError("unknown native graph analysis lookup contract")
+    return value == NAMED_CONTRACT
+
+
+def _rank_selection(proof):
+    """Reproduce the original whole-forward rank receipt independently of table keys."""
+    selections = []
     for key, ranks in sorted(proof["forwards"].items()):
         selected = min(ranks, key=lambda rank: (-ranks[rank]["whole_forward_gpu_ms"], rank))
-        record = ranks[selected]
         selections.append(
             {
                 "benchmark_id": key[0],
@@ -390,6 +395,38 @@ def aggregate_graph(proof, *, evidence_sha256):
                 ],
             }
         )
+    return {
+        "schema": "glm53flash_graph_rank_selection_v1",
+        "aggregation_policy": WHOLE_FORWARD_RANK,
+        "forwards": selections,
+    }
+
+
+def aggregate_graph(proof, *, evidence_sha256, lookup_contract=None):
+    """Select actual whole-forward slowest rank, then median physical samples."""
+    named = _named_contract(lookup_contract)
+    grouped = defaultdict(list)
+    entries = proof["manifest"]["phases"]["generation"] + proof["manifest"]["runtime_operations"]["generation"]
+    if named:
+        policy = proof["policy"]
+        expected = build_model_manifest(
+            policy["backend"], policy["checkpoint_format"], policy["tp_size"], policy["backend_version"]
+        )
+        if proof["manifest"] != expected:
+            raise ValueError("named graph analysis requires the complete original model manifest")
+        repetitions = defaultdict(set)
+        for (point, repetition), ranks in proof["forwards"].items():
+            repetitions[point].add(repetition)
+            for record in ranks.values():
+                if set(record["binding"]) != {entry["name"] for entry in entries}:
+                    raise ValueError("named graph forward lacks its complete physical unit inventory")
+                if record["sampling_role"] != ("warmup" if repetition < 5 else "measurement"):
+                    raise ValueError("named graph repetition differs from original 5+10 sampling roles")
+        if not repetitions or any(ids != set(range(15)) for ids in repetitions.values()):
+            raise ValueError("named graph analysis requires all original five warmups and ten measurements")
+    for key, ranks in sorted(proof["forwards"].items()):
+        selected = min(ranks, key=lambda rank: (-ranks[rank]["whole_forward_gpu_ms"], rank))
+        record = ranks[selected]
         if record["sampling_role"] != "measurement":
             continue
         for entry in entries:
@@ -401,22 +438,23 @@ def aggregate_graph(proof, *, evidence_sha256):
                 record["prefix_lengths"][0],
                 record["num_padded_tokens"],
             )
+            if named:
+                identity = (*identity, entry["name"])
             grouped[identity].append((key, unit["latency"], unit["dispatch"], unit["activity_count"]))
-    selection = {
-        "schema": "glm53flash_graph_rank_selection_v1",
-        "aggregation_policy": WHOLE_FORWARD_RANK,
-        "forwards": selections,
-    }
+    selection = _rank_selection(proof)
     rows = []
     for identity, samples in sorted(grouped.items()):
         signatures = {(row[2], row[3]) for row in samples}
         repetitions = {row[0] for row in samples}
+        if named and (len(samples) != 10 or len(repetitions) != 10):
+            raise ValueError("named graph unit repeats or omits an original measurement")
         if len(signatures) != 1 or len(repetitions) < 10:
             raise ValueError("native graph physical key mixes dispatch identities or lacks ten repetitions")
         dispatch, count = signatures.pop()
         rows.append(
             {
-                **dict(zip(KEYS, identity, strict=True)),
+                **dict(zip((*KEYS, "operation_name") if named else KEYS, identity, strict=True)),
+                **({"graph_lookup_contract": NAMED_CONTRACT} if named else {}),
                 "latency": statistics.median(row[1] for row in samples),
                 "activity_count": count,
                 "sample_count": len(repetitions),
@@ -449,7 +487,7 @@ def verify_evidence(root, proof):
         file_sha256(_local(root, name)) != digest for name, digest in files.items()
     ):
         raise ValueError("graph calibration original evidence is incomplete or changed")
-    _, selection = aggregate_graph(proof, evidence_sha256=file_sha256(root / "graph-calibration-evidence.json"))
+    selection = _rank_selection(proof)
     if json.loads(_local(root, "graph-rank-selection.json").read_bytes()) != selection:
         raise ValueError("graph rank selection differs from actual whole-forward intervals")
     control = json.loads(_local(root, "graph-profile-control.json").read_bytes())
@@ -559,13 +597,16 @@ def profile_control(root, proof, control_root, control_run):
     }
 
 
-def export_graph(root: Path, run: dict, output: Path, *, control_root: Path, control_run: dict) -> dict:
+def export_graph(
+    root: Path, run: dict, output: Path, *, control_root: Path, control_run: dict, lookup_contract=None
+) -> dict:
     """Export only complete real calibration; this does not certify accuracy."""
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     from collector.glm53flash_validation import _load_native
 
+    _named_contract(lookup_contract)
     if run["role"] != "calibration" or run["spec"].get("ops_execution_mode") != "native_full_graph":
         raise ValueError("graph table export requires explicit native graph calibration")
     if output.name != BASENAME or output.exists():
@@ -578,7 +619,7 @@ def export_graph(root: Path, run: dict, output: Path, *, control_root: Path, con
     control_path = root / "graph-profile-control.json"
     with control_path.open("x") as stream:
         stream.write(canonical_json(control))
-    _, selection = aggregate_graph(proof, evidence_sha256="0" * 64)
+    _, selection = aggregate_graph(proof, evidence_sha256="0" * 64, lookup_contract=lookup_contract)
     selection_path = root / "graph-rank-selection.json"
     with selection_path.open("x") as stream:
         stream.write(canonical_json(selection))
@@ -594,7 +635,30 @@ def export_graph(root: Path, run: dict, output: Path, *, control_root: Path, con
     evidence = root / "graph-calibration-evidence.json"
     with evidence.open("x") as stream:
         stream.write(canonical_json(receipt))
-    rows, _ = aggregate_graph(proof, evidence_sha256=file_sha256(evidence))
+    rows, _ = aggregate_graph(proof, evidence_sha256=file_sha256(evidence), lookup_contract=lookup_contract)
+    pq.write_table(pa.Table.from_pylist(rows), output)
+    return {"rows": len(rows), "table_sha256": file_sha256(output), "accuracy_acceptance": "NOT_EVALUATED"}
+
+
+def republish_named_graph(root: Path, run: dict, output: Path) -> dict:
+    """Derive a new named table from complete original traces, leaving raw files intact."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from collector.glm53flash_validation import _load_native
+
+    if run["role"] != "calibration" or run["spec"].get("ops_execution_mode") != "native_full_graph":
+        raise ValueError("named graph re-export requires original native FULL calibration")
+    if output.name != BASENAME or output.exists():
+        raise ValueError("named graph re-export requires a new canonical table path")
+    native = _load_native(run, root, calibration_evidence=False)
+    proof = read_graph_run(root, run)
+    receipt = verify_evidence(root, proof)
+    if Path(native["evidence_root"]) != root.resolve() or receipt["request_set"] != native["runtime_run_id"]:
+        raise ValueError("named graph re-export differs from original native run")
+    rows, _ = aggregate_graph(
+        proof, evidence_sha256=file_sha256(root / "graph-calibration-evidence.json"), lookup_contract=NAMED_CONTRACT
+    )
     pq.write_table(pa.Table.from_pylist(rows), output)
     return {"rows": len(rows), "table_sha256": file_sha256(output), "accuracy_acceptance": "NOT_EVALUATED"}
 
@@ -607,7 +671,6 @@ def bind_calibration(paths, run, native):
     receipt = verify_evidence(root, proof)
     if receipt["request_set"] != native["runtime_run_id"] or receipt["source_plan_sha256"] != run["plan"]["sha256"]:
         raise ValueError("graph calibration evidence belongs to another frozen native run")
-    expected, _ = aggregate_graph(proof, evidence_sha256=file_sha256(root / "graph-calibration-evidence.json"))
     selected = []
     tables = []
     identity = run["key"][:3]
@@ -618,9 +681,30 @@ def bind_calibration(paths, run, native):
                 policy = json.loads(row["graph_policy"])
                 if (policy["backend"], policy["checkpoint_format"], policy["tp_size"]) == tuple(identity):
                     selected.append(row)
-    if sorted(selected, key=canonical_json) != sorted(expected, key=canonical_json):
+    contracts = {row.get("graph_lookup_contract") for row in selected}
+    if len(contracts) != 1:
+        raise ValueError("graph table mixes analysis lookup contracts or has no measurements")
+    contract = contracts.pop()
+    named = _named_contract(contract)
+    if any((row.get("operation_name") is not None) != named for row in selected):
+        raise ValueError("graph operation names require their explicit analysis contract")
+    expected, _ = aggregate_graph(
+        proof, evidence_sha256=file_sha256(root / "graph-calibration-evidence.json"), lookup_contract=contract
+    )
+    # A mixed-deployment Parquet may carry null named-analysis columns for a
+    # different, legacy identity. Null optional metadata is equivalent to absence.
+    comparable = [
+        {
+            key: value
+            for key, value in row.items()
+            if not (key in ("operation_name", "graph_lookup_contract") and value is None)
+        }
+        for row in selected
+    ]
+    if sorted(comparable, key=canonical_json) != sorted(expected, key=canonical_json):
         raise ValueError("consumer graph table differs from original native activity measurements")
     return {
+        **({"lookup_contract": NAMED_CONTRACT} if named else {}),
         "rows": len(selected),
         "tables": tables,
         "graph_policy_sha256": sha256_json(proof["policy"]),
@@ -630,7 +714,7 @@ def bind_calibration(paths, run, native):
     }
 
 
-def predict_homogeneous(run, base, config, calibration_native):
+def predict_homogeneous(run, base, config, calibration_native, *, calibration_binding=None):
     """Use public static geometry only after native per-request proof is checked.
 
     The common acceptance caller first binds every selected table to original
@@ -710,7 +794,36 @@ def predict_homogeneous(run, base, config, calibration_native):
         strict_provenance=True,
         transfer_policy=cfg.transfer_policy,
     )
-    rows = {}
+    # This public graph path admits exactly one canonical, positively bound table.
+    # Read its analysis metadata so an omitted binding cannot silently omit a named audit.
+    import pyarrow.parquet as pq
+
+    table = Path(cfg.systems_paths[0]) / "data" / cfg.system / cfg.backend / cfg.backend_version / BASENAME
+    contract = None
+    if table.is_file():
+        selected = [
+            row for row in pq.read_table(table).to_pylist() if row["graph_policy_sha256"] == sha256_json(policy)
+        ]
+        contracts = {row.get("graph_lookup_contract") for row in selected}
+        if len(contracts) != 1:
+            raise ValueError("graph prediction table has missing or mixed analysis contracts")
+        contract = contracts.pop()
+    named = _named_contract(contract)
+    if named:
+        evidence = Path(calibration_native["evidence_root"]) / "graph-calibration-evidence.json"
+        original = json.loads(evidence.read_bytes())
+        if not calibration_binding or (
+            calibration_binding.get("lookup_contract") != contract
+            or calibration_binding.get("graph_policy_sha256") != sha256_json(policy)
+            or calibration_binding.get("native_runtime_run_id") != calibration_native["runtime_run_id"]
+            or calibration_binding.get("evidence_sha256") != file_sha256(evidence)
+            or calibration_binding.get("source_plan_sha256") != original["source_plan_sha256"]
+            or {"path": str(table), "sha256": file_sha256(table)} not in calibration_binding.get("tables", [])
+        ):
+            raise ValueError("named graph prediction requires its exact original calibration binding")
+    elif calibration_binding and calibration_binding.get("lookup_contract") is not None:
+        raise ValueError("graph prediction binding differs from table analysis contract")
+    rows, prediction_evidence = {}, {}
     for point in run["points"]:
         try:
             batch, total = point["batch_size"], point["total_kv_read_tokens"]
@@ -721,11 +834,22 @@ def predict_homogeneous(run, base, config, calibration_native):
                 raise ValueError("public graph consumer returned no positive finite latency")
             if engine.last_provenance() is not None:
                 raise ValueError("graph consumer fired a non-silicon fallback")
+            if named:
+                audit = engine.glm53flash_lookup_audit("generation", batch, 1, total // batch)
+                if (
+                    audit.get("lookup_contract") != NAMED_CONTRACT
+                    or audit.get("graph_policy_sha256") != sha256_json(policy)
+                    or len(audit.get("operations", [])) != (367 if policy["backend"] == "sglang" else 278)
+                    or not math.isclose(sum(op["latency_ms"] for op in audit["operations"]), value, rel_tol=1e-12)
+                ):
+                    raise ValueError("named graph endpoint audit differs from public prediction")
+                prediction_evidence[point["benchmark_id"]] = audit
             rows[point["benchmark_id"]] = {"prediction_ms": value}
         except Exception as error:
             rows[point["benchmark_id"]] = {"error": f"{type(error).__name__}: {error}"}
     return {
         "rows": rows,
+        **({"prediction_evidence": prediction_evidence} if named else {}),
         "diagnostics": {
             "consumer": "public_EngineHandle_predict_decode_latency",
             "graph_policy_sha256": sha256_json(policy),

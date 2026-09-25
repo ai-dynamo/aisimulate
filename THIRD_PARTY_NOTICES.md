@@ -1490,3 +1490,31 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 
 ```
+
+## GLM-5.3-Flash named FULL graph analysis identity
+
+- Files: `python/aisimulate/collector/glm53flash_graph_export.py`, its integration
+  in `collector/fpm_forward/glm53flash_validation.py`,
+  `crates/core/src/perfmodel/perf_database/glm53flash_graph.rs`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_graph_named_export.py`,
+  `python/aisimulate/tests/unit/sdk/test_glm53flash_graph_named_consumer.py`, and
+  `collector/README.glm53flash.md`.
+- Native contracts referenced: SGLang https://github.com/sgl-project/sglang at
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
+  `python/sglang/srt/models/glm5_next.py`,
+  `python/sglang/srt/layers/communicator_mhc.py`,
+  `python/sglang/srt/layers/vocab_parallel_embedding.py`, and
+  `python/sglang/srt/distributed/parallel_state.py`; Copyright 2023-2024 SGLang
+  Team and contributors, Apache-2.0. vLLM https://github.com/vllm-project/vllm at
+  `ced6857afa0ea7b2e3f0846a62e1394e90f15607`, original paths
+  `vllm/models/glm5next/nvidia/model.py`,
+  `vllm/model_executor/layers/vocab_parallel_embedding.py`, and
+  `vllm/distributed/parallel_state.py`; Copyright vLLM contributors and NVIDIA
+  CORPORATION & AFFILIATES, Apache-2.0. Applicable license texts and existing
+  native-model notices above are preserved.
+- Modified/adapted: independently expressed operation occurrence identities and
+  typed consumer checks; no upstream compute implementation copied. The
+  `graph_named_operations_v1` analysis contract retains original named source
+  calls without changing native policy, fusion, graph execution or recorded
+  timing. Authored TEST_ONLY fixtures establish schema/query behavior, not GPU
+  performance or holdout accuracy.

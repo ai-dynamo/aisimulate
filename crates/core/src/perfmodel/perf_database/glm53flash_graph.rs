@@ -13,11 +13,13 @@ use crate::operators::{Op, PerformanceResult, Source};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub const BASENAME: &str = "glm53flash_graph_perf.parquet";
+const NAMED_CONTRACT: &str = "graph_named_operations_v1";
+type NamedUnit = (String, String, String);
 const SG_SOURCE: &str = "401b762a863931720b2b5cdc7b64246fac11cb215dbf6ea0fd19f3db24ce7e49";
 const SG_REVISION: &str = "94602c9c2b7cbdb8efd5c52802dac6a1c180089e";
 const SG_DECODE: &str = "55892739b9c577ae43a60d5d31eac53f81e2b4aeca57ef5368b9c881117889d8";
@@ -287,6 +289,11 @@ pub(crate) fn validate_model_ops(
     {
         return Ok(());
     }
+    db.glm53flash_graph.validate_named_model(
+        &spec.engine.model_name,
+        spec.engine.parallel.tp_size,
+        &spec.generation_ops,
+    )?;
     let prefill = &db.glm53flash_graph.sglang_prefill;
     if prefill.has_measurements()?
         && (spec
@@ -338,6 +345,9 @@ pub(crate) fn validate_generation_ops(
     }
     if db.glm53flash_graph.validate_serving_ops(ops, false)? {
         return Ok(true);
+    }
+    if let Some(profile) = db.glm53flash_graph.named_profile(ops)? {
+        validate_named_ops(profile, ops)?;
     }
     let markers: Vec<_> = ops
         .iter()
@@ -411,6 +421,7 @@ pub(crate) fn validate_generation_ops(
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Key {
+    name: Option<String>,
     component: String,
     geometry: String,
     batch: u32,
@@ -421,8 +432,12 @@ struct Row {
     latency: f64,
     dispatch: String,
     activity_count: u32,
+    evidence: String,
+    rank_selection: String,
 }
 struct Profile {
+    named: bool,
+    units: BTreeSet<NamedUnit>,
     policy: GraphPolicy,
     rows: BTreeMap<Key, Row>,
 }
@@ -499,6 +514,39 @@ impl Glm53GraphTable {
         }
         Ok(())
     }
+    fn named_profile(&self, ops: &[Op]) -> Result<Option<&Profile>, AicError> {
+        let Some(first) = ops.first() else {
+            return Ok(None);
+        };
+        if !contains_glm(first) {
+            return Ok(None);
+        }
+        let (_, shape) = named_op(first)?;
+        let identity = (
+            shape["checkpoint_format"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned(),
+            shape["tp_size"].as_u64().unwrap_or_default() as u32,
+        );
+        Ok(self
+            .profile()?
+            .and_then(|p| p.get(&identity))
+            .filter(|p| p.named))
+    }
+    fn validate_named_model(&self, model: &str, tp: u32, ops: &[Op]) -> Result<(), AicError> {
+        let format = match model {
+            "zai-org/GLM-5.3-Flash" => "fp8",
+            "nvidia/GLM-5.3-Flash-NVFP4" => "nvfp4",
+            _ => return Ok(()),
+        };
+        if let Some(profile) = self.profile()?.and_then(|p| p.get(&(format.into(), tp)))
+            && profile.named
+        {
+            validate_named_ops(profile, ops)?;
+        }
+        Ok(())
+    }
     fn matches_serving_model(&self, model: &str, tp: u32) -> Result<bool, AicError> {
         let format = match model {
             "zai-org/GLM-5.3-Flash" => "fp8",
@@ -544,8 +592,56 @@ impl Glm53GraphTable {
         is_context: bool,
         point: (u32, u32, u32),
     ) -> Result<Value, AicError> {
+        self.check_schema_identities()?;
         if is_context && self.sglang_prefill.has_measurements()? {
             self.sglang_prefill.audit(context, generation, point)
+        } else if !is_context && let Some(profile) = self.named_profile(generation)? {
+            validate_named_ops(profile, generation)?;
+            let (batch, query, prefix) = point;
+            if query != 1 || prefix == 0 || prefix >= 131072 {
+                return Err(invalid(
+                    "named graph audit requires homogeneous one-token decode",
+                ));
+            }
+            let mut operations = Vec::new();
+            let policy_hash = format!(
+                "{:x}",
+                Sha256::digest(
+                    serde_json::to_string(
+                        &serde_json::to_value(&profile.policy)
+                            .map_err(|e| invalid(e.to_string()))?
+                    )
+                    .map_err(|e| invalid(e.to_string()))?
+                    .as_bytes()
+                )
+            );
+            for op in generation {
+                let (unit, _) = named_op(op)?;
+                let target = Key {
+                    name: Some(unit.1.clone()),
+                    component: unit.0,
+                    geometry: unit.2,
+                    batch,
+                    prefix,
+                    padded: profile.policy.padded_batch(batch)?,
+                };
+                let selected = select_rows(&profile.rows, &target)?;
+                operations.push(serde_json::json!({"operation_name":op.name(),"geometry":target.geometry,
+                    "latency_ms":selected.iter().map(|(_, r, w)| r.latency * w).sum::<f64>(),
+                    "endpoints":selected.iter().map(|(key,row,weight)| serde_json::json!({
+                        "batch_size":key.batch,"prefix":key.prefix,"padded_batch_size":key.padded,
+                        "latency_ms":row.latency,"weight":weight,"evidence_sha256":row.evidence,
+                        "rank_selection_sha256":row.rank_selection,"dispatch_fingerprint":row.dispatch,
+                        "activity_count":row.activity_count})).collect::<Vec<_>>()}));
+            }
+            if operations.is_empty() {
+                return Err(invalid("named graph audit requires complete generation"));
+            }
+            Ok(
+                serde_json::json!({"schema":"glm53flash_lookup_audit_v1","lookup_contract":NAMED_CONTRACT,
+                "graph_policy_sha256":policy_hash,"phase":"generation",
+                "target":{"batch_size":batch,"query_length":query,"prefix":prefix},"operations":operations}),
+            )
         } else {
             self.serving.audit(context, generation, is_context, point)
         }
@@ -642,6 +738,7 @@ impl Glm53GraphTable {
             ));
         }
         let target = Key {
+            name: profile.named.then(|| op.name().into()),
             component: component.into(),
             geometry: geometry(&shape)?,
             batch: ctx.batch_size,
@@ -654,19 +751,149 @@ impl Glm53GraphTable {
                 .ok_or_else(|| invalid("native graph decode position must be positive"))?,
             padded: profile.policy.padded_batch(ctx.batch_size)?,
         };
-        let latency = if let Some(row) = profile.rows.get(&target) {
-            row.latency
-        } else {
-            interpolate(&profile.rows, &target)?.ok_or_else(|| {
-                invalid("native graph unit lacks same-policy, same-pad measured history brackets")
-            })?
-        };
+        let latency = select_rows(&profile.rows, &target)?
+            .iter()
+            .map(|(_, row, weight)| row.latency * weight)
+            .sum();
         Ok(Some(PerformanceResult::with_energy(
             latency,
             0.0,
             Source::Silicon,
         )))
     }
+}
+
+fn expected_names(backend: &str) -> BTreeSet<(String, String)> {
+    let mut names: BTreeSet<_> = [
+        ("primitive", "embedding"),
+        ("primitive", "embedding_allreduce"),
+        ("primitive", "final_norm"),
+        ("primitive", "logits"),
+        ("mhc", "mhc_expand"),
+        ("mhc", "mhc_contract"),
+        ("runtime", "native_graph_setup"),
+    ]
+    .into_iter()
+    .map(|(c, n)| (c.into(), n.into()))
+    .collect();
+    for i in 0..45 {
+        for (c, n) in [
+            ("attention", "attention"),
+            ("ffn", "ffn"),
+            ("primitive", "attention_allreduce"),
+            ("primitive", "ffn_allreduce"),
+        ] {
+            names.insert((c.into(), format!("{n}_{i}")));
+        }
+        if backend == "sglang" {
+            for n in [
+                "mhc_pre_attn",
+                "mhc_post_attn",
+                "mhc_pre_ffn",
+                "mhc_post_ffn",
+            ] {
+                names.insert(("mhc".into(), format!("{n}_{i}")));
+            }
+        } else {
+            names.insert((
+                "mhc".into(),
+                if i == 0 {
+                    "mhc_pre_attn_0".into()
+                } else {
+                    format!("mhc_fused_attn_{i}")
+                },
+            ));
+            names.insert(("mhc".into(), format!("mhc_fused_ffn_{i}")));
+        }
+    }
+    if backend == "vllm" {
+        names.insert(("mhc".into(), "mhc_post_ffn_44".into()));
+    }
+    names
+}
+fn validate_named_unit(
+    backend: &str,
+    component: &str,
+    name: &str,
+    shape: &Value,
+) -> Result<(), AicError> {
+    if !expected_names(backend).contains(&(component.into(), name.into())) {
+        return Err(invalid("unknown named graph operation"));
+    }
+    let role = if component == "primitive" {
+        Some(if name.contains("allreduce") {
+            "allreduce"
+        } else {
+            name
+        })
+    } else if component == "mhc" {
+        Some(if name == "mhc_expand" {
+            "expand"
+        } else if name == "mhc_contract" {
+            "contract"
+        } else if name.starts_with("mhc_fused_") {
+            "fused_post_pre"
+        } else if name.starts_with("mhc_pre_") {
+            "pre"
+        } else {
+            "post"
+        })
+    } else {
+        None
+    };
+    if role.is_some_and(|r| shape["role"] != r) {
+        return Err(invalid(
+            "named graph role differs from original call identity",
+        ));
+    }
+    if matches!(component, "attention" | "ffn") {
+        let index: u32 = name
+            .rsplit('_')
+            .next()
+            .unwrap_or_default()
+            .parse()
+            .map_err(|_| invalid("invalid graph layer name"))?;
+        if (component == "attention"
+            && shape["layer_kind"] != if index % 4 == 3 { "sparse_mla" } else { "kda" })
+            || (component == "ffn" && shape["is_dense"] != (index < 3))
+        {
+            return Err(invalid(
+                "named graph layer geometry differs from native model topology",
+            ));
+        }
+    }
+    Ok(())
+}
+fn named_op(op: &Op) -> Result<(NamedUnit, Value), AicError> {
+    let (component, shape) = match op {
+        Op::Glm53Attention(o) => ("attention", serde_json::to_value(o)),
+        Op::Glm53Mhc(o) => ("mhc", serde_json::to_value(o)),
+        Op::Glm53Ffn(o) => ("ffn", serde_json::to_value(o)),
+        Op::Glm53Primitive(o) => ("primitive", serde_json::to_value(o)),
+        Op::Glm53Runtime(o) => ("runtime", serde_json::to_value(o)),
+        _ => {
+            return Err(invalid(
+                "named graph requires unwrapped original physical operations",
+            ));
+        }
+    };
+    let shape = shape.map_err(|e| invalid(e.to_string()))?;
+    Ok((
+        (component.into(), op.name().into(), geometry(&shape)?),
+        shape,
+    ))
+}
+fn validate_named_ops(profile: &Profile, ops: &[Op]) -> Result<(), AicError> {
+    let units = ops
+        .iter()
+        .map(|op| named_op(op).map(|(u, _)| u))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if !profile.named || ops.len() != units.len() || units != profile.units {
+        return Err(invalid(
+            "named graph generation differs from complete measured operation names/geometries",
+        ));
+    }
+    Ok(())
 }
 
 fn partition(key: &Key) -> Result<Vec<u32>, AicError> {
@@ -684,11 +911,18 @@ fn partition(key: &Key) -> Result<Vec<u32>, AicError> {
         },
     )
 }
-fn interpolate(rows: &BTreeMap<Key, Row>, target: &Key) -> Result<Option<f64>, AicError> {
+fn select_rows<'a>(
+    rows: &'a BTreeMap<Key, Row>,
+    target: &Key,
+) -> Result<Vec<(&'a Key, &'a Row, f64)>, AicError> {
+    if let Some((key, row)) = rows.get_key_value(target) {
+        return Ok(vec![(key, row, 1.0)]);
+    }
     let wanted = partition(target)?;
     let mut groups: BTreeMap<&str, Vec<(&Key, &Row)>> = BTreeMap::new();
     for (key, row) in rows {
-        if key.component == target.component
+        if key.name == target.name
+            && key.component == target.component
             && key.geometry == target.geometry
             && key.batch == target.batch
             && key.padded == target.padded
@@ -715,10 +949,12 @@ fn interpolate(rows: &BTreeMap<Key, Row>, target: &Key) -> Result<Option<f64>, A
                 return Err(invalid("ambiguous native graph dispatch brackets"));
             }
             let weight = f64::from(target.prefix - lk.prefix) / f64::from(hk.prefix - lk.prefix);
-            answer = Some(lv.latency * (1.0 - weight) + hv.latency * weight);
+            answer = Some(vec![(*lk, *lv, 1.0 - weight), (*hk, *hv, weight)]);
         }
     }
-    Ok(answer)
+    answer.ok_or_else(|| {
+        invalid("native graph unit lacks same-policy, same-pad measured history brackets")
+    })
 }
 fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, AicError> {
     if !path.try_exists().map_err(|e| invalid(e.to_string()))? {
@@ -767,6 +1003,8 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
         .iter()
         .map(|name| reader.col(name))
         .collect::<Result<Vec<_>, _>>()?;
+    let named_col = reader.col_optional("operation_name");
+    let contract_col = reader.col_optional("graph_lookup_contract");
     let mut profiles = Profiles::new();
     let mut point_evidence = BTreeMap::new();
     for row in reader.rows()? {
@@ -790,10 +1028,21 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
                 "native graph table mixes policy identities or noncanonical source evidence",
             ));
         }
+        let name = row.str_optional(named_col)?;
+        let contract = row.str_optional(contract_col)?;
+        let named = match (contract, name) {
+            (None, None) => false,
+            (Some(NAMED_CONTRACT), Some(value)) if !value.is_empty() => true,
+            _ => {
+                return Err(invalid(
+                    "graph operation names require the exact analysis lookup contract",
+                ));
+            }
+        };
         let identity = (parsed.checkpoint_format.clone(), parsed.tp_size);
         if profiles
             .get(&identity)
-            .is_some_and(|previous| previous.policy != parsed)
+            .is_some_and(|previous| previous.policy != parsed || previous.named != named)
         {
             return Err(invalid(
                 "native graph identity has competing capture/runtime policies",
@@ -827,6 +1076,9 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
                 "graph row differs from its physical execution policy",
             ));
         }
+        if let Some(name) = name {
+            validate_named_unit(&parsed.backend, component, name, &shape)?;
+        }
         let batch = row.u32(cols[2])?;
         let prefix = row.u32(cols[3])?;
         let padded = row.u32(cols[4])?;
@@ -839,6 +1091,7 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
             || latency < 0.0
             || (count == 0) != (latency == 0.0)
             || row.u32(cols[7])? < 10
+            || (named && row.u32(cols[7])? != 10)
             || !sha256(row.str(cols[8])?)
             || row.str(cols[11])? != "calibration"
             || row.str(cols[12])? != "whole_forward_slowest_rank_v1"
@@ -865,6 +1118,7 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
             ));
         }
         let key = Key {
+            name: name.map(str::to_owned),
             component: component.into(),
             geometry: encoded.into(),
             batch,
@@ -872,6 +1126,8 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
             padded,
         };
         let profile = profiles.entry(identity).or_insert_with(|| Profile {
+            named,
+            units: BTreeSet::new(),
             policy: parsed.clone(),
             rows: BTreeMap::new(),
         });
@@ -883,6 +1139,8 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
                     latency,
                     dispatch: row.str(cols[8])?.into(),
                     activity_count: count,
+                    evidence: row.str(cols[14])?.into(),
+                    rank_selection: row.str(cols[13])?.into(),
                 },
             )
             .is_some()
@@ -893,7 +1151,35 @@ fn load(path: &Path, request: &(String, String)) -> Result<Option<Profiles>, Aic
     if profiles.is_empty() {
         return Err(invalid("empty native graph table is not a serving policy"));
     }
-    for profile in profiles.values() {
+    for profile in profiles.values_mut() {
+        if profile.named {
+            let mut points: BTreeMap<(u32, u32, u32), BTreeSet<NamedUnit>> = BTreeMap::new();
+            for key in profile.rows.keys() {
+                points
+                    .entry((key.batch, key.prefix, key.padded))
+                    .or_default()
+                    .insert((
+                        key.component.clone(),
+                        key.name.clone().expect("named key"),
+                        key.geometry.clone(),
+                    ));
+            }
+            for units in points.values() {
+                let actual: BTreeSet<_> = units
+                    .iter()
+                    .map(|(c, n, _)| (c.clone(), n.clone()))
+                    .collect();
+                if actual != expected_names(&profile.policy.backend)
+                    || actual.len() != units.len()
+                    || (!profile.units.is_empty() && &profile.units != units)
+                {
+                    return Err(invalid(
+                        "named graph point lacks complete consistent original operation inventory",
+                    ));
+                }
+                profile.units = units.clone();
+            }
+        }
         for key in profile.rows.keys() {
             if !profile.rows.keys().any(|setup| {
                 setup.component == "runtime"
@@ -1055,6 +1341,112 @@ pub(crate) mod tests {
         PerfDatabase::load(root, "testsys", "sglang", "0.5.20")
             .unwrap()
             .with_mode(DatabaseMode::Silicon, TransferPolicy::ALL)
+    }
+    #[test]
+    fn named_selector_preserves_collective_occurrence_and_original_endpoints() {
+        let mut rows = BTreeMap::new();
+        for (name, low, high) in [
+            ("embedding_allreduce", 0.8, 1.6),
+            ("attention_allreduce_0", 0.004, 0.008),
+        ] {
+            for (prefix, latency) in [(128, low), (136, high)] {
+                rows.insert(
+                    Key {
+                        name: Some(name.into()),
+                        component: "primitive".into(),
+                        geometry: "{}".into(),
+                        batch: 1,
+                        prefix,
+                        padded: 1,
+                    },
+                    Row {
+                        latency,
+                        dispatch: SHA.into(),
+                        activity_count: 1,
+                        evidence: format!("{prefix}"),
+                        rank_selection: SHA.into(),
+                    },
+                );
+            }
+        }
+        let target = Key {
+            name: Some("embedding_allreduce".into()),
+            component: "primitive".into(),
+            geometry: "{}".into(),
+            batch: 1,
+            prefix: 132,
+            padded: 1,
+        };
+        let chosen = select_rows(&rows, &target).unwrap();
+        assert_eq!(
+            chosen
+                .iter()
+                .map(|(k, _, w)| (k.prefix, *w))
+                .collect::<Vec<_>>(),
+            vec![(128, 0.5), (136, 0.5)]
+        );
+        assert!((chosen.iter().map(|(_, r, w)| r.latency * w).sum::<f64>() - 1.2).abs() < 1e-12);
+        assert_eq!(chosen[0].1.evidence, "128");
+        let missing = Key {
+            name: Some("ffn_allreduce_0".into()),
+            ..target
+        };
+        assert!(select_rows(&rows, &missing).is_err());
+        let legacy = Key {
+            name: None,
+            ..missing
+        };
+        assert!(select_rows(&rows, &legacy).is_err());
+    }
+    #[test]
+    fn named_inventory_retains_native_fusion_and_layer_role_identity() {
+        assert_eq!(expected_names("sglang").len(), 367);
+        assert_eq!(expected_names("vllm").len(), 278);
+        assert!(
+            validate_named_unit(
+                "sglang",
+                "primitive",
+                "embedding_allreduce",
+                &serde_json::json!({"role":"allreduce"})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_named_unit(
+                "sglang",
+                "primitive",
+                "embedding_allreduce",
+                &serde_json::json!({"role":"logits"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_named_unit(
+                "vllm",
+                "mhc",
+                "mhc_post_attn_0",
+                &serde_json::json!({"role":"post"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_named_unit(
+                "vllm",
+                "mhc",
+                "mhc_fused_attn_1",
+                &serde_json::json!({"role":"fused_post_pre"})
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_named_unit(
+                "sglang",
+                "attention",
+                "attention_3",
+                &serde_json::json!({"layer_kind":"kda"})
+            )
+            .is_err()
+        );
     }
     #[test]
     fn vllm_full_table_requires_exact_runtime_and_preserves_padding_setup_geometry() {

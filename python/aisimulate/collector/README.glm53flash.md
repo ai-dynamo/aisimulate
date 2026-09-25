@@ -899,3 +899,39 @@ fictional native run ID. Holdout children predict using the same calibrated
 policy, then map results back to the original parent IDs. Errors and missing
 brackets remain in those results. A passing shard publication or protocol test
 does not meet the independent accuracy gate or qualify a runtime.
+
+### Named FULL graph analysis
+
+`export_graph(..., lookup_contract="graph_named_operations_v1")` preserves each
+native operation occurrence in legacy SG FULL/schema 1 and vLLM FULL/schema 2
+measurements. The Parquet key adds `operation_name`; `graph_lookup_contract`
+records this analysis choice. The original native `graph_policy`, its hash,
+source/capture identity and measurement boundary stay unchanged. In particular,
+`embedding_allreduce` is measured and queried separately from the 90 layer
+all-reduces even when their physical geometry and kernel fingerprint match.
+Schema 3 serving and schema 4 prefill already preserve names and are unchanged.
+
+For existing original evidence, call
+`republish_named_graph(native_root, frozen_calibration_run, new_table_path)`.
+The new path must use `glm53flash_graph_perf.parquet`. This verifies the original
+native state, capture/clone/trace bindings, independent control and evidence
+receipts, then derives named rows from the original traces. It writes only the
+new table; original sidecars and any prior pooled table remain unchanged. A
+pooled table cannot recover individual measurements or supply this export.
+
+Named points require the complete 367 SG or 278 vLLM model/setup units and all
+original five warmups plus ten measured repetitions. Rust requires exact names
+and physical geometries, rejects missing/duplicate/mixed-contract rows, and
+composes each measured unit once. Exact lookup and the existing FULL P-bracket,
+padding, state and fingerprint constraints are unchanged; there is no geometry
+fallback, SOL replacement or extrapolation. Tables without the explicit contract
+keep their historical geometry-pooling behavior.
+
+The existing public `glm53flash_lookup_audit("generation", B, 1, P)` API returns
+named selected endpoints, weights, original evidence/rank-selection hashes and
+activity fingerprints from the same Rust selector that computes the price.
+The public validation adapter requires the exact calibration binding and retains
+this audit in `prediction_evidence`. An offline re-export is an analysis result,
+not new GPU measurement or accuracy acceptance. Graph controls remain
+`REPORTED_NOT_ASSUMED`; profiled launch gaps and collective arrival waits are not
+constants to add to independent holdout predictions.

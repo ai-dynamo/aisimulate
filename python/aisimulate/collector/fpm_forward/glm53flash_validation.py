@@ -647,7 +647,7 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
     if mode == "ops" and calibration["spec"].get("ops_execution_mode") == "native_full_graph":
         from collector.glm53flash_graph_export import predict_homogeneous
 
-        prediction = predict_homogeneous(run, base, config, calibration_native)
+        prediction = predict_homogeneous(run, base, config, calibration_native, calibration_binding=binding)
         return {**prediction, "config": config, "data_receipts": receipts, "calibration_binding": binding}
     model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
     rows = {}
