@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 from collector import glm53flash_runtime_identity as identity
-from collector.fpm_forward import hybrid_artifact
 
 pytestmark = pytest.mark.unit
 
@@ -20,7 +19,7 @@ def test_candidate_versions_are_not_implicitly_qualified(version):
 
 
 def test_actual_source_closure_is_required_even_for_stock_version():
-    manifest = Path(hybrid_artifact.__file__).parent / "runtime/glm53flash/runtime-source-sha256.json"
+    manifest = Path(identity.__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-sha256.json"
     producer = {
         "vllm_package_version": "0.30.0",
         "runtime_source_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
@@ -41,7 +40,7 @@ def test_holdout_runtime_must_equal_calibration_runtime():
 
 
 def source_manifest():
-    return Path(hybrid_artifact.__file__).parent / "runtime/glm53flash/runtime-source-sha256.json"
+    return Path(identity.__file__).parent / "fpm_forward/runtime/glm53flash/runtime-source-sha256.json"
 
 
 def test_closed_candidate_cannot_generate_a_source_or_binary_admission(monkeypatch):
@@ -55,8 +54,7 @@ def test_closed_candidate_cannot_generate_a_source_or_binary_admission(monkeypat
 
 
 def test_reviewed_repair_contract_binds_distinct_sources_and_all_native_binaries(monkeypatch):
-    # TEST ONLY: isolate runtime binding from the independently tested receipt gate.
-    # TEST_ONLY: this test isolates downstream runtime binding; summary validation has its own suite.
+    # TEST_ONLY: isolate downstream binding from the separately tested receipt gate.
     monkeypatch.setattr(identity, "_validate_qualification_summary", lambda _: {})
     monkeypatch.setitem(identity.ADMITTED_VLLM_REPAIRS, identity.VLLM_KPOOL_CANDIDATE, "a" * 64)
     contract = identity.vllm_runtime_closure(identity.VLLM_KPOOL_CANDIDATE, source_manifest())
@@ -273,3 +271,93 @@ def test_actual_tail_admission_rechecks_packaged_evidence(tmp_path, monkeypatch,
     monkeypatch.setattr(identity, "_tail_root", lambda: root)
     with pytest.raises((ValueError, FileNotFoundError)):
         identity.validate_backend_version("vllm", identity.VLLM_TAIL_CANDIDATE)
+
+
+def original_fpm_stock_manifest():
+    return source_manifest().with_name("runtime-source-stock-fpm-v1.json")
+
+
+def test_original_stock_fpm_and_ops_manifests_keep_distinct_exact_identity():
+    original = original_fpm_stock_manifest()
+    current = source_manifest()
+    assert hashlib.sha256(original.read_bytes()).hexdigest() == (
+        "7e6d2a2a476dbd9411ab405158e92e0f4eb904153e380ff04297a58eef934911"
+    )
+    assert hashlib.sha256(current.read_bytes()).hexdigest() == (
+        "bfa4d6e44075a7815fe2a460189635962483ae95b8ab8143c6b27aff6357a7ae"
+    )
+    for manifest in (original, current):
+        producer = {
+            "vllm_package_version": "0.30.0",
+            "runtime_source_manifest_sha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        }
+        before = dict(producer)
+        assert identity.validate_vllm_source_identity(producer, current) == json.loads(manifest.read_bytes())
+        assert producer == before
+    # New producers still declare the full current source identity.
+    assert identity.vllm_source_manifest_sha256("0.30.0", current) == hashlib.sha256(current.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("damage", ["format_only", "pin", "missing", "extra"])
+def test_rehashed_stock_map_does_not_become_an_admitted_historical_variant(damage):
+    raw = original_fpm_stock_manifest().read_bytes()
+    pins = json.loads(raw)
+    if damage == "pin":
+        pins[next(iter(pins))] = "0" * 64
+    elif damage == "missing":
+        del pins[next(iter(pins))]
+    elif damage == "extra":
+        pins["vllm/TEST_ONLY_extra.py"] = "0" * 64
+    rewritten = json.dumps(pins, sort_keys=True, separators=(",", ":")).encode()
+    assert rewritten != raw
+    producer = {
+        "vllm_package_version": "0.30.0",
+        "runtime_source_manifest_sha256": hashlib.sha256(rewritten).hexdigest(),
+    }
+    with pytest.raises(ValueError, match="source manifest"):
+        identity.validate_vllm_source_identity(producer, source_manifest())
+
+
+@pytest.mark.parametrize("version", [None, "0.30", "0.30.0+unreviewed", "0.31.0"])
+def test_original_stock_manifest_does_not_admit_another_runtime(version):
+    with pytest.raises(ValueError, match="unqualified"):
+        identity.validate_vllm_source_identity(
+            {
+                "vllm_package_version": version,
+                "runtime_source_manifest_sha256": hashlib.sha256(
+                    original_fpm_stock_manifest().read_bytes()
+                ).hexdigest(),
+            },
+            source_manifest(),
+        )
+
+
+def test_original_stock_packaged_bytes_are_mandatory(monkeypatch):
+    original = original_fpm_stock_manifest()
+    read = Path.read_bytes
+    digest = hashlib.sha256(read(original)).hexdigest()
+    monkeypatch.setattr(Path, "read_bytes", lambda self: read(self) + b" " if self == original else read(self))
+    with pytest.raises(ValueError, match="immutable identity"):
+        identity.validate_vllm_source_identity(
+            {"vllm_package_version": "0.30.0", "runtime_source_manifest_sha256": digest}, source_manifest()
+        )
+
+
+def test_repaired_runtime_source_and_binary_closure_is_identical_across_original_manifests():
+    old = identity.vllm_runtime_closure(identity.VLLM_TAIL_CANDIDATE, original_fpm_stock_manifest())
+    current = identity.vllm_runtime_closure(identity.VLLM_TAIL_CANDIDATE, source_manifest())
+    assert old == current
+    assert len(current["files"]) == 52
+    assert current["runtime_source_manifest_sha256"] == (
+        "603066c63ced49b8e059ff020a372acb75539d45c9d1bff591fade9d4f51f63b"
+    )
+    with pytest.raises(ValueError, match="source manifest"):
+        identity.validate_vllm_source_identity(
+            {
+                "vllm_package_version": identity.VLLM_TAIL_CANDIDATE,
+                "runtime_source_manifest_sha256": hashlib.sha256(
+                    original_fpm_stock_manifest().read_bytes()
+                ).hexdigest(),
+            },
+            source_manifest(),
+        )

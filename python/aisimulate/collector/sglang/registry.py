@@ -12,6 +12,14 @@ from collector.registry_types import OpEntry, PerfFile
 
 REGISTRY: list[OpEntry] = [
     OpEntry(
+        op="glm53flash_module",
+        module="collector.sglang.collect_glm53flash",
+        get_func="get_glm53flash_test_cases",
+        run_func="run_glm53flash_worker",
+        perf_filename=PerfFile.GLM53FLASH_MODULE,
+        unverified=True,
+    ),
+    OpEntry(
         op="dsv41_module",
         module="collector.sglang.collect_dsv41_module",
         get_func="get_dsv41_module_test_cases",

@@ -1,0 +1,876 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Admission regressions for native GLM measurements; fixtures are not perf data."""
+
+import copy
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from collector.glm53flash_contract import (
+    BACKENDS,
+    CHECKPOINTS,
+    aggregate_rank_records,
+    canonical_json,
+    validate_native_workload,
+    validate_row,
+    write_parquet,
+)
+from collector.glm53flash_observer import NativeOperationObserver, NativeWorkload
+
+pytestmark = pytest.mark.unit
+
+
+def _test_only_historical_candidate_admission(monkeypatch):
+    # Explicit per-test fixture for downstream identity/schema proofs. Production
+    # remains quarantined; the immutable historical summary is still validated.
+    from collector import glm53flash_contract as contract
+    from collector import glm53flash_runtime_identity as identity
+
+    # Do not let this explicit historical TEST_ONLY registry enter the production
+    # process-lifetime source snapshot cache or contaminate later quarantine tests.
+    monkeypatch.setattr(contract, "_runtime_contract", contract._runtime_contract.__wrapped__)
+    monkeypatch.setitem(
+        identity.ADMITTED_VLLM_REPAIRS,
+        identity.VLLM_KPOOL_CANDIDATE,
+        "d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67",
+    )
+
+
+@pytest.mark.parametrize("candidate", [False, True])
+@pytest.mark.parametrize(
+    "defect", [None, "manifest_version", "provenance_version", "revision", "source", "unknown_version"]
+)
+def test_native_hook_entry_binds_actual_qualified_package_before_touching_model(monkeypatch, candidate, defect):
+    from collector import glm53flash_native_hooks as hooks
+    from collector.glm53flash_contract import runtime_source_pins, sha256_json
+    from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE
+
+    if defect == "source" and not candidate:
+        pytest.skip("stock source verification belongs to worker preflight, preserving its historical row contract")
+    if candidate:
+        _test_only_historical_candidate_admission(monkeypatch)
+    installed = VLLM_KPOOL_CANDIDATE if candidate else BACKENDS["vllm"][0]
+    provenance = {
+        "backend": "vllm",
+        "backend_version": installed,
+        "backend_revision": BACKENDS["vllm"][1],
+        "source_sha256": sha256_json(runtime_source_pins("vllm", installed)),
+    }
+    frozen = dict(provenance)
+    if defect == "manifest_version":
+        frozen["backend_version"] = "different"
+    elif defect == "provenance_version":
+        provenance["backend_version"] = "different"
+    elif defect == "revision":
+        provenance["backend_revision"] = frozen["backend_revision"] = "0" * 40
+    elif defect == "source":
+        provenance["source_sha256"] = "0" * 64
+    elif defect == "unknown_version":
+        installed += ".unqualified"
+        provenance["backend_version"] = frozen["backend_version"] = installed
+    monkeypatch.setattr(hooks, "version", lambda name: installed)
+    touched = []
+    model = SimpleNamespace(modules=lambda: touched.append(True) or [])
+    observer = SimpleNamespace(provenance=provenance, manifest=frozen)
+    if defect is None:
+        # Passing the package gate still requires a complete real loaded model;
+        # this CPU fixture deliberately has none and must not install a wrapper.
+        with pytest.raises(RuntimeError, match="expected exactly 45"):
+            hooks.install_native_hooks(model, observer, "vllm")
+        assert touched == [True]
+    else:
+        with pytest.raises((RuntimeError, ValueError)):
+            hooks.install_native_hooks(model, observer, "vllm")
+        assert touched == []
+
+
+def test_native_launch_keeps_measured_128k_and_native_admission_headroom(tmp_path):
+    from collector.collect_glm53flash import native_command
+
+    command = native_command("sglang", "/models/fixture", "pinned", 4, "prefill", tmp_path, tmp_path / "text")
+    assert command[command.index("--context-length") + 1] == "131079"
+    assert command[command.index("--benchmark-max-context-length") + 1] == "131072"
+    command = native_command("vllm", "/models/fixture", "pinned", 4, "prefill", tmp_path, tmp_path / "text")
+    assert command[command.index("--max-model-len") + 1] == "131079"
+    assert "--no-async-scheduling" in command
+    assert "--no-enable-prefix-caching" in command
+    assert "--enforce-eager" in command
+
+
+def sample_row():
+    return {
+        "component": "attention",
+        "geometry": canonical_json({"backend": "vllm", "checkpoint_format": "fp8", "is_context": True, "tp_size": 2}),
+        "batch_size": 1,
+        "prefix": 0,
+        "x": 128,
+        "latency": 2.0,
+        "sample_count": 10,
+        "dispatch_fingerprint": "",
+        "dataset_role": "calibration",
+        "request_set": "authored-unit-fixture-not-performance",
+        "corpus_sha256": "d" * 64,
+        "evidence_sha256": "e" * 64,
+        "measurement_scope": "local_compute",
+        "kv_seed_regime": "empty",
+        "backend": "vllm",
+        "backend_version": BACKENDS["vllm"][0],
+        "backend_revision": BACKENDS["vllm"][1],
+        "checkpoint_revision": CHECKPOINTS["fp8"][1],
+        "source_sha256": "a" * 64,
+        "config_sha256": "b" * 64,
+        "runtime_digest": "sha256:" + "c" * 64,
+        "used_cuda_graph": False,
+        "kernel_source": "fixture.actual_module.forward",
+        "state_mode": "full_prefill",
+        "name": "attention_0",
+        "phase": "context",
+        "sample": 0,
+        "invocation": 1,
+        "tp_rank": 0,
+        "stage": "measure",
+        "benchmark_id": 0,
+        "repetition": 0,
+        "sampling_role": "measurement",
+    }
+
+
+def manifest(row, *, second_layer=False):
+    entries = [{key: row[key] for key in ("name", "component", "geometry")}]
+    if second_layer:
+        entries.append({**entries[0], "name": "attention_1"})
+    return {"schema_version": 1, "phases": {"context": entries, "generation": entries}}
+
+
+@pytest.mark.parametrize(
+    "updates,match",
+    [
+        ({"prefix": 128, "state_mode": "cached_prefill", "kv_seed_regime": "fake_kv"}, "real-prefix"),
+        ({"prefix": 128}, "state mode"),
+        ({"x": 131073}, "128K"),
+        ({"sample_count": True}, "uint32"),
+        ({"latency": float("nan")}, "finite"),
+        ({"latency": True}, "finite"),
+        ({"runtime_digest": "latest"}, "digest"),
+        ({"checkpoint_revision": "main"}, "checkpoint revision"),
+        ({"backend_revision": "main"}, "backend revision"),
+        ({"used_cuda_graph": "false"}, "boolean"),
+        ({"used_cuda_graph": True}, "dispatch/padding/setup"),
+        ({"kernel_source": " "}, "dispatch"),
+    ],
+)
+def test_reject_unqualified_measurements(updates, match):
+    row = {**sample_row(), **updates}
+    with pytest.raises(ValueError, match=match):
+        validate_row(row)
+
+
+def test_native_pool_start_guard_and_inclusive_context_admission():
+    for prefix, query in ((4097, 3), (4097, 4), (1, 2)):
+        with pytest.raises(ValueError, match="unaligned IndexPool start"):
+            validate_native_workload("vllm", "context", prefix, query)
+    for backend, phase, prefix, query in (
+        ("vllm", "context", 4096, 3),
+        ("vllm", "context", 4097, 1),
+        ("vllm", "generation", 4097, 1),
+        ("sglang", "context", 4097, 3),
+    ):
+        validate_native_workload(backend, phase, prefix, query)
+    validate_row({**sample_row(), "x": 131072})
+    with pytest.raises(ValueError, match="unaligned IndexPool start"):
+        validate_row(
+            {**sample_row(), "prefix": 4097, "x": 3, "state_mode": "cached_prefill", "kv_seed_regime": "real_kv"}
+        )
+
+
+def rank_files(tmp_path, rows):
+    paths = []
+    for rank, records in enumerate(rows):
+        path = tmp_path / f"rank-{rank}.jsonl"
+        path.write_text("".join(json.dumps({**row, "tp_rank": rank}) + "\n" for row in records))
+        paths.append(path)
+    return paths
+
+
+def test_rank_max_then_median_and_complete_layer_evidence(tmp_path):
+    first = sample_row()
+
+    def repetitions(rank):
+        return [
+            {
+                **first,
+                "sample": rep,
+                "repetition": rep,
+                "invocation": rep + 1,
+                "sampling_role": "warmup" if rep < 5 else "measurement",
+                "latency": 1000 if rep < 5 else (1 if rank == 0 else 3) if rep < 10 else (7 if rank == 0 else 5),
+            }
+            for rep in range(15)
+        ]
+
+    paths = rank_files(tmp_path, [repetitions(0), repetitions(1)])
+    rows = aggregate_rank_records(paths, 2, manifest(first), evidence_sha256="e" * 64)
+    assert rows[0]["latency"] == 5
+    assert rows[0]["sample_count"] == 10
+    with pytest.raises(ValueError, match="incomplete native context graph"):
+        aggregate_rank_records(paths, 2, manifest(first, second_layer=True), evidence_sha256="e" * 64)
+    paths = rank_files(tmp_path, [repetitions(0)[:14], repetitions(1)[:14]])
+    with pytest.raises(ValueError, match="five warmups and ten"):
+        aggregate_rank_records(paths, 2, manifest(first), evidence_sha256="e" * 64)
+
+
+def test_rank_and_source_mismatch_cannot_be_repaired_by_merge(tmp_path):
+    row = sample_row()
+    paths = rank_files(tmp_path, [[row], [{**row, "config_sha256": "d" * 64}]])
+    with pytest.raises(ValueError, match="incompatible native"):
+        aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
+    paths[1].write_text("")
+    with pytest.raises(ValueError, match="incomplete TP rank"):
+        aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
+    paths[1].write_text(json.dumps({**row, "tp_rank": 0}) + "\n")
+    with pytest.raises(ValueError, match="evidence file"):
+        aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
+
+
+def test_exact_sglang_mhc_forwarders_share_callee_without_rewriting_raw(tmp_path):
+    from collector import glm53flash_contract as contract
+
+    pins = json.loads(
+        (
+            Path(contract.__file__).parent / "fpm_forward/runtime/glm53flash_sglang/runtime-source-sha256.json"
+        ).read_bytes()
+    )
+    row = {
+        **sample_row(),
+        "backend": "sglang",
+        "backend_version": BACKENDS["sglang"][0],
+        "backend_revision": BACKENDS["sglang"][1],
+        "component": "mhc",
+        "name": "mhc_pre_attn_0",
+        "geometry": canonical_json({"backend": "sglang", "checkpoint_format": "fp8", "role": "pre", "tp_size": 2}),
+        "state_mode": "token_only",
+        "kv_seed_regime": "n/a",
+        "source_sha256": contract.sha256_json(pins),
+    }
+    records = [
+        {
+            **row,
+            "name": f"mhc_pre_{site}_0",
+            "sample": rep,
+            "repetition": rep,
+            "invocation": rep + 1,
+            "sampling_role": "warmup" if rep < 5 else "measurement",
+            "kernel_source": f"sglang.srt.models.glm5_next.Glm5NextDecoderLayer.hc_{site}_pre",
+        }
+        for rep in range(15)
+        for site in ("attn", "ffn")
+    ]
+    phases = [{k: r[k] for k in ("name", "component", "geometry")} for r in records[:2]]
+    model = {"phases": {"context": phases, "generation": phases}}
+    paths = rank_files(tmp_path, [records, records])
+    before = [p.read_bytes() for p in paths]
+    result = aggregate_rank_records(paths, 2, model, evidence_sha256="e" * 64)
+    assert len(result) == 1 and result[0]["sample_count"] == 20
+    assert result[0]["kernel_source"].endswith("._hc_pre/sglang.kernels.ops.layernorm.mhc.hc_pre")
+    assert result[0]["dispatch_fingerprint"] == ""
+    assert [p.read_bytes() for p in paths] == before
+    for update in (
+        {"source_sha256": "a" * 64},
+        {"backend_revision": "different"},
+        {"geometry": canonical_json({"backend": "sglang", "role": "post"})},
+    ):
+        with pytest.raises(ValueError, match="equivalence"):
+            contract.canonical_native_source({**records[0], **update})
+    unrelated = {**records[0], "kernel_source": "sglang.other_forwarder"}
+    assert contract.canonical_native_source(unrelated) == unrelated["kernel_source"]
+
+
+def test_shared_physical_key_uses_frozen_point_owner_not_lower_latency(tmp_path):
+    row = sample_row()
+    records = [
+        {
+            **row,
+            "benchmark_id": point,
+            "sample": rep,
+            "repetition": rep,
+            "invocation": point * 100 + rep,
+            "sampling_role": "warmup" if rep < 5 else "measurement",
+            "latency": 9.0 if point == 1 else 1.0,
+        }
+        for point in (1, 2)
+        for rep in range(15)
+    ]
+    paths = rank_files(tmp_path, [records, records])
+    result = aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)[0]
+    assert (result["latency"], result["sample_count"], result["original_point_id"]) == (9.0, 10, 1)
+    result = aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64, point_ids={1: 8, 2: 3})[0]
+    assert (result["latency"], result["owner_benchmark_id"], result["original_point_id"]) == (1.0, 2, 3)
+    records[-1]["dispatch_fingerprint"] = "a" * 64
+    paths = rank_files(tmp_path, [records, records])
+    with pytest.raises(ValueError, match="incompatible measured dispatch"):
+        aggregate_rank_records(paths, 2, manifest(row), evidence_sha256="e" * 64)
+
+
+def shard_fixture():
+    row = {**sample_row(), "component": "mhc", "kv_seed_regime": "n/a", "state_mode": "token_only"}
+    shard_manifest = {
+        "schema_name": "aic_fpm_shard_manifest",
+        "schema_version": 1,
+        "shards": [
+            {
+                "shard_id": "a",
+                "parent_cell_id": "parent",
+                "phase": "prefill",
+                "point_map": [
+                    {
+                        "native_benchmark_id": 1,
+                        "original_point_id": 1,
+                        "point": {"batch_size": 1, "total_prefill_tokens": 128, "total_kv_read_tokens": 0},
+                    }
+                ],
+            },
+            {
+                "shard_id": "b",
+                "parent_cell_id": "parent",
+                "phase": "prefill",
+                "point_map": [
+                    {
+                        "native_benchmark_id": 1,
+                        "original_point_id": 2,
+                        "point": {"batch_size": 2, "total_prefill_tokens": 128, "total_kv_read_tokens": 128},
+                    }
+                ],
+            },
+        ],
+    }
+    rows = {
+        "a": [{**row, "owner_benchmark_id": 1, "original_point_id": 1, "latency": 9.0}],
+        "b": [
+            {
+                **row,
+                "owner_benchmark_id": 1,
+                "original_point_id": 2,
+                "latency": 1.0,
+                "request_set": "other-independent-run",
+                "evidence_sha256": "f" * 64,
+            }
+        ],
+    }
+    return manifest(row), shard_manifest, rows
+
+
+def test_frozen_shard_owner_keeps_slower_preselected_row_and_all_raw_provenance():
+    from collector.glm53flash_shards import merge_shard_rows, physical_ownership
+
+    model, shards, rows = shard_fixture()
+    frozen = physical_ownership(model, shards, "parent")["frozen"]
+    result, after = merge_shard_rows(model, shards, "parent", rows)
+    assert frozen == after
+    assert (result[0]["latency"], result[0]["evidence_sha256"]) == (9.0, "e" * 64)
+    assert rows["b"][0]["latency"] == 1.0
+
+
+@pytest.mark.parametrize("failure", ["missing_shard", "missing_row", "wrong_owner", "dispatch", "duplicate_point"])
+def test_shard_publication_rejects_incomplete_or_incompatible_evidence(failure):
+    from collector.glm53flash_shards import merge_shard_rows
+
+    model, shards, rows = shard_fixture()
+    if failure == "missing_shard":
+        rows.pop("b")
+    elif failure == "missing_row":
+        rows["b"] = []
+    elif failure == "wrong_owner":
+        rows["b"][0]["original_point_id"] = 1
+    elif failure == "dispatch":
+        rows["b"][0]["dispatch_fingerprint"] = "a" * 64
+    else:
+        shards["shards"][1]["point_map"][0]["original_point_id"] = 1
+    with pytest.raises(ValueError):
+        merge_shard_rows(model, shards, "parent", rows)
+
+
+def test_checkpoint_formats_remain_separate_physical_keys(tmp_path):
+    pq = pytest.importorskip("pyarrow.parquet")
+    fp8 = sample_row()
+    nvfp4 = copy.deepcopy(fp8)
+    shape = json.loads(nvfp4["geometry"])
+    shape["checkpoint_format"] = "nvfp4"
+    nvfp4.update(geometry=canonical_json(shape), checkpoint_revision=CHECKPOINTS["nvfp4"][1], config_sha256="d" * 64)
+    path = tmp_path / "glm53flash_module_perf.parquet"
+    write_parquet([fp8, nvfp4], path)
+    assert pq.read_table(path).num_rows == 2
+    with pytest.raises(ValueError, match="duplicate"):
+        write_parquet([fp8, fp8], path)
+
+
+def test_workload_requires_native_history_and_rejects_graph_relabeling():
+    values = dict(
+        phase="generation",
+        batch_size=1,
+        query=1,
+        prefix=128,
+        state_mode="decode",
+        request_ids=("r1",),
+        history_ids=(),
+        sample=0,
+        invocation=1,
+    )
+    with pytest.raises(ValueError, match="execution receipts"):
+        NativeWorkload(**values)
+    with pytest.raises(ValueError, match="graph replay"):
+        NativeWorkload(**{**values, "history_ids": ("prefill-r1",), "used_cuda_graph": True})
+
+
+class FakeCuda:
+    def __init__(self):
+        self.clock = 0.0
+
+    def current_stream(self):
+        return 0
+
+    def is_current_stream_capturing(self):
+        return False
+
+    def synchronize(self):
+        pass
+
+    def Event(self, enable_timing):  # noqa: N802 - mirrors torch.cuda's public constructor
+        assert enable_timing
+        cuda = self
+
+        class Event:
+            def record(self, stream):
+                self.time = cuda.clock
+
+            def elapsed_time(self, other):
+                return other.time - self.time
+
+        return Event()
+
+
+def test_native_observer_preserves_arguments_and_subtracts_only_witnessed_collective():
+    cuda = FakeCuda()
+    row = sample_row()
+    recorder = NativeOperationObserver(manifest(row), row, 0, torch_module=SimpleNamespace(cuda=cuda))
+
+    class Native:
+        def collective(self, value):
+            cuda.clock += 2
+            return value
+
+        def forward(self, value):
+            cuda.clock += 1
+            result = self.collective(value)
+            cuda.clock += 1
+            return result
+
+    native = Native()
+    original = native.forward
+    recorder.wrap(native, "forward", "attention_0")
+    recorder.wrap_collective(native, "collective")
+    recorder.begin(NativeWorkload("context", 1, 128, 0, "full_prefill", ("r1",), (), 0, 1))
+    sentinel = object()
+    assert native.forward(sentinel) is sentinel
+    measured = recorder.end()
+    # The hand-authored timeline is 1 ms compute + 2 ms collective + 1 ms compute.
+    assert measured[0]["latency"] == 2
+    assert measured[0]["excluded_collectives"][0]["latency"] == 2
+    assert measured[0]["used_cuda_graph"] is False
+    recorder.close()
+    assert native.forward == original
+
+
+def test_native_graph_replay_without_python_events_is_not_coverage():
+    row = sample_row()
+    recorder = NativeOperationObserver(manifest(row), row, 0, torch_module=SimpleNamespace(cuda=FakeCuda()))
+    recorder.begin(NativeWorkload("context", 1, 128, 0, "full_prefill", ("r1",), (), 0, 1))
+    with pytest.raises(RuntimeError, match="incomplete native operation coverage"):
+        recorder.end()
+
+
+@pytest.mark.parametrize("lazy", [True, False])
+def test_saved_projection_is_counted_once_inside_or_before_its_native_attention(lazy):
+    cuda = FakeCuda()
+    row = sample_row()
+    recorder = NativeOperationObserver(manifest(row), row, 0, torch_module=SimpleNamespace(cuda=cuda))
+
+    class Native:
+        def collective(self, value):
+            cuda.clock += 2
+            return value
+
+        def latent(self, value):
+            cuda.clock += 3
+            return self.collective(value)
+
+        def forward(self, value):
+            cuda.clock += 2
+            result = self.latent(value) if lazy else value
+            cuda.clock += 4
+            return result
+
+    native = Native()
+    recorder.wrap(native, "forward", "attention_0")
+    recorder.wrap(native, "latent", "attention_0", included_by_same_operation=True)
+    recorder.wrap_collective(native, "collective")
+    recorder.begin(NativeWorkload("context", 1, 128, 0, "full_prefill", ("r1",), (), 0, 1))
+    sentinel = object()
+    if not lazy:
+        assert native.latent(sentinel) is sentinel
+    assert native.forward(sentinel) is sentinel
+    result = recorder.end()[0]
+    assert result["latency"] == 9  # 3 projection + 2/4 attention, excluding 2 collective.
+    assert len(result["excluded_collectives"]) == 1
+    assert result["excluded_collectives"][0]["latency"] == 2
+    assert "Native.latent" in result["kernel_source"]
+
+
+@pytest.mark.parametrize("same_name,declared", [(True, False), (False, True)])
+def test_nested_callback_exception_requires_explicit_same_physical_operation(same_name, declared):
+    cuda = FakeCuda()
+    row = sample_row()
+    graph = manifest(row)
+    for entries in graph["phases"].values():
+        entries.append({**entries[0], "name": "attention_1"})
+    recorder = NativeOperationObserver(graph, row, 0, torch_module=SimpleNamespace(cuda=cuda))
+
+    class Native:
+        def latent(self, value):
+            cuda.clock += 3
+            return value
+
+        def forward(self, value):
+            return self.latent(value)
+
+    native = Native()
+    recorder.wrap(native, "forward", "attention_0")
+    recorder.wrap(
+        native,
+        "latent",
+        "attention_0" if same_name else "attention_1",
+        included_by_same_operation=declared,
+    )
+    recorder.begin(NativeWorkload("context", 1, 128, 0, "full_prefill", ("r1",), (), 0, 1))
+    with pytest.raises(RuntimeError, match="nested compute"):
+        native.forward(object())
+
+
+def test_collective_is_counted_once_in_complete_local_plus_communication_partition():
+    cuda = FakeCuda()
+    row = sample_row()
+    graph = manifest(row)
+    primitive = {
+        "name": "attention_allreduce_0",
+        "component": "primitive",
+        "geometry": canonical_json(
+            {"backend": "vllm", "checkpoint_format": "fp8", "role": "allreduce", "token_selection": "all_scheduled"}
+        ),
+    }
+    for entries in graph["phases"].values():
+        if primitive not in entries:
+            entries.append(primitive)
+    recorder = NativeOperationObserver(graph, row, 0, torch_module=SimpleNamespace(cuda=cuda))
+
+    class Native:
+        def collective(self, value):
+            cuda.clock += 2
+            return value
+
+        def forward(self, value):
+            cuda.clock += 3
+            self.collective(value)
+            cuda.clock += 5
+            return value
+
+    native = Native()
+    recorder.wrap(native, "forward", "attention_0")
+    recorder.wrap_collective(native, "collective", ("attention_allreduce_0",))
+    recorder.begin(NativeWorkload("context", 1, 128, 0, "full_prefill", ("r1",), (), 0, 1))
+    native.forward(object())
+    rows = {result["component"]: result for result in recorder.end()}
+    assert rows["attention"]["latency"] == 8
+    assert rows["primitive"]["latency"] == 2
+    assert rows["primitive"]["measurement_scope"] == "communication"
+    assert sum(result["latency"] for result in rows.values()) == 10
+
+
+def test_profile_kernel_attribution_partitions_nested_communication():
+    row = sample_row()
+    graph = manifest(row)
+    graph["phases"]["context"].append(dict(graph["phases"]["context"][0], name="comm"))
+    graph["phases"]["generation"].append(dict(graph["phases"]["generation"][0], name="comm"))
+    recorder = NativeOperationObserver(graph, row, 0, torch_module=SimpleNamespace(cuda=FakeCuda()))
+    recorder.workload = NativeWorkload("context", 1, 128, 0, "full_prefill", ("request",), (), 4, 4)
+    local = SimpleNamespace(name="aisim.glm53/attention_0", cpu_parent=None)
+    comm = SimpleNamespace(name="aisim.glm53/comm", cpu_parent=local)
+    events = [
+        SimpleNamespace(name="launch", cpu_parent=local, kernels=[SimpleNamespace(name="gemm_native")]),
+        SimpleNamespace(name="launch", cpu_parent=comm, kernels=[SimpleNamespace(name="nccl_native")]),
+    ]
+    recorder.profiler = SimpleNamespace(stop=lambda: None, events=lambda: events)
+    recorder._finish_profile()
+    assert recorder.dispatches[recorder._dispatch_key("attention_0")] == ["gemm_native"]
+    assert recorder.dispatches[recorder._dispatch_key("comm")] == ["nccl_native"]
+
+
+@pytest.mark.parametrize("backend", ["vllm", "sglang"])
+def test_public_population_preserves_native_checkpoint_and_targeted_plan(monkeypatch, backend):
+    import importlib
+
+    from collector.model_cases import build_collection_case_plan
+    from collector.version_resolver import build_collections
+
+    module = importlib.import_module(f"collector.{backend}.collect_glm53flash")
+    registry = importlib.import_module(f"collector.{backend}.registry").REGISTRY
+    monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
+    raw = module.get_glm53flash_test_cases()
+    assert len(raw) == 8
+    assert len({case["id"] for case in raw}) == len(raw)
+    assert sum(len(case["params"][-1]) for case in raw) == 120
+    for fmt, (path, _revision) in CHECKPOINTS.items():
+        monkeypatch.setenv("COLLECTOR_MODEL_PATH", path)
+        plan = build_collection_case_plan(backend=backend, model_path=path, sm_version=103)
+        assert plan.selected_ops == {"glm53flash_module"}
+        cases = module.get_glm53flash_test_cases()
+        assert len(cases) == 4
+        assert {tuple(case["params"][1:4]) for case in cases} == {(path, fmt, 2), (path, fmt, 4)}
+    resolved = build_collections(registry, backend, BACKENDS[backend][0], ops=["glm53flash_module"])
+    assert len(resolved) == 1 and resolved[0]["unverified"] is True
+    # The public scheduler therefore queues zero cases until native qualification;
+    # raw recipes are retained and never described as scheduled GPU coverage.
+
+
+def test_native_completion_streams_raw_forwards_and_requires_boolean_receipts(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from collector.collect_glm53flash import verify_target_completeness
+
+    (tmp_path / "requests.json").write_text(json.dumps({"requests": {"r": {"benchmark_id": 1, "repetition": 0}}}))
+    path = tmp_path / "forward-rank-0.jsonl"
+    record = {
+        "stage": "measure",
+        "benchmark_id": 1,
+        "repetition": 0,
+        "gpu_completed": True,
+        "state_layout_admitted": True,
+    }
+    path.write_text(json.dumps(record) + "\n")
+    original = Path.read_text
+
+    def bounded(self, *args, **kwargs):
+        if self.suffix == ".jsonl":
+            pytest.fail("native forward JSONL must stream")
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", bounded)
+    assert verify_target_completeness(tmp_path, 1)["requests"]
+    record["gpu_completed"] = "true"
+    path.write_text(json.dumps(record) + "\n")
+    with pytest.raises(ValueError, match="completion/state"):
+        verify_target_completeness(tmp_path, 1)
+
+
+@pytest.mark.parametrize(
+    "method,role,native_class",
+    [
+        ("hc_pre", "pre", "MHCPreOp"),
+        ("hc_post", "post", "MHCPostOp"),
+        ("hc_fused_post_pre", "fused_post_pre", "MHCFusedPostPreOp"),
+    ],
+)
+def test_vllm_mhc_source_owns_only_called_custom_op(method, role, native_class):
+    from collector.glm53flash_contract import canonical_native_source, sha256_json
+    from collector.glm53flash_observer import dispatch_identity
+
+    module = "vllm.models.glm5next.nvidia.model.Glm5NextDecoderLayer"
+    selected = f"m{method}_op:forward=vllm.model_executor.layers.mhc.{native_class}.forward_cuda"
+    pins = json.loads(
+        (Path(__file__).parents[3] / "collector/fpm_forward/runtime/glm53flash/runtime-source-sha256.json").read_bytes()
+    )
+    row = {
+        **sample_row(),
+        "component": "mhc",
+        "source_sha256": sha256_json(pins),
+        "geometry": canonical_json({"backend": "vllm", "checkpoint_format": "fp8", "role": role}),
+        "kernel_source": (
+            f"{module}.{method}/{selected};mlp.gate:quant_method=loaded.fp8;self_attn.indexer:forward=loaded.index"
+        ),
+    }
+    expected = f"{module}.{method}/{selected}"
+    assert canonical_native_source(row) == expected
+    assert canonical_native_source({**row, "kernel_source": expected}) == expected
+    for updates in (
+        {"source_sha256": "a" * 64},
+        {"geometry": canonical_json({"backend": "vllm", "role": "other"})},
+        {"kernel_source": row["kernel_source"].replace(".forward_cuda", ".forward_native")},
+        {"kernel_source": row["kernel_source"] + ";unknown:forward=unknown"},
+        {"kernel_source": row["kernel_source"] + ";" + selected},
+    ):
+        with pytest.raises(ValueError, match="vLLM mHC"):
+            canonical_native_source({**row, **updates})
+
+    def native():
+        pass
+
+    native.__module__ = module.rsplit(".", 1)[0]
+    native.__qualname__ = f"Glm5NextDecoderLayer.{method}"
+
+    def forward():
+        pass
+
+    forward.__module__ = "vllm.model_executor.layers.mhc"
+    forward.__qualname__ = f"{native_class}.forward_cuda"
+    owner = SimpleNamespace(**{method: native, f"m{method}_op": SimpleNamespace(_forward_method=forward)})
+    owner.named_modules = lambda: pytest.fail("unrelated DecoderLayer descendants must not be enumerated")
+    assert dispatch_identity(owner, method) == expected
+    setattr(owner, f"m{method}_op", SimpleNamespace())
+    with pytest.raises(RuntimeError, match="selected CustomOp"):
+        dispatch_identity(owner, method)
+
+
+def test_coherent_rank_selection_uses_whole_forward_and_keeps_all_operations(tmp_path):
+    from collector.glm53flash_contract import WHOLE_FORWARD_RANK, select_forward_ranks, sha256_json
+
+    a = sample_row()
+    b = {
+        **a,
+        "name": "attention_1",
+        "geometry": canonical_json({**json.loads(a["geometry"]), "layer_kind": "sparse_mla"}),
+    }
+    graph = {"phases": {"context": [{k: r[k] for k in ("name", "component", "geometry")} for r in (a, b)]}}
+    all_rows = []
+    for rank in range(2):
+        rows, forwards = [], []
+        for repetition in range(15):
+            label = "warmup" if repetition < 5 else "measurement"
+            fields = {
+                "sample": repetition,
+                "repetition": repetition,
+                "invocation": repetition + 1,
+                "benchmark_id": 1,
+                "sampling_role": label,
+                "request_ids": [f"fixture-{repetition}"],
+                "tp_rank": rank,
+            }
+            for operation, latency in [(a, 7 if rank == 0 else 3), (b, 3 if rank == 0 else 7)]:
+                rows.append({**operation, **fields, "latency": latency})
+            forwards.append(
+                {
+                    **a,
+                    **fields,
+                    "gpu_completed": True,
+                    "state_layout_admitted": True,
+                    "whole_forward_gpu_ms": 11 if rank == 0 else 10,
+                    "whole_forward_boundary": "embedding_to_logits_gpu_v1",
+                }
+            )
+        all_rows.append(rows)
+        (tmp_path / f"forward-rank-{rank}.jsonl").write_text("".join(json.dumps(x) + "\n" for x in forwards))
+    paths = rank_files(tmp_path, all_rows)
+    original = {p: p.read_bytes() for p in tmp_path.iterdir()}
+    selection = select_forward_ranks(paths, 2)
+    assert {r["selected_rank"] for r in selection["forwards"]} == {0}
+    rows = aggregate_rank_records(paths, 2, graph, evidence_sha256="e" * 64, aggregation_policy=WHOLE_FORWARD_RANK)
+    assert [r["latency"] for r in rows] == [7, 3]
+    assert all(r["rank_selection_sha256"] == sha256_json(selection) for r in rows)
+    legacy = aggregate_rank_records(paths, 2, graph, evidence_sha256="e" * 64)
+    assert [r["latency"] for r in legacy] == [7, 7]
+    assert all(p.read_bytes() == raw for p, raw in original.items())
+    # Equal full-forward intervals choose the lowest TP rank deterministically.
+    f = tmp_path / "forward-rank-1.jsonl"
+    values = [json.loads(line) for line in f.read_text().splitlines()]
+    for item in values:
+        item["whole_forward_gpu_ms"] = 11
+    f.write_text("".join(json.dumps(x) + "\n" for x in values))
+    assert {r["selected_rank"] for r in select_forward_ranks(paths, 2)["forwards"]} == {0}
+    good = f.read_bytes()
+    for mutate in (
+        lambda rs: rs.pop(),
+        lambda rs: rs.append(rs[0]),
+        lambda rs: rs[0].update(request_ids=["different-request"]),
+        lambda rs: rs[0].update(whole_forward_gpu_ms=True),
+        lambda rs: rs[0].pop("whole_forward_gpu_ms"),
+    ):
+        values = [json.loads(line) for line in good.splitlines()]
+        mutate(values)
+        f.write_text("".join(json.dumps(x) + "\n" for x in values))
+        with pytest.raises(ValueError, match="rank selection"):
+            aggregate_rank_records(paths, 2, graph, evidence_sha256="e" * 64, aggregation_policy=WHOLE_FORWARD_RANK)
+    f.write_bytes(good)
+    paths[0].write_text(paths[0].read_text().replace("fixture-0", "other-0"))
+    with pytest.raises(ValueError, match="different native forward"):
+        aggregate_rank_records(paths, 2, graph, evidence_sha256="e" * 64, aggregation_policy=WHOLE_FORWARD_RANK)
+
+
+def test_writer_does_not_mix_tp_aggregation_policies(tmp_path):
+    from collector.glm53flash_contract import WHOLE_FORWARD_RANK
+
+    a = sample_row()
+    b = {**a, "x": 256, "aggregation_policy": WHOLE_FORWARD_RANK, "rank_selection_sha256": "a" * 64}
+    with pytest.raises(ValueError, match="mixes native Ops TP aggregation"):
+        write_parquet([a, b], tmp_path / "test-only.parquet")
+
+
+def test_historical_repair_does_not_admit_stock_unaligned_rows_or_version_aliases(monkeypatch):
+    _test_only_historical_candidate_admission(monkeypatch)
+    from collector.glm53flash_contract import runtime_source_pins, sha256_json
+    from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE
+
+    row = sample_row()
+    row.update(prefix=4097, x=3, state_mode="cached_prefill", kv_seed_regime="real_kv")
+    with pytest.raises(ValueError, match="unaligned"):
+        validate_row(row)
+    row["backend_version"] = VLLM_KPOOL_CANDIDATE
+    with pytest.raises(ValueError, match="source closure"):
+        validate_row(row)
+    row["source_sha256"] = sha256_json(runtime_source_pins("vllm", VLLM_KPOOL_CANDIDATE))
+    validate_row(row)
+    rust = Path(__file__).resolve().parents[5] / "crates/core/src/perfmodel/perf_database/glm53flash.rs"
+    assert f'const REPAIRED_VLLM_SOURCE: &str =\n    "{row["source_sha256"]}";' in rust.read_text()
+    row["backend_version"] += ".unknown"
+    with pytest.raises(ValueError, match="unqualified"):
+        validate_row(row)
+
+
+def test_historical_manifest_repaired_runtime_is_explicit_and_keeps_physical_graph(monkeypatch):
+    _test_only_historical_candidate_admission(monkeypatch)
+    from collector.glm53flash_contract import build_model_manifest
+    from collector.glm53flash_runtime_identity import VLLM_KPOOL_CANDIDATE
+
+    stock = build_model_manifest("vllm", "fp8", 4)
+    repaired = build_model_manifest("vllm", "fp8", 4, VLLM_KPOOL_CANDIDATE)
+    assert stock["backend_version"] == "0.30.0"
+    assert repaired == {**stock, "backend_version": VLLM_KPOOL_CANDIDATE}
+    with pytest.raises(ValueError, match="TP2/TP4"):
+        build_model_manifest("vllm", "nvfp4", 1, VLLM_KPOOL_CANDIDATE)
+
+
+@pytest.mark.parametrize("phase,prefix,query", [("context", 0, 128), ("context", 4096, 3), ("generation", 4096, 1)])
+def test_production_quarantine_rejects_matching_historical_rows_and_manifest(phase, prefix, query):
+    from collector.glm53flash_contract import build_model_manifest, validate_native_workload
+    from collector.glm53flash_runtime_identity import ADMITTED_VLLM_REPAIRS, VLLM_KPOOL_CANDIDATE
+
+    assert VLLM_KPOOL_CANDIDATE not in ADMITTED_VLLM_REPAIRS
+    row = sample_row()
+    shape = json.loads(row["geometry"])
+    shape["is_context"] = phase == "context"
+    row.update(
+        geometry=canonical_json(shape),
+        phase=phase,
+        prefix=prefix,
+        x=query,
+        backend_version=VLLM_KPOOL_CANDIDATE,
+        source_sha256="06a8cb8ab3fa89d4e82428fd32112074f50249c427a467787004ecb0a870f128",
+    )
+    if phase == "generation":
+        row.update(prefix=0, x=prefix, state_mode="decode", kv_seed_regime="real_kv")
+    elif prefix:
+        row.update(state_mode="cached_prefill", kv_seed_regime="real_kv")
+    with pytest.raises(ValueError, match="unqualified"):
+        validate_row(row)
+    with pytest.raises(ValueError, match="unqualified"):
+        validate_native_workload("vllm", phase, prefix, query, VLLM_KPOOL_CANDIDATE)
+    with pytest.raises(ValueError, match="unqualified"):
+        build_model_manifest("vllm", "fp8", 4, VLLM_KPOOL_CANDIDATE)

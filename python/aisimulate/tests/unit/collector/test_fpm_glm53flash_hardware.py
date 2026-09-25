@@ -7,7 +7,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from collector.fpm_forward.hybrid_artifact import validate_vllm_hardware_receipts
 from collector.fpm_forward.runtime.glm53flash import glm53flash_worker_hardware as hardware
 
@@ -205,4 +204,19 @@ def test_rehashed_repair_receipt_needs_actual_every_rank_binary_closure(monkeypa
     last.write_text(json.dumps(receipt))
     entries[-1]["sha256"] = hashlib.sha256(last.read_bytes()).hexdigest()
     with pytest.raises(ValueError, match="binary closure"):
+        validate_vllm_hardware_receipts(cell, payload, path)
+
+
+@pytest.mark.parametrize("damage", ["coverage", "protocol"])
+def test_original_stock_source_identity_keeps_full_hardware_gate(tmp_path, damage):
+    cell, payload, path = artifact(tmp_path)
+    payload["producer"]["runtime_source_manifest_sha256"] = (
+        "7e6d2a2a476dbd9411ab405158e92e0f4eb904153e380ff04297a58eef934911"
+    )
+    validate_vllm_hardware_receipts(cell, payload, path)
+    if damage == "coverage":
+        payload["input_provenance"]["native_hardware_manifest"].pop()
+    else:
+        payload["producer"]["hardware_contract_version"] = 2
+    with pytest.raises(ValueError, match="hardware"):
         validate_vllm_hardware_receipts(cell, payload, path)

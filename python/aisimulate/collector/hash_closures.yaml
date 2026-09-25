@@ -310,3 +310,41 @@ collector.wideep.trtllm.collect_moe_a2a:
   - collector/wideep/trtllm/slurm/run_trtllm_moe_a2a_job.sh
   - collector/wideep/trtllm/slurm/submit_trtllm_moe_a2a.sh
   - __model_cases__
+
+# Full native GLM request/measurement/physical-identity chain.
+collector.sglang.collect_glm53flash: &glm53flash_native_closure
+  - collector/cases/base_ops/glm53flash_module.yaml
+  - collector/collect_glm53flash.py
+  - collector/glm53flash_contract.py
+  - collector/glm53flash_native_hooks.py
+  - collector/glm53flash_observer.py
+  - collector/glm53flash_validation.py
+  - collector/glm53flash_protocol.py
+  - collector/glm53flash_sglang_runtime.py
+  - collector/glm53flash_vllm_runtime.py
+  - collector/glm53flash_vllm_graph_ops.py
+  - collector/glm53flash_vllm_graph_policy.py
+  - collector/glm53flash_graph_nodes.py
+  - collector/glm53flash_graph_libraries.py
+  - collector/glm53flash_graph_hooks.py
+  - collector/glm53flash_graph_callbacks.py
+  - collector/fpm_forward/sglang_driver.py
+  - collector/fpm_forward/sglang_artifact.py
+  - collector/fpm_forward/native_artifact.py
+  - collector/fpm_forward/runtime/glm53flash/glm53flash_scheduler.py
+  - collector/fpm_forward/runtime/glm53flash/sitecustomize.py
+  - collector/fpm_forward/runtime/glm53flash/runtime-source-sha256.json
+  - collector/fpm_forward/runtime/glm53flash_sglang/runtime-source-sha256.json
+  - src/aisimulate_core/sdk/glm53flash.py
+  - src/aisimulate_core/sdk/models/glm53flash.py
+  - src/aisimulate_core/sdk/models/__init__.py
+  - src/aisimulate_core/sdk/models/base.py
+  - src/aisimulate_core/sdk/models/helpers.py
+  - src/aisimulate_core/sdk/config.py
+  - src/aisimulate_core/sdk/common.py
+  - src/aisimulate_core/sdk/utils.py
+  - src/aisimulate_core/model_configs/zai-org--GLM-5.3-Flash_config.json
+  - src/aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_config.json
+  - src/aisimulate_core/model_configs/nvidia--GLM-5.3-Flash-NVFP4_hf_quant_config.json
+  - __model_cases__
+collector.vllm.collect_glm53flash: *glm53flash_native_closure

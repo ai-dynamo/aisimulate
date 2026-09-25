@@ -164,26 +164,33 @@ def freeze_requests(points: list[dict], *, request_set: str, dataset_role: str, 
     }
 
 
-def validate_eager_args(server, *, resolved: bool) -> None:
+def validate_eager_args(server, *, resolved: bool, native_prefill: bool = False) -> None:
     """Respect native ServerArgs' separate declaration/resolution lifecycle."""
+    expected = {"prefill": "disabled", "decode": "full" if native_prefill else "disabled"}
+    scope = "disable prefill capture and retain FULL decode" if native_prefill else "disable both native graph phases"
     if resolved:
         # Native resolution freezes raw input fields and writes a declaration
         # stash; direct attributes still contain the original CLI values.
         config = server.resolved_dict().get("cuda_graph_config")
         if not isinstance(config, dict) or any(
-            config.get(phase, {}).get("backend") != "disabled" for phase in ("decode", "prefill")
+            config.get(phase, {}).get("backend") != mode for phase, mode in expected.items()
         ):
-            raise ValueError("resolved SGLang Ops execution must disable both native graph phases")
+            raise ValueError(f"resolved SGLang Ops execution must {scope}")
         return
     config = server.cuda_graph_config
     if config is None:
-        if server.cuda_graph_backend_decode != "disabled" or server.cuda_graph_backend_prefill != "disabled":
-            raise ValueError("declared SGLang Ops execution must disable both native graph phases")
+        if any(getattr(server, f"cuda_graph_backend_{phase}") != mode for phase, mode in expected.items()):
+            raise ValueError(f"declared SGLang Ops execution must {scope}")
     elif isinstance(config, dict):
-        if any(config.get(phase, {}).get("backend") != "disabled" for phase in ("decode", "prefill")):
-            raise ValueError("declared SGLang Ops graph config must disable both phases")
-    elif any(getattr(config, phase).backend != "disabled" for phase in ("decode", "prefill")):
-        raise ValueError("declared SGLang Ops graph config must disable both phases")
+        if any(config.get(phase, {}).get("backend") != mode for phase, mode in expected.items()):
+            raise ValueError(f"declared SGLang Ops graph config must {scope}")
+    elif any(getattr(config, phase).backend != mode for phase, mode in expected.items()):
+        raise ValueError(f"declared SGLang Ops graph config must {scope}")
+
+
+def validate_native_prefill_scope(purpose: str, phase: str, enabled: bool) -> None:
+    if enabled and (purpose not in ("ops", "ops_holdout") or phase != "prefill"):
+        raise ValueError("native eager prefill requires an Ops prefill target")
 
 
 def validate_server_args(args, *, measured_context_limit=MAX_MEASURED_CONTEXT) -> None:
@@ -365,6 +372,33 @@ def read_ops_provenance(path: Path, *, raw_config: dict, checkpoint_revision: st
     return {**expected, "runtime_digest": supplied["runtime_digest"]}
 
 
+def generate_native_request(
+    engine,
+    *,
+    root,
+    benchmark_id,
+    repetition,
+    mode,
+    request_ids,
+    inputs,
+    graph_submission=False,
+    reference=None,
+    reference_sha256=None,
+):
+    """Submit exactly one original public request, retaining graph kwargs first."""
+    params = {"temperature": 0, "max_new_tokens": 2 if mode == "decode" else 1, "ignore_eos": True}
+    if graph_submission:
+        from collector import glm53flash_sglang_control as native_control
+
+        if mode != "decode":
+            raise ValueError("native graph request submission requires decode")
+        params = native_control.sampling_parameters(reference, benchmark_id, repetition, inputs)
+        native_control.append_submission(root, benchmark_id, repetition, request_ids, inputs, params, reference_sha256)
+    elif reference is not None or reference_sha256 is not None:
+        raise ValueError("native input reference cannot alter a non-graph request")
+    return engine.generate(input_ids=inputs, rid=request_ids, sampling_params=params)
+
+
 def main(argv=None) -> None:
     from .sglang_allocator import OPTION, cli_max_split_size, prepare_environment
 
@@ -388,8 +422,23 @@ def main(argv=None) -> None:
     parser.add_argument("--dataset-role", choices=("calibration", "holdout"), default="calibration")
     parser.add_argument("--run-id", default=os.environ.get("DYN_FPM_RUN_ID", "glm53flash"))
     parser.add_argument("--request-timeout-seconds", type=int, default=900)
-    parser.add_argument("--observation-purpose", choices=("fpm", "ops", "ops_holdout"), default="fpm")
+    parser.add_argument(
+        "--observation-purpose", choices=("fpm", "ops", "ops_holdout", "ops_graph", "ops_graph_holdout"), default="fpm"
+    )
+    parser.add_argument("--ops-native-prefill", action="store_true")
+    parser.add_argument("--ops-graph-control-inputs", type=Path)
+    parser.add_argument("--ops-graph-control-inputs-sha256")
     args = parser.parse_args(argv)
+    from collector.glm53flash_sglang_control import validate_scope as validate_control_scope
+
+    validate_control_scope(
+        args.observation_purpose,
+        args.benchmark_mode,
+        args.dataset_role,
+        args.ops_graph_control_inputs,
+        args.ops_graph_control_inputs_sha256,
+    )
+    validate_native_prefill_scope(args.observation_purpose, args.benchmark_mode, args.ops_native_prefill)
     if args.sglang_allocator_max_split_size_mb != allocator_policy["max_split_size_mb"]:
         raise ValueError("allocator request differs from pre-import policy; use the complete option name")
     server = ServerArgs.from_cli_args(args)
@@ -397,14 +446,39 @@ def main(argv=None) -> None:
     if args.observation_purpose in ("ops", "ops_holdout"):
         if bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")) != (args.observation_purpose == "ops"):
             raise ValueError("SGLang Ops requires an explicit manifest and native eager execution")
-        validate_eager_args(server, resolved=False)
-    elif os.environ.get("AISIM_GLM53_OPS_MANIFEST"):
+        if os.environ.get("AISIM_GLM53_GRAPH_OPS_MANIFEST"):
+            raise ValueError("eager operation collection cannot also install graph observers")
+        validate_eager_args(server, resolved=False, native_prefill=args.ops_native_prefill)
+    elif args.observation_purpose in ("ops_graph", "ops_graph_holdout"):
+        if (
+            os.environ.get("AISIM_GLM53_OPS_MANIFEST")
+            or bool(os.environ.get("AISIM_GLM53_GRAPH_OPS_MANIFEST")) != (args.observation_purpose == "ops_graph")
+            or args.benchmark_mode != "decode"
+        ):
+            raise ValueError("native graph Ops requires a separate manifest and decode target scope")
+        if server.cuda_graph_backend_decode != "full" or server.cuda_graph_backend_prefill != "disabled":
+            raise ValueError("initial native graph Ops requires explicit FULL decode and disabled prefill capture")
+    elif os.environ.get("AISIM_GLM53_OPS_MANIFEST") or os.environ.get("AISIM_GLM53_GRAPH_OPS_MANIFEST"):
         raise ValueError("SGLang FPM cannot run with Ops instrumentation")
     output = args.benchmark_output
     output.parent.mkdir(parents=True, exist_ok=True)
     if output.exists():
         raise ValueError("SGLang refuses to overwrite an existing benchmark artifact")
     verify_runtime(output.parent)
+    graph_submission = args.observation_purpose in ("ops_graph", "ops_graph_holdout")
+    control_reference = None
+    if graph_submission:
+        from collector import glm53flash_sglang_control as native_control
+
+        producer = native_control.producer_identity()
+        native_control.write_new(output.parent / native_control.PRODUCER, producer)
+        if args.ops_graph_control_inputs:
+            control_reference = native_control.load_reference(
+                args.ops_graph_control_inputs, args.ops_graph_control_inputs_sha256, producer
+            )
+            # Retain the exact caller-supplied bytes under the control root.
+            with (output.parent / native_control.REFERENCE).open("xb") as stream:
+                stream.write(args.ops_graph_control_inputs.read_bytes())
     expected_model = next(model for model, revision in MODEL_REVISIONS.items() if revision == args.tokenizer_revision)
     raw_config = get_model_config_from_model_path(server.model_path)["raw_config"]
     expected_config = get_model_config_from_model_path(expected_model)["raw_config"]
@@ -453,6 +527,14 @@ def main(argv=None) -> None:
     provenance = {
         "allocator_policy": allocator_policy,
         "run_id": args.run_id,
+        **(
+            {
+                "ops_execution_mode": "native_eager_prefill",
+                "prefill_measurement_contract": "native_sglang_prefill_events_v1",
+            }
+            if args.ops_native_prefill
+            else {}
+        ),
         "execution_identity": identity,
         "telemetry_policy": TELEMETRY_POLICY,
         "producer_protocol": PRODUCER_PROTOCOL,
@@ -462,7 +544,7 @@ def main(argv=None) -> None:
             "native_admission_headroom": SGLANG_CONTEXT_HEADROOM,
         },
     }
-    if args.observation_purpose in ("ops", "ops_holdout"):
+    if args.observation_purpose != "fpm":
         checkpoint_config, checkpoint_file_sha256 = raw_checkpoint_config(
             server.model_path, args.tokenizer_revision, expected_model
         )
@@ -476,6 +558,9 @@ def main(argv=None) -> None:
             **provenance,
             "checkpoint_config_file_sha256": checkpoint_file_sha256,
         }
+    if graph_submission:
+        provenance["native_request_submission"] = native_control.SUBMISSION
+        provenance["native_control_reference_sha256"] = args.ops_graph_control_inputs_sha256
     provenance_path = output.parent / "sglang-provenance.json"
     write_json(provenance_path, provenance)
     write_json(output.parent / "sglang-declared-config.json", server.resolved_dict())
@@ -490,7 +575,11 @@ def main(argv=None) -> None:
     try:
         engine = create_observed_engine(server)
         if args.observation_purpose in ("ops", "ops_holdout"):
-            validate_eager_args(engine.server_args, resolved=True)
+            validate_eager_args(engine.server_args, resolved=True, native_prefill=args.ops_native_prefill)
+        elif args.observation_purpose in ("ops_graph", "ops_graph_holdout"):
+            config = engine.server_args.resolved_dict()["cuda_graph_config"]
+            if config["decode"]["backend"] != "full" or config["prefill"]["backend"] != "disabled":
+                raise ValueError("resolved native graph policy differs from explicit graph Ops scope")
         write_json(output.parent / "sglang-resolved-config.json", engine.server_args.resolved_dict())
         for point in points:
             for repetition in range(WARMUPS + MEASUREMENTS):
@@ -513,14 +602,17 @@ def main(argv=None) -> None:
                 old_handler = signal.signal(signal.SIGALRM, timeout)
                 signal.alarm(args.request_timeout_seconds)
                 try:
-                    result = engine.generate(
-                        input_ids=inputs,
-                        rid=[rid for rid, _ in selected],
-                        sampling_params={
-                            "temperature": 0,
-                            "max_new_tokens": 2 if args.benchmark_mode == "decode" else 1,
-                            "ignore_eos": True,
-                        },
+                    result = generate_native_request(
+                        engine,
+                        root=output.parent,
+                        benchmark_id=point["benchmark_id"],
+                        repetition=repetition,
+                        mode=args.benchmark_mode,
+                        request_ids=[rid for rid, _ in selected],
+                        inputs=inputs,
+                        graph_submission=graph_submission,
+                        reference=control_reference,
+                        reference_sha256=args.ops_graph_control_inputs_sha256,
                     )
                     wait_retained_release(
                         output.parent, [rid for rid, _ in selected], server.tp_size, args.request_timeout_seconds
@@ -541,7 +633,7 @@ def main(argv=None) -> None:
                         + "\n"
                     )
         trace_paths = [output.parent / f"forward-rank-{rank}.jsonl" for rank in range(server.tp_size)]
-        if args.observation_purpose in ("ops", "ops_holdout"):
+        if args.observation_purpose != "fpm":
             write_json(
                 output.parent / "ops-run-summary.json",
                 {

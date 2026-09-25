@@ -16,7 +16,9 @@
 //! DSA, DSV4) get one variant per phase so a single `query` method handles
 //! dispatch.
 
-use crate::operators::{Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53PrimitiveOp, Glm53RouterOp};
+use crate::operators::{
+    Glm53AttentionOp, Glm53FfnOp, Glm53MhcOp, Glm53PrimitiveOp, Glm53RouterOp, Glm53RuntimeOp,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::common::error::AicError;
@@ -189,6 +191,8 @@ pub enum Op {
     Glm53Router(Glm53RouterOp),
     Glm53Ffn(Glm53FfnOp),
     Glm53Primitive(Glm53PrimitiveOp),
+    // Append only: preserve every existing bincode variant index.
+    Glm53Runtime(Glm53RuntimeOp),
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -288,6 +292,7 @@ impl Op {
             Op::Glm53Router(o) => o.weight_bytes(),
             Op::Glm53Ffn(o) => o.weight_bytes(),
             Op::Glm53Primitive(o) => o.weight_bytes(),
+            Op::Glm53Runtime(_) => 0.0,
             Op::TokenScale(o) => o.op.weight_bytes(),
             Op::Gemm(o) => o.weights_bytes(),
             Op::Embedding(o) => o.weights_bytes(),
@@ -353,6 +358,7 @@ impl Op {
             Op::Glm53Router(o) => &o.name,
             Op::Glm53Ffn(o) => &o.name,
             Op::Glm53Primitive(o) => &o.name,
+            Op::Glm53Runtime(o) => &o.name,
             Op::TokenScale(o) => o.op.name(),
             Op::Gemm(o) => &o.name,
             Op::Embedding(o) => &o.name,
@@ -407,6 +413,7 @@ impl Op {
             Op::Glm53Router(o) => o.name = name,
             Op::Glm53Ffn(o) => o.name = name,
             Op::Glm53Primitive(o) => o.name = name,
+            Op::Glm53Runtime(o) => o.name = name,
             Op::TokenScale(o) => o.op.set_name(name),
             Op::Gemm(o) => o.name = name,
             Op::Embedding(o) => o.name = name,
@@ -492,7 +499,8 @@ impl Op {
             | Op::Glm53Mhc(_)
             | Op::Glm53Router(_)
             | Op::Glm53Ffn(_)
-            | Op::Glm53Primitive(_) => {}
+            | Op::Glm53Primitive(_)
+            | Op::Glm53Runtime(_) => {}
             Op::Dsv4MegaMoe(o) => o.scale_factor = scale_factor,
             Op::Kda(o) => o.scale_factor = scale_factor,
             Op::MoeAllToAll(o) => o.scale_factor = scale_factor,
@@ -553,6 +561,15 @@ impl Op {
         db: &PerfDatabase,
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
+        if matches!(
+            db.database_mode,
+            crate::common::enums::DatabaseMode::Silicon
+                | crate::common::enums::DatabaseMode::Hybrid
+        ) {
+            if let Some(result) = db.glm53flash_graph.query(self, ctx)? {
+                return Ok(result);
+            }
+        }
         match self {
             Op::Dsv41Attention(op) => op.query(db, ctx),
             Op::Dsv41Mhc(op) => op.query(db, ctx.num_tokens),
@@ -564,6 +581,7 @@ impl Op {
             Op::Glm53Router(op) => op.query(db, ctx.num_tokens),
             Op::Glm53Ffn(op) => op.query(db, ctx),
             Op::Glm53Primitive(op) => op.query(db, ctx),
+            Op::Glm53Runtime(op) => op.query(db, ctx),
             Op::TokenScale(op) => {
                 let scaled = RuntimeContext {
                     batch_size: op.scale_tokens(ctx.batch_size)?,

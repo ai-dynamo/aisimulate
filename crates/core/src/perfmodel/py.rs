@@ -349,6 +349,24 @@ impl AicEngine {
             .map_err(aic_to_py)
     }
 
+    /// Original measured endpoints selected by the native GLM lookup.
+    fn glm53flash_lookup_audit(
+        &self,
+        py: Python<'_>,
+        phase: &str,
+        batch: u32,
+        query: u32,
+        prefix: u32,
+    ) -> PyResult<String> {
+        let value = py
+            .allow_threads(|| {
+                self.inner
+                    .glm53flash_lookup_audit(phase, batch, query, prefix)
+            })
+            .map_err(aic_to_py)?;
+        serde_json::to_string(&value).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
     /// Mocker H2: decode-step latency in ms. Thin shim over `run_static` with
     /// `mode=Generation`. Mocker passes `osl=2` (one decode step at
     /// `s = isl + 1`). Returns the total ms (== generation_ms in this mode).

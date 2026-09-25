@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+schema_version: 1
+op: glm53flash_module
+description: Native eager GLM module calibration; exact request coordinates remain mandatory.
+common_case_values:
+  glm53flash_module:
+    prefill_points:
+      - {batch_size: 1, query: 128, prefix: 0}
+      - {batch_size: 1, query: 129, prefix: 4095}
+      - {batch_size: 1, query: 512, prefix: 32768}
+      - {batch_size: 1, query: 128, prefix: 130944}
+      - {batch_size: 4, query: 512, prefix: 0}
+      - {batch_size: 4, query: 128, prefix: 8192}
+    decode_batch_sizes: [1, 4, 16, 32]
+    decode_prefix_lengths: [128, 2048, 8192, 32768, 65536, 131071]

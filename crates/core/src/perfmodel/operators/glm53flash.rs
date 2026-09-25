@@ -12,7 +12,7 @@
 use crate::common::enums::{DatabaseMode, GemmQuantMode, KvCacheQuantMode, MoeQuantMode};
 use crate::common::error::AicError;
 use crate::common::system_spec::{SystemSpec, quant_tc_flops};
-use crate::operators::base::{PerformanceResult, SolComponents};
+use crate::operators::base::{PerformanceResult, SolComponents, Source};
 use crate::operators::op::{Op, RuntimeContext};
 use crate::perf_database::PerfDatabase;
 use serde::{Deserialize, Serialize};
@@ -42,17 +42,39 @@ fn identity(backend: &str, checkpoint: &str) -> Result<(), AicError> {
     }
     Ok(())
 }
-// The Ops PR supplies the measured table. Until then explicit SILICON must
-// fail; HYBRID reports Source::Sol rather than relabelling an analytical value.
-fn analytical_only(db: &PerfDatabase, component: &str) -> Result<(), AicError> {
-    match db.database_mode {
-        DatabaseMode::Silicon => Err(AicError::PerfDatabase(format!(
-            "GLM-5.3-Flash {component} has no measured SILICON data"
-        ))),
-        DatabaseMode::Empirical => Err(AicError::EmpiricalNotImplemented(format!(
+// Missing measured coverage remains an error in both SILICON and HYBRID.
+fn measured<T: Serialize>(
+    db: &PerfDatabase,
+    component: &str,
+    op: &T,
+    batch: u32,
+    prefix: u32,
+    x: u32,
+) -> Result<PerformanceResult, AicError> {
+    if db.database_mode == DatabaseMode::Empirical {
+        return Err(AicError::EmpiricalNotImplemented(format!(
             "GLM-5.3-Flash {component} has no empirical anchor"
+        )));
+    }
+    let shape = serde_json::to_value(op).map_err(|e| AicError::InvalidPerfData(e.to_string()))?;
+    if (shape.get("is_context") == Some(&serde_json::Value::Bool(false))
+        && db.glm53flash_graph.has_measurements()?)
+        || db.glm53flash_graph.requires_serving_context(&shape)?
+    {
+        return Err(AicError::InvalidPerfData("native graph data requires the Op RuntimeContext query; token-only/direct legacy lookup is unsupported".into()));
+    }
+    if batch == 0 || x == 0 {
+        return Ok(PerformanceResult::with_energy(0.0, 0.0, Source::Silicon));
+    }
+    match db.glm53flash.query(component, op, batch, prefix, x)? {
+        Some(value) => Ok(PerformanceResult::with_energy(
+            value.latency,
+            value.energy,
+            Source::Silicon,
+        )),
+        None => Err(AicError::PerfDatabase(format!(
+            "GLM-5.3-Flash {component} has no exact measured data for geometry, batch={batch}, prefix={prefix}, x={x}"
         ))),
-        _ => Ok(()),
     }
 }
 fn weight_size(q: GemmQuantMode) -> f64 {
@@ -373,7 +395,17 @@ impl Glm53AttentionOp {
         db: &PerfDatabase,
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
-        analytical_only(db, "attention")?;
+        self.validate()?;
+        if !matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            return measured(
+                db,
+                "attention",
+                self,
+                ctx.batch_size,
+                if self.is_context { ctx.prefix } else { 0 },
+                ctx.s,
+            );
+        }
         self.sol(
             &db.system_spec,
             ctx.batch_size as f64,
@@ -397,6 +429,29 @@ pub struct Glm53MhcOp {
     pub sinkhorn_iters: u32,
 }
 impl Glm53MhcOp {
+    pub fn validate(&self) -> Result<(), AicError> {
+        identity(&self.backend, &self.checkpoint_format)?;
+        if self.hidden_size == 0
+            || self.hc_mult != 4
+            || self.sinkhorn_iters != 20
+            || !matches!(self.tp_size, 1 | 2 | 4)
+        {
+            return Err(AicError::ModelConfig(
+                "GLM mHC requires positive hidden size, multiplier4 and20 Sinkhorn iterations"
+                    .into(),
+            ));
+        }
+        if !matches!(
+            self.role.as_str(),
+            "pre" | "post" | "fused_post_pre" | "expand" | "contract"
+        ) || (self.backend == "sglang" && self.role == "fused_post_pre")
+        {
+            return Err(AicError::ModelConfig(
+                "unsupported GLM mHC backend role".into(),
+            ));
+        }
+        Ok(())
+    }
     pub fn weight_bytes(&self) -> f64 {
         let (h, c) = (self.hidden_size as f64, self.hc_mult as f64);
         if matches!(self.role.as_str(), "pre" | "fused_post_pre") {
@@ -406,13 +461,9 @@ impl Glm53MhcOp {
         }
     }
     pub fn sol(&self, spec: &SystemSpec, x: f64) -> Result<PerformanceResult, AicError> {
-        identity(&self.backend, &self.checkpoint_format)?;
+        self.validate()?;
         let (h, c) = (self.hidden_size as f64, self.hc_mult as f64);
-        if c != 4.0 || self.sinkhorn_iters != 20 || !matches!(self.tp_size, 1 | 2 | 4) {
-            return Err(AicError::ModelConfig(
-                "GLM mHC requires TP1/2/4, multiplier4 and20 Sinkhorn iterations".into(),
-            ));
-        }
+
         if x <= 0.0 {
             return Ok(zero());
         }
@@ -438,8 +489,12 @@ impl Glm53MhcOp {
         ))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytical_only(db, "mhc")?;
-        self.sol(&db.system_spec, tokens as f64)
+        self.validate()?;
+        if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            self.sol(&db.system_spec, tokens as f64)
+        } else {
+            measured(db, "mhc", self, 1, 0, tokens)
+        }
     }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -452,14 +507,20 @@ pub struct Glm53RouterOp {
     pub topk: u32,
 }
 impl Glm53RouterOp {
+    pub fn validate(&self) -> Result<(), AicError> {
+        identity(&self.backend, &self.checkpoint_format)?;
+        if self.hidden_size == 0 || self.topk == 0 || self.topk > self.num_experts {
+            return Err(AicError::ModelConfig(
+                "invalid GLM router geometry/topk".into(),
+            ));
+        }
+        Ok(())
+    }
     pub fn weight_bytes(&self) -> f64 {
         4.0 * f64::from(self.num_experts) * f64::from(self.hidden_size)
     }
     pub fn sol(&self, spec: &SystemSpec, x: f64) -> Result<PerformanceResult, AicError> {
-        identity(&self.backend, &self.checkpoint_format)?;
-        if self.topk == 0 || self.topk > self.num_experts {
-            return Err(AicError::ModelConfig("invalid GLM router topk".into()));
-        }
+        self.validate()?;
         if x <= 0.0 {
             return Ok(zero());
         }
@@ -474,8 +535,12 @@ impl Glm53RouterOp {
         ))
     }
     pub fn query(&self, db: &PerfDatabase, tokens: u32) -> Result<PerformanceResult, AicError> {
-        analytical_only(db, "router")?;
-        self.sol(&db.system_spec, tokens as f64)
+        self.validate()?;
+        if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            self.sol(&db.system_spec, tokens as f64)
+        } else {
+            measured(db, "router", self, 1, 0, tokens)
+        }
     }
 }
 
@@ -509,7 +574,9 @@ pub struct Glm53FfnOp {
     pub children: Vec<Op>,
 }
 impl Glm53FfnOp {
-    pub fn validate(&self) -> Result<(), AicError> {
+    /// Validate the measured physical identity without analytical children.
+    /// Row admission uses this method because children are excluded from keys.
+    pub fn validate_physical(&self) -> Result<(), AicError> {
         identity(&self.backend, &self.checkpoint_format)?;
         if !matches!(self.tp_size, 1 | 2 | 4)
             || self.hidden_size != 4096
@@ -523,13 +590,6 @@ impl Glm53FfnOp {
             || self.num_experts != 288
             || self.topk != 8
             || self.intermediate_size != if self.is_dense { 12288 } else { 2048 }
-            || self.children.len() != if self.is_dense { 3 } else { 5 }
-            || self.children.iter().any(|op| {
-                !matches!(
-                    op,
-                    Op::Gemm(_) | Op::Elementwise(_) | Op::Moe(_) | Op::Glm53Router(_)
-                )
-            })
         {
             return Err(AicError::ModelConfig(
                 "GLM-5.3-Flash FFN requires the native sigmoid/top8/clamp10 pure-TP contract"
@@ -557,11 +617,27 @@ impl Glm53FfnOp {
                 "GLM FFN checkpoint precision partition disagrees with its geometry".into(),
             ));
         }
+        Ok(())
+    }
+    pub fn validate(&self) -> Result<(), AicError> {
+        self.validate_physical()?;
+        if self.children.len() != if self.is_dense { 3 } else { 5 }
+            || self.children.iter().any(|op| {
+                !matches!(
+                    op,
+                    Op::Gemm(_) | Op::Elementwise(_) | Op::Moe(_) | Op::Glm53Router(_)
+                )
+            })
+        {
+            return Err(AicError::ModelConfig(
+                "GLM FFN requires its complete analytical composition".into(),
+            ));
+        }
         let width = self.intermediate_size / self.tp_size;
         let quant = if self.is_dense {
-            gemm_quant
+            self.gemm_quant_mode
         } else {
-            shared_quant
+            self.shared_quant_mode
         };
         let gemm_matches = |op: &Op, n: u32, k: u32| {
             matches!(op,Op::Gemm(g)
@@ -610,7 +686,16 @@ impl Glm53FfnOp {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         self.validate()?;
-        analytical_only(db, "ffn")?;
+        if !matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            let tokens = if self.is_context {
+                ctx.batch_size.checked_mul(ctx.s).ok_or_else(|| {
+                    AicError::ModelConfig("GLM FFN token count exceeds u32 coordinates".into())
+                })?
+            } else {
+                ctx.batch_size
+            };
+            return measured(db, "ffn", self, 1, 0, tokens);
+        }
         self.sol(db, ctx)
     }
 }
@@ -734,8 +819,65 @@ impl Glm53PrimitiveOp {
         ctx: &RuntimeContext,
     ) -> Result<PerformanceResult, AicError> {
         self.validate()?;
-        analytical_only(db, "primitive")?;
+        if !matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            let tokens = if self.token_selection == "last_per_request" || !self.is_context {
+                ctx.batch_size
+            } else {
+                ctx.batch_size.checked_mul(ctx.s).ok_or_else(|| {
+                    AicError::ModelConfig(
+                        "GLM primitive token count exceeds u32 coordinates".into(),
+                    )
+                })?
+            };
+            return measured(db, "primitive", self, 1, 0, tokens);
+        }
         self.sol(db, ctx)
+    }
+}
+
+/// Explicit runtime bookkeeping, separate from the 277/366 physical model
+/// boundaries. SOL preserves its analytic zero. A selected native graph or
+/// SG prefill profile must answer this marker from measured setup exactly once;
+/// historical tables without an explicit setup contract retain their behavior.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Glm53RuntimeOp {
+    pub name: String,
+    pub backend: String,
+    pub checkpoint_format: String,
+    pub tp_size: u32,
+    pub is_context: bool,
+}
+impl Glm53RuntimeOp {
+    pub fn validate(&self) -> Result<(), AicError> {
+        identity(&self.backend, &self.checkpoint_format)?;
+        if self.name != "native_graph_setup" || !matches!(self.tp_size, 1 | 2 | 4) {
+            return Err(AicError::ModelConfig(
+                "invalid GLM native runtime marker".into(),
+            ));
+        }
+        Ok(())
+    }
+    pub fn query(
+        &self,
+        db: &PerfDatabase,
+        ctx: &RuntimeContext,
+    ) -> Result<PerformanceResult, AicError> {
+        self.validate()?;
+        if matches!(db.database_mode, DatabaseMode::Sol | DatabaseMode::SolFull) {
+            return Ok(zero());
+        }
+        if db.database_mode == DatabaseMode::Empirical {
+            return Err(AicError::EmpiricalNotImplemented(
+                "GLM native runtime setup has no empirical anchor".into(),
+            ));
+        }
+        if let Some(value) = db
+            .glm53flash_graph
+            .query(&Op::Glm53Runtime(self.clone()), ctx)?
+        {
+            return Ok(value);
+        }
+        Ok(PerformanceResult::with_energy(0.0, 0.0, Source::Silicon))
     }
 }
 
@@ -887,8 +1029,97 @@ pub(crate) mod tests {
             }
         }
         assert!(matches!(
-            analytical_only(&db(DatabaseMode::Silicon), "attention"),
-            Err(AicError::PerfDatabase(_))
+            measured(
+                &db(DatabaseMode::Silicon),
+                "attention",
+                &attention("kda"),
+                1,
+                0,
+                128
+            ),
+            // This fixture intentionally points GLM at historical SGLang0.5.14.
+            // Native identity rejection precedes any possible foreign-table hit.
+            Err(AicError::InvalidPerfData(_))
         ));
+    }
+
+    #[test]
+    fn invalid_physical_geometry_fails_before_measured_lookup() {
+        let db = db(DatabaseMode::Silicon);
+        let mut attention = attention("kda");
+        attention.conv_kernel = 3;
+        assert!(matches!(
+            attention.query(&db, &RuntimeContext::default()),
+            Err(AicError::ModelConfig(_))
+        ));
+        let mhc = Glm53MhcOp {
+            name: "bad_mhc".into(),
+            tp_size: 2,
+            is_context: true,
+            role: "unknown".into(),
+            backend: "vllm".into(),
+            checkpoint_format: "fp8".into(),
+            hidden_size: 4096,
+            hc_mult: 4,
+            sinkhorn_iters: 20,
+        };
+        assert!(matches!(mhc.query(&db, 1), Err(AicError::ModelConfig(_))));
+        let router = Glm53RouterOp {
+            name: "bad_router".into(),
+            backend: "vllm".into(),
+            checkpoint_format: "fp8".into(),
+            hidden_size: 4096,
+            num_experts: 288,
+            topk: 289,
+        };
+        assert!(matches!(
+            router.query(&db, 1),
+            Err(AicError::ModelConfig(_))
+        ));
+    }
+
+    #[test]
+    fn ffn_physical_rows_need_no_children_but_queries_reject_token_overflow() {
+        use crate::operators::{elementwise::ElementwiseOp, gemm::GemmOp};
+        let mut op = Glm53FfnOp {
+            name: "ffn_0".into(),
+            backend: "vllm".into(),
+            checkpoint_format: "fp8".into(),
+            is_context: true,
+            is_dense: true,
+            hidden_size: 4096,
+            intermediate_size: 12288,
+            num_experts: 288,
+            topk: 8,
+            tp_size: 2,
+            n_shared_experts: 1,
+            swiglu_limit: 10.0,
+            scoring_func: "sigmoid".into(),
+            routed_scaling_factor: 2.5,
+            n_group: 1,
+            topk_group: 1,
+            norm_topk_prob: true,
+            gemm_quant_mode: GemmQuantMode::Fp8Block,
+            shared_quant_mode: GemmQuantMode::Fp8Block,
+            moe_quant_mode: MoeQuantMode::Fp8Block,
+            children: vec![],
+        };
+        assert!(op.validate_physical().is_ok());
+        assert!(op.validate().is_err());
+        op.children = vec![
+            Op::Gemm(GemmOp::new("up", 12288, 4096, GemmQuantMode::Fp8Block)),
+            Op::Elementwise(ElementwiseOp::new("clamp", 6.0 * 6144.0)),
+            Op::Gemm(GemmOp::new("down", 4096, 6144, GemmQuantMode::Fp8Block)),
+        ];
+        assert!(op.validate().is_ok());
+        let ctx = RuntimeContext {
+            batch_size: u32::MAX,
+            s: 2,
+            ..RuntimeContext::default()
+        };
+        let error = op.query(&db(DatabaseMode::Silicon), &ctx).unwrap_err();
+        assert!(
+            matches!(&error, AicError::ModelConfig(message) if message.contains("exceeds u32"))
+        );
     }
 }

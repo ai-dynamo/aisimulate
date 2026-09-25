@@ -20,6 +20,13 @@ frameworks:
         default: "lmsysorg/sglang:v0.5.14@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3"
         cu130: "lmsysorg/sglang:v0.5.14-cu130@sha256:5027e95bf6ec536856b1b52a91d1f35ff5c564ab83e8a94758a169ff09bb8df3"
     families:
+      # GLM native module observations target GB300/ARM64 only. These platform
+      # digests and release/source labels were verified in the serving campaign;
+      # registry maturity remains unverified until the Ops paths are exercised.
+      glm53flash:
+        version: "0.5.20"
+        images:
+          default: "lmsysorg/sglang:v0.5.20@sha256:b0d8718a4424bb22e448e04407ab3ce5f7399a4c5fc702d6fbe36c3772ec8862"
       # Kimi-K3 KDA kernels exist only on the sglang kimi-k3 branch
       # (https://github.com/sgl-project/sglang/tree/kimi-k3), whose build
       # reports 0.5.16. Pin the branch image for the kda family only.
@@ -129,6 +136,13 @@ frameworks:
         default: "vllm/vllm-openai:v0.24.0@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f"
         cu129: "vllm/vllm-openai:v0.24.0-cu129@sha256:6b005c78cd17a1f0215f31e95d183833f4dfd6167c4473241b80d1c8843b91e8"
     families:
+      # GLM native module observations target GB300/ARM64 only. These platform
+      # digests and release/source labels were verified in the serving campaign;
+      # registry maturity remains unverified until the Ops paths are exercised.
+      glm53flash:
+        version: "0.30.0"
+        images:
+          default: "vllm/vllm-openai:v0.30.0@sha256:4864d46625cbc3307623e29ac742030655e27249feba7b97ec925ce4cc4dfb56"
       # Kimi-K3 KDA kernels exist on the official kimi-k3 preview image
       # (CUDA 13 build with fused_kda_decode + FlashKDA; setuptools-scm
       # version 0.1.dev19262+gb6bbf29dd) and upstreamed in v0.27.0 — but the

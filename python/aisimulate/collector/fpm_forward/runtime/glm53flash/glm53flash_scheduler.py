@@ -57,7 +57,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         self._real_request_set = f"{os.environ.get('FPM_RUN_ID', 'glm53flash')}-{uuid.uuid4().hex}"
         self._real_request_manifest = {}
         self._real_purpose = os.environ.get("AISIM_GLM53_PURPOSE", "fpm")
-        if self._real_purpose not in {"fpm", "ops", "ops_holdout"}:
+        if self._real_purpose not in {"fpm", "ops", "ops_holdout", "ops_graph", "ops_graph_holdout"}:
             raise ValueError("unsupported GLM observation purpose")
         self._real_tags = {}
         self._real_callback_stage = None
@@ -80,11 +80,11 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
         super()._bench_init(config)
         if not self._bench_active:
             raise ValueError("GLM-5.3-Flash canary overlay requires native benchmark mode")
-        if self._real_purpose == "fpm" and config.model_config.enforce_eager:
+        if self._real_purpose in {"fpm", "ops_graph", "ops_graph_holdout"} and config.model_config.enforce_eager:
             raise ValueError("GLM-5.3-Flash formal collection requires native graph policy")
-        if self._real_purpose != "fpm" and not config.model_config.enforce_eager:
+        if self._real_purpose in {"ops", "ops_holdout"} and not config.model_config.enforce_eager:
             raise ValueError("GLM operation observation currently requires explicit native eager execution")
-        if (self._real_purpose == "ops") != bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")):
+        if (self._real_purpose in {"ops", "ops_graph"}) != bool(os.environ.get("AISIM_GLM53_OPS_MANIFEST")):
             raise ValueError("GLM Ops instrumentation must match its explicit collection purpose")
         if not config.observability_config.cudagraph_metrics:
             raise ValueError("GLM-5.3-Flash FPM requires actual CUDA graph dispatch metrics")
@@ -622,15 +622,16 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             raise RuntimeError("GLM token history changed before publication")
         output["input_provenance"] = dict(self._real_input or {})
         output["input_provenance"]["context_policy"] = self._real_context_policy
-        hardware = []
-        for rank in range(self._real_tp_size if self._real_purpose == "fpm" else 0):
-            path = destination.with_name(f"native-device-rank-{rank}.json")
-            raw = path.read_bytes()
-            receipt = json.loads(raw)
-            if receipt.get("status") != "passed" or receipt.get("tp_rank") != rank:
-                raise RuntimeError("native GLM worker hardware qualification did not pass")
-            hardware.append({"tp_rank": rank, "file": path.name, "sha256": hashlib.sha256(raw).hexdigest()})
-        output["input_provenance"]["native_hardware_manifest"] = hardware
+        if self._real_purpose == "fpm":
+            hardware = []
+            for rank in range(self._real_tp_size):
+                path = destination.with_name(f"native-device-rank-{rank}.json")
+                raw = path.read_bytes()
+                receipt = json.loads(raw)
+                if receipt.get("status") != "passed" or receipt.get("tp_rank") != rank:
+                    raise RuntimeError("native GLM worker hardware qualification did not pass")
+                hardware.append({"tp_rank": rank, "file": path.name, "sha256": hashlib.sha256(raw).hexdigest()})
+            output["input_provenance"]["native_hardware_manifest"] = hardware
         output["input_provenance"]["token_stream_manifest"] = {
             "schema_version": 3,
             "file": stream_path.name,
@@ -641,9 +642,15 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             raise RuntimeError("native result context limit differs from the admitted GLM context policy")
         output["context_policy"] = self._real_context_policy
         output["execution_identity"] = self._real_identity
-        output["execution_mode"] = "native_graph_policy" if self._real_purpose == "fpm" else "eager_ops"
+        output["execution_mode"] = {
+            "fpm": "native_graph_policy",
+            "ops": "eager_ops",
+            "ops_holdout": "eager_ops",
+            "ops_graph": "native_graph_ops_calibration",
+            "ops_graph_holdout": "native_graph_ops_holdout",
+        }[self._real_purpose]
         output["observation_purpose"] = self._real_purpose
-        output["ops_instrumented"] = self._real_purpose == "ops"
+        output["ops_instrumented"] = self._real_purpose in {"ops", "ops_graph"}
         output["timing_boundary"] = "vllm_native_scheduler_output_interval"
         output["kvwarm"] = {
             "enabled": True,
@@ -665,7 +672,7 @@ class Glm53FlashRealKVScheduler(native.InstrumentedScheduler):
             ),
             "overlay_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "context_policy_version": 1,
-            "hardware_contract_version": 1,
+            **({"hardware_contract_version": 1} if self._real_purpose == "fpm" else {}),
             "warmup_repeats": WARMUP_REPEATS,
             "measurement_repeats": MEASUREMENT_REPEATS,
         }

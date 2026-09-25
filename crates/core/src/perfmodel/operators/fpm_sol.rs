@@ -117,6 +117,10 @@ pub(crate) fn op_sol_latency_ms(
         Op::ContextAttention(o) => Ok(context_attention_sol(o, spec, batch, s, prefix)),
         Op::GenerationAttention(o) => Ok(generation_attention_sol(o, spec, batch, s)),
         Op::Dsv41Attention(o) => Ok(o.sol(spec, batch, s, prefix)?.latency_ms),
+        Op::Glm53Runtime(o) => {
+            o.validate()?;
+            Ok(0.0)
+        }
         Op::Glm53Primitive(o) => {
             o.validate()?;
             let child_x = if o.token_selection == "last_per_request" {

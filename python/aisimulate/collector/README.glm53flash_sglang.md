@@ -9,6 +9,19 @@ native forward interval, including native graph load/replay work where the
 DeviceTimer includes it; they do not measure production scheduler throughput.
 Ordinary Engine smoke traces without this protocol cannot be formal data.
 
+For Ops prefill under the production decode policy, the driver accepts
+`--ops-native-prefill` only with a prefill target and `ops`/`ops_holdout`
+observation. It requires disabled prefill capture and FULL decode in both the
+declared and resolved native configuration. Decode graphs are constructed by
+the original runtime; prefill still reaches its native `EagerRunner` through
+`model_executor/model_runner.py:1774–1865` at the pinned revision below.
+The command builder exposes this as `ops_execution_mode="native_eager_prefill"`;
+an optional explicit `sglang_mem_fraction_static` is preserved in native argv.
+The evidence reader requires the same mode, actual NONE forwards, real request
+histories, and the existing embedding-to-logits GPU boundary. A separate control
+uses the calibration requests without operation hooks. This mode adds no graph
+fallback, state reconstruction or qualification by itself.
+
 For each repeat, the controller executes every prefix in real native chunks
 of at most 8192 new tokens, keeping the same request, KV row and KDA state slot.
 It then combines the parked requests into one native `ScheduleBatch` for the
@@ -125,6 +138,203 @@ request loops, shutdown order and watchdog settings are unchanged. This is a
 new producer source identity requiring qualification; original job 624031's
 watchdog and cleanup failure remain excluded from accepted data.
 
+### Source-bound native prefill units
+
+`--ops-native-prefill` retains disabled prefill graphs and FULL decode graph
+initialization. Its new observation contract is
+`native_sglang_prefill_events_v1`. Only the fifth excluded warmup uses the
+existing observer profiler, started at the actual native model entry and
+stopped after logits. The original Chrome document is retained with exact
+run/rank/forward identity before deriving CPU-scope → CUDA-API → GPU-activity
+ownership. Names are never used to assign kernels to operations. Every one of
+the 366 physical units must execute; qualified hoisted MLA projections can
+contribute disjoint source parts, and synchronous nested collectives own their
+activities exclusively. Unknown, missing or unowned device activity rejects
+export and leaves the trace and error evidence intact.
+
+The native `BumpAllocator.__init__` in the model's forward calls `torch.zeros`.
+The observer directly times its one actual 90-element FP32 CUDA allocation and
+records the constructor arguments as `native_graph_setup`. This interval is
+not a residual or a host allocator estimate. TBO, auxiliary hidden states,
+multimodal inputs, a second conditional zero allocator and a configured
+`input_embeds` copy buffer require separate observation contracts. The current
+route rejects these states without changing native execution. The remaining
+ten retained samples contain original CUDA-event intervals and no profiler.
+Independent control and holdout use only the original complete model timer.
+
+`glm53flash_sglang_prefill_export.export_prefill` rederives every trace, original
+event row, same-request state chain and all-rank 5+10 identity. It requires a
+separate control with identical native configuration (only random_seed is
+normalized), distinct requests, identical input tokens and the original 5%
+timing-equivalence threshold. Terminal sampled outputs remain in the original
+evidence and state-chain checks; they are produced after the timed boundary
+and need not equal the independent control's terminal outputs. One
+whole-forward slowest rank is selected per
+repetition for all its unit costs; retained medians never mix per-unit maxima.
+No ratio rescales measured latency.
+
+The dedicated `glm53flash_sglang_prefill_perf.parquet` schema4 keeps operation
+name and full B/Q/P coordinates for all 366 units plus the existing runtime
+marker. Without an explicit analysis lookup contract its public consumer supports
+exact homogeneous prefill queries, including SG's unaligned prefixes. Missing
+measured support, incomplete phases,
+wrong source/config/checkpoint/runtime, direct token-only queries and legacy
+eager fallback are rejected. Schema1 SG decode and vLLM schemas2/3 retain their
+meanings. Complete independent holdout coverage and accuracy acceptance still
+require real GPU evidence; CPU and TEST_ONLY tables do not establish them.
+
+The source boundaries additionally inspect immutable SGLang revision
+`94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, paths
+`python/sglang/srt/models/glm5_next.py`,
+`python/sglang/srt/managers/mm_utils.py` and
+`python/sglang/srt/utils/common.py` (Apache-2.0, SGLang Team and contributors).
+No upstream computation is copied or substituted. Original failed native
+prefill evidence without Chrome traces cannot be upgraded to this contract.
+
+
+### Independent graph control with matching native inputs
+
+The graph driver records its original public `Engine.generate` arguments in
+`sglang-request-inputs.jsonl` before each call, outside the model timer. It also
+records the actual collector source closure and the five pinned native
+sampling files, plus each worker's original loaded sampling methods. These
+receipts are part of the raw evidence. Existing runs without these receipts
+cannot be relabeled as this new producer.
+
+After a fresh calibration completes, call
+`glm53flash_sglang_control.freeze_reference(native_root, frozen_run, new_path)`.
+This revalidates the original complete native state and graph activity proofs
+and writes a new reference containing all 5+10 point repetitions, actual
+submitted request order, prompts, Q1 query tokens, input-history hashes and
+source/TP forward identities. The returned SHA identifies its original bytes.
+It does not imply that calibration has passed its independent timing control.
+
+Only a separate decode `ops_graph_holdout` process on the calibration corpus
+may pass `--ops-graph-control-inputs NEW_REFERENCE.json` together with
+`--ops-graph-control-inputs-sha256 SHA256`. Its public per-request sampling
+parameters add exactly `logit_bias={str(original_target_token): 100.0}` to the
+existing temperature-zero, two-token, ignore-EOS request. This is a fixed finite
+experimental value, not a documented native magnitude bound or a guarantee of
+selection. Before a GPU qualification, the actual pinned native CPU
+`SamplingParams(**kwargs).verify(vocab_size)` must accept those exact arguments.
+The GPU reader must then prove every real target query and complete input
+history equals the reference. A mismatch fails; there is no adaptive bias,
+retry, request-field mutation, tensor write or fabricated KV state.
+
+Native sampling applies this bias after the original metadata-to-logits model
+interval. The bias allocation can nevertheless change execution conditions;
+the original independent 5% timing control remains mandatory and cannot be
+used to rescale measured units. Terminal sampled outputs remain in the raw
+TP and state-chain evidence, but equality between terminal outputs is not an
+input constraint. Actual query/history disagreement still rejects export.
+Calibration and control must have the same complete producer and loaded
+sampling identity, native configuration and initialized graph policy. The
+control reference and its SHA remain in the original provenance/forward rows
+and are rederived against the calibration files during publication.
+
+This mechanism still needs actual native CPU and GPU qualification. Original
+failed controls stay failed. No new timing data, formal matrix coverage or
+accuracy acceptance follows from CPU fixtures.
+
+
+### Recorded native allocator policy
+
+The shared native driver accepts `--sglang-allocator-max-split-size-mb N`, an
+exact integer of at least 20 MiB under the pinned native PyTorch parser. It sets
+`PYTORCH_CUDA_ALLOC_CONF=backend:native,max_split_size_mb:N` before framework
+imports. Conflicting inherited CUDA/HIP/unified allocator settings and disabled
+caching are rejected, including explicitly empty settings. Omission follows
+the original default and does not reclassify historical unknown environments.
+
+Each new worker records the actual native backend, effective split limit,
+allowlisted environment, Torch source and loaded library identities, native
+run/precision identity and GPU. Every forward binds the original rank receipt
+SHA. Shared readers compare the normalized actual allocator with ServerArgs;
+known-policy evidence cannot be paired with legacy unknown evidence. These
+adapters are ported from FPM commit636206a73f391a1340b57acd8c396c557061c9db.
+Ops keeps its existing orchestration; externally frozen public FPM plans/cells
+must retain any explicit allocator option. This records execution identity,
+not capacity qualification, an OOM repair or performance acceptance.
+
+
+Ops additionally cross-checks the requested allocator option in the original
+plan, selected cell and runtime cell, reads every original rank receipt against
+its GPU and checkpoint, and checks every seed and measured forward's allocator
+SHA. Both graph and prefill readers derive the same actual allocator-inclusive
+execution-policy digest; independent controls, holdouts and existing shard
+unions reject known/unknown or differing actual policies. Schema4 uses its
+existing `execution_policy_sha256`. Schema1 retains the original meaning of
+`resolved_config_sha256` and binds allocator evidence through its Python
+execution-policy and raw/control evidence closure. No public allocator query
+axis or competing deployment policy is introduced.
+
+### Native prefill shard publication
+
+Schema4 calibration can be published from the exact complete child union of
+an original frozen parent plan. Each child is rederived from its native raw
+events, fifth-warmup Chrome trace, whole-forward rank selection and independent
+control. The merge preserves all 366 named units plus setup at each original
+B/Q/P point, individual evidence hashes and child run IDs; it does not average
+duplicate geometries or fill failed children from another run.
+
+The parent and every child must share the full prefill policy, including the
+normalized actual allocator identity. Calibration and control roots, run IDs
+and request IDs cannot be reused across children. Publication and later
+consumer binding recheck the original point map and complete row union.
+Prediction retains real child identities and remaps each independent holdout
+result, including missing-exact errors, to its original parent point ID.
+There is no synthetic aggregate native run or evidence root.
+
+Legacy schema4 publications remain exact-only. Explicit bounded lookup is an
+analysis option described below; independent holdout coverage and accuracy
+acceptance still require actual measured endpoints and validation.
+
+### Explicit bounded native prefill lookup
+
+Pass `lookup_contract="sglang_prefill_bounded_p_q_v1"` to `export_prefill`,
+`publish_prefill` (read-only reuse of already verified original evidence),
+`glm53flash_sglang_prefill_shards.publish_calibration`, or the shared
+`publish_sharded_calibration(..., parent_run=parent)` entry. This adds separate
+analysis columns `lookup_contract` and `source_ownership_sha256`; it does not
+change the native policy, capture/allocator/source configuration, original
+calibration/control receipts, or timing producer. Both columns must be present
+and valid; unknown contracts and mixed contracts for a deployment reject.
+
+The consumer first uses an exact point. Otherwise it chooses the nearest
+strictly enclosing P points at fixed B/Q, keeping P0 initialization separate
+from a real cached prefix. At P0 it can instead choose enclosing Q points at
+fixed B. All367 units use the same two complete points. Each measured unit's
+latency is interpolated linearly on that one axis, then units and direct setup
+are summed. There is no B interpolation, positive-P Q rule, extrapolation,
+SOL, residual, donor table or skipping a nearer endpoint with incompatible
+ownership. Missing one unit rejects the whole prediction. Original ten-sample
+rank reduction, independent five-percent controls and full point union remain.
+
+Each endpoint retains its complete native identity, source-call ownership and
+fusion boundary. Different internal kernel names, activity counts or grids
+remain diagnostic evidence and need not be identical across shapes. Native
+KDA's internal chunk schedule, DSA scoring threshold and IndexPool pool/tail
+extent changes do not alone define another physical operation. Different
+cache/state layouts, precision, native ownership/fusion decomposition or
+execution/allocator policies do. In particular, no vLLM alignment restriction
+is introduced for SGLang. These predicates are source analysis of SGLang
+94602c9, `srt/layers/attention/linear/kda_backend.py`, `kernels/kda_triton.py`,
+`kernels/ops/attention/fla/kda.py` and `srt/layers/attention/dsa/{kpool_plan.py,
+dsa_indexer_kpool.py}`; no native computation is copied or replaced.
+
+`EngineHandle.glm53flash_lookup_audit("context", B, Q, P)` uses the same Rust
+selector as prediction. It reports each named unit's exact or P/Q selection,
+endpoint coordinates/weights, native policy SHA, original calibration/rank
+selection/policy-evidence SHA, ownership SHA and observed dispatch fingerprint.
+The native prefill validation report preserves those endpoint records per
+original holdout point, including across shards. Every successful opted-in
+prediction requires exactly one audit; missing, duplicate, orphaned or failed
+prediction audits reject. A separate `prediction_evidence_origins` map records
+the child cell ID, native benchmark ID and original parent point ID without
+rewriting the original audit. Old exact rows retain their old behavior;
+adding this lookup contract alone is not measurement admission.
+The frozen holdout denominator and20% MAPE criterion remain unchanged. Actual
+GPU coverage and accuracy cannot be established by TEST_ONLY fixtures.
 
 ## Explicit native allocator policy
 

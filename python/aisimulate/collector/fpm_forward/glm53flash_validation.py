@@ -128,7 +128,8 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         raise ValueError("acceptance requires a frozen GB300 FPM collection plan")
     _sha(plan["sha256"])
     options = plan["options"]
-    if options.get("dataset_role", "calibration") != role:
+    source_role = "calibration" if role == "control" and "ops_observation_partition" in spec else role
+    if options.get("dataset_role", "calibration") != source_role:
         raise ValueError(f"expected frozen {role} plan")
     cells = [cell for cell in plan["cells"] if cell["cell_id"] == spec["cell_id"]]
     if len(cells) != 1:
@@ -201,6 +202,12 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         "spec": spec,
         "role": role,
     }
+    if "ops_observation_partition" in spec:
+        from collector.glm53flash_observation_partition import load_partition_run
+
+        return load_partition_run(run, base)
+    if "observation_children" in spec:
+        raise ValueError("observation children require their explicit partition contract")
     if "shards" in spec:
         from collector.glm53flash_shard_contract import validate_point_union
 
@@ -360,20 +367,86 @@ def installed_consumer_identity() -> dict:
 
 
 def _load_native(run: dict, base: Path, mode: str) -> dict:
+    if ("observation_partition" in run or "observation_leaf" in run) and mode != "ops":
+        raise ValueError("observation partition is an explicit Ops analysis contract, not an FPM plan")
     if "children" in run:
+        serving = (
+            mode == "ops" and run["key"][0] == "vllm" and run["spec"].get("ops_execution_mode") == "native_serving"
+        )
+        prefill = (
+            mode == "ops"
+            and run["key"][0] == "sglang"
+            and run.get("spec", {}).get("ops_execution_mode") == "native_eager_prefill"
+        )
+        graph = (
+            mode == "ops"
+            and run["key"][0] == "sglang"
+            and run.get("spec", {}).get("ops_execution_mode") == "native_full_graph"
+        )
+        if serving:
+            from collector.glm53flash_serving_shards import same_native_policy, validate_children
+
+            validate_children(run, run["children"])
+        if prefill:
+            from collector.glm53flash_sglang_prefill_shards import same_native_policy, validate_children
+
+            validate_children(run, run["children"])
+        if graph:
+            from collector.glm53flash_graph_shards import same_native_policy, validate_children
+
+            validate_children(run, run["children"])
+            from collector.glm53flash_graph_group import CONTRACT, enabled, same_members
+
+            if enabled(run):
+                same_native_policy = same_members
         values, request_ids, children, receipts = {}, set(), {}, []
         boundaries, versions = set(), set()
         execution_policy = None
+        native_runs, native_roots = set(), set()
         for child in run["children"]:
+            if graph and enabled(run):
+                child = {**child, "spec": {**child["spec"], "ops_graph_group_contract": CONTRACT}}
             native = _load_native(child, base, mode)
-            if mode == "fpm" and run["key"][0] == "sglang":
+            if run["key"][0] == "sglang":
                 _require_sglang_policy(native)
                 if execution_policy is not None:
                     _same_sglang_policy(execution_policy, native, "native shards")
+                    if prefill or graph:
+                        same_native_policy(execution_policy, native)
+                if (prefill or graph) and (
+                    native["runtime_run_id"] in native_runs or Path(native["evidence_root"]).resolve() in native_roots
+                ):
+                    raise ValueError("native prefill/graph shards reused an original native run or root")
+                if prefill or graph:
+                    native_runs.add(native["runtime_run_id"])
+                    native_roots.add(Path(native["evidence_root"]).resolve())
                 execution_policy = {
                     key: native[key]
-                    for key in ("execution_policy", "_execution_policy", "_allocator_policy")
+                    for key in (
+                        "execution_policy",
+                        "_execution_policy",
+                        "_allocator_policy",
+                        "prefill_policy",
+                        "graph_policy",
+                        "graph_group_compatibility",
+                    )
                     if key in native
+                }
+                if prefill or graph:
+                    same_native_policy(execution_policy, native)
+            elif serving:
+                if "observation_partition" in run:
+                    if (
+                        native["runtime_run_id"] in native_runs
+                        or Path(native["evidence_root"]).resolve() in native_roots
+                    ):
+                        raise ValueError("observation leaves reused an original native run or root")
+                    native_runs.add(native["runtime_run_id"])
+                    native_roots.add(Path(native["evidence_root"]).resolve())
+                if execution_policy is not None:
+                    same_native_policy(execution_policy, native)
+                execution_policy = {
+                    key: native[key] for key in ("execution_policy", "_execution_policy", "graph_policy")
                 }
             cid = child["cell"]["cell_id"]
             if request_ids & native["request_ids"]:
@@ -407,6 +480,9 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
         version = validate_backend_version(run["key"][0], versions.pop())
         if run["role"] == "holdout" and set(values) != {point["benchmark_id"] for point in run["points"]}:
             raise ValueError("native shards omit original frozen holdout point IDs")
+        if graph and enabled(run):
+            execution_policy = {key: value for key, value in execution_policy.items() if key != "graph_policy"}
+            execution_policy["graph_group_contract"] = CONTRACT
         return {
             "values": values,
             "request_ids": request_ids,
@@ -526,6 +602,10 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
     from aisimulate_core.sdk.rust_engine_step import ForwardPassPerfModelConfig, RustForwardPassPerfModel
 
     config = dict(entry["consumer_config"])
+    if mode == "ops" and calibration["spec"].get("ops_execution_mode", "eager") != run["spec"].get(
+        "ops_execution_mode", "eager"
+    ):
+        raise ValueError("Ops calibration and holdout use different native execution modes")
     backend, _quant, tp, _phase = run["key"]
     required = {
         "model": run["plan"]["model_path"],
@@ -598,10 +678,26 @@ def _predict(run: dict, entry: dict, mode: str, base: Path, *, calibration: dict
                     for child in calibration["children"]
                 ],
                 calibration["shard_manifest"],
+                parent_run=calibration,
             )
         else:
             binding = bind_calibration(paths, calibration, calibration_native)
     config["systems_paths"] = roots
+    if mode == "ops" and calibration["spec"].get("ops_execution_mode") == "native_eager_prefill":
+        from collector.glm53flash_sglang_prefill_shards import predict_homogeneous
+
+        prediction = predict_homogeneous(run, base, config, calibration_native, binding)
+        return {**prediction, "config": config, "data_receipts": receipts, "calibration_binding": binding}
+    if mode == "ops" and calibration["spec"].get("ops_execution_mode") == "native_serving":
+        from collector.glm53flash_serving_shards import predict_homogeneous
+
+        prediction = predict_homogeneous(run, base, config, calibration_native, binding)
+        return {**prediction, "config": config, "data_receipts": receipts, "calibration_binding": binding}
+    if mode == "ops" and calibration["spec"].get("ops_execution_mode") == "native_full_graph":
+        from collector.glm53flash_graph_shards import predict_homogeneous
+
+        prediction = predict_homogeneous(run, base, config, calibration_native, binding)
+        return {**prediction, "config": config, "data_receipts": receipts, "calibration_binding": binding}
     model = RustForwardPassPerfModel.best_available(ForwardPassPerfModelConfig(**config))
     rows = {}
     try:
@@ -751,7 +847,7 @@ def evaluate(manifest: dict, base: Path) -> dict:
                     from collector.glm53flash_runtime_identity import validate_runtime_pair
 
                     validate_runtime_pair(key[0], record["calibration_native"], record["holdout_native"])
-                    if mode == "fpm" and key[0] == "sglang":
+                    if key[0] == "sglang":
                         _same_sglang_policy(
                             record["calibration_native"], record["holdout_native"], "calibration/holdout"
                         )

@@ -137,6 +137,8 @@ class _TraceState:
         self.retired = set()
         self.counter = 0
         self.observer = None
+        self.prefill_execution = None
+        self.native_prefill_identity = None
         self.purpose = os.environ.get("AISIM_GLM53_PURPOSE", "fpm")
         self.whole_events = {}
         self.current_invocation = None
@@ -148,6 +150,15 @@ class _TraceState:
         (output / f"state-layout-rank-{self.rank}.json").write_text(json.dumps(self.state_layout, indent=2))
         # Retain the observed identity even when this allocation is rejected.
         validate_gb300_identity(self.state_layout["hardware"])
+        if provenance.get("native_request_submission") is not None:
+            from collector.glm53flash_sglang_control import SUBMISSION, worker_identity, write_new
+
+            if (
+                self.purpose not in ("ops_graph", "ops_graph_holdout")
+                or provenance["native_request_submission"] != SUBMISSION
+            ):
+                raise RuntimeError("native sampling source witness has another observation purpose")
+            write_new(output / f"sampling-source-rank-{self.rank}.json", worker_identity(runner))
         self.allocator_identity_sha256 = None
         if "allocator_policy" in provenance:
             from collector.fpm_forward.sglang_allocator import observe_worker
@@ -189,6 +200,15 @@ class _TraceState:
         else:
             runner.device_timer.add_reporter(self.on_timing)
         self.timer = runner.device_timer
+        if provenance.get("ops_execution_mode") == "native_eager_prefill":
+            from collector.glm53flash_sglang_prefill_activity import METHOD, model_identity
+
+            if self.purpose not in ("ops", "ops_holdout") or provenance.get("prefill_measurement_contract") != METHOD:
+                raise RuntimeError("native prefill observation requires its explicit source-bound purpose")
+            self.native_prefill_identity = model_identity(runner.model, runner)
+            (output / f"prefill-model-rank-{self.rank}.json").write_text(
+                json.dumps(self.native_prefill_identity, indent=2)
+            )
         if self.purpose == "ops_holdout":
             import torch
 
@@ -221,6 +241,10 @@ class _TraceState:
             self.observer = NativeOperationObserver(manifest, provenance, self.rank)
             inventory = install_native_hooks(runner.model, self.observer, "sglang")
             (output / f"inventory-rank-{self.rank}.json").write_text(json.dumps(inventory, indent=2))
+            if self.native_prefill_identity is not None:
+                from collector.glm53flash_sglang_prefill_activity import NativeSglangPrefillExecution
+
+                self.prefill_execution = NativeSglangPrefillExecution(runner, self.observer, output)
 
     def append(self, name: str, value: dict) -> None:
         filename = f"rank-{self.rank}.jsonl" if name == "ops" else f"{name}-rank-{self.rank}.jsonl"
@@ -309,7 +333,7 @@ class _TraceState:
             "forward_id": f"rank-{self.rank}/forward-{invocation}",
             "requests": snapshots,
             "timing_boundary": "sglang_native_forward_device_timer",
-            "ops_instrumented": self.observer is not None,
+            "ops_instrumented": self.observer is not None or self.purpose == "ops_graph",
             "allocated_fake_tokens": 0,
             "state_protocol": "glm53flash_same_request_real_hybrid_v1",
             "state_layout_sha256": self.state_layout_sha256,
@@ -322,6 +346,12 @@ class _TraceState:
         self.pending.append(invocation)
         record.update(match_frozen_requests(record, self.request_manifest))
         if record["stage"] == "measure":
+            if self.native_prefill_identity is not None:
+                from collector.glm53flash_contract import sha256_json
+                from collector.glm53flash_sglang_prefill_activity import validate_forward_batch
+
+                validate_forward_batch(forward_batch)
+                record["native_prefill_model_sha256"] = sha256_json(self.native_prefill_identity)
             if not self.state_layout["admitted"]:
                 raise RuntimeError("actual native hybrid cache dtype/layout is outside the admitted GLM identity")
             key = (record["benchmark_id"], record["repetition"])
@@ -349,6 +379,8 @@ class _TraceState:
                 )
             )
             record["ops_observed"] = True
+            if self.prefill_execution is not None:
+                self.prefill_execution.begin(record)
         return invocation
 
     def after(self, invocation: int, result) -> None:
@@ -372,7 +404,10 @@ class _TraceState:
         if self.observer is not None and record.get("ops_observed"):
             if graph:
                 raise RuntimeError("native eager Ops campaign actually replayed a CUDA graph")
-            for row in self.observer.end():
+            rows = self.observer.end()
+            if self.prefill_execution is not None:
+                self.prefill_execution.complete(record)
+            for row in rows:
                 row.update(
                     {
                         key: record.get(key)
@@ -422,6 +457,19 @@ class _TraceState:
                 raise RuntimeError("whole-forward GPU interval must be positive")
             record["whole_forward_boundary"] = "embedding_to_logits_gpu_v1"
         record.pop("_completed_tokens")
+        if self.purpose in ("ops_graph", "ops_graph_holdout"):
+            from collector.glm53flash_sglang_graph_ops import finish_native_forward
+
+            graph_record = finish_native_forward(self.runner, record)
+            if graph_record is not None:
+                self.append("graph-forward", graph_record)
+                record.update(
+                    whole_forward_gpu_ms=graph_record["whole_forward_gpu_ms"],
+                    whole_forward_boundary=graph_record["whole_forward_boundary"],
+                    graph_ops_profiled=graph_record["profiled"],
+                    graph_ops_formal_admission=False,
+                )
+            self.runner._aisim_glm53_graph_forward = None
         self.current_invocation = None
         self.append("forward", record)
         del self.records[invocation]
@@ -497,6 +545,17 @@ def install() -> None:
     manifest = json.loads(Path(manifest_path).read_text()) if manifest_path else None
     request_manifest_path = os.environ.get("AISIM_GLM53_REQUEST_MANIFEST")
     request_manifest = json.loads(Path(request_manifest_path).read_text()) if request_manifest_path else None
+    purpose = os.environ.get("AISIM_GLM53_PURPOSE", "fpm")
+    if purpose in ("ops_graph", "ops_graph_holdout"):
+        from collector.glm53flash_sglang_graph_ops import install as install_graph
+
+        graph_path = os.environ.get("AISIM_GLM53_GRAPH_OPS_MANIFEST")
+        graph_manifest = json.loads(Path(graph_path).read_text()) if graph_path else None
+        if manifest is not None:
+            raise RuntimeError("native graph collection cannot also install eager operation events")
+        # Called in the actual scheduler entry, before native model loading and
+        # its decode graph construction. First-request TraceState is too late.
+        install_graph(graph_manifest, provenance, output, holdout=purpose == "ops_graph_holdout")
     current = threading.local()
     states = {}
     original_forward = ModelRunner.forward
@@ -511,12 +570,19 @@ def install() -> None:
         if state is None:
             state = states[id(runner)] = _TraceState(runner, output, provenance, manifest, request_manifest)
         invocation = state.before(forward_batch, context["requests"])
+        if purpose in ("ops_graph", "ops_graph_holdout"):
+            runner._aisim_glm53_graph_forward = state.records[invocation]
         context["calls"].append((state, invocation))
         try:
             result = original_forward(runner, forward_batch, *args, **kwargs)
             state.after(invocation, result)
             return result
         except BaseException as error:
+            if state.prefill_execution is not None:
+                try:
+                    state.prefill_execution.abort(error)
+                except BaseException as cleanup_error:
+                    state.records[invocation]["prefill_observation_cleanup_error"] = str(cleanup_error)
             state.append(
                 "failed", {**state.records[invocation], "error_type": type(error).__name__, "error": str(error)}
             )

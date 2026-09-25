@@ -99,3 +99,14 @@ prefill/decode short canaries on allocation 603053 with native limit 131072.
 That exception preserves historical receipts and does not qualify exact 128K
 execution. Frozen existing canaries are unchanged; new boundary probes require
 new source and run receipts.
+
+The combined consumer retains `runtime-source-stock-fpm-v1.json`, the exact
+20-file stock FPM manifest from AISimulate commit
+`ccb0218d75a38ba61896c4192762ce994f640389`, alongside the current 23-file source
+manifest. Only original vLLM `0.30.0` evidence declaring that exact historical
+byte SHA may use it. Readers preserve the recorded identity and all hardware,
+request, state and policy gates. Reformatting a manifest, matching a subset or
+using another runtime version does not grant compatibility. New producers
+continue to use the current complete source manifest. The admitted tail
+repair's full 52-file source/binary closure is identical for both manifests;
+its source identity and original qualification are unchanged.

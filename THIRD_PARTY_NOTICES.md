@@ -1002,6 +1002,81 @@ Copyright 2018- The Hugging Face team. All rights reserved.
   GitHub Pages presentation, local import paths, and canonical estimator API
   adaptation with older-wheel compatibility. No Plotly assets included.
 
+## GLM-5.3-Flash native operation observation adapters
+
+- Derived files: `python/aisimulate/collector/glm53flash_native_hooks.py`,
+  `glm53flash_observer.py`, `glm53flash_contract.py`, `glm53flash_validation.py`,
+  `glm53flash_graph_nodes.py`, `glm53flash_graph_hooks.py`,
+  `glm53flash_graph_callbacks.py`, `glm53flash_graph_policy.py`,
+  `glm53flash_sglang_graph_ops.py`, `glm53flash_vllm_graph_ops.py`,
+  `glm53flash_vllm_piecewise.py`, `glm53flash_vllm_piecewise_activity.py`
+  and their piecewise capture/activity tests,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_vllm_sizing_capture.py`,
+  and their graph-node/hook/execution CPU tests,
+  `collect_glm53flash.py`, `{vllm,sglang}/collect_glm53flash.py`,
+  `cases/base_ops/glm53flash_module.yaml`,
+  `cases/models/Glm5NextForConditionalGeneration_cases.yaml`,
+  `framework_manifest.yaml` (GLM family entries), and `README.glm53flash.md`
+  in the same directory; measured interpolation and its tests in
+  `crates/core/src/perfmodel/perf_database/{glm53flash,glm53flash_graph}.rs`. These original adapters import and observe native
+  implementations; no upstream compute implementation is bundled or replaced.
+- Sources: https://github.com/vllm-project/vllm at
+  `ced6857afa0ea7b2e3f0846a62e1394e90f15607` (v0.30.0), original paths
+  `vllm/models/glm5next/nvidia/{model,attention,kda}.py` and
+  `vllm/distributed/parallel_state.py` and
+  `vllm/model_executor/layers/logits_processor.py`,
+  `vllm/model_executor/layers/sparse_attn_indexer_kpool.py`,
+  `vllm/models/glm5next/nvidia/ops/kpool_compress.py`,
+  `vllm/v1/worker/gpu/cudagraph_utils.py`,
+  `vllm/compilation/breakable_cudagraph.py`, `vllm/forward_context.py`,
+  `vllm/model_executor/offloader/base.py`;
+  https://github.com/sgl-project/sglang at
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e` (v0.5.20), original paths
+  `python/sglang/srt/models/{glm5_next,deepseek_v2}.py` and
+  `python/sglang/srt/layers/{communicator,communicator_mhc}.py`,
+  `python/sglang/srt/models/deepseek_common/attention_forward_methods/forward_mha.py`,
+  `python/sglang/srt/layers/logits_processor.py`,
+  `python/sglang/srt/arg_groups/exec_.py`,
+  `python/sglang/srt/managers/schedule_batch.py`, and
+  `python/sglang/srt/model_executor/cuda_graph_config.py`,
+  `python/sglang/srt/model_executor/runner_backend/full_cuda_graph_backend.py`,
+  `python/sglang/srt/model_executor/runner/{shape_key,base_cuda_graph_runner,decode_cuda_graph_runner}.py`,
+  `python/sglang/srt/layers/attention/dsa/kpool_fp8_index.py`, and
+  `python/sglang/kernels/ops/attention/fla/kda.py`.
+- Copyright: contributors to the vLLM project; Copyright 2023-2024 SGLang
+  Team and SGLang contributors. License: Apache-2.0 (full text above).
+- Modified/adapted: independently authored timing bindings, complete graph/rank
+  admission, immutable provenance, and exact measured-key serialization. No
+  native model, dispatch, cache population, or collective implementation is
+  modified by these adapters.
+
+The vLLM graph adapter also distinguishes the source-defined temporary memory
+sizing lifecycle in `vllm/v1/worker/gpu/cudagraph_utils.py` at the immutable
+revision above. Independently authored marker checks and TEST_ONLY lifecycle
+tests preserve the original sizing capture and its memory measurements, while
+reserving serving snapshots and operation observation for real initialization.
+No upstream capture implementation is copied or replaced.
+
+The graph callback adapter additionally uses independently authored ctypes
+bindings for NVIDIA CUPTI13.0.85's documented resource and graph descriptors.
+The ABI reference is NVIDIA's `extras/CUPTI/samples/cuda_graphs_trace/cuda_graphs_trace.cu`
+in the official Linux SBSA CUPTI13.0.85 archive, SHA256
+`f6f34d534cce56f91b1496abf51be3b1559ba879985d34eb89c808004b77513a`;
+original sample SHA256
+`0458254b6d8ada6c6db82492f14f6bf029f70cafaf97a07dfc6168c95dc312f8`.
+Source distribution: https://developer.download.nvidia.com/compute/cuda/redist/cuda_cupti/linux-sbsa/.
+Copyright NVIDIA Corporation; the CUDA Toolkit license applies to the original
+SDK. No SDK headers, sample implementation, or binaries are redistributed here.
+The original adapter and its tests record API identities and native callbacks;
+they do not modify CUDA graphs or replace native kernels.
+
+The interpolation documentation also references FlashKDA,
+https://github.com/vllm-project/FlashKDA at
+`b59532f1f464fbd536272780e30df5bf6a2ccc02`,
+`csrc/flash_kda.cpp` and `csrc/smxx/fwd_launch.cu`.
+Copyright (c) 2026 MoonshotAI, MIT license. This is a description of dispatch
+predicates and tile work; no FlashKDA source implementation is copied.
+
 ## GLM-5.3-Flash configurations and analytical model
 
 Unmodified configurations are included at
@@ -1076,6 +1151,129 @@ the repository Apache-2.0 license text applies to these adaptations.
   follows the native worker and tokenizer admission limits; it does not change
   native admission or assert allocator capacity.
 
+
+## GLM-5.3-Flash source-bound SGLang prefill observation
+
+- Derived files: `python/aisimulate/collector/glm53flash_sglang_prefill_activity.py`,
+  `python/aisimulate/collector/glm53flash_sglang_prefill_export.py`,
+  `python/aisimulate/collector/glm53flash_sglang_prefill_shards.py`, their
+  TEST_ONLY collector tests, the native-prefill additions to the existing
+  observer/runtime/driver and validation adapters,
+  `crates/core/src/perfmodel/perf_database/glm53flash_sglang_prefill.rs`,
+  `python/aisimulate/tests/unit/sdk/test_glm53flash_sglang_prefill_consumer.py`,
+  and the corresponding section of `collector/README.glm53flash_sglang.md`.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
+  `python/sglang/srt/models/glm5_next.py`,
+  `python/sglang/srt/managers/mm_utils.py`,
+  `python/sglang/srt/utils/common.py`, and the existing communicator and
+  native model-runner paths cited above. Bounded prefill lookup source analysis
+  additionally references `python/sglang/srt/layers/attention/linear/kda_backend.py`,
+  `python/sglang/srt/layers/attention/linear/kernels/kda_triton.py`,
+  `python/sglang/kernels/ops/attention/fla/kda.py`, and
+  `python/sglang/srt/layers/attention/dsa/{kpool_plan.py,dsa_indexer_kpool.py}`
+  at that same immutable revision.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: independently expressed wrappers, source predicates,
+  activity joins and typed consumer geometry. Native model and allocator
+  implementations execute unchanged; no compute implementation is copied.
+  The one allocator event is measured directly, and raw Chrome correlations
+  establish exclusive ownership. TEST_ONLY fixtures are original synthetic
+  proofs, never measured GPU data. The independently expressed shard reader
+  preserves original point ownership, per-child native/control evidence and
+  actual execution policy without copying native implementation code. The
+  optional bounded lookup and shared native SDK endpoint audit are independently
+  expressed analysis/consumer code. They preserve native policy and measured
+  operation ownership; no per-kernel compute implementation is copied.
+  Referenced SGLang FLA KDA source retains vLLM contributor copyright and its
+  attribution to vLLM `0384aa7150c4c9778efca041ffd1beb3ad2bd694`, original path
+  `vllm/model_executor/layers/fla/ops/kda.py` (Apache-2.0), plus inherited
+  Copyright (c) 2023-2025 Songlin Yang, Yu Zhang (MIT license; full text above).
+- CPU user-annotation category semantics use Kineto
+  https://github.com/pytorch/kineto at
+  `094d3c1d072362d0a919a77299459eee94f97931`,
+  `libkineto/include/ActivityType.h`; Copyright (c) Facebook, Inc. and its
+  affiliates, BSD license preserved in the Kineto notice below. No C++ code
+  is copied.
+
+## GLM-5.3-Flash native SGLang input-matched controls
+
+- Derived files: `python/aisimulate/collector/glm53flash_sglang_control.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_sglang_control.py`,
+  the corresponding changes to `collector/fpm_forward/sglang_driver.py`,
+  `collector/glm53flash_sglang_runtime.py`, `collector/glm53flash_graph_export.py`
+  and `collector/README.glm53flash_sglang.md`.
+- Source: https://github.com/sgl-project/sglang at immutable revision
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
+  `python/sglang/srt/entrypoints/engine.py`,
+  `python/sglang/srt/model_executor/model_runner.py`,
+  `python/sglang/srt/layers/sampler.py`,
+  `python/sglang/srt/sampling/sampling_params.py`, and
+  `python/sglang/srt/sampling/sampling_batch_info.py`.
+- Copyright: Copyright 2023-2024 SGLang Team and SGLang contributors.
+- License: Apache-2.0 (full text above).
+- Modified/adapted: independently expressed public-API request arguments,
+  source/method identity checks and original input-evidence joins. No upstream
+  compute or sampling implementation is copied. The native framework owns
+  request state, bias allocation, sampling and KV updates. The finite bias is
+  experimental; exact observed input equality and timing controls are still
+  required. Test data are authored TEST_ONLY evidence, not GPU measurements.
+
+## GLM-5.3-Flash vLLM native worker telemetry
+
+- Derived files: `python/aisimulate/collector/glm53flash_vllm_runtime.py`,
+  `python/aisimulate/collector/glm53flash_vllm_none.py`,
+  `python/aisimulate/collector/glm53flash_vllm_none_activity.py` and their
+  CPU lifecycle and TEST_ONLY event/export tests,
+  `python/aisimulate/collector/glm53flash_vllm_serving_export.py` and its
+  TEST_ONLY capture/trace/export tests,
+  `python/aisimulate/collector/glm53flash_serving_shards.py` and its TEST_ONLY
+  source-contract/shard publication tests,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_vllm_runtime.py`,
+  `python/aisimulate/collector/glm53flash_graph_observer.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_graph_observer.py`,
+  and the vLLM integration section of `collector/README.glm53flash.md`.
+- Source: https://github.com/vllm-project/vllm at immutable revision
+  `ced6857afa0ea7b2e3f0846a62e1394e90f15607` (v0.30.0), paths
+  `vllm/v1/worker/gpu_model_runner.py`, `vllm/v1/worker/gpu_worker.py`,
+  `vllm/v1/worker/gpu/warmup.py` (initialization lifecycle),
+  `vllm/v1/worker/gpu/{model_runner,input_batch,states,cudagraph_utils}.py`, `vllm/forward_context.py`,
+  `vllm/compilation/breakable_cudagraph.py` (original PIECEWISE entry replay),
+  `vllm/model_executor/models/glm4_1v.py` (inherited text forward/logits calls),
+  `vllm/models/glm5next/nvidia/{model,attention,kda}.py`,
+  and `vllm/model_executor/layers/{mla,logits_processor}.py`.
+- Copyright: vLLM contributors; the GLM4V source also credits Copyright 2025
+  The vLLM team, The ZhipuAI Team, and The HuggingFace Inc. team.
+  License: Apache-2.0 (full text above).
+- Modified/adapted: independently authored wrappers preserve original native
+  calls and inspect real worker requests, allocated cache metadata and dispatch.
+  No upstream compute, request construction or scheduling code is copied.
+  The optional `vllm_serving_bounded_p_q_v1` lookup in
+  `crates/core/src/perfmodel/perf_database/glm53flash_serving.rs`,
+  `glm53flash_vllm_serving_export.py` and `glm53flash_serving_shards.py`
+  is independently authored analysis metadata. It preserves the original
+  native policy and source attribution, binds the measured 277 named physical
+  units plus setup, and interpolates only enclosing P or P0/Q measurements
+  under the same runtime, precision, layout, ownership and native graph
+  descriptor. Original activity inventories remain diagnostic evidence;
+  no upstream computation or interpolation code is copied.
+
+
+## Dynamo GLM-5.3-Flash FPM collection adapter
+
+`python/aisimulate/collector/fpm_forward/runtime/glm53flash/glm53flash_scheduler.py`
+is modified code adapted from `components/src/dynamo/vllm/instrumented_scheduler.py`
+in https://github.com/ai-dynamo/dynamo/tree/54960177085413259859c88bd34ed0734d4c2ea9,
+using this repository's DeepSeek V4.1 same-request adapter as the integration
+precedent. Changes add the GLM hybrid-state contract, repeated real warmups and
+measurements, actual graph-dispatch receipts and immutable source validation.
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+Licensed under Apache-2.0; the upstream license is preserved in the adjacent
+`LICENSE`. No upstream root NOTICE exists. vLLM implementation files are not
+vendored; exact API source hashes and their revision are recorded alongside
+this adapter. The corpus and new contract tests are original project content.
+
 ## GLM-5.3-Flash retained SGLang request benchmark
 
 - Adapted integration files: `python/aisimulate/collector/glm53flash_sglang_retained.py`,
@@ -1130,6 +1328,80 @@ the repository Apache-2.0 license text applies to these adaptations.
   and separate candidate qualification status are retained. No binary wheel is
   vendored and this unqualified candidate does not replace stock admission.
 
+## Kineto memcpy, memset and CPU annotation trace contracts
+
+The independently authored strict memcpy, memset and CPU annotation parsers in
+`python/aisimulate/collector/glm53flash_graph_nodes.py`,
+`python/aisimulate/collector/glm53flash_vllm_piecewise_activity.py`,
+`python/aisimulate/collector/glm53flash_vllm_none_activity.py`, their
+`test_glm53flash_graph_memcpy.py`, `test_glm53flash_graph_memset.py`, profiler
+category and graph execution/exporter tests, and
+`collector/README.glm53flash.md` reference the trace format in
+https://github.com/pytorch/kineto at immutable commit
+`094d3c1d072362d0a919a77299459eee94f97931`, original paths
+`libkineto/src/CuptiActivity.h`, `libkineto/src/cupti_strings.cpp` and
+`libkineto/include/ActivityType.h`.
+That gitlink is pinned by PyTorch `cf30153c4c131c8164ee7798e5022d810682e2cb`.
+The format checks are adapted for fail-closed source/callback/replay binding;
+no Kineto implementation or profiling binary is redistributed. The original
+Kineto BSD license and copyright notices follow. CUDA GetParams bindings are
+original bindings to the CUDA13 runtime API documented in the existing NVIDIA
+CUDA/CUPTI entry above; no SDK header implementation is copied.
+`test_glm53flash_native_classification.py` and the adjacent
+`fixtures/glm53flash_native_classification_observed.{json,README.md}` retain
+reduced metadata from this project's own failed native observations, not
+third-party implementation. The modified strict parser additionally references
+NVIDIA CUDA Toolkit 13.0.2 runtime documentation for Driver Entry Point Access,
+Execution Control and Runtime/Driver Interactions, linked in the fixture README.
+Its exact function-control classification, deferred Memset query and separately
+versioned pending live-source Memset/replay contract are independently authored;
+no external source or documentation text is copied. The new Memset tests use
+synthetic parameters and replay activities, explicitly separate from original
+failed native observations. Memset API references additionally use CUDA Toolkit
+13.0.1 `cudaMemsetParams` and `cudaGraphMemsetNodeGetParams` documentation linked
+in `collector/README.glm53flash.md`.
+The separately versioned reported-memory-kind parser and
+`python/aisimulate/tests/unit/collector/test_glm53flash_reported_memory_kind.py`
+retain Kineto's `Unknown` label without inferring a destination memory type. The
+host-memory API observation references CUDA Toolkit 13.0.2 Memory Management
+documentation linked in that README. These modifications are independently
+authored format/API bindings; no external implementation or documentation text
+was copied.
+
+BSD License
+
+For Kineto software
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+All contributions by Microsoft:
+Copyright (c) Microsoft Corporation. (The Azure AI Platform team)
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+ * Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+ * Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+ * Neither the name Meta nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific
+   prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
+ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 ## GLM-5.3-Flash circular-tail runtime repair and reference
 
 - Derived files: `collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/`
@@ -1157,9 +1429,14 @@ the repository Apache-2.0 license text applies to these adaptations.
 
 - Integration files: `python/aisimulate/collector/fpm_forward/sglang_allocator.py`,
   the allocator-only additions to its driver/artifact/validation/database peers,
-  `collector/glm53flash_sglang_runtime.py`, and
-  `tests/unit/collector/test_fpm_sglang_allocator_policy.py` under the same
-  Python application.
+  `collector/glm53flash_sglang_runtime.py`, `collector/glm53flash_validation.py`,
+  graph/native-prefill reader integrations, and the FPM/Ops allocator tests
+  `test_fpm_sglang_allocator_policy.py`, `test_glm53flash_sglang_allocator.py`
+  and `test_glm53flash_ops_allocator.py` under the same Python application.
+- The Ops adapter originally retained the shared helper and native receipt
+  adapters from internal FPM commit `636206a73f391a1340b57acd8c396c557061c9db`;
+  the combined integration preserves the complete FPM option/orchestration
+  contract and purpose-scoped Ops observers.
 - Source: https://github.com/pytorch/pytorch at immutable revision
   `cf30153c4c131c8164ee7798e5022d810682e2cb`, original paths
   `c10/core/AllocatorConfig.cpp`, `c10/cuda/CUDAAllocatorConfig.cpp`,
@@ -1259,3 +1536,69 @@ ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 POSSIBILITY OF SUCH DAMAGE.
 
 ```
+
+## GLM-5.3-Flash named FULL graph analysis identity
+
+- Files: `python/aisimulate/collector/glm53flash_graph_export.py`,
+  `python/aisimulate/collector/glm53flash_graph_shards.py`,
+  `python/aisimulate/collector/glm53flash_graph_group.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_graph_group.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_graph_shards.py`, their integration
+  in `collector/fpm_forward/glm53flash_validation.py`,
+  `crates/core/src/perfmodel/perf_database/glm53flash_graph.rs`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_graph_named_export.py`,
+  `python/aisimulate/tests/unit/sdk/test_glm53flash_graph_named_consumer.py`, and
+  `collector/README.glm53flash.md`.
+- Native contracts referenced: SGLang https://github.com/sgl-project/sglang at
+  `94602c9c2b7cbdb8efd5c52802dac6a1c180089e`, original paths
+  `python/sglang/srt/models/glm5_next.py`,
+  `python/sglang/srt/layers/communicator_mhc.py`,
+  `python/sglang/srt/layers/vocab_parallel_embedding.py`,
+  `python/sglang/srt/mem_cache/memory_pool.py`, and
+  `python/sglang/srt/distributed/parallel_state.py`; Copyright 2023-2024 SGLang
+  Team and contributors, Apache-2.0. vLLM https://github.com/vllm-project/vllm at
+  `ced6857afa0ea7b2e3f0846a62e1394e90f15607`, original paths
+  `vllm/models/glm5next/nvidia/model.py`,
+  `vllm/model_executor/layers/vocab_parallel_embedding.py`, and
+  `vllm/distributed/parallel_state.py`; Copyright vLLM contributors and NVIDIA
+  CORPORATION & AFFILIATES, Apache-2.0. Applicable license texts and existing
+  native-model notices above are preserved.
+- Modified/adapted: independently expressed operation occurrence identities and
+  typed consumer checks; no upstream compute implementation copied. The
+  `graph_named_operations_v1` analysis contract retains original named source
+  calls without changing native policy, fusion, graph execution or recorded
+  timing. The independently expressed shard adapter preserves complete original
+  point unions, named unit/control provenance and exact capture policies without
+  modifying native execution. Authored TEST_ONLY fixtures establish schema/query
+  behavior, not GPU performance or holdout accuracy.
+
+## GLM-5.3-Flash pre-freeze observation partition contract
+
+- Files: `python/aisimulate/collector/glm53flash_observation_partition.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_observation_partition.py`,
+  its integration in `collector/fpm_forward/glm53flash_validation.py`,
+  `collector/glm53flash_validation.py`, `collector/glm53flash_serving_shards.py`,
+  `collector/glm53flash_vllm_serving_export.py`, and `collector/README.glm53flash.md`.
+- Native source contract referenced: https://github.com/vllm-project/vllm at
+  immutable commit `ced6857afa0ea7b2e3f0846a62e1394e90f15607`, original path
+  `vllm/v1/worker/gpu/cudagraph_utils.py` (`_init_candidates`, `dispatch`),
+  Copyright vLLM contributors, Apache-2.0. Existing applicable vLLM license and
+  native-source notices above remain included.
+- Modified/adapted: independently expressed source/config observation-family
+  declarations and provenance checks, with authored TEST_ONLY fixtures. No
+  native compute, scheduler or dispatch implementation is copied or replaced.
+  The new pre-freeze Ops leaf identity retains complete original FPM geometry
+  and corpus provenance while explicitly distinguishing new benchmark IDs and
+  token offsets; actual dispatch, source, state, control and measurement guards
+  still apply. No performance rows or query formulas are synthesized.
+
+### Preserved GLM stock FPM source manifest
+
+`python/aisimulate/collector/fpm_forward/runtime/glm53flash/runtime-source-stock-fpm-v1.json`
+preserves the original source hash map from AISimulate commit
+`ccb0218d75a38ba61896c4192762ce994f640389` without modification. The immutable
+vLLM/Dynamo source revisions, original paths, copyright and Apache-2.0 license
+for its entries are those of the GLM real-KV runtime integration documented
+above and in the adjacent runtime README. This contains source identities,
+not upstream implementation. The compatibility reader and tests are original
+project code; they retain exact historical provenance without rewriting it.

@@ -307,11 +307,6 @@ def _verify_fpm_workflow() -> str:
         ),
         (importlib.import_module("collector.glm53flash_shard_contract"), "collector/glm53flash_shard_contract.py"),
         (importlib.import_module("collector.glm53flash_jsonl"), "collector/glm53flash_jsonl.py"),
-        (importlib.import_module("collector.glm53flash_sglang_retained"), "collector/glm53flash_sglang_retained.py"),
-        (
-            importlib.import_module("collector.fpm_forward.glm53flash_validation"),
-            "collector/fpm_forward/glm53flash_validation.py",
-        ),
         (
             importlib.import_module("collector.fpm_forward.glm53flash_publication"),
             "collector/fpm_forward/glm53flash_publication.py",
@@ -320,12 +315,55 @@ def _verify_fpm_workflow() -> str:
             importlib.import_module("collector.fpm_forward.runtime.glm53flash.glm53flash_worker_hardware"),
             "collector/fpm_forward/runtime/glm53flash/glm53flash_worker_hardware.py",
         ),
+        (importlib.import_module("collector.glm53flash_graph_export"), "collector/glm53flash_graph_export.py"),
+        (importlib.import_module("collector.glm53flash_graph_shards"), "collector/glm53flash_graph_shards.py"),
+        (importlib.import_module("collector.glm53flash_graph_group"), "collector/glm53flash_graph_group.py"),
+        (
+            importlib.import_module("collector.glm53flash_vllm_graph_export"),
+            "collector/glm53flash_vllm_graph_export.py",
+        ),
+        (importlib.import_module("collector.glm53flash_graph_libraries"), "collector/glm53flash_graph_libraries.py"),
+        (importlib.import_module("collector.glm53flash_vllm_none"), "collector/glm53flash_vllm_none.py"),
+        (
+            importlib.import_module("collector.glm53flash_vllm_none_activity"),
+            "collector/glm53flash_vllm_none_activity.py",
+        ),
+        (
+            importlib.import_module("collector.glm53flash_vllm_serving_export"),
+            "collector/glm53flash_vllm_serving_export.py",
+        ),
+        (
+            importlib.import_module("collector.glm53flash_serving_shards"),
+            "collector/glm53flash_serving_shards.py",
+        ),
+        (
+            importlib.import_module("collector.glm53flash_vllm_graph_policy"),
+            "collector/glm53flash_vllm_graph_policy.py",
+        ),
+        (importlib.import_module("collector.glm53flash_sglang_retained"), "collector/glm53flash_sglang_retained.py"),
+        (
+            importlib.import_module("collector.glm53flash_sglang_prefill_activity"),
+            "collector/glm53flash_sglang_prefill_activity.py",
+        ),
+        (
+            importlib.import_module("collector.glm53flash_sglang_prefill_export"),
+            "collector/glm53flash_sglang_prefill_export.py",
+        ),
+        (
+            importlib.import_module("collector.glm53flash_sglang_prefill_shards"),
+            "collector/glm53flash_sglang_prefill_shards.py",
+        ),
+        (
+            importlib.import_module("collector.fpm_forward.glm53flash_validation"),
+            "collector/fpm_forward/glm53flash_validation.py",
+        ),
         (importlib.import_module("collector.glm53flash_sglang_runtime"), "collector/glm53flash_sglang_runtime.py"),
-        (importlib.import_module("collector.fpm_forward.sglang_driver"), "collector/fpm_forward/sglang_driver.py"),
+        (importlib.import_module("collector.glm53flash_sglang_control"), "collector/glm53flash_sglang_control.py"),
         (
             importlib.import_module("collector.fpm_forward.sglang_allocator"),
             "collector/fpm_forward/sglang_allocator.py",
         ),
+        (importlib.import_module("collector.fpm_forward.sglang_driver"), "collector/fpm_forward/sglang_driver.py"),
     ):
         if Path(module.__file__).resolve() != exact_distribution_path(relative_path):
             raise RuntimeError(f"installed FPM module did not resolve from its exact RECORD path: {module.__file__}")

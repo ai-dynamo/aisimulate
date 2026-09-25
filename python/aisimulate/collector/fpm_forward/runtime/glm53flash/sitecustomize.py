@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Lazily activate source-checked scheduler and native-worker observation."""
+"""Lazily activate purpose-scoped scheduler and native-worker observation."""
 
 import os
 
@@ -77,13 +77,50 @@ if os.environ.get("DYN_FPM_GLM53FLASH_REAL_KV") == "1":
         def __getattr__(self, name):
             return getattr(self.original, name)
 
+    class _WorkerLoader(importlib.abc.Loader):
+        def __init__(self, original):
+            self.original = original
+
+        def create_module(self, spec):
+            return self.original.create_module(spec)
+
+        def exec_module(self, module):
+            self.original.exec_module(module)
+            expected = _source_pins()
+            source = module.__name__.replace(".", "/") + ".py"
+            actual = hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
+            if actual != expected[source]:
+                raise RuntimeError("native vLLM worker differs from the pinned Ops source")
+            from collector.glm53flash_vllm_runtime import install, install_v2, install_worker_lifecycle
+
+            installers = {
+                "vllm.v1.worker.gpu_model_runner": install,
+                "vllm.v1.worker.gpu.model_runner": install_v2,
+                "vllm.v1.worker.gpu_worker": install_worker_lifecycle,
+            }
+            installers[module.__name__]()
+
+        def __getattr__(self, name):
+            return getattr(self.original, name)
+
     class _SchedulerFinder(importlib.abc.MetaPathFinder):
         def find_spec(self, fullname, path=None, target=None):
-            if fullname not in {_TARGET, _WORKER_TARGET}:
+            worker = fullname in (
+                "vllm.v1.worker.gpu_model_runner",
+                "vllm.v1.worker.gpu.model_runner",
+                "vllm.v1.worker.gpu_worker",
+            ) and os.environ.get("AISIM_GLM53_PURPOSE") in (
+                "ops",
+                "ops_holdout",
+                "ops_graph",
+                "ops_graph_holdout",
+            )
+            fpm_worker = fullname == _WORKER_TARGET and os.environ.get("AISIM_GLM53_PURPOSE", "fpm") == "fpm"
+            if fullname != _TARGET and not worker and not fpm_worker:
                 return None
             spec = importlib.machinery.PathFinder.find_spec(fullname, path, target)
             if spec is not None and spec.loader is not None:
-                spec.loader = _SchedulerLoader(spec.loader)
+                spec.loader = _WorkerLoader(spec.loader) if worker else _SchedulerLoader(spec.loader)
             return spec
 
     # NVRTC/compiler helpers inherit PYTHONPATH and this activation variable.

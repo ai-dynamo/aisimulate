@@ -74,6 +74,13 @@ pub(crate) fn run_context_ops_with<'a>(
     filter: ContextOpFilter,
     mut on_op: impl FnMut(&'a Op, PerformanceResult),
 ) -> Result<f64, AicError> {
+    if crate::perf_database::glm53flash_graph::validate_context_ops(ops, db)?
+        && !matches!(filter, ContextOpFilter::All)
+    {
+        return Err(AicError::InvalidPerfData(
+            "native serving context cannot omit non-attention/setup units".into(),
+        ));
+    }
     let mut total = 0.0_f64;
     for op in ops {
         match filter {
@@ -201,6 +208,13 @@ pub(crate) fn run_generation_ops_step_beamed_with<'a>(
     only_generation_attention: bool,
     mut on_op: impl FnMut(&'a Op, PerformanceResult),
 ) -> Result<f64, AicError> {
+    if crate::perf_database::glm53flash_graph::validate_generation_ops(ops, db)?
+        && only_generation_attention
+    {
+        return Err(AicError::InvalidPerfData(
+            "native graph generation cannot omit non-attention/setup units".into(),
+        ));
+    }
     let mut total = 0.0_f64;
     for op in ops {
         if only_generation_attention && !op.is_generation_attention() {
@@ -281,6 +295,7 @@ pub(crate) fn get_mix_step_ops(
     kv_per_decode_req: u32,
     decode_batch: u32,
 ) -> Result<f64, AicError> {
+    crate::perf_database::glm53flash_graph::reject_mixed(context_ops, db)?;
     // ---- Pass 1: combined non-attention work (batch=1, isl=ctx+gen) ----
     // Python: `run_static` is called with `isl = num_tokens_combined`
     // and `prefix = prefix * floor(ctx_tokens / isl)`, which makes
