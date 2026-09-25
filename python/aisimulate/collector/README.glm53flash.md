@@ -857,24 +857,52 @@ no device duration or zero-cost operation is synthesized. Unexpected correlated
 device activity and unknown API names still reject. Separate native event
 intervals and whole-forward controls retain any elapsed effect of these calls.
 
-Actual vLLM captures exposed source Memset2/callback0 alongside the D2D copies
-above. The explicit vLLM capture and original-evidence reader paths require a
-closed callback subscription, the exact qualified CUDA/CUPTI providers, the
-complete source-to-executable bijection and a deferred query of each actual
-Memset clone returning rc0/type2 while its executable remains alive. A mixed
-Memset/EventRecord query uses `CUDA13_MEMSET_EVENT_RECORD_CLONE_QUERY_V1`;
-EventRecord-only proofs retain their original method and structure. Raw source
-types and callback values remain unchanged. Empty, EventWait, host and unknown
-mismatches retain their original rejection.
+Historical vLLM records using `CUDA13_MEMSET_EVENT_RECORD_CLONE_QUERY_V1`
+retain their strict contract: the deferred clone query must return rc0/type2
+for source Memset2. EventRecord-only proofs keep their original method and
+structure. Source2/callback0/queried0 still fails that contract. Original failed
+935 captures retain those three observations and cannot be upgraded into new
+records or measured rows.
 
-Capture proof provides ownership only. Every measured replay must still supply
-all original kernel, copy and memset node activities with exact graph/node/API
-correlations, positive intervals and byte counts; the pending D2D copy also
-requires its original direction and source byte count. FULL and PIECEWISE
-exporters independently rederive these bindings. Missing replay or deferred
-query evidence cannot be repaired from capture metadata. This changes producer
-identity and requires fresh CPU and native model qualification; earlier failed
-attempts do not become accepted measurements.
+New vLLM captures explicitly opt into
+`cuda13_live_source_memset_pending_replay_v1`. During the existing live-source
+snapshot, outside CUPTI callbacks, `cudaGraphMemsetNodeGetParams` records its
+return code, exact node handle, selected native providers and original fill
+parameters. Only a positive linear device fill is supported: height1,
+elementSize1/2/4, a device pointer, and a positive byte count `width*elementSize`.
+The CUDA13 [Memset parameter contract](https://docs.nvidia.com/cuda/archive/13.0.1/cuda-runtime-api/structcudaMemsetParams.html)
+and [graph API](https://docs.nvidia.com/cuda/archive/13.0.1/cuda-runtime-api/group__CUDART__GRAPH.html)
+define these fields; pitch is unused for height1. Other geometries reject.
+Fresh CPU qualification must compile size, alignment and every field-offset
+checks against the actual pinned CUDA13 headers/toolchain on the intended
+architecture. Python ctypes fixtures alone do not qualify that ABI.
+
+The new pending contract still requires a closed callback subscription, the
+qualified CUDA/CUPTI providers and the complete source-to-executable bijection.
+A source2/callback0 mismatch also requires the original executable's deferred
+query receipt. A successful clone query returning type0 or type2 is retained
+verbatim under the separately named method
+`CUDA13_LIVE_SOURCE_MEMSET_PENDING_REPLAY_V1`. Type0 is not relabeled as type2
+or treated as proof of a kernel, optimization or a stale handle. EventRecord
+mismatches still require queried type7; other mismatches and failed queries
+reject. The observer does not change native graph retention, capture or replay
+order, and does not query CUDA inside a CUPTI callback.
+
+Pending capture ownership supplies no measured cost. Every replay must contain
+exactly one positive-duration `gpu_memset` activity named `Memset (Device)`
+with the matching source byte count, executable graph ID, node ID and launch
+correlation. These spellings and fields come from pinned Kineto
+[CuptiActivity.h](https://github.com/pytorch/kineto/blob/094d3c1d072362d0a919a77299459eee94f97931/libkineto/src/CuptiActivity.h#L614),
+[cupti_strings.cpp](https://github.com/pytorch/kineto/blob/094d3c1d072362d0a919a77299459eee94f97931/libkineto/src/cupti_strings.cpp#L45)
+and [ActivityType.h](https://github.com/pytorch/kineto/blob/094d3c1d072362d0a919a77299459eee94f97931/libkineto/include/ActivityType.h#L77),
+pinned by Torch cf30153c4c131c8164ee7798e5022d810682e2cb. FULL and PIECEWISE
+exporters rebuild ownership and replay binding from original evidence. A kernel
+substitute, missing or duplicate activity, wrong bytes, wrong identity or
+capture-only evidence rejects. All other graph nodes keep their existing
+activity requirements, and measured intervals retain their actual operation
+owner. Synthetic source/replay tests do not prove a native model emits this
+activity. New producer/source identity, CPU ABI checks and fresh native replay
+qualification are required; no earlier failed attempt becomes accepted.
 
 
 ### Native serving schema3

@@ -1328,13 +1328,14 @@ this adapter. The corpus and new contract tests are original project content.
   and separate candidate qualification status are retained. No binary wheel is
   vendored and this unqualified candidate does not replace stock admission.
 
-## Kineto memcpy and CPU annotation trace contracts
+## Kineto memcpy, memset and CPU annotation trace contracts
 
-The independently authored strict memcpy and CPU annotation parsers in
+The independently authored strict memcpy, memset and CPU annotation parsers in
 `python/aisimulate/collector/glm53flash_graph_nodes.py`,
 `python/aisimulate/collector/glm53flash_vllm_piecewise_activity.py`,
 `python/aisimulate/collector/glm53flash_vllm_none_activity.py`, their
-`test_glm53flash_graph_memcpy.py`, profiler category and graph execution/exporter tests, and
+`test_glm53flash_graph_memcpy.py`, `test_glm53flash_graph_memset.py`, profiler
+category and graph execution/exporter tests, and
 `collector/README.glm53flash.md` reference the trace format in
 https://github.com/pytorch/kineto at immutable commit
 `094d3c1d072362d0a919a77299459eee94f97931`, original paths
@@ -1352,8 +1353,13 @@ reduced metadata from this project's own failed native observations, not
 third-party implementation. The modified strict parser additionally references
 NVIDIA CUDA Toolkit 13.0.2 runtime documentation for Driver Entry Point Access,
 Execution Control and Runtime/Driver Interactions, linked in the fixture README.
-Its exact function-control classification and deferred Memset query are
-independently authored; no external source or documentation text is copied.
+Its exact function-control classification, deferred Memset query and separately
+versioned pending live-source Memset/replay contract are independently authored;
+no external source or documentation text is copied. The new Memset tests use
+synthetic parameters and replay activities, explicitly separate from original
+failed native observations. Memset API references additionally use CUDA Toolkit
+13.0.1 `cudaMemsetParams` and `cudaGraphMemsetNodeGetParams` documentation linked
+in `collector/README.glm53flash.md`.
 
 BSD License
 

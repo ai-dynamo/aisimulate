@@ -6,14 +6,14 @@ Original bindings to documented NVIDIA CUDA/CUPTI APIs; no CUDA source copied.
 See README.glm53flash.md for API references and qualification limits. No event,
 kernel, dependency, stream wait or other graph node is inserted by this module.
 
-The memcpy trace contract references Kineto 094d3c1d072362d0a919a77299459eee94f97931,
+The memcpy and memset trace contracts reference Kineto 094d3c1d072362d0a919a77299459eee94f97931,
 libkineto/src/{CuptiActivity.h,cupti_strings.cpp} and include/ActivityType.h;
-independently authored strict
-parser, not copied C++ code. BSD attribution is in THIRD_PARTY_NOTICES.md.
+independently authored strict parsers, not copied C++ code. BSD attribution is in THIRD_PARTY_NOTICES.md.
 """
 
 from __future__ import annotations
 
+import copy
 import ctypes
 import ctypes.util
 import hashlib
@@ -23,6 +23,8 @@ from pathlib import Path
 MEMCPY_TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
 MEMCPY_KINETO_REVISION = "094d3c1d072362d0a919a77299459eee94f97931"
 MEMCPY_TRACE_NAME = "Memcpy DtoD (Device -> Device)"
+MEMSET_PENDING_CONTRACT = "cuda13_live_source_memset_pending_replay_v1"
+MEMSET_TRACE_NAME = "Memset (Device)"
 # CUDA 13.0.2 Driver Entry Point Access / Execution Control documentation:
 # these exact APIs resolve a function pointer or set a function attribute.
 # They do not launch that function. See README.glm53flash.md for source links.
@@ -55,6 +57,51 @@ class GraphCopyParams(ctypes.Structure):
         ("extent", GraphCopyExtent),
         ("kind", ctypes.c_int),
     )
+
+
+class GraphMemsetParams(ctypes.Structure):
+    """Original binding to CUDA13 cudaMemsetParams; no SDK code copied."""
+
+    _fields_ = (
+        ("dst", ctypes.c_void_p),
+        ("pitch", ctypes.c_size_t),
+        ("value", ctypes.c_uint),
+        ("elementSize", ctypes.c_uint),
+        ("width", ctypes.c_size_t),
+        ("height", ctypes.c_size_t),
+    )
+
+
+def memset_activity_requirement(node):
+    """Require a live-source linear fill; this is not a replay measurement."""
+    proof = node.get("memset_params", {})
+    params = proof.get("parameters", {})
+    libraries = proof.get("native_api_libraries", {})
+    if (
+        node.get("node_type") != 2
+        or proof.get("contract") != MEMSET_PENDING_CONTRACT
+        or proof.get("api") != "cudaGraphMemsetNodeGetParams"
+        or type(proof.get("rc")) is not int
+        or proof["rc"] != 0
+        or type(proof.get("source_node_handle")) is not int
+        or proof["source_node_handle"] <= 0
+        or proof.get("trace_producer")
+        != {"torch_git_version": MEMCPY_TORCH_REVISION, "kineto_gitlink": MEMCPY_KINETO_REVISION}
+        or libraries.get("cudart", {}).get("sha256")
+        != "7bdba2b5b08cbdc85203c41cc94598adedb1bcfea7cb574ca693ac73599e4e63"
+        or libraries.get("cupti", {}).get("sha256")
+        != "a55e03ccab21830f5b9d1ca7a02ecd59c557e0d54c769a181ad1140a3cff8ac1"
+        or set(params) != {"dst", "pitch", "value", "elementSize", "width", "height"}
+        or any(type(value) is not int for value in params.values())
+        or params.get("dst", 0) <= 0
+        or not 0 <= params.get("pitch", -1) < 2**64
+        or not 0 <= params.get("value", -1) < 2**32
+        or params.get("elementSize") not in (1, 2, 4)
+        or params.get("height") != 1
+        or not 0 < params.get("width", 0) * params.get("elementSize", 0) < 2**64
+    ):
+        raise ValueError("pending native memset requires checked live source parameters for a positive linear fill")
+    return {"category": "gpu_memset", "name": MEMSET_TRACE_NAME, "bytes": params["width"] * params["elementSize"]}
 
 
 def memcpy_activity_requirement(node):
@@ -143,7 +190,8 @@ def _library(stem):
 class NativeGraphAPI:
     """Minimal read-only API surface, resolved without initializing CUDA."""
 
-    def __init__(self):
+    def __init__(self, *, capture_memset_parameters=False):
+        self.capture_memset_parameters = capture_memset_parameters
         self.runtime, runtime = _library("cudart")
         self.cupti, cupti = _library("cupti")
         self.libraries = {"cudart": runtime, "cupti": cupti}
@@ -177,6 +225,8 @@ class NativeGraphAPI:
         )
         self._bind(self.runtime, "cudaGraphNodeGetType", [pointer, ctypes.POINTER(ctypes.c_int)])
         self._bind(self.runtime, "cudaGraphMemcpyNodeGetParams", [pointer, ctypes.POINTER(GraphCopyParams)])
+        if capture_memset_parameters:
+            self._bind(self.runtime, "cudaGraphMemsetNodeGetParams", [pointer, ctypes.POINTER(GraphMemsetParams)])
         self._bind(self.cupti, "cuptiGetGraphId", [pointer, ctypes.POINTER(ctypes.c_uint32)])
         self._bind(self.cupti, "cuptiGetGraphNodeId", [pointer, ctypes.POINTER(ctypes.c_uint64)])
 
@@ -230,6 +280,23 @@ class NativeGraphAPI:
             if node_type.value == 4:
                 raise RuntimeError("child graphs require recursive native ownership before admission")
             nodes[node_id.value] = {"node_type": node_type.value}
+            if node_type.value == 2 and self.capture_memset_parameters:
+                import torch
+
+                params = GraphMemsetParams()
+                rc = self.runtime.cudaGraphMemsetNodeGetParams(handle, ctypes.byref(params))
+                nodes[node_id.value]["memset_params"] = {
+                    "contract": MEMSET_PENDING_CONTRACT,
+                    "api": "cudaGraphMemsetNodeGetParams",
+                    "source_node_handle": handle,
+                    "rc": rc,
+                    "parameters": {name: int(getattr(params, name) or 0) for name, _ in params._fields_},
+                    "native_api_libraries": copy.deepcopy(self.libraries),
+                    "trace_producer": {
+                        "torch_git_version": torch.version.git_version,
+                        "kineto_gitlink": MEMCPY_KINETO_REVISION,
+                    },
+                }
             if node_type.value == 1:
                 import torch
 
@@ -368,6 +435,12 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
     It does not turn sums into a whole-forward prediction or certify accuracy.
     """
     node_types = {"kernel": 0, "gpu_memcpy": 1, "gpu_memset": 2}
+    if "memset_pending_contract" in registry:
+        memsets = [row for row in registry["nodes"] if row["node_type"] == 2]
+        if registry["memset_pending_contract"] != MEMSET_PENDING_CONTRACT or not memsets:
+            raise ValueError("unknown or empty pending native memset contract")
+        if any(row.get("memset_activity_requirement") != memset_activity_requirement(row) for row in memsets):
+            raise ValueError("pending native memset lacks its original live-source replay requirement")
     expected = {row["node_id"]: row for row in registry["nodes"] if row["node_type"] in node_types.values()}
     structural = [row for row in registry["nodes"] if row["node_type"] not in node_types.values()]
     if any(row["node_type"] not in (5, 6, 7) for row in structural):
@@ -409,6 +482,15 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
                 ):
                     raise ValueError("pending native memcpy lacks its exact replay category, direction, and bytes")
                 fingerprint["copy_direction"] = "D2D"
+            requirement = expected[node].get("memset_activity_requirement")
+            if requirement is not None and (
+                registry.get("memset_pending_contract") != MEMSET_PENDING_CONTRACT
+                or requirement != memset_activity_requirement(expected[node])
+                or category != requirement["category"]
+                or event.get("name") != requirement["name"]
+                or args["bytes"] != requirement["bytes"]
+            ):
+                raise ValueError("pending native memset lacks its exact replay category and source bytes")
         start, duration = event.get("ts"), event.get("dur")
         if (
             any(type(value) not in (int, float) or not math.isfinite(value) for value in (start, duration))

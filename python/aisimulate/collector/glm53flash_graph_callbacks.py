@@ -251,8 +251,32 @@ def _direct_instantiation(registry, receipt):
     return create, clones, originals, ids
 
 
-def _event_record_mismatches(registry, receipt, *, allow_pending_memcpy=False, allow_memset_query=False):
+def _event_record_mismatches(
+    registry, receipt, *, allow_pending_memcpy=False, allow_memset_query=False, allow_pending_memset=False
+):
+    if allow_memset_query and allow_pending_memset:
+        raise ValueError("strict memset queries and pending replay are distinct contracts")
     create, clones, originals, ids = _direct_instantiation(registry, receipt)
+    if allow_pending_memset and any(node["node_type"] == 2 for node in originals.values()):
+        from .glm53flash_graph_nodes import memset_activity_requirement
+
+        libraries = registry.get("native_api_libraries", {})
+        if (
+            receipt.get("callback_subscription_closed") is not True
+            or libraries.get("cudart", {}).get("sha256") != EVENT_RECORD_CUDART_SHA256
+            or libraries.get("cupti", {}).get("sha256") != QUALIFIED_CUPTI_SHA256
+        ):
+            raise ValueError("pending memset mapping differs from its closed qualified native providers")
+        for clone in clones:
+            original = originals[clone["original_node_id"]]
+            if original["node_type"] == 2:
+                memset_activity_requirement(original)
+                proof = original["memset_params"]
+                if (
+                    proof["source_node_handle"] != clone["raw_fields"]["originalNode"]
+                    or proof["native_api_libraries"] != libraries
+                ):
+                    raise ValueError("memset live source query differs from its exact clone/provider identity")
     mismatches = [row for row in clones if row["node_type"] != originals[row["original_node_id"]]["node_type"]]
     copies = [
         row for row in mismatches if (originals[row["original_node_id"]]["node_type"], row["node_type"]) == (1, 0)
@@ -273,7 +297,7 @@ def _event_record_mismatches(registry, receipt, *, allow_pending_memcpy=False, a
             if original["memcpy_params"]["source_node_handle"] != clone["raw_fields"]["originalNode"]:
                 raise ValueError("memcpy source query handle differs from its exact clone callback")
         mismatches = [row for row in mismatches if row not in copies]
-    query_types = (2, 7) if allow_memset_query else (7,)
+    query_types = (2, 7) if allow_memset_query or allow_pending_memset else (7,)
     if any(
         originals[row["original_node_id"]]["node_type"] not in query_types or row["node_type"] != 0
         for row in mismatches
@@ -282,16 +306,26 @@ def _event_record_mismatches(registry, receipt, *, allow_pending_memcpy=False, a
     return create, clones, originals, ids, mismatches
 
 
-def _query_method(originals, mismatches):
+def _query_method(originals, mismatches, *, allow_pending_memset=False):
     # Preserve the original EventRecord-only proof byte contract. The explicit
     # Memset opt-in gets a distinct method, with each exact source type retained.
     if any(originals[row["original_node_id"]]["node_type"] == 2 for row in mismatches):
+        if allow_pending_memset:
+            return "CUDA13_LIVE_SOURCE_MEMSET_PENDING_REPLAY_V1"
         return "CUDA13_MEMSET_EVENT_RECORD_CLONE_QUERY_V1"
     return "CUDA13_EVENT_RECORD_CLONE_QUERY_V1"
 
 
 def record_event_record_types(
-    api, graph, registry, receipt, path, *, allow_pending_memcpy=False, allow_memset_query=False
+    api,
+    graph,
+    registry,
+    receipt,
+    path,
+    *,
+    allow_pending_memcpy=False,
+    allow_memset_query=False,
+    allow_pending_memset=False,
 ):
     """Query qualified EventRecord / explicitly enabled Memset mismatches.
 
@@ -302,9 +336,17 @@ def record_event_record_types(
     Its Empty5→clone0 case is deliberately rejected. No CUDA API runs inside a
     callback, no source handle is dereferenced after Torch may have freed it,
     and the caller retains the real graph executable throughout this function.
+
+    The separate pending-Memset opt-in retains successful clone types0/2 as
+    observations, never as type equivalence. Its live source parameters and
+    exact positive replay activity remain mandatory before measured rows.
     """
     create, _, originals, _, mismatches = _event_record_mismatches(
-        registry, receipt, allow_pending_memcpy=allow_pending_memcpy, allow_memset_query=allow_memset_query
+        registry,
+        receipt,
+        allow_pending_memcpy=allow_pending_memcpy,
+        allow_memset_query=allow_memset_query,
+        allow_pending_memset=allow_pending_memset,
     )
     if not mismatches:
         return None
@@ -321,7 +363,7 @@ def record_event_record_types(
     if handle != create["raw_fields"]["graphExec"]:
         raise RuntimeError("deferred node query does not retain its original executable")
     proof = {
-        "method": _query_method(originals, mismatches),
+        "method": _query_method(originals, mismatches, allow_pending_memset=allow_pending_memset),
         "native_api_libraries": copy.deepcopy(libraries),
         "graph_exec_handle": handle,
         "graph_exec_id": receipt["actual_graph_exec_id"],
@@ -358,22 +400,35 @@ def record_event_record_types(
             row["rc"] = api.runtime.cudaGraphNodeGetType(row["clone_node_handle"], ctypes.byref(actual))
             row["native_node_type"] = actual.value
             persist()
-            if row["rc"] != 0 or actual.value != source_type:
+            allowed_types = (0, 2) if allow_pending_memset and source_type == 2 else (source_type,)
+            if row["rc"] != 0 or actual.value not in allowed_types:
                 raise RuntimeError("deferred native node clone query failed or changed type")
         proof["completed"] = True
         persist()
     return proof
 
 
-def resolve_registry(registry, receipt, node_type_proof=None, *, allow_pending_memcpy=False, allow_memset_query=False):
+def resolve_registry(
+    registry,
+    receipt,
+    node_type_proof=None,
+    *,
+    allow_pending_memcpy=False,
+    allow_memset_query=False,
+    allow_pending_memset=False,
+):
     """Derive executable ownership, retaining strict native type evidence."""
     create, clones, originals, ids, mismatches = _event_record_mismatches(
-        registry, receipt, allow_pending_memcpy=allow_pending_memcpy, allow_memset_query=allow_memset_query
+        registry,
+        receipt,
+        allow_pending_memcpy=allow_pending_memcpy,
+        allow_memset_query=allow_memset_query,
+        allow_pending_memset=allow_pending_memset,
     )
     if mismatches:
         libraries = registry.get("native_api_libraries", {})
         expected = {
-            "method": _query_method(originals, mismatches),
+            "method": _query_method(originals, mismatches, allow_pending_memset=allow_pending_memset),
             "native_api_libraries": libraries,
             "graph_exec_handle": create["raw_fields"]["graphExec"],
             "graph_exec_id": receipt["actual_graph_exec_id"],
@@ -394,6 +449,18 @@ def resolve_registry(registry, receipt, node_type_proof=None, *, allow_pending_m
                 for row in mismatches
             ],
         }
+        if allow_pending_memset and isinstance(node_type_proof, dict):
+            observed_queries = node_type_proof.get("queries", [])
+            if isinstance(observed_queries, list) and len(observed_queries) == len(expected["queries"]):
+                for wanted, actual in zip(expected["queries"], observed_queries, strict=True):
+                    if (
+                        wanted["source_node_type"] == 2
+                        and isinstance(actual, dict)
+                        and type(actual.get("native_node_type")) is int
+                        and actual["native_node_type"] in (0, 2)
+                    ):
+                        # Retain the observed executable query. Never recast0 to2.
+                        wanted["native_node_type"] = actual["native_node_type"]
         if (
             node_type_proof != expected
             or receipt.get("callback_subscription_closed") is not True
@@ -426,6 +493,11 @@ def resolve_registry(registry, receipt, node_type_proof=None, *, allow_pending_m
             from .glm53flash_graph_nodes import memcpy_activity_requirement
 
             row["memcpy_activity_requirement"] = memcpy_activity_requirement(row)
+        if row["node_type"] == 2 and allow_pending_memset:
+            from .glm53flash_graph_nodes import MEMSET_PENDING_CONTRACT, memset_activity_requirement
+
+            row["memset_activity_requirement"] = memset_activity_requirement(row)
+            result["memset_pending_contract"] = MEMSET_PENDING_CONTRACT
         row["node_id"] = ids[row["node_id"]]
     for edge in result["edges"]:
         edge["from"], edge["to"] = ids[edge["from"]], ids[edge["to"]]
@@ -439,3 +511,14 @@ def resolve_registry(registry, receipt, node_type_proof=None, *, allow_pending_m
     if node_type_proof is not None:
         result["native_instantiation"]["event_record_type_proof"] = copy.deepcopy(node_type_proof)
     return result
+
+
+def vllm_memset_contract_options(recorded):
+    """Route declared new records explicitly; historical strict proofs stay strict."""
+    from .glm53flash_graph_nodes import MEMSET_PENDING_CONTRACT
+
+    if "memset_pending_contract" not in recorded:
+        return {"allow_memset_query": True}
+    if recorded["memset_pending_contract"] != MEMSET_PENDING_CONTRACT:
+        raise ValueError("unknown pending native memset contract")
+    return {"allow_pending_memset": True}

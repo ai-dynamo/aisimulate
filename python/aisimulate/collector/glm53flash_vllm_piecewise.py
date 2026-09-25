@@ -473,9 +473,9 @@ def bind_piecewise_instantiations(pending, callbacks, api, output, stem):
             graph = native_graphs[position]["graph"]
             path = output / f"{stem}-piecewise-{capture_index}-{position}-event-types.json"
             proof = record_event_record_types(
-                api, graph, original, receipt, path, allow_pending_memcpy=True, allow_memset_query=True
+                api, graph, original, receipt, path, allow_pending_memcpy=True, allow_pending_memset=True
             )
-            bound = resolve_registry(original, receipt, proof, allow_pending_memcpy=True, allow_memset_query=True)
+            bound = resolve_registry(original, receipt, proof, allow_pending_memcpy=True, allow_pending_memset=True)
             bound["shared_callback_receipt"] = shared
             bound["observed_executable"] = next(
                 row for row in observed if row["capture_index"] == capture_index and row["position"] == position

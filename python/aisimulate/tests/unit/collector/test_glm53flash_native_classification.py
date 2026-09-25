@@ -233,7 +233,10 @@ def test_capture_proof_cannot_replace_each_replay_memory_activity(tmp_path, defe
 def test_piecewise_producer_retains_original_copy_and_memset_evidence(tmp_path):
     from collector.glm53flash_vllm_piecewise import bind_piecewise_instantiations
 
+    from .test_glm53flash_graph_memset import source_parameters
+
     source, receipt, api, graph, _, calls = graph_fixture(tmp_path)
+    source_parameters(source, receipt)
     # The native query remains a CPU double; this exercises the real producer
     # seam, serialization and independently rederived mapping.
     queried = []
@@ -271,7 +274,9 @@ def test_piecewise_producer_retains_original_copy_and_memset_evidence(tmp_path):
     bind_piecewise_instantiations([item], subscriber, api, tmp_path, "TEST_ONLY")
     bound = registry.bound_capture["segments"][0]
     proof = json.loads((tmp_path / bound["node_type_receipt"]["file"]).read_text())
-    derived = resolve(original_source, receipt, proof)
+    derived = callbacks.resolve_registry(
+        original_source, receipt, proof, allow_pending_memcpy=True, allow_pending_memset=True
+    )
     assert bound["nodes"] == derived["nodes"]
     assert [n["node_type"] for n in bound["nodes"]] == [0, 1, 2]
     assert len(queried) == 1 and not calls

@@ -480,7 +480,11 @@ def aggregate_serving(proof, *, evidence_sha256):
 
 def _piecewise_captures(root, rank, snapshot, manifest, provenance, files, full_captures):
     """Rebuild every PW segment from original source and shared callbacks."""
-    from collector.glm53flash_graph_callbacks import QUALIFIED_CUPTI_SHA256, resolve_registry
+    from collector.glm53flash_graph_callbacks import (
+        QUALIFIED_CUPTI_SHA256,
+        resolve_registry,
+        vllm_memset_contract_options,
+    )
     from collector.glm53flash_graph_export import _local, _receipt
     from collector.glm53flash_jsonl import file_sha256
     from collector.glm53flash_vllm_piecewise import BREAKABLE_SOURCE_PIN, EAGER_RANGE_PREFIX
@@ -631,7 +635,7 @@ def _piecewise_captures(root, rank, snapshot, manifest, provenance, files, full_
                 raise ValueError("serving PW node query belongs to another executable")
             type_proof = _receipt(root, type_ref, files) if type_ref is not None else None
             derived = resolve_registry(
-                original, receipt, type_proof, allow_pending_memcpy=True, allow_memset_query=True
+                original, receipt, type_proof, allow_pending_memcpy=True, **vllm_memset_contract_options(bound)
             )
             create = claim(original["graph_id"], receipt)
             if observed.get("actual_graph_exec_handle") != create["raw_fields"]["graphExec"]:

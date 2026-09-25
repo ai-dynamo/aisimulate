@@ -508,7 +508,7 @@ def install(manifest, provenance, output, *, include_piecewise=False):
         if state is None:
             rank = get_tensor_model_parallel_rank()
             observer_class = NativePiecewiseGraphObserver if include_piecewise else NativeGraphOperationObserver
-            observer = observer_class(manifest, provenance, rank, NativeGraphAPI())
+            observer = observer_class(manifest, provenance, rank, NativeGraphAPI(capture_memset_parameters=True))
             inventory = install_native_hooks(model, observer, "vllm")
             state = {"observer": observer, "rank": rank, "model": model, "inventory": inventory}
             models[id(model)] = state
@@ -615,10 +615,10 @@ def install(manifest, provenance, output, *, include_piecewise=False):
                 receipt,
                 type_path,
                 allow_pending_memcpy=True,
-                allow_memset_query=True,
+                allow_pending_memset=True,
             )
             registry = resolve_registry(
-                observations[0], receipt, type_proof, allow_pending_memcpy=True, allow_memset_query=True
+                observations[0], receipt, type_proof, allow_pending_memcpy=True, allow_pending_memset=True
             )
             registry["instantiation_receipt"] = {
                 "file": path.name,

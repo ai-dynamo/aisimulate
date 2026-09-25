@@ -146,7 +146,12 @@ def native(monkeypatch, tmp_path):
 
     monkeypatch.setattr(graph, "persist_snapshot", persist)
     monkeypatch.setattr(graph, "install_native_hooks", install_hooks)
-    monkeypatch.setattr(graph, "NativeGraphAPI", lambda: calls.append(("api",)))
+
+    def graph_api(*, capture_memset_parameters):
+        assert capture_memset_parameters is True
+        calls.append(("api",))
+
+    monkeypatch.setattr(graph, "NativeGraphAPI", graph_api)
     monkeypatch.setattr(graph, "NativeGraphOperationObserver", Observer)
     monkeypatch.setattr(graph, "CloneCallbacks", Callbacks)
     monkeypatch.setattr(graph, "bind_captured_graphs", lambda manager, pending: calls.append(("bind",)))

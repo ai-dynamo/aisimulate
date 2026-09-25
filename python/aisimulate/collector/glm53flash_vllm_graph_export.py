@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 from collector.glm53flash_contract import build_model_manifest, canonical_json, sha256_json
-from collector.glm53flash_graph_callbacks import QUALIFIED_CUPTI_SHA256, resolve_registry
+from collector.glm53flash_graph_callbacks import QUALIFIED_CUPTI_SHA256, resolve_registry, vllm_memset_contract_options
 from collector.glm53flash_graph_nodes import bind_replay_kernels, bind_vllm_execution_activity, trace_forward_identity
 from collector.glm53flash_jsonl import file_sha256, iter_records
 from collector.glm53flash_vllm_graph_ops import LOGITS_SOURCE_PIN
@@ -146,7 +146,9 @@ def _captures(root, rank, snapshot, manifest, provenance, files):
         _completed_boundaries(source, operations)
         type_receipt = recorded.get("node_type_receipt")
         type_proof = _receipt(root, type_receipt, files) if type_receipt is not None else None
-        derived = resolve_registry(source, callbacks, type_proof, allow_pending_memcpy=True, allow_memset_query=True)
+        derived = resolve_registry(
+            source, callbacks, type_proof, allow_pending_memcpy=True, **vllm_memset_contract_options(recorded)
+        )
         derived["instantiation_receipt"] = receipt
         if type_receipt is not None:
             derived["node_type_receipt"] = type_receipt
