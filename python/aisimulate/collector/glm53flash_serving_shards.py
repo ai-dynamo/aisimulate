@@ -18,6 +18,10 @@ from collector.glm53flash_shard_contract import validate_point_union
 
 def validate_children(parent, children):
     """Recheck the original parent bytes and every child/map before any merge."""
+    if "observation_partition" in parent:
+        from collector.glm53flash_observation_partition import validate_children as validate_observation_children
+
+        return validate_observation_children(parent, children)
     if (
         parent["spec"].get("ops_execution_mode") != "native_serving"
         or parent["key"][0] != "vllm"
@@ -160,6 +164,15 @@ def calibration_rows(parent, children, *, lookup_contract=None):
                     "shard_id": shard["shard_id"],
                     "original_point_id": owner["original_point_id"],
                     "native_benchmark_id": owner["native_benchmark_id"],
+                    **(
+                        {
+                            "observation_leaf_id": cid,
+                            "original_child_cell_id": shard["original_child_cell_id"],
+                            "original_child_benchmark_id": owner["original_child_benchmark_id"],
+                        }
+                        if "observation_partition" in parent
+                        else {}
+                    ),
                 }
             )
         if observed != coordinate_owners.keys():
@@ -173,10 +186,24 @@ def calibration_rows(parent, children, *, lookup_contract=None):
                 "native_runtime_run_id": native["runtime_run_id"],
                 "policy_evidence_sha256": proof["policy_evidence_sha256"],
                 "rows": len(actual),
+                **(
+                    {
+                        "observation_leaf_id": cid,
+                        "original_child_cell_id": shard["original_child_cell_id"],
+                        "original_child_plan_sha256": shard["original_child_plan_sha256"],
+                        "observation_family": shard["observation_family"],
+                    }
+                    if "observation_partition" in parent
+                    else {}
+                ),
             }
         )
     ownership = {
-        "schema": "glm53flash_serving_shard_ownership_v1",
+        "schema": (
+            "glm53flash_serving_observation_ownership_v1"
+            if "observation_partition" in parent
+            else "glm53flash_serving_shard_ownership_v1"
+        ),
         "parent_cell_id": parent["cell"]["cell_id"],
         "source_plan_sha256": parent["plan"]["sha256"],
         "shard_manifest_sha256": sha256_json(parent["shard_manifest"]),
@@ -185,6 +212,7 @@ def calibration_rows(parent, children, *, lookup_contract=None):
         "rows": sorted(owners, key=canonical_json),
         "children": sorted(receipts, key=canonical_json),
         **({"lookup_contract": lookup_contract} if lookup_contract else {}),
+        **({"observation_partition": parent["observation_partition"]} if "observation_partition" in parent else {}),
     }
     return sorted(rows, key=canonical_json), ownership
 
@@ -261,12 +289,41 @@ def validate_prediction_binding(native, binding):
         or len(by_id) != len(receipts)
         or by_id.keys() != native["_children"].keys()
         or ownership.get("children") != sorted(receipts, key=canonical_json)
-        or ownership.get("schema") != "glm53flash_serving_shard_ownership_v1"
+        or ownership.get("schema")
+        not in ("glm53flash_serving_shard_ownership_v1", "glm53flash_serving_observation_ownership_v1")
         or ownership.get("graph_policy_sha256") != sha256_json(native["graph_policy"])
         or ownership.get("source_plan_sha256") != binding.get("source_plan_sha256")
         or binding.get("calibration_group_sha256") != sha256_json(ownership)
     ):
         raise ValueError("serving prediction lacks its complete original calibration shard group")
+    if ownership["schema"] == "glm53flash_serving_observation_ownership_v1":
+        partition = ownership.get("observation_partition", {})
+        if (
+            partition.get("schema") != "glm53flash_ops_observation_partition_v1"
+            or ownership.get("shard_manifest_sha256") != sha256_json(partition)
+            or {leaf["leaf_id"] for leaf in partition.get("leaves", [])} != by_id.keys()
+        ):
+            raise ValueError("serving observation binding lost its original partition")
+        for leaf in partition["leaves"]:
+            receipt = by_id[leaf["leaf_id"]]
+            if any(
+                receipt.get(key) != leaf[key]
+                for key in ("original_child_cell_id", "original_child_plan_sha256", "observation_family")
+            ):
+                raise ValueError("serving observation binding changed its original child identity")
+            if native["_children"][leaf["leaf_id"]].get("observation_identity") != {
+                "leaf": leaf,
+                "partition_sha256": sha256_json(partition),
+                "source_plan_sha256": receipt["source_plan_sha256"],
+            }:
+                raise ValueError("serving observation binding differs from actual native leaf identity")
+        from collector.glm53flash_observation_partition import validate_ownership_rows
+
+        validate_ownership_rows(ownership)
+    elif "observation_partition" in ownership:
+        raise ValueError("legacy serving binding cannot hide an observation partition")
+    elif any("observation_identity" in child for child in native["_children"].values()):
+        raise ValueError("serving observation binding cannot downgrade to the legacy contract")
     for cid, child in native["_children"].items():
         same_native_policy(native, child)
         receipt = by_id[cid]
@@ -319,6 +376,10 @@ def predict_homogeneous(run, base, config, calibration_native, calibration_bindi
                 "native_benchmark_id": native_id,
                 "original_point_id": original_id,
             }
+            if "observation_leaf" in child:
+                from collector.glm53flash_observation_partition import origin
+
+                evidence_origins[original_id].update(origin(child, native_id))
         diagnostics.append({"child_cell_id": child["cell"]["cell_id"], **result["diagnostics"]})
     if rows.keys() != {point["benchmark_id"] for point in run["points"]}:
         raise ValueError("serving predictions omit original frozen holdout coverage")

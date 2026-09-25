@@ -1533,3 +1533,23 @@ POSSIBILITY OF SUCH DAMAGE.
   point unions, named unit/control provenance and exact capture policies without
   modifying native execution. Authored TEST_ONLY fixtures establish schema/query
   behavior, not GPU performance or holdout accuracy.
+
+## GLM-5.3-Flash pre-freeze observation partition contract
+
+- Files: `python/aisimulate/collector/glm53flash_observation_partition.py`,
+  `python/aisimulate/tests/unit/collector/test_glm53flash_observation_partition.py`,
+  its integration in `collector/fpm_forward/glm53flash_validation.py`,
+  `collector/glm53flash_validation.py`, `collector/glm53flash_serving_shards.py`,
+  `collector/glm53flash_vllm_serving_export.py`, and `collector/README.glm53flash.md`.
+- Native source contract referenced: https://github.com/vllm-project/vllm at
+  immutable commit `ced6857afa0ea7b2e3f0846a62e1394e90f15607`, original path
+  `vllm/v1/worker/gpu/cudagraph_utils.py` (`_init_candidates`, `dispatch`),
+  Copyright vLLM contributors, Apache-2.0. Existing applicable vLLM license and
+  native-source notices above remain included.
+- Modified/adapted: independently expressed source/config observation-family
+  declarations and provenance checks, with authored TEST_ONLY fixtures. No
+  native compute, scheduler or dispatch implementation is copied or replaced.
+  The new pre-freeze Ops leaf identity retains complete original FPM geometry
+  and corpus provenance while explicitly distinguishing new benchmark IDs and
+  token offsets; actual dispatch, source, state, control and measurement guards
+  still apply. No performance rows or query formulas are synthesized.

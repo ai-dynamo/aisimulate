@@ -742,6 +742,17 @@ def _load_native(run: dict, base: Path, *, calibration_evidence: bool = True) ->
         "hardware_by_rank": hardware_by_rank,
         "graph_policy": graph_proof["policy"] if graph_proof else None,
         **(
+            {
+                "observation_identity": {
+                    "leaf": graph_proof["observation_leaf"],
+                    "partition_sha256": sha256_json(run["observation_partition"]),
+                    "source_plan_sha256": run["plan"]["sha256"],
+                }
+            }
+            if graph_proof and "observation_leaf" in graph_proof
+            else {}
+        ),
+        **(
             {"graph_group_compatibility": graph_proof["graph_group_compatibility"]}
             if graph_proof and "graph_group_compatibility" in graph_proof
             else {}

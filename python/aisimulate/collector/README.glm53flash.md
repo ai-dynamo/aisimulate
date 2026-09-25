@@ -1023,3 +1023,65 @@ contracts retain their existing behavior.
 Tests use explicitly authored synthetic measurements and a rebuilt public Rust
 consumer. Real multi-shard compatibility and full holdout accuracy still require
 original GPU evidence. No historical failed pilot is relabeled as accepted.
+
+### Pre-freeze vLLM observation-family partitions
+
+`glm53flash_observation_partition.build_partition(parent, child_plans,
+runtime_identity, parent_cell_id=..., role=..., campaign_id=...)` creates the
+explicit `glm53flash_ops_observation_partition_v1` analysis contract. Supply the
+complete original parent and every original FPM child plan. The unchanged
+`validate_point_union` rechecks their content hashes, original phase-local IDs,
+point geometry, topology and corpus before deriving any leaf. The public helper
+has no campaign paths or fixed campaign point/child counts.
+
+This source-bound version declares FULL for decode, PIECEWISE for prefill BQ up
+to 2048, and NONE above 2048, within the original batch32/8192-token/context128K
+bounds. It never forces native dispatch. Every real target on every rank must
+pass the existing strict source, snapshot, descriptor, state, physical ownership
+and timing readers, then match its declared family and all five warmup plus ten
+retained repetitions. The actual snapshot must retain FULL_AND_PIECEWISE,
+max32 requests and capture2048. A mismatch fails; it cannot trigger repartition,
+retry, fallback or reuse of a pilot's rows.
+
+`leaf_plan(partition, leaf_id)` emits a new `glm53flash_ops_observation_leaf_v1`
+plan. It is not an original FPM child. The original source plans remain inside
+the partition. Native benchmark IDs are local to each new leaf; the unchanged
+scheduler therefore assigns new token offsets. The contract preserves original
+**geometry and corpus**, not historical token-byte equality. New per-leaf
+requests must be frozen by the native scheduler. The independent calibration
+and control leaves must use the same new point map/corpus and distinct run IDs;
+actual cohort/token/dispatch equality remains mandatory. Holdout preserves its
+complete independent original point union and corpus. Errors remain in the
+original parent denominator.
+
+Use these parent acceptance-spec fields with the existing public plan loader:
+
+- `plan` and `cell_id`: original parent receipt and selected phase cell.
+- `ops_execution_mode`: `native_serving`.
+- `ops_observation_partition`: path/SHA receipt for the new partition.
+- `observation_runtime_sources`: exact path/SHA references for every declared
+  entry source file; the loader verifies bytes and size.
+- `observation_children`: every real leaf's custom `plan` receipt, `cell_id`,
+  `raw_root` and `ops_execution_mode=native_serving`.
+
+Do not supply an aggregate `raw_root`, original FPM `shards` field, or a fake
+FPM plan for a leaf. Load calibration, control and holdout as distinct roles.
+The common `glm53flash_formal_observation_runtime_v1` source declaration binds
+the immutable producer commit/wheel/source map, shared native runtime/cache/
+overlay and both entry mechanisms. Actual native provenance must match its
+runtime digest and the leaf's unique run ID. Source declaration and entry byte
+checks do not replace installed-wheel, startup-chain or GPU qualification.
+Render a new experiment with the repaired public `build_run_provenance` helper
+and exact leaf `run_id`/`FPM_RUN_ID`; keep both native BenchmarkPoints phase lists,
+including the empty unused phase. Historical renders remain historical.
+
+The existing `publish_sharded_calibration(..., parent_run=parent)` and binding
+routes re-read every original real leaf and its independent control. The new
+`glm53flash_serving_observation_ownership_v1` sidecar preserves each row's new
+leaf/native ID plus original child/local/parent IDs, raw evidence and native
+policy. All leaves require the same complete actual serving policy and separate
+native requests/runs. Each successful prediction keeps the unchanged Rust
+endpoint audit, with these distinct origin IDs in `prediction_evidence_origins`.
+A group has no invented native run. Legacy original-FPM routing and schema3
+row keys, lookup rules and formulas are unchanged. Source/TEST_ONLY checks do
+not establish GPU collection, full coverage or accuracy acceptance.

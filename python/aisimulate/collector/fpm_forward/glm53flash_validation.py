@@ -128,7 +128,8 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         raise ValueError("acceptance requires a frozen GB300 FPM collection plan")
     _sha(plan["sha256"])
     options = plan["options"]
-    if options.get("dataset_role", "calibration") != role:
+    source_role = "calibration" if role == "control" and "ops_observation_partition" in spec else role
+    if options.get("dataset_role", "calibration") != source_role:
         raise ValueError(f"expected frozen {role} plan")
     cells = [cell for cell in plan["cells"] if cell["cell_id"] == spec["cell_id"]]
     if len(cells) != 1:
@@ -201,6 +202,12 @@ def _plan_run(spec: dict, base: Path, role: str) -> dict:
         "spec": spec,
         "role": role,
     }
+    if "ops_observation_partition" in spec:
+        from collector.glm53flash_observation_partition import load_partition_run
+
+        return load_partition_run(run, base)
+    if "observation_children" in spec:
+        raise ValueError("observation children require their explicit partition contract")
     if "shards" in spec:
         from collector.glm53flash_shard_contract import validate_point_union
 
@@ -353,6 +360,8 @@ def installed_consumer_identity() -> dict:
 
 
 def _load_native(run: dict, base: Path, mode: str) -> dict:
+    if ("observation_partition" in run or "observation_leaf" in run) and mode != "ops":
+        raise ValueError("observation partition is an explicit Ops analysis contract, not an FPM plan")
     if "children" in run:
         serving = (
             mode == "ops" and run["key"][0] == "vllm" and run["spec"].get("ops_execution_mode") == "native_serving"
@@ -419,6 +428,14 @@ def _load_native(run: dict, base: Path, mode: str) -> dict:
                 if prefill or graph:
                     same_native_policy(execution_policy, native)
             elif serving:
+                if "observation_partition" in run:
+                    if (
+                        native["runtime_run_id"] in native_runs
+                        or Path(native["evidence_root"]).resolve() in native_roots
+                    ):
+                        raise ValueError("observation leaves reused an original native run or root")
+                    native_runs.add(native["runtime_run_id"])
+                    native_roots.add(Path(native["evidence_root"]).resolve())
                 if execution_policy is not None:
                     same_native_policy(execution_policy, native)
                 execution_policy = {

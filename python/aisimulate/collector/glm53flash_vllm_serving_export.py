@@ -1003,7 +1003,7 @@ def read_serving_run(root, run):
         "graph_policy_sha256": sha256_json(policy),
         "files": {name: file_sha256(_local(root, name)) for name in sorted(files)},
     }
-    return {
+    proof = {
         **execution,
         "policy": policy,
         "snapshots": snapshots,
@@ -1017,6 +1017,12 @@ def read_serving_run(root, run):
         "source_plan_sha256": run["plan"]["sha256"],
         "corpus_sha256": run["corpus"],
     }
+    from collector.glm53flash_observation_partition import check_native_proof
+
+    check_native_proof(run, proof)
+    if "observation_leaf" in run:
+        proof["observation_leaf"] = run["observation_leaf"]
+    return proof
 
 
 def profile_control(root, proof, control_root, control_run):
@@ -1025,6 +1031,11 @@ def profile_control(root, proof, control_root, control_run):
 
     if control_run["role"] != "control" or control_run["spec"].get("ops_execution_mode") != "native_serving":
         raise ValueError("graph export requires an independent unprofiled same-calibration control")
+    from collector.glm53flash_observation_partition import check_control_pair, freeze_leaf_run
+
+    check_control_pair(proof, control_run)
+    if "observation_leaf" in control_run:
+        control_run = freeze_leaf_run(control_run)
     native = load_native(control_run, control_root)
     if Path(native["evidence_root"]) != control_root.resolve() or control_root.resolve() == root.resolve():
         raise ValueError("graph profiling control must retain a separate original native run")
