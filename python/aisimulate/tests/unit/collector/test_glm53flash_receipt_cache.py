@@ -63,6 +63,17 @@ def test_shared_receipt_cannot_change_after_first_read(tmp_path, when, defect):
         path.symlink_to(target)
     else:
         path.unlink()
+    if defect == "same_size" and when == "reuse":
+        # Restoring mtime can leave every cached stat field unchanged on a
+        # coarse-resolution filesystem. Reuse may reject early; final content
+        # verification must reject before the reader can accept evidence.
+        try:
+            cache.read(reference)
+        except (ValueError, FileNotFoundError):
+            return
+        with pytest.raises((ValueError, FileNotFoundError)):
+            cache.verify()
+        return
     with pytest.raises((ValueError, FileNotFoundError)):
         cache.read(reference) if when == "reuse" else cache.verify()
 
@@ -82,10 +93,11 @@ def test_final_verification_checks_content_even_if_stat_identity_matches(tmp_pat
 
     path, reference = receipt(tmp_path)
     cache = ReceiptCache(tmp_path, set())
-    cache.read(reference)
+    original = cache.read(reference)
     identity = module._identity(path.stat())
     path.write_bytes(path.read_bytes().replace(b"TEST_ONLY", b"MUTATED!!"))
     monkeypatch.setattr(module, "_identity", lambda _: identity)
+    assert cache.read(reference) is original
     with pytest.raises(ValueError, match="changed during validation"):
         cache.verify()
 
