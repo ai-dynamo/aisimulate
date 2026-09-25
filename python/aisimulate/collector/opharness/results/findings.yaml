@@ -1235,11 +1235,17 @@ findings:
       appeared: GDN/KDA/mamba/MoE/attention kernel families of the onboarded
       models are all in the existing taxonomy.
       Configs bundled into the SDK (byte-for-byte at pinned revisions,
-      THIRD_PARTY_NOTICES updated; commits 97bce88f, 8d8e154d): Qwen3.8-27B
-      / -FP8 / -NVFP4, Qwen3.8-2.4T-A95B-NVFP4, DeepSeek-V4.1-Flash-NVFP4,
-      Nemotron-3.5-Lightning-BF16, Muse-Glimmer-30B-NVFP4, Ornith-1.5,
-      MiniCPM5-2B, NeoHorse-1-9B. NOT bundled: every generator-rejected
-      architecture (dead weight until modeled).
+      THIRD_PARTY_NOTICES updated; commits 97bce88f, 8d8e154d, 895586de):
+      Qwen3.8-27B / -FP8, Qwen3.8-2.4T-A95B-NVFP4, DeepSeek-V4.1-Flash-NVFP4,
+      Nemotron-3.5-Lightning-BF16, Ornith-1.5, MiniCPM5-2B, NeoHorse-1-9B.
+      NOT bundled: every generator-rejected architecture (dead weight until
+      modeled), and the two modelopt mixed_precision NVFP4 artifacts
+      (Qwen3.8-27B-NVFP4, Muse-Glimmer-30B-NVFP4) — the SDK quant inference
+      maps mixed_precision to fp8_static for dense models and the support
+      matrix then reports FAIL instead of HW_INCOMPATIBLE on non-FP4
+      systems (TODO.md); they stay in the probe roster and render from the
+      Hub. The other eight classify like their bundled siblings in a
+      tools/support_matrix dry run on h200_sxm.
       Side answers: Kimi-K3 max-num-seqs bisection completed — 64, 256, 384,
       448, 480, 496 all pass framework-mode; only the generator's 512 fails,
       i.e. the fault is the 512-batch CUDA-graph decode warm-up itself, not a
