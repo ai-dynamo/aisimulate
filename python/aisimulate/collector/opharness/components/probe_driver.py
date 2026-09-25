@@ -495,7 +495,10 @@ LINEAR_ATTN_KERNEL_RE = re.compile(r"chunk_gated_delta|delta_rule|gdn_decode|gdn
 KERNEL_DENY = re.compile(
     r"Memcpy|Memset|^memcpy\d|^memset\d|Lazy Function Loading|Runtime Triggered Module Loading|"
     r"at::native::(vectorized_elementwise|elementwise|index_elementwise|"
-    r"unrolled_elementwise|reduce_kernel|distribution_|fill)|aten::(fill_|copy_|zero_)|"
+    r"unrolled_elementwise|reduce_kernel|distribution_|fill|indexSelect|index_put|"
+    r"vectorized_layer_norm|CatArrayBatchedCopy|write_indices|cunn_|sort|radix|"
+    r"mbtopk|gatherTopK|arange|triu_tril|masked_scale|_scatter_gather|"
+    r"bitonic|cumsum|tensor_kernel_scan|upsample)|aten::(fill_|copy_|zero_)|"
     r"^void at::native::.*FillFunctor"
 )
 # wrapper identifiers to skip when extracting a meaningful kernel name
@@ -515,6 +518,10 @@ _CUTEDSL_PARAM_SUFFIX = re.compile(r"_(tensorptr|object).*$")
 
 
 def normalize_kernel(name: str) -> str | None:
+    # "(anonymous namespace)::" carries no identity and, left in place, hides
+    # the at::native:: glue from KERNEL_DENY and the kernel name from the
+    # identifier scan (K3's KDA decode kernel read as "namespace", 2026-09-25)
+    name = name.replace("(anonymous namespace)::", "")
     if KERNEL_DENY.search(name):
         return None
     if "<" not in name and " " not in name.strip():

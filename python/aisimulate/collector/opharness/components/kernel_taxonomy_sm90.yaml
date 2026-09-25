@@ -223,3 +223,15 @@ rules:
      match: "kimi_k3_fused_ops::fusedKimiK3MLA"}
   - {backend: framework_native, role: infra,
      match: "^write_indices$"}
+  # torch glue that surfaces by its bare name once "(anonymous namespace)::" is
+  # stripped (index/copy/elementwise/layernorm helpers) — infra, never identity
+  - {backend: torch, role: infra,
+     match: "^elementwise_kernel_with_index|^indexSelect(Small|Large)Index|^vectorized_layer_norm_kernel|^CatArrayBatchedCopy|^unrolled_elementwise_kernel|^index_elementwise_kernel|^_scatter_gather_elementwise_kernel|^sort_postprocess_kernel|^radixSort|^fill_reverse_indices_kernel"}
+  - {backend: torch, role: infra,
+     match: "^cunn_SoftMaxForward|^cunn_|^distribution_elementwise_grid_stride_kernel"}
+  # names that surface once "(anonymous namespace)::" is stripped: sglang fused
+  # rope / indexer-cache store, trtllm fp8 KV concat — norm_rope / kvcache glue
+  - {backend: framework_native, role: norm_rope,
+     match: "^fused_rope_kernel|^fused_rope_store_kernel"}
+  - {backend: framework_native, role: kvcache,
+     match: "^fused_store_indexer_cache|kernels::fusedCatFp8Kernel"}

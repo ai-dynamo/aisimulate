@@ -200,7 +200,12 @@ def pred_dummies_built(p):
     dirs = list((ROOT / "dummy_models").glob(f"*/{name}__*"))
     if not dirs:
         return False, "no dummy variants"
-    bare = [d.name for d in dirs if not (d / "tokenizer.json").exists()]
+    # tokenizer artifacts differ per family: HF tokenizer.json, sentencepiece
+    # tokenizer.model, or tiktoken (Kimi: tiktoken.model + tokenization_*.py)
+    def _has_tokenizer(d: Path) -> bool:
+        return any((d / n).exists() for n in ("tokenizer.json", "tokenizer.model", "tiktoken.model")) \
+            or ((d / "tokenizer_config.json").exists() and any(d.glob("tokenization_*.py")))
+    bare = [d.name for d in dirs if not _has_tokenizer(d)]
     if bare:
         return False, f"variants missing tokenizer: {bare[:2]}"
     return True, f"{len(dirs)} variants with tokenizers"
