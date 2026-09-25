@@ -15,7 +15,20 @@ import math
 import re
 from pathlib import Path
 
-CONTRACT = "fpm_cleanup_reconciliation_v3"
+if __package__:
+    from . import accounting_termination as accounting
+else:
+    import importlib.util
+    import sys
+
+    spec = importlib.util.spec_from_file_location(
+        "accounting_termination", Path(__file__).with_name("accounting_termination.py")
+    )
+    accounting = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = accounting
+    spec.loader.exec_module(accounting)
+
+CONTRACT = "fpm_cleanup_reconciliation_v4"
 SELECTION_SCHEMA = "fpm_complete_child_selection_reconciled_v2"
 LEGACY_SELECTION_SCHEMA = "fpm_complete_child_selection_v1"
 REVIEW_CONTRACT = "fpm_original_terminal_failure_review_v1"
@@ -175,6 +188,15 @@ def original_identity(original):
         in (
             {"task_root", "attempt_directory", "references", "documents", "host_source"},
             {"task_root", "attempt_directory", "references", "documents", "host_source", "routing_mode"},
+            {
+                "task_root",
+                "attempt_directory",
+                "references",
+                "documents",
+                "host_source",
+                "termination_mode",
+                "accounting",
+            },
         ),
         "original fields differ",
     )
@@ -299,7 +321,7 @@ def original_identity(original):
         require(set(info) == {"sha256", "bytes"}, "invalid reviewed log identity")
         sha(info["sha256"])
         require(type(info["bytes"]) is int and info["bytes"] >= 0, "invalid reviewed log bytes")
-    return {
+    result = {
         "backend": backend,
         "job": job,
         "cluster": cluster,
@@ -317,6 +339,30 @@ def original_identity(original):
         "plan": plan,
         "entry": entry,
     }
+    if "termination_mode" in original:
+        require(original["termination_mode"] == accounting.MODE, "unknown explicit termination mode")
+        evidence = original["accounting"]
+        require(
+            set(evidence) == {"client", "known_history", "history_document", "capture_documents"},
+            "accounting request closure missing",
+        )
+        reference = file_ref(evidence["known_history"])
+        require(
+            all(evidence["history_document"][k] == reference[k] for k in ("sha256", "bytes")),
+            "known history reference changed",
+        )
+        history = decode(evidence["history_document"])
+        for item in history["captures"]:
+            file_ref(item["reference"])
+        result.update(
+            termination_mode=accounting.MODE,
+            accounting=evidence,
+            allocation_job=jobs[0],
+            original_owner_sha256=refs["owner"]["sha256"],
+        )
+        accounting.validate_client(evidence["client"])
+        accounting.known_history(result)
+    return result
 
 
 def validate_cleanup(cleanup, identity):
@@ -451,7 +497,10 @@ def verify(proof, *, expected_original_refs=None):
         proof["cleanup"]["owner_sha256"] == proof["original"]["references"]["owner"]["sha256"],
         "owner receipt hash changed",
     )
-    validate_cleanup(proof["cleanup"], identity)
+    if identity.get("termination_mode") == accounting.MODE:
+        accounting.validate(proof["cleanup"], identity)
+    else:
+        validate_cleanup(proof["cleanup"], identity)
     storage = proof["storage_binding"]
     require(
         set(storage)
@@ -544,10 +593,12 @@ def verify(proof, *, expected_original_refs=None):
         and native["point_count"] > 0,
         "incomplete original whole child",
     )
+    expected_source = {"eligibility_sha256", "executor_sha256", "accounting_sha256"}
     require(
-        set(proof["source"]) == {"eligibility_sha256", "executor_sha256"}
+        set(proof["source"]) == expected_source
         and proof["source"]["eligibility_sha256"] == digest(Path(__file__).read_bytes())
-        and proof["source"]["executor_sha256"] == digest(Path(__file__).with_name("cleanup_executor.py").read_bytes()),
+        and proof["source"]["executor_sha256"] == digest(Path(__file__).with_name("cleanup_executor.py").read_bytes())
+        and proof["source"]["accounting_sha256"] == digest(Path(accounting.__file__).read_bytes()),
         "reconciliation source closure differs",
     )
     return identity

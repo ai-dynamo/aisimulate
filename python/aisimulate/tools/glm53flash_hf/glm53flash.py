@@ -50,6 +50,7 @@ POLICY_MODULES = (
     "closed_history.py",
     "cleanup_reconciliation.py",
     "cleanup_executor.py",
+    "accounting_termination.py",
     "portable_history.py",
     "import_glm53flash.py",
     "profile.py",
