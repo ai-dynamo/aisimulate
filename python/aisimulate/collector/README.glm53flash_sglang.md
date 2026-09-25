@@ -126,6 +126,18 @@ scheduler bookkeeping changes; they do not seed or repair GPU hybrid state.
 The first retained GPU attempt exposed this missing queue before any request or
 timing; its failure remains a failed qualification, not a data observation.
 
+The retained loop clears the native `cur_batch_for_debug` marker after a fully
+completed, released and retired cohort, and before no-pending idle housekeeping.
+At the pinned SGLang revision, `scheduler.py:1927,1971` clears this marker on
+native idle iterations; `scheduler_components/invariant_checker.py:505-527`
+uses it to decide whether the unchanged forward-counter watchdog is active.
+Leaving the last completed batch there can produce a timeout while the driver
+validates and hashes its raw evidence after the requests finish. Active work,
+incomplete release and retirement errors retain the marker. Native timing,
+request loops, shutdown order and watchdog settings are unchanged. This is a
+new producer source identity requiring qualification; original job 624031's
+watchdog and cleanup failure remain excluded from accepted data.
+
 ### Source-bound native prefill units
 
 `--ops-native-prefill` retains disabled prefill graphs and FULL decode graph
