@@ -109,6 +109,7 @@ def test_complete_distributed_source_closure_is_copied(tmp_path):
         "accounting_termination.py",
         "portable_history.py",
         "external_control_sglang_mixed.py",
+        "external_control_sglang_factory.py",
         "profile.py",
         "import_glm53flash.py",
     } <= set(policy.POLICY_MODULES)
@@ -122,7 +123,7 @@ def test_complete_distributed_source_closure_is_copied(tmp_path):
             "-c",
             "import sys;sys.path.insert(0,sys.argv[1]);import glm53flash as p;"
             "p.portable_history.h.dependencies(p.raw_campaign.archive);"
-            "assert len(p.POLICY_MODULES)==15;print('COLD_COMPLETE_POLICY_PASS')",
+            "assert len(p.POLICY_MODULES)==16;print('COLD_COMPLETE_POLICY_PASS')",
             str(tmp_path / "scripts"),
         ],
         capture_output=True,
