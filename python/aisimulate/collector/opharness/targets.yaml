@@ -195,15 +195,20 @@ families:
       date: 2026-08-24
       reason: internal RL checkpoint with no public artifact; revisit if it gets a public release.
     - repo: mistralai/Leanstral-1.5-119B-A6B
-      decided_by: pending-owner
+      decided_by: tianhaox
       date: 2026-09-25
       reason: 'fetch step hard-stop: the Hub repo ships no config.json (Mistral params.json layout only); the
-        dummy builder and the generator both need a transformers config. Recorded as excluded pending owner sign-off.'
+        dummy builder and the generator both need a transformers config. Owner decision 2026-09-25: drop (params.json-only checkpoints are out).'
     - repo: MiniMaxAI/MiniMax-H3
-      decided_by: pending-owner
+      decided_by: tianhaox
       date: 2026-09-25
-      reason: 'fetch step hard-stop: the Hub repo ships no config.json at fetch time (2026-09-25). Recorded as
-        excluded pending owner sign-off; re-fetch when the artifact gains a transformers config.'
+      reason: 'fetch step hard-stop: the Hub repo ships no config.json at fetch time (2026-09-25). Owner decision
+        2026-09-25: drop.'
+    - repo: Altworld/Hemmingway-1
+      decided_by: tianhaox
+      date: 2026-09-25
+      reason: 'CC-BY-NC-4.0 (non-commercial) license — owner decision 2026-09-25: models with license problems are
+        dropped from the roster; config not bundled, probe raws moved to facts/dropped/.'
     architecture: full support-matrix roster (per-checkpoint, no arch dedup)
     derive: true
     extra_repos:
@@ -239,7 +244,6 @@ families:
     - ornith-ai/Ornith-1.5-35B-A3B
     - XHToken/Spark-X2.5-4B
     - openbmb/MiniCPM5-2B
-    - Altworld/Hemmingway-1
     - TokenRhythm/NeoHorse-1-9B
     checkpoint_overrides:
       nvidia/Nemotron-H-56B-Base-8K:

@@ -130,5 +130,4 @@ IFM/K2-Horizon-MoVA-36B-A4B
 ornith-ai/Ornith-1.5-35B-A3B
 XHToken/Spark-X2.5-4B
 openbmb/MiniCPM5-2B
-Altworld/Hemmingway-1
 TokenRhythm/NeoHorse-1-9B

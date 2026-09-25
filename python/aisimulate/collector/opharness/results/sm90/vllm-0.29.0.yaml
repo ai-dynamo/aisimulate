@@ -4,15 +4,10 @@ _meta:
   version: 0.29.0
   verdicts: pass = plain `cli generate` output boots+runs; pass+custom = boots with facts-derived extra generate args; fail = root-caused (see results/findings.yaml)
   summary:
-    pass: 98
+    pass: 97
     pass+custom: 9
     fail: 23
 results:
-  Altworld/Hemmingway-1:
-    verdict: pass
-    attention: flash::FlashAttnFwdSm90
-    kv_allocated: auto
-    topology: tp1
   IFM/K2-Horizon-MoVA-36B-A4B:
     verdict: fail
     cause: generator rejects

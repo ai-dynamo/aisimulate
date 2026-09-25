@@ -6,12 +6,8 @@ _meta:
   summary:
     pass: 93
     pass+custom: 6
-    fail: 31
+    fail: 30
 results:
-  Altworld/Hemmingway-1:
-    verdict: fail
-    cause: framework gap
-    error: 'ValueError: Qwen3_5ForCausalLM has no SGlang implementation and the Transformers implementation is not compatible with SGLang.'
   IFM/K2-Horizon-MoVA-36B-A4B:
     verdict: fail
     cause: generator rejects

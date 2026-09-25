@@ -1191,7 +1191,9 @@ findings:
       Spark2_5ForCausalLM. A tenth, Qwen3_5ForCausalLM (text-only dense
       Qwen3.5: Altworld/Hemmingway-1, TokenRhythm/NeoHorse-1-9B), was the
       flat-config twin of an already-supported class and is now mapped
-      (commit 8d8e154d) — both render and were probed in pass 2.
+      (commit 8d8e154d) — both rendered and were probed in pass 2;
+      Hemmingway-1 was then DROPPED by owner decision (CC-BY-NC-4.0, see
+      below), its inputs/raws live in facts/dropped/.
       (2) THE PINNED FRAMEWORKS know the architecture — checked in the three
       images: vllm 0.29.0 lacks Glm5Next and DeepseekV41; sglang 0.5.16 lacks
       Glm5Next, Qwen4Exp, Qwen3_5MoeForCausalLM, DeepseekV41, MuseGlimmer;
@@ -1236,9 +1238,8 @@ findings:
       THIRD_PARTY_NOTICES updated; commits 97bce88f, 8d8e154d): Qwen3.8-27B
       / -FP8 / -NVFP4, Qwen3.8-2.4T-A95B-NVFP4, DeepSeek-V4.1-Flash-NVFP4,
       Nemotron-3.5-Lightning-BF16, Muse-Glimmer-30B-NVFP4, Ornith-1.5,
-      MiniCPM5-2B, NeoHorse-1-9B. NOT bundled: Hemmingway-1 (CC-BY-NC-4.0 —
-      owner call), and every generator-rejected architecture (dead weight
-      until modeled).
+      MiniCPM5-2B, NeoHorse-1-9B. NOT bundled: every generator-rejected
+      architecture (dead weight until modeled).
       Side answers: Kimi-K3 max-num-seqs bisection completed — 64, 256, 384,
       448, 480, 496 all pass framework-mode; only the generator's 512 fails,
       i.e. the fault is the 512-batch CUDA-graph decode warm-up itself, not a
@@ -1246,14 +1247,16 @@ findings:
       standalone-kernel deviation is now a governed standards exception
       (collector/evidence_exceptions.yaml, expires 2026-12-31).
       Pass 2 (after the Qwen3_5ForCausalLM alias and the capacity rule):
-      Hemmingway-1 and NeoHorse-1-9B pass on vllm and trtllm, sglang 0.5.16
-      has no Qwen3_5ForCausalLM implementation (framework gap);
+      NeoHorse-1-9B (and Hemmingway-1 before its removal) pass on vllm and
+      trtllm, sglang 0.5.16 has no Qwen3_5ForCausalLM implementation
+      (framework gap);
       Qwen3.8-2.4T-A95B-NVFP4 passes on vllm at depth4 (capacity_fallback_from
       depth8; ModelOptNvFp4FusedMoE -> marlin W4A16 on SM90, as for the other
       NVFP4 MoE checkpoints), sglang framework gap, trtllm NVFP4 MoE wall.
-      Matrix after onboarding: 130 rows per backend — vllm 98 pass / 9
-      pass+custom / 23 fail, sglang 93 / 6 / 31, trtllm 70 / 0 / 60; of the
-      30 new rows: vllm 11 pass, sglang 6 pass, trtllm 8 pass, 19 rows
+      Matrix after onboarding (Hemmingway-1 removed): 129 rows per backend
+      — vllm 97 pass / 9 pass+custom / 23 fail, sglang 93 / 6 / 30, trtllm
+      69 / 0 / 60; of the 29 new rows: vllm 10 pass, sglang 6 pass, trtllm
+      7 pass, 19 rows
       "generator rejects" on every backend, the rest framework gaps / walls
       named above. Note (display, pre-existing): NemotronH rows on vllm show
       attention "ReLUSquaredActivation" and the text-only Qwen3.5 rows show
@@ -1263,11 +1266,35 @@ findings:
       Evidence: facts/onboard_2026-09-25_repos.txt (33 surveyed repos),
       facts/onboard_render/arch_support*.txt (framework registry checks),
       facts/onboard_render/{plan.log,plan_onboard_pass1.json,queues*/}.
-      OWNER DECISIONS NEEDED: (a) sign or drop the Leanstral-1.5 / MiniMax-H3
-      exclusions (no config.json); (b) Hemmingway-1 (CC-BY-NC-4.0) config
-      bundling; (c) framework pin bumps for GLM-5.3-Flash, Qwen3.8-Flash-Next,
-      DeepSeek-V4.1-Flash, Muse-Glimmer (sglang/trtllm); (d) SDK modeling for
-      the 9 rejected architectures, Glm5Next first per the request.
+      OWNER DECISIONS (tianhaox, 2026-09-25): (a) Leanstral-1.5 / MiniMax-H3
+      dropped (params.json-only; roster scope = language models and models
+      with a vision module, no diffusion/DiT — none of the 30 was DiT);
+      (b) models with license problems are dropped: Hemmingway-1
+      (CC-BY-NC-4.0) removed from roster, configs, dummies, plan and matrix
+      (raws in facts/dropped/); every other new repo is Apache-2.0 / MIT /
+      NVIDIA Open Model / OpenMDW / Qwen-community (Qwen3.8-Flash-Next only,
+      not bundled anyway); (c) framework gaps and walls stay as recorded —
+      no pin bumps now; (d) SDK modeling of the 9 rejected architectures
+      stays open. Structural notes for (d), from the Hub configs: Glm5Next
+      = GLM-5.3 DSA (kv_lora 512, indexer topk 2048, mHC fields) with 34/45
+      layers swapped to KDA linear attention (linear_attn_config as in
+      Kimi-K3, 0-based lists) + 288-expert MoE + MTP — closest existing
+      families DEEPSEEKV32/GLM-5.3 + KIMIK3; Qwen4Exp = Qwen3.5 GDN hybrid
+      (interval 4, 512 experts x 640, MTP) plus new n-gram embedding
+      (ngram_*, ple_*) and indexer_* fields — extends QWEN35; AliceAI =
+      Qwen3.5-style GDN/KDA hybrid MoE (512 x 512, interval-4 layer_types)
+      with block attention residual — QWEN35-like; Inkling = 66-layer
+      GQA MoE (256 experts top-6, 2 shared) with SWA layers (local_layer_ids,
+      swa_* heads), short conv, vision hmlp encoder + audio — new; MiMoV2 =
+      MiMo-V2-Flash lineage (hybrid SWA 128 + full attention, 384-expert
+      MoE, head_dim 192/v 128, vision + audio configs) — extends HYBRIDMOE;
+      Xing4_0 = DeepSeek-V3-style MLA (q_lora 768, kv_lora 512, nope 128 /
+      rope 64) + 64-expert MoE + mHC + MTP — DEEPSEEK-like; K2Horizon =
+      GQA MoE (100 experts top-8 + MoVA expert set) — MOE-like; Spark2_5 =
+      dense 36-layer with 27 SWA(512)/9 full layers, per-kind rope —
+      Gemma-like SWA hybrid. Framework side: vllm 0.29 loads Qwen4Exp,
+      Inkling, MiMoV2 natively; none of the pins knows Glm5Next, Xing4_0,
+      AliceAI, K2Horizon or Spark2_5 (custom auto_map code only).
     applies_to: [zai-org/GLM-5.3-Flash, Qwen/Qwen3.8-27B, Qwen/Qwen3.8-Flash-Next, nvidia/Qwen3.8-2.4T-A95B-NVFP4,
       deepseek-ai/DeepSeek-V4.1-Flash, meta-models/Muse-Glimmer-30B, baerquant/Inkling, Altworld/Hemmingway-1,
       TokenRhythm/NeoHorse-1-9B, ornith-ai/Ornith-1.5-35B-A3B, openbmb/MiniCPM5-2B,
