@@ -76,7 +76,9 @@ def test_partition_retains_exact_arrow_values_schema_and_complete_source_union(t
         subset = pq.read_table(output / record["parquet"]["path"])
         assert subset.equals(original.take(pa.array(indices, type=pa.int64())))
         meta = json.loads((output / record["metadata"]["path"]).read_text())
-        assert "aic_revision" not in meta
+        assert meta["aic_revision"] == meta["planner_revision"] == "a" * 40
+        assert meta["revision_identity_schema"] == "glm53flash_revision_identity_v1"
+        assert meta["producer_revision_semantics"] == "legacy_planner_revision_alias"
         assert meta["producer_revision"] == "a" * 40
         assert meta["source_partition"]["parquet_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
         assert len(meta["collector_attempt_ids"]) == 2

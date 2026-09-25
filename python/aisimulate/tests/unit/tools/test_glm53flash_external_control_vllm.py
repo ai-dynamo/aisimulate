@@ -306,7 +306,13 @@ def test_native_frozen_fpm_default_requires_absence_or_exact_explicit_value(laun
 def test_standalone_bundle_executes_without_repository_pythonpath(launch, tmp_path):
     bundle = tmp_path / "TEST_ONLY_standalone"
     bundle.mkdir()
-    for name in ("raw_archive.py", "raw_campaign.py", "external_control.py", "external_control_vllm.py"):
+    for name in (
+        "raw_archive.py",
+        "raw_campaign.py",
+        "external_control.py",
+        "external_control_vllm.py",
+        "external_control_current.py",
+    ):
         shutil.copyfile(Path(control.__file__).with_name(name), bundle / name)
     request = tmp_path / "TEST_ONLY_request.json"
     request.write_text(

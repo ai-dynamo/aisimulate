@@ -17,14 +17,26 @@ from pathlib import Path, PurePosixPath
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+if __package__:
+    from . import external_control, external_control_current, raw_campaign
+else:
+    # The embedding dataset loader temporarily adds scripts/ only while loading
+    # this module. Resolve the complete portable closure before it restores paths.
+    import external_control
+    import external_control_current
+    import raw_campaign
+
 CAMPAIGN = "glm53flash-pr324"
 POLICY = "glm53flash-accepted-arrow-partitions-v1"
+REVISION_SCHEMA = "glm53flash_revision_identity_v1"
+PLANNER_ALIAS = "legacy_planner_revision_alias"
 POLICY_MODULES = (
     "glm53flash.py",
     "raw_campaign.py",
     "raw_archive.py",
     "external_control.py",
     "external_control_vllm.py",
+    "external_control_current.py",
 )
 MODELS = {
     "zai-org/GLM-5.3-Flash": "eb9eb208eb0d988989d07a6a12d0fdeb5f52574a",
@@ -150,11 +162,92 @@ def validate_external_receipts(records, *, stage_root=None, evidence_root=None):
     require(
         stage_root is not None and evidence_root is not None, "bound raw evidence requires stage and evidence roots"
     )
-    if __package__:
-        from . import raw_campaign
-    else:
-        import raw_campaign
     return raw_campaign.validate(records, Path(stage_root), Path(evidence_root))
+
+
+def validate_planner_revision(meta, original):
+    """Recognize legacy partitions; new partitions must preserve the original value."""
+    fields = {"revision_identity_schema", "planner_revision", "producer_revision_semantics"}
+    if not fields.intersection(meta):
+        return False
+    value = original.get("aic_revision")
+    require(
+        meta.get("revision_identity_schema") == REVISION_SCHEMA
+        and isinstance(value, str)
+        and bool(value.strip())
+        and all(meta.get(k) == value for k in ("aic_revision", "planner_revision", "producer_revision"))
+        and meta.get("producer_revision_semantics") == PLANNER_ALIAS,
+        "partition planner revision is missing, mislabeled, or changed",
+    )
+    return True
+
+
+def publication_revisions(meta, report, records, evidence_root, source_revision, part):
+    """Re-derive explicit revision names from validated original controls.
+
+    Callers first validate the complete stage and raw campaign. Legacy stages
+    remain readable without invented native identities. New stages require all
+    four phase/role controls, never a planner or analysis revision substitution.
+    """
+    key = tuple(part[k] for k in ("backend", "weight_quantization", "tp"))
+    selected = [r for r in records if tuple(r[k] for k in ("backend", "weight_quantization", "tp")) == key]
+    if not validate_planner_revision(meta, meta):
+        require(
+            all(
+                "external_control" not in r
+                or read(checked(Path(evidence_root), r["external_control"])).get("schema")
+                != external_control_current.SCHEMA
+                for r in selected
+            ),
+            "current external controls require explicit revision metadata",
+        )
+        return None
+    require(
+        len(selected) == 4
+        and {(r["phase"], r["role"]) for r in selected}
+        == {(p, r) for p in ("prefill", "decode") for r in ("calibration", "holdout")},
+        "revision identity needs exactly four original phase/role records",
+    )
+    identities, controls, cached = [], [], {}
+    for record in selected:
+        ref = record.get("external_control")
+        require(isinstance(ref, dict), "native producer revision requires original external controls")
+        path = checked(Path(evidence_root), ref)
+        cache_key = str(path), ref["sha256"]
+        if cache_key not in cached:
+            document = read(path)
+            require(
+                document.get("schema") == external_control_current.SCHEMA, "new revision identity requires v2 controls"
+            )
+            _, get, admission = external_control.validate(path.parent, document)
+            cached[cache_key] = external_control_current.configuration_revisions(
+                document, get, admission, *key, meta["planner_revision"]
+            )
+        identities.append(cached[cache_key])
+        controls.append(ref["sha256"])
+    require(all(i == identities[0] for i in identities), "phase/role native producer or planner identities differ")
+    consumer = report.get("consumer", {})
+    require(
+        consumer.get("distribution") == "aisimulate"
+        and consumer.get("api") == "RustForwardPassPerfModel.best_available"
+        and isinstance(consumer.get("version"), str)
+        and bool(consumer["version"])
+        and re.fullmatch(r"[0-9a-f]{64}", consumer.get("payload_sha256", ""))
+        and re.fullmatch(r"[0-9a-f]{40}", source_revision),
+        "analysis installed consumer or publication tool identity is missing",
+    )
+    return {
+        "schema": REVISION_SCHEMA,
+        "planner_revision": meta["planner_revision"],
+        "producer_revision": meta["producer_revision"],
+        "producer_revision_semantics": PLANNER_ALIAS,
+        **identities[0],
+        "analysis_revision": {
+            "installed_consumer": consumer,
+            "publication_tool_revision": source_revision,
+        },
+        "external_control_sha256": sorted(set(controls)),
+    }
 
 
 def validate_stage(root):
@@ -217,6 +310,7 @@ def validate_stage(root):
         )
         original = pq.read_table(sources[lineage["parquet_sha256"]])
         original_meta = read(sources[lineage["metadata_sha256"]])
+        validate_planner_revision(meta, original_meta)
         require(
             original.num_rows == lineage["original_row_count"]
             and max(indices) < original.num_rows
@@ -286,7 +380,8 @@ def validate_snapshot(root, manifest):
     stage_path = checked(root, policy["stage"])
     stage = validate_stage(stage_path.parent)
     external_path = checked(root, policy["external_raw_evidence"])
-    validate_external_receipts(read(external_path), stage_root=stage_path.parent, evidence_root=external_path.parent)
+    external = read(external_path)
+    validate_external_receipts(external, stage_root=stage_path.parent, evidence_root=external_path.parent)
     parts = [
         p
         for p in stage["configurations"]
@@ -307,6 +402,28 @@ def validate_snapshot(root, manifest):
     )
     meta = read(root / entry["metadata_path"])
     original = read(stage_path.parent / part["metadata"]["path"])
+    revisions = publication_revisions(
+        original,
+        read(checked(stage_path.parent, stage["acceptance"])),
+        external,
+        external_path.parent,
+        policy["source_revision"],
+        part,
+    )
+    require(
+        policy.get("revision_identity") == manifest["provenance"].get("revision_identity") == revisions,
+        "canonical revision identity differs from original controls or installed analysis",
+    )
+    if revisions is not None:
+        require(
+            manifest.get("aisim_commit") == revisions["native_producer_revision"]
+            and manifest.get("aisim_commit_status") == "recorded"
+            and manifest.get("aisim_commit_semantics") == "native_producer_revision"
+            and manifest["provenance"].get("producer_revisions") == [original["producer_revision"]]
+            and manifest["provenance"].get("producer_revisions_semantics") == PLANNER_ALIAS
+            and manifest["provenance"].get("producer_identity_missing") is False,
+            "canonical revision aliases are inconsistent",
+        )
     first = pq.read_table(stage_path.parent / part["parquet"]["path"]).to_pylist()[0]
     require(
         all(
@@ -347,6 +464,14 @@ def validate_snapshot(root, manifest):
 def validate_catalog_record(root, record):
     manifest = read(root / record["configuration_path"] / "manifest.json")
     validate_snapshot(root, manifest)
+    if manifest["provenance"].get("revision_identity") is not None:
+        require(
+            all(
+                record.get(k) == manifest.get(k)
+                for k in ("aisim_commit", "aisim_commit_status", "aisim_commit_semantics")
+            ),
+            "catalog native producer revision differs from manifest",
+        )
     require(
         record["schema_name"] == "aic_fpm_forward_perf" and record["schema_version"] == 7,
         "GLM requires schema-v7 FPM",

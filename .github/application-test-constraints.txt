@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# SQLAlchemy 2.1.0's sdist declares duplicate normalized optional-dependency
+# names (including mssql-pymssql), so uv rejects its build metadata before
+# wheel tests start. Observed in Full CI run 36051534826 with uv 0.12.18.
+# Exclude only that release; this constrains CI installation, not wheel metadata.
+sqlalchemy!=2.1.0
+
+# googleapis-common-protos 1.75.4 registers operations_proto.proto instead of
+# operations.proto, which google-vizier 0.1.21 requires. Full CI 36074952226
+# failed 18 Sweeper tests on import; 1.75.1 through 1.75.3 pass the same probe.
+# Exclude only the observed incompatible release from CI installation.
+googleapis-common-protos!=1.75.4

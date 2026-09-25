@@ -18,9 +18,11 @@ import stat
 from pathlib import Path
 
 if __package__:
+    from . import external_control_current as current
     from . import external_control_vllm as vllm
     from . import raw_archive as archive
 else:
+    import external_control_current as current
     import external_control_vllm as vllm
     import raw_archive as archive
 
@@ -78,6 +80,8 @@ def sums(data, parent):
 
 def closure(document, get):
     """Validate original launch semantics using a caller's bytes-only resolver."""
+    if document.get("schema") == current.SCHEMA:
+        return current.closure(document, get)
     require(document.get("schema") == SCHEMA, "invalid external control schema")
     require(document.get("adapter") in (ADAPTER, vllm.ADAPTER), "unsupported external startup adapter")
     is_vllm = document["adapter"] == vllm.ADAPTER
@@ -221,7 +225,9 @@ def closure(document, get):
 
 def execution_paths(document, run):
     paths = [run["started"], run["collector_provenance"]]
-    if document["adapter"] == vllm.ADAPTER:
+    if document.get("schema") == current.SCHEMA:
+        paths.extend(current.execution_paths(document, run))
+    elif document["adapter"] == vllm.ADAPTER:
         paths.extend(vllm.execution_paths(run))
     require(len(paths) == len(set(paths)), "duplicate external execution path")
     return paths
@@ -265,7 +271,11 @@ def prepare(source_root, original_task_root, anchors, runs, output, *, adapter=A
         not output.exists() and not output.is_relative_to(source_root), "attachment output exists or is inside source"
     )
     document = dict(
-        schema=SCHEMA, adapter=adapter, original_task_root=str(absolute(original_task_root)), anchors=anchors, runs=runs
+        schema=current.SCHEMA if adapter in current.ADAPTERS else SCHEMA,
+        adapter=adapter,
+        original_task_root=str(absolute(original_task_root)),
+        anchors=anchors,
+        runs=runs,
     )
     observed = {}
 
@@ -305,6 +315,8 @@ def prepare(source_root, original_task_root, anchors, runs, output, *, adapter=A
 
 def bind_role(document, get, admission, pairs, plans, manifest_base, inventory, archive_source):
     """Join selected accepted attempts to the archived original started bytes."""
+    if document.get("schema") == current.SCHEMA:
+        return current.bind_role(document, get, admission, pairs, plans, manifest_base, inventory, archive_source)
     task = absolute(document["original_task_root"])
     runs = {run["cell_id"]: run for run in document["runs"]}
     children = {child["child_cell_id"]: child for child in admission["children"]}

@@ -22,59 +22,55 @@ These are qualification candidates, not evidence of measured GB300 coverage. Pre
 
 ## Acceptance and data status
 
-Implemented: GLM-specific planning and configuration identity; source-pinned vLLM real-hybrid scheduling; native SGLang Engine collection; Generator, Slurm and Kubernetes backend routing; exact request/dispatch/state evidence validation; and five warmup plus ten measurement medians. The native runtime adapters are shared with the companion Ops implementation. CPU contract tests and all eight deployment renders pass.
+The required matrix has eight deployments: vLLM/SGLang × FP8/NVFP4 × TP2/TP4.
+No complete deployment has yet passed independent prefill and decode accuracy
+acceptance. CPU tests, runtime qualification and individual native completions
+are separate evidence; none grants dataset publication or a passing MAPE.
 
-GPU qualification and producer qualification are separate. All eight native
-model/request smoke configurations passed on GB300: vLLM job 601652 and SGLang
-job 603053. The long request used 131008 input tokens plus 32 decode tokens.
-The subsequent FP8 TP2 producer job 604763 completed exact inclusive 128K
-prefill at B1/B32 P131040/Q32 and decode at B1 past131071. All three points
-passed their historical strict reader and aggregation with five warmups and
-ten retained samples. Long ordinary-Engine output comparison and the new
-formal hardware contract remain separately unqualified.
+Implemented interfaces include model-specific planning, the native same-request
+hybrid-state protocol, SGLang Engine collection, Generator/Slurm/Kubernetes
+routing, strict request/dispatch/state validation, bounded original-point shards,
+installed-consumer validation and qualified dataset staging. Each retained point
+uses five warmups and ten measurements. Calibration and holdout corpus, request
+and geometry identities stay disjoint.
 
-The vLLM FP8 TP2 producer canary in job 603053 completed two prefill and two
-decode points, each with five warmups and ten retained observations. The
-production native reader and common aggregator passed all four points. Prefill
-Q1024/P0 used NONE dispatch; Q3/P4096 used PIECEWISE with four total tokens after padding (one padding token).
-Decode B1/P1024 and B4/P4099 used FULL for admission and measurement. These
-are producer receipts; independent ordinary-Engine output replay, full-matrix
-collection, MAPE acceptance and immutable Hugging Face publication are pending.
-SGLang job 604896 completed four prefill and three decode points, including
-inclusive 128K, and passed historical strict readers/aggregation. Ordinary
-Engine decode replay matched all twelve requests. Prefill matched fifteen of
-sixteen requests; a B2 P7/Q3 request differed from its ordinary B1 replay.
-Both TP ranks agreed on the retained state/token evidence. Matched-batch and
-chunking controls are required to distinguish numerical differences from a
-state error; the original failure remains unqualified and is not discarded.
+Stock vLLM cached-prefill restrictions remain attached to the stock identity.
+The former `0.30.0+glm53kpool.bf5f6b0e689d` candidate is quarantined after
+circular-tail out-of-bounds evidence; earlier successes do not restore eligibility.
+The separately identified `0.30.0+glm53tail.eb4704514fdf` repair has exact
+source/binary closure and an immutable four-deployment functional qualification
+summary, SHA256
+`8fc691d6054f48741c248eb7937b7b4db6220ff1ea337b968ff656c56ba8cf45`.
+Its three-profile comparisons, cache oracle and one NVFP4 TP2 128K ordinary-request
+regression are functional evidence. Each deployment still needs its own capacity,
+producer, full-campaign and independent accuracy checks. The reference runtime
+is not a measured producer. Licensed patches and qualification commands remain in
+the [runtime qualification sources](../python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_tail_repair/README.md).
 
-Formal hardware admission requires native per-worker GB300/sm103 identity,
-runtime/source/attempt binding, and distinct native UUIDs when available.
-SGLang state tensor devices are bound to those observations. Historical
-canaries missing these fields are deliberately denied formal publication;
-receipts are never backfilled after measurement.
+The current tail runtime has passed the original nine-point producer qualification
+and strict prefill/decode readers in all four vLLM deployments. Its formal
+397-calibration/221-holdout campaign is collecting on GB300. Current SGLang
+qualification uses native 0.5.20, explicit memory fraction 0.82, the native default
+allocator for FP8 TP4/NVFP4 TP2/TP4, and the separately recorded 16384 MiB split
+limit for FP8 TP2. Allocation and graph policy changes require new qualified
+campaign identity; historical unknown allocator settings stay unknown.
 
-Native GB300 split/one-shot IndexPool probes in job 604200 found wrong pooled
-cache entries for stock vLLM P4097/Q3 (B1/B2) and P4097/Q4 (B1). Aligned
-controls and all one-shot oracle cases passed. Producer, reader and Rust FPM
-queries reject the conservative unaligned-start contract P%4 != 0 with Q >= 2;
-requested coordinates remain in coverage. A source-pinned runtime repair must
-pass independent qualification before those points can be collected. The
-[versioned repair candidate](../python/aisimulate/collector/fpm_forward/runtime/glm53flash_vllm_kpool_candidate/README.md)
-preserves the exact patch, native binary lineage, actual build receipt and
-qualification commands. The exact runtime `0.30.0+glm53kpool.bf5f6b0e689d`
-is admitted by the packaged four-cell Engine summary, SHA256
-`d43dfdcfabe870cc51983fa41fada4897b4d84d64ac57fafe2236e7753435e67`.
-All four cells passed stock/reference, repaired/reference and repaired/split
-comparisons (20 requests per profile, 32 output tokens, 40 comparisons per cell).
-The original raw inventories and source identities remain linked in the summary.
-This functional qualification preserves the stock-runtime gate. Formal hardware
-qualification, campaign coverage and independent FPM accuracy are separate gates;
-no performance profile is accepted by the Engine result alone.
+Formal hardware admission binds each native worker's GB300/sm103 identity,
+source, attempt and distinct UUID where available. SGLang state tensor devices
+must agree. Historical canaries without this contract cannot be backfilled into
+formal acceptance. Original startup, state, capacity and collection failures
+remain available, including host-loader OOM separately from GPU-memory failures.
 
-Formal collection retains at least five warmups and ten observations per point, and separate calibration/holdout token streams and geometry. Exact table self-queries verify integrity, not independent accuracy. Record complete coverage, phase MAPE, WAPE and tail errors. Existing data remains unchanged.
+All eight cells must provide complete independent holdout predictions with
+**prefill MAPE <=10% and decode MAPE <=10%**, plus WAPE, P95/max APE,
+context-band results and every original failed/missing request. Exact table
+self-queries establish integrity only. The dataset staging gate requires all
+sixteen phase cells to pass; immutable Hugging Face ingestion, consumer pin,
+installed-wheel replay and offline-cache loading remain separate required steps.
+HTTP TTFT/TPOT is reported separately. Existing model data remains unchanged.
 
-Track [AIC-1999](https://linear.app/nvidia/issue/AIC-1999). SOL is the common prerequisite; FPM and Ops can progress in parallel after their shared execution contract is established.
+Track [AIC-1999](https://linear.app/nvidia/issue/AIC-1999). SOL provides the common
+model contract; Ops has its own timing, data and accuracy acceptance.
 
 ## Native collection interfaces
 
@@ -97,6 +93,14 @@ Calibration and holdout must also have identical actual serving settings
 (except the native per-process random seed). A changed fraction requires a new
 qualified campaign; it does not turn a historical OOM or earlier default-setting
 measurement into a successful observation.
+
+`--sglang-allocator-max-split-size-mb` passes the native allocator split setting
+before framework imports. It accepts a positive integer from 20 through
+8796093022207 MiB, and is rejected for other backends. Omission preserves the
+native default; it is not an observed historical default. Requested and actual
+per-worker allocator identities are recorded and validated across calibration,
+holdout and shards. FP8 TP2 uses 16384 only in its explicitly frozen campaign;
+it does not change the other three SGLang cells or justify dropping failed points.
 
 Keep writable runtime caches separate from a read-only checkpoint mount.
 The generated launcher defaults an unset `FLASHINFER_CUBIN_DIR` to
