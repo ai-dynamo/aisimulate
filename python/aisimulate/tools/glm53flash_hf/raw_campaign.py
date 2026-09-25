@@ -165,7 +165,7 @@ def native_pairs(spec, evidence):
     return [(children[cid], observed[cid]) for cid in sorted(children)]
 
 
-def external_controls(spec, record, root, pairs, paths, source):
+def external_controls(spec, record, root, pairs, paths, source, storage_root_binding=None):
     plans = {path: read(file) for path, file in paths.items()}
     uses_hook = any(
         Path(item["path"]).name.startswith("cache-setup-") for _, evidence in pairs for item in evidence["receipts"]
@@ -197,6 +197,7 @@ def external_controls(spec, record, root, pairs, paths, source):
         record["manifest_base"],
         archive.inventory_records(checked(root, record["source_inventory"])),
         source,
+        storage_root_binding=storage_root_binding,
     )
     files = {actual["path"]: actual["sha256"]}
     for item in index.values():
@@ -225,17 +226,23 @@ def consumer_sources(stage_root, stage, entry, cell):
     return result
 
 
-def make_plan(stage_root, manifest_base):
+def make_plan(stage_root, manifest_base, *, storage_root_binding=None):
     stage_root = Path(stage_root)
     _, _, manifest, cells = context(stage_root)
-    base = archive.absolute_safe(manifest_base)
+    base = (
+        archive.absolute_safe(manifest_base) if storage_root_binding is None else original_path("/", str(manifest_base))
+    )
+    archive.storage_path(base, storage_root_binding, live=True)
     jobs, seen = [], set()
     for index, entry in enumerate(manifest["entries"]):
         for role in ("calibration", "holdout"):
             spec = entry[role]
             path = original_path(base, spec["plan"]["path"])
-            require(archive.sha_file(archive.absolute_safe(path)) == spec["plan"]["sha256"], "original plan changed")
-            ident = plan_key(read(path), spec, role)
+            require(
+                archive.sha_file(archive.storage_path(path, storage_root_binding, live=True)) == spec["plan"]["sha256"],
+                "original plan changed",
+            )
+            ident = plan_key(read(archive.storage_path(path, storage_root_binding, live=True)), spec, role)
             require(ident not in seen, "duplicate phase/role manifest entry")
             seen.add(ident)
             pairs = native_pairs(spec, cells[ident[:-1]][role + "_evidence"])
@@ -249,16 +256,20 @@ def make_plan(stage_root, manifest_base):
                 )
             )
     require(seen == KEYS, "manifest omits required phase/role")
+    if storage_root_binding is not None:
+        archive.validate_storage_binding(storage_root_binding, live=True)
     return {
         "schema": PLAN,
         "stage_sha256": archive.sha_file(stage_root / "stage.json"),
         "manifest_base": str(base),
         "jobs": jobs,
+        **({"storage_root_binding": storage_root_binding} if storage_root_binding is not None else {}),
     }
 
 
 def load_plan(stage_root, plan):
-    expected = make_plan(stage_root, plan["manifest_base"])
+    binding = plan.get("storage_root_binding")
+    expected = make_plan(stage_root, plan["manifest_base"], storage_root_binding=binding)
     require(plan["schema"] == PLAN and plan["stage_sha256"] == expected["stage_sha256"], "archive plan stage mismatch")
     jobs = {key(j): j for j in plan["jobs"]}
     require(len(jobs) == len(plan["jobs"]) == 32 and jobs.keys() == KEYS, "exact thirty-two archive jobs required")
@@ -270,7 +281,7 @@ def load_plan(stage_root, plan):
             "archive plan changed accepted selection",
         )
         require(Path(job["source_root"]).is_absolute(), "closed source root must be absolute")
-        source = archive.absolute_safe(job["source_root"])
+        source = archive.storage_path(job["source_root"], binding, live=True)
         require(source.is_dir(), "closed campaign source must be a directory")
         archive.validate_identity(job["uri"], [{k: job[k] for k in FIELDS}])
         require(
@@ -279,9 +290,11 @@ def load_plan(stage_root, plan):
         )
         for raw in job["accepted_raw_roots"]:
             require(
-                archive.absolute_safe(raw).is_relative_to(source),
+                archive.storage_path(raw, binding, live=True).is_relative_to(source),
                 "accepted raw root is outside declared closed campaign",
             )
+    if binding is not None:
+        archive.validate_storage_binding(binding, live=True)
     return jobs
 
 
@@ -291,7 +304,10 @@ def archive_one(stage_root, plan, label, output):
     require(len(matches) == 1, "unknown archive label")
     job = matches[0]
     output = archive.absolute_safe(output, must_exist=False)
-    immutable_roots = [Path(stage_root).absolute(), *(Path(j["source_root"]) for j in jobs.values())]
+    immutable_roots = [
+        Path(stage_root).absolute(),
+        *(archive.storage_path(j["source_root"], plan.get("storage_root_binding"), live=True) for j in jobs.values()),
+    ]
     require(
         not any(output.is_relative_to(root) for root in immutable_roots),
         "archive output is inside campaign/stage input",
@@ -301,7 +317,9 @@ def archive_one(stage_root, plan, label, output):
         for _, other in sorted(jobs.items())
         if Path(other["source_root"]) == Path(job["source_root"]) and other["uri"] == job["uri"]
     ]
-    return archive.create_archive(job["source_root"], output, job["uri"], labels)
+    return archive.create_archive(
+        job["source_root"], output, job["uri"], labels, storage_root_binding=plan.get("storage_root_binding")
+    )
 
 
 def _bindings(stage_root, ctx, record, root):
@@ -327,6 +345,12 @@ def _bindings(stage_root, ctx, record, root):
     pairs = native_pairs(spec, cell[ident[-1] + "_evidence"])
     archive_input = read(checked(root, record["archive_input_manifest"]))
     source = original_path("/", archive_input["source_path"])
+    binding = archive_input.get("storage_root_binding")
+    if binding is not None:
+        require(
+            archive.storage_path(archive_input["original_source_path"], binding) == source,
+            "archive original/canonical source differs",
+        )
     roots = []
     expected_files = {}
     for child, evidence in pairs:
@@ -335,6 +359,7 @@ def _bindings(stage_root, ctx, record, root):
         if "shards" in spec:
             require(evidence["source_plan_sha256"] == child_plan["sha256"], "accepted shard plan identity mismatch")
         raw = original_path(record["manifest_base"], child["raw_root"])
+        raw = archive.storage_path(raw, binding)
         require(raw.is_relative_to(source), "accepted native root escapes archive source")
         prefix = raw.relative_to(source).as_posix()
         prefix = "" if prefix == "." else prefix
@@ -396,7 +421,7 @@ def _bindings(stage_root, ctx, record, root):
                 observed[prefix][item["path"][len(prefix) + 1 :] if prefix else item["path"]] = item["sha256"]
     require(root_stat == archive_input["source_root_stat"], "archive input root stat differs from inventory")
     require(observed == expected_files, "archived accepted native file set/SHA differs from acceptance")
-    external_files = external_controls(spec, record, root, pairs, paths, source)
+    external_files = external_controls(spec, record, root, pairs, paths, source, binding)
     return roots, consumer_sources(stage_root, stage, entry, cell), counts, external_files
 
 
@@ -488,6 +513,10 @@ def validate(records, stage_root, root):
             and archive_input["external_uri"] == record["uri"],
             "archive input manifest mismatch",
         )
+        require(
+            archive_input.get("storage_root_binding") == attestation.get("storage_root_binding"),
+            "archive storage proof differs from attestation",
+        )
         roots, consumers, counts, external_files = _bindings(stage_root, ctx, record, root)
         for path, digest in external_files.items():
             require(path not in files or files[path] == digest, "conflicting external control files")
@@ -559,7 +588,7 @@ def bind(stage_root, plan, bundles, destination):
     inputs = [
         stage_root,
         *map(Path, bundles.values()),
-        *[Path(j["source_root"]) for j in jobs.values()],
+        *[archive.storage_path(j["source_root"], plan.get("storage_root_binding"), live=True) for j in jobs.values()],
     ]
     require(
         not any(destination.is_relative_to(p.absolute()) for p in inputs),
@@ -574,7 +603,9 @@ def bind(stage_root, plan, bundles, destination):
             attestation = read(bundle / "receipt.json")
             archive_input = read(bundle / archive.INPUT_MANIFEST)
             require(
-                Path(archive_input["source_path"]) == Path(job["source_root"]),
+                Path(archive_input["source_path"])
+                == archive.storage_path(job["source_root"], plan.get("storage_root_binding"), live=True)
+                and archive_input.get("storage_root_binding") == plan.get("storage_root_binding"),
                 "bundle archived a different closed source",
             )
             target = destination / "raw-evidence" / name(job)
@@ -605,7 +636,9 @@ def bind(stage_root, plan, bundles, destination):
             for item in control_specs(spec):
                 if any(c["original_path"] == item["path"] and c["sha256"] == item["sha256"] for c in controls):
                     continue
-                source = archive.absolute_safe(original_path(plan["manifest_base"], item["path"]))
+                source = archive.storage_path(
+                    original_path(plan["manifest_base"], item["path"]), plan.get("storage_root_binding"), live=True
+                )
                 require(archive.sha_file(source) == item["sha256"], "frozen control changed")
                 copied = target / (item["sha256"] + ".json")
                 if not copied.exists():
@@ -614,7 +647,9 @@ def bind(stage_root, plan, bundles, destination):
             record["controls"] = controls
             if "external_control" in spec:
                 item = spec["external_control"]
-                original = archive.absolute_safe(original_path(plan["manifest_base"], item["path"]))
+                original = archive.storage_path(
+                    original_path(plan["manifest_base"], item["path"]), plan.get("storage_root_binding"), live=True
+                )
                 require(archive.sha_file(original) == item["sha256"], "external control manifest changed")
                 document = read(original)
                 index, get, _ = external_control.validate(original.parent, document)
@@ -639,6 +674,8 @@ def bind(stage_root, plan, bundles, destination):
         validate(records, stage_root, destination)
         for bundle, identity in verified.items():
             require(_bundle_identity(bundle) == identity, "verified archive bundle changed before final binding")
+        if plan.get("storage_root_binding") is not None:
+            archive.validate_storage_binding(plan["storage_root_binding"], live=True)
         archive.write_json(destination / "external-raw-evidence.json", records)
         return records
     except Exception as error:
@@ -659,6 +696,9 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     prepare = sub.add_parser("plan")
     prepare.add_argument("--manifest-base", type=Path, required=True)
+    prepare.add_argument(
+        "--storage-root-binding", type=Path, help="Explicit observed original/canonical storage root proof"
+    )
     capture = sub.add_parser("archive")
     capture.add_argument("--label", required=True)
     finish = sub.add_parser("bind")
@@ -674,7 +714,14 @@ def main():
     if args.command == "plan":
         output = archive.absolute_safe(args.output, must_exist=False)
         require(not output.is_relative_to(args.stage.absolute()), "plan output cannot modify the accepted stage")
-        archive.write_json(output, make_plan(args.stage, args.manifest_base))
+        archive.write_json(
+            output,
+            make_plan(
+                args.stage,
+                args.manifest_base,
+                storage_root_binding=read(args.storage_root_binding) if args.storage_root_binding else None,
+            ),
+        )
     elif args.command == "archive":
         archive_one(args.stage, read(args.plan), args.label, args.output)
     else:

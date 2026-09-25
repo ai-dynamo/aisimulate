@@ -313,10 +313,23 @@ def prepare(source_root, original_task_root, anchors, runs, output, *, adapter=A
     return document
 
 
-def bind_role(document, get, admission, pairs, plans, manifest_base, inventory, archive_source):
+def bind_role(
+    document, get, admission, pairs, plans, manifest_base, inventory, archive_source, *, storage_root_binding=None
+):
     """Join selected accepted attempts to the archived original started bytes."""
     if document.get("schema") == current.SCHEMA:
-        return current.bind_role(document, get, admission, pairs, plans, manifest_base, inventory, archive_source)
+        return current.bind_role(
+            document,
+            get,
+            admission,
+            pairs,
+            plans,
+            manifest_base,
+            inventory,
+            archive_source,
+            storage_root_binding=storage_root_binding,
+        )
+    require(storage_root_binding is None, "explicit storage proof requires current external controls")
     task = absolute(document["original_task_root"])
     runs = {run["cell_id"]: run for run in document["runs"]}
     children = {child["child_cell_id"]: child for child in admission["children"]}

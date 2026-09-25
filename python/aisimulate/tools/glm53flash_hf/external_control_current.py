@@ -750,7 +750,9 @@ def configuration_revisions(document, get, admission, backend, quant, tp, planne
     }
 
 
-def bind_role(document, get, admission, pairs, plans, manifest_base, inventory, archive_source):
+def bind_role(
+    document, get, admission, pairs, plans, manifest_base, inventory, archive_source, *, storage_root_binding=None
+):
     """Crossbind the original child bytes already validated by the strict stage."""
     control = _control()
     context = frozen_contract(document, get)
@@ -798,7 +800,7 @@ def bind_role(document, get, admission, pairs, plans, manifest_base, inventory, 
                 "accepted native worker bytes differ",
             )
         for path in control.execution_paths(document, run):
-            original = task / path
+            original = archive.storage_path(task / path, storage_root_binding)
             require(original.is_relative_to(archive_source), "archive omits original external execution controls")
             required[original.relative_to(archive_source).as_posix()] = files[path]["sha256"]
     observed = {row["path"]: row["sha256"] for row in inventory if row["kind"] == "file" and row["path"] in required}
