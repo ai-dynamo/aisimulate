@@ -508,7 +508,14 @@ def install(manifest, provenance, output, *, include_piecewise=False):
         if state is None:
             rank = get_tensor_model_parallel_rank()
             observer_class = NativePiecewiseGraphObserver if include_piecewise else NativeGraphOperationObserver
-            observer = observer_class(manifest, provenance, rank, NativeGraphAPI(capture_memset_parameters=True))
+            from collector.glm53flash_graph_nodes import MEMSET_REPORTED_KIND_CONTRACT
+
+            observer = observer_class(
+                manifest,
+                provenance,
+                rank,
+                NativeGraphAPI(capture_memset_parameters=True, memset_contract=MEMSET_REPORTED_KIND_CONTRACT),
+            )
             inventory = install_native_hooks(model, observer, "vllm")
             state = {"observer": observer, "rank": rank, "model": model, "inventory": inventory}
             models[id(model)] = state

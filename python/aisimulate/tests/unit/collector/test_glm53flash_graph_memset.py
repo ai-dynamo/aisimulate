@@ -318,7 +318,8 @@ def observed_query(source, receipt, path):
 @pytest.mark.parametrize(
     "defect", [None, "missing_contract", "unknown_contract", "missing_params", "source_bytes", "missing_query"]
 )
-def test_full_exporter_rederives_new_source_query_contract(tmp_path, monkeypatch, defect):
+@pytest.mark.parametrize("contract", nodes.MEMSET_CONTRACTS)
+def test_full_exporter_rederives_new_source_query_contract(tmp_path, monkeypatch, defect, contract):
     from collector import glm53flash_vllm_graph_export as export
 
     from .test_glm53flash_vllm_graph_export import fixture
@@ -330,6 +331,7 @@ def test_full_exporter_rederives_new_source_query_contract(tmp_path, monkeypatch
     source["native_api_libraries"] = libraries()
     receipt["callback_subscription_closed"] = True
     node = add_memset(source, receipt)
+    node["memset_params"]["contract"] = contract
     source["calls"][0]["owned_node_ids"].append(node["node_id"])
     path = tmp_path / "TEST_ONLY-pending-memset.json"
     bound = resolve(source, receipt, observed_query(source, receipt, path))
@@ -375,7 +377,7 @@ def test_full_exporter_rederives_new_source_query_contract(tmp_path, monkeypatch
         trace = json.loads(trace_path.read_text())
         memory = {
             "cat": "gpu_memset",
-            "name": nodes.MEMSET_TRACE_NAME,
+            "name": nodes.MEMSET_TRACE_NAME if contract == nodes.MEMSET_PENDING_CONTRACT else "Memset (Unknown)",
             "ts": 11,
             "dur": 2,
             "args": {
@@ -401,7 +403,7 @@ def test_full_exporter_rederives_new_source_query_contract(tmp_path, monkeypatch
             export._binding(tmp_path, row, bound, set())
 
 
-def piecewise_pending_files(tmp_path):
+def piecewise_pending_files(tmp_path, contract=nodes.MEMSET_PENDING_CONTRACT):
     from .test_glm53flash_vllm_serving_export import piecewise_files
 
     policy, manifest, provenance = piecewise_files(tmp_path)
@@ -415,7 +417,7 @@ def piecewise_pending_files(tmp_path):
         source["native_api_libraries"] = libraries()
         segment = source["segments"][0]
         segment["native_api_libraries"] = source["native_api_libraries"]
-        add_memset(segment, shared)
+        add_memset(segment, shared)["memset_params"]["contract"] = contract
         segment.pop("native_api_libraries")
         put(source_path, source)
         sources.append((source, source_path))
@@ -455,10 +457,11 @@ def piecewise_pending_files(tmp_path):
 @pytest.mark.parametrize(
     "defect", [None, "missing_contract", "unknown_contract", "missing_source", "wrong_bytes", "missing_query"]
 )
-def test_piecewise_exporter_rederives_new_source_query_contract(tmp_path, defect):
+@pytest.mark.parametrize("contract", nodes.MEMSET_CONTRACTS)
+def test_piecewise_exporter_rederives_new_source_query_contract(tmp_path, defect, contract):
     from collector import glm53flash_vllm_serving_export as export
 
-    policy, manifest, provenance = piecewise_pending_files(tmp_path)
+    policy, manifest, provenance = piecewise_pending_files(tmp_path, contract)
     path = tmp_path / "vllm-graph-clones-rank-0-capture-0-piecewise-0-bound.json"
     bound = json.loads(path.read_text())
     segment = bound["segments"][0]
@@ -480,10 +483,7 @@ def test_piecewise_exporter_rederives_new_source_query_contract(tmp_path, defect
     else:
         captures = export._piecewise_captures(*args)
         assert set(captures) == {1, 2, 4}
-        assert all(
-            value[0]["segments"][0]["memset_pending_contract"] == nodes.MEMSET_PENDING_CONTRACT
-            for value in captures.values()
-        )
+        assert all(value[0]["segments"][0]["memset_pending_contract"] == contract for value in captures.values())
         row = {
             "runtime_mode": "PIECEWISE",
             "tp_rank": 0,
@@ -508,7 +508,7 @@ def test_piecewise_exporter_rederives_new_source_query_contract(tmp_path, defect
         segment = registry["segments"][0]
         memory = {
             "cat": "gpu_memset",
-            "name": nodes.MEMSET_TRACE_NAME,
+            "name": nodes.MEMSET_TRACE_NAME if contract == nodes.MEMSET_PENDING_CONTRACT else "Memset (Unknown)",
             "ts": 16,
             "dur": 2,
             "args": {

@@ -196,6 +196,8 @@ def bind_prefill_activity(events, calls, expected_names):
             "sglang.srt.utils.common.BumpAllocator.__init__" if scope == SETUP_RANGE else inventory[scope]["source"]
         )
     result = _compose_execution(None, region, activities)
+    if "host_memory_api_observations" in checked:
+        result["host_memory_api_observations"] = checked["host_memory_api_observations"]
     result.update(
         measurement_contract=METHOD,
         native_calls=calls,

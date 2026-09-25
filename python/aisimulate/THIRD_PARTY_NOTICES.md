@@ -1360,6 +1360,13 @@ synthetic parameters and replay activities, explicitly separate from original
 failed native observations. Memset API references additionally use CUDA Toolkit
 13.0.1 `cudaMemsetParams` and `cudaGraphMemsetNodeGetParams` documentation linked
 in `collector/README.glm53flash.md`.
+The separately versioned reported-memory-kind parser and
+`python/aisimulate/tests/unit/collector/test_glm53flash_reported_memory_kind.py`
+retain Kineto's `Unknown` label without inferring a destination memory type. The
+host-memory API observation references CUDA Toolkit 13.0.2 Memory Management
+documentation linked in that README. These modifications are independently
+authored format/API bindings; no external implementation or documentation text
+was copied.
 
 BSD License
 

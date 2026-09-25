@@ -308,6 +308,8 @@ def bind_none_execution(events, calls, expected_names):
         row["source_boundary"] = owner if setup else inventory[owner]["source"]
         row["setup_boundary"] = owner if setup else None
     result = _compose_execution(None, region, activities)
+    if "host_memory_api_observations" in checked:
+        result["host_memory_api_observations"] = checked["host_memory_api_observations"]
     result.update(
         measurement_contract=NONE_MEASUREMENT_CONTRACT,
         native_calls=calls,

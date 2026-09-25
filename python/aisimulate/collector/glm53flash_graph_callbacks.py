@@ -494,10 +494,13 @@ def resolve_registry(
 
             row["memcpy_activity_requirement"] = memcpy_activity_requirement(row)
         if row["node_type"] == 2 and allow_pending_memset:
-            from .glm53flash_graph_nodes import MEMSET_PENDING_CONTRACT, memset_activity_requirement
+            from .glm53flash_graph_nodes import memset_activity_requirement
 
             row["memset_activity_requirement"] = memset_activity_requirement(row)
-            result["memset_pending_contract"] = MEMSET_PENDING_CONTRACT
+            contract = row["memset_params"]["contract"]
+            if result.get("memset_pending_contract", contract) != contract:
+                raise ValueError("native graph mixes distinct pending memset observation contracts")
+            result["memset_pending_contract"] = contract
         row["node_id"] = ids[row["node_id"]]
     for edge in result["edges"]:
         edge["from"], edge["to"] = ids[edge["from"]], ids[edge["to"]]
@@ -515,10 +518,10 @@ def resolve_registry(
 
 def vllm_memset_contract_options(recorded):
     """Route declared new records explicitly; historical strict proofs stay strict."""
-    from .glm53flash_graph_nodes import MEMSET_PENDING_CONTRACT
+    from .glm53flash_graph_nodes import MEMSET_CONTRACTS
 
     if "memset_pending_contract" not in recorded:
         return {"allow_memset_query": True}
-    if recorded["memset_pending_contract"] != MEMSET_PENDING_CONTRACT:
+    if recorded["memset_pending_contract"] not in MEMSET_CONTRACTS:
         raise ValueError("unknown pending native memset contract")
     return {"allow_pending_memset": True}

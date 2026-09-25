@@ -24,12 +24,20 @@ MEMCPY_TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
 MEMCPY_KINETO_REVISION = "094d3c1d072362d0a919a77299459eee94f97931"
 MEMCPY_TRACE_NAME = "Memcpy DtoD (Device -> Device)"
 MEMSET_PENDING_CONTRACT = "cuda13_live_source_memset_pending_replay_v1"
+MEMSET_REPORTED_KIND_CONTRACT = "cuda13_live_source_memset_reported_kind_v2"
+MEMSET_CONTRACTS = (MEMSET_PENDING_CONTRACT, MEMSET_REPORTED_KIND_CONTRACT)
 MEMSET_TRACE_NAME = "Memset (Device)"
+# Kineto formats these from CUPTI's reported memoryKind. Unknown
+# remains unknown; GPU_MEMSET establishes the activity, not its memory kind.
+MEMSET_REPORTED_NAMES = {"Memset (Unknown)": "Unknown", MEMSET_TRACE_NAME: "Device"}
 # CUDA 13.0.2 Driver Entry Point Access / Execution Control documentation:
 # these exact APIs resolve a function pointer or set a function attribute.
 # They do not launch that function. See README.glm53flash.md for source links.
 # Keep exact names: a future similarly named dispatch must not inherit this.
 FUNCTION_CONTROL_APIS = frozenset(("cudaGetDriverEntryPointByVersion", "cudaFuncSetAttribute", "cudaGetFuncBySymbol"))
+# CUDA13 Memory Management: host page-locked allocation is not a device
+# memset/copy/kernel dispatch. Preserve its observed CPU interval separately.
+HOST_MEMORY_APIS = frozenset(("cudaHostAlloc",))
 
 
 class GraphCopyPosition(ctypes.Structure):
@@ -79,7 +87,7 @@ def memset_activity_requirement(node):
     libraries = proof.get("native_api_libraries", {})
     if (
         node.get("node_type") != 2
-        or proof.get("contract") != MEMSET_PENDING_CONTRACT
+        or proof.get("contract") not in MEMSET_CONTRACTS
         or proof.get("api") != "cudaGraphMemsetNodeGetParams"
         or type(proof.get("rc")) is not int
         or proof["rc"] != 0
@@ -101,7 +109,12 @@ def memset_activity_requirement(node):
         or not 0 < params.get("width", 0) * params.get("elementSize", 0) < 2**64
     ):
         raise ValueError("pending native memset requires checked live source parameters for a positive linear fill")
-    return {"category": "gpu_memset", "name": MEMSET_TRACE_NAME, "bytes": params["width"] * params["elementSize"]}
+    identity = (
+        {"name": MEMSET_TRACE_NAME}
+        if proof["contract"] == MEMSET_PENDING_CONTRACT
+        else {"reported_names": copy.deepcopy(MEMSET_REPORTED_NAMES)}
+    )
+    return {"category": "gpu_memset", **identity, "bytes": params["width"] * params["elementSize"]}
 
 
 def memcpy_activity_requirement(node):
@@ -190,8 +203,11 @@ def _library(stem):
 class NativeGraphAPI:
     """Minimal read-only API surface, resolved without initializing CUDA."""
 
-    def __init__(self, *, capture_memset_parameters=False):
+    def __init__(self, *, capture_memset_parameters=False, memset_contract=MEMSET_PENDING_CONTRACT):
+        if memset_contract not in MEMSET_CONTRACTS:
+            raise ValueError("unknown live-source memset observation contract")
         self.capture_memset_parameters = capture_memset_parameters
+        self.memset_contract = memset_contract
         self.runtime, runtime = _library("cudart")
         self.cupti, cupti = _library("cupti")
         self.libraries = {"cudart": runtime, "cupti": cupti}
@@ -286,7 +302,7 @@ class NativeGraphAPI:
                 params = GraphMemsetParams()
                 rc = self.runtime.cudaGraphMemsetNodeGetParams(handle, ctypes.byref(params))
                 nodes[node_id.value]["memset_params"] = {
-                    "contract": MEMSET_PENDING_CONTRACT,
+                    "contract": self.memset_contract,
                     "api": "cudaGraphMemsetNodeGetParams",
                     "source_node_handle": handle,
                     "rc": rc,
@@ -437,9 +453,13 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
     node_types = {"kernel": 0, "gpu_memcpy": 1, "gpu_memset": 2}
     if "memset_pending_contract" in registry:
         memsets = [row for row in registry["nodes"] if row["node_type"] == 2]
-        if registry["memset_pending_contract"] != MEMSET_PENDING_CONTRACT or not memsets:
+        if registry["memset_pending_contract"] not in MEMSET_CONTRACTS or not memsets:
             raise ValueError("unknown or empty pending native memset contract")
-        if any(row.get("memset_activity_requirement") != memset_activity_requirement(row) for row in memsets):
+        if any(
+            row.get("memset_activity_requirement") != memset_activity_requirement(row)
+            or row["memset_params"]["contract"] != registry["memset_pending_contract"]
+            for row in memsets
+        ):
             raise ValueError("pending native memset lacks its original live-source replay requirement")
     expected = {row["node_id"]: row for row in registry["nodes"] if row["node_type"] in node_types.values()}
     structural = [row for row in registry["nodes"] if row["node_type"] not in node_types.values()]
@@ -483,14 +503,24 @@ def bind_replay_kernels(registry: dict, events: list[dict], *, correlation: int)
                     raise ValueError("pending native memcpy lacks its exact replay category, direction, and bytes")
                 fingerprint["copy_direction"] = "D2D"
             requirement = expected[node].get("memset_activity_requirement")
-            if requirement is not None and (
-                registry.get("memset_pending_contract") != MEMSET_PENDING_CONTRACT
-                or requirement != memset_activity_requirement(expected[node])
-                or category != requirement["category"]
-                or event.get("name") != requirement["name"]
-                or args["bytes"] != requirement["bytes"]
-            ):
-                raise ValueError("pending native memset lacks its exact replay category and source bytes")
+            if requirement is not None:
+                contract = registry.get("memset_pending_contract")
+                if (
+                    contract not in MEMSET_CONTRACTS
+                    or contract != expected[node]["memset_params"]["contract"]
+                    or requirement != memset_activity_requirement(expected[node])
+                    or category != requirement["category"]
+                    or args["bytes"] != requirement["bytes"]
+                    or (
+                        event.get("name") != requirement["name"]
+                        if contract == MEMSET_PENDING_CONTRACT
+                        else event.get("name") not in requirement["reported_names"]
+                    )
+                ):
+                    raise ValueError("pending native memset lacks its exact replay category and source bytes")
+                if contract == MEMSET_REPORTED_KIND_CONTRACT:
+                    fingerprint["reported_memory_kind"] = copy.deepcopy(requirement["reported_names"][event["name"]])
+                    fingerprint["memory_kind_contract"] = contract
         start, duration = event.get("ts"), event.get("dur")
         if (
             any(type(value) not in (int, float) or not math.isfinite(value) for value in (start, duration))
@@ -708,6 +738,7 @@ def _bind_execution_activity(bindings, events):
     # Prove both directions: absence of CUPTI activity is not a zero-cost
     # memory/kernel launch. A zero-byte call also needs explicit native proof;
     # profiler API names alone cannot establish zero work.
+    host_memory = []
     for correlation, call in calls.items():
         name = call["name"]
         expected = (
@@ -755,10 +786,26 @@ def _bind_execution_activity(bindings, events):
         )
         if name in FUNCTION_CONTROL_APIS and any(row["launch_correlation"] == correlation for row in setup):
             raise ValueError("native function lookup/configuration unexpectedly owns device activity")
+        if name in HOST_MEMORY_APIS:
+            if any(row["launch_correlation"] == correlation for row in setup):
+                raise ValueError("native host-memory API unexpectedly owns device activity")
+            host_memory.append(
+                {
+                    "name": name,
+                    "correlation": correlation,
+                    "start_us": call["ts"],
+                    "duration_us": call["dur"],
+                    "pid": call["pid"],
+                    "tid": call["tid"],
+                    "timing_domain": "host",
+                    "included_in_device_activity_sum": False,
+                }
+            )
         if (
             expected is None
             and name not in ("cudaGraphLaunch", "cuGraphLaunch")
             and name not in FUNCTION_CONTROL_APIS
+            and name not in HOST_MEMORY_APIS
             and not name.startswith(control_prefixes)
         ):
             raise ValueError(
@@ -779,7 +826,10 @@ def _bind_execution_activity(bindings, events):
         }
     else:
         binding = bindings[0] if bindings else None
-    return _compose_execution(binding, region, setup)
+    result = _compose_execution(binding, region, setup)
+    if host_memory:
+        result["host_memory_api_observations"] = host_memory
+    return result
 
 
 def _compose_execution(binding, region, outside):
@@ -888,4 +938,6 @@ def bind_vllm_execution_activity(binding: dict, events: list[dict]) -> dict:
     result["outside_graph_setup"] = [row for row in outside if row["operation"] == "native_graph_setup"]
     result["outside_graph_operations"] = [row for row in outside if row["operation"] != "native_graph_setup"]
     result["logits_range"] = unit
+    if "host_memory_api_observations" in checked:
+        result["host_memory_api_observations"] = checked["host_memory_api_observations"]
     return result

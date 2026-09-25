@@ -147,8 +147,9 @@ def native(monkeypatch, tmp_path):
     monkeypatch.setattr(graph, "persist_snapshot", persist)
     monkeypatch.setattr(graph, "install_native_hooks", install_hooks)
 
-    def graph_api(*, capture_memset_parameters):
+    def graph_api(*, capture_memset_parameters, memset_contract):
         assert capture_memset_parameters is True
+        assert memset_contract == "cuda13_live_source_memset_reported_kind_v2"
         calls.append(("api",))
 
     monkeypatch.setattr(graph, "NativeGraphAPI", graph_api)

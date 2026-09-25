@@ -913,6 +913,29 @@ owner. Synthetic source/replay tests do not prove a native model emits this
 activity. New producer/source identity, CPU ABI checks and fresh native replay
 qualification are required; no earlier failed attempt becomes accepted.
 
+The new `cuda13_live_source_memset_reported_kind_v2` observation identity
+preserves the memory kind actually reported by pinned Kineto. In failed native
+decode629630, all four ranks recorded eleven `gpu_memset` activities named
+`Memset (Unknown)`; rank0's exact source/executable/node/launch joins and all
+3088-byte source/replay counts agreed. `Unknown` is a documented CUPTI memory
+kind, independently formatted from the activity category and byte count.
+New vLLM captures use v2, which accepts only the documented `Device` and
+`Unknown` spellings while retaining the reported kind in the activity
+fingerprint. It makes no inferred destination-memory-kind claim. All original
+source, provider, clone, launch, positive duration and exact byte-count checks
+remain mandatory. Legacy v1 still requires `Memset (Device)`; original failed
+captures are not upgraded or reclassified as accepted data.
+
+Failed prefill629628 also exposed `cudaHostAlloc` inside `aten::_pin_memory`.
+CUDA13 [Memory Management](https://docs.nvidia.com/cuda/archive/13.0.2/cuda-runtime-api/group__CUDART__MEMORY.html)
+defines this exact API as host page-locked allocation. The execution reader
+retains its source-bound CPU interval and correlation in
+`host_memory_api_observations`, separately from GPU activity sums. A correlated
+device activity rejects, as do unknown similarly named APIs. This is not a
+zero-latency observation or a latency correction. These two collector fixes
+require a new producer identity and fresh native qualification; the original
+calibration failures, control thresholds and complete request sets remain.
+
 
 ### Native serving schema3
 

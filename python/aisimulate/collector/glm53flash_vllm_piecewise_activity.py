@@ -183,6 +183,8 @@ def bind_piecewise_execution(capture, events):
     result["outside_graph_setup"] = [row for row in outside if row["operation"] == "native_graph_setup"]
     result["outside_graph_operations"] = [row for row in outside if row["operation"] != "native_graph_setup"]
     result["logits_range"] = logits_range
+    if "host_memory_api_observations" in checked:
+        result["host_memory_api_observations"] = checked["host_memory_api_observations"]
     result["native_segments"] = [
         {"position": row["position"], "kind": row["kind"], "cpu_interval": positions[row["position"]]}
         for row in segments
