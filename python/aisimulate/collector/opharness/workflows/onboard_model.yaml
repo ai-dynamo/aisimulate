@@ -16,10 +16,10 @@ steps:
   done_when: {check: model_fails_dispositioned}
 - id: decomposed
   actor: script
-  done_when: {check: component_pending, args: {component: decompose}}
+  done_when: {check: model_decomposed}
 - id: granularity_decided
   actor: owner
-  done_when: {check: component_pending, args: {component: decompose}}
+  done_when: {check: residue_dispositioned}
 - id: coverage_collected
   actor: script
   done_when: {check: component_pending, args: {component: sanity}}
@@ -28,4 +28,4 @@ steps:
   done_when: {check: component_pending, args: {component: path_diff}}
 - id: e2e_admitted
   actor: script
-  done_when: {check: component_pending, args: {component: e2e_align}}
+  done_when: {check: e2e_admitted}

@@ -48,7 +48,8 @@ ROOT = Path(os.environ.get("AIS_PROBE_WORKSPACE")
             or os.environ.get("AIC_PROBE_WORKSPACE")  # legacy name
             or Path.cwd())
 
-IMPLEMENTED_COMPONENTS = {"probe_driver", "dummies", "probes", "build_images", "workflow_check", "path_diff"}
+IMPLEMENTED_COMPONENTS = {"probe_driver", "dummies", "probes", "build_images", "workflow_check", "path_diff",
+                          "decompose", "e2e_align"}
 
 
 def _load_targets() -> dict:
@@ -239,11 +240,83 @@ def pred_model_fails_dispositioned(p):
     return True, "every fail cell is findings-covered (or rescued)"
 
 
+def _decompositions(repo: str, sm: str) -> dict[str, dict]:
+    """{fw-version: decomposition entry} for every pinned backend whose matrix
+    cell for the repo PASSES (fail cells have no execution to decompose)."""
+    out = {}
+    for fw, be in _load_targets()["backends"].items():
+        ver = (be.get("versions") or ["?"])[0]
+        cell = ((_load_matrix(fw, ver, sm) or {}).get("results") or {}).get(repo) or {}
+        if not str(cell.get("verdict", "")).startswith("pass"):
+            continue
+        p = HARNESS / "results" / sm / "decompose" / f"{fw}-{ver}.yaml"
+        entry = ((yaml.safe_load(p.read_text()) or {}).get("results") or {}).get(repo) if p.exists() else None
+        out[f"{fw}-{ver}"] = entry
+    return out
+
+
+def pred_model_decomposed(p):
+    """components/decompose.py produced an entry for the repo on every pinned
+    backend where it passes (results/<sm>/decompose/<fw>-<ver>.yaml)."""
+    d = _decompositions(p["repo"], p.get("sm", "sm90"))
+    if not d:
+        return False, "not evaluable: no passing matrix cell yet (probe first)"
+    missing = [k for k, v in d.items() if v is None]
+    if missing:
+        return False, f"no decomposition on: {', '.join(missing)} (run components/decompose.py)"
+    res = sum(len(v.get("residue") or []) for v in d.values())
+    return True, f"decomposed on {len(d)} backends, {res} residue kernels"
+
+
+def pred_residue_dispositioned(p):
+    """Owner granularity call: every residue kernel of the repo is named in
+    findings (new family / new table / absorb), or there is no residue."""
+    d = _decompositions(p["repo"], p.get("sm", "sm90"))
+    if not d or any(v is None for v in d.values()):
+        return False, "not evaluable: decompose first"
+    residue = sorted({k for v in d.values() for k in (v.get("residue") or [])})
+    if not residue:
+        return True, "no residue — nothing to decide"
+    blob = json.dumps(_load_findings(), ensure_ascii=False)
+    undecided = [k for k in residue if k not in blob]
+    if undecided:
+        return False, f"{len(undecided)} residue kernels without a findings decision (e.g. {undecided[0]})"
+    return True, f"{len(residue)} residue kernels dispositioned in findings"
+
+
+def pred_e2e_admitted(p):
+    """components/e2e_align.py verdicts exist for the repo on every pinned
+    backend where it passes, and all of them are 'aligned'."""
+    sm = p.get("sm", "sm90")
+    tag = p["repo"].replace("/", "_")
+    missing, bad, n = [], [], 0
+    for fw, be in _load_targets()["backends"].items():
+        ver = (be.get("versions") or ["?"])[0]
+        cell = ((_load_matrix(fw, ver, sm) or {}).get("results") or {}).get(p["repo"]) or {}
+        if not str(cell.get("verdict", "")).startswith("pass"):
+            continue
+        files = sorted((HARNESS / "results" / sm / "e2e" / f"{fw}-{ver}").glob(f"{tag}*.json"))
+        if not files:
+            missing.append(f"{fw}-{ver}")
+            continue
+        for f in files:
+            n += 1
+            if json.loads(f.read_text()).get("verdict") != "aligned":
+                bad.append(f.name)
+    if not missing and n == 0:
+        return False, "not evaluable: no passing matrix cell yet"
+    if missing:
+        return False, f"no e2e verdict on: {', '.join(missing)} (needs a live measurement — see TODO.md)"
+    if bad:
+        return False, f"e2e verdicts not aligned: {bad[:3]}"
+    return True, f"{n} e2e verdicts, all aligned"
+
+
 PREDICATES = {fn.__name__[5:]: fn for fn in [
     pred_component_pending, pred_pin_is, pred_plan_has_version, pred_path_verdicts_aligned,
     pred_matrix_complete, pred_fails_root_caused, pred_customizations_retested,
     pred_model_inputs_ready, pred_dummies_built, pred_model_probed,
-    pred_model_fails_dispositioned,
+    pred_model_fails_dispositioned, pred_model_decomposed, pred_residue_dispositioned, pred_e2e_admitted,
 ]}
 
 

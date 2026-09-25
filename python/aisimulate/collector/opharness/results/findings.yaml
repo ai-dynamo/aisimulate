@@ -1309,6 +1309,17 @@ findings:
       compute_scale rows are an approximation by design (governed exception
       stands, no further follow-up). SDK modeling of the four remaining
       unmodeled architectures is out of this work — see TODO.md.
+      DECOMPOSE (step 5, component landed 2026-09-25): every passing record
+      on the three pins decomposes with EMPTY residue after six glue rules
+      (torch xmma f32/tf32 GEMM, fa3 split-kv combine, vision-encoder
+      attention/conv glue, trtllm MoE tactic-profiler buffers, trtllm GDN
+      layout transposes). One identity fact surfaced: sglang 0.5.16 serves
+      MiniMax-M2 / M2.5 (block-fp8 checkpoints) through the Triton
+      _w8a8_block_fp8_matmul GEMM, while the collector's fp8_block gemm lane
+      is DeepGEMM (kernel_source_backends gemm_dtype fp8_block) — labeled
+      triton_block_fp8 so a gemm path_diff on those repos reads diverged
+      instead of hiding under the DeepGEMM label. No capture exists yet for
+      that cell; recorded, not graded.
     applies_to: [zai-org/GLM-5.3-Flash, Qwen/Qwen3.8-27B, Qwen/Qwen3.8-Flash-Next, nvidia/Qwen3.8-2.4T-A95B-NVFP4,
       deepseek-ai/DeepSeek-V4.1-Flash, meta-models/Muse-Glimmer-30B, baerquant/Inkling, Altworld/Hemmingway-1,
       TokenRhythm/NeoHorse-1-9B, ornith-ai/Ornith-1.5-35B-A3B, openbmb/MiniCPM5-2B,

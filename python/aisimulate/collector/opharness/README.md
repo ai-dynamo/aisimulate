@@ -35,6 +35,8 @@ opharness/
 | `probes/` + `inject/` | in-container identity probes per framework; `inject/sitecustomize.py` is the multi-rank (tp/ep) leg — the filename is the mechanism |
 | `kernel_taxonomy_<sm>.yaml` | per-SM kernel-name -> canonical-backend vocabulary (both sides of a verdict translate through the SAME file; SMs never share one) |
 | `path_diff.py` | collector op path vs serving, same profiler, same vocabulary (stub) |
+| `decompose.py` | observed execution -> op families (taxonomy roles x backend labels) + residue (kernels no family names); results/<sm>/decompose/ |
+| `e2e_align.py` | SDK prediction vs one live measurement of the golden deployment (explicit measurement file); results/<sm>/e2e/ — the campaign needs a GPU matching an SDK system entry |
 | `build_images.sh` | rebuild probe images + generator venv from targets.yaml pins |
 
 ## Workflows
