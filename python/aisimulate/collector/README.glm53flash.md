@@ -779,7 +779,16 @@ raw model entry, and raw model return to logits entry. Neither a whole-forward
 residual nor profile-derived scaling supplies setup or operation latency.
 The independent control installs no operation hooks or profiler and retains the
 same whole-forward interval. Its actual policy, configuration and requests must
-match calibration. Failures preserve original traces and partial call evidence.
+match calibration. Every original NONE prefill point must satisfy the original
+symmetric five-percent control: the absolute difference between instrumented
+and control medians is at most `0.05 * control_median`. Both medians use the
+maximum rank time for each of the ten original retained repetitions. The full
+v1 control report is saved before rejection; no failed point is dropped and no
+table is exported after a control failure. Binding an existing table rederives
+and checks the same control, while existing valid v1 receipts remain readable.
+This threshold does not apply to FULL or PIECEWISE graph ratios, which remain
+reported without assuming timing equivalence. Failures preserve original
+traces and partial call evidence.
 
 The schema3 reader independently rederives the warmup ownership, validates every
 retained event row and selects one coherent rank per actual forward. Its 277

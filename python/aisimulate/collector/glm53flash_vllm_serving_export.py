@@ -1118,6 +1118,50 @@ def profile_control(root, proof, control_root, control_run):
     }
 
 
+def require_none_timing_control(proof, control):
+    """Require the original symmetric 5% control for measured NONE prefill.
+
+    Keep the v1 all-point report unchanged. Call only after preserving it, or
+    after independently rederiving an existing receipt from original evidence.
+    Graph ratios remain descriptive and have no threshold here.
+    """
+    none_points = {
+        bid
+        for (bid, _), ranks in proof["forwards"].items()
+        for row in ranks.values()
+        if row["phase"] == "context" and row["runtime_mode"] == "NONE"
+    }
+    if not none_points:
+        return
+    results = control.get("results")
+    expected = {bid for bid, _ in proof["forwards"]}
+    if (
+        not isinstance(results, list)
+        or any(not isinstance(row, dict) or type(row.get("benchmark_id")) is not int for row in results)
+        or len(results) != len(expected)
+        or {row["benchmark_id"] for row in results} != expected
+    ):
+        raise ValueError("native NONE timing control lacks complete original point results")
+    failed = []
+    for row in results:
+        if row["benchmark_id"] not in none_points:
+            continue
+        observed, original = row.get("profiled_median_ms"), row.get("control_median_ms")
+        if (
+            not _elapsed(observed, positive=True)
+            or not _elapsed(original, positive=True)
+            or not isinstance(row.get("samples"), list)
+            or len(row["samples"]) != 10
+            or abs(observed - original) > 0.05 * original
+        ):
+            failed.append(row["benchmark_id"])
+    if failed:
+        raise ValueError(
+            "native NONE prefill observation failed the original five-percent independent timing control "
+            f"at benchmark IDs {sorted(failed)}"
+        )
+
+
 def export_serving(
     root: Path, run: dict, output: Path, *, control_root: Path, control_run: dict, lookup_contract=None
 ) -> dict:
@@ -1141,6 +1185,7 @@ def export_serving(
     control_path = root / "serving-profile-control.json"
     with control_path.open("x") as stream:
         stream.write(canonical_json(control))
+    require_none_timing_control(proof, control)
     _, selection = aggregate_serving(proof, evidence_sha256="0" * 64)
     selection_path = root / "serving-rank-selection.json"
     with selection_path.open("x") as stream:
@@ -1227,6 +1272,7 @@ def verify_evidence(root, proof):
         raise ValueError("serving calibration lacks its independent unprofiled native control")
     if profile_control(root, proof, Path(control["evidence_root"]), control["frozen_run"]) != control:
         raise ValueError("serving control differs from original independent execution")
+    require_none_timing_control(proof, control)
     return receipt
 
 
