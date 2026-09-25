@@ -112,7 +112,7 @@ results:
     topology: tp1
   Qwen/Qwen3-VL-235B-A22B-Instruct:
     verdict: pass
-    attention: UnquantizedFusedMoEMethod
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
@@ -123,7 +123,7 @@ results:
     topology: tp1
   Qwen/Qwen3-VL-30B-A3B-Instruct:
     verdict: pass
-    attention: UnquantizedFusedMoEMethod
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
@@ -149,45 +149,45 @@ results:
     topology: tp1
   Qwen/Qwen3.5-0.8B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-122B-A10B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-27B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-2B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-35B-A3B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-397B-A17B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-4B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.5-9B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.8-2.4T-A95B:
@@ -202,12 +202,12 @@ results:
       GiB '
   Qwen/Qwen3.8-27B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.8-27B-FP8:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   Qwen/Qwen3.8-Flash-Next:
@@ -220,7 +220,7 @@ results:
     error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next-FP8'' is not a valid HuggingFace model path or loca'
   TokenRhythm/NeoHorse-1-9B:
     verdict: pass
-    attention: flash::FlashAttnFwdSm90
+    attention: flash::FlashAttnFwdSm90 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   XiaomiMiMo/MiMo-7B-Base:
@@ -316,13 +316,13 @@ results:
     topology: tp1
   meta-llama/Llama-4-Maverick-17B-128E-Instruct:
     verdict: pass
-    attention: SiluAndMul
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   meta-llama/Llama-4-Scout-17B-16E-Instruct:
     verdict: pass
-    attention: SiluAndMul
+    attention: flash::FlashAttnFwdSm90
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
@@ -366,7 +366,7 @@ results:
     topology: tp1
   moonshotai/Kimi-K2.5:
     verdict: pass
-    attention: SiluAndMul
+    attention: flash::FlashAttnFwdSm90
     moe: CompressedTensorsWNA16MoE->marlin
     kv_allocated: auto
     topology: tp1
@@ -434,30 +434,30 @@ results:
     topology: tp1
   nvidia/Gemma-4-26B-A4B-NVFP4:
     verdict: pass
-    attention: null
+    attention: kernel_unified_attention
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Gemma-4-31B-IT-NVFP4:
     verdict: pass
-    attention: null
+    attention: kernel_unified_attention
     kv_allocated: auto
     topology: tp1
   nvidia/Kimi-K2.5-NVFP4:
     verdict: pass
-    attention: SiluAndMul
+    attention: flash::flash_fwd_splitkv_mla_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Kimi-K2.6-NVFP4:
     verdict: pass
-    attention: SiluAndMul
+    attention: flash::flash_fwd_splitkv_mla_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Kimi-K2.7-Code-NVFP4:
     verdict: pass
-    attention: SiluAndMul
+    attention: flash::flash_fwd_splitkv_mla_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
@@ -500,62 +500,62 @@ results:
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     verdict: pass
-    attention: ReLUSquaredActivation
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
     verdict: pass
-    attention: ReLUSquaredActivation
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
     verdict: pass
-    attention: QuantFP8
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     moe: ModelOptFp8MoE
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
     verdict: pass
-    attention: QuantFP8
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
     verdict: pass
-    attention: ReLUSquaredActivation
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
     verdict: pass
-    attention: ReLUSquaredActivation
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-NVFP4:
     verdict: pass
-    attention: QuantFP8
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
     verdict: pass
-    attention: ReLUSquaredActivation
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
     verdict: pass
-    attention: ReLUSquaredActivation
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Nemotron-H-56B-Base-8K:
     verdict: pass+custom
     extra_args: --generator-set params.agg.extra_cli_args=["--benchmark-mode","agg","--gpu-memory-utilization","0.6"]
-    attention: flash::FlashAttnFwdSm90
+    attention: flash::FlashAttnFwdSm90 + _chunk_scan_fwd_kernel
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3-235B-A22B-NVFP4:
@@ -566,36 +566,36 @@ results:
     topology: tp1
   nvidia/Qwen3.5-122B-A10B-NVFP4:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.5-397B-A17B-NVFP4:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.6-27B-NVFP4:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.6-35B-A3B-NVFP4:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.8-2.4T-A95B-NVFP4:
     verdict: pass
-    attention: flash::FlashAttnFwdSm90
+    attention: flash::FlashAttnFwdSm90 + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: ModelOptNvFp4FusedMoE->marlin
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.8-27B-NVFP4:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     kv_allocated: auto
     topology: tp1
   nvidia/Qwen3.8-Flash-Next-NVFP4:
@@ -621,7 +621,7 @@ results:
     topology: tp1
   ornith-ai/Ornith-1.5-35B-A3B:
     verdict: pass
-    attention: ChunkGatedDeltaRule
+    attention: ChunkGatedDeltaRule + fused_recurrent_gated_delta_rule_packed_decode_kernel
     moe: UnquantizedFusedMoE->triton_fused_moe
     kv_allocated: auto
     topology: tp1

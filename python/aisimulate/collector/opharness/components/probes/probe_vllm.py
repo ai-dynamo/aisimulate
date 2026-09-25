@@ -350,6 +350,13 @@ def main() -> None:
                                        if "forward" in vars(c) and c is not _nn.Module), None)
                         if holder is None or holder in wrapped:
                             continue
+                        # a generic base (vllm CustomOp) defining forward would label
+                        # EVERY CustomOp — activations, quant, MoE methods — as an
+                        # attention span (NemotronH showed ReLUSquaredActivation as
+                        # its attention identity, 2026-09-25): wrap only holders that
+                        # are themselves attention-ish
+                        if not any(k in holder.__name__ for k in ("Attention", "Attn", "MLA", "Mixer", "SSM", "Compressor", "Indexer")):
+                            continue
                         wrap_span(holder, "forward",
                                   lambda s: f"AIC::attn::{type(getattr(s, 'impl', s)).__name__}")
                         wrapped.add(t)

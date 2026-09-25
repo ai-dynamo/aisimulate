@@ -488,6 +488,10 @@ def derive_profile(repo: str, configs_dir: Path) -> str:
 # records.jsonl — kernel normalization, taxonomy labeling, error compression
 
 # kernels that are infrastructure, never op identity
+# attention-ish module classes whose forward spans define the attention identity
+ATTN_CLASS_RE = re.compile(r"Attention|Attn|MLA|Mixer|SSM|DeltaRule|GatedDelta|KDA|Mamba|Impl$|Backend$|Flash|Indexer|Compressor|Sparse")
+# linear-attention / SSM kernel families (fla, KDA, mamba2) — identity of hybrid models
+LINEAR_ATTN_KERNEL_RE = re.compile(r"chunk_gated_delta|delta_rule|gdn_decode|gdn_prefill|fused_recurrent|_kda_|kda_|mamba|_chunk_scan|_chunk_state|_state_passing|selective_state|_fwd_recompute_w_u", re.I)
 KERNEL_DENY = re.compile(
     r"Memcpy|Memset|^memcpy\d|^memset\d|Lazy Function Loading|Runtime Triggered Module Loading|"
     r"at::native::(vectorized_elementwise|elementwise|index_elementwise|"
@@ -726,7 +730,10 @@ def build_records() -> None:
                     # trtllm: no spans — fall back to the attention kernel family
                     "attn_backend": ((f.get("attn_backend") or "").rsplit(".", 1)[-1]
                                      or next((s.split("::")[2] for s in (f.get("api_trace") or {})
-                                              if "::attn::" in s), None)
+                                              if "::attn::" in s
+                                              # older probes wrapped vllm's CustomOp base, so
+                                              # activations/quant methods carry attn spans too
+                                              and ATTN_CLASS_RE.search(s.split("::")[2])), None)
                                      # graph-replayed / compiled forwards emit no
                                      # Python spans (framework-mode probes,
                                      # 2026-09-24): the attention kernel family
@@ -736,9 +743,18 @@ def build_records() -> None:
                                                         + (f.get("decode_kernels") or [])
                                                         + (f.get("prefill_kernels") or []))
                                               if re.search(r"fmha|flash_?attn|flash_fwd|"
-                                                           r"mla_|attention_kernel|paged_kv",
+                                                           r"mla_|attention_kernel|paged_kv|"
+                                                           r"sparse_attn_fwd|mqa_logits|unified_attention",
                                                            k["kernel"], re.I)
                                               and "norm" not in k["kernel"].lower()), None)),
+                    # hybrids (GDN / KDA / mamba + attention): the linear-attention
+                    # kernel family is part of the identity too; recorded separately
+                    # so the attention column can show "fa3 + chunk_gated_delta_rule"
+                    "linear_attn_kernel": next((normalize_kernel(k["kernel"])
+                                                for k in ((f.get("kernels") or [])
+                                                          + (f.get("decode_kernels") or [])
+                                                          + (f.get("prefill_kernels") or []))
+                                                if LINEAR_ATTN_KERNEL_RE.search(k["kernel"])), None),
                     "modules": {k.rsplit(".", 1)[-1]: v.get("modules", v.get("examples", []))
                                 for k, v in (f.get("quant_methods") or {}).items()},
                     "param_dtypes": f.get("param_dtypes"),
@@ -882,7 +898,7 @@ def build_matrix(targets: dict) -> None:
                     if rec and (rec.get("outcome") or {}).get("status") == "ok":
                         ident = rec.get("identity") or {}
                         res = rec.get("resolved") or {}
-                        cell["attention"] = ident.get("attn_backend")
+                        cell["attention"] = " + ".join(x for x in (ident.get("attn_backend"), ident.get("linear_attn_kernel")) if x) or None
                         moe_q = next((k for k in (ident.get("modules") or {}) if "MoE" in k), None)
                         moe_b = set()
                         _moe_rx = re.compile(r"moe|Marlin|marlin|grouped|expert")

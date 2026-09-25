@@ -145,45 +145,45 @@ results:
     topology: tp1
   Qwen/Qwen3.5-0.8B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.5-122B-A10B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_sm90_FullyFu
     moe: UnquantizedFusedMoE->causal_conv1d/cutlass/fla_triton/flashinfer/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.5-27B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_sm90_FullyFu
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.5-2B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.5-35B-A3B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel
     moe: UnquantizedFusedMoE->causal_conv1d/cutlass/fla_triton/flashinfer/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.5-397B-A17B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_sm90_FullyFu
     moe: UnquantizedFusedMoE->causal_conv1d/cutlass/fla_triton/flashinfer/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.5-4B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.5-9B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.8-2.4T-A95B:
@@ -196,12 +196,12 @@ results:
     error: '  model: reduce max_num_tokens and/or shard the model weights across GPUs by enabling pipeline and/or tensor parallelism'
   Qwen/Qwen3.8-27B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_sm90_FullyFu
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.8-27B-FP8:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_sm90_FullyFu
     kv_allocated: null
     topology: tp1
   Qwen/Qwen3.8-Flash-Next:
@@ -214,7 +214,7 @@ results:
     error: 'golden render failed: aiconfigurator generate: error: argument --model-path/--model: ''Qwen/Qwen3.8-Flash-Next-FP8'' is not a valid HuggingFace model path or loca'
   TokenRhythm/NeoHorse-1-9B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel
     kv_allocated: null
     topology: tp1
   XiaomiMiMo/MiMo-7B-Base:
@@ -263,7 +263,7 @@ results:
     topology: tp1
   deepseek-ai/DeepSeek-V3.2:
     verdict: pass
-    attention: null
+    attention: sm90::sparse_attn_fwd_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
     kv_allocated: null
     topology: tp1
@@ -444,37 +444,37 @@ results:
       this mod
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel + _chunk_scan_fwd_kernel
     moe: UnquantizedFusedMoE
     kv_allocated: null
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel + _chunk_scan_fwd_kernel
     moe: W4A16NVFP4CutlassFusedMoE
     kv_allocated: null
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-FP8:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel + _chunk_scan_fwd_kernel
     moe: FP8QDQFusedMoE
     kv_allocated: null
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel + _chunk_scan_fwd_kernel
     moe: W4A16NVFP4CutlassFusedMoE
     kv_allocated: null
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-BF16:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel + _chunk_scan_fwd_kernel
     moe: UnquantizedFusedMoE
     kv_allocated: null
     topology: tp1
   nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B-FP8:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel + _chunk_scan_fwd_kernel
     moe: FP8QDQFusedMoE
     kv_allocated: null
     topology: tp1
@@ -483,19 +483,19 @@ results:
     cause: no raw (crashed before dump)
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel + _chunk_scan_fwd_kernel
     moe: UnquantizedFusedMoE
     kv_allocated: null
     topology: tp1
   nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel + _chunk_scan_fwd_kernel
     moe: W4A16NVFP4CutlassFusedMoE
     kv_allocated: null
     topology: tp1
   nvidia/Nemotron-H-56B-Base-8K:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_128_S_qkv_128_causal_tma_ws_sm90_kernel + _chunk_scan_fwd_kernel
     kv_allocated: null
     topology: tp1
   nvidia/Qwen3-235B-A22B-NVFP4:
@@ -524,7 +524,7 @@ results:
     error: 'RuntimeError: No supported MoE GEMM tactic remains after replacing unsupported NO_SMEM epilogues.'
   nvidia/Qwen3.8-27B-NVFP4:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_sm90_FullyFu
     kv_allocated: null
     topology: tp1
   nvidia/Qwen3.8-Flash-Next-NVFP4:
@@ -550,7 +550,7 @@ results:
     topology: tp1
   ornith-ai/Ornith-1.5-35B-A3B:
     verdict: pass
-    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel
+    attention: fmha_v2_flash_attention_bf16_64_64_S_qkv_256_causal_tma_ws_sm90_kernel + kernel_cutlass_kernel_flashinfergdn_kernelsdelta_rule_dsldelta_rule_cp_sm90CPDel
     moe: UnquantizedFusedMoE->causal_conv1d/cutlass/fla_triton/flashinfer/triton_fused_moe/trtllm_internal/trtllm_mha
     kv_allocated: null
     topology: tp1
@@ -564,49 +564,49 @@ results:
     error: 'AssertionError: DeepSeek-V4 is not supported on pre-blackwell GPUs.'
   zai-org/GLM-5:
     verdict: pass
-    attention: null
+    attention: sm90::sparse_attn_fwd_kernel
     moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton_fused_moe/trtllm_internal
     kv_allocated: null
     topology: tp1
   zai-org/GLM-5-FP8:
     verdict: pass
-    attention: null
+    attention: sm90::sparse_attn_fwd_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
     kv_allocated: null
     topology: tp1
   zai-org/GLM-5.1:
     verdict: pass
-    attention: null
+    attention: sm90::sparse_attn_fwd_kernel
     moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton_fused_moe/trtllm_internal
     kv_allocated: null
     topology: tp1
   zai-org/GLM-5.1-FP8:
     verdict: pass
-    attention: null
+    attention: sm90::sparse_attn_fwd_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
     kv_allocated: null
     topology: tp1
   zai-org/GLM-5.2:
     verdict: pass
-    attention: null
+    attention: sm90::sparse_attn_fwd_kernel
     moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton_fused_moe/trtllm_internal
     kv_allocated: null
     topology: tp1
   zai-org/GLM-5.2-FP8:
     verdict: pass
-    attention: null
+    attention: sm90::sparse_attn_fwd_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
     kv_allocated: null
     topology: tp1
   zai-org/GLM-5.3:
     verdict: pass
-    attention: null
+    attention: sm90::sparse_attn_fwd_kernel
     moe: DeepSeekFP8BlockScalesFusedMoE
     kv_allocated: null
     topology: tp1
   zai-org/GLM-5.3-BF16:
     verdict: pass
-    attention: null
+    attention: sm90::sparse_attn_fwd_kernel
     moe: UnquantizedFusedMoE->cutlass/dsa_nsa/triton_fused_moe/trtllm_internal
     kv_allocated: null
     topology: tp1
