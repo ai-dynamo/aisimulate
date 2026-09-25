@@ -609,9 +609,17 @@ def install(manifest, provenance, output, *, include_piecewise=False):
                 json.dump(observations[0], stream, indent=2)
             type_path = output / f"{stem}-{index}.event-record-types.json"
             type_proof = record_event_record_types(
-                state["observer"].api, manager.graphs[descriptor], observations[0], receipt, type_path
+                state["observer"].api,
+                manager.graphs[descriptor],
+                observations[0],
+                receipt,
+                type_path,
+                allow_pending_memcpy=True,
+                allow_memset_query=True,
             )
-            registry = resolve_registry(observations[0], receipt, type_proof)
+            registry = resolve_registry(
+                observations[0], receipt, type_proof, allow_pending_memcpy=True, allow_memset_query=True
+            )
             registry["instantiation_receipt"] = {
                 "file": path.name,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),

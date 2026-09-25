@@ -23,6 +23,11 @@ from pathlib import Path
 MEMCPY_TORCH_REVISION = "cf30153c4c131c8164ee7798e5022d810682e2cb"
 MEMCPY_KINETO_REVISION = "094d3c1d072362d0a919a77299459eee94f97931"
 MEMCPY_TRACE_NAME = "Memcpy DtoD (Device -> Device)"
+# CUDA 13.0.2 Driver Entry Point Access / Execution Control documentation:
+# these exact APIs resolve a function pointer or set a function attribute.
+# They do not launch that function. See README.glm53flash.md for source links.
+# Keep exact names: a future similarly named dispatch must not inherit this.
+FUNCTION_CONTROL_APIS = frozenset(("cudaGetDriverEntryPointByVersion", "cudaFuncSetAttribute", "cudaGetFuncBySymbol"))
 
 
 class GraphCopyPosition(ctypes.Structure):
@@ -666,12 +671,18 @@ def _bind_execution_activity(bindings, events):
             "cudaDeviceSynchronize",
             "cuCtxSynchronize",
         )
+        if name in FUNCTION_CONTROL_APIS and any(row["launch_correlation"] == correlation for row in setup):
+            raise ValueError("native function lookup/configuration unexpectedly owns device activity")
         if (
             expected is None
             and name not in ("cudaGraphLaunch", "cuGraphLaunch")
+            and name not in FUNCTION_CONTROL_APIS
             and not name.startswith(control_prefixes)
         ):
-            raise ValueError("unknown native CUDA dispatch cannot be admitted as zero-cost setup")
+            raise ValueError(
+                "unknown native CUDA dispatch cannot be admitted as zero-cost setup: "
+                f"{name!r}, correlation={correlation}"
+            )
         if expected is not None and not any(
             row["launch_correlation"] == correlation and row["activity"] == expected for row in setup
         ):

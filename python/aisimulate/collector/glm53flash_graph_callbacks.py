@@ -251,7 +251,7 @@ def _direct_instantiation(registry, receipt):
     return create, clones, originals, ids
 
 
-def _event_record_mismatches(registry, receipt, *, allow_pending_memcpy=False):
+def _event_record_mismatches(registry, receipt, *, allow_pending_memcpy=False, allow_memset_query=False):
     create, clones, originals, ids = _direct_instantiation(registry, receipt)
     mismatches = [row for row in clones if row["node_type"] != originals[row["original_node_id"]]["node_type"]]
     copies = [
@@ -273,21 +273,39 @@ def _event_record_mismatches(registry, receipt, *, allow_pending_memcpy=False):
             if original["memcpy_params"]["source_node_handle"] != clone["raw_fields"]["originalNode"]:
                 raise ValueError("memcpy source query handle differs from its exact clone callback")
         mismatches = [row for row in mismatches if row not in copies]
-    if any((originals[row["original_node_id"]]["node_type"], row["node_type"]) != (7, 0) for row in mismatches):
+    query_types = (2, 7) if allow_memset_query else (7,)
+    if any(
+        originals[row["original_node_id"]]["node_type"] not in query_types or row["node_type"] != 0
+        for row in mismatches
+    ):
         raise ValueError("native instantiation has an unqualified changed node type")
     return create, clones, originals, ids, mismatches
 
 
-def record_event_record_types(api, graph, registry, receipt, path, *, allow_pending_memcpy=False):
-    """Query only the qualified EventRecord mismatch after unsubscribe.
+def _query_method(originals, mismatches):
+    # Preserve the original EventRecord-only proof byte contract. The explicit
+    # Memset opt-in gets a distinct method, with each exact source type retained.
+    if any(originals[row["original_node_id"]]["node_type"] == 2 for row in mismatches):
+        return "CUDA13_MEMSET_EVENT_RECORD_CLONE_QUERY_V1"
+    return "CUDA13_EVENT_RECORD_CLONE_QUERY_V1"
+
+
+def record_event_record_types(
+    api, graph, registry, receipt, path, *, allow_pending_memcpy=False, allow_memset_query=False
+):
+    """Query qualified EventRecord / explicitly enabled Memset mismatches.
 
     The captured source types remain authoritative. Actual GPU probe 612570 on
-    the exact libraries below found callback type0 versus native clone type7.
+    the exact libraries below found callback type0 versus native clone types7/2.
+    Memset additionally requires complete positive replay activity, independently
+    checked by bind_replay_kernels. Capture query success supplies no timing.
     Its Empty5→clone0 case is deliberately rejected. No CUDA API runs inside a
     callback, no source handle is dereferenced after Torch may have freed it,
     and the caller retains the real graph executable throughout this function.
     """
-    create, _, _, _, mismatches = _event_record_mismatches(registry, receipt, allow_pending_memcpy=allow_pending_memcpy)
+    create, _, originals, _, mismatches = _event_record_mismatches(
+        registry, receipt, allow_pending_memcpy=allow_pending_memcpy, allow_memset_query=allow_memset_query
+    )
     if not mismatches:
         return None
     if receipt.get("callback_subscription_closed") is not True:
@@ -298,12 +316,12 @@ def record_event_record_types(api, graph, registry, receipt, path, *, allow_pend
         or libraries.get("cudart", {}).get("sha256") != EVENT_RECORD_CUDART_SHA256
         or libraries.get("cupti", {}).get("sha256") != QUALIFIED_CUPTI_SHA256
     ):
-        raise RuntimeError("deferred EventRecord query differs from its actual qualified provider")
+        raise RuntimeError("deferred native node query differs from its actual qualified provider")
     handle = graph.raw_cuda_graph_exec()
     if handle != create["raw_fields"]["graphExec"]:
         raise RuntimeError("deferred node query does not retain its original executable")
     proof = {
-        "method": "CUDA13_EVENT_RECORD_CLONE_QUERY_V1",
+        "method": _query_method(originals, mismatches),
         "native_api_libraries": copy.deepcopy(libraries),
         "graph_exec_handle": handle,
         "graph_exec_id": receipt["actual_graph_exec_id"],
@@ -322,12 +340,13 @@ def record_event_record_types(api, graph, registry, receipt, path, *, allow_pend
 
         persist()
         for clone in mismatches:
+            source_type = originals[clone["original_node_id"]]["node_type"]
             row = {
                 "original_node_id": clone["original_node_id"],
                 "node_id": clone["node_id"],
                 "source_node_handle": clone["raw_fields"]["originalNode"],
                 "clone_node_handle": clone["raw_fields"]["node"],
-                "source_node_type": 7,
+                "source_node_type": source_type,
                 "callback_node_type": 0,
                 "api": "cudaGraphNodeGetType",
                 "rc": None,
@@ -339,22 +358,22 @@ def record_event_record_types(api, graph, registry, receipt, path, *, allow_pend
             row["rc"] = api.runtime.cudaGraphNodeGetType(row["clone_node_handle"], ctypes.byref(actual))
             row["native_node_type"] = actual.value
             persist()
-            if row["rc"] != 0 or actual.value != 7:
-                raise RuntimeError("deferred native EventRecord clone query failed or changed type")
+            if row["rc"] != 0 or actual.value != source_type:
+                raise RuntimeError("deferred native node clone query failed or changed type")
         proof["completed"] = True
         persist()
     return proof
 
 
-def resolve_registry(registry, receipt, node_type_proof=None, *, allow_pending_memcpy=False):
+def resolve_registry(registry, receipt, node_type_proof=None, *, allow_pending_memcpy=False, allow_memset_query=False):
     """Derive executable ownership, retaining strict native type evidence."""
     create, clones, originals, ids, mismatches = _event_record_mismatches(
-        registry, receipt, allow_pending_memcpy=allow_pending_memcpy
+        registry, receipt, allow_pending_memcpy=allow_pending_memcpy, allow_memset_query=allow_memset_query
     )
     if mismatches:
         libraries = registry.get("native_api_libraries", {})
         expected = {
-            "method": "CUDA13_EVENT_RECORD_CLONE_QUERY_V1",
+            "method": _query_method(originals, mismatches),
             "native_api_libraries": libraries,
             "graph_exec_handle": create["raw_fields"]["graphExec"],
             "graph_exec_id": receipt["actual_graph_exec_id"],
@@ -366,11 +385,11 @@ def resolve_registry(registry, receipt, node_type_proof=None, *, allow_pending_m
                     "node_id": row["node_id"],
                     "source_node_handle": row["raw_fields"]["originalNode"],
                     "clone_node_handle": row["raw_fields"]["node"],
-                    "source_node_type": 7,
+                    "source_node_type": originals[row["original_node_id"]]["node_type"],
                     "callback_node_type": 0,
                     "api": "cudaGraphNodeGetType",
                     "rc": 0,
-                    "native_node_type": 7,
+                    "native_node_type": originals[row["original_node_id"]]["node_type"],
                 }
                 for row in mismatches
             ],
@@ -395,7 +414,7 @@ def resolve_registry(registry, receipt, node_type_proof=None, *, allow_pending_m
                 )
             )
         ):
-            raise ValueError("EventRecord callback mismatch lacks its exact deferred native type proof")
+            raise ValueError("native node callback mismatch lacks its exact deferred native type proof")
     elif node_type_proof is not None:
         raise ValueError("unexpected node type evidence cannot alter matching native clone types")
     result = copy.deepcopy(registry)

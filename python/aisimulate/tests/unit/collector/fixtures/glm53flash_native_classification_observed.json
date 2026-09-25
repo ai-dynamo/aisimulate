@@ -1,0 +1,285 @@
+{
+  "scope": "TEST_ONLY reduced own observed metadata; not a complete model capture or accepted measurement",
+  "originals": {
+    "gpu/ops-vllm-native2c3b-gpu-results/none/prefill/626499/gpu/calibration/none-profile-rank-0-forward-5.json": {
+      "sha256": "0b12175d4d5beb55626006c75778f412522a3469f2ee2ecd2b6d59cf7c3726c4",
+      "bytes": 7275237
+    },
+    "gpu/ops-vllm-native2c3b-gpu-results/graph/prefill/626500/gpu/calibration/vllm-graph-clones-rank-0-capture-0-0-source.json": {
+      "sha256": "13ed3a5954c1766272b20e7bcdeabc4164056caff8bd5cf8414fef960ef59e9c",
+      "bytes": 811309
+    },
+    "gpu/ops-vllm-native2c3b-gpu-results/graph/prefill/626500/gpu/calibration/vllm-graph-clones-rank-0-capture-0-0.json": {
+      "sha256": "cc7c35ac42b8febd8e5184216722dfb95422c3876328020fd3f396bf6fdcf8e1",
+      "bytes": 59094995
+    }
+  },
+  "none": {
+    "region": {
+      "ph": "X",
+      "cat": "user_annotation",
+      "name": "aisim.glm53/native_none_metadata_to_logits",
+      "pid": 1110513,
+      "tid": 1110513,
+      "ts": 7358803391030.704,
+      "dur": 280675.296,
+      "args": {
+        "External id": 1,
+        "Record function id": 0,
+        "Ev Idx": 0
+      }
+    },
+    "control_calls": [
+      {
+        "ph": "X",
+        "cat": "cuda_runtime",
+        "name": "cudaGetDriverEntryPointByVersion",
+        "pid": 1110513,
+        "tid": 1110513,
+        "ts": 7358803408498.0,
+        "dur": 1.248,
+        "args": {
+          "External id": 868,
+          "cbid": 468,
+          "correlation": 1556
+        }
+      },
+      {
+        "ph": "X",
+        "cat": "cuda_runtime",
+        "name": "cudaFuncSetAttribute",
+        "pid": 1110513,
+        "tid": 1110513,
+        "ts": 7358803408516.656,
+        "dur": 6.656,
+        "args": {
+          "External id": 868,
+          "cbid": 273,
+          "correlation": 1576
+        }
+      },
+      {
+        "ph": "X",
+        "cat": "cuda_runtime",
+        "name": "cudaGetFuncBySymbol",
+        "pid": 1110513,
+        "tid": 1110513,
+        "ts": 7358803671522.512,
+        "dur": 3.776,
+        "args": {
+          "External id": 13762,
+          "cbid": 336,
+          "correlation": 47736
+        }
+      }
+    ],
+    "launch": {
+      "ph": "X",
+      "cat": "cuda_runtime",
+      "name": "cudaLaunchKernel",
+      "pid": 1110513,
+      "tid": 1110513,
+      "ts": 7358803397817.104,
+      "dur": 19.072,
+      "args": {
+        "External id": 62,
+        "cbid": 211,
+        "correlation": 73
+      }
+    },
+    "activity": {
+      "ph": "X",
+      "cat": "kernel",
+      "name": "void at::native::elementwise_kernel<128, 2, at::native::gpu_kernel_impl_nocast<at::native::BUnaryFunctor<int, int, int, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#3}::operator()() const::{lambda(int, int)#1}> >(at::TensorIteratorBase&, at::native::BUnaryFunctor<int, int, int, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#3}::operator()() const::{lambda(int, int)#1}> const&)::{lambda(int)#1}>(int, at::native::gpu_kernel_impl_nocast<at::native::BUnaryFunctor<int, int, int, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#3}::operator()() const::{lambda(int, int)#1}> >(at::TensorIteratorBase&, at::native::BUnaryFunctor<int, int, int, at::native::binary_internal::div_floor_kernel_cuda(at::TensorIteratorBase&)::{lambda()#1}::operator()() const::{lambda()#3}::operator()() const::{lambda(int, int)#1}> const&)::{lambda(int)#1})",
+      "pid": 0,
+      "tid": 17,
+      "ts": 7358803397838.079,
+      "dur": 3.296,
+      "args": {
+        "External id": 62,
+        "queued": 0,
+        "device": 0,
+        "context": 1,
+        "stream": 17,
+        "correlation": 73,
+        "registers per thread": 20,
+        "shared memory": 0,
+        "blocks per SM": 0.019737,
+        "warps per SM": 0.078947,
+        "grid": [
+          3,
+          1,
+          1
+        ],
+        "block": [
+          128,
+          1,
+          1
+        ],
+        "est. achieved occupancy %": 0,
+        "occupancy": {
+          "activeBlocksPerMultiprocessor": 16,
+          "limitingFactors": "WARPS",
+          "blockLimitRegs": 21,
+          "blockLimitSharedMem": 228,
+          "blockLimitWarps": 16,
+          "blockLimitBlocks": 32,
+          "blockLimitBarriers": 2147483647,
+          "allocatedRegistersPerBlock": 3072,
+          "allocatedSharedMemPerBlock": 1024
+        },
+        "graph id": 0,
+        "graph node id": 0,
+        "channel": 5,
+        "channel_type": 1
+      }
+    }
+  },
+  "graph": {
+    "source": {
+      "graph_id": 36793,
+      "native_api_libraries": {
+        "cudart": {
+          "path": "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcudart.so.13",
+          "sha256": "7bdba2b5b08cbdc85203c41cc94598adedb1bcfea7cb574ca693ac73599e4e63",
+          "runtime_version": 13000,
+          "abi": "CUDA13_capture7_edges5"
+        },
+        "cupti": {
+          "path": "/usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcupti.so.13",
+          "sha256": "a55e03ccab21830f5b9d1ca7a02ecd59c557e0d54c769a181ad1140a3cff8ac1"
+        }
+      },
+      "nodes": [
+        {
+          "node_id": 158024731721728,
+          "name": "embedding",
+          "node_type": 0
+        },
+        {
+          "node_id": 158024731723402,
+          "name": "native_graph_setup",
+          "node_type": 1,
+          "memcpy_params": {
+            "api": "cudaGraphMemcpyNodeGetParams",
+            "source_node_handle": 1809514592,
+            "rc": 0,
+            "parameters": {
+              "srcArray": 0,
+              "srcPos": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "srcPtr": {
+                "ptr": 281335887593472,
+                "pitch": 0,
+                "xsize": 0,
+                "ysize": 0
+              },
+              "dstArray": 0,
+              "dstPos": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "dstPtr": {
+                "ptr": 281331101597696,
+                "pitch": 0,
+                "xsize": 0,
+                "ysize": 0
+              },
+              "extent": {
+                "width": 262144,
+                "height": 1,
+                "depth": 1
+              },
+              "kind": 3
+            },
+            "trace_producer": {
+              "torch_git_version": "cf30153c4c131c8164ee7798e5022d810682e2cb",
+              "kineto_gitlink": "094d3c1d072362d0a919a77299459eee94f97931"
+            }
+          }
+        },
+        {
+          "node_id": 158024731721806,
+          "name": "attention_3",
+          "node_type": 2
+        }
+      ],
+      "edges": []
+    },
+    "callbacks": {
+      "callback_errors": [],
+      "actual_graph_exec_id": 36794,
+      "callback_subscription_closed": true,
+      "graph_mutations": false,
+      "callbacks": [
+        {
+          "kind": "graph_exec_created",
+          "cbid": 18,
+          "raw_fields": {
+            "graph": 3839610144,
+            "originalGraph": null,
+            "node": null,
+            "originalNode": null,
+            "nodeType": 0,
+            "dependency": null,
+            "graphExec": 2847216560
+          },
+          "graph_id": 36793,
+          "graph_exec_id": 36794
+        },
+        {
+          "kind": "node_cloned",
+          "cbid": 20,
+          "raw_fields": {
+            "graph": 2847216560,
+            "originalGraph": 3839610144,
+            "node": 1809512696,
+            "originalNode": 1821136208,
+            "nodeType": 0,
+            "dependency": null,
+            "graphExec": null
+          },
+          "node_id": 158029026689024,
+          "original_node_id": 158024731721728,
+          "node_type": 0
+        },
+        {
+          "kind": "node_cloned",
+          "cbid": 20,
+          "raw_fields": {
+            "graph": 2847216560,
+            "originalGraph": 3839610144,
+            "node": 1810083200,
+            "originalNode": 1828266104,
+            "nodeType": 0,
+            "dependency": null,
+            "graphExec": null
+          },
+          "node_id": 158029026689102,
+          "original_node_id": 158024731721806,
+          "node_type": 0
+        },
+        {
+          "kind": "node_cloned",
+          "cbid": 20,
+          "raw_fields": {
+            "graph": 2847216560,
+            "originalGraph": 3839610144,
+            "node": 1784961480,
+            "originalNode": 1809514592,
+            "nodeType": 0,
+            "dependency": null,
+            "graphExec": null
+          },
+          "node_id": 158029026690698,
+          "original_node_id": 158024731723402,
+          "node_type": 0
+        }
+      ]
+    }
+  }
+}

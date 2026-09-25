@@ -423,7 +423,8 @@ that exact clone handle. Source type and callback bytes remain unchanged.
 The full unique source/clone ID and handle mapping, exact qualified provider
 hashes, closed subscription, live executable handle and query rc/type are
 retained. The hashed query receipt is independently rechecked by the exporter.
-All other mismatches, including Empty5/clone0, still reject. No potentially
+The original default rejects other mismatches, including Empty5/clone0;
+the explicit vLLM Memset route below has its own deferred proof. No potentially
 freed source handle is queried after Torch capture returns, and no CUDA API
 is invoked inside a callback. The original failed model attempt is preserved;
 this narrow repair still needs a new full-model capture/profile qualification.
@@ -839,7 +840,41 @@ activity, kernel substituted for copy, wrong direction, or byte mismatch cannot
 produce a measured row. Native source parameters, callback0, and all failed
 proofs remain evidence; copying is charged once to its actual operation owner.
 The new native GetParams ABI and full SGLang B1 replay remain subject to actual
-CPU and GPU qualification. vLLM mapping keeps the previous strict default.
+CPU and GPU qualification. vLLM enables the same pending-copy proof together
+with the explicitly checked Memset route below.
+
+### Observed CUDA function controls and vLLM memory nodes
+
+The native eager activity reader recognizes exactly
+`cudaGetDriverEntryPointByVersion`, `cudaFuncSetAttribute`, and
+`cudaGetFuncBySymbol` as function lookup/configuration calls. The CUDA 13.0.2
+[driver-entry-point API](https://docs.nvidia.com/cuda/archive/13.0.2/cuda-runtime-api/group__CUDART__DRIVER__ENTRY__POINT.html),
+[execution API](https://docs.nvidia.com/cuda/archive/13.0.2/cuda-runtime-api/group__CUDART__EXECUTION.html), and
+[runtime/driver interaction API](https://docs.nvidia.com/cuda/archive/13.0.2/cuda-runtime-api/group__CUDART__DRIVER.html)
+specify function-pointer lookup and attribute configuration, separately from
+kernel dispatch. Each call remains in the original trace and source ownership;
+no device duration or zero-cost operation is synthesized. Unexpected correlated
+device activity and unknown API names still reject. Separate native event
+intervals and whole-forward controls retain any elapsed effect of these calls.
+
+Actual vLLM captures exposed source Memset2/callback0 alongside the D2D copies
+above. The explicit vLLM capture and original-evidence reader paths require a
+closed callback subscription, the exact qualified CUDA/CUPTI providers, the
+complete source-to-executable bijection and a deferred query of each actual
+Memset clone returning rc0/type2 while its executable remains alive. A mixed
+Memset/EventRecord query uses `CUDA13_MEMSET_EVENT_RECORD_CLONE_QUERY_V1`;
+EventRecord-only proofs retain their original method and structure. Raw source
+types and callback values remain unchanged. Empty, EventWait, host and unknown
+mismatches retain their original rejection.
+
+Capture proof provides ownership only. Every measured replay must still supply
+all original kernel, copy and memset node activities with exact graph/node/API
+correlations, positive intervals and byte counts; the pending D2D copy also
+requires its original direction and source byte count. FULL and PIECEWISE
+exporters independently rederive these bindings. Missing replay or deferred
+query evidence cannot be repaired from capture metadata. This changes producer
+identity and requires fresh CPU and native model qualification; earlier failed
+attempts do not become accepted measurements.
 
 
 ### Native serving schema3

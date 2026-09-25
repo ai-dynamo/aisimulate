@@ -1346,6 +1346,14 @@ no Kineto implementation or profiling binary is redistributed. The original
 Kineto BSD license and copyright notices follow. CUDA GetParams bindings are
 original bindings to the CUDA13 runtime API documented in the existing NVIDIA
 CUDA/CUPTI entry above; no SDK header implementation is copied.
+`test_glm53flash_native_classification.py` and the adjacent
+`fixtures/glm53flash_native_classification_observed.{json,README.md}` retain
+reduced metadata from this project's own failed native observations, not
+third-party implementation. The modified strict parser additionally references
+NVIDIA CUDA Toolkit 13.0.2 runtime documentation for Driver Entry Point Access,
+Execution Control and Runtime/Driver Interactions, linked in the fixture README.
+Its exact function-control classification and deferred Memset query are
+independently authored; no external source or documentation text is copied.
 
 BSD License
 

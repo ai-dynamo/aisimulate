@@ -146,7 +146,7 @@ def _captures(root, rank, snapshot, manifest, provenance, files):
         _completed_boundaries(source, operations)
         type_receipt = recorded.get("node_type_receipt")
         type_proof = _receipt(root, type_receipt, files) if type_receipt is not None else None
-        derived = resolve_registry(source, callbacks, type_proof)
+        derived = resolve_registry(source, callbacks, type_proof, allow_pending_memcpy=True, allow_memset_query=True)
         derived["instantiation_receipt"] = receipt
         if type_receipt is not None:
             derived["node_type_receipt"] = type_receipt

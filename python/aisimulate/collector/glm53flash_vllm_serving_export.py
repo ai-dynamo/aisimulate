@@ -630,7 +630,9 @@ def _piecewise_captures(root, rank, snapshot, manifest, provenance, files, full_
             if type_ref is not None and type_ref["file"] != f"{stem}-piecewise-{index}-{position}-event-types.json":
                 raise ValueError("serving PW node query belongs to another executable")
             type_proof = _receipt(root, type_ref, files) if type_ref is not None else None
-            derived = resolve_registry(original, receipt, type_proof)
+            derived = resolve_registry(
+                original, receipt, type_proof, allow_pending_memcpy=True, allow_memset_query=True
+            )
             create = claim(original["graph_id"], receipt)
             if observed.get("actual_graph_exec_handle") != create["raw_fields"]["graphExec"]:
                 raise ValueError("serving PW executable handle differs from its actual native callback")
