@@ -22,7 +22,7 @@ import yaml
 from aisimulate.fpm_contract import FPM_RESOLVED_CONFIG_GLOB
 from aisimulate_core.sdk.fpm_identity import EXECUTION_COLUMNS, LEGACY_EXECUTION_IDENTITY
 
-from .native_artifact import validate_native_collection
+from .native_artifact import NativePointMeasurement, validate_native_collection
 from .planner import FPMCell, FPMCollectionPlan, backend_identity_columns
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,29 @@ def _validate_backend_markers(cell: FPMCell, cell_dir: Path) -> None:
             raise ValueError(f"backend marker mismatch in {path}: {mismatches}")
 
 
+def _zero_kv_prefill_sample(measurements: list[NativePointMeasurement]) -> NativePointMeasurement | None:
+    """Prefer the unique ordinary sample over equivalent real-prefix path samples."""
+    ordinary = [m for m in measurements if m.kv_seed_regime == "not_applicable"]
+    if len(ordinary) != 1:
+        return None
+    sample = ordinary[0]
+    if sample.point["point_type"] != "prefill" or sample.point["total_kv_read_tokens"] != 0:
+        return None
+    expected = {key: value for key, value in sample.point.items() if key != "benchmark_id"}
+    for measurement in measurements:
+        if measurement is sample:
+            continue
+        if measurement.kv_seed_regime != "real_prefix":
+            return None
+        point = {key: value for key, value in measurement.point.items() if key != "benchmark_id"}
+        point["sample_reasons"] = [
+            reason for reason in point.get("sample_reasons", []) if reason != "prefill_real_seed"
+        ]
+        if point != expected:
+            return None
+    return sample
+
+
 def aggregate_cell(
     plan: FPMCollectionPlan,
     cell: FPMCell,
@@ -124,10 +147,13 @@ def aggregate_cell(
     # requested total-kv 3/4/5/6 all measure total-kv 6). Repeated samples of
     # one coordinate would violate the database's unique-key contract, so keep
     # exactly one per coordinate: the native (unclamped) sample when present,
-    # otherwise the clamped sample with the lowest benchmark_id. Two native
-    # samples on one coordinate remain a hard error — the grid itself
-    # guarantees native coordinates are unique.
-    grouped: dict[tuple[str, int, int, int], list[Any]] = {}
+    # otherwise the clamped sample with the lowest benchmark_id.
+    # Real-prefix staging can also emit zero-KV prefill samples beside the
+    # ordinary sample of the same work. Only this provenance difference is
+    # consolidatable: keep the unique ordinary sample with identical remaining
+    # point metadata. Other native collisions remain a hard error. Raw samples
+    # stay intact; neither reduction averages timings nor selects by latency.
+    grouped: dict[tuple[str, int, int, int], list[NativePointMeasurement]] = {}
     for measurement in collection.points:
         point = measurement.point
         key = (
@@ -137,11 +163,17 @@ def aggregate_cell(
             int(point["total_kv_read_tokens"]),
         )
         grouped.setdefault(key, []).append(measurement)
-    selected: list[Any] = []
+    selected: list[NativePointMeasurement] = []
     dropped_clamped = 0
+    dropped_zero_kv = 0
     for key, measurements in grouped.items():
         natives = [m for m in measurements if "context_clamped" not in (m.point.get("sample_reasons") or ())]
         if len(natives) > 1:
+            sample = _zero_kv_prefill_sample(measurements)
+            if sample is not None:
+                selected.append(sample)
+                dropped_zero_kv += len(measurements) - 1
+                continue
             raise ValueError(
                 f"conflicting FPM measurements for physical coordinate {key} in "
                 f"{cell.cell_id}: {len(natives)} unclamped samples share one key"
@@ -156,6 +188,12 @@ def aggregate_cell(
             "FPM %s: consolidated %d context-clamped duplicate sample(s) onto their achieved physical coordinates",
             cell.cell_id,
             dropped_clamped,
+        )
+    if dropped_zero_kv:
+        logger.info(
+            "FPM %s: consolidated %d zero-KV prefill provenance duplicate sample(s) onto their ordinary samples",
+            cell.cell_id,
+            dropped_zero_kv,
         )
 
     # KV seed regime (schema v6 additive column): a per-row RECORD of the

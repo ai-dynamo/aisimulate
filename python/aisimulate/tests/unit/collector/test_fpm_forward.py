@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import copy
 import csv
 import hashlib
 import importlib.metadata
@@ -2409,6 +2410,142 @@ def test_native_aggregation_keeps_first_when_all_duplicates_are_clamped(tmp_path
 
 def test_native_aggregation_rejects_native_coordinate_collision(tmp_path):
     plan, cell, cell_dir = _decode_cell_with_coordinate_collision(tmp_path, clamp_first=False)
+
+    with pytest.raises(ValueError, match="unclamped samples share one key"):
+        aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+
+def _prefill_cell_with_zero_kv_provenance_duplicates(tmp_path, *, seed_samples=3, canonical_first=False):
+    plan, cell, cell_dir = _synthetic_plan_and_cell(tmp_path)
+    count = seed_samples + 1
+    canonical_id = 1 if canonical_first else count
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        template = payload["iteration_groups"][0]
+        payload["results"] = []
+        payload["iteration_groups"] = []
+        for benchmark_id in range(1, count + 1):
+            ordinary = benchmark_id == canonical_id
+            group = copy.deepcopy(template)
+            group["benchmark_id"] = benchmark_id
+            point = group["point"]
+            point.update(
+                benchmark_id=benchmark_id,
+                total_kv_read_tokens=0,
+                sample_reasons=["post_capture"] + ([] if ordinary else ["prefill_real_seed"]),
+                partition=None,
+                rows=None,
+            )
+            for item in group["rank_results"]:
+                fpm = item["fpms"][0]
+                fpm["counter_id"] = benchmark_id
+                fpm["scheduled_requests"]["sum_prefill_kv_tokens"] = 0
+                # The ordinary sample is deliberately slower than the seeded
+                # duplicates: selection must not bias toward minimum latency.
+                fpm["wall_time"] = (0.010 if ordinary else 0.002) + item["dp_rank"] * 0.001
+            group["wall_time"] = max(item["fpms"][0]["wall_time"] for item in group["rank_results"])
+            payload["iteration_groups"].append(group)
+            payload["results"].append(
+                {
+                    "point": point,
+                    "kv_seed_regime": "not_applicable" if ordinary else "real_prefix",
+                    "fpms": group["rank_results"][payload["dp"]["rank"]]["fpms"],
+                }
+            )
+        payload["coverage"].update(expected_points=count, completed_points=count)
+        payload["timing"]["measured_iteration_seconds"] = sum(
+            group["wall_time"] for group in payload["iteration_groups"]
+        )
+        path.write_text(json.dumps(payload))
+    return plan, cell, cell_dir
+
+
+@pytest.mark.parametrize("seed_samples", [3, 4])
+@pytest.mark.parametrize("canonical_first", [False, True])
+def test_zero_kv_prefill_duplicates_publish_unique_ordinary_sample(tmp_path, caplog, seed_samples, canonical_first):
+    import pyarrow.parquet as pq
+
+    plan, cell, cell_dir = _prefill_cell_with_zero_kv_provenance_duplicates(
+        tmp_path, seed_samples=seed_samples, canonical_first=canonical_first
+    )
+    raw_before = {path: path.read_bytes() for path in (cell_dir / "raw").rglob("*.json")}
+
+    with caplog.at_level("INFO", logger="collector.fpm_forward.database"):
+        rows = aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
+
+    assert len(rows) == 1
+    assert rows[0]["latency_ms"] == pytest.approx(11.0)
+    assert rows[0]["total_kv_read_tokens"] == 0
+    assert rows[0]["kv_seed_regime"] == "n/a"
+    assert rows[0]["measurement_repeats"] == 1
+    assert f"consolidated {seed_samples} zero-KV prefill provenance duplicate sample(s)" in caplog.text
+    assert "context-clamped duplicate" not in caplog.text
+
+    parquet, metadata, skipped = write_formal_database(plan, rows, systems_root=tmp_path / "systems")
+    assert skipped == ()
+    assert pq.read_table(parquet).to_pylist() == rows
+    assert json.loads(metadata.read_text())["row_count"] == 1
+    committed = validate_formal_database_commit(parquet, metadata, plan)
+    validate_formal_database_commit(
+        parquet,
+        metadata,
+        plan,
+        expected_attempt_ids={cell.cell_id: "attempt"},
+        expected_cell_rows=committed["cell_rows"],
+    )
+    write_formal_database(plan, rows, systems_root=tmp_path / "systems")
+    assert all(path.read_bytes() == original for path, original in raw_before.items())
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        "duplicate_ordinary",
+        "no_ordinary",
+        "missing_provenance",
+        "positive_kv",
+        "expected_cudagraph_mode",
+        "expected_capture_size",
+        "padding_tokens",
+        "partition",
+        "rows",
+        "sample_reasons",
+        "context_clamped",
+    ],
+)
+def test_prefill_provenance_consolidation_rejects_ambiguous_duplicates(tmp_path, conflict):
+    plan, cell, cell_dir = _prefill_cell_with_zero_kv_provenance_duplicates(tmp_path)
+    for path in (cell_dir / "raw").glob("*/benchmark*.json"):
+        payload = json.loads(path.read_text())
+        for index, (row, group) in enumerate(zip(payload["results"], payload["iteration_groups"], strict=True)):
+            point = row["point"]
+            if conflict == "positive_kv":
+                point["total_kv_read_tokens"] = 128
+                for item in group["rank_results"]:
+                    item["fpms"][0]["scheduled_requests"]["sum_prefill_kv_tokens"] = 128
+                row["fpms"] = group["rank_results"][payload["dp"]["rank"]]["fpms"]
+            elif conflict == "no_ordinary":
+                row["kv_seed_regime"] = "real_prefix"
+                point["sample_reasons"] = ["post_capture", "prefill_real_seed"]
+            elif index == 0:
+                if conflict == "duplicate_ordinary":
+                    row["kv_seed_regime"] = "not_applicable"
+                    point["sample_reasons"] = ["post_capture"]
+                elif conflict == "missing_provenance":
+                    row.pop("kv_seed_regime")
+                elif conflict == "context_clamped":
+                    point["sample_reasons"].append("context_clamped")
+                else:
+                    point[conflict] = {
+                        "expected_cudagraph_mode": "NONE",
+                        "expected_capture_size": 512,
+                        "padding_tokens": 255,
+                        "partition": "different",
+                        "rows": [{"tokens": 257}],
+                        "sample_reasons": ["eager_tail", "prefill_real_seed"],
+                    }[conflict]
+            group["point"] = point
+        path.write_text(json.dumps(payload))
 
     with pytest.raises(ValueError, match="unclamped samples share one key"):
         aggregate_cell(plan, cell, cell_dir, expected_attempt_id="attempt")
