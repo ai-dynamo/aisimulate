@@ -22,9 +22,12 @@ else:
     import raw_archive as archive
 
 SCHEMA = "glm53flash_external_control_v2"
+MIXED_SCHEMA = "glm53flash_external_control_v3"
+SCHEMAS = {SCHEMA, MIXED_SCHEMA}
+MIXED_SGLANG = "sglang_split_host_formal_mixed_v3"
 VLLM = "vllm_nested_formal_v2"
 SGLANG = "sglang_split_host_formal_v2"
-ADAPTERS = {VLLM, SGLANG}
+ADAPTERS = {VLLM, SGLANG, MIXED_SGLANG}
 DEPLOYMENTS = {f"{precision}-tp{tp}" for precision in ("fp8", "nvfp4") for tp in (2, 4)}
 POINTS = {
     ("calibration", "prefill"): 250,
@@ -96,9 +99,12 @@ def _cpu_pass(result):
     )
 
 
-def _children(groups):
+def _children(groups, *, expected_deployments=None):
     """Preserve phase-local IDs: prefill 1 is distinct from decode 1."""
-    require(set(groups) == DEPLOYMENTS, "formal deployment set differs")
+    require(
+        set(groups) == (DEPLOYMENTS if expected_deployments is None else set(expected_deployments)),
+        "formal deployment set differs",
+    )
     indexed = {}
     for deployment, children in groups.items():
         require(len(children) == 18, "formal deployment must contain eighteen original children")
@@ -368,7 +374,7 @@ def _vllm_frozen(document, frozen, admission, task):
     )
 
 
-def _sglang_frozen(document, frozen, admission, task):
+def _sglang_frozen(document, frozen, admission, task, *, deployments=None):
     anchors = document["anchors"]
     require(
         set(anchors) == {"launcher_manifest", "admission", "source_identity", "cache_hook"},
@@ -433,7 +439,7 @@ def _sglang_frozen(document, frozen, admission, task):
     groups = {}
     qualifications = {}
     points = frozen.read(str(factory / "qualification-points.json"))
-    for deployment in DEPLOYMENTS:
+    for deployment in DEPLOYMENTS if deployments is None else set(deployments):
         qualification = admission["qualifications"].get(deployment)
         require(
             isinstance(qualification, dict) and set(qualification) == {"prefill", "decode"},
@@ -469,7 +475,7 @@ def _sglang_frozen(document, frozen, admission, task):
     return dict(
         backend="sglang",
         version="0.5.20",
-        children=_children(groups),
+        children=_children(groups, expected_deployments=deployments),
         groups=groups,
         host=host,
         producer=producer,
@@ -577,8 +583,14 @@ def _sg_qualification(frozen, refs, deployment, phase, producer, points):
 
 def frozen_contract(document, get):
     """Source-only gate. This does not require or manufacture GPU attempts."""
+    if document.get("schema") == MIXED_SCHEMA:
+        if __package__:
+            from . import external_control_sglang_mixed as mixed
+        else:
+            import external_control_sglang_mixed as mixed
+        return mixed.frozen_contract(document, get)
     require(
-        document.get("schema") == SCHEMA and document.get("adapter") in ADAPTERS,
+        document.get("schema") == SCHEMA and document.get("adapter") in {VLLM, SGLANG},
         "unsupported current external-control contract",
     )
     task = _control().absolute(document["original_task_root"])
@@ -606,7 +618,7 @@ def closure(document, get):
     context = frozen_contract(document, get)
     task = control.absolute(document["original_task_root"])
     admission = context["admission"]
-    anchors = document["anchors"]
+    anchors = document.get("anchors", {})
     expected = dict(context["files"])
     runs = {r["cell_id"]: r for r in document["runs"]}
     require(
@@ -615,6 +627,9 @@ def closure(document, get):
     )
     for cid, run in runs.items():
         child = context["children"][cid]
+        if document["schema"] == MIXED_SCHEMA:
+            admission = context["deployment_admissions"][child["deployment"]]
+            anchors = context["deployment_anchors"][child["deployment"]]
         start = json.loads(get(run["started"]))
         provenance = json.loads(get(run["collector_provenance"]))
         raw = control.absolute(run["raw_root"])
@@ -720,7 +735,7 @@ def closure(document, get):
             control.relative(path)
             require(path not in expected, "execution receipt aliases frozen or another execution file")
             expected[path] = control.sha(get(path))
-    return expected, admission
+    return expected, context["admission"]
 
 
 def configuration_revisions(document, get, admission, backend, quant, tp, planner_revision):

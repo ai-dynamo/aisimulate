@@ -78,6 +78,21 @@ def profile_context(tmp_path, request):
                 "original_consumer_paths": [receipt["path"]],
             }
         parts.extend(partition_table(table, metadata, stage_root))
+        # This no-external-controller fixture remains deliberately legacy,
+        # matching test_glm53flash_hf_publication.staged. Repartitioning with
+        # the current exporter must not invent a current native identity.
+        for part in parts:
+            path = stage_root / part["metadata"]["path"]
+            info = policy.read(path)
+            for field in (
+                "aic_revision",
+                "planner_revision",
+                "revision_identity_schema",
+                "producer_revision_semantics",
+            ):
+                info.pop(field, None)
+            integration.write(path, info)
+            part["metadata"]["sha256"] = policy.sha(path)
         for cell in report["cells"]:
             if cell["backend"] != backend:
                 continue

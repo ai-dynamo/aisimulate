@@ -5,7 +5,8 @@
 The complete v2 controller validator is exercised without mocks in
 test_glm53flash_external_control_current. These tests isolate merging and
 canonical revalidation after that boundary; the mocked trust seam is local to
-pytest and cannot admit a production attachment.
+pytest and cannot admit a production attachment. The portable history verifier
+is also isolated here; its actual tar/metadata gates have separate tests.
 """
 
 import copy
@@ -13,11 +14,11 @@ import shutil
 
 import pyarrow.parquet as pq
 import pytest
-
-from tests.unit.tools import test_glm53flash_hf_publication as fixtures
 from tools.glm53flash_hf import external_control, external_control_current
 from tools.glm53flash_hf import glm53flash as policy
 from tools.glm53flash_hf import import_glm53flash as integration
+
+from tests.unit.tools import test_glm53flash_hf_publication as fixtures
 
 pytestmark = pytest.mark.unit
 
@@ -139,8 +140,16 @@ def snapshot(staged, tmp_path, monkeypatch):
     integration.write(tmp_path / "external.json", records)
     monkeypatch.setattr(policy, "validate_external_receipts", lambda *_a, **_k: {})
     revisions = policy.publication_revisions(meta, report, records, tmp_path, "7" * 40, part)
+    history = {
+        "contract": policy.portable_history.PORTABLE_CONTRACT,
+        "proof": {"path": "TEST_ONLY_history", "sha256": "8" * 64, "bytes": 0},
+    }
+    # Isolate revision naming after the separately tested history boundary.
+    # Mandatory policy/provenance dispatch itself still runs unmodified.
+    monkeypatch.setattr(policy.portable_history, "verify_portable_history", lambda *_a, **_k: {"files": {}})
     receipt = dict(
-        policy=policy.POLICY,
+        policy=policy.HISTORY_POLICY,
+        external_raw_history=history,
         source_revision="7" * 40,
         stage={"path": str((root / "stage.json").relative_to(tmp_path)), "sha256": policy.sha(root / "stage.json")},
         external_raw_evidence={"path": "external.json", "sha256": policy.sha(tmp_path / "external.json")},
@@ -153,7 +162,7 @@ def snapshot(staged, tmp_path, monkeypatch):
         tmp_path / "canonical.metadata.json",
         dict(
             meta,
-            import_policy=policy.POLICY,
+            import_policy=policy.HISTORY_POLICY,
             supporting_files=[{"path": "import.json", "sha256": policy.sha(tmp_path / "import.json")}],
         ),
     )
@@ -184,6 +193,7 @@ def snapshot(staged, tmp_path, monkeypatch):
         aisim_commit_semantics="native_producer_revision",
         provenance=dict(
             source_campaign_id=policy.CAMPAIGN,
+            external_raw_history=history,
             source_revision="7" * 40,
             import_receipt="import.json",
             import_receipt_sha256=policy.sha(tmp_path / "import.json"),

@@ -93,7 +93,7 @@ def _load_import(stage_root, dataset_root, import_result_path):
     result = policy.read(import_result_path)
     policy.require(
         result.get("status") == "CANONICAL_LOCAL_NOT_PUBLISHED"
-        and result.get("policy") == policy.POLICY
+        and result.get("policy") in {policy.POLICY, policy.HISTORY_POLICY}
         and result.get("stage_sha256") == policy.sha(stage_root / "stage.json"),
         "canonical import does not identify this accepted stage",
     )
@@ -118,9 +118,11 @@ def _load_import(stage_root, dataset_root, import_result_path):
             "configuration is missing from the canonical catalog",
         )
         manifest = policy.read(policy.checked(dataset_root, registered[path]))
-        policy.validate_snapshot(dataset_root, manifest)
+        for required_path in policy.validate_snapshot(dataset_root, manifest):
+            controls[required_path] = policy.sha(dataset_root / required_path)
         receipt = policy.read(dataset_root / manifest["provenance"]["import_receipt"])
         policy.require(receipt["stage"]["sha256"] == result["stage_sha256"], "mixed canonical stages")
+        policy.require(receipt["policy"] == result["policy"], "mixed canonical import policies")
         archive_stage = policy.checked(dataset_root, receipt["stage"]).parent
         policy.require(archive_stage == import_result_path.parent / "stage", "import result and archive disagree")
         quant = "nvfp4" if manifest["weight_quantization"] == "nvfp4" else "fp8"
